@@ -13,7 +13,10 @@
 #![forbid(unsafe_code)]
 
 pub mod color;
+pub mod debug;
 pub mod framebuffer;
+pub mod golden;
+pub mod inflate;
 pub mod mesh;
 pub mod png;
 pub mod raster;
@@ -23,8 +26,8 @@ pub mod texture;
 pub use color::Color;
 pub use framebuffer::Framebuffer;
 pub use mesh::{Mesh, ObjError};
-pub use png::{encode_png, save_png, save_ppm};
-pub use raster::{Blend, CullMode, DrawStats, Rasterizer};
+pub use png::{decode_png, encode_png, load_png, save_png, save_ppm, Image, PngError};
+pub use raster::{Blend, CullMode, DrawStats, PolygonMode, Rasterizer};
 pub use shader::{
     BasicShader, BasicVarying, DirectionalLight, Shader, UnlitShader, Varying, Vertex, VertexOutput,
 };

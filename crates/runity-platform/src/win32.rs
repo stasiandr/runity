@@ -9,7 +9,9 @@
 //! `BI_RGB` DIB, whose pixel layout is exactly the `0xAARRGGBB` the renderer
 //! already produces.
 
-#![allow(non_snake_case, non_camel_case_types)]
+// Types and fields keep their Windows SDK spelling: a reader comparing this
+// against MSDN should see the same names.
+#![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
 
 use crate::window::{Event, Key, MouseButton, Window, WindowConfig};
 use std::cell::RefCell;

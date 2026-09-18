@@ -46,14 +46,17 @@ pub use runity_render as render;
 
 /// Everything you normally need, in one `use`.
 pub mod prelude {
+    pub use runity_core::headless;
     pub use runity_core::{
-        App, Camera, Engine, Entity, Game, Input, RunOptions, Time, Transform, World,
+        App, Camera, DebugView, Engine, Entity, Game, Input, RunOptions, Time, Transform, World,
     };
     pub use runity_math::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use runity_platform::{Event, HeadlessWindow, Key, MouseButton, Window, WindowConfig};
-    pub use runity_render::png::{save_png, save_ppm};
+    pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
+    pub use runity_render::{debug, golden};
     pub use runity_render::{
         BasicShader, Blend, Color, CullMode, DirectionalLight, DrawStats, Filter, Framebuffer,
-        Mesh, Rasterizer, Shader, Texture, UnlitShader, Varying, Vertex, VertexOutput, Wrap,
+        Image, Mesh, PolygonMode, Rasterizer, Shader, Texture, UnlitShader, Varying, Vertex,
+        VertexOutput, Wrap,
     };
 }

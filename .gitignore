@@ -1,4 +1,9 @@
 target/
 **/*.rs.bk
-*.png
-!docs/*.png
+
+# Screenshots written by the examples into the working directory.
+/*.png
+
+# Written by a failing golden-image test, next to the reference it failed against.
+*.actual.png
+*.diff.png

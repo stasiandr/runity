@@ -279,3 +279,29 @@ fn unlit_shader_draws_a_cube_without_panicking() {
     assert_eq!(stats.triangles_rasterized, 6);
     assert!(stats.fragments_written > 0);
 }
+
+#[test]
+fn wireframe_mode_draws_edges_and_leaves_the_interior_alone() {
+    let mut raster = Rasterizer::new();
+    raster.polygon_mode = runity_render::PolygonMode::Line;
+
+    let mut fb = Framebuffer::new(64, 64);
+    fb.clear(Color::BLACK);
+    let stats = raster.draw_mesh(&mut fb, &fullscreen_quad(0.5, Color::RED), &Ndc);
+
+    assert_eq!(
+        stats.triangles_rasterized, 2,
+        "the geometry is still rasterized"
+    );
+    let drawn = stats.fragments_written;
+    assert!(drawn > 100, "the edges should be drawn, got {drawn}");
+    assert!(
+        drawn < 64 * 64 / 4,
+        "but a wireframe must be far cheaper than a fill, got {drawn} of {}",
+        64 * 64
+    );
+    // Well inside one triangle and away from all three of its edges.
+    assert_eq!(fb.get_pixel(55, 30), Color::BLACK);
+    // A corner sits on two edges.
+    assert_eq!(fb.get_pixel(0, 63), Color::RED);
+}

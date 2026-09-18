@@ -13,6 +13,17 @@ pub enum CullMode {
     Front,
 }
 
+/// Fill triangles, or draw only their edges.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PolygonMode {
+    #[default]
+    Fill,
+    /// Solid wireframe: the same pipeline, but only fragments within
+    /// [`Rasterizer::line_width`] pixels of an edge survive. It works with any
+    /// shader and still depth-tests, which line drawing over the top does not.
+    Line,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Blend {
     /// Overwrite the destination pixel.
@@ -48,6 +59,9 @@ pub struct Rasterizer {
     pub depth_test: bool,
     pub depth_write: bool,
     pub blend: Blend,
+    pub polygon_mode: PolygonMode,
+    /// Half-width, in pixels, of the edges drawn by [`PolygonMode::Line`].
+    pub line_width: f32,
 }
 
 impl Default for Rasterizer {
@@ -57,6 +71,8 @@ impl Default for Rasterizer {
             depth_test: true,
             depth_write: true,
             blend: Blend::Replace,
+            polygon_mode: PolygonMode::Fill,
+            line_width: 0.75,
         }
     }
 }
@@ -206,6 +222,9 @@ impl Rasterizer {
         let inv_area = 1.0 / area;
         // Edge i is opposite vertex i, so its edge function is vertex i's weight.
         let edges = [(b, c), (c, a), (a, b)];
+        // For wireframe: an edge function divided by the edge's length is the
+        // pixel distance to that edge.
+        let edge_lengths = edges.map(|(p, q)| ((q.x - p.x).powi(2) + (q.y - p.y).powi(2)).sqrt());
         let bias = [
             top_left_bias(edges[0].0, edges[0].1),
             top_left_bias(edges[1].0, edges[1].1),
@@ -230,6 +249,22 @@ impl Rasterizer {
                 }
                 if !inside {
                     continue;
+                }
+
+                if self.polygon_mode == PolygonMode::Line {
+                    let distance = (0..3)
+                        .map(|i| {
+                            let length = edge_lengths[i];
+                            if length > 0.0 {
+                                (w[i] * area) / length
+                            } else {
+                                f32::INFINITY
+                            }
+                        })
+                        .fold(f32::INFINITY, f32::min);
+                    if distance > self.line_width {
+                        continue;
+                    }
                 }
 
                 // z/w is linear in screen space, so plain barycentrics are correct.

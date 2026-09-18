@@ -26,6 +26,18 @@ jobs:
       # a fake X server, and rendering goes to an in-memory framebuffer.
       - name: Test
         run: cargo test --workspace
+      # A failing golden-image test leaves the rendered frame and the diff
+      # next to the reference; they are the whole point of the test.
+      - name: Upload golden-image diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-diffs-${{ matrix.os }}
+          path: |
+            **/*.actual.png
+            **/*.diff.png
+          if-no-files-found: ignore
+
       - name: Render a frame headlessly
         run: cargo run --release --example spinning_cube
         env:

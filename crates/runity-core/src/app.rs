@@ -5,9 +5,25 @@ use crate::world::World;
 use runity_math::Mat4;
 use runity_platform::{open_window, Event, Window, WindowConfig};
 use runity_render::{
-    BasicShader, Color, DirectionalLight, DrawStats, Framebuffer, Mesh, Rasterizer, Shader,
+    debug, BasicShader, Color, DirectionalLight, DrawStats, Framebuffer, Mesh, PolygonMode,
+    Rasterizer, Shader,
 };
 use std::io;
+
+/// What the frame should show. One switch, applied by the main loop, so a
+/// running game can be inspected without touching its rendering code.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum DebugView {
+    /// The scene as the game drew it.
+    #[default]
+    Shaded,
+    /// The same draw calls, but only triangle edges.
+    Wireframe,
+    /// The depth buffer, normalized over what the frame contains.
+    Depth,
+    /// How many times each pixel was written.
+    Overdraw,
+}
 
 /// Everything a game is handed each frame: the world, timing, input, the
 /// camera, and the framebuffer it draws into.
@@ -21,6 +37,10 @@ pub struct Engine {
     pub light: DirectionalLight,
     pub ambient: Color,
     pub clear_color: Color,
+    /// Which debug view the main loop presents after `render`.
+    pub debug_view: DebugView,
+    /// Write count that counts as "fully red" in [`DebugView::Overdraw`].
+    pub overdraw_saturation: u32,
     running: bool,
     frame_stats: DrawStats,
 }
@@ -37,6 +57,8 @@ impl Engine {
             light: DirectionalLight::default(),
             ambient: Color::rgb(0.12, 0.13, 0.16),
             clear_color: Color::rgb(0.05, 0.06, 0.09),
+            debug_view: DebugView::Shaded,
+            overdraw_saturation: 4,
             running: true,
             frame_stats: DrawStats::default(),
         }
@@ -81,6 +103,34 @@ impl Engine {
     /// What the previous frame cost.
     pub fn frame_stats(&self) -> DrawStats {
         self.frame_stats
+    }
+
+    /// Overlay a mesh's triangle edges, ignoring depth.
+    ///
+    /// For a wireframe that respects depth and runs the real shader, set
+    /// [`DebugView::Wireframe`] instead.
+    pub fn draw_wireframe(&mut self, mesh: &Mesh, model: Mat4, color: Color) {
+        let mvp = self.view_projection() * model;
+        debug::draw_wireframe(&mut self.framebuffer, mesh, mvp, color);
+    }
+
+    /// Overlay each vertex normal as a short segment.
+    pub fn draw_normals(&mut self, mesh: &Mesh, model: Mat4, length: f32, color: Color) {
+        let view_projection = self.view_projection();
+        debug::draw_normals(
+            &mut self.framebuffer,
+            mesh,
+            model,
+            view_projection,
+            length,
+            color,
+        );
+    }
+
+    /// Overlay the world axes at the origin.
+    pub fn draw_axes(&mut self, length: f32) {
+        let view_projection = self.view_projection();
+        debug::draw_axes(&mut self.framebuffer, view_projection, length);
     }
 }
 
@@ -207,9 +257,29 @@ impl App {
 
             // --- rendering ------------------------------------------------
             engine.frame_stats = DrawStats::default();
+            engine.rasterizer.polygon_mode = match engine.debug_view {
+                DebugView::Wireframe => PolygonMode::Line,
+                _ => PolygonMode::Fill,
+            };
+            let counting = engine.debug_view == DebugView::Overdraw;
+            if counting != engine.framebuffer.overdraw().is_some() {
+                engine.framebuffer.track_overdraw(counting);
+            }
+
             let clear = engine.clear_color;
             engine.framebuffer.clear(clear);
             game.render(&mut engine);
+
+            // Debug views replace the frame after the game has drawn it, so a
+            // game needs no awareness of them.
+            match engine.debug_view {
+                DebugView::Shaded | DebugView::Wireframe => {}
+                DebugView::Depth => engine.framebuffer = debug::depth_view(&engine.framebuffer),
+                DebugView::Overdraw => {
+                    let saturation = engine.overdraw_saturation;
+                    engine.framebuffer = debug::overdraw_view(&engine.framebuffer, saturation);
+                }
+            }
 
             let (w, h) = (
                 engine.framebuffer.width() as u32,

@@ -6,8 +6,11 @@
 //! RUNITY_HEADLESS=1 cargo run --release --example spinning_cube   # writes a PNG
 //! ```
 //!
-//! Controls: arrows or WASD orbit the camera, Q/E zoom, Space toggles the
-//! wireframe-ish backface culling, Escape quits.
+//! Controls: arrows or WASD orbit the camera, Q/E zoom, Escape quits.
+//! Debug views: 1 shaded, 2 wireframe, 3 depth buffer, 4 overdraw; N overlays
+//! vertex normals and the world axes.
+//!
+//! Headless, the view is picked with `RUNITY_DEBUG_VIEW=shaded|wireframe|depth|overdraw`.
 
 use runity::prelude::*;
 
@@ -21,6 +24,7 @@ struct Demo {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    show_normals: bool,
 }
 
 impl Demo {
@@ -58,6 +62,7 @@ impl Demo {
             yaw: 0.6,
             pitch: 0.45,
             distance: 6.0,
+            show_normals: false,
         }
     }
 }
@@ -83,6 +88,22 @@ impl Game for Demo {
             engine.quit();
             return;
         }
+        // One switch drives every debug view; the render code below is unaware.
+        for (key, view) in [
+            (Key::Num1, DebugView::Shaded),
+            (Key::Num2, DebugView::Wireframe),
+            (Key::Num3, DebugView::Depth),
+            (Key::Num4, DebugView::Overdraw),
+        ] {
+            if input.key_pressed(key) {
+                engine.debug_view = view;
+            }
+        }
+        if input.key_pressed(Key::N) {
+            self.show_normals = !self.show_normals;
+        }
+
+        let input = &engine.input;
         self.yaw += (input.axis(Key::Left, Key::Right) + input.axis(Key::A, Key::D)) * dt * 1.5;
         self.pitch = (self.pitch
             + (input.axis(Key::Down, Key::Up) + input.axis(Key::S, Key::W)) * dt * 1.2)
@@ -125,6 +146,25 @@ impl Game for Demo {
             shader.shininess = 64.0;
             engine.draw(&self.sphere, &shader);
         }
+
+        // Overlays go on last: they ignore depth and sit on top of the frame.
+        if self.show_normals {
+            let model = Mat4::from_rotation_y(self.angle) * Mat4::from_rotation_x(self.angle * 0.6);
+            engine.draw_normals(&self.cube, model, 0.35, Color::rgb(0.2, 1.0, 0.4));
+            engine.draw_axes(1.5);
+        }
+    }
+}
+
+fn debug_view_from_env() -> DebugView {
+    match std::env::var("RUNITY_DEBUG_VIEW")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "wireframe" => DebugView::Wireframe,
+        "depth" => DebugView::Depth,
+        "overdraw" => DebugView::Overdraw,
+        _ => DebugView::Shaded,
     }
 }
 
@@ -153,7 +193,29 @@ fn main() -> std::io::Result<()> {
             .with_target_fps(None);
     }
 
-    let engine = app.run(Demo::new())?;
+    let mut demo = Demo::new();
+    demo.show_normals = std::env::var("RUNITY_SHOW_NORMALS").is_ok();
+
+    let engine = if headless {
+        // Headless runs are scripted rather than interactive.
+        let view = debug_view_from_env();
+        struct Configured(Demo, DebugView);
+        impl Game for Configured {
+            fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
+                engine.debug_view = self.1;
+                self.0.start(engine)
+            }
+            fn update(&mut self, engine: &mut Engine) {
+                self.0.update(engine);
+            }
+            fn render(&mut self, engine: &mut Engine) {
+                self.0.render(engine);
+            }
+        }
+        app.run(Configured(demo, view))?
+    } else {
+        app.run(demo)?
+    };
 
     if headless {
         let path = std::env::var("RUNITY_SCREENSHOT").unwrap_or_else(|_| "cube.png".to_string());
