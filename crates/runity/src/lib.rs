@@ -60,9 +60,10 @@ pub mod prelude {
     };
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Everything, Game, Input,
-        Interest, Mut, Nearby, Replica, Replication, RunOptions, Season, SnapshotStats, Time,
-        Transform, World, WorldClock,
+        App, Authority, Cadence, Calendar, Camera, Command, CommandQueue, Correction, Date,
+        DebugView, Despawned, Detail, Due, Engine, Entity, Everything, Game, Input, Interest,
+        Lease, Mut, Nearby, PeerId, Predictable, Prediction, Region, Regions, Replica, Replication,
+        RunOptions, Season, SnapshotStats, Time, Transform, World, WorldClock,
     };
     pub use runity_math::{vec2, vec3, vec4, Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
     pub use runity_physics::{
