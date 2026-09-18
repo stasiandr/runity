@@ -1,39 +1,59 @@
 //! Reading TrueType fonts — the sfnt table soup — without `rusttype`.
 //!
-//! This module only reads numbers. A [`Font`] knows how big its em is, which
-//! glyph a character maps to, how wide that glyph is, and where its outline
-//! lives in the `glyf` table; it does not know what the outline *means*. Turning
-//! [`Font::raw_glyph`]'s bytes into contours and then into pixels is the next
-//! layer's job.
+//! A [`Font`] reads its own tables ([`tables`]), turns a glyph's `glyf` bytes
+//! into contours ([`outline`]) and those contours into 8-bit coverage
+//! ([`raster`]). What comes out is a [`GlyphBitmap`]: pixels, a placement
+//! relative to the pen, and an advance. Putting those pixels on a surface is
+//! the caller's business, and so is deciding what a line of text is.
 //!
 //! ```no_run
 //! use runity_render::font::Font;
 //!
 //! let font = Font::embedded();
 //! let glyph = font.glyph_index('Ж').expect("Roboto covers Cyrillic");
-//! let metrics = font.glyph_metrics(glyph).unwrap();
-//! println!("{} units wide of {}", metrics.advance_width, font.units_per_em());
+//! let bitmap = font.rasterize(glyph, 16.0).unwrap();
+//! println!("{}x{} pixels, {} across", bitmap.width, bitmap.height, bitmap.advance);
 //! ```
 //!
-//! What is supported: TrueType outlines (`glyf`/`loca`), `.ttc` collections by
-//! index, `cmap` formats 4 and 12, and format 0 `kern`. What is not: CFF
-//! (`.otf`) outlines, which are refused with
-//! [`FontError::Unsupported`] rather than parsed into an empty font.
+//! Rasterizing the same glyph at the same size twice costs once: a [`Font`]
+//! keeps its bitmaps in a [`RefCell`]-guarded cache, which is why a `Font` is
+//! usable from one thread only. The renderer around it is single-threaded by
+//! design, so that costs nothing here; [`Font::clear_cache`] and
+//! [`Font::cache_bytes`] are there to keep the memory it holds visible.
+//!
+//! What is supported: TrueType outlines (`glyf`/`loca`), simple and composite
+//! glyphs, `.ttc` collections by index, `cmap` formats 4 and 12, and format 0
+//! `kern`. What is not: CFF (`.otf`) outlines, which are refused with
+//! [`FontError::Unsupported`] rather than parsed into an empty font, and
+//! hinting, which this rasterizer answers with a contrast curve instead.
 
+mod outline;
+mod raster;
 mod tables;
 
 #[cfg(test)]
 mod fixture;
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::ops::Range;
 use std::path::Path;
+use std::rc::Rc;
 
+pub use outline::{Contour, Outline, Segment, MAX_COMPOSITE_DEPTH};
+pub use raster::GlyphBitmap;
 pub use tables::GlyphMetrics;
 
 use tables::{Cmap, Directory, KernPair};
+
+/// The largest pixel size a glyph is rasterized at.
+///
+/// Well past any text on a screen; it is here so that a size out of a
+/// configuration file cannot ask for a gigabyte of coverage.
+const MAX_SIZE: f32 = 512.0;
 
 /// Roboto Regular, Apache-2.0, as shipped in `assets/` — the font
 /// [`Font::embedded`] parses. Exposed so a caller can keep the bytes without
@@ -86,8 +106,12 @@ impl std::error::Error for FontError {}
 /// else (`loca`, `hmtx`, `kern`) is parsed up front, so a lookup is an index or
 /// a binary search and never a parse.
 ///
-/// Coordinates and metrics are in font units; divide by [`Font::units_per_em`]
-/// to get ems.
+/// Coordinates and metrics are in font units; the `*_units` accessors give
+/// them as the file stores them, and the ones taking a size in pixels — such as
+/// [`Font::ascent`] — have already divided by [`Font::units_per_em`].
+///
+/// A `Font` is not `Sync`: the glyph cache behind [`Font::rasterize`] is a
+/// [`RefCell`]. Share one per thread.
 pub struct Font {
     data: Cow<'static, [u8]>,
     units_per_em: u16,
@@ -102,6 +126,12 @@ pub struct Font {
     hmtx: Vec<GlyphMetrics>,
     cmap: Option<Cmap>,
     kern: Vec<KernPair>,
+    /// Rasterized glyphs, keyed by glyph id and size in 64ths of a pixel.
+    ///
+    /// No atlas image: an atlas saves texture switches on a GPU, and this
+    /// blitter walks memory. Bitmaps are handed out as [`Rc`] so that a cache
+    /// hit copies a pointer and not a glyph.
+    cache: RefCell<HashMap<(u16, u32), Rc<GlyphBitmap>>>,
 }
 
 impl Font {
@@ -195,6 +225,7 @@ impl Font {
             hmtx,
             cmap,
             kern,
+            cache: RefCell::new(HashMap::new()),
         })
     }
 
@@ -214,23 +245,54 @@ impl Font {
     }
 
     /// Height of the tallest glyph above the baseline, in font units.
-    pub fn ascender(&self) -> i16 {
+    pub fn ascender_units(&self) -> i16 {
         self.ascender
     }
 
     /// Depth below the baseline, in font units — negative in every real font.
-    pub fn descender(&self) -> i16 {
+    pub fn descender_units(&self) -> i16 {
         self.descender
     }
 
     /// Extra space the designer wants between two lines, in font units.
-    pub fn line_gap(&self) -> i16 {
+    pub fn line_gap_units(&self) -> i16 {
         self.line_gap
     }
 
     /// Baseline-to-baseline distance in font units: ascent, descent and gap.
-    pub fn line_height(&self) -> i32 {
+    pub fn line_height_units(&self) -> i32 {
         self.ascender as i32 - self.descender as i32 + self.line_gap as i32
+    }
+
+    /// Pixels per font unit at a given size — the number every metric here is
+    /// multiplied by.
+    pub fn scale(&self, size: f32) -> f32 {
+        size / self.units_per_em as f32
+    }
+
+    /// Height above the baseline at a size in pixels.
+    ///
+    /// From the typographic fields of `OS/2` where the font has them, falling
+    /// back to `hhea`: those are the numbers the designer meant for setting
+    /// lines, rather than whatever the tallest glyph happens to reach.
+    pub fn ascent(&self, size: f32) -> f32 {
+        self.ascender as f32 * self.scale(size)
+    }
+
+    /// Depth below the baseline at a size in pixels — negative, going down.
+    pub fn descent(&self, size: f32) -> f32 {
+        self.descender as f32 * self.scale(size)
+    }
+
+    /// Space to leave between one line's descent and the next line's ascent,
+    /// in pixels.
+    pub fn line_gap(&self, size: f32) -> f32 {
+        self.line_gap as f32 * self.scale(size)
+    }
+
+    /// Baseline-to-baseline distance in pixels: ascent, descent and gap.
+    pub fn line_height(&self, size: f32) -> f32 {
+        self.line_height_units() as f32 * self.scale(size)
     }
 
     /// The glyph a character maps to, or `None` if the font has no glyph for it.
@@ -283,6 +345,77 @@ impl Font {
         let end = self.glyf.start + end as usize;
         &self.data[start..end]
     }
+
+    /// A glyph's contours in font units, with composite components resolved.
+    ///
+    /// An empty outline is the normal answer for a space or for a glyph id the
+    /// font does not have. The errors are about the file: a `glyf` entry that
+    /// ends mid-point is [`FontError::Truncated`], and components nested deeper
+    /// than [`MAX_COMPOSITE_DEPTH`] — which no honest font is — are
+    /// [`FontError::Malformed`].
+    pub fn outline(&self, glyph: u16) -> Result<Outline, FontError> {
+        outline::build(self, glyph)
+    }
+
+    /// Rasterize a glyph at a size in pixels, through the cache.
+    ///
+    /// The bitmap is 8-bit coverage plus the offsets that place it against the
+    /// pen; see [`GlyphBitmap`]. The second call for the same glyph at the same
+    /// size does no work at all — it hands back the same [`Rc`] — so a caller
+    /// laying out text does not need a cache of its own.
+    ///
+    /// Sizes are rounded to a 64th of a pixel before they become a cache key,
+    /// so a size that wobbles in its last bits does not fill the cache with
+    /// copies of one glyph. A size at or below zero, or one past 512 pixels, is
+    /// clamped rather than refused.
+    pub fn rasterize(&self, glyph: u16, size: f32) -> Result<Rc<GlyphBitmap>, FontError> {
+        let size = quantize(size);
+        let key = (glyph, (size * 64.0) as u32);
+        if let Some(cached) = self.cache.borrow().get(&key) {
+            return Ok(Rc::clone(cached));
+        }
+
+        let outline = self.outline(glyph)?;
+        let scale = self.scale(size);
+        let advance = self.glyph_metrics(glyph).unwrap_or_default().advance_width as f32 * scale;
+        let bitmap = Rc::new(raster::rasterize(&outline, scale, advance));
+        self.cache.borrow_mut().insert(key, Rc::clone(&bitmap));
+        Ok(bitmap)
+    }
+
+    /// Throw away every rasterized glyph held for this font.
+    ///
+    /// Bitmaps a caller still holds an [`Rc`] to stay alive until it drops them.
+    pub fn clear_cache(&self) {
+        self.cache.borrow_mut().clear();
+    }
+
+    /// How many glyph bitmaps the cache is holding.
+    pub fn cached_glyphs(&self) -> usize {
+        self.cache.borrow().len()
+    }
+
+    /// Roughly how much memory those bitmaps take, in bytes.
+    ///
+    /// Coverage plus the header of each bitmap and its key; near enough to
+    /// watch a cache grow, not an allocator's own accounting.
+    pub fn cache_bytes(&self) -> usize {
+        let entry = std::mem::size_of::<(u16, u32)>() + std::mem::size_of::<Rc<GlyphBitmap>>();
+        self.cache
+            .borrow()
+            .values()
+            .map(|bitmap| bitmap.bytes() + entry)
+            .sum()
+    }
+}
+
+/// A size in pixels, clamped to what this rasterizer will draw and rounded to
+/// the 64th of a pixel the cache is keyed by.
+fn quantize(size: f32) -> f32 {
+    if !size.is_finite() {
+        return 0.0;
+    }
+    (size.clamp(0.0, MAX_SIZE) * 64.0).round() / 64.0
 }
 
 impl fmt::Debug for Font {
@@ -294,6 +427,7 @@ impl fmt::Debug for Font {
             .field("descender", &self.descender)
             .field("line_gap", &self.line_gap)
             .field("bytes", &self.data.len())
+            .field("cached_glyphs", &self.cached_glyphs())
             .finish()
     }
 }
@@ -308,8 +442,8 @@ mod tests {
         let font = Font::embedded();
         assert_eq!(font.units_per_em(), 2048);
         assert!(font.num_glyphs() > 1000, "Roboto is not a five-glyph font");
-        assert!(font.ascender() > 0 && font.descender() < 0);
-        assert!(font.line_height() > font.units_per_em() as i32 / 2);
+        assert!(font.ascender_units() > 0 && font.descender_units() < 0);
+        assert!(font.line_height_units() > font.units_per_em() as i32 / 2);
     }
 
     #[test]
@@ -378,9 +512,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             (
-                with_os2.ascender(),
-                with_os2.descender(),
-                with_os2.line_gap()
+                with_os2.ascender_units(),
+                with_os2.descender_units(),
+                with_os2.line_gap_units()
             ),
             (1500, -400, 60)
         );
@@ -395,9 +529,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             (
-                empty_os2.ascender(),
-                empty_os2.descender(),
-                empty_os2.line_gap()
+                empty_os2.ascender_units(),
+                empty_os2.descender_units(),
+                empty_os2.line_gap_units()
             ),
             (800, -200, 100)
         );
@@ -433,7 +567,7 @@ mod tests {
         );
         let font = Font::from_bytes_indexed(ttc.clone(), 1).unwrap();
         assert_eq!(font.units_per_em(), 2048);
-        assert_eq!(font.ascender(), 1000);
+        assert_eq!(font.ascender_units(), 1000);
         assert_eq!(font.raw_glyph(1).len(), 12, "the second font's own glyf");
 
         assert_eq!(
@@ -621,6 +755,231 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Total coverage of a bitmap, in whole pixels of ink.
+    fn ink(bitmap: &GlyphBitmap) -> f32 {
+        bitmap.coverage.iter().map(|&c| c as f32).sum::<f32>() / 255.0
+    }
+
+    #[test]
+    fn a_rasterized_glyph_is_placed_against_the_pen_and_carries_its_advance() {
+        let font = Font::embedded();
+        let glyph = font.glyph_index('H').expect("Roboto has an H");
+        let bitmap = font.rasterize(glyph, 40.0).unwrap();
+
+        assert!(
+            bitmap.width > 10 && bitmap.height > 20,
+            "{bitmap:?} is tiny"
+        );
+        assert_eq!(bitmap.coverage.len(), bitmap.width * bitmap.height);
+        // An H sits on the baseline and reaches the cap height above it.
+        assert!(bitmap.top > 0 && (bitmap.top as f32) < font.ascent(40.0));
+        assert_eq!(bitmap.height as i32, bitmap.top, "an H has nothing below");
+        assert!(bitmap.left >= 0);
+        let advance = font.glyph_metrics(glyph).unwrap().advance_width as f32;
+        assert!((bitmap.advance - advance * font.scale(40.0)).abs() < 1e-3);
+
+        // The middle of a stem is solid and the space beside the letter is not.
+        let middle = bitmap.height / 2;
+        assert_eq!(bitmap.coverage_at(1, middle), 255, "the left stem");
+        assert_eq!(
+            bitmap.coverage_at(bitmap.width / 2, 1),
+            0,
+            "between the stems, above the crossbar"
+        );
+    }
+
+    #[test]
+    fn a_space_rasterizes_to_no_pixels_and_still_moves_the_pen() {
+        let font = Font::embedded();
+        let space = font.glyph_index(' ').unwrap();
+        let bitmap = font.rasterize(space, 24.0).unwrap();
+        assert!(bitmap.is_empty());
+        assert!(bitmap.advance > 3.0, "a space is not zero-width");
+    }
+
+    #[test]
+    fn the_second_call_for_a_glyph_comes_out_of_the_cache() {
+        let font = Font::embedded();
+        let glyph = font.glyph_index('g').unwrap();
+        assert_eq!(font.cache_bytes(), 0, "nothing is rasterized up front");
+
+        let first = font.rasterize(glyph, 18.0).unwrap();
+        let filled = font.cache_bytes();
+        assert!(filled > first.coverage.len(), "the cache holds the bitmap");
+
+        let again = font.rasterize(glyph, 18.0).unwrap();
+        assert!(Rc::ptr_eq(&first, &again), "the same bitmap, not a copy");
+        assert_eq!(font.cache_bytes(), filled, "and no second entry");
+        assert_eq!(font.cached_glyphs(), 1);
+
+        // A size that differs by less than a 64th of a pixel is the same key;
+        // a different size is a different glyph to rasterize.
+        let nudged = font.rasterize(glyph, 18.001).unwrap();
+        assert!(Rc::ptr_eq(&first, &nudged));
+        let bigger = font.rasterize(glyph, 19.0).unwrap();
+        assert!(!Rc::ptr_eq(&first, &bigger));
+        assert_eq!(font.cached_glyphs(), 2);
+        assert!(font.cache_bytes() > filled);
+
+        font.clear_cache();
+        assert_eq!(font.cache_bytes(), 0);
+        assert_eq!(font.cached_glyphs(), 0);
+        // The bitmap handed out earlier outlives the cache it came from.
+        assert!(!first.coverage.is_empty());
+    }
+
+    #[test]
+    fn the_same_glyph_twice_the_size_carries_four_times_the_ink() {
+        let font = Font::embedded();
+        for ch in ['o', 'M', '8', 'Щ'] {
+            let glyph = font.glyph_index(ch).unwrap();
+            let small = ink(&font.rasterize(glyph, 24.0).unwrap());
+            let large = ink(&font.rasterize(glyph, 48.0).unwrap());
+            let ratio = large / small;
+            assert!(
+                (3.5..4.5).contains(&ratio),
+                "{ch:?} went from {small} to {large} pixels of ink, a factor of {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_inside_of_a_glyph_is_solid_and_the_outside_is_empty() {
+        // A capital O at a size where the ring is several pixels thick: the
+        // middle of the ring is ink, the counter inside it is not, and neither
+        // are the corners of the bitmap the round letter never reaches.
+        let font = Font::embedded();
+        let bitmap = font
+            .rasterize(font.glyph_index('O').unwrap(), 64.0)
+            .unwrap();
+        let (w, h) = (bitmap.width, bitmap.height);
+        assert_eq!(bitmap.coverage_at(w / 2, h / 2), 0, "the counter is empty");
+        assert_eq!(bitmap.coverage_at(w / 2, 1), 255, "the top of the ring");
+        assert_eq!(bitmap.coverage_at(w / 2, h - 2), 255, "and the bottom");
+        assert_eq!(bitmap.coverage_at(1, h / 2), 255, "the left of the ring");
+        assert_eq!(
+            bitmap.coverage_at(0, 0),
+            0,
+            "the corner it curves away from"
+        );
+        assert_eq!(bitmap.coverage_at(w - 1, h - 1), 0);
+    }
+
+    #[test]
+    fn the_composite_yo_is_the_letter_e_with_two_dots_over_it() {
+        // Ё is a composite glyph: Е placed at the origin and a dieresis placed
+        // above it. If the component transform were wrong the letter underneath
+        // would be shifted, so it is compared with a plain Е pixel by pixel.
+        let font = Font::embedded();
+        let size = 48.0;
+        let e = font
+            .rasterize(font.glyph_index('Е').unwrap(), size)
+            .unwrap();
+        let yo = font
+            .rasterize(font.glyph_index('Ё').unwrap(), size)
+            .unwrap();
+
+        assert_eq!(e.left, yo.left, "the same left side bearing");
+        assert_eq!(e.advance, yo.advance);
+        assert!(yo.top > e.top, "the dots reach above the cap height");
+        assert!(yo.height > e.height);
+        assert_eq!(e.width, yo.width, "and no wider than the letter");
+
+        // Rows of Ё below the dots line up with Е once both are hung off the
+        // baseline, which is what `top` measures.
+        let offset = (yo.top - e.top) as usize;
+        let mut differing = 0;
+        for y in 0..e.height {
+            for x in 0..e.width {
+                if e.coverage_at(x, y) != yo.coverage_at(x, y + offset) {
+                    differing += 1;
+                }
+            }
+        }
+        assert_eq!(differing, 0, "the Е inside Ё sits exactly where Е does");
+
+        // And the dots themselves are ink, in the rows above the letter.
+        let dots: u32 = (0..offset)
+            .flat_map(|y| (0..yo.width).map(move |x| (x, y)))
+            .map(|(x, y)| yo.coverage_at(x, y) as u32)
+            .sum();
+        assert!(dots > 0, "the dieresis rasterized to nothing");
+    }
+
+    #[test]
+    fn scaled_vertical_metrics_follow_the_size() {
+        let font = Font::embedded();
+        let em = font.units_per_em() as f32;
+        assert_eq!(
+            font.scale(em),
+            1.0,
+            "a size of one em is one unit per pixel"
+        );
+
+        assert!((font.ascent(16.0) - font.ascender_units() as f32 * 16.0 / em).abs() < 1e-4);
+        assert!(font.ascent(16.0) > 0.0);
+        assert!(font.descent(16.0) < 0.0, "descent goes below the baseline");
+        assert!(font.line_gap(16.0) >= 0.0);
+        assert!(
+            (font.line_height(16.0)
+                - (font.ascent(16.0) - font.descent(16.0) + font.line_gap(16.0)))
+            .abs()
+                < 1e-4
+        );
+        assert!(font.line_height(16.0) > 16.0, "lines must not overlap");
+
+        // Twice the size is twice everything.
+        assert!((font.ascent(32.0) - 2.0 * font.ascent(16.0)).abs() < 1e-4);
+        assert!((font.line_height(32.0) - 2.0 * font.line_height(16.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_size_that_makes_no_sense_gives_an_empty_glyph_and_not_a_panic() {
+        let font = Font::embedded();
+        let glyph = font.glyph_index('A').unwrap();
+        for size in [0.0, -12.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let bitmap = font.rasterize(glyph, size).unwrap();
+            assert!(bitmap.is_empty(), "size {size} drew something");
+        }
+        // Past the cap, a glyph still comes out, at the cap.
+        let huge = font.rasterize(glyph, 10_000.0).unwrap();
+        let capped = font.rasterize(glyph, MAX_SIZE).unwrap();
+        assert!(Rc::ptr_eq(&huge, &capped));
+        assert!(huge.height < 1000);
+    }
+
+    #[test]
+    fn rasterizing_a_broken_glyph_is_an_error_and_not_a_panic() {
+        let font = Font::from_bytes(
+            Builder::simple()
+                .with_glyphs(&[
+                    vec![],
+                    fixture::glyf_composite(&[fixture::Comp::at(1, 0, 0)]),
+                ])
+                .build(),
+        )
+        .unwrap();
+        assert_eq!(
+            font.rasterize(1, 20.0).unwrap_err(),
+            FontError::Malformed("composite glyphs nested too deep")
+        );
+        assert_eq!(font.cached_glyphs(), 0, "a failure is not cached");
+    }
+
+    #[test]
+    fn every_glyph_of_the_embedded_font_rasterizes() {
+        // Not the whole font at a readable size — that is a second of work; a
+        // stride through it at a small size still walks every code path.
+        let font = Font::embedded();
+        for glyph in (0..font.num_glyphs()).step_by(7) {
+            let bitmap = font
+                .rasterize(glyph, 11.0)
+                .unwrap_or_else(|e| panic!("glyph {glyph}: {e}"));
+            assert_eq!(bitmap.coverage.len(), bitmap.width * bitmap.height);
+        }
+        assert!(font.cache_bytes() > 0);
     }
 
     #[test]
