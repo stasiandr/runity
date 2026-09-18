@@ -152,6 +152,17 @@ pub fn flip_y(y: f64, view_height: f64) -> f64 {
     view_height - y
 }
 
+/// Whether the polled window state means the user actually closed the window.
+///
+/// With no delegate, closing has to be read off the window itself, and
+/// `-[NSWindow isVisible]` alone is not enough: a window miniaturized into the
+/// Dock (Cmd+M) and every window of a hidden application (Cmd+H) report `NO`
+/// too. Neither is a request to quit, so both are ruled out first.
+#[inline]
+pub fn window_was_closed(visible: bool, miniaturized: bool, app_hidden: bool) -> bool {
+    !visible && !miniaturized && !app_hidden
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +235,28 @@ mod tests {
             Some(MouseButton::Other(4))
         );
         assert_eq!(mouse_button(NS_KEY_DOWN, 0), None);
+    }
+
+    #[test]
+    fn only_a_real_close_ends_the_app() {
+        // visible, miniaturized, app_hidden
+        assert!(
+            window_was_closed(false, false, false),
+            "an invisible window that is neither in the Dock nor hidden was closed"
+        );
+        assert!(
+            !window_was_closed(false, true, false),
+            "Cmd+M puts the window in the Dock; the app keeps running"
+        );
+        assert!(
+            !window_was_closed(false, false, true),
+            "Cmd+H hides the app; the app keeps running"
+        );
+        assert!(
+            !window_was_closed(false, true, true),
+            "hiding an app whose window is already in the Dock is still not a close"
+        );
+        assert!(!window_was_closed(true, false, false), "plainly on screen");
     }
 
     #[test]
