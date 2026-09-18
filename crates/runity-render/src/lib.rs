@@ -14,6 +14,7 @@
 
 pub mod color;
 pub mod debug;
+pub mod font;
 pub mod framebuffer;
 pub mod golden;
 pub mod inflate;
@@ -24,6 +25,7 @@ pub mod shader;
 pub mod texture;
 
 pub use color::Color;
+pub use font::{Font, FontError, GlyphMetrics};
 pub use framebuffer::Framebuffer;
 pub use mesh::{Mesh, ObjError};
 pub use png::{decode_png, encode_png, load_png, save_png, save_ppm, Image, PngError};
