@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # Every test runs without a display: the X11 backend is exercised against
+      # a fake X server, and rendering goes to an in-memory framebuffer.
+      - name: Test
+        run: cargo test --workspace
+      - name: Render a frame headlessly
+        run: cargo run --release --example spinning_cube
+        env:
+          RUNITY_HEADLESS: "1"
+
+  cross-check-windows:
+    name: cross-check the win32 backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add x86_64-pc-windows-gnu
+      - run: cargo check --workspace --target x86_64-pc-windows-gnu

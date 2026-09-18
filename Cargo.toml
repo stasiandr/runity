@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/runity-math",
+    "crates/runity-render",
+    "crates/runity-platform",
+    "crates/runity-core",
+    "crates/runity",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stasiandr/runity"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
