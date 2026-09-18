@@ -8,6 +8,7 @@ members = [
     "crates/runity-render",
     "crates/runity-physics",
     "crates/runity-serialize",
+    "crates/runity-terrain",
     "crates/runity-platform",
     "crates/runity-core",
     "crates/runity",

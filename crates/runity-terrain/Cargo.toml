@@ -1,0 +1,13 @@
+[package]
+name = "runity-terrain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Heightmapped ground for the runity engine: sampling, meshing and queries. No dependencies."
+
+[dependencies]
+runity-math = { path = "../runity-math", version = "0.1.0" }
+runity-render = { path = "../runity-render", version = "0.1.0" }
+runity-serialize = { path = "../runity-serialize", version = "0.1.0" }

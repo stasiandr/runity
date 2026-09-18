@@ -53,6 +53,7 @@ pub use runity_physics as physics;
 pub use runity_platform as platform;
 pub use runity_render as render;
 pub use runity_serialize as serialize;
+pub use runity_terrain as terrain;
 
 /// Everything you normally need, in one `use`.
 pub mod prelude {
@@ -90,4 +91,5 @@ pub mod prelude {
         from_bytes, serializable, serializable_enum, to_bytes, Archive, Deserialize, Reader,
         Serialize, Writer,
     };
+    pub use runity_terrain::{Chunk, ChunkMesh, Heightmap, Terrain, TerrainHit};
 }
