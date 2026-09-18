@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod authority;
 pub mod clock;
 pub mod headless;
 pub mod input;
@@ -13,6 +14,7 @@ pub mod transform;
 pub mod world;
 
 pub use app::{App, DebugView, Engine, Game, RunOptions};
+pub use authority::{Authority, Command, CommandQueue, Lease, PeerId};
 pub use clock::{Calendar, Date, Season, WorldClock};
 pub use input::Input;
 pub use replicate::{Everything, Interest, Nearby, Replica, Replication, SnapshotStats};
