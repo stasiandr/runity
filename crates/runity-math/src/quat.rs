@@ -105,6 +105,29 @@ impl Quat {
         )
     }
 
+    /// Advance this orientation by an angular velocity, in radians per second.
+    ///
+    /// `dq/dt = ½ ω q` with `ω` as a pure quaternion. Integrating that
+    /// first-order and renormalizing is accurate enough for a physics step and
+    /// far cheaper than building a rotation from the axis and angle.
+    pub fn integrate(self, angular_velocity: Vec3, dt: f32) -> Self {
+        let w = Quat::new(
+            angular_velocity.x,
+            angular_velocity.y,
+            angular_velocity.z,
+            0.0,
+        );
+        let derivative = w * self;
+        let half = dt * 0.5;
+        Self::new(
+            self.x + derivative.x * half,
+            self.y + derivative.y * half,
+            self.z + derivative.z * half,
+            self.w + derivative.w * half,
+        )
+        .normalized()
+    }
+
     pub fn to_mat4(self) -> Mat4 {
         let Quat { x, y, z, w } = self;
         let (x2, y2, z2) = (x + x, y + y, z + z);
@@ -165,6 +188,32 @@ mod tests {
         let b = Quat::from_axis_angle(Vec3::Z, 1.0);
         assert!(close(a.slerp(b, 0.0).rotate(Vec3::X), a.rotate(Vec3::X)));
         assert!(close(a.slerp(b, 1.0).rotate(Vec3::X), b.rotate(Vec3::X)));
+    }
+
+    #[test]
+    fn integrating_an_angular_velocity_turns_the_body() {
+        // A quarter turn per second about Y, integrated in small steps.
+        let mut q = Quat::IDENTITY;
+        let omega = Vec3::Y * FRAC_PI_2;
+        for _ in 0..1000 {
+            q = q.integrate(omega, 1.0 / 1000.0);
+        }
+        assert!(
+            close(q.rotate(Vec3::X), -Vec3::Z),
+            "{:?}",
+            q.rotate(Vec3::X)
+        );
+        assert!(
+            (q.length() - 1.0).abs() < 1e-5,
+            "and it stays a unit quaternion"
+        );
+    }
+
+    #[test]
+    fn integrating_nothing_changes_nothing() {
+        let q = Quat::from_euler(0.3, 0.2, 0.1);
+        let after = q.integrate(Vec3::ZERO, 0.016);
+        assert!(close(after.rotate(Vec3::X), q.rotate(Vec3::X)));
     }
 
     #[test]

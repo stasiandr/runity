@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "runity-core",
  "runity-math",
+ "runity-physics",
  "runity-platform",
  "runity-render",
 ]
@@ -17,6 +18,7 @@ name = "runity-core"
 version = "0.1.0"
 dependencies = [
  "runity-math",
+ "runity-physics",
  "runity-platform",
  "runity-render",
 ]
@@ -24,6 +26,13 @@ dependencies = [
 [[package]]
 name = "runity-math"
 version = "0.1.0"
+
+[[package]]
+name = "runity-physics"
+version = "0.1.0"
+dependencies = [
+ "runity-math",
+]
 
 [[package]]
 name = "runity-platform"

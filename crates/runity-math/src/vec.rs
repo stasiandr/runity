@@ -1,4 +1,4 @@
-use core::ops::{Add, AddAssign, Div, Index, Mul, MulAssign, Neg, Sub, SubAssign};
+use core::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign};
 
 macro_rules! impl_binop {
     ($ty:ident, $trait:ident, $method:ident, $op:tt, $($field:ident),+) => {
@@ -258,6 +258,31 @@ impl MulAssign<f32> for Vec3 {
     }
 }
 
+impl Index<usize> for Vec3 {
+    type Output = f32;
+    #[inline]
+    fn index(&self, i: usize) -> &f32 {
+        match i {
+            0 => &self.x,
+            1 => &self.y,
+            2 => &self.z,
+            _ => panic!("Vec3 index out of range: {i}"),
+        }
+    }
+}
+
+impl IndexMut<usize> for Vec3 {
+    #[inline]
+    fn index_mut(&mut self, i: usize) -> &mut f32 {
+        match i {
+            0 => &mut self.x,
+            1 => &mut self.y,
+            2 => &mut self.z,
+            _ => panic!("Vec3 index out of range: {i}"),
+        }
+    }
+}
+
 impl Index<usize> for Vec4 {
     type Output = f32;
     #[inline]
@@ -292,6 +317,14 @@ mod tests {
     #[test]
     fn normalize_zero_is_zero() {
         assert_eq!(Vec3::ZERO.normalized(), Vec3::ZERO);
+    }
+
+    #[test]
+    fn components_can_be_reached_by_index() {
+        let mut v = vec3(1.0, 2.0, 3.0);
+        assert_eq!((v[0], v[1], v[2]), (1.0, 2.0, 3.0));
+        v[1] = 9.0;
+        assert_eq!(v.y, 9.0);
     }
 
     #[test]

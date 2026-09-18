@@ -7,12 +7,14 @@
 #![forbid(unsafe_code)]
 
 mod mat;
+mod mat3;
 mod quat;
 mod vec;
 
 pub use mat::Mat4;
+pub use mat3::Mat3;
 pub use quat::Quat;
-pub use vec::{Vec2, Vec3, Vec4};
+pub use vec::{vec2, vec3, vec4, Vec2, Vec3, Vec4};
 
 /// Linear interpolation.
 #[inline]
