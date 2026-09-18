@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod action;
 pub mod app;
 pub mod authority;
 pub mod clock;
@@ -16,6 +17,7 @@ pub mod time;
 pub mod transform;
 pub mod world;
 
+pub use action::{Action, ActionSet, Actions, AxisBinding, Binding, Bindings, Intent};
 pub use app::{App, DebugView, Engine, Game, RunOptions};
 pub use authority::{Authority, Command, CommandQueue, Lease, PeerId};
 pub use clock::{Calendar, Date, Season, WorldClock};

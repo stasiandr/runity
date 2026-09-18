@@ -63,10 +63,11 @@ pub mod prelude {
     pub use runity_audio::{sine, square, Envelope, Listener, Mixer, Sound, SoundId, VoiceId};
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Authority, Cadence, Calendar, Camera, Command, CommandQueue, Correction, Date,
-        DebugView, Despawned, Detail, Due, Engine, Entity, Everything, Game, Input, Interest,
-        Lease, Mut, Nearby, Node, PeerId, Predictable, Prediction, Region, Regions, Replica,
-        Replication, RunOptions, Scene, Season, SnapshotStats, Time, Transform, World, WorldClock,
+        Action, ActionSet, Actions, App, Authority, AxisBinding, Binding, Bindings, Cadence,
+        Calendar, Camera, Command, CommandQueue, Correction, Date, DebugView, Despawned, Detail,
+        Due, Engine, Entity, Everything, Game, Input, Intent, Interest, Lease, Mut, Nearby, Node,
+        PeerId, Predictable, Prediction, Region, Regions, Replica, Replication, RunOptions, Scene,
+        Season, SnapshotStats, Time, Transform, World, WorldClock,
     };
     pub use runity_math::{
         vec2, vec3, vec4, Fbm, Frustum, Mat4, Noise, Plane, Quat, Rng, Vec2, Vec3, Vec4,

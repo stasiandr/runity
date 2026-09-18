@@ -1,3 +1,4 @@
+use crate::action::Actions;
 use crate::clock::WorldClock;
 use crate::input::Input;
 use crate::time::Time;
@@ -61,6 +62,11 @@ pub struct Engine {
     /// Whether the main loop steps [`Engine::physics`] itself.
     pub auto_step_physics: bool,
     pub input: Input,
+    /// Named actions evaluated from [`Engine::input`] each frame.
+    ///
+    /// Empty until the game binds something; a game that reads keys directly
+    /// pays nothing for it.
+    pub actions: Actions,
     pub camera: Camera,
     pub framebuffer: Framebuffer,
     /// The deferred renderer: lights, environment and passes.
@@ -93,6 +99,7 @@ impl Engine {
             audio_follows_camera: true,
             auto_step_physics: true,
             input: Input::new(),
+            actions: Actions::default(),
             camera: Camera::default(),
             framebuffer: Framebuffer::new(width, height),
             renderer: Renderer::default(),
@@ -439,6 +446,9 @@ impl App {
                 engine.input.handle(&event);
                 game.on_event(&mut engine, &event);
             }
+            // After the events, before the game reads them: actions describe
+            // the frame that has just arrived, not the one before it.
+            engine.actions.update(&engine.input);
 
             // --- simulation ----------------------------------------------
             match self.options.frame_delta {

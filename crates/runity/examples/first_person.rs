@@ -17,6 +17,43 @@
 use runity::physics::{Character, CharacterSettings};
 use runity::prelude::*;
 
+// The game asks for actions, not keys. Nothing below mentions a key again,
+// which is what makes the controls rebindable and what lets the same code
+// run from an intent that arrived over the network.
+const WALK: Action = Action::named("walk");
+const STRAFE: Action = Action::named("strafe");
+/// Turning with the keys, in radians per second...
+const TURN: Action = Action::named("turn");
+/// ...and with the mouse, which already reports a per-frame delta. Two axes
+/// rather than one because they are in different units; adding them would
+/// make the mouse speed depend on the frame rate.
+const LOOK_X: Action = Action::named("look_x");
+const LOOK_Y: Action = Action::named("look_y");
+const JUMP: Action = Action::named("jump");
+const RUN: Action = Action::named("run");
+const SHOVE: Action = Action::named("shove");
+const QUIT: Action = Action::named("quit");
+
+/// The default keymap. A settings screen would edit this and save it; here it
+/// is built once at startup.
+fn default_bindings() -> Bindings {
+    let mut bindings = Bindings::new();
+    bindings
+        .key(JUMP, Key::Space)
+        .key(RUN, Key::LeftShift)
+        .key(RUN, Key::RightShift)
+        .key(SHOVE, Key::F)
+        .key(QUIT, Key::Escape)
+        .key_axis(WALK, Key::S, Key::W)
+        .key_axis(WALK, Key::Down, Key::Up)
+        .key_axis(STRAFE, Key::A, Key::D)
+        .key_axis(STRAFE, Key::Left, Key::Right)
+        .key_axis(TURN, Key::Q, Key::E)
+        .bind_axis(LOOK_X, AxisBinding::MouseX { scale: 0.004 })
+        .bind_axis(LOOK_Y, AxisBinding::MouseY { scale: -0.004 });
+    bindings
+}
+
 struct Player {
     character: Character,
     yaw: f32,
@@ -85,6 +122,7 @@ impl Game for Player {
         engine.camera.near = 0.05;
         engine.exposure = 0.9;
 
+        engine.actions = Actions::new(default_bindings());
         engine.physics.add(RigidBody::fixed(Shape::ground()));
 
         // A few things to walk into, over and around: a kerb to step onto, a
@@ -145,30 +183,27 @@ impl Game for Player {
         let dt = engine.time.delta();
         self.elapsed += dt;
 
-        if engine.input.key_pressed(Key::Escape) {
+        if engine.actions.pressed(QUIT) {
             engine.quit();
             return;
         }
 
-        // Looking: mouse when there is one, keys when there is not.
-        let look = engine.input.mouse_delta();
-        self.yaw += look.x * 0.004 + engine.input.axis(Key::Q, Key::E) * dt * 2.0;
-        self.pitch = (self.pitch - look.y * 0.004).clamp(-1.4, 1.4);
+        // Looking: the mouse straight through, the keys scaled by the frame.
+        self.yaw += engine.actions.value(LOOK_X) + engine.actions.value(TURN) * dt * 2.0;
+        self.pitch = (self.pitch + engine.actions.value(LOOK_Y)).clamp(-1.4, 1.4);
 
         // Walking is in the plane, whatever the pitch: looking down does not
         // push the player into the floor.
         let forward = vec3(self.yaw.sin(), 0.0, -self.yaw.cos());
         let right = vec3(forward.z, 0.0, -forward.x) * -1.0;
-        let input = &engine.input;
-        let mut wish = forward * (input.axis(Key::S, Key::W) + input.axis(Key::Down, Key::Up))
-            + right * (input.axis(Key::A, Key::D) + input.axis(Key::Left, Key::Right));
+        let actions = &engine.actions;
+        let mut wish = forward * actions.value(WALK) + right * actions.value(STRAFE);
         if wish.length_squared() > 1.0 {
             wish = wish.normalized();
         }
-        let running = input.key_down(Key::LeftShift) || input.key_down(Key::RightShift);
-        let speed = if running { 5.5 } else { 3.0 };
+        let speed = if actions.down(RUN) { 5.5 } else { 3.0 };
 
-        if input.key_pressed(Key::Space) {
+        if actions.pressed(JUMP) {
             self.character.jump();
         }
 
@@ -183,7 +218,7 @@ impl Game for Player {
 
         // Shove the nearest crate: a ray from the eyes, the same way a game
         // would decide what the player is pointing at.
-        if input.key_pressed(Key::F) {
+        if engine.actions.pressed(SHOVE) {
             let ray = Ray::new(self.character.eyes(), self.forward(), 3.0);
             if let Some(hit) = engine.physics.cast_ray(&ray) {
                 let direction = self.forward();

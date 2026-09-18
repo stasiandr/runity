@@ -317,3 +317,95 @@ fn a_reconnecting_client_starts_over_cleanly() {
         Some(&Carrying(3))
     );
 }
+
+/// Intent, not keystrokes.
+///
+/// The claim the action layer makes is that what a player wanted can be sent
+/// to another machine and replayed there to the same result. This drives a
+/// character controller on two independent physics worlds — one from the
+/// local actions, one from the bytes those actions serialized to — and
+/// requires that they end in the same place, exactly.
+#[test]
+fn a_remote_machine_replays_an_intent_to_the_same_position() {
+    use runity::physics::{Character, CharacterSettings};
+    use runity::platform::{Event, Key};
+    use runity::serialize::{from_bytes, to_bytes};
+
+    const WALK: Action = Action::named("walk");
+    const STRAFE: Action = Action::named("strafe");
+    const JUMP: Action = Action::named("jump");
+
+    let mut set = ActionSet::new();
+    set.button(JUMP);
+    set.axis(WALK).axis(STRAFE);
+
+    let mut bindings = Bindings::new();
+    bindings
+        .key(JUMP, Key::Space)
+        .key_axis(WALK, Key::S, Key::W)
+        .key_axis(STRAFE, Key::A, Key::D);
+    let mut actions = Actions::new(bindings);
+    let mut input = Input::new();
+
+    // Two worlds that never talk to each other except through the wire.
+    let mut here = PhysicsWorld::new();
+    let mut there = PhysicsWorld::new();
+    here.add(RigidBody::fixed(Shape::ground()));
+    there.add(RigidBody::fixed(Shape::ground()));
+    let settings = CharacterSettings::default();
+    let mut local = Character::new(settings, vec3(0.0, 0.2, 0.0));
+    let mut remote = Character::new(settings, vec3(0.0, 0.2, 0.0));
+
+    // A scripted sixty ticks of held keys, changing partway through.
+    let dt = 1.0 / 60.0;
+    for tick in 0..60 {
+        input.begin_frame();
+        let events: &[Event] = match tick {
+            0 => &[Event::KeyDown(Key::W)],
+            20 => &[Event::KeyDown(Key::D), Event::KeyDown(Key::Space)],
+            40 => &[Event::KeyUp(Key::W)],
+            _ => &[],
+        };
+        for event in events {
+            input.handle(event);
+        }
+        actions.update(&input);
+
+        let intent = actions.intent(&set);
+        // Everything below the line is what the other machine has: bytes.
+        let bytes = to_bytes(&intent);
+        let received: Intent = from_bytes(&bytes).expect("an intent off the wire");
+
+        step_from_intent(&mut local, &mut here, &intent, &set, dt);
+        step_from_intent(&mut remote, &mut there, &received, &set, dt);
+    }
+
+    assert_eq!(
+        local.position, remote.position,
+        "the same intent must produce the same position, bit for bit"
+    );
+    assert!(
+        local.position.z < -0.5,
+        "and it should actually have walked: {:?}",
+        local.position
+    );
+}
+
+/// Move a character the way a game would, reading only the intent.
+fn step_from_intent(
+    character: &mut runity::physics::Character,
+    world: &mut PhysicsWorld,
+    intent: &Intent,
+    set: &ActionSet,
+    dt: f32,
+) {
+    const WALK: Action = Action::named("walk");
+    const STRAFE: Action = Action::named("strafe");
+    const JUMP: Action = Action::named("jump");
+
+    if intent.down(set, JUMP) {
+        character.jump();
+    }
+    let wish = vec3(intent.value(set, STRAFE), 0.0, -intent.value(set, WALK));
+    character.step(world, wish * 3.0, dt);
+}
