@@ -161,6 +161,10 @@ fn composite(font: &Font) -> Framebuffer {
 
 fn main() -> std::io::Result<()> {
     let directory = std::env::args().nth(1).unwrap_or_else(|| ".".to_string());
+    // The directory named on the command line is where the caller wants the
+    // sheet, not a promise that it already exists: make it, the way
+    // `headless::save_frames` does.
+    std::fs::create_dir_all(&directory)?;
     let font = Font::embedded();
 
     for (name, frame) in [
