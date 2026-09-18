@@ -4,6 +4,7 @@ members = [
     "crates/runity-math",
     "crates/runity-render",
     "crates/runity-physics",
+    "crates/runity-serialize",
     "crates/runity-platform",
     "crates/runity-core",
     "crates/runity",

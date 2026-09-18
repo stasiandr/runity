@@ -11,6 +11,7 @@ dependencies = [
  "runity-physics",
  "runity-platform",
  "runity-render",
+ "runity-serialize",
 ]
 
 [[package]]
@@ -40,6 +41,13 @@ version = "0.1.0"
 
 [[package]]
 name = "runity-render"
+version = "0.1.0"
+dependencies = [
+ "runity-math",
+]
+
+[[package]]
+name = "runity-serialize"
 version = "0.1.0"
 dependencies = [
  "runity-math",

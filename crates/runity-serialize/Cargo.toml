@@ -1,0 +1,11 @@
+[package]
+name = "runity-serialize"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Versioned binary serialization for the runity engine. No dependencies."
+
+[dependencies]
+runity-math = { path = "../runity-math", version = "0.1.0" }
