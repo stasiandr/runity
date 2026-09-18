@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/runity-ai",
     "crates/runity-math",
     "crates/runity-render",
     "crates/runity-physics",

@@ -1,0 +1,12 @@
+[package]
+name = "runity-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Spatial queries, navigation and decision making for the runity engine. No dependencies."
+
+[dependencies]
+runity-math = { path = "../runity-math", version = "0.1.0" }
+runity-serialize = { path = "../runity-serialize", version = "0.1.0" }
