@@ -84,9 +84,18 @@ fn a_full_sheet_of_text_features_looks_the_way_it_did() {
     y += pangram_style.measure(latin).height.ceil() as i32 + GAP * 2;
 
     // --- digits and the required signs (font_embedded.rs's repertoire) --
-    y = caption(&mut frame, &font, "Цифры и знаки из обязательного списка", y);
-    let signs = "0123456789   % ‰ ° № + − × ÷ ± = ≈ ≠ ≤ ≥ ·   $ € £ ¥ ₽   — – « » „ “ ” ‘ ’ … • § © ®";
-    let signs_style = TextStyle::new(&font).size(18.0).color(INK).tabular_digits(true);
+    y = caption(
+        &mut frame,
+        &font,
+        "Цифры и знаки из обязательного списка",
+        y,
+    );
+    let signs =
+        "0123456789   % ‰ ° № + − × ÷ ± = ≈ ≠ ≤ ≥ ·   $ € £ ¥ ₽   — – « » „ “ ” ‘ ’ … • § © ®";
+    let signs_style = TextStyle::new(&font)
+        .size(18.0)
+        .color(INK)
+        .tabular_digits(true);
     signs_style.draw(&mut frame, signs, MARGIN, y);
     y += signs_style.measure(signs).height.ceil() as i32 + GAP * 2;
 
@@ -106,7 +115,12 @@ fn a_full_sheet_of_text_features_looks_the_way_it_did() {
     y += GAP;
 
     // --- three alignments, each framed with stroke_rect --------------------
-    y = caption(&mut frame, &font, "Выравнивание: слева / по центру / справа", y);
+    y = caption(
+        &mut frame,
+        &font,
+        "Выравнивание: слева / по центру / справа",
+        y,
+    );
     let column_width = 260usize;
     let pad = 8i32;
     let gap_x = 20i32;
@@ -115,7 +129,10 @@ fn a_full_sheet_of_text_features_looks_the_way_it_did() {
     let align_probe = TextStyle::new(&font).size(14.0).wrap_width(inner_width);
     let box_height = align_probe.measure(aligned_text).height.ceil() as i32 + pad * 2;
 
-    for (i, align) in [Align::Left, Align::Center, Align::Right].into_iter().enumerate() {
+    for (i, align) in [Align::Left, Align::Center, Align::Right]
+        .into_iter()
+        .enumerate()
+    {
         let x = MARGIN + i as i32 * (column_width as i32 + gap_x);
         frame.stroke_rect(x, y, column_width, box_height as usize, 1, FRAME);
         let style = TextStyle::new(&font)
@@ -133,12 +150,20 @@ fn a_full_sheet_of_text_features_looks_the_way_it_did() {
         шрифтового движка: контуры превращаются в отрезки, а отрезки — в покрытие \
         пикселя, и перенос строк ломает слово только тогда, когда оно само по себе \
         шире отведённой ширины.";
-    let paragraph_style = TextStyle::new(&font).size(15.0).color(INK).wrap_width(420.0);
+    let paragraph_style = TextStyle::new(&font)
+        .size(15.0)
+        .color(INK)
+        .wrap_width(420.0);
     paragraph_style.draw(&mut frame, paragraph, MARGIN, y);
     y += paragraph_style.measure(paragraph).height.ceil() as i32 + GAP * 2;
 
     // --- shadow and panel, both over a gradient -----------------------------
-    y = caption(&mut frame, &font, "Белый текст с тенью и с панелью поверх градиента", y);
+    y = caption(
+        &mut frame,
+        &font,
+        "Белый текст с тенью и с панелью поверх градиента",
+        y,
+    );
     let gradient_height = 96usize;
     gradient_rect(
         &mut frame,
@@ -162,5 +187,9 @@ fn a_full_sheet_of_text_features_looks_the_way_it_did() {
     y += gradient_height as i32 + MARGIN;
 
     let sheet = crop(&frame, WIDTH, y as usize);
-    golden::assert_matches("tests/golden/font-showcase.png", &sheet, Tolerance::default());
+    golden::assert_matches(
+        "tests/golden/font-showcase.png",
+        &sheet,
+        Tolerance::default(),
+    );
 }

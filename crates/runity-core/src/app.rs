@@ -483,7 +483,10 @@ mod tests {
         // In front of the default camera, which sits at (0, 1.5, 4) looking
         // at the origin.
         let drawn = engine.draw_text_at(Vec3::ZERO, "here", &style);
-        assert!(drawn.is_some(), "a point in front of the camera must project");
+        assert!(
+            drawn.is_some(),
+            "a point in front of the camera must project"
+        );
         let lit = engine
             .framebuffer
             .pixels()
