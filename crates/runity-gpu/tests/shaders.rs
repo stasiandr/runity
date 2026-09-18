@@ -81,20 +81,26 @@ fn probe_texture() -> Texture {
 
 #[test]
 fn the_basic_shader_lights_a_surface_the_same_way_on_both_renderers() {
-    diff::assert_agrees("basic-lit", 128, 128, SHADER_TOLERANCE, |canvas: &mut Canvas| {
-        canvas.set_cull(CullMode::None);
-        let mut shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
-            .with_base_color(Color::rgb(0.8, 0.6, 0.35))
-            .with_camera_position(Vec3::new(0.0, 0.0, 3.0))
-            .with_light(DirectionalLight {
-                direction: Vec3::new(-0.5, -0.85, -0.35).normalized(),
-                color: Color::rgb(1.0, 0.96, 0.88),
-                intensity: 1.15,
-            });
-        // `pow` is the one operation two implementations may round apart.
-        shader.specular_strength = 0.0;
-        canvas.draw(&sloped_quad(), &shader);
-    });
+    diff::assert_agrees(
+        "basic-lit",
+        128,
+        128,
+        SHADER_TOLERANCE,
+        |canvas: &mut Canvas| {
+            canvas.set_cull(CullMode::None);
+            let mut shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
+                .with_base_color(Color::rgb(0.8, 0.6, 0.35))
+                .with_camera_position(Vec3::new(0.0, 0.0, 3.0))
+                .with_light(DirectionalLight {
+                    direction: Vec3::new(-0.5, -0.85, -0.35).normalized(),
+                    color: Color::rgb(1.0, 0.96, 0.88),
+                    intensity: 1.15,
+                });
+            // `pow` is the one operation two implementations may round apart.
+            shader.specular_strength = 0.0;
+            canvas.draw(&sloped_quad(), &shader);
+        },
+    );
 }
 
 #[test]
@@ -116,15 +122,21 @@ fn the_basic_shaders_specular_highlight_lands_in_the_same_place() {
     // entitled to round apart — so this one gets the geometric budget rather
     // than the shader budget, and it is the highlight's *position* that is
     // being asserted.
-    diff::assert_agrees("basic-specular", 128, 128, Tolerance::new(8, 0.02), |canvas| {
-        canvas.set_cull(CullMode::None);
-        let mut shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
-            .with_base_color(Color::rgb(0.7, 0.7, 0.75))
-            .with_camera_position(Vec3::new(0.0, 0.0, 2.5));
-        shader.specular_strength = 0.8;
-        shader.shininess = 24.0;
-        canvas.draw(&sloped_quad(), &shader);
-    });
+    diff::assert_agrees(
+        "basic-specular",
+        128,
+        128,
+        Tolerance::new(8, 0.02),
+        |canvas| {
+            canvas.set_cull(CullMode::None);
+            let mut shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
+                .with_base_color(Color::rgb(0.7, 0.7, 0.75))
+                .with_camera_position(Vec3::new(0.0, 0.0, 2.5));
+            shader.specular_strength = 0.8;
+            shader.shininess = 24.0;
+            canvas.draw(&sloped_quad(), &shader);
+        },
+    );
 }
 
 #[test]
@@ -284,9 +296,8 @@ fn alpha_blending_composites_the_same_way_on_both_renderers() {
             (0.0, Color::rgba(0.35, 0.90, 0.45, 0.55)),
             (0.3, Color::rgba(0.40, 0.55, 0.98, 0.55)),
         ] {
-            let mut shader = UnlitShader::new(Mat4::from_translation(Vec3::new(
-                offset, offset, 0.0,
-            )));
+            let mut shader =
+                UnlitShader::new(Mat4::from_translation(Vec3::new(offset, offset, 0.0)));
             shader.tint = color;
             canvas.draw(&half_quad(), &shader);
         }

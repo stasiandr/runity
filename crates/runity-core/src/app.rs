@@ -221,6 +221,16 @@ impl Engine {
         self.gpu.as_ref()
     }
 
+    /// The Metal device, to change how it presents.
+    ///
+    /// This is how the benchmark turns vsync off and pins the backing scale to
+    /// 1 before its first frame. A game has no reason to reach in here: the
+    /// defaults — present in step with the display, at whatever scale the
+    /// display has — are the ones a game wants.
+    pub fn gpu_mut(&mut self) -> Option<&mut Gpu> {
+        self.gpu.as_mut()
+    }
+
     /// Which debug view the main loop will present after `render`.
     pub fn debug_view(&self) -> DebugView {
         self.debug_view
@@ -347,8 +357,7 @@ impl Engine {
         let view_projection = self.view_projection();
         if self.gpu.is_some() {
             let (width, height) = self.overlay_size();
-            let segments =
-                runity_gpu::lines::axis_segments(view_projection, length, width, height);
+            let segments = runity_gpu::lines::axis_segments(view_projection, length, width, height);
             self.draw_segments(&segments);
             return;
         }
@@ -360,7 +369,10 @@ impl Engine {
     fn overlay_size(&self) -> (f32, f32) {
         match self.gpu.as_ref().and_then(|g| g.frame_size()) {
             Some((w, h)) => (w as f32, h as f32),
-            None => (self.framebuffer.width() as f32, self.framebuffer.height() as f32),
+            None => (
+                self.framebuffer.width() as f32,
+                self.framebuffer.height() as f32,
+            ),
         }
     }
 
@@ -815,7 +827,9 @@ mod tests {
     fn a_refused_view_leaves_the_old_one_alone_and_says_why() {
         let mut engine = Engine::new(8, 8);
         engine.renderer = Renderer::Gpu;
-        engine.set_debug_view(DebugView::Depth).expect("depth works");
+        engine
+            .set_debug_view(DebugView::Depth)
+            .expect("depth works");
         assert_eq!(engine.debug_view(), DebugView::Depth);
 
         let refused = engine

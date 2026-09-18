@@ -96,12 +96,7 @@ pub fn normal_segments(
 }
 
 /// The three world axes at the origin: X red, Y green, Z blue.
-pub fn axis_segments(
-    view_projection: Mat4,
-    length: f32,
-    width: f32,
-    height: f32,
-) -> Vec<Segment> {
+pub fn axis_segments(view_projection: Mat4, length: f32, width: f32, height: f32) -> Vec<Segment> {
     let origin = project(view_projection.transform_point(Vec3::ZERO), width, height);
     let mut out = Vec::new();
     for (direction, color) in [
@@ -129,12 +124,7 @@ pub fn axis_segments(
 ///
 /// Positions come out already in clip space — the line shader's matrix is the
 /// identity — so nothing downstream has to know these are screen-space lines.
-pub fn segments_to_mesh(
-    segments: &[Segment],
-    width: f32,
-    height: f32,
-    thickness: f32,
-) -> Mesh {
+pub fn segments_to_mesh(segments: &[Segment], width: f32, height: f32, thickness: f32) -> Mesh {
     let mut vertices = Vec::with_capacity(segments.len() * 4);
     let mut indices = Vec::with_capacity(segments.len() * 6);
     let half = (thickness * 0.5).max(0.5);
@@ -143,10 +133,7 @@ pub fn segments_to_mesh(
     let to_clip = |x: f32, y: f32| Vec3::new(x / width * 2.0 - 1.0, 1.0 - y / height * 2.0, 0.0);
 
     for segment in segments {
-        let (dx, dy) = (
-            segment.to.0 - segment.from.0,
-            segment.to.1 - segment.from.1,
-        );
+        let (dx, dy) = (segment.to.0 - segment.from.0, segment.to.1 - segment.from.1);
         let length = (dx * dx + dy * dy).sqrt();
         if !length.is_finite() || length <= f32::EPSILON {
             continue;
@@ -159,9 +146,8 @@ pub fn segments_to_mesh(
             (segment.to.0 - nx, segment.to.1 - ny),
             (segment.from.0 - nx, segment.from.1 - ny),
         ] {
-            vertices.push(
-                Vertex::new(to_clip(x, y), Vec3::Z, Vec2::ZERO).with_color(segment.color),
-            );
+            vertices
+                .push(Vertex::new(to_clip(x, y), Vec3::Z, Vec2::ZERO).with_color(segment.color));
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
@@ -189,9 +175,7 @@ pub fn fullscreen_quad() -> Mesh {
 /// Read a framebuffer back as a texture, so a picture the CPU produced can be
 /// put on screen through the GPU path.
 pub fn image_to_texture(image: &Framebuffer) -> Texture {
-    let mut texture = Texture::from_fn(image.width(), image.height(), |x, y| {
-        image.get_pixel(x, y)
-    });
+    let mut texture = Texture::from_fn(image.width(), image.height(), |x, y| image.get_pixel(x, y));
     // One texel per pixel, edge to edge: nothing to interpolate or wrap.
     texture.filter = runity_render::Filter::Nearest;
     texture.wrap = runity_render::Wrap::Clamp;
@@ -208,12 +192,7 @@ impl Shader for LineShader {
     fn vertex(&self, vertex: &Vertex) -> VertexOutput<Color> {
         VertexOutput {
             // The positions are already in clip space.
-            clip_position: Vec4::new(
-                vertex.position.x,
-                vertex.position.y,
-                vertex.position.z,
-                1.0,
-            ),
+            clip_position: Vec4::new(vertex.position.x, vertex.position.y, vertex.position.z, 1.0),
             varying: vertex.color,
         }
     }
@@ -311,7 +290,8 @@ mod tests {
         frame.set_pixel(2, 1, Color::BLUE);
         let texture = image_to_texture(&frame);
         assert_eq!(texture.width(), 3);
-        let sample = |x: usize, y: usize| texture.sample((x as f32 + 0.5) / 3.0, (y as f32 + 0.5) / 2.0);
+        let sample =
+            |x: usize, y: usize| texture.sample((x as f32 + 0.5) / 3.0, (y as f32 + 0.5) / 2.0);
         assert_eq!(sample(0, 0).to_argb8(), Color::RED.to_argb8());
         assert_eq!(sample(2, 1).to_argb8(), Color::BLUE.to_argb8());
     }

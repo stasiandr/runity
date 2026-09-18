@@ -17,10 +17,7 @@ pub fn fail(title: &str, detail: &str) -> ! {
         let _pool = Pool::push();
         let app = msg_id(class(b"NSApplication\0"), sel(b"sharedApplication\0"));
         if !app.is_null() {
-            let alert = msg_id(
-                msg_id(class(b"NSAlert\0"), sel(b"alloc\0")),
-                sel(b"init\0"),
-            );
+            let alert = msg_id(msg_id(class(b"NSAlert\0"), sel(b"alloc\0")), sel(b"init\0"));
             if !alert.is_null() {
                 let mut heading = nsstring(title);
                 let mut body = nsstring(detail);

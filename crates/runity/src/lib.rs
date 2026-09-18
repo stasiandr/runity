@@ -51,8 +51,8 @@ pub use runity_render as render;
 pub mod prelude {
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Camera, DebugView, Engine, Entity, Game, Input, Renderer, RunOptions, Time,
-        Transform, UnsupportedView, World,
+        App, Camera, DebugView, Engine, Entity, Game, Input, Renderer, RunOptions, Time, Transform,
+        UnsupportedView, World,
     };
     pub use runity_gpu::{GpuShader, PulseUniforms, ENGINE_SOURCE, PULSE_FRAGMENT, PULSE_VERTEX};
     pub use runity_math::{Mat4, Quat, Vec2, Vec3, Vec4};

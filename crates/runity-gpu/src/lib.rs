@@ -81,7 +81,10 @@ impl fmt::Display for GpuError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GpuError::Unsupported => {
-                write!(f, "the GPU backend is built for macOS only; {FALLBACK_ADVICE}")
+                write!(
+                    f,
+                    "the GPU backend is built for macOS only; {FALLBACK_ADVICE}"
+                )
             }
             GpuError::NoDevice => write!(
                 f,

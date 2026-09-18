@@ -55,6 +55,10 @@ impl Gpu {
         0.0
     }
 
+    pub fn last_download_seconds(&self) -> f32 {
+        0.0
+    }
+
     pub fn frame_stats(&self) -> DrawStats {
         DrawStats::default()
     }

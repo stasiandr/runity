@@ -50,10 +50,15 @@
 //!   it applies to every scene.
 //! * `RUNITY_FRAMES=<dir>` — headless only: also keep all 60 frames of every
 //!   scene as PNGs in `<dir>`.
+//! * `RUNITY_ACTIONS=n` — headless only: press `Space` n times for each scene
+//!   before the first frame, so a capture can show a grown teapot grid rather
+//!   than the single teapot every run starts from.
 
 use runity::prelude::*;
+use std::cell::RefCell;
 use std::f32::consts::{PI, TAU};
 use std::io;
+use std::rc::Rc;
 
 /// The window never changes shape, so the headless PNGs are the same pixels.
 const WIDTH: u32 = 960;
@@ -1218,6 +1223,9 @@ struct SmallWorld {
     /// nothing says why up there, for two seconds, and then the frame rate
     /// comes back.
     notice: Option<(String, f32)>,
+    /// How many times to press `Space` for the scene before the first frame.
+    /// Zero everywhere but a headless run that was asked for more.
+    actions: u32,
 }
 
 impl SmallWorld {
@@ -1228,7 +1236,15 @@ impl SmallWorld {
             debug_view,
             overlays: false,
             notice: None,
+            actions: 0,
         }
+    }
+
+    /// Press `Space` for the starting scene this many times before it is first
+    /// drawn — the only way a headless capture reaches a grown grid.
+    fn with_actions(mut self, actions: u32) -> Self {
+        self.actions = actions;
+        self
     }
 
     /// Put something in the title bar for [`NOTICE_SECONDS`].
@@ -1266,6 +1282,13 @@ impl Game for SmallWorld {
         // application starts shaded rather than pretending.
         if let Err(refused) = engine.set_debug_view(self.debug_view) {
             self.say(refused.to_string());
+        }
+        // A headless run has no keyboard, so a scene that only gets
+        // interesting after a few presses of `Space` — the teapot grid, the
+        // world's entities — would only ever be photographed in its first
+        // state. This presses for it.
+        for _ in 0..self.actions {
+            self.active(engine).action(engine);
         }
         Ok(())
     }
@@ -1368,11 +1391,15 @@ fn debug_view_from_env(value: Option<&str>) -> DebugView {
     }
 }
 
-/// Render every scene with no display and write the six screenshots.
+/// Render every scene with no display and write the seven screenshots.
 fn run_headless(debug_view: DebugView) -> io::Result<()> {
     let frames_directory = std::env::var_os("RUNITY_FRAMES");
+    let actions = std::env::var("RUNITY_ACTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
     for id in SceneId::ALL {
-        let game = SmallWorld::new(id, debug_view);
+        let game = SmallWorld::new(id, debug_view).with_actions(actions);
         let frame = match &frames_directory {
             Some(directory) => {
                 let frames =
@@ -1396,8 +1423,266 @@ fn run_headless(debug_view: DebugView) -> io::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Benchmark
+// ---------------------------------------------------------------------------
+
+/// Frames timed per scene per renderer, after [`BENCH_WARMUP`].
+const BENCH_FRAMES: u64 = 120;
+/// Frames thrown away first: the first few carry shader compilation, buffer
+/// growth and the window server settling, none of which is the steady state.
+const BENCH_WARMUP: u64 = 20;
+
+/// The three ways the same scene gets timed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BenchLane {
+    /// The rasterizer, presenting into a window.
+    Cpu,
+    /// Metal, presenting into the window's `CAMetalLayer`.
+    GpuWindow,
+    /// Metal, encoding into an offscreen target and reading it back.
+    GpuOffscreen,
+}
+
+impl BenchLane {
+    const ALL: [BenchLane; 3] = [
+        BenchLane::Cpu,
+        BenchLane::GpuWindow,
+        BenchLane::GpuOffscreen,
+    ];
+
+    fn heading(self) -> &'static str {
+        match self {
+            BenchLane::Cpu => "CPU",
+            BenchLane::GpuWindow => "GPU window",
+            BenchLane::GpuOffscreen => "GPU offscreen",
+        }
+    }
+
+    fn renderer(self) -> Renderer {
+        match self {
+            BenchLane::Cpu => Renderer::Cpu,
+            BenchLane::GpuWindow | BenchLane::GpuOffscreen => Renderer::Gpu,
+        }
+    }
+}
+
+/// Milliseconds per frame, reduced to the three numbers worth printing.
+///
+/// The median rather than the mean, and p95 rather than the max: one frame
+/// stalled behind the window server says nothing about the renderer, and a
+/// mean lets it move the whole column.
+#[derive(Clone, Copy, Default)]
+struct Timings {
+    min: f32,
+    median: f32,
+    p95: f32,
+}
+
+impl Timings {
+    /// `samples` is in seconds; the result is in milliseconds.
+    fn of(samples: &mut [f32]) -> Option<Self> {
+        if samples.is_empty() {
+            return None;
+        }
+        samples.sort_by(|a, b| a.partial_cmp(b).expect("frame times are never NaN"));
+        let at = |fraction: f32| {
+            let last = samples.len() - 1;
+            samples[((last as f32) * fraction).round() as usize] * 1000.0
+        };
+        Some(Self {
+            min: samples[0] * 1000.0,
+            median: at(0.5),
+            p95: at(0.95),
+        })
+    }
+}
+
+/// What one lane of one scene measured.
+#[derive(Clone, Copy, Default)]
+struct BenchRow {
+    wall: Option<Timings>,
+    /// `GPUEndTime - GPUStartTime`, which is the device's own view of the
+    /// frame and excludes everything the CPU was doing around it.
+    gpu: Option<Timings>,
+    /// Blit plus read-back, on the offscreen lane only.
+    download: Option<Timings>,
+}
+
+/// The raw per-frame seconds a run collected.
+///
+/// Shared rather than owned because `run_with_window` takes the game by value
+/// and hands back only the `Engine`, so the samples have to outlive it.
+#[derive(Default)]
+struct Samples {
+    wall: Vec<f32>,
+    gpu: Vec<f32>,
+    download: Vec<f32>,
+}
+
+impl Samples {
+    fn row(&mut self, lane: BenchLane) -> BenchRow {
+        BenchRow {
+            wall: Timings::of(&mut self.wall),
+            gpu: Timings::of(&mut self.gpu),
+            download: (lane == BenchLane::GpuOffscreen)
+                .then(|| Timings::of(&mut self.download))
+                .flatten(),
+        }
+    }
+}
+
+/// Runs one scene and keeps the per-frame timings, delegating everything else.
+///
+/// The wall-clock sample is taken update-to-update rather than around
+/// `render`, so it is a whole frame — input, simulation, draw and present —
+/// which is the number the title bar shows and the one a player feels.
+struct BenchGame {
+    inner: SmallWorld,
+    frame: u64,
+    previous: Option<std::time::Instant>,
+    samples: Rc<RefCell<Samples>>,
+}
+
+impl BenchGame {
+    fn new(scene: SceneId, samples: Rc<RefCell<Samples>>) -> Self {
+        Self {
+            inner: SmallWorld::new(scene, DebugView::Shaded),
+            frame: 0,
+            previous: None,
+            samples,
+        }
+    }
+}
+
+impl Game for BenchGame {
+    fn start(&mut self, engine: &mut Engine) -> io::Result<()> {
+        if let Some(gpu) = engine.gpu_mut() {
+            // Free-running and 1x: vsync would measure the display, and a 2x
+            // drawable would make the GPU lanes four times the work of the CPU
+            // one, so the columns would not be comparable.
+            gpu.set_vsync(false);
+            gpu.force_scale(Some(1.0));
+        }
+        self.inner.start(engine)
+    }
+
+    fn update(&mut self, engine: &mut Engine) {
+        let now = std::time::Instant::now();
+        if let Some(previous) = self.previous.replace(now) {
+            if self.frame > BENCH_WARMUP {
+                let mut samples = self.samples.borrow_mut();
+                samples
+                    .wall
+                    .push(now.duration_since(previous).as_secs_f32());
+                if let Some(gpu) = engine.gpu() {
+                    // Last frame's, not this one's: the command buffer these
+                    // come from only finished after `render` returned.
+                    samples.gpu.push(gpu.last_gpu_seconds());
+                    samples.download.push(gpu.last_download_seconds());
+                }
+            }
+        }
+        self.frame += 1;
+        self.inner.update(engine);
+    }
+
+    fn fixed_update(&mut self, engine: &mut Engine) {
+        self.inner.fixed_update(engine);
+    }
+
+    fn render(&mut self, engine: &mut Engine) {
+        self.inner.render(engine);
+    }
+}
+
+/// Time one scene in one lane.
+fn bench_one(scene: SceneId, lane: BenchLane) -> io::Result<BenchRow> {
+    let mut config = WindowConfig::new("SmallWorld — bench", WIDTH, HEIGHT);
+    config.resizable = false;
+    let window: Box<dyn Window> = match lane {
+        // The offscreen lane must not have a surface to present to, or the GPU
+        // path would take the window branch and never read a frame back.
+        BenchLane::GpuOffscreen => Box::new(HeadlessWindow::new(&config)),
+        _ => runity::platform::open_window(&config)?,
+    };
+    let samples = Rc::new(RefCell::new(Samples::default()));
+    App::new(config)
+        .with_renderer(lane.renderer())
+        .with_max_frames(BENCH_FRAMES + BENCH_WARMUP)
+        // No sleeping and no fixed step: this measures how fast the frame can
+        // be made, not how long the loop was told to wait.
+        .with_target_fps(None)
+        .run_with_window(window, BenchGame::new(scene, Rc::clone(&samples)))?;
+    let row = samples.borrow_mut().row(lane);
+    Ok(row)
+}
+
+/// Time every scene on every renderer and print the table.
+fn run_bench() -> io::Result<()> {
+    let device = runity::gpu::Gpu::new()
+        .map(|gpu| gpu.device_name())
+        .unwrap_or_else(|error| format!("none ({error})"));
+    println!(
+        "SmallWorld benchmark — {BENCH_FRAMES} frames per scene per renderer, \
+         {WIDTH}x{HEIGHT} at 1x, no vsync\nMetal device: {device}\n"
+    );
+    println!(
+        "{:<16} {:>22} {:>22} {:>22}",
+        "scene",
+        BenchLane::Cpu.heading(),
+        BenchLane::GpuWindow.heading(),
+        BenchLane::GpuOffscreen.heading()
+    );
+    println!(
+        "{:<16} {:>22} {:>22} {:>22}",
+        "", "min/med/p95 ms", "min/med/p95 ms", "min/med/p95 ms"
+    );
+
+    for id in SceneId::ALL {
+        let mut rows = Vec::new();
+        for lane in BenchLane::ALL {
+            rows.push(bench_one(id, lane)?);
+        }
+        println!(
+            "{:<16} {:>22} {:>22} {:>22}",
+            id.name(),
+            cell(rows[0].wall),
+            cell(rows[1].wall),
+            cell(rows[2].wall)
+        );
+        // The device's own timing, and what the read-back costs on top of it.
+        println!(
+            "{:<16} {:>22} {:>22} {:>22}",
+            "  on device",
+            "—",
+            cell(rows[1].gpu),
+            cell(rows[2].gpu)
+        );
+        println!(
+            "{:<16} {:>22} {:>22} {:>22}",
+            "  read-back",
+            "—",
+            "—",
+            cell(rows[2].download)
+        );
+    }
+    Ok(())
+}
+
+fn cell(timings: Option<Timings>) -> String {
+    match timings {
+        Some(t) => format!("{:.2}/{:.2}/{:.2}", t.min, t.median, t.p95),
+        None => "—".to_string(),
+    }
+}
+
 fn main() -> io::Result<()> {
     let debug_view = debug_view_from_env(std::env::var("RUNITY_DEBUG_VIEW").ok().as_deref());
+
+    if std::env::var("RUNITY_BENCH").is_ok() {
+        return run_bench();
+    }
 
     if std::env::var("RUNITY_HEADLESS").is_ok() {
         return run_headless(debug_view);
@@ -1477,7 +1762,11 @@ mod tests {
             SceneId::Lit,
             "forwards wraps around"
         );
-        assert_eq!(SceneId::Lit.previous(), SceneId::Teapots, "and so does back");
+        assert_eq!(
+            SceneId::Lit.previous(),
+            SceneId::Teapots,
+            "and so does back"
+        );
         assert_eq!(SceneId::Triangle.previous(), SceneId::Lit);
     }
 
@@ -1877,6 +2166,39 @@ mod tests {
     }
 
     #[test]
+    fn a_headless_run_can_be_asked_to_press_space_before_the_first_frame() {
+        // The grid itself is behind `dyn Scene`, but the camera is not: it
+        // pulls back a step for every row, so its distance says how many
+        // presses landed. Four of them is the 25-teapot grid the README quotes.
+        let mut engine = Engine::new(64, 64);
+        let mut pressed = SmallWorld::new(SceneId::Teapots, DebugView::Shaded).with_actions(4);
+        pressed.start(&mut engine).expect("nothing here can fail");
+        let grown = orbit_of(&mut pressed, SceneId::Teapots).distance;
+
+        let mut untouched = SmallWorld::new(SceneId::Teapots, DebugView::Shaded);
+        untouched.start(&mut engine).expect("nothing here can fail");
+        // Visiting the scene is what builds it, which `start` only does when
+        // there are presses to deliver.
+        untouched.active(&mut engine);
+        let single = orbit_of(&mut untouched, SceneId::Teapots).distance;
+
+        assert!(
+            grown > single,
+            "four presses grow the grid and pull the camera back: {grown} vs {single}"
+        );
+
+        let mut by_hand = TeapotsScene::new();
+        for _ in 0..4 {
+            by_hand.action(&mut engine);
+        }
+        assert_eq!(by_hand.count(), 25, "1 -> 4 -> 9 -> 16 -> 25");
+        assert_eq!(
+            by_hand.orbit.distance, grown,
+            "the variable presses Space, it does not take its own path"
+        );
+    }
+
+    #[test]
     fn the_teapots_stand_apart_and_turn_around_a_common_centre() {
         let mut scene = TeapotsScene::new();
         let mut engine = Engine::new(32, 32);
@@ -1901,7 +2223,10 @@ mod tests {
         let (sx, sz) = places
             .iter()
             .fold((0i64, 0i64), |(x, z), p| (x + p.0 as i64, z + p.1 as i64));
-        assert!(sx.abs() < 9 && sz.abs() < 9, "centred on the origin: {sx}, {sz}");
+        assert!(
+            sx.abs() < 9 && sz.abs() < 9,
+            "centred on the origin: {sx}, {sz}"
+        );
 
         // And the whole grid turns: advancing time moves every teapot.
         let before = places.clone();
@@ -1938,9 +2263,15 @@ mod tests {
         );
 
         app.say("wireframe needs the CPU renderer");
-        assert_eq!(app.title(SceneId::Lit, 60.0, 0.5), "wireframe needs the CPU renderer");
+        assert_eq!(
+            app.title(SceneId::Lit, 60.0, 0.5),
+            "wireframe needs the CPU renderer"
+        );
         // Two seconds, and then the frame rate is back.
-        assert_eq!(app.title(SceneId::Lit, 60.0, 1.0), "wireframe needs the CPU renderer");
+        assert_eq!(
+            app.title(SceneId::Lit, 60.0, 1.0),
+            "wireframe needs the CPU renderer"
+        );
         assert_eq!(
             app.title(SceneId::Lit, 60.0, 1.0),
             window_title(SceneId::Lit, 60.0)

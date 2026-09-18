@@ -137,7 +137,9 @@ pub unsafe fn nsstring_to_string(string: Id) -> String {
     if bytes.is_null() {
         return String::new();
     }
-    std::ffi::CStr::from_ptr(bytes).to_string_lossy().into_owned()
+    std::ffi::CStr::from_ptr(bytes)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Build an `NSString`. The caller owns the result and must release it.

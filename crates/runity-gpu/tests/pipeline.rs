@@ -352,9 +352,8 @@ fn the_depth_test_keeps_the_nearer_surface_on_both_renderers() {
 }
 
 fn quad_at(z: f32, color: Color) -> Mesh {
-    let corner = |x: f32, y: f32| {
-        Vertex::new(Vec3::new(x, y, z), Vec3::Z, Vec2::ZERO).with_color(color)
-    };
+    let corner =
+        |x: f32, y: f32| Vertex::new(Vec3::new(x, y, z), Vec3::Z, Vec2::ZERO).with_color(color);
     Mesh::new(
         vec![
             corner(-0.8, 0.8),
@@ -368,19 +367,21 @@ fn quad_at(z: f32, color: Color) -> Mesh {
 
 #[test]
 fn back_face_culling_agrees_between_the_renderers() {
-    diff::assert_agrees("culling", 64, 64, Tolerance::new(2, 0.0), |canvas: &mut Canvas| {
-        // A cube: half its faces are facing away, and which half is exactly
-        // what the winding convention decides.
-        canvas.state.cull = CullMode::Back;
-        let mvp = Mat4::perspective(1.0, 1.0, 0.1, 100.0)
-            * Mat4::look_at(
-                Vec3::new(2.0, 1.5, 3.0),
-                Vec3::ZERO,
-                Vec3::Y,
-            );
-        let shader = UnlitShader::new(mvp);
-        let mut cube = Mesh::cube(1.6);
-        cube.set_color(Color::rgb(0.9, 0.5, 0.2));
-        canvas.draw(&cube, &shader);
-    });
+    diff::assert_agrees(
+        "culling",
+        64,
+        64,
+        Tolerance::new(2, 0.0),
+        |canvas: &mut Canvas| {
+            // A cube: half its faces are facing away, and which half is exactly
+            // what the winding convention decides.
+            canvas.state.cull = CullMode::Back;
+            let mvp = Mat4::perspective(1.0, 1.0, 0.1, 100.0)
+                * Mat4::look_at(Vec3::new(2.0, 1.5, 3.0), Vec3::ZERO, Vec3::Y);
+            let shader = UnlitShader::new(mvp);
+            let mut cube = Mesh::cube(1.6);
+            cube.set_color(Color::rgb(0.9, 0.5, 0.2));
+            canvas.draw(&cube, &shader);
+        },
+    );
 }

@@ -109,7 +109,7 @@ impl Arena {
         loop {
             if self.chunk < self.chunks.len() {
                 let (buffer, size) = self.chunks[self.chunk];
-                let start = (self.offset + ARENA_ALIGN - 1) / ARENA_ALIGN * ARENA_ALIGN;
+                let start = self.offset.div_ceil(ARENA_ALIGN) * ARENA_ALIGN;
                 if start + len <= size {
                     self.offset = start + len;
                     let base = msg_ptr(buffer, sel(b"contents\0")) as *mut u8;
@@ -126,7 +126,10 @@ impl Arena {
                 size,
                 MTLResourceStorageModeShared,
             );
-            assert!(!buffer.is_null(), "MTLDevice could not allocate {size} bytes");
+            assert!(
+                !buffer.is_null(),
+                "MTLDevice could not allocate {size} bytes"
+            );
             self.chunks.push((buffer, size));
         }
     }
@@ -178,6 +181,7 @@ pub struct Gpu {
     frame_index: usize,
     stats: DrawStats,
     gpu_seconds: f32,
+    download_seconds: f32,
     /// The depth buffer as of a few frames ago, in the layout `debug::depth_view`
     /// expects. A lap of the ring behind, which is what makes it free.
     depth_snapshot: Option<Framebuffer>,
@@ -235,6 +239,7 @@ impl Gpu {
                 frame_index: 0,
                 stats: DrawStats::default(),
                 gpu_seconds: 0.0,
+                download_seconds: 0.0,
                 depth_snapshot: None,
                 depth_wanted: false,
             };
@@ -259,8 +264,18 @@ impl Gpu {
     }
 
     /// Take over a native view's layer so frames can be presented to it.
+    ///
+    /// Safe to call because the only pointer that reaches here comes from
+    /// `NativeSurface::AppKitView`, which the platform backend only ever builds
+    /// from a live window it owns; a null pointer is rejected, not dereferenced.
+    ///
+    /// The boundary has to be safe here: `runity-core`, which calls this, is
+    /// `#![forbid(unsafe_code)]`.
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     pub fn attach(&mut self, view: *mut c_void) -> Result<(), GpuError> {
-        let surface = Surface::attach(self.device, view)?;
+        // SAFETY: `view` is a live `NSView` per the invariant above, `device` is
+        // this `Gpu`'s own, and the engine drives the loop on the main thread.
+        let surface = unsafe { Surface::attach(self.device, view)? };
         self.surface = Some(surface);
         Ok(())
     }
@@ -308,6 +323,13 @@ impl Gpu {
     /// own `GPUStartTime` and `GPUEndTime`.
     pub fn last_gpu_seconds(&self) -> f32 {
         self.gpu_seconds
+    }
+
+    /// What the last offscreen frame spent copying the shared buffer back into
+    /// a [`Framebuffer`] — the price of a frame the CPU can look at, which the
+    /// window path never pays. Zero on the window path.
+    pub fn last_download_seconds(&self) -> f32 {
+        self.download_seconds
     }
 
     /// Counters for the frame so far. `triangles_in` is honest;
@@ -367,11 +389,7 @@ impl Gpu {
                 sel(b"renderPassDescriptor\0"),
             );
             let color_attachments = msg_id(descriptor, sel(b"colorAttachments\0"));
-            let color0 = msg_id_with_u64(
-                color_attachments,
-                sel(b"objectAtIndexedSubscript:\0"),
-                0,
-            );
+            let color0 = msg_id_with_u64(color_attachments, sel(b"objectAtIndexedSubscript:\0"), 0);
             msg_with_id(color0, sel(b"setTexture:\0"), color_texture);
             msg_with_u64(color0, sel(b"setLoadAction:\0"), MTLLoadActionClear);
             msg_with_u64(color0, sel(b"setStoreAction:\0"), MTLStoreActionStore);
@@ -388,7 +406,11 @@ impl Gpu {
 
             let depth_attachment = msg_id(descriptor, sel(b"depthAttachment\0"));
             msg_with_id(depth_attachment, sel(b"setTexture:\0"), depth_texture);
-            msg_with_u64(depth_attachment, sel(b"setLoadAction:\0"), MTLLoadActionClear);
+            msg_with_u64(
+                depth_attachment,
+                sel(b"setLoadAction:\0"),
+                MTLLoadActionClear,
+            );
             // Far is 1.0, and the compare function is Less: the same "smaller
             // is closer, nothing drawn is farthest" the rasterizer uses.
             msg_with_f64(depth_attachment, sel(b"setClearDepth:\0"), 1.0);
@@ -467,7 +489,9 @@ impl Gpu {
                 msg(frame.command_buffer, sel(b"commit\0"));
                 msg(frame.command_buffer, sel(b"waitUntilCompleted\0"));
                 if let Some(target) = into {
+                    let started = std::time::Instant::now();
                     self.download_color(&frame, target);
+                    self.download_seconds = started.elapsed().as_secs_f32();
                 }
                 self.record_gpu_time(frame.command_buffer);
             }
@@ -475,7 +499,8 @@ impl Gpu {
             // The arena this frame drew from cannot be reused until the GPU is
             // done with it; the command buffer is the thing that says when.
             let slot = frame.slot;
-            let mut previous = std::mem::replace(&mut self.arenas[slot].fence, frame.command_buffer);
+            let mut previous =
+                std::mem::replace(&mut self.arenas[slot].fence, frame.command_buffer);
             release(&mut previous);
         }
         self.frame_index += 1;
@@ -763,7 +788,11 @@ impl Gpu {
                 sel(b"init\0"),
             );
             msg_with_id(descriptor, sel(b"setVertexFunction:\0"), vertex_function);
-            msg_with_id(descriptor, sel(b"setFragmentFunction:\0"), fragment_function);
+            msg_with_id(
+                descriptor,
+                sel(b"setFragmentFunction:\0"),
+                fragment_function,
+            );
             msg_with_u64(
                 descriptor,
                 sel(b"setDepthAttachmentPixelFormat:\0"),
@@ -776,8 +805,16 @@ impl Gpu {
                 Blend::Replace => msg_with_bool(color0, sel(b"setBlendingEnabled:\0"), NO),
                 Blend::Alpha => {
                     msg_with_bool(color0, sel(b"setBlendingEnabled:\0"), YES);
-                    msg_with_u64(color0, sel(b"setRgbBlendOperation:\0"), MTLBlendOperationAdd);
-                    msg_with_u64(color0, sel(b"setAlphaBlendOperation:\0"), MTLBlendOperationAdd);
+                    msg_with_u64(
+                        color0,
+                        sel(b"setRgbBlendOperation:\0"),
+                        MTLBlendOperationAdd,
+                    );
+                    msg_with_u64(
+                        color0,
+                        sel(b"setAlphaBlendOperation:\0"),
+                        MTLBlendOperationAdd,
+                    );
                     msg_with_u64(
                         color0,
                         sel(b"setSourceRGBBlendFactor:\0"),
@@ -936,7 +973,10 @@ impl Gpu {
         msg_with_u64(descriptor, sel(b"setUsage:\0"), MTLTextureUsageShaderRead);
         msg_with_u64(descriptor, sel(b"setStorageMode:\0"), MTLStorageModeShared);
         let id = msg_id_with_id(self.device, sel(b"newTextureWithDescriptor:\0"), descriptor);
-        assert!(!id.is_null(), "MTLDevice could not make a {width}x{height} texture");
+        assert!(
+            !id.is_null(),
+            "MTLDevice could not make a {width}x{height} texture"
+        );
 
         // Half floats: eleven bits of mantissa is more than an 8-bit target
         // can show, and it halves what the sampler has to read.
@@ -1263,7 +1303,7 @@ fn sampler_index(filter: Filter, wrap: Wrap) -> usize {
 /// this can run on, at the price of a little slack per row.
 fn aligned_row(width: usize, bytes_per_pixel: usize) -> usize {
     let row = width * bytes_per_pixel;
-    (row + 255) / 256 * 256
+    row.div_ceil(256) * 256
 }
 
 /// One texel, exactly.
@@ -1396,7 +1436,7 @@ mod tests {
 
     /// Only the test needs to go back the other way.
     fn f16_to_f32(half: u16) -> f32 {
-        let sign = ((half as u32 & 0x8000) << 16) as u32;
+        let sign = (half as u32 & 0x8000) << 16;
         let exponent = (half as u32 >> 10) & 0x1f;
         let mantissa = half as u32 & 0x03ff;
         if exponent == 0 {

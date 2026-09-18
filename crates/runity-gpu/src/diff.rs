@@ -69,9 +69,7 @@ impl Canvas<'_> {
     /// Draw a mesh with a shader that exists on both sides.
     pub fn draw<S: GpuShader>(&mut self, mesh: &Mesh, shader: &S) -> DrawStats {
         match &mut self.target {
-            CanvasTarget::Cpu(framebuffer) => {
-                self.state.draw_mesh(framebuffer, mesh, shader)
-            }
+            CanvasTarget::Cpu(framebuffer) => self.state.draw_mesh(framebuffer, mesh, shader),
             CanvasTarget::Gpu(gpu) => gpu.draw(
                 mesh,
                 shader,

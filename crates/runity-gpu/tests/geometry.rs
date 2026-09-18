@@ -47,15 +47,21 @@ fn lit(model: Mat4, view_projection: Mat4, eye: Vec3, color: Color) -> BasicShad
 
 #[test]
 fn a_lit_cube_looks_the_same_on_both_renderers() {
-    diff::assert_agrees("cube", WIDTH, HEIGHT, GEOMETRY_TOLERANCE, |canvas: &mut Canvas| {
-        let eye = Vec3::new(2.4, 1.8, 3.2);
-        let vp = camera(eye, Vec3::ZERO);
-        let model = Mat4::from_rotation_y(0.7) * Mat4::from_rotation_x(0.35);
-        canvas.draw(
-            &Mesh::cube(1.6),
-            &lit(model, vp, eye, Color::rgb(0.85, 0.55, 0.25)),
-        );
-    });
+    diff::assert_agrees(
+        "cube",
+        WIDTH,
+        HEIGHT,
+        GEOMETRY_TOLERANCE,
+        |canvas: &mut Canvas| {
+            let eye = Vec3::new(2.4, 1.8, 3.2);
+            let vp = camera(eye, Vec3::ZERO);
+            let model = Mat4::from_rotation_y(0.7) * Mat4::from_rotation_x(0.35);
+            canvas.draw(
+                &Mesh::cube(1.6),
+                &lit(model, vp, eye, Color::rgb(0.85, 0.55, 0.25)),
+            );
+        },
+    );
 }
 
 #[test]
@@ -77,10 +83,8 @@ fn a_lit_sphere_looks_the_same_on_both_renderers() {
 /// shows up against a two per cent budget.
 #[test]
 fn the_teapot_looks_the_same_on_both_renderers() {
-    let teapot = Mesh::from_obj(include_str!(
-        "../../runity/examples/assets/teapot.obj"
-    ))
-    .expect("the showcase's teapot parses");
+    let teapot = Mesh::from_obj(include_str!("../../runity/examples/assets/teapot.obj"))
+        .expect("the showcase's teapot parses");
     assert!(teapot.triangle_count() > 1000, "that is the teapot");
 
     diff::assert_agrees("teapot", WIDTH, HEIGHT, GEOMETRY_TOLERANCE, |canvas| {
@@ -96,23 +100,29 @@ fn the_teapot_looks_the_same_on_both_renderers() {
 /// depth write all have to be right at the same time.
 #[test]
 fn intersecting_translucent_planes_composite_the_same_way() {
-    diff::assert_agrees("translucent-planes", WIDTH, HEIGHT, GEOMETRY_TOLERANCE, |canvas| {
-        let eye = Vec3::new(2.6, 1.6, 3.4);
-        let vp = camera(eye, Vec3::ZERO);
-        canvas.set_cull(CullMode::None);
-        canvas.set_blending(Blend::Alpha, true, false);
-        let quad = Mesh::plane(2.6, 1);
-        for (turn, color) in [
-            (0.0_f32, Color::rgba(0.95, 0.35, 0.35, 0.55)),
-            (TAU / 3.0, Color::rgba(0.35, 0.90, 0.45, 0.55)),
-            (2.0 * TAU / 3.0, Color::rgba(0.40, 0.55, 0.98, 0.55)),
-        ] {
-            let model = Mat4::from_rotation_y(turn) * Mat4::from_rotation_x(0.35);
-            let mut shader = UnlitShader::new(vp * model);
-            shader.tint = color;
-            canvas.draw(&quad, &shader);
-        }
-    });
+    diff::assert_agrees(
+        "translucent-planes",
+        WIDTH,
+        HEIGHT,
+        GEOMETRY_TOLERANCE,
+        |canvas| {
+            let eye = Vec3::new(2.6, 1.6, 3.4);
+            let vp = camera(eye, Vec3::ZERO);
+            canvas.set_cull(CullMode::None);
+            canvas.set_blending(Blend::Alpha, true, false);
+            let quad = Mesh::plane(2.6, 1);
+            for (turn, color) in [
+                (0.0_f32, Color::rgba(0.95, 0.35, 0.35, 0.55)),
+                (TAU / 3.0, Color::rgba(0.35, 0.90, 0.45, 0.55)),
+                (2.0 * TAU / 3.0, Color::rgba(0.40, 0.55, 0.98, 0.55)),
+            ] {
+                let model = Mat4::from_rotation_y(turn) * Mat4::from_rotation_x(0.35);
+                let mut shader = UnlitShader::new(vp * model);
+                shader.tint = color;
+                canvas.draw(&quad, &shader);
+            }
+        },
+    );
 }
 
 /// Geometry that crosses the near plane. The rasterizer clips against `z >= 0`
@@ -137,8 +147,12 @@ fn geometry_crossing_the_near_plane_is_clipped_the_same_way() {
 /// showcase's first page draws them.
 #[test]
 fn a_whole_scene_looks_the_same_on_both_renderers() {
-    let mut floor_texture =
-        runity_render::Texture::checker(64, 8, Color::rgb(0.20, 0.22, 0.26), Color::rgb(0.32, 0.34, 0.40));
+    let mut floor_texture = runity_render::Texture::checker(
+        64,
+        8,
+        Color::rgb(0.20, 0.22, 0.26),
+        Color::rgb(0.32, 0.34, 0.40),
+    );
     floor_texture.wrap = runity_render::Wrap::Repeat;
 
     diff::assert_agrees("scene", WIDTH, HEIGHT, GEOMETRY_TOLERANCE, |canvas| {
@@ -155,7 +169,10 @@ fn a_whole_scene_looks_the_same_on_both_renderers() {
         canvas.draw(&Mesh::plane(10.0, 1), &floor);
 
         let model = Mat4::from_rotation_y(0.6) * Mat4::from_rotation_x(0.3);
-        canvas.draw(&Mesh::cube(1.4), &lit(model, vp, eye, Color::rgb(0.8, 0.5, 0.25)));
+        canvas.draw(
+            &Mesh::cube(1.4),
+            &lit(model, vp, eye, Color::rgb(0.8, 0.5, 0.25)),
+        );
 
         for (x, tint) in [
             (-2.0_f32, Color::rgb(0.9, 0.3, 0.35)),

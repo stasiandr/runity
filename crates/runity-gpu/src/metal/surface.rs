@@ -62,7 +62,12 @@ unsafe fn msg_rect(receiver: Id, selector: Sel) -> CGRect {
 
 impl Surface {
     /// Replace `view`'s layer with a `CAMetalLayer` bound to `device`.
-    pub fn attach(device: Id, view: *mut c_void) -> Result<Self, GpuError> {
+    ///
+    /// # Safety
+    ///
+    /// `view` must be null or a live `NSView`, and `device` a live `MTLDevice`.
+    /// Must be called on the main thread, like every other AppKit call.
+    pub unsafe fn attach(device: Id, view: *mut c_void) -> Result<Self, GpuError> {
         if view.is_null() {
             return Err(GpuError::NoSurface);
         }
@@ -79,11 +84,7 @@ impl Surface {
             msg(layer, sel(b"retain\0"));
 
             msg_with_id(layer, sel(b"setDevice:\0"), device);
-            msg_with_u64(
-                layer,
-                sel(b"setPixelFormat:\0"),
-                MTLPixelFormatBGRA8Unorm,
-            );
+            msg_with_u64(layer, sel(b"setPixelFormat:\0"), MTLPixelFormatBGRA8Unorm);
             // Nothing reads the drawable back, so let the driver keep it in
             // whatever form is cheapest to scan out.
             msg_with_bool(layer, sel(b"setFramebufferOnly:\0"), YES);
