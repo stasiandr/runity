@@ -13,7 +13,12 @@
 //! renderer already produces, so there is no conversion pass.
 //!
 //! Input avoids a delegate too: `-[NSApplication nextEventMatchingMask:...]`
-//! with a past deadline is a non-blocking poll of the real event queue.
+//! with a past deadline is a non-blocking poll of the real event queue, and the
+//! window's own state says when it was closed or lost focus.
+//!
+//! The one piece of AppKit furniture that cannot be skipped is a main menu:
+//! key equivalents are dispatched by the menu bar, so without one Cmd+M, Cmd+H
+//! and Cmd+W do nothing at all.
 //!
 //! **Threading.** AppKit may only be used from the main thread; `open` checks
 //! that and refuses otherwise.
@@ -197,7 +202,9 @@ msg_send_fn!(msg_with_bool(a: Bool) -> ());
 msg_send_fn!(msg_with_f64(a: f64) -> ());
 msg_send_fn!(msg_with_i64(a: i64) -> ());
 msg_send_fn!(msg_with_ptr(a: *const c_void) -> ());
+msg_send_fn!(msg_with_two_ids(a: Id, b: Id) -> ());
 msg_send_fn!(msg_string_init(bytes: *const c_void, len: usize, encoding: u64) -> Id);
+msg_send_fn!(msg_menu_item_init(title: Id, action: Sel, key: Id) -> Id);
 msg_send_fn!(msg_window_init(rect: NSRect, style: u64, backing: u64, defer: Bool) -> Id);
 msg_send_fn!(msg_next_event(mask: u64, until: Id, mode: Id, dequeue: Bool) -> Id);
 
@@ -238,6 +245,90 @@ unsafe fn nsstring(text: &str) -> Id {
     )
 }
 
+/// One `NSMenuItem`. The caller owns the result and must release it; pass a
+/// null `action` for an item that only carries a submenu.
+///
+/// # Safety
+/// Must run on the main thread, with `action` a selector or null.
+unsafe fn menu_item(title: &str, action: Sel, key_equivalent: &str) -> Id {
+    let title = nsstring(title);
+    let key = nsstring(key_equivalent);
+    let item = msg_id(class(b"NSMenuItem\0"), sel(b"alloc\0"));
+    let item = msg_menu_item_init(
+        item,
+        sel(b"initWithTitle:action:keyEquivalent:\0"),
+        title,
+        action,
+        key,
+    );
+    msg(title, sel(b"release\0"));
+    msg(key, sel(b"release\0"));
+    item
+}
+
+/// Hang one submenu, with the items it contains, off the menu bar.
+///
+/// Each item is a title, the selector it sends up the responder chain, and its
+/// key equivalent (the plain letter; Cmd is implied).
+///
+/// # Safety
+/// Must run on the main thread, with every `action` a selector or null.
+unsafe fn add_submenu(menu_bar: Id, title: &str, items: &[(&str, Sel, &str)]) {
+    let menu = msg_id(msg_id(class(b"NSMenu\0"), sel(b"alloc\0")), sel(b"init\0"));
+    for (item_title, action, key) in items {
+        let item = menu_item(item_title, *action, key);
+        msg_with_id(menu, sel(b"addItem:\0"), item);
+        msg(item, sel(b"release\0"));
+    }
+    // A submenu reaches the menu bar through a carrier item of its own.
+    let carrier = menu_item(title, std::ptr::null(), "");
+    msg_with_id(menu_bar, sel(b"addItem:\0"), carrier);
+    msg_with_two_ids(menu_bar, sel(b"setSubmenu:forItem:\0"), menu, carrier);
+    msg(carrier, sel(b"release\0"));
+    msg(menu, sel(b"release\0"));
+}
+
+/// Give the application the smallest main menu that still behaves like a Mac
+/// application.
+///
+/// It is not decoration. A key equivalent is dispatched by the menu bar, so
+/// with no menu at all AppKit silently drops Cmd+M, Cmd+H and Cmd+W — the
+/// window cannot be sent to the Dock or hidden from the keyboard.
+///
+/// Quit is wired to `performClose:` rather than `terminate:` on purpose: every
+/// way out of the app then follows the same path as the close button, and the
+/// main loop gets to finish the frame it is on instead of the process
+/// vanishing mid-render.
+///
+/// # Safety
+/// Must run on the main thread, before `finishLaunching`.
+unsafe fn install_main_menu(app: Id, app_name: &str) {
+    let menu_bar = msg_id(msg_id(class(b"NSMenu\0"), sel(b"alloc\0")), sel(b"init\0"));
+
+    // The first submenu is the application menu, whatever it is called.
+    let hide = format!("Hide {app_name}");
+    let quit = format!("Quit {app_name}");
+    add_submenu(
+        menu_bar,
+        app_name,
+        &[
+            (hide.as_str(), sel(b"hide:\0"), "h"),
+            (quit.as_str(), sel(b"performClose:\0"), "q"),
+        ],
+    );
+    add_submenu(
+        menu_bar,
+        "Window",
+        &[
+            ("Minimize", sel(b"performMiniaturize:\0"), "m"),
+            ("Close", sel(b"performClose:\0"), "w"),
+        ],
+    );
+
+    msg_with_id(app, sel(b"setMainMenu:\0"), menu_bar);
+    msg(menu_bar, sel(b"release\0"));
+}
+
 /// Frees the pixel buffer once Core Graphics is done with the image built over it.
 extern "C" fn release_pixels(_info: *mut c_void, data: *const c_void, size: usize) {
     if data.is_null() || size == 0 {
@@ -249,6 +340,68 @@ extern "C" fn release_pixels(_info: *mut c_void, data: *const c_void, size: usiz
         let slice = std::slice::from_raw_parts_mut(data as *mut u8, size);
         drop(Box::from_raw(slice as *mut [u8]));
     }
+}
+
+/// Build the `CGImage` a frame is shown as.
+///
+/// This is the whole of the colour path: the pixels are copied out as
+/// little-endian words and described as `kCGImageAlphaNoneSkipFirst |
+/// kCGBitmapByteOrder32Little`, which is exactly the `0xAARRGGBB` the renderer
+/// produces — no conversion pass, and nothing to get the channel order wrong.
+///
+/// The caller owns the result and must release it.
+///
+/// # Safety
+/// `pixels` must hold at least `width * height` entries.
+unsafe fn cg_image_from_frame(pixels: &[u32], width: u32, height: u32) -> io::Result<CGImageRef> {
+    let expected = (width as usize) * (height as usize);
+    if pixels.len() < expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "pixel buffer is smaller than the frame it describes",
+        ));
+    }
+
+    // Core Graphics keeps the pixels until the image is released, which can
+    // outlive this call, so the buffer is handed over rather than borrowed.
+    let bytes: Box<[u8]> = pixels[..expected]
+        .iter()
+        .flat_map(|p| p.to_le_bytes())
+        .collect::<Vec<u8>>()
+        .into();
+    let size = bytes.len();
+    let data = Box::into_raw(bytes) as *mut u8;
+
+    let provider = CGDataProviderCreateWithData(
+        std::ptr::null_mut(),
+        data.cast(),
+        size,
+        Some(release_pixels),
+    );
+    if provider.is_null() {
+        release_pixels(std::ptr::null_mut(), data.cast(), size);
+        return Err(io::Error::other("CGDataProvider creation failed"));
+    }
+    let space = CGColorSpaceCreateDeviceRGB();
+    let image = CGImageCreate(
+        width as usize,
+        height as usize,
+        8,
+        32,
+        width as usize * 4,
+        space,
+        BITMAP_INFO,
+        provider,
+        std::ptr::null(),
+        NO,
+        0,
+    );
+    CGColorSpaceRelease(space);
+    CGDataProviderRelease(provider);
+    if image.is_null() {
+        return Err(io::Error::other("CGImage creation failed"));
+    }
+    Ok(image)
 }
 
 /// A window on the macOS window server.
@@ -288,6 +441,9 @@ impl CocoaWindow {
                 sel(b"setActivationPolicy:\0"),
                 NS_APPLICATION_ACTIVATION_POLICY_REGULAR,
             );
+            // Key equivalents live on the menu bar, so this has to exist before
+            // launching or Cmd+M, Cmd+H and Cmd+W go nowhere.
+            install_main_menu(app, &config.title);
             // Without this the app never processes events, because we drive the
             // loop ourselves instead of calling -[NSApplication run].
             msg(app, sel(b"finishLaunching\0"));
@@ -335,6 +491,10 @@ impl CocoaWindow {
             msg_with_f64(layer, sel(b"setContentsScale:\0"), 1.0);
 
             msg_with_id(window, sel(b"makeKeyAndOrderFront:\0"), NIL);
+            // Focus is reported as a change, so the starting point has to be the
+            // truth: assuming "key" here costs a bogus FocusLost on the first
+            // poll, because the window only becomes key once events are pumped.
+            let was_key_window = msg_bool(window, sel(b"isKeyWindow\0")) != NO;
 
             // -[NSApplication nextEventMatchingMask:...] wants a run loop mode;
             // NSDefaultRunLoopMode is this string.
@@ -349,7 +509,7 @@ impl CocoaWindow {
                 width,
                 height,
                 modifier_flags: 0,
-                was_key_window: true,
+                was_key_window,
                 closed: false,
             })
         }
@@ -457,8 +617,12 @@ impl Window for CocoaWindow {
             objc_autoreleasePoolPop(pool);
 
             // There is no delegate, so the window's own state is the source of
-            // truth for closing, resizing and focus.
-            if msg_bool(self.window, sel(b"isVisible\0")) == NO {
+            // truth for closing, resizing and focus. Invisible is not the same
+            // as closed: Cmd+M and Cmd+H make a window invisible too.
+            let visible = msg_bool(self.window, sel(b"isVisible\0")) != NO;
+            let miniaturized = msg_bool(self.window, sel(b"isMiniaturized\0")) != NO;
+            let app_hidden = msg_bool(self.app, sel(b"isHidden\0")) != NO;
+            if keys::window_was_closed(visible, miniaturized, app_hidden) {
                 self.closed = true;
                 events.push(Event::CloseRequested);
                 return Ok(events);
@@ -490,56 +654,11 @@ impl Window for CocoaWindow {
         if self.closed || width == 0 || height == 0 {
             return Ok(());
         }
-        let expected = (width as usize) * (height as usize);
-        if pixels.len() < expected {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "pixel buffer is smaller than the frame it describes",
-            ));
-        }
 
-        // Core Graphics keeps the pixels until the image is released, which can
-        // outlive this call, so the buffer is handed over rather than borrowed.
-        let bytes: Box<[u8]> = pixels[..expected]
-            .iter()
-            .flat_map(|p| p.to_le_bytes())
-            .collect::<Vec<u8>>()
-            .into();
-        let size = bytes.len();
-        let data = Box::into_raw(bytes) as *mut u8;
-
-        // SAFETY: `data`/`size` describe the leaked buffer, which
-        // `release_pixels` takes ownership of exactly once.
+        // SAFETY: the image is ours until `CGImageRelease` below, and the layer
+        // retains it for as long as it displays it.
         unsafe {
-            let provider = CGDataProviderCreateWithData(
-                std::ptr::null_mut(),
-                data.cast(),
-                size,
-                Some(release_pixels),
-            );
-            if provider.is_null() {
-                release_pixels(std::ptr::null_mut(), data.cast(), size);
-                return Err(io::Error::other("CGDataProvider creation failed"));
-            }
-            let space = CGColorSpaceCreateDeviceRGB();
-            let image = CGImageCreate(
-                width as usize,
-                height as usize,
-                8,
-                32,
-                width as usize * 4,
-                space,
-                BITMAP_INFO,
-                provider,
-                std::ptr::null(),
-                NO,
-                0,
-            );
-            CGColorSpaceRelease(space);
-            CGDataProviderRelease(provider);
-            if image.is_null() {
-                return Err(io::Error::other("CGImage creation failed"));
-            }
+            let image = cg_image_from_frame(pixels, width, height)?;
 
             // We never run the main run loop, so the implicit transaction may
             // not commit on its own — make it explicit.
@@ -612,6 +731,91 @@ mod tests {
             [0xcc, 0x88, 0x44, 0x00],
             "B, G, R, then the skipped byte"
         );
+    }
+
+    // Reading the image back needs a bitmap context to draw it into; nothing
+    // outside the test wants these, so they are declared here.
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGBitmapContextCreate(
+            data: *mut c_void,
+            width: usize,
+            height: usize,
+            bits_per_component: usize,
+            bytes_per_row: usize,
+            space: CGColorSpaceRef,
+            bitmap_info: u32,
+        ) -> *mut c_void;
+        fn CGContextDrawImage(context: *mut c_void, rect: NSRect, image: CGImageRef);
+        fn CGContextRelease(context: *mut c_void);
+    }
+
+    /// The image `present` hands the layer, read back through Core Graphics as
+    /// plain R, G, B bytes. Colours on screen are exactly this, and this is as
+    /// close as a test can get to looking at the window.
+    #[test]
+    fn a_presented_frame_keeps_its_colours_and_its_orientation() {
+        // Top row, then bottom row: red, green, blue, and one mixed colour
+        // whose channels are all different so a swap cannot hide.
+        let frame: [u32; 8] = [
+            0x00_ff_00_00,
+            0x00_00_ff_00,
+            0x00_00_00_ff,
+            0x00_11_22_33,
+            0x00_ff_ff_ff,
+            0x00_00_00_00,
+            0x00_44_88_cc,
+            0x00_cc_88_44,
+        ];
+        const K_CG_IMAGE_ALPHA_NONE_SKIP_LAST: u32 = 5;
+
+        // SAFETY: a 4x2 bitmap context matching the image we draw into it.
+        let readback = unsafe {
+            let image = cg_image_from_frame(&frame, 4, 2).expect("the image should build");
+            let mut buffer = vec![0u8; 4 * 2 * 4];
+            let space = CGColorSpaceCreateDeviceRGB();
+            // Default (big-endian) byte order, alpha last: bytes are R, G, B, X.
+            let context = CGBitmapContextCreate(
+                buffer.as_mut_ptr().cast(),
+                4,
+                2,
+                8,
+                4 * 4,
+                space,
+                K_CG_IMAGE_ALPHA_NONE_SKIP_LAST,
+            );
+            assert!(!context.is_null(), "bitmap context creation failed");
+            CGContextDrawImage(context, NSRect::new(0.0, 0.0, 4.0, 2.0), image);
+            CGContextRelease(context);
+            CGColorSpaceRelease(space);
+            CGImageRelease(image);
+            buffer
+        };
+
+        let pixel = |i: usize| (readback[i * 4], readback[i * 4 + 1], readback[i * 4 + 2]);
+        assert_eq!(pixel(0), (0xff, 0x00, 0x00), "0x00ff0000 must read as red");
+        assert_eq!(
+            pixel(1),
+            (0x00, 0xff, 0x00),
+            "0x0000ff00 must read as green"
+        );
+        assert_eq!(pixel(2), (0x00, 0x00, 0xff), "0x000000ff must read as blue");
+        assert_eq!(pixel(3), (0x11, 0x22, 0x33), "channels keep their order");
+        assert_eq!(
+            pixel(4),
+            (0xff, 0xff, 0xff),
+            "the second row is the second row: the frame is not flipped"
+        );
+        assert_eq!(pixel(5), (0x00, 0x00, 0x00));
+        assert_eq!(pixel(6), (0x44, 0x88, 0xcc));
+        assert_eq!(pixel(7), (0xcc, 0x88, 0x44));
+    }
+
+    #[test]
+    fn a_frame_shorter_than_its_own_size_is_refused() {
+        // SAFETY: the short slice is exactly what this call has to reject.
+        let too_short = unsafe { cg_image_from_frame(&[0u32; 3], 4, 2) };
+        assert!(too_short.is_err(), "a truncated frame must not be drawn");
     }
 
     #[test]

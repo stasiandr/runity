@@ -337,6 +337,78 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use runity_platform::HeadlessWindow;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct TitleChanger {
+        title_set: bool,
+    }
+
+    impl Game for TitleChanger {
+        fn update(&mut self, engine: &mut Engine) {
+            if !self.title_set {
+                engine.set_title("new title");
+                self.title_set = true;
+            }
+        }
+    }
+
+    struct TrackingWindow {
+        inner: HeadlessWindow,
+        titles_set: Rc<RefCell<Vec<String>>>,
+    }
+
+    impl TrackingWindow {
+        fn new(config: &WindowConfig, titles: Rc<RefCell<Vec<String>>>) -> Self {
+            Self {
+                inner: HeadlessWindow::new(config),
+                titles_set: titles,
+            }
+        }
+    }
+
+    impl Window for TrackingWindow {
+        fn size(&self) -> (u32, u32) {
+            self.inner.size()
+        }
+
+        fn poll_events(&mut self) -> io::Result<Vec<Event>> {
+            self.inner.poll_events()
+        }
+
+        fn present(&mut self, pixels: &[u32], width: u32, height: u32) -> io::Result<()> {
+            self.inner.present(pixels, width, height)
+        }
+
+        fn set_title(&mut self, title: &str) -> io::Result<()> {
+            self.titles_set.borrow_mut().push(title.to_string());
+            self.inner.set_title(title)
+        }
+
+        fn backend_name(&self) -> &'static str {
+            self.inner.backend_name()
+        }
+    }
+
+    #[test]
+    fn set_title_calls_window_set_title_when_title_changes() -> io::Result<()> {
+        let config = WindowConfig::new("initial title", 100, 100);
+        let titles_set = Rc::new(RefCell::new(Vec::new()));
+        let window = Box::new(TrackingWindow::new(&config, Rc::clone(&titles_set)));
+        let app = App::new(config).with_max_frames(2);
+        app.run_with_window(window, TitleChanger { title_set: false })?;
+        assert_eq!(titles_set.borrow().as_slice(), &["new title".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn engine_set_title_stores_the_pending_title() {
+        let mut engine = Engine::new(100, 100);
+        assert!(engine.pending_title.is_none());
+        engine.set_title("test title");
+        assert_eq!(engine.pending_title, Some("test title".to_string()));
+    }
 
     #[test]
     fn a_title_reaches_the_loop_once_per_change() {
