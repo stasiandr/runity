@@ -50,8 +50,8 @@ pub use runity_serialize as serialize;
 pub mod prelude {
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Calendar, Camera, Date, DebugView, Engine, Entity, Game, Input, RunOptions, Season,
-        Time, Transform, World, WorldClock,
+        App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Game, Input, Mut,
+        RunOptions, Season, Time, Transform, World, WorldClock,
     };
     pub use runity_math::{Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
     pub use runity_platform::{Event, HeadlessWindow, Key, MouseButton, Window, WindowConfig};

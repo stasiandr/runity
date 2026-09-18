@@ -16,4 +16,4 @@ pub use clock::{Calendar, Date, Season, WorldClock};
 pub use input::Input;
 pub use time::Time;
 pub use transform::{Camera, Transform};
-pub use world::{Entity, World};
+pub use world::{Despawned, Entity, Mut, World};

@@ -85,8 +85,39 @@ pub use writer::Writer;
 /// let tree = Resource { position: Vec3 { x: 3.0, y: 0.0, z: -7.5 }, kind: 2, remaining: 40 };
 /// assert_eq!(from_bytes::<Resource>(&to_bytes(&tree)).unwrap(), tree);
 /// ```
+/// Tuple structs — the usual shape of a small component — use parentheses
+/// and field indices instead:
+///
+/// ```
+/// use runity_serialize::{from_bytes, serializable, to_bytes};
+///
+/// #[derive(Debug, PartialEq)]
+/// struct Wood(u32);
+///
+/// serializable!(Wood(0));
+/// assert_eq!(from_bytes::<Wood>(&to_bytes(&Wood(12))).unwrap(), Wood(12));
+/// ```
 #[macro_export]
 macro_rules! serializable {
+    ($ty:ident ( $($index:tt),* $(,)? )) => {
+        impl $crate::Serialize for $ty {
+            fn serialize(&self, writer: &mut $crate::Writer) {
+                $($crate::Serialize::serialize(&self.$index, writer);)*
+            }
+        }
+
+        impl $crate::Deserialize for $ty {
+            fn deserialize(reader: &mut $crate::Reader) -> $crate::Result<Self> {
+                // Fields are decoded in declaration order; the indices are
+                // there to name them on the way out.
+                Ok(Self($({
+                    let _ = $index;
+                    $crate::Deserialize::deserialize(reader)?
+                }),*))
+            }
+        }
+    };
+
     ($ty:ty { $($field:ident),* $(,)? }) => {
         impl $crate::Serialize for $ty {
             fn serialize(&self, writer: &mut $crate::Writer) {
