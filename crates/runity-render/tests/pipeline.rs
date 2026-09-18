@@ -51,7 +51,7 @@ fn fullscreen_quad_covers_every_pixel_exactly_once() {
     // triangle: no gaps, no pixel shaded twice.
     assert_eq!(stats.fragments_written, 64 * 48);
     assert_eq!(stats.fragments_shaded, 64 * 48);
-    assert!(fb.pixels().iter().all(|p| *p == Color::RED.to_argb8()));
+    assert!(fb.colors().iter().all(|c| *c == Color::RED));
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn nearer_geometry_wins_regardless_of_draw_order() {
             raster.draw_mesh(&mut fb, mesh, &Ndc);
         }
         assert!(
-            fb.pixels().iter().all(|p| *p == Color::BLUE.to_argb8()),
+            fb.colors().iter().all(|c| *c == Color::BLUE),
             "the near quad must survive the depth test in both orders"
         );
     }
@@ -82,7 +82,7 @@ fn depth_test_can_be_disabled() {
     raster.draw_mesh(&mut fb, &fullscreen_quad(0.2, Color::BLUE), &Ndc);
     raster.draw_mesh(&mut fb, &fullscreen_quad(0.8, Color::RED), &Ndc);
     assert!(
-        fb.pixels().iter().all(|p| *p == Color::RED.to_argb8()),
+        fb.colors().iter().all(|c| *c == Color::RED),
         "painter's order wins"
     );
 }
@@ -158,7 +158,7 @@ fn a_triangle_outside_the_viewport_is_skipped() {
     );
     let stats = Rasterizer::new().draw_mesh(&mut fb, &offscreen, &Ndc);
     assert_eq!(stats.fragments_written, 0);
-    assert!(fb.pixels().iter().all(|p| *p == Color::BLACK.to_argb8()));
+    assert!(fb.colors().iter().all(|c| *c == Color::BLACK));
 }
 
 /// The real test of the interpolator: render a ground plane in perspective and

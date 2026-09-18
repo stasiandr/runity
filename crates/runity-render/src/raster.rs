@@ -295,22 +295,33 @@ impl Rasterizer {
                     continue;
                 };
 
+                // Deferred: the geometry pass records what the surface is, so
+                // the lighting and screen-space passes can read it back.
+                if target.gbuffer().is_some() {
+                    if let Some(surface) = shader.surface(&varying) {
+                        if let Some(gbuffer) = target.gbuffer_mut() {
+                            gbuffer.set(index, surface);
+                        }
+                    }
+                }
+
                 // The depth write happens after the fragment stage, so a
                 // discarded fragment leaves the depth buffer untouched.
                 if self.depth_write {
                     target.set_depth(index, z);
                 }
 
-                let packed = match self.blend {
-                    Blend::Replace => src.to_argb8(),
+                let color = match self.blend {
+                    Blend::Replace => src,
                     Blend::Alpha => {
-                        let dst = Color::from_argb8(target.pixels()[index]);
+                        // Blending happens in linear light, the only space
+                        // where "half of this plus half of that" is true.
+                        let dst = target.colors()[index];
                         let alpha = src.a.clamp(0.0, 1.0);
                         dst.lerp(Color::rgba(src.r, src.g, src.b, 1.0), alpha)
-                            .to_argb8()
                     }
                 };
-                target.write_packed(index, packed);
+                target.write_color(index, color);
                 stats.fragments_written += 1;
             }
         }

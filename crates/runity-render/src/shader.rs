@@ -1,4 +1,5 @@
 use crate::color::Color;
+use crate::gbuffer::Surface;
 use crate::texture::Texture;
 use runity_math::{Mat4, Vec2, Vec3, Vec4};
 
@@ -132,8 +133,20 @@ pub trait Shader {
 
     fn vertex(&self, vertex: &Vertex) -> VertexOutput<Self::Varying>;
 
-    /// Return `None` to discard the fragment (an alpha-test / `discard`).
+    /// Linear-light color for this fragment, or `None` to discard it (the
+    /// equivalent of GLSL's `discard`).
+    ///
+    /// In a forward pass this is the final color; in a geometry pass it is the
+    /// albedo, and the lighting pass overwrites it later.
     fn fragment(&self, varying: &Self::Varying) -> Option<Color>;
+
+    /// Surface parameters for the G-buffer.
+    ///
+    /// Returning `None` — the default — means this shader is forward-only and
+    /// contributes nothing to the deferred passes.
+    fn surface(&self, _varying: &Self::Varying) -> Option<Surface> {
+        None
+    }
 }
 
 /// Interpolants used by [`BasicShader`].

@@ -15,6 +15,7 @@
 pub mod color;
 pub mod debug;
 pub mod framebuffer;
+pub mod gbuffer;
 pub mod golden;
 pub mod inflate;
 pub mod mesh;
@@ -22,9 +23,11 @@ pub mod png;
 pub mod raster;
 pub mod shader;
 pub mod texture;
+pub mod tonemap;
 
 pub use color::Color;
 pub use framebuffer::Framebuffer;
+pub use gbuffer::{GBuffer, Surface};
 pub use mesh::{Mesh, ObjError};
 pub use png::{decode_png, encode_png, load_png, save_png, save_ppm, Image, PngError};
 pub use raster::{Blend, CullMode, DrawStats, PolygonMode, Rasterizer};
@@ -32,3 +35,4 @@ pub use shader::{
     BasicShader, BasicVarying, DirectionalLight, Shader, UnlitShader, Varying, Vertex, VertexOutput,
 };
 pub use texture::{Filter, Texture, Wrap};
+pub use tonemap::ToneMap;

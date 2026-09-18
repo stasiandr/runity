@@ -147,9 +147,9 @@ mod tests {
             engine.draw(&Mesh::cube(1.0), &shader);
         });
         assert_eq!((frame.width(), frame.height()), (40, 30));
-        let background = Color::rgb(0.05, 0.06, 0.09).to_argb8();
+        let background = Color::rgb(0.05, 0.06, 0.09);
         assert!(
-            frame.pixels().iter().any(|p| *p != background),
+            frame.colors().iter().any(|c| *c != background),
             "something was drawn"
         );
     }
@@ -158,7 +158,7 @@ mod tests {
     fn a_headless_run_is_deterministic() {
         let first = run(Spinner { angle: 0.0 }, 32, 24, 10, 1.0 / 60.0).unwrap();
         let second = run(Spinner { angle: 0.0 }, 32, 24, 10, 1.0 / 60.0).unwrap();
-        assert_eq!(first.framebuffer.pixels(), second.framebuffer.pixels());
+        assert_eq!(first.framebuffer.colors(), second.framebuffer.colors());
         assert_eq!(first.time.frame(), 10);
         // Ten frames at 1/60 s each.
         assert!((first.time.elapsed() - 10.0 / 60.0).abs() < 1e-5);
@@ -169,8 +169,8 @@ mod tests {
         let frames = record(Spinner { angle: 0.0 }, 32, 24, 4, 0.1).unwrap();
         assert_eq!(frames.len(), 4);
         assert_ne!(
-            frames[0].pixels(),
-            frames[3].pixels(),
+            frames[0].colors(),
+            frames[3].colors(),
             "the cube rotates, so the frames must not be identical"
         );
     }

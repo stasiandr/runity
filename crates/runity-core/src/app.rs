@@ -6,7 +6,7 @@ use runity_math::Mat4;
 use runity_platform::{open_window, Event, Window, WindowConfig};
 use runity_render::{
     debug, BasicShader, Color, DirectionalLight, DrawStats, Framebuffer, Mesh, PolygonMode,
-    Rasterizer, Shader,
+    Rasterizer, Shader, ToneMap,
 };
 use std::io;
 
@@ -41,6 +41,10 @@ pub struct Engine {
     pub debug_view: DebugView,
     /// Write count that counts as "fully red" in [`DebugView::Overdraw`].
     pub overdraw_saturation: u32,
+    /// Curve used to turn the frame's linear HDR light into displayable pixels.
+    pub tone_map: ToneMap,
+    /// Linear multiplier applied before the tone curve — the camera's exposure.
+    pub exposure: f32,
     running: bool,
     frame_stats: DrawStats,
 }
@@ -59,6 +63,8 @@ impl Engine {
             clear_color: Color::rgb(0.05, 0.06, 0.09),
             debug_view: DebugView::Shaded,
             overdraw_saturation: 4,
+            tone_map: ToneMap::default(),
+            exposure: 1.0,
             running: true,
             frame_stats: DrawStats::default(),
         }
@@ -224,6 +230,9 @@ impl App {
     ) -> io::Result<Engine> {
         let (width, height) = window.size();
         let mut engine = Engine::new(width as usize, height as usize);
+        // Reused every frame: tone mapping is the only place the renderer
+        // produces 8-bit pixels, and it should not allocate to do it.
+        let mut resolved: Vec<u32> = Vec::with_capacity(engine.framebuffer.len());
         game.start(&mut engine)?;
 
         while engine.is_running() {
@@ -270,14 +279,30 @@ impl App {
             engine.framebuffer.clear(clear);
             game.render(&mut engine);
 
-            // Debug views replace the frame after the game has drawn it, so a
-            // game needs no awareness of them.
-            match engine.debug_view {
-                DebugView::Shaded | DebugView::Wireframe => {}
-                DebugView::Depth => engine.framebuffer = debug::depth_view(&engine.framebuffer),
-                DebugView::Overdraw => {
-                    let saturation = engine.overdraw_saturation;
-                    engine.framebuffer = debug::overdraw_view(&engine.framebuffer, saturation);
+            // Debug views replace the frame's contents after the game has drawn
+            // it, so a game needs no awareness of them. The buffer itself is
+            // kept — it owns the depth, the attachments and the size.
+            let view = match engine.debug_view {
+                DebugView::Shaded | DebugView::Wireframe => None,
+                DebugView::Depth => Some(debug::depth_view(&engine.framebuffer)),
+                DebugView::Overdraw => Some(debug::overdraw_view(
+                    &engine.framebuffer,
+                    engine.overdraw_saturation,
+                )),
+            };
+            match view {
+                Some(view) => {
+                    engine
+                        .framebuffer
+                        .colors_mut()
+                        .copy_from_slice(view.colors());
+                    // A debug view is data, not light.
+                    engine.framebuffer.tone_map = ToneMap::Raw;
+                    engine.framebuffer.exposure = 1.0;
+                }
+                None => {
+                    engine.framebuffer.tone_map = engine.tone_map;
+                    engine.framebuffer.exposure = engine.exposure;
                 }
             }
 
@@ -285,7 +310,8 @@ impl App {
                 engine.framebuffer.width() as u32,
                 engine.framebuffer.height() as u32,
             );
-            window.present(engine.framebuffer.pixels(), w, h)?;
+            engine.framebuffer.resolve_into(&mut resolved);
+            window.present(&resolved, w, h)?;
 
             if let Some(max) = self.options.max_frames {
                 if engine.time.frame() >= max {

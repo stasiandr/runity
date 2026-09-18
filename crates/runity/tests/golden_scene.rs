@@ -60,7 +60,7 @@ fn the_reference_scene_still_looks_the_same() {
 #[test]
 fn rendering_the_same_scene_twice_gives_identical_pixels() {
     // Headless rendering must be deterministic, or golden images are worthless.
-    assert_eq!(reference_scene().pixels(), reference_scene().pixels());
+    assert_eq!(reference_scene().colors(), reference_scene().colors());
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn the_diff_report_describes_a_real_change() {
     // Round-trip through the encoder rather than reading the reference file, so
     // this test does not race the one that may be creating it.
     let reference =
-        decode_png(&encode_png(frame.width(), frame.height(), frame.pixels())).expect("decodes");
+        decode_png(&encode_png(frame.width(), frame.height(), &frame.resolve())).expect("decodes");
 
     let clean = golden::compare(&frame, &reference, Tolerance::new(4, 0.02)).expect("same size");
     assert!(clean.is_within(Tolerance::new(4, 0.02)), "{clean}");
@@ -90,14 +90,11 @@ fn debug_views_describe_the_same_frame() {
     // Depth: the scene fills part of the frame, so some pixels are untouched.
     let depth = debug::depth_view(&frame);
     let lit = depth
-        .pixels()
+        .colors()
         .iter()
-        .filter(|p| **p != Color::BLACK.to_argb8())
+        .filter(|c| **c != Color::BLACK)
         .count();
-    assert!(
-        lit > 1000 && lit < depth.pixels().len(),
-        "{lit} pixels have depth"
-    );
+    assert!(lit > 1000 && lit < depth.len(), "{lit} pixels have depth");
 
     // Wireframe: same geometry, far fewer fragments.
     let mut wire = Framebuffer::new(128, 96);

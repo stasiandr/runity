@@ -5,6 +5,7 @@
 //! actually compress. We emit stored (uncompressed) deflate blocks, so the
 //! encoder is about a hundred lines: CRC-32, Adler-32, and some chunk framing.
 
+use crate::color::Color;
 use crate::framebuffer::Framebuffer;
 use std::fmt;
 use std::fs::File;
@@ -118,7 +119,7 @@ pub fn encode_png(width: usize, height: usize, pixels: &[u32]) -> Vec<u8> {
 
 /// Write a framebuffer to a PNG file.
 pub fn save_png(path: impl AsRef<Path>, fb: &Framebuffer) -> io::Result<()> {
-    let bytes = encode_png(fb.width(), fb.height(), fb.pixels());
+    let bytes = encode_png(fb.width(), fb.height(), &fb.resolve());
     let mut file = BufWriter::new(File::create(path)?);
     file.write_all(&bytes)?;
     file.flush()
@@ -129,7 +130,8 @@ pub fn save_ppm(path: impl AsRef<Path>, fb: &Framebuffer) -> io::Result<()> {
     let mut file = BufWriter::new(File::create(path)?);
     write!(file, "P6\n{} {}\n255\n", fb.width(), fb.height())?;
     let mut row = Vec::with_capacity(fb.width() * 3);
-    for line in fb.pixels().chunks(fb.width()) {
+    let resolved = fb.resolve();
+    for line in resolved.chunks(fb.width()) {
         row.clear();
         for p in line {
             row.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
@@ -378,10 +380,22 @@ pub fn load_png(path: impl AsRef<Path>) -> io::Result<Image> {
 }
 
 impl Image {
-    /// Copy this image into a framebuffer of the same size.
+    /// Copy this image into a framebuffer, decoding sRGB into linear light.
     pub fn to_framebuffer(&self) -> Framebuffer {
         let mut fb = Framebuffer::new(self.width, self.height);
-        fb.pixels_mut().copy_from_slice(&self.pixels);
+        for (destination, pixel) in fb.colors_mut().iter_mut().zip(&self.pixels) {
+            *destination = Color::from_srgb8(*pixel);
+        }
+        fb
+    }
+
+    /// Copy this image into a framebuffer that displays it unchanged — for
+    /// images that are data rather than light.
+    pub fn to_raw_framebuffer(&self) -> Framebuffer {
+        let mut fb = Framebuffer::new_raw(self.width, self.height);
+        for (destination, pixel) in fb.colors_mut().iter_mut().zip(&self.pixels) {
+            *destination = Color::from_argb8(*pixel);
+        }
         fb
     }
 }
@@ -511,8 +525,19 @@ mod tests {
     #[test]
     fn a_decoded_image_becomes_a_framebuffer() {
         let image = decode_png(include_bytes!("../tests/data/fixture_gray.png")).expect("decodes");
-        let fb = image.to_framebuffer();
-        assert_eq!((fb.width(), fb.height()), (8, 8));
-        assert_eq!(fb.pixels(), image.pixels);
+
+        // A raw framebuffer keeps the file's values as they are...
+        let raw = image.to_raw_framebuffer();
+        assert_eq!((raw.width(), raw.height()), (8, 8));
+        assert_eq!(raw.resolve(), image.pixels);
+
+        // ...while the normal path treats them as sRGB and stores linear light,
+        // which is darker in the mid tones.
+        let linear = image.to_framebuffer();
+        let mid = linear.get_pixel(4, 4);
+        let file_value = Color::from_argb8(image.pixels[4 * 8 + 4]);
+        assert!(mid.r < file_value.r, "{mid:?} vs {file_value:?}");
+        // ...and re-encoding that light as sRGB gives the file's value back.
+        assert_eq!(mid.to_srgb8() & 0xff, image.pixels[4 * 8 + 4] & 0xff);
     }
 }

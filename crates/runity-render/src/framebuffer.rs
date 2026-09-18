@@ -1,6 +1,14 @@
 use crate::color::Color;
+use crate::gbuffer::GBuffer;
+use crate::tonemap::ToneMap;
 
-/// A CPU render target: packed `0xAARRGGBB` color plus an f32 depth buffer.
+/// A CPU render target: linear HDR color, a depth buffer, and optionally the
+/// G-buffer attachments the deferred passes need.
+///
+/// Color is **linear light with no upper bound**, not display values. Nothing
+/// clamps until [`Framebuffer::resolve`] applies exposure, the tone curve and
+/// the sRGB transfer — that is what lets a highlight be ten times white and
+/// still roll off smoothly instead of turning into a flat blob.
 ///
 /// Depth follows the projection convention in `runity-math`: 0 at the near
 /// plane, 1 at the far plane, smaller is closer.
@@ -8,10 +16,16 @@ use crate::color::Color;
 pub struct Framebuffer {
     width: usize,
     height: usize,
-    color: Vec<u32>,
+    color: Vec<Color>,
     depth: Vec<f32>,
     /// Per-pixel write counter, allocated only while overdraw tracking is on.
     overdraw: Option<Vec<u32>>,
+    /// Geometry attachments, allocated only for deferred rendering.
+    gbuffer: Option<GBuffer>,
+    /// How [`Framebuffer::resolve`] turns this buffer into 8-bit pixels.
+    pub tone_map: ToneMap,
+    /// Linear multiplier applied before the tone curve.
+    pub exposure: f32,
 }
 
 impl Framebuffer {
@@ -23,10 +37,21 @@ impl Framebuffer {
         Self {
             width,
             height,
-            color: vec![0; width * height],
+            color: vec![Color::BLACK; width * height],
             depth: vec![f32::INFINITY; width * height],
             overdraw: None,
+            gbuffer: None,
+            tone_map: ToneMap::default(),
+            exposure: 1.0,
         }
+    }
+
+    /// A buffer holding display values rather than light: no exposure, no tone
+    /// curve, no gamma. Debug views and masks use this.
+    pub fn new_raw(width: usize, height: usize) -> Self {
+        let mut fb = Self::new(width, height);
+        fb.tone_map = ToneMap::Raw;
+        fb
     }
 
     #[inline]
@@ -40,24 +65,55 @@ impl Framebuffer {
     }
 
     #[inline]
+    pub fn len(&self) -> usize {
+        self.color.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.color.is_empty()
+    }
+
+    #[inline]
     pub fn aspect_ratio(&self) -> f32 {
         self.width as f32 / self.height as f32
     }
 
-    /// Raw pixels, row-major, top row first — ready to hand to the OS.
+    /// Linear HDR pixels, row-major, top row first.
     #[inline]
-    pub fn pixels(&self) -> &[u32] {
+    pub fn colors(&self) -> &[Color] {
         &self.color
     }
 
     #[inline]
-    pub fn pixels_mut(&mut self) -> &mut [u32] {
+    pub fn colors_mut(&mut self) -> &mut [Color] {
         &mut self.color
     }
 
     #[inline]
     pub fn depth(&self) -> &[f32] {
         &self.depth
+    }
+
+    /// Tone-map the frame into packed `0xAARRGGBB` pixels ready for a window or
+    /// a PNG.
+    pub fn resolve(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(self.color.len());
+        self.resolve_into(&mut out);
+        out
+    }
+
+    /// As [`Framebuffer::resolve`], reusing a buffer instead of allocating —
+    /// the main loop calls this every frame.
+    pub fn resolve_into(&self, out: &mut Vec<u32>) {
+        out.clear();
+        out.reserve(self.color.len());
+        let (map, exposure) = (self.tone_map, self.exposure);
+        out.extend(
+            self.color
+                .iter()
+                .map(|c| map.apply(*c, exposure).to_argb8()),
+        );
     }
 
     /// Count how many times each pixel is written, for [`crate::debug::overdraw_view`].
@@ -68,10 +124,26 @@ impl Framebuffer {
         self.overdraw = enabled.then(|| vec![0; self.width * self.height]);
     }
 
-    /// Write counts from the last clear, if tracking is on.
+    /// Write counts since the last clear, if tracking is on.
     #[inline]
     pub fn overdraw(&self) -> Option<&[u32]> {
         self.overdraw.as_deref()
+    }
+
+    /// Allocate (or drop) the deferred attachments: normals, material
+    /// parameters and world positions alongside the color and depth.
+    pub fn enable_gbuffer(&mut self, enabled: bool) {
+        self.gbuffer = enabled.then(|| GBuffer::new(self.width, self.height));
+    }
+
+    #[inline]
+    pub fn gbuffer(&self) -> Option<&GBuffer> {
+        self.gbuffer.as_ref()
+    }
+
+    #[inline]
+    pub fn gbuffer_mut(&mut self) -> Option<&mut GBuffer> {
+        self.gbuffer.as_mut()
     }
 
     /// Write a depth value directly. Useful for tools and tests; the rasterizer
@@ -83,7 +155,6 @@ impl Framebuffer {
         }
     }
 
-    /// Read a depth value.
     #[inline]
     pub fn depth_at(&self, x: usize, y: usize) -> f32 {
         self.depth[y * self.width + x]
@@ -101,43 +172,57 @@ impl Framebuffer {
         self.width = width;
         self.height = height;
         self.color.clear();
-        self.color.resize(width * height, 0);
+        self.color.resize(width * height, Color::BLACK);
         self.depth.clear();
         self.depth.resize(width * height, f32::INFINITY);
         if self.overdraw.is_some() {
             self.overdraw = Some(vec![0; width * height]);
         }
+        if self.gbuffer.is_some() {
+            self.gbuffer = Some(GBuffer::new(width, height));
+        }
     }
 
+    /// Clear color, depth and every attachment.
     pub fn clear(&mut self, color: Color) {
-        let packed = color.to_argb8();
-        self.color.fill(packed);
+        self.color.fill(color);
         self.depth.fill(f32::INFINITY);
         if let Some(overdraw) = &mut self.overdraw {
             overdraw.fill(0);
         }
+        if let Some(gbuffer) = &mut self.gbuffer {
+            gbuffer.clear();
+        }
     }
 
     pub fn clear_color(&mut self, color: Color) {
-        self.color.fill(color.to_argb8());
+        self.color.fill(color);
     }
 
     pub fn clear_depth(&mut self) {
         self.depth.fill(f32::INFINITY);
     }
 
-    /// Write a pixel without bounds checking of the caller's coordinates
-    /// (they are checked here; out-of-range writes are dropped).
+    /// Write a linear color. Out-of-range coordinates are dropped.
     #[inline]
     pub fn set_pixel(&mut self, x: usize, y: usize, color: Color) {
         if x < self.width && y < self.height {
-            self.color[y * self.width + x] = color.to_argb8();
+            self.color[y * self.width + x] = color;
         }
     }
 
+    /// Read a linear color.
     #[inline]
     pub fn get_pixel(&self, x: usize, y: usize) -> Color {
-        Color::from_argb8(self.color[y * self.width + x])
+        self.color[y * self.width + x]
+    }
+
+    /// The resolved, displayable value of one pixel.
+    #[inline]
+    pub fn resolved_pixel(&self, x: usize, y: usize) -> u32 {
+        self.tone_map
+            .apply(self.get_pixel(x, y), self.exposure)
+            .to_argb8()
     }
 
     #[inline]
@@ -146,8 +231,8 @@ impl Framebuffer {
     }
 
     #[inline]
-    pub(crate) fn write_packed(&mut self, index: usize, packed: u32) {
-        self.color[index] = packed;
+    pub(crate) fn write_color(&mut self, index: usize, color: Color) {
+        self.color[index] = color;
         if let Some(overdraw) = &mut self.overdraw {
             overdraw[index] += 1;
         }
@@ -162,8 +247,55 @@ mod tests {
     fn clear_fills_color_and_depth() {
         let mut fb = Framebuffer::new(4, 3);
         fb.clear(Color::RED);
-        assert!(fb.pixels().iter().all(|p| *p == 0xff_ff_00_00));
+        assert!(fb.colors().iter().all(|c| *c == Color::RED));
         assert!(fb.depth().iter().all(|d| *d == f32::INFINITY));
+    }
+
+    #[test]
+    fn color_is_stored_in_linear_light_without_clamping() {
+        let mut fb = Framebuffer::new(2, 1);
+        // Ten times white: a value that only means anything before tone mapping.
+        fb.set_pixel(0, 0, Color::rgb(10.0, 10.0, 10.0));
+        assert_eq!(fb.get_pixel(0, 0).r, 10.0, "the buffer must not clamp");
+
+        // Two values well above white must still resolve to different pixels.
+        fb.set_pixel(1, 0, Color::rgb(2.0, 2.0, 2.0));
+        let resolved = fb.resolve();
+        assert_ne!(
+            resolved[0], resolved[1],
+            "the tone curve must not clip them together"
+        );
+    }
+
+    #[test]
+    fn resolve_applies_the_tone_curve_and_gamma() {
+        let mut fb = Framebuffer::new(1, 1);
+        fb.tone_map = ToneMap::Raw;
+        fb.set_pixel(0, 0, Color::rgb(0.5, 0.5, 0.5));
+        let raw = fb.resolve()[0] & 0xff;
+
+        fb.tone_map = ToneMap::AcesFilmic;
+        let mapped = fb.resolve()[0] & 0xff;
+        assert_ne!(
+            raw, mapped,
+            "the curve and the sRGB transfer must both apply"
+        );
+        assert!(mapped > raw, "sRGB encoding lifts mid grey");
+    }
+
+    #[test]
+    fn resolve_into_reuses_its_buffer() {
+        let fb = Framebuffer::new(4, 4);
+        let mut out = Vec::new();
+        fb.resolve_into(&mut out);
+        let capacity = out.capacity();
+        fb.resolve_into(&mut out);
+        assert_eq!(out.len(), 16);
+        assert_eq!(
+            out.capacity(),
+            capacity,
+            "no reallocation on the second frame"
+        );
     }
 
     #[test]
@@ -172,15 +304,15 @@ mod tests {
         fb.clear(Color::WHITE);
         fb.resize(8, 2);
         assert_eq!(fb.width(), 8);
-        assert_eq!(fb.pixels().len(), 16);
-        assert!(fb.pixels().iter().all(|p| *p == 0));
+        assert_eq!(fb.len(), 16);
+        assert!(fb.colors().iter().all(|c| *c == Color::BLACK));
     }
 
     #[test]
     fn out_of_bounds_writes_are_dropped() {
         let mut fb = Framebuffer::new(2, 2);
         fb.set_pixel(9, 9, Color::WHITE);
-        assert!(fb.pixels().iter().all(|p| *p == 0));
+        assert!(fb.colors().iter().all(|c| *c == Color::BLACK));
     }
 
     #[test]
@@ -188,12 +320,24 @@ mod tests {
         let mut fb = Framebuffer::new(2, 2);
         assert!(fb.overdraw().is_none(), "off by default");
         fb.track_overdraw(true);
-        fb.write_packed(0, 0xffff_ffff);
-        fb.write_packed(0, 0xff00_0000);
+        fb.write_color(0, Color::WHITE);
+        fb.write_color(0, Color::BLACK);
         assert_eq!(fb.overdraw().unwrap()[0], 2);
         assert_eq!(fb.overdraw().unwrap()[1], 0);
         fb.clear(Color::BLACK);
         assert_eq!(fb.overdraw().unwrap()[0], 0);
+    }
+
+    #[test]
+    fn the_gbuffer_is_opt_in_and_follows_resizes() {
+        let mut fb = Framebuffer::new(4, 4);
+        assert!(fb.gbuffer().is_none());
+        fb.enable_gbuffer(true);
+        assert_eq!(fb.gbuffer().unwrap().len(), 16);
+        fb.resize(2, 3);
+        assert_eq!(fb.gbuffer().unwrap().len(), 6);
+        fb.enable_gbuffer(false);
+        assert!(fb.gbuffer().is_none());
     }
 
     #[test]

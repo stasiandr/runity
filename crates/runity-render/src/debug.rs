@@ -173,7 +173,8 @@ pub fn depth_view(source: &Framebuffer) -> Framebuffer {
     let max = finite.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let range = (max - min).max(1e-6);
 
-    let mut out = Framebuffer::new(source.width(), source.height());
+    // Debug views hold display values, not light.
+    let mut out = Framebuffer::new_raw(source.width(), source.height());
     out.clear(Color::BLACK);
     for (index, depth) in source.depth().iter().enumerate() {
         let color = if depth.is_finite() {
@@ -192,7 +193,8 @@ pub fn depth_view(source: &Framebuffer) -> Framebuffer {
 ///
 /// Requires [`Framebuffer::track_overdraw`]; without it the result is black.
 pub fn overdraw_view(source: &Framebuffer, saturation: u32) -> Framebuffer {
-    let mut out = Framebuffer::new(source.width(), source.height());
+    // Debug views hold display values, not light.
+    let mut out = Framebuffer::new_raw(source.width(), source.height());
     out.clear(Color::BLACK);
     let Some(counts) = source.overdraw() else {
         return out;
@@ -232,7 +234,7 @@ mod tests {
         let mut fb = Framebuffer::new(8, 8);
         fb.clear(Color::BLACK);
         draw_line(&mut fb, (-50.0, -50.0), (-10.0, -10.0), Color::WHITE);
-        assert!(fb.pixels().iter().all(|p| *p == Color::BLACK.to_argb8()));
+        assert!(fb.colors().iter().all(|c| *c == Color::BLACK));
     }
 
     #[test]
@@ -245,11 +247,7 @@ mod tests {
         let mut fb = Framebuffer::new(16, 16);
         fb.clear(Color::BLACK);
         draw_line(&mut fb, (-1e6, 4.0), (1e6, 4.0), Color::WHITE);
-        let lit = fb
-            .pixels()
-            .iter()
-            .filter(|p| **p == Color::WHITE.to_argb8())
-            .count();
+        let lit = fb.colors().iter().filter(|c| **c == Color::WHITE).count();
         assert_eq!(lit, 16, "the whole row, and nothing else");
     }
 
@@ -267,11 +265,7 @@ mod tests {
         );
         draw_wireframe(&mut fb, &mesh, Mat4::IDENTITY, Color::WHITE);
 
-        let lit = fb
-            .pixels()
-            .iter()
-            .filter(|p| **p == Color::WHITE.to_argb8())
-            .count();
+        let lit = fb.colors().iter().filter(|c| **c == Color::WHITE).count();
         assert!(
             lit > 40,
             "the three edges should be drawn, got {lit} pixels"
@@ -315,8 +309,8 @@ mod tests {
     fn the_overdraw_view_is_black_without_tracking() {
         let fb = Framebuffer::new(4, 4);
         assert!(overdraw_view(&fb, 4)
-            .pixels()
+            .colors()
             .iter()
-            .all(|p| *p == 0xff00_0000));
+            .all(|c| *c == Color::BLACK));
     }
 }

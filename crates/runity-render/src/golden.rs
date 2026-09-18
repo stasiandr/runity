@@ -135,7 +135,10 @@ pub fn compare(actual: &Framebuffer, expected: &Image, tolerance: Tolerance) -> 
     };
     let mut total_delta = 0u64;
 
-    for (index, (a, b)) in actual.pixels().iter().zip(&expected.pixels).enumerate() {
+    // Compare what would be displayed, not the HDR values behind it: the
+    // reference is an 8-bit file, and that is the thing a human looks at.
+    let resolved = actual.resolve();
+    for (index, (a, b)) in resolved.iter().zip(&expected.pixels).enumerate() {
         // Alpha is ignored: the reference is stored as RGB.
         let deltas = channel_deltas(*a, *b);
         let worst = deltas[1].max(deltas[2]).max(deltas[3]);
@@ -154,12 +157,13 @@ pub fn compare(actual: &Framebuffer, expected: &Image, tolerance: Tolerance) -> 
 /// Build a picture of the difference: matching pixels dimmed to grey, differing
 /// ones in magenta scaled by how far off they are.
 pub fn diff_image(actual: &Framebuffer, expected: &Image) -> Framebuffer {
-    let mut out = Framebuffer::new(actual.width(), actual.height());
+    // A diff is data, not light: it must survive resolve untouched.
+    let mut out = Framebuffer::new_raw(actual.width(), actual.height());
     out.clear(Color::BLACK);
     for y in 0..actual.height() {
         for x in 0..actual.width() {
             let index = y * actual.width() + x;
-            let a = actual.pixels()[index];
+            let a = actual.resolved_pixel(x, y);
             let color = match expected.pixels.get(index) {
                 Some(b) => {
                     let deltas = channel_deltas(a, *b);
@@ -357,8 +361,10 @@ mod tests {
         dir
     }
 
+    /// Raw buffers, so a test's values survive resolve unchanged and the
+    /// assertions are about the comparison rather than the tone curve.
     fn frame(width: usize, height: usize, f: impl Fn(usize, usize) -> Color) -> Framebuffer {
-        let mut fb = Framebuffer::new(width, height);
+        let mut fb = Framebuffer::new_raw(width, height);
         for y in 0..height {
             for x in 0..width {
                 fb.set_pixel(x, y, f(x, y));

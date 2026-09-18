@@ -90,22 +90,72 @@ impl Color {
         }
     }
 
-    /// Approximate linear -> sRGB transfer (gamma 2.2), for display output.
+    /// Linear -> sRGB transfer, for display output.
     pub fn to_srgb(self) -> Self {
-        #[inline]
-        fn enc(v: f32) -> f32 {
-            if v <= 0.0 {
-                0.0
-            } else {
-                v.powf(1.0 / 2.2)
-            }
-        }
         Self {
-            r: enc(self.r),
-            g: enc(self.g),
-            b: enc(self.b),
+            r: linear_to_srgb(self.r),
+            g: linear_to_srgb(self.g),
+            b: linear_to_srgb(self.b),
             a: self.a,
         }
+    }
+
+    /// sRGB -> linear. Everything authored for a screen — texture files, color
+    /// pickers, hex codes — is sRGB, and has to come through here before it can
+    /// be added to or multiplied by anything.
+    pub fn to_linear(self) -> Self {
+        Self {
+            r: srgb_to_linear(self.r),
+            g: srgb_to_linear(self.g),
+            b: srgb_to_linear(self.b),
+            a: self.a,
+        }
+    }
+
+    /// Decode a packed sRGB `0xAARRGGBB` pixel into linear light.
+    #[inline]
+    pub fn from_srgb8(p: u32) -> Self {
+        Self::from_argb8(p).to_linear()
+    }
+
+    /// Encode as a packed `0xAARRGGBB` pixel through the sRGB transfer.
+    #[inline]
+    pub fn to_srgb8(self) -> u32 {
+        self.to_srgb().to_argb8()
+    }
+
+    /// Relative luminance (Rec. 709), in linear light.
+    #[inline]
+    pub fn luminance(self) -> f32 {
+        0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
+    }
+
+    /// Component-wise maximum, for bright-pass style thresholds.
+    #[inline]
+    pub fn max_component(self) -> f32 {
+        self.r.max(self.g).max(self.b)
+    }
+}
+
+/// The exact sRGB transfer function, not the gamma-2.2 approximation: the
+/// linear toe near black is what keeps dark gradients from banding.
+#[inline]
+pub fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[inline]
+pub fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.0 {
+        0.0
+    } else if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -130,6 +180,21 @@ mod tests {
             Color::rgba(f32::NAN, 0.0, 0.0, 1.0).to_argb8(),
             0xff_00_00_00
         );
+    }
+
+    #[test]
+    fn srgb_round_trips_through_linear() {
+        for value in [0.0f32, 0.002, 0.05, 0.25, 0.5, 0.9, 1.0] {
+            let back = linear_to_srgb(srgb_to_linear(value));
+            assert!((back - value).abs() < 1e-5, "{value} -> {back}");
+        }
+    }
+
+    #[test]
+    fn mid_grey_is_not_half_the_light() {
+        // The classic gotcha: sRGB 0.5 is about 21% of the light, which is why
+        // lighting has to happen in linear space.
+        assert!((srgb_to_linear(0.5) - 0.2140).abs() < 1e-3);
     }
 
     #[test]

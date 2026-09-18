@@ -171,14 +171,14 @@ fn rendering_actually_puts_geometry_on_the_screen() {
         )
         .expect("the loop runs");
 
-    let clear = Color::rgb(0.0, 0.0, 0.25).to_argb8();
+    let clear = Color::rgb(0.0, 0.0, 0.25);
     let drawn = engine
         .framebuffer
-        .pixels()
+        .colors()
         .iter()
-        .filter(|p| **p != clear)
+        .filter(|c| **c != clear)
         .count();
-    let total = engine.framebuffer.pixels().len();
+    let total = engine.framebuffer.len();
     assert!(
         drawn > total / 40 && drawn < total,
         "the cube should cover a chunk of the frame, got {drawn} of {total} pixels"
