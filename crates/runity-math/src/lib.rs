@@ -8,12 +8,16 @@
 
 mod mat;
 mod mat3;
+mod noise;
 mod quat;
+mod rng;
 mod vec;
 
 pub use mat::Mat4;
 pub use mat3::Mat3;
+pub use noise::{Cell, Fbm, Noise};
 pub use quat::Quat;
+pub use rng::Rng;
 pub use vec::{vec2, vec3, vec4, Vec2, Vec3, Vec4};
 
 /// Linear interpolation.
