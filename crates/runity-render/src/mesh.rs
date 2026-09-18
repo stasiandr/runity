@@ -65,6 +65,11 @@ impl Mesh {
     pub fn recompute_tangents(&mut self) {
         let mut tangents = vec![Vec3::ZERO; self.vertices.len()];
         let mut bitangents = vec![Vec3::ZERO; self.vertices.len()];
+        // Texture density is averaged per triangle rather than taken from the
+        // summed tangent: neighbouring tangents partly cancel on a curved
+        // surface, and that would read as a much denser texture than there is.
+        let mut density = vec![0.0f32; self.vertices.len()];
+        let mut contributions = vec![0.0f32; self.vertices.len()];
 
         for tri in self.indices.chunks_exact(3) {
             let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
@@ -81,21 +86,28 @@ impl Mesh {
             let r = 1.0 / determinant;
             let tangent = (edge1 * duv2.y - edge2 * duv1.y) * r;
             let bitangent = (edge2 * duv1.x - edge1 * duv2.x) * r;
+            let world_per_u = tangent.length();
             for index in [i0, i1, i2] {
                 tangents[index] += tangent;
                 bitangents[index] += bitangent;
+                density[index] += world_per_u;
+                contributions[index] += 1.0;
             }
         }
 
-        for (vertex, (tangent, bitangent)) in self
+        for (index, (vertex, (tangent, bitangent))) in self
             .vertices
             .iter_mut()
             .zip(tangents.into_iter().zip(bitangents))
+            .enumerate()
         {
             if tangent.length_squared() <= 0.0 {
                 continue;
             }
             let n = vertex.normal;
+            // World units per unit of u — what mip selection needs, and what
+            // the normalization below would otherwise throw away.
+            vertex.uv_density = (density[index] / contributions[index].max(1.0)).max(1e-6);
             // Gram-Schmidt: the tangent must be perpendicular to the normal.
             let t = (tangent - n * n.dot(tangent)).normalized();
             // Handedness tells the shader which way the bitangent runs.
@@ -502,6 +514,33 @@ mod tests {
             // assertion is a direction check, not an equality.
             assert!(a.dot(v.normal) > 0.95, "{a:?} vs {:?}", v.normal);
         }
+    }
+
+    #[test]
+    fn uv_density_measures_how_far_a_texture_is_stretched() {
+        // A 60-unit plane with UVs spanning 0..1: one unit of u covers 60 units.
+        let plane = Mesh::plane(60.0, 1);
+        for vertex in &plane.vertices {
+            assert!(
+                (vertex.uv_density - 60.0).abs() < 0.5,
+                "expected 60 world units per u, got {}",
+                vertex.uv_density
+            );
+        }
+
+        // Subdividing the same plane does not change how stretched it is.
+        let subdivided = Mesh::plane(60.0, 4);
+        for vertex in &subdivided.vertices {
+            assert!(
+                (vertex.uv_density - 60.0).abs() < 0.5,
+                "{}",
+                vertex.uv_density
+            );
+        }
+
+        // A smaller plane with the same UVs is denser.
+        let small = Mesh::plane(6.0, 1);
+        assert!((small.vertices[0].uv_density - 6.0).abs() < 0.1);
     }
 
     #[test]

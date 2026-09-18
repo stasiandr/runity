@@ -41,6 +41,10 @@ pub struct RenderSettings {
     pub ssr: SsrSettings,
     pub bloom: BloomSettings,
     pub post: PostSettings,
+    /// Pick a mip level per fragment. Off means always sampling the
+    /// full-resolution texture, which aliases as soon as a surface is small or
+    /// far away.
+    pub mip_mapping: bool,
 }
 
 impl Default for RenderSettings {
@@ -53,6 +57,7 @@ impl Default for RenderSettings {
             ssr: SsrSettings::default(),
             bloom: BloomSettings::default(),
             post: PostSettings::default(),
+            mip_mapping: true,
         }
     }
 }
@@ -167,7 +172,14 @@ impl Renderer {
             map.draw(mesh, model);
         }
 
-        let shader = GeometryShader::new(model, self.camera.view_projection(), *material);
+        // Mip selection needs to know how big a pixel is in this frame.
+        let footprint = if self.settings.mip_mapping {
+            self.camera.pixel_footprint(target.height())
+        } else {
+            0.0
+        };
+        let shader = GeometryShader::new(model, self.camera.view_projection(), *material)
+            .with_camera(self.camera.position, footprint);
         let stats = self.rasterizer.draw_mesh(target, mesh, &shader);
         self.stats.triangles_in += stats.triangles_in;
         self.stats.triangles_rasterized += stats.triangles_rasterized;
@@ -324,7 +336,8 @@ pub fn reflect(incident: Vec3, normal: Vec3) -> Vec3 {
 mod tests {
     use super::*;
     use crate::sky::SkyParams;
-    use runity_math::Vec3;
+    use crate::texture::Texture;
+    use runity_math::{Vec2, Vec3};
 
     fn camera() -> CameraView {
         let position = Vec3::new(0.0, 0.0, 3.0);
@@ -606,6 +619,69 @@ mod tests {
         assert!(
             reflected.g > reflected.r * 1.5,
             "and it should be green: {reflected:?}"
+        );
+    }
+
+    #[test]
+    fn mip_mapping_removes_the_aliasing_on_a_receding_floor() {
+        // A checkerboard seen at a grazing angle is the worst case for a point
+        // sampler: neighbouring pixels land on unrelated texels, and the result
+        // is noise. Mip mapping replaces that with an average.
+        let mut texture = Texture::checker(256, 64, Color::BLACK, Color::WHITE);
+        texture.wrap = crate::texture::Wrap::Repeat;
+
+        let position = Vec3::new(0.0, 0.6, 6.0);
+        let camera = CameraView::new(
+            Mat4::look_at(position, Vec3::new(0.0, 0.5, -20.0), Vec3::Y),
+            Mat4::perspective(50f32.to_radians(), 2.0, 0.05, 400.0),
+            position,
+            0.05,
+            400.0,
+        );
+
+        let render = |mip_mapping: bool| {
+            let mut renderer = renderer();
+            renderer.settings.mip_mapping = mip_mapping;
+            renderer.settings.ssao.enabled = false;
+            renderer.settings.ssr.enabled = false;
+            renderer.settings.bloom.enabled = false;
+            let mut target = Framebuffer::new(128, 64);
+            renderer.begin_frame(&mut target, camera, Color::BLACK);
+            renderer.draw(
+                &mut target,
+                &Mesh::plane(400.0, 1),
+                Mat4::IDENTITY,
+                &Material {
+                    roughness: 0.9,
+                    base_color_texture: Some(&texture),
+                    uv_scale: Vec2::splat(40.0),
+                    ..Material::default()
+                },
+            );
+            renderer.shade(&mut target);
+            target
+        };
+
+        // Measure how much neighbouring pixels disagree along a distant row.
+        let roughness_of = |target: &Framebuffer, row: usize| -> f32 {
+            (1..target.width())
+                .map(|x| {
+                    (target.get_pixel(x, row).luminance()
+                        - target.get_pixel(x - 1, row).luminance())
+                    .abs()
+                })
+                .sum::<f32>()
+        };
+
+        let with_mips = render(true);
+        let without = render(false);
+        // Row 10 of 64 is well above the horizon line's center: distant floor.
+        let near_horizon = 34;
+        let noisy = roughness_of(&without, near_horizon);
+        let smooth = roughness_of(&with_mips, near_horizon);
+        assert!(
+            smooth < noisy * 0.6,
+            "mip mapping should calm the distant floor: {smooth} vs {noisy}"
         );
     }
 

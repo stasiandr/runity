@@ -76,6 +76,17 @@ impl CameraView {
         ))
     }
 
+    /// World-space size of one pixel, one unit in front of the camera.
+    ///
+    /// Multiplying by a fragment's distance gives the footprint that decides
+    /// which mip level to sample.
+    #[inline]
+    pub fn pixel_footprint(&self, height: usize) -> f32 {
+        // The projection's [1][1] entry is 1 / tan(fov_y / 2).
+        let focal = self.projection.cols[1].y.abs().max(1e-6);
+        2.0 / (focal * height.max(1) as f32)
+    }
+
     /// Where the camera looks, in world space.
     #[inline]
     pub fn forward(&self) -> Vec3 {
@@ -127,6 +138,34 @@ mod tests {
             assert!((py - (y as f32 + 0.5)).abs() < 0.01, "y: {py} vs {y}");
             assert!((0.0..=1.0).contains(&depth));
         }
+    }
+
+    #[test]
+    fn a_pixel_footprint_grows_with_distance_and_field_of_view() {
+        let narrow = camera();
+        let wide = CameraView::new(
+            narrow.view,
+            Mat4::perspective(120f32.to_radians(), 16.0 / 9.0, 0.1, 100.0),
+            narrow.position,
+            0.1,
+            100.0,
+        );
+        assert!(wide.pixel_footprint(90) > narrow.pixel_footprint(90));
+        assert!(
+            narrow.pixel_footprint(180) < narrow.pixel_footprint(90),
+            "more pixels, smaller"
+        );
+
+        // A 90 degree camera 1 unit away spans 2 world units, so each of 100
+        // pixels covers 0.02.
+        let square = CameraView::new(
+            Mat4::IDENTITY,
+            Mat4::perspective(90f32.to_radians(), 1.0, 0.1, 100.0),
+            Vec3::ZERO,
+            0.1,
+            100.0,
+        );
+        assert!((square.pixel_footprint(100) - 0.02).abs() < 1e-4);
     }
 
     #[test]

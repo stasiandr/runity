@@ -9,6 +9,7 @@ use crate::color::Color;
 use crate::gbuffer::Surface;
 use crate::pbr::Material;
 use crate::shader::{Shader, Varying, Vertex, VertexOutput};
+use crate::texture::Texture;
 use runity_math::{Mat4, Vec2, Vec3, Vec4};
 
 /// What the geometry pass interpolates across a triangle.
@@ -20,6 +21,9 @@ pub struct GeometryVarying {
     pub bitangent: Vec3,
     pub uv: Vec2,
     pub color: Color,
+    /// World units per unit of `u` at this fragment — how stretched the
+    /// texture is here, which is half of what mip selection needs.
+    pub uv_density: f32,
 }
 
 impl Varying for GeometryVarying {
@@ -32,6 +36,7 @@ impl Varying for GeometryVarying {
             bitangent: self.bitangent * s,
             uv: self.uv * s,
             color: self.color.scale(s),
+            uv_density: self.uv_density * s,
         }
     }
 
@@ -44,6 +49,7 @@ impl Varying for GeometryVarying {
             bitangent: self.bitangent + o.bitangent,
             uv: self.uv + o.uv,
             color: self.color.add(o.color),
+            uv_density: self.uv_density + o.uv_density,
         }
     }
 }
@@ -54,6 +60,11 @@ pub struct GeometryShader<'a> {
     pub normal_matrix: Mat4,
     pub view_projection: Mat4,
     pub material: Material<'a>,
+    /// Where the eye is, for the mip-level calculation.
+    pub camera_position: Vec3,
+    /// World size of one pixel at unit distance. Zero disables mip selection
+    /// and samples the full-resolution level.
+    pub pixel_footprint: f32,
 }
 
 impl<'a> GeometryShader<'a> {
@@ -63,14 +74,49 @@ impl<'a> GeometryShader<'a> {
             normal_matrix: model.normal_matrix(),
             view_projection,
             material,
+            camera_position: Vec3::ZERO,
+            pixel_footprint: 0.0,
         }
+    }
+
+    /// Tell the shader how big a pixel is, so it can pick a mip level.
+    pub fn with_camera(mut self, position: Vec3, pixel_footprint: f32) -> Self {
+        self.camera_position = position;
+        self.pixel_footprint = pixel_footprint;
+        self
+    }
+
+    /// Which mip level a pixel-sized footprint corresponds to here.
+    ///
+    /// The pixel's world footprint grows with distance, and again as the
+    /// surface turns away from the eye; dividing by how much world one texel
+    /// covers gives texels per pixel, and its log2 is the level.
+    fn lod(&self, varying: &GeometryVarying, texture: &Texture) -> f32 {
+        if self.pixel_footprint <= 0.0 || texture.level_count() <= 1 {
+            return 0.0;
+        }
+        let to_eye = self.camera_position - varying.world_position;
+        let distance = to_eye.length();
+        if distance <= 0.0 {
+            return 0.0;
+        }
+        let normal = varying.normal.normalized();
+        // Clamped so a surface seen edge-on does not ask for an infinite level.
+        let slant = normal.dot(to_eye * (1.0 / distance)).abs().max(0.2);
+        let footprint_world = distance * self.pixel_footprint / slant;
+
+        // World per texel, including the material's UV tiling.
+        let tiling = self.material.uv_scale.x.abs().max(1e-6);
+        let world_per_uv = varying.uv_density.abs().max(1e-6) / tiling;
+        let world_per_texel = world_per_uv / texture.width().max(1) as f32;
+        (footprint_world / world_per_texel).max(1.0).log2()
     }
 
     /// Albedo and alpha at these coordinates, before lighting.
     fn base_color(&self, varying: &GeometryVarying) -> Color {
         let uv = varying.uv * self.material.uv_scale;
         let sampled = match self.material.base_color_texture {
-            Some(texture) => texture.sample(uv.x, uv.y),
+            Some(texture) => texture.sample_lod(uv.x, uv.y, self.lod(varying, texture)),
             None => Color::WHITE,
         };
         sampled
@@ -84,7 +130,7 @@ impl<'a> GeometryShader<'a> {
         match self.material.metallic_roughness_texture {
             // glTF packs roughness in green and metallic in blue.
             Some(texture) => {
-                let sample = texture.sample(uv.x, uv.y);
+                let sample = texture.sample_lod(uv.x, uv.y, self.lod(varying, texture));
                 (
                     (self.material.roughness * sample.g).clamp(0.0, 1.0),
                     (self.material.metallic * sample.b).clamp(0.0, 1.0),
@@ -105,7 +151,7 @@ impl<'a> GeometryShader<'a> {
             return normal;
         };
         let uv = varying.uv * self.material.uv_scale;
-        let sample = map.sample(uv.x, uv.y);
+        let sample = map.sample_lod(uv.x, uv.y, self.lod(varying, map));
         // Normal maps store a direction in [0,1]; unpack it to [-1,1].
         let tangent_space = Vec3::new(
             sample.r * 2.0 - 1.0,
@@ -148,6 +194,8 @@ impl Shader for GeometryShader<'_> {
                 bitangent,
                 uv: vertex.uv,
                 color: vertex.color,
+                // The model matrix scales the texture along with the geometry.
+                uv_density: vertex.uv_density * tangent.length(),
             },
         }
     }
@@ -172,7 +220,9 @@ impl Shader for GeometryShader<'_> {
         let (roughness, metallic) = self.surface_parameters(varying);
         let uv = varying.uv * self.material.uv_scale;
         let emissive = match self.material.emissive_texture {
-            Some(texture) => texture.sample(uv.x, uv.y).modulate(self.material.emissive),
+            Some(texture) => texture
+                .sample_lod(uv.x, uv.y, self.lod(varying, texture))
+                .modulate(self.material.emissive),
             None => self.material.emissive,
         };
 
@@ -191,7 +241,6 @@ impl Shader for GeometryShader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::texture::Texture;
 
     fn varying() -> GeometryVarying {
         GeometryVarying {
@@ -201,6 +250,7 @@ mod tests {
             bitangent: Vec3::Z,
             uv: Vec2::new(0.5, 0.5),
             color: Color::WHITE,
+            uv_density: 1.0,
         }
     }
 
@@ -257,6 +307,56 @@ mod tests {
         let shader = GeometryShader::new(Mat4::IDENTITY, Mat4::IDENTITY, material);
         let normal = shader.shading_normal(&varying());
         assert!((normal - Vec3::Y).length() < 1e-4, "{normal:?}");
+    }
+
+    #[test]
+    fn distant_surfaces_ask_for_a_coarser_mip_level() {
+        let checker = Texture::checker(256, 32, Color::BLACK, Color::WHITE);
+        let shader = GeometryShader::new(Mat4::IDENTITY, Mat4::IDENTITY, Material::default())
+            .with_camera(Vec3::new(0.0, 0.0, 1.0), 0.002);
+
+        let near = GeometryVarying {
+            normal: Vec3::Z,
+            ..varying()
+        };
+        let far = GeometryVarying {
+            world_position: Vec3::new(0.0, 0.0, -80.0),
+            normal: Vec3::Z,
+            ..varying()
+        };
+        let near_lod = shader.lod(&near, &checker);
+        let far_lod = shader.lod(&far, &checker);
+        assert!(far_lod > near_lod + 2.0, "near {near_lod}, far {far_lod}");
+        assert!(near_lod >= 0.0, "level 0 is the finest there is");
+
+        // A surface seen almost edge-on has a longer footprint too.
+        let grazing = GeometryVarying {
+            normal: Vec3::X,
+            ..near
+        };
+        assert!(shader.lod(&grazing, &checker) > near_lod);
+    }
+
+    #[test]
+    fn mip_selection_is_off_without_a_camera() {
+        let checker = Texture::checker(64, 8, Color::BLACK, Color::WHITE);
+        let shader = GeometryShader::new(Mat4::IDENTITY, Mat4::IDENTITY, Material::default());
+        assert_eq!(shader.lod(&varying(), &checker), 0.0);
+    }
+
+    #[test]
+    fn tiling_a_texture_makes_its_texels_smaller() {
+        let checker = Texture::checker(64, 8, Color::BLACK, Color::WHITE);
+        let material = Material::default().with_uv_scale(Vec2::splat(16.0));
+        let plain = GeometryShader::new(Mat4::IDENTITY, Mat4::IDENTITY, Material::default())
+            .with_camera(Vec3::new(0.0, 0.0, 4.0), 0.002);
+        let tiled = GeometryShader::new(Mat4::IDENTITY, Mat4::IDENTITY, material)
+            .with_camera(Vec3::new(0.0, 0.0, 4.0), 0.002);
+        let v = GeometryVarying {
+            normal: Vec3::Z,
+            ..varying()
+        };
+        assert!(tiled.lod(&v, &checker) > plain.lod(&v, &checker));
     }
 
     #[test]

@@ -11,6 +11,9 @@ pub struct Vertex {
     /// Tangent in model space; `w` is the bitangent's handedness (+1 or -1).
     /// Only normal mapping reads it.
     pub tangent: Vec4,
+    /// Model-space distance covered by one unit of `u`. Mip selection needs it
+    /// to know how many texels a pixel covers.
+    pub uv_density: f32,
     pub uv: Vec2,
     pub color: Color,
 }
@@ -21,6 +24,7 @@ impl Default for Vertex {
             position: Vec3::ZERO,
             normal: Vec3::Y,
             tangent: Vec4::new(1.0, 0.0, 0.0, 1.0),
+            uv_density: 1.0,
             uv: Vec2::ZERO,
             color: Color::WHITE,
         }
