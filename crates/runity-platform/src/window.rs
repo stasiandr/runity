@@ -140,6 +140,20 @@ pub enum Event {
     Exposed,
 }
 
+/// A handle to whatever the platform draws on, for a renderer that wants to
+/// talk to the GPU instead of handing over pixels.
+///
+/// This is the whole of the crack in [`Window`]'s contract, and it is
+/// deliberately one variant wide. A GPU backend needs the native object and
+/// nothing else — not the screen scale, not the refresh rate, not the colour
+/// space; it can ask the platform for those itself, and asking keeps this
+/// trait from growing a second job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeSurface {
+    /// An `NSView *`. Its layer is the renderer's to replace.
+    AppKitView(*mut std::ffi::c_void),
+}
+
 /// A presentable window.
 ///
 /// The contract is deliberately tiny: hand it a block of `0xAARRGGBB` pixels
@@ -161,4 +175,47 @@ pub trait Window {
 
     /// Human-readable backend name, e.g. `"x11"` or `"headless"`.
     fn backend_name(&self) -> &'static str;
+
+    /// The native object a GPU renderer can draw into, if this backend has
+    /// one.
+    ///
+    /// Defaulted to `None` on purpose: X11, Win32 and the headless backend
+    /// answer this without a line of code, and stay exactly as they were. A
+    /// backend that does have a surface is promising that the pointer is live
+    /// for as long as the window is.
+    fn native_surface(&self) -> Option<NativeSurface> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+
+    /// A backend that implements nothing it does not have to.
+    struct Minimal;
+
+    impl Window for Minimal {
+        fn size(&self) -> (u32, u32) {
+            (1, 1)
+        }
+        fn poll_events(&mut self) -> io::Result<Vec<Event>> {
+            Ok(Vec::new())
+        }
+        fn present(&mut self, _pixels: &[u32], _w: u32, _h: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn set_title(&mut self, _title: &str) -> io::Result<()> {
+            Ok(())
+        }
+        fn backend_name(&self) -> &'static str {
+            "minimal"
+        }
+    }
+
+    #[test]
+    fn a_backend_that_says_nothing_has_no_native_surface() {
+        assert_eq!(Minimal.native_surface(), None);
+    }
 }

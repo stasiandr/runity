@@ -5,7 +5,9 @@
 //!
 //! * [`runity_math`] — vectors, matrices, quaternions.
 //! * [`runity_render`] — a software rasterizer with programmable vertex and
-//!   fragment stages.
+//!   fragment stages: the reference, and what runs with no display.
+//! * [`runity_gpu`] — the same pictures on Metal, and the differential tests
+//!   that say they are the same.
 //! * [`runity_platform`] — windows and input, straight from the OS (the X11
 //!   wire protocol over a Unix socket; `user32`/`gdi32` on Windows).
 //! * [`runity_core`] — entities, timing, input state and the main loop.
@@ -40,6 +42,7 @@
 #![forbid(unsafe_code)]
 
 pub use runity_core as core;
+pub use runity_gpu as gpu;
 pub use runity_math as math;
 pub use runity_platform as platform;
 pub use runity_render as render;
@@ -48,8 +51,10 @@ pub use runity_render as render;
 pub mod prelude {
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Camera, DebugView, Engine, Entity, Game, Input, RunOptions, Time, Transform, World,
+        App, Camera, DebugView, Engine, Entity, Game, Input, Renderer, RunOptions, Time,
+        Transform, UnsupportedView, World,
     };
+    pub use runity_gpu::{GpuShader, PulseUniforms, ENGINE_SOURCE, PULSE_FRAGMENT, PULSE_VERTEX};
     pub use runity_math::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use runity_platform::{Event, HeadlessWindow, Key, MouseButton, Window, WindowConfig};
     pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};

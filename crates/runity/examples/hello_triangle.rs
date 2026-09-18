@@ -3,13 +3,24 @@
 //! ```text
 //! cargo run --release --example hello_triangle
 //! RUNITY_HEADLESS=1 cargo run --release --example hello_triangle
+//! RUNITY_RENDERER=cpu cargo run --release --example hello_triangle
 //! ```
+//!
+//! In a window it runs on the GPU, because the shader below is written twice —
+//! once in Rust for the rasterizer, once in Metal Shading Language for the
+//! hardware. Writing it twice is the whole price of admission, and a
+//! differential test in `runity-gpu` is what holds the two halves together.
 
 use runity::prelude::*;
 
 /// A shader is just a pair of functions. `vertex` puts a vertex in clip space
 /// and returns whatever the fragment stage needs; the rasterizer interpolates
 /// that value with perspective correction and calls `fragment` per pixel.
+///
+/// The GPU runs the other half of it, `pulse_vertex` / `pulse_fragment` in
+/// `runity-gpu`'s `shader.metal` — this shader is the engine's own pulse, so
+/// the Metal side is already written and [`GpuShader`] only has to point at
+/// it and say what goes in the uniform block.
 struct Gradient {
     mvp: Mat4,
     time: f32,
@@ -27,9 +38,28 @@ impl Shader for Gradient {
     }
 
     fn fragment(&self, color: &Color) -> Option<Color> {
-        // A slow pulse, to prove the fragment stage is really running per frame.
-        let pulse = 0.75 + 0.25 * (self.time * 2.0).sin();
-        Some(color.scale_rgb(pulse))
+        Some(color.scale_rgb(self.pulse()))
+    }
+}
+
+impl Gradient {
+    /// A slow pulse, to prove the fragment stage is really running per frame.
+    fn pulse(&self) -> f32 {
+        0.75 + 0.25 * (self.time * 2.0).sin()
+    }
+}
+
+/// The half of `Gradient` that runs on the hardware. There is no code here
+/// because the arithmetic lives in `shader.metal`; what an implementation
+/// says is *which* pair of functions, and what they are handed.
+impl GpuShader for Gradient {
+    const SOURCE: &'static str = ENGINE_SOURCE;
+    const VERTEX: &'static str = PULSE_VERTEX;
+    const FRAGMENT: &'static str = PULSE_FRAGMENT;
+    type Uniforms = PulseUniforms;
+
+    fn uniforms(&self) -> PulseUniforms {
+        PulseUniforms::new(self.mvp, self.pulse())
     }
 }
 

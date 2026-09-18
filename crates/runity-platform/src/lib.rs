@@ -35,7 +35,7 @@ pub mod x11;
 pub mod win32;
 
 pub use headless::HeadlessWindow;
-pub use window::{Event, Key, MouseButton, Window, WindowConfig};
+pub use window::{Event, Key, MouseButton, NativeSurface, Window, WindowConfig};
 
 use std::io;
 

@@ -1,40 +1,51 @@
-//! SmallWorld: six scenes in one window — the whole engine, page by page.
+//! SmallWorld: seven scenes in one window — the whole engine, page by page.
 //!
 //! ```text
 //! cargo run --release --example smallworld
-//! RUNITY_HEADLESS=1 cargo run --release --example smallworld   # 01-lit-scene.png ... 06-world.png
+//! RUNITY_HEADLESS=1 cargo run --release --example smallworld  # 01-lit-scene.png ... 07-teapots.png
+//! RUNITY_RENDERER=cpu cargo run --release --example smallworld
+//! RUNITY_BENCH=1 cargo run --release --example smallworld
 //! ```
+//!
+//! In a window this runs on Metal. The software rasterizer is still the
+//! reference — it is what the headless screenshots and every golden image are
+//! made of, and `RUNITY_RENDERER=cpu` puts the window back on it.
 //!
 //! Keyboard only; this list and the README are the only places the keys are
 //! written down.
 //!
 //! | Key | What it does |
 //! | --- | --- |
-//! | `Tab` / `Shift+Tab` | next / previous scene, wrapping around all six |
+//! | `Tab` / `Shift+Tab` | next / previous scene, wrapping around all seven |
 //! | arrows or `WASD` | orbit the current scene's camera |
 //! | `Q` / `E` | zoom out / in |
 //! | `Space` | the current scene's action (see below) |
 //! | `Backspace` | undo it — in *World*, drop the last ten entities |
 //! | `1` `2` `3` `4` | shaded, wireframe, depth buffer, overdraw |
+//! | | on the GPU, `2` and `4` are refused and say why in the title bar |
 //! | `N` | overlay vertex normals and the world axes |
 //! | `Escape`, or the close button | quit |
 //!
 //! What `Space` does, scene by scene: *Lit scene* pauses the animation,
 //! *Triangle* freezes the pulse, *Meshes* stops the turntable, *Textures*
 //! swaps the texture for the one that went through this engine's PNG codec,
-//! *Depth & blending* steps through the blend and depth-buffer settings, and
-//! *World* spawns ten more entities.
+//! *Depth & blending* steps through the blend and depth-buffer settings,
+//! *World* spawns ten more entities, and *Teapots* grows the grid by a row.
 //!
 //! The camera, and everything else a scene owns, belongs to that scene: the
-//! five scenes that are not on screen are frozen exactly where they were left.
+//! six scenes that are not on screen are frozen exactly where they were left.
 //! The debug view is the one thing they share, so it survives `Tab`.
 //!
 //! Environment variables:
 //!
 //! * `RUNITY_HEADLESS=1` — no window: run every scene for 60 frames at a fixed
-//!   1/60 s step and save its last frame as `01-lit-scene.png` … `06-world.png`
-//!   in the current directory.
-//! * `RUNITY_SCENE=1..6` — open straight into that scene (windowed).
+//!   1/60 s step and save its last frame as `01-lit-scene.png` …
+//!   `07-teapots.png` in the current directory.
+//! * `RUNITY_SCENE=1..7` — open straight into that scene (windowed).
+//! * `RUNITY_RENDERER=cpu|gpu` — which renderer to run. The default is the GPU
+//!   in a window and the rasterizer headless.
+//! * `RUNITY_BENCH=1` — no game: time every scene on every renderer and print
+//!   the table.
 //! * `RUNITY_DEBUG_VIEW=shaded|wireframe|depth|overdraw` — start in that view;
 //!   it applies to every scene.
 //! * `RUNITY_FRAMES=<dir>` — headless only: also keep all 60 frames of every
@@ -55,7 +66,7 @@ const HEADLESS_DELTA: f32 = 1.0 / 60.0;
 // Which scene is on screen
 // ---------------------------------------------------------------------------
 
-/// The six pages of the showcase, in the order `Tab` walks them.
+/// The seven pages of the showcase, in the order `Tab` walks them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SceneId {
     Lit,
@@ -64,9 +75,10 @@ enum SceneId {
     Textures,
     DepthAndBlending,
     World,
+    Teapots,
 }
 
-const SCENE_COUNT: usize = 6;
+const SCENE_COUNT: usize = 7;
 
 impl SceneId {
     const ALL: [SceneId; SCENE_COUNT] = [
@@ -76,6 +88,7 @@ impl SceneId {
         SceneId::Textures,
         SceneId::DepthAndBlending,
         SceneId::World,
+        SceneId::Teapots,
     ];
 
     /// What the title bar calls it.
@@ -87,6 +100,7 @@ impl SceneId {
             SceneId::Textures => "Textures",
             SceneId::DepthAndBlending => "Depth & blending",
             SceneId::World => "World",
+            SceneId::Teapots => "Teapots",
         }
     }
 
@@ -99,6 +113,7 @@ impl SceneId {
             SceneId::Textures => "04-textures",
             SceneId::DepthAndBlending => "05-depth-blending",
             SceneId::World => "06-world",
+            SceneId::Teapots => "07-teapots",
         }
     }
 
@@ -111,6 +126,7 @@ impl SceneId {
             SceneId::Textures => 3,
             SceneId::DepthAndBlending => 4,
             SceneId::World => 5,
+            SceneId::Teapots => 6,
         }
     }
 
@@ -230,6 +246,7 @@ fn build_scene(id: SceneId, engine: &mut Engine) -> Box<dyn Scene> {
         SceneId::Textures => Box::new(TexturesScene::new()),
         SceneId::DepthAndBlending => Box::new(DepthScene::new()),
         SceneId::World => Box::new(WorldScene::new(engine)),
+        SceneId::Teapots => Box::new(TeapotsScene::new()),
     }
 }
 
@@ -378,6 +395,20 @@ impl Shader for PulseShader {
 
     fn fragment(&self, color: &Color) -> Option<Color> {
         Some(color.scale_rgb(self.pulse))
+    }
+}
+
+/// ...and the same shader again, for the hardware. The MSL half is
+/// `pulse_vertex` / `pulse_fragment` in `runity-gpu`, and a differential test
+/// there draws this closure with both renderers and compares the pixels.
+impl GpuShader for PulseShader {
+    const SOURCE: &'static str = ENGINE_SOURCE;
+    const VERTEX: &'static str = PULSE_VERTEX;
+    const FRAGMENT: &'static str = PULSE_FRAGMENT;
+    type Uniforms = PulseUniforms;
+
+    fn uniforms(&self) -> PulseUniforms {
+        PulseUniforms::new(self.mvp, self.pulse)
     }
 }
 
@@ -1022,16 +1053,171 @@ impl Scene for WorldScene {
 }
 
 // ---------------------------------------------------------------------------
+// 7. Teapots
+// ---------------------------------------------------------------------------
+
+/// A grid of teapots turning around a common centre, and a key that makes it
+/// bigger.
+///
+/// This is the page where the renderer choice stops being an implementation
+/// detail. One teapot is 6320 triangles; the grid is square, so `Space` walks
+/// it through 1, 4, 9, 16, 25, 36 of them, and the frame rate in the title bar
+/// walks the other way. The mesh is uploaded to the GPU every frame with no
+/// resource cache behind it — a cache is its own piece of work, and without
+/// one the cost of the naive thing is honest and on screen.
+struct TeapotsScene {
+    orbit: Orbit,
+    teapot: Mesh,
+    /// The grid is `rows` by `rows`. `Space` adds a row and the column that
+    /// comes with it, so it stays square and the counts are the squares.
+    rows: usize,
+    angle: f32,
+    turning: bool,
+}
+
+/// How far apart the teapots stand, in world units.
+const TEAPOT_SPACING: f32 = 2.4;
+/// The teapot ships at about six units tall; this brings it to the size of the
+/// other scenes' props.
+const TEAPOT_SCALE: f32 = 0.34;
+
+impl TeapotsScene {
+    fn new() -> Self {
+        let teapot = Mesh::from_obj(include_str!("assets/teapot.obj"))
+            .expect("assets/teapot.obj ships with this example and parses");
+        let mut scene = Self {
+            orbit: Orbit::new(0.5, 0.45, 8.0),
+            teapot,
+            rows: 1,
+            angle: 0.0,
+            turning: true,
+        };
+        scene.frame_the_grid();
+        scene
+    }
+
+    fn count(&self) -> usize {
+        self.rows * self.rows
+    }
+
+    /// Pull the camera back far enough to hold whatever the grid has become.
+    fn frame_the_grid(&mut self) {
+        let span = (self.rows.max(1) - 1) as f32 * TEAPOT_SPACING + 3.0;
+        self.orbit.distance = (span * 1.35).clamp(6.0, 40.0);
+    }
+
+    /// Where each teapot stands, and which way it faces.
+    ///
+    /// The whole grid turns about its centre, and each teapot turns on its own
+    /// base a little faster, so a static frame still shows which is which.
+    fn instances(&self) -> Vec<Mat4> {
+        let rows = self.rows.max(1);
+        let half = (rows - 1) as f32 * 0.5;
+        let ring = Mat4::from_rotation_y(self.angle);
+        let mut out = Vec::with_capacity(rows * rows);
+        for row in 0..rows {
+            for column in 0..rows {
+                let offset = Vec3::new(
+                    (column as f32 - half) * TEAPOT_SPACING,
+                    -0.9,
+                    (row as f32 - half) * TEAPOT_SPACING,
+                );
+                let spin = self.angle * (1.0 + ((row * rows + column) % 3) as f32 * 0.5);
+                out.push(
+                    ring * Mat4::from_translation(offset)
+                        * Mat4::from_rotation_y(spin)
+                        * Mat4::from_scale(Vec3::splat(TEAPOT_SCALE)),
+                );
+            }
+        }
+        out
+    }
+
+    /// Six colours, so neighbouring teapots are told apart at a glance.
+    fn tint(index: usize) -> Color {
+        const PALETTE: [Color; 6] = [
+            Color::rgb(0.86, 0.80, 0.72),
+            Color::rgb(0.80, 0.55, 0.40),
+            Color::rgb(0.55, 0.72, 0.68),
+            Color::rgb(0.72, 0.62, 0.82),
+            Color::rgb(0.86, 0.74, 0.44),
+            Color::rgb(0.56, 0.68, 0.84),
+        ];
+        PALETTE[index % PALETTE.len()]
+    }
+}
+
+impl Scene for TeapotsScene {
+    fn environment(&self, engine: &mut Engine) {
+        engine.clear_color = Color::rgb(0.05, 0.05, 0.08);
+        engine.light = DirectionalLight {
+            direction: Vec3::new(-0.4, -0.85, -0.35).normalized(),
+            color: Color::rgb(1.0, 0.97, 0.92),
+            intensity: 1.1,
+        };
+    }
+
+    fn orbit_mut(&mut self) -> &mut Orbit {
+        &mut self.orbit
+    }
+
+    fn update(&mut self, _engine: &mut Engine, dt: f32) {
+        if self.turning {
+            self.angle += dt * 0.35;
+        }
+    }
+
+    fn action(&mut self, _engine: &mut Engine) {
+        self.rows += 1;
+        self.frame_the_grid();
+        println!(
+            "teapots: {} of them, {} triangles",
+            self.count(),
+            self.count() * self.teapot.triangle_count()
+        );
+    }
+
+    fn undo(&mut self, _engine: &mut Engine) {
+        self.rows = self.rows.saturating_sub(1).max(1);
+        self.frame_the_grid();
+        println!(
+            "teapots: {} of them, {} triangles",
+            self.count(),
+            self.count() * self.teapot.triangle_count()
+        );
+    }
+
+    fn render(&mut self, engine: &mut Engine) {
+        for (index, model) in self.instances().into_iter().enumerate() {
+            let mut shader = engine.lit_shader(model);
+            shader.base_color = Self::tint(index);
+            shader.specular_strength = 0.3;
+            engine.draw(&self.teapot, &shader);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The application
 // ---------------------------------------------------------------------------
 
-/// The six scenes, the one on screen, and the keys that move between them.
+/// How long a refusal stays in the title bar before the frame rate comes back.
+const NOTICE_SECONDS: f32 = 2.0;
+
+/// The seven scenes, the one on screen, and the keys that move between them.
 struct SmallWorld {
     current: SceneId,
     /// Built the first time a scene is visited, and kept from then on.
     scenes: [Option<Box<dyn Scene>>; SCENE_COUNT],
     debug_view: DebugView,
     overlays: bool,
+    /// Something to say instead of the usual title, and how long it has left.
+    ///
+    /// The title bar is the only surface this application has: there is no
+    /// menu, no HUD and no console anyone is watching. So a key that does
+    /// nothing says why up there, for two seconds, and then the frame rate
+    /// comes back.
+    notice: Option<(String, f32)>,
 }
 
 impl SmallWorld {
@@ -1041,7 +1227,27 @@ impl SmallWorld {
             scenes: std::array::from_fn(|_| None),
             debug_view,
             overlays: false,
+            notice: None,
         }
+    }
+
+    /// Put something in the title bar for [`NOTICE_SECONDS`].
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        println!("{text}");
+        self.notice = Some((text, NOTICE_SECONDS));
+    }
+
+    /// Count the notice down, and report what the title should read now.
+    fn title(&mut self, scene: SceneId, fps: f32, dt: f32) -> String {
+        if let Some((text, remaining)) = &mut self.notice {
+            *remaining -= dt;
+            if *remaining > 0.0 {
+                return text.clone();
+            }
+            self.notice = None;
+        }
+        window_title(scene, fps)
     }
 
     /// The scene on screen, built if this is the first visit.
@@ -1055,8 +1261,12 @@ impl SmallWorld {
 
 impl Game for SmallWorld {
     fn start(&mut self, engine: &mut Engine) -> io::Result<()> {
-        // One debug view for all six scenes, which is why `Tab` cannot lose it.
-        engine.debug_view = self.debug_view;
+        // One debug view for all seven scenes, which is why `Tab` cannot lose
+        // it. A view this renderer does not have is refused here too, and the
+        // application starts shaded rather than pretending.
+        if let Err(refused) = engine.set_debug_view(self.debug_view) {
+            self.say(refused.to_string());
+        }
         Ok(())
     }
 
@@ -1074,14 +1284,20 @@ impl Game for SmallWorld {
                 self.current.next()
             };
         }
-        for (key, view) in [
+        let requested = [
             (Key::Num1, DebugView::Shaded),
             (Key::Num2, DebugView::Wireframe),
             (Key::Num3, DebugView::Depth),
             (Key::Num4, DebugView::Overdraw),
-        ] {
-            if engine.input.key_pressed(key) {
-                engine.debug_view = view;
+        ]
+        .into_iter()
+        .find(|(key, _)| engine.input.key_pressed(*key))
+        .map(|(_, view)| view);
+        if let Some(view) = requested {
+            // Wireframe and overdraw live inside the rasterizer. On the GPU
+            // the view does not change and the reason goes in the title bar.
+            if let Err(refused) = engine.set_debug_view(view) {
+                self.say(refused.to_string());
             }
         }
         if engine.input.key_pressed(Key::N) {
@@ -1105,7 +1321,8 @@ impl Game for SmallWorld {
         scene.orbit_mut().apply(&mut engine.camera);
         scene.update(engine, dt);
 
-        engine.set_title(window_title(self.current, engine.time.average_fps()));
+        let title = self.title(self.current, engine.time.average_fps(), dt);
+        engine.set_title(title);
     }
 
     fn fixed_update(&mut self, engine: &mut Engine) {
@@ -1254,8 +1471,13 @@ mod tests {
             assert_eq!(SceneId::from_index(index), id);
         }
         assert_eq!(SceneId::Lit.next(), SceneId::Triangle);
-        assert_eq!(SceneId::World.next(), SceneId::Lit, "forwards wraps around");
-        assert_eq!(SceneId::Lit.previous(), SceneId::World, "and so does back");
+        assert_eq!(SceneId::World.next(), SceneId::Teapots);
+        assert_eq!(
+            SceneId::Teapots.next(),
+            SceneId::Lit,
+            "forwards wraps around"
+        );
+        assert_eq!(SceneId::Lit.previous(), SceneId::Teapots, "and so does back");
         assert_eq!(SceneId::Triangle.previous(), SceneId::Lit);
     }
 
@@ -1266,18 +1488,22 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(stems, sorted);
         assert_eq!(stems.first(), Some(&"01-lit-scene"));
-        assert_eq!(stems.last(), Some(&"06-world"));
+        assert_eq!(stems.last(), Some(&"07-teapots"));
     }
 
     #[test]
     fn the_title_says_which_scene_and_how_fast() {
         assert_eq!(
             window_title(SceneId::Lit, 59.8),
-            "SmallWorld — 1/6 Lit scene — 60 fps"
+            "SmallWorld — 1/7 Lit scene — 60 fps"
         );
         assert_eq!(
             window_title(SceneId::DepthAndBlending, 30.2),
-            "SmallWorld — 5/6 Depth & blending — 30 fps"
+            "SmallWorld — 5/7 Depth & blending — 30 fps"
+        );
+        assert_eq!(
+            window_title(SceneId::Teapots, 120.4),
+            "SmallWorld — 7/7 Teapots — 120 fps"
         );
     }
 
@@ -1290,12 +1516,13 @@ mod tests {
             SceneId::Textures,
             SceneId::DepthAndBlending,
             SceneId::World,
+            SceneId::Teapots,
             SceneId::Lit,
         ] {
             tap(&mut app, &mut engine, &[Key::Tab]);
             assert_eq!(app.current, expected);
         }
-        for expected in [SceneId::World, SceneId::DepthAndBlending] {
+        for expected in [SceneId::Teapots, SceneId::World] {
             tap(&mut app, &mut engine, &[Key::LeftShift, Key::Tab]);
             assert_eq!(app.current, expected);
         }
@@ -1354,19 +1581,19 @@ mod tests {
     fn the_debug_view_is_shared_and_survives_a_scene_switch() {
         let (mut app, mut engine) = started(SceneId::Lit);
         tap(&mut app, &mut engine, &[Key::Num3]);
-        assert_eq!(engine.debug_view, DebugView::Depth);
+        assert_eq!(engine.debug_view(), DebugView::Depth);
 
         tap(&mut app, &mut engine, &[Key::Tab]);
         tap(&mut app, &mut engine, &[Key::Tab]);
         assert_eq!(app.current, SceneId::Meshes);
         assert_eq!(
-            engine.debug_view,
+            engine.debug_view(),
             DebugView::Depth,
             "the debug view belongs to the application, not to a scene"
         );
 
         tap(&mut app, &mut engine, &[Key::Num1]);
-        assert_eq!(engine.debug_view, DebugView::Shaded);
+        assert_eq!(engine.debug_view(), DebugView::Shaded);
     }
 
     #[test]
@@ -1384,8 +1611,9 @@ mod tests {
         assert_eq!(scene_from_env(None), SceneId::Lit);
         assert_eq!(scene_from_env(Some("1")), SceneId::Lit);
         assert_eq!(scene_from_env(Some(" 6 ")), SceneId::World);
+        assert_eq!(scene_from_env(Some("7")), SceneId::Teapots);
         assert_eq!(scene_from_env(Some("0")), SceneId::Lit, "1-based, not 0");
-        assert_eq!(scene_from_env(Some("7")), SceneId::Lit);
+        assert_eq!(scene_from_env(Some("8")), SceneId::Lit);
         assert_eq!(scene_from_env(Some("nonsense")), SceneId::Lit);
 
         assert_eq!(debug_view_from_env(None), DebugView::Shaded);
@@ -1400,7 +1628,7 @@ mod tests {
         let mut engine = Engine::new(16, 16);
         let mut app = SmallWorld::new(SceneId::Triangle, DebugView::Overdraw);
         app.start(&mut engine).unwrap();
-        assert_eq!(engine.debug_view, DebugView::Overdraw);
+        assert_eq!(engine.debug_view(), DebugView::Overdraw);
     }
 
     #[test]
@@ -1620,6 +1848,104 @@ mod tests {
                 "the title names the scene that is on screen"
             );
         }
+    }
+
+    #[test]
+    fn space_grows_the_teapot_grid_by_a_row_and_backspace_shrinks_it() {
+        let mut engine = Engine::new(32, 32);
+        let mut scene = TeapotsScene::new();
+        assert_eq!(scene.count(), 1, "the grid starts with one teapot");
+        assert_eq!(scene.instances().len(), 1);
+
+        let start_distance = scene.orbit.distance;
+        for expected in [4, 9, 16, 25] {
+            scene.action(&mut engine);
+            assert_eq!(scene.count(), expected);
+            assert_eq!(scene.instances().len(), expected);
+        }
+        assert!(
+            scene.orbit.distance > start_distance,
+            "the camera pulls back to hold the grid"
+        );
+
+        scene.undo(&mut engine);
+        assert_eq!(scene.count(), 16);
+        for _ in 0..10 {
+            scene.undo(&mut engine);
+        }
+        assert_eq!(scene.count(), 1, "one teapot is the floor, not zero");
+    }
+
+    #[test]
+    fn the_teapots_stand_apart_and_turn_around_a_common_centre() {
+        let mut scene = TeapotsScene::new();
+        let mut engine = Engine::new(32, 32);
+        scene.action(&mut engine);
+        scene.action(&mut engine);
+        assert_eq!(scene.count(), 9);
+
+        let places: Vec<(i32, i32)> = scene
+            .instances()
+            .iter()
+            .map(|m| {
+                let p = m.transform_point(Vec3::ZERO).xyz();
+                ((p.x * 100.0) as i32, (p.z * 100.0) as i32)
+            })
+            .collect();
+        let mut unique = places.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 9, "nine teapots, nine places");
+
+        // The grid is centred on the origin, so the mean of the positions is.
+        let (sx, sz) = places
+            .iter()
+            .fold((0i64, 0i64), |(x, z), p| (x + p.0 as i64, z + p.1 as i64));
+        assert!(sx.abs() < 9 && sz.abs() < 9, "centred on the origin: {sx}, {sz}");
+
+        // And the whole grid turns: advancing time moves every teapot.
+        let before = places.clone();
+        scene.update(&mut engine, 1.0);
+        let after: Vec<(i32, i32)> = scene
+            .instances()
+            .iter()
+            .map(|m| {
+                let p = m.transform_point(Vec3::ZERO).xyz();
+                ((p.x * 100.0) as i32, (p.z * 100.0) as i32)
+            })
+            .collect();
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn the_teapot_grid_is_the_mesh_the_meshes_page_shows() {
+        let teapots = TeapotsScene::new();
+        let meshes = MeshesScene::new();
+        assert_eq!(
+            teapots.teapot.triangle_count(),
+            meshes.teapot.triangle_count(),
+            "the same asset, so the benchmark's triangle count means something"
+        );
+    }
+
+    #[test]
+    fn a_notice_holds_the_title_bar_then_gives_it_back() {
+        let mut app = SmallWorld::new(SceneId::Lit, DebugView::Shaded);
+        assert_eq!(
+            app.title(SceneId::Lit, 60.0, 0.1),
+            window_title(SceneId::Lit, 60.0),
+            "with nothing to say, the usual title"
+        );
+
+        app.say("wireframe needs the CPU renderer");
+        assert_eq!(app.title(SceneId::Lit, 60.0, 0.5), "wireframe needs the CPU renderer");
+        // Two seconds, and then the frame rate is back.
+        assert_eq!(app.title(SceneId::Lit, 60.0, 1.0), "wireframe needs the CPU renderer");
+        assert_eq!(
+            app.title(SceneId::Lit, 60.0, 1.0),
+            window_title(SceneId::Lit, 60.0)
+        );
+        assert!(app.notice.is_none());
     }
 
     #[test]
