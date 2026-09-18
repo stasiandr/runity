@@ -1,0 +1,14 @@
+teapot.obj — the Utah/Newell teapot
+
+Original model: Martin Newell, 1975 (public domain; the canonical
+computer-graphics test object, with no known copyright holder or
+restriction on reuse).
+
+Downloaded from:
+https://raw.githubusercontent.com/alecjacobson/common-3d-test-models/master/data/teapot.obj
+
+That repository cites the same original source:
+ftp://ftp.funet.fi/pub/sci/graphics/packages/objects/teaset.tar.Z
+
+This copy has only `v` and `f` lines (already triangulated, no `vt`,
+no `vn`) — Mesh::from_obj derives normals for it via recompute_normals.
