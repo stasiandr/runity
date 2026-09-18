@@ -3,6 +3,9 @@
 Игровой движок на Rust **без единой сторонней зависимости**. Весь код собирается
 из `std` — ни `winit`, ни `wgpu`, ни `glam`, ни `image`, ни `libc`.
 
+Основная платформа — **macOS** (AppKit через Objective-C runtime); X11 и Win32
+уже работают, Wayland и мобильные — потом.
+
 ```
 $ cargo tree -p runity            # в дереве только крейты этого репозитория
 runity v0.1.0
@@ -27,7 +30,7 @@ runity v0.1.0
 | --- | --- | --- |
 | Математика | `runity-math` | `Vec2/3/4`, `Mat4` (колоночная, как в GLSL), `Quat`, проекции, `look_at`, инверсия матриц |
 | Рендер | `runity-render` | программируемый софтварный растеризатор, буфер глубины, текстуры, меши, загрузчик OBJ, PNG/PPM-энкодер |
-| Платформа | `runity-platform` | окно и ввод: X11 напрямую по wire-протоколу, Win32 через `user32`/`gdi32`, headless-бэкенд |
+| Платформа | `runity-platform` | окно и ввод: **macOS через Objective-C runtime**, X11 напрямую по wire-протоколу, Win32 через `user32`/`gdi32`, headless-бэкенд |
 | Движок | `runity-core` | ECS на поколениях, время с фиксированным шагом, состояние ввода, главный цикл |
 | Фасад | `runity` | реэкспорт + `prelude`, примеры |
 
@@ -42,12 +45,16 @@ viewport → отсечение задних граней → растериза
 ## Запуск
 
 ```bash
-cargo run --release --example spinning_cube      # окно (нужен X11)
+cargo run --release --example spinning_cube      # окно: macOS, X11 или Win32
 cargo run --release --example hello_triangle
 
 RUNITY_HEADLESS=1 cargo run --release --example spinning_cube   # без дисплея, пишет cube.png
-cargo test --workspace                                          # 60+ тестов, дисплей не нужен
-cargo check --target x86_64-pc-windows-gnu --workspace           # проверка Win32-бэкенда
+cargo test --workspace                                          # 90+ тестов, дисплей не нужен
+
+# кросс-проверка бэкендов, которые нельзя собрать на текущей машине
+cargo check --workspace --target aarch64-apple-darwin
+cargo check --workspace --target x86_64-apple-darwin
+cargo check --workspace --target x86_64-pc-windows-gnu
 ```
 
 Управление в `spinning_cube`: стрелки или WASD — орбита камеры, Q/E — зум,
@@ -85,7 +92,9 @@ impl Shader for Gradient {
    иначе: X11-бэкенд тестируется против поддельного X-сервера
    (`crates/runity-platform/tests/x11_wire.rs`), рендер — сравнением с
    независимо посчитанным пересечением луча с плоскостью
-   (`crates/runity-render/tests/pipeline.rs`).
+   (`crates/runity-render/tests/pipeline.rs`), а разбор событий Cocoa вынесен
+   в модуль без единого вызова Objective-C, чтобы его тесты шли на любой
+   машине (`crates/runity-platform/src/macos_keys.rs`).
 
 Подробности о том, как вообще рисовать без зависимостей, — в
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -94,7 +103,8 @@ impl Shader for Gradient {
 
 Сейчас это твёрдая основа, а не законченный движок. Ближайшее по списку:
 многопоточная растеризация по тайлам, mip-mapping, отсечение по frustum и
-иерархия трансформов, Wayland и Cocoa-бэкенды, загрузка glTF, звук.
+иерархия трансформов, HiDPI на macOS, загрузка glTF, звук. Wayland и мобильные
+платформы — потом.
 
 ## Лицензия
 

@@ -96,6 +96,9 @@ pub enum Key {
     RightControl,
     LeftAlt,
     RightAlt,
+    /// The Windows key, or Command on a Mac.
+    LeftSuper,
+    RightSuper,
     F1,
     F2,
     F3,

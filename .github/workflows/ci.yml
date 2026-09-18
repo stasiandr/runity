@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Check formatting
@@ -31,10 +31,15 @@ jobs:
         env:
           RUNITY_HEADLESS: "1"
 
-  cross-check-windows:
-    name: cross-check the win32 backend
+  cross-check:
+    name: cross-check every backend
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Backends that cannot be built on the host still get type-checked.
+        target: [aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-gnu]
     steps:
       - uses: actions/checkout@v4
-      - run: rustup target add x86_64-pc-windows-gnu
-      - run: cargo check --workspace --target x86_64-pc-windows-gnu
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings

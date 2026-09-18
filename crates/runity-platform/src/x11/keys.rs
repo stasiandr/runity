@@ -36,6 +36,8 @@ pub fn key_from_keysym(keysym: u32) -> Key {
         0xffe4 => Key::RightControl,
         0xffe9 => Key::LeftAlt,
         0xffea | 0xfe03 => Key::RightAlt,
+        0xffeb => Key::LeftSuper,
+        0xffec => Key::RightSuper,
         0xffbe..=0xffc9 => function_key(keysym - 0xffbe),
         other => Key::Unknown(other),
     }
@@ -108,6 +110,7 @@ mod tests {
         assert_eq!(key_from_keysym(0xff53), Key::Right);
         assert_eq!(key_from_keysym(0xffc9), Key::F12);
         assert_eq!(key_from_keysym(0xffbe), Key::F1);
+        assert_eq!(key_from_keysym(0xffeb), Key::LeftSuper);
     }
 
     #[test]

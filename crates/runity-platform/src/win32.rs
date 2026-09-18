@@ -247,6 +247,8 @@ fn key_from_virtual_key(vk: u32) -> Key {
         0x11 => Key::LeftControl,
         0x12 => Key::LeftAlt,
         0x1B => Key::Escape,
+        0x5B => Key::LeftSuper,
+        0x5C => Key::RightSuper,
         0x20 => Key::Space,
         0x25 => Key::Left,
         0x26 => Key::Up,

@@ -3,6 +3,9 @@
 //! Each backend talks to its operating system the way that OS actually wants to
 //! be talked to:
 //!
+//! * `macos` drives AppKit through the Objective-C runtime (`objc_getClass`,
+//!   `sel_registerName`, `objc_msgSend`) and presents frames as a `CGImage` on
+//!   the content view's layer.
 //! * `x11` speaks the X11 wire protocol over a Unix socket, using nothing but
 //!   `std::os::unix::net::UnixStream`. No `libX11`, no `xcb`, no `unsafe`.
 //! * `win32` declares the handful of `user32`/`gdi32` entry points it needs and
@@ -10,10 +13,20 @@
 //! * `headless` implements the same trait with a `Vec<u32>`, which is what makes
 //!   the engine testable on a machine with no display at all.
 
-#![cfg_attr(not(windows), forbid(unsafe_code))]
+// The two backends that cannot avoid FFI opt out; everything else — including
+// the whole X11 client — is safe Rust.
+#![cfg_attr(all(not(windows), not(target_os = "macos")), forbid(unsafe_code))]
 
 pub mod headless;
 pub mod window;
+
+#[cfg(target_os = "macos")]
+pub mod macos;
+
+/// Cocoa event decoding with no Objective-C in it, so it can be unit-tested on
+/// any host.
+#[cfg(any(target_os = "macos", test))]
+mod macos_keys;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 pub mod x11;
@@ -43,6 +56,11 @@ fn headless_requested() -> bool {
 pub fn open_window(config: &WindowConfig) -> io::Result<Box<dyn Window>> {
     if headless_requested() {
         return Ok(Box::new(HeadlessWindow::new(config)));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Ok(Box::new(macos::CocoaWindow::open(config)?));
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
