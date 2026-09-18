@@ -14,6 +14,11 @@ pub struct Time {
     /// Timestep used for [`crate::Game::fixed_update`].
     pub fixed_delta: f32,
     accumulator: f32,
+    /// How long [`Time::average_fps`] averages over before it refreshes.
+    pub fps_window: f32,
+    window_elapsed: f32,
+    window_frames: u32,
+    average_fps: f32,
 }
 
 impl Default for Time {
@@ -34,6 +39,10 @@ impl Time {
             max_delta: 0.25,
             fixed_delta: 1.0 / 60.0,
             accumulator: 0.0,
+            fps_window: 0.5,
+            window_elapsed: 0.0,
+            window_frames: 0,
+            average_fps: 0.0,
         }
     }
 
@@ -63,6 +72,24 @@ impl Time {
         }
     }
 
+    /// Frames per second averaged over the last [`Time::fps_window`] seconds.
+    ///
+    /// [`Time::fps`] is one frame's reciprocal delta, which jitters far too
+    /// much to put in a window title. This value only changes when a window's
+    /// worth of frames has gone by — twice a second at the default 0.5 s — so
+    /// the number a player reads stays still long enough to read.
+    ///
+    /// Before the first window fills there is nothing to average, so the
+    /// instantaneous rate stands in.
+    #[inline]
+    pub fn average_fps(&self) -> f32 {
+        if self.average_fps > 0.0 {
+            self.average_fps
+        } else {
+            self.fps()
+        }
+    }
+
     /// Advance to the next frame using the wall clock.
     pub fn tick(&mut self) {
         let now = Instant::now();
@@ -79,6 +106,14 @@ impl Time {
         self.elapsed += self.delta;
         self.frame += 1;
         self.accumulator += self.delta;
+
+        self.window_elapsed += self.delta;
+        self.window_frames += 1;
+        if self.fps_window > 0.0 && self.window_elapsed >= self.fps_window {
+            self.average_fps = self.window_frames as f32 / self.window_elapsed;
+            self.window_elapsed = 0.0;
+            self.window_frames = 0;
+        }
     }
 
     /// Take one fixed step if enough time has accumulated.
@@ -126,6 +161,45 @@ mod tests {
             "the leftover plus the new frame is one more step"
         );
         assert!(!t.next_fixed_step());
+    }
+
+    #[test]
+    fn average_fps_refreshes_once_per_window_and_smooths_a_stutter() {
+        let mut t = Time::new();
+        assert_eq!(t.fps_window, 0.5);
+
+        // Half a second of 60 Hz frames is exactly one window.
+        for _ in 0..30 {
+            t.advance(1.0 / 60.0);
+        }
+        assert!((t.average_fps() - 60.0).abs() < 0.01, "{}", t.average_fps());
+
+        // One long frame drags the instantaneous rate down hard, but the
+        // average holds the previous window's value until the next one fills.
+        t.advance(0.2);
+        assert!((t.fps() - 5.0).abs() < 0.01);
+        assert!((t.average_fps() - 60.0).abs() < 0.01, "not refreshed yet");
+
+        for _ in 0..18 {
+            t.advance(1.0 / 60.0);
+        }
+        // 19 frames over 0.2 + 18/60 s.
+        let expected = 19.0 / (0.2 + 18.0 / 60.0);
+        assert!(
+            (t.average_fps() - expected).abs() < 0.01,
+            "{} vs {expected}",
+            t.average_fps()
+        );
+    }
+
+    #[test]
+    fn average_fps_falls_back_to_the_instantaneous_rate_at_startup() {
+        let mut t = Time::new();
+        t.advance(1.0 / 50.0);
+        assert!(
+            (t.average_fps() - 50.0).abs() < 0.01,
+            "the first window has not filled, so there is nothing to average"
+        );
     }
 
     #[test]
