@@ -1,6 +1,9 @@
 target/
 **/*.rs.bk
 
+# Built by tools/package-macos.sh.
+/dist/
+
 # Screenshots written by the examples into the working directory.
 /*.png
 
