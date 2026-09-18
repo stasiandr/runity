@@ -9,6 +9,7 @@ description = "runity: a dependency-free game engine in Rust."
 
 [dependencies]
 runity-ai = { path = "../runity-ai", version = "0.1.0" }
+runity-audio = { path = "../runity-audio", version = "0.1.0" }
 runity-math = { path = "../runity-math", version = "0.1.0" }
 runity-render = { path = "../runity-render", version = "0.1.0" }
 runity-net = { path = "../runity-net", version = "0.1.0" }

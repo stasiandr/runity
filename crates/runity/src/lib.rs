@@ -11,6 +11,7 @@
 //! * [`runity_physics`] — rigid bodies, collision and the simulation step.
 //! * [`runity_ai`] — spatial queries, navigation, steering and decisions.
 //! * [`runity_net`] — UDP with reliability chosen per message.
+//! * [`runity_audio`] — sounds, mixing, positional audio and WAV.
 //! * [`runity_serialize`] — versioned binary encoding shared by saves, the
 //!   network and snapshot tests.
 //! * [`runity_core`] — entities, timing, input state and the main loop.
@@ -44,6 +45,7 @@
 #![forbid(unsafe_code)]
 
 pub use runity_ai as ai;
+pub use runity_audio as audio;
 pub use runity_core as core;
 pub use runity_math as math;
 pub use runity_net as net;
@@ -58,6 +60,7 @@ pub mod prelude {
         arrive, choose, choose_near_best, curve, score, seek, separation, Awareness, FlowField,
         Locomotion, NavGrid, Path, PathFinder, PathFollower, PathSettings, Senses, SpatialGrid,
     };
+    pub use runity_audio::{sine, square, Envelope, Listener, Mixer, Sound, SoundId, VoiceId};
     pub use runity_core::headless;
     pub use runity_core::{
         App, Authority, Cadence, Calendar, Camera, Command, CommandQueue, Correction, Date,

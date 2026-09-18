@@ -3,6 +3,7 @@ use crate::input::Input;
 use crate::time::Time;
 use crate::transform::Camera;
 use crate::world::World;
+use runity_audio::{Listener, Mixer, Sound};
 use runity_math::Mat4;
 use runity_physics::PhysicsWorld;
 use runity_platform::{open_window, Event, Window, WindowConfig};
@@ -49,6 +50,14 @@ pub struct Engine {
     /// Rigid bodies, stepped once per fixed update unless
     /// [`Engine::auto_step_physics`] is off.
     pub physics: PhysicsWorld,
+    /// Sounds and where they are.
+    ///
+    /// There is no sound device behind it yet, so nothing is heard unless the
+    /// run is recording — which is the same bargain the renderer makes, and
+    /// it means a headless run can produce what it would have sounded like.
+    pub audio: Mixer,
+    /// Whether the listener follows the camera each frame.
+    pub audio_follows_camera: bool,
     /// Whether the main loop steps [`Engine::physics`] itself.
     pub auto_step_physics: bool,
     pub input: Input,
@@ -70,6 +79,7 @@ pub struct Engine {
     pub text_scale: usize,
     running: bool,
     frame_stats: DrawStats,
+    recorded: Option<Sound>,
 }
 
 impl Engine {
@@ -79,6 +89,8 @@ impl Engine {
             time: Time::new(),
             clock: WorldClock::default(),
             physics: PhysicsWorld::new(),
+            audio: Mixer::default(),
+            audio_follows_camera: true,
             auto_step_physics: true,
             input: Input::new(),
             camera: Camera::default(),
@@ -92,7 +104,42 @@ impl Engine {
             text_scale: 2,
             running: true,
             frame_stats: DrawStats::default(),
+            recorded: None,
         }
+    }
+
+    /// Start collecting what the mixer produces.
+    ///
+    /// Recording is off by default because without it the mixer costs
+    /// nothing: no device is listening, so there is no reason to compute
+    /// samples nobody will hear.
+    pub fn record_audio(&mut self) {
+        self.recorded = Some(Sound::stereo(Vec::new(), self.audio.rate()));
+    }
+
+    /// What has been recorded so far.
+    pub fn recorded_audio(&self) -> Option<&Sound> {
+        self.recorded.as_ref()
+    }
+
+    /// Render one frame's worth of audio into the recording, if any.
+    ///
+    /// Time is taken from the frame, so a headless run at a fixed delta
+    /// produces exactly the soundtrack that run would have had.
+    pub fn mix_audio(&mut self, seconds: f32) {
+        if self.audio_follows_camera {
+            self.audio.listener = Listener::look_at(self.camera.position, self.camera.target);
+        }
+        let Some(recording) = self.recorded.as_mut() else {
+            return;
+        };
+        let frames = (seconds.max(0.0) * self.audio.rate() as f32).round() as usize;
+        if frames == 0 {
+            return;
+        }
+        let start = recording.samples.len();
+        recording.samples.resize(start + frames * 2, 0.0);
+        self.audio.render(&mut recording.samples[start..]);
     }
 
     /// Ask the main loop to stop after this frame.
@@ -289,6 +336,8 @@ pub struct RunOptions {
     /// Upper bound on fixed-update catch-up steps, so a slow frame cannot
     /// spiral into running fixed steps forever.
     pub max_fixed_steps: u32,
+    /// Collect the soundtrack as the run goes, for saving afterwards.
+    pub record_audio: bool,
     /// Render at this multiple of the window size and average back down.
     ///
     /// The cheapest anti-aliasing there is, and on a software rasterizer the
@@ -304,6 +353,7 @@ impl Default for RunOptions {
             frame_delta: None,
             target_fps: Some(60.0),
             max_fixed_steps: 8,
+            record_audio: false,
             supersample: 1,
         }
     }
@@ -366,6 +416,9 @@ impl App {
         // Reused every frame: tone mapping is the only place the renderer
         // produces 8-bit pixels, and it should not allocate to do it.
         let mut resolved: Vec<u32> = Vec::with_capacity(engine.framebuffer.len());
+        if self.options.record_audio {
+            engine.record_audio();
+        }
         game.start(&mut engine)?;
 
         while engine.is_running() {
@@ -402,6 +455,8 @@ impl App {
                 game.fixed_update(&mut engine);
                 steps += 1;
             }
+
+            engine.mix_audio(engine.time.delta());
 
             // The world's own clock, which the frame rate does not govern.
             engine.clock.advance(engine.time.delta());

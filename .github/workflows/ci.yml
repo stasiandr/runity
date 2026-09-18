@@ -63,6 +63,11 @@ jobs:
           RUNITY_WIDTH: "320"
           RUNITY_HEIGHT: "180"
 
+      # No renderer involved: it walks a listener past the village and writes
+      # what it would have sounded like, asserting the panning on the way.
+      - name: Record a soundscape
+        run: cargo run --release --example soundscape
+
       # Small, because the point is that the AI runs end to end — terrain to
       # navigation to decisions — not that the frame looks good.
       - name: Run the foragers

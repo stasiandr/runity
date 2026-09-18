@@ -7,6 +7,7 @@ name = "runity"
 version = "0.1.0"
 dependencies = [
  "runity-ai",
+ "runity-audio",
  "runity-core",
  "runity-math",
  "runity-net",
@@ -25,9 +26,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-audio"
+version = "0.1.0"
+dependencies = [
+ "runity-math",
+]
+
+[[package]]
 name = "runity-core"
 version = "0.1.0"
 dependencies = [
+ "runity-audio",
  "runity-math",
  "runity-net",
  "runity-physics",

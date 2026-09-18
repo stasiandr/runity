@@ -1,0 +1,11 @@
+[package]
+name = "runity-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sound for the runity engine: mixing, WAV and positional audio. No dependencies."
+
+[dependencies]
+runity-math = { path = "../runity-math", version = "0.1.0" }
