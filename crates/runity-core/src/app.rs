@@ -66,6 +66,8 @@ pub struct Engine {
     pub tone_map: ToneMap,
     /// Linear multiplier applied before the tone curve — the camera's exposure.
     pub exposure: f32,
+    /// Size of debug text, in multiples of the 5x7 glyphs.
+    pub text_scale: usize,
     running: bool,
     frame_stats: DrawStats,
 }
@@ -87,6 +89,7 @@ impl Engine {
             overdraw_saturation: 4,
             tone_map: ToneMap::default(),
             exposure: 1.0,
+            text_scale: 2,
             running: true,
             frame_stats: DrawStats::default(),
         }
@@ -186,6 +189,51 @@ impl Engine {
             length,
             color,
         );
+    }
+
+    /// Draw a line of debug text at a pixel position.
+    ///
+    /// Pixel coordinates, not world ones, and it ignores depth: this is for
+    /// the numbers you want on top of the frame regardless of what is in it.
+    /// Note that with supersampling the framebuffer is larger than the window,
+    /// so text is drawn at the same scale the scene is rendered.
+    pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color) {
+        debug::draw_text(&mut self.framebuffer, x, y, text, color, self.text_scale);
+    }
+
+    /// Draw several lines of text over a darkened panel.
+    pub fn draw_panel(&mut self, x: i32, y: i32, lines: &[&str]) {
+        debug::draw_text_panel(
+            &mut self.framebuffer,
+            x,
+            y,
+            lines,
+            Color::rgb(0.9, 0.95, 1.0),
+            self.text_scale,
+        );
+    }
+
+    /// Draw the usual frame statistics in the corner.
+    ///
+    /// Costs a few hundred pixels and answers "is it the renderer or my scene"
+    /// without leaving the window.
+    pub fn draw_frame_stats(&mut self) {
+        let stats = self.frame_stats();
+        let lines = [
+            format!(
+                "{:>5.1} fps  {:>5.1} ms",
+                self.time.fps(),
+                self.time.delta() * 1000.0
+            ),
+            format!(
+                "{} tris in  {} drawn",
+                stats.triangles_in, stats.triangles_rasterized
+            ),
+            format!("{} fragments", stats.fragments_written),
+            format!("tick {}  x{}", self.clock.tick(), self.clock.speed()),
+        ];
+        let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+        self.draw_panel(8, 8, &borrowed);
     }
 
     /// Overlay the world axes at the origin.

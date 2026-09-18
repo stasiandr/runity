@@ -15,6 +15,7 @@
 pub mod bloom;
 pub mod color;
 pub mod debug;
+pub mod font;
 pub mod framebuffer;
 pub mod gbuffer;
 pub mod geometry;

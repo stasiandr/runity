@@ -6,6 +6,7 @@
 //! whatever the scene produced.
 
 use crate::color::Color;
+use crate::font;
 use crate::framebuffer::Framebuffer;
 use crate::mesh::Mesh;
 use runity_math::{Mat4, Vec3};
@@ -88,6 +89,115 @@ pub fn draw_line(target: &mut Framebuffer, from: (f32, f32), to: (f32, f32), col
         if e2 <= dx {
             error += dx;
             y += sy;
+        }
+    }
+}
+
+/// Draw a line of text at a pixel position, ignoring depth.
+///
+/// `scale` multiplies the 5x7 glyphs; 1 is small but legible at 960x540, 2 is
+/// comfortable. Nothing is antialiased and nothing is clipped to a box —
+/// anything off the edge of the frame is simply not drawn.
+pub fn draw_text(
+    target: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: Color,
+    scale: usize,
+) -> i32 {
+    let scale = scale.max(1) as i32;
+    let mut cursor = x;
+    for character in text.chars() {
+        if let Some(columns) = font::glyph(character) {
+            for (column_index, column) in columns.iter().enumerate() {
+                for row in 0..font::GLYPH_HEIGHT {
+                    if column & (1 << row) == 0 {
+                        continue;
+                    }
+                    let px = cursor + column_index as i32 * scale;
+                    let py = y + row as i32 * scale;
+                    fill_block(target, px, py, scale, color);
+                }
+            }
+        }
+        cursor += font::CELL_WIDTH as i32 * scale;
+    }
+    cursor
+}
+
+/// Draw several lines of text, one below the other.
+///
+/// Returns the y coordinate below the last line, so blocks of text can be
+/// stacked without the caller counting rows.
+pub fn draw_text_lines(
+    target: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    lines: &[&str],
+    color: Color,
+    scale: usize,
+) -> i32 {
+    let step = font::line_height(scale) as i32;
+    let mut cursor = y;
+    for line in lines {
+        draw_text(target, x, cursor, line, color, scale);
+        cursor += step;
+    }
+    cursor
+}
+
+/// Draw text over a darkened rectangle, so it stays readable on a bright sky.
+pub fn draw_text_panel(
+    target: &mut Framebuffer,
+    x: i32,
+    y: i32,
+    lines: &[&str],
+    color: Color,
+    scale: usize,
+) {
+    let padding = 2 * scale.max(1) as i32;
+    let width = lines
+        .iter()
+        .map(|line| font::text_width(line, scale))
+        .max()
+        .unwrap_or(0) as i32;
+    let height = font::line_height(scale) as i32 * lines.len() as i32;
+    shade_rect(
+        target,
+        x - padding,
+        y - padding,
+        width + padding * 2,
+        height + padding,
+        0.25,
+    );
+    draw_text_lines(target, x, y, lines, color, scale);
+}
+
+/// Multiply a rectangle of the frame toward black.
+///
+/// Darkening rather than filling keeps the scene visible underneath, which is
+/// what you want from an overlay that is in the way of the thing you are
+/// debugging.
+pub fn shade_rect(target: &mut Framebuffer, x: i32, y: i32, width: i32, height: i32, factor: f32) {
+    for row in y.max(0)..(y + height).min(target.height() as i32) {
+        for column in x.max(0)..(x + width).min(target.width() as i32) {
+            let (cx, cy) = (column as usize, row as usize);
+            let existing = target.get_pixel(cx, cy);
+            target.set_pixel(cx, cy, existing.scale_rgb(factor.clamp(0.0, 1.0)));
+        }
+    }
+}
+
+/// One scaled pixel of a glyph.
+fn fill_block(target: &mut Framebuffer, x: i32, y: i32, scale: i32, color: Color) {
+    for row in 0..scale {
+        for column in 0..scale {
+            let (px, py) = (x + column, y + row);
+            if px < 0 || py < 0 || px >= target.width() as i32 || py >= target.height() as i32 {
+                continue;
+            }
+            target.set_pixel(px as usize, py as usize, color);
         }
     }
 }
@@ -259,6 +369,146 @@ pub fn overdraw_view(source: &Framebuffer, saturation: u32) -> Framebuffer {
 
 #[cfg(test)]
 mod tests {
+
+    /// Count the pixels that are not the background.
+    fn lit(target: &Framebuffer) -> usize {
+        let mut count = 0;
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                if target.get_pixel(x, y).luminance() > 0.01 {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// The rightmost and lowest lit pixel, for checking extents.
+    fn extent(target: &Framebuffer) -> (usize, usize) {
+        let (mut right, mut bottom) = (0, 0);
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                if target.get_pixel(x, y).luminance() > 0.01 {
+                    right = right.max(x);
+                    bottom = bottom.max(y);
+                }
+            }
+        }
+        (right, bottom)
+    }
+
+    #[test]
+    fn text_puts_pixels_on_the_frame() {
+        let mut target = Framebuffer::new(200, 40);
+        assert_eq!(lit(&target), 0);
+        draw_text(&mut target, 4, 4, "RUNITY 123", Color::WHITE, 1);
+        let drawn = lit(&target);
+        assert!(
+            drawn > 40,
+            "ten characters should light more than {drawn} pixels"
+        );
+    }
+
+    #[test]
+    fn what_is_measured_is_what_is_drawn() {
+        let mut target = Framebuffer::new(300, 40);
+        let text = "MEASURE ME";
+        let end = draw_text(&mut target, 10, 5, text, Color::WHITE, 1);
+        let (right, bottom) = extent(&target);
+
+        // The advance matches the measured width plus the trailing spacing.
+        assert_eq!(
+            end - 10,
+            font::text_width(text, 1) as i32 + font::GLYPH_SPACING as i32
+        );
+        assert!(
+            right < 10 + font::text_width(text, 1),
+            "nothing spills past the measured width"
+        );
+        assert!(bottom < 5 + font::GLYPH_HEIGHT, "nor below the line");
+    }
+
+    #[test]
+    fn scaling_makes_it_bigger_and_nothing_else() {
+        let mut small = Framebuffer::new(200, 60);
+        let mut large = Framebuffer::new(200, 60);
+        draw_text(&mut small, 2, 2, "ABC", Color::WHITE, 1);
+        draw_text(&mut large, 2, 2, "ABC", Color::WHITE, 3);
+        // Nine times the area per lit pixel.
+        assert_eq!(lit(&large), lit(&small) * 9);
+    }
+
+    #[test]
+    fn text_off_the_edge_is_clipped_rather_than_wrapped_or_fatal() {
+        let mut target = Framebuffer::new(64, 20);
+        draw_text(&mut target, -30, -5, "OFF THE TOP LEFT", Color::WHITE, 2);
+        draw_text(&mut target, 60, 12, "OFF THE RIGHT", Color::WHITE, 2);
+        draw_text(&mut target, 0, 400, "FAR BELOW", Color::WHITE, 1);
+        // The point is that none of that panicked; some of it may be visible.
+        assert!(lit(&target) < 64 * 20);
+    }
+
+    #[test]
+    fn an_unknown_character_leaves_a_gap_rather_than_rubbish() {
+        let mut with = Framebuffer::new(120, 20);
+        let mut without = Framebuffer::new(120, 20);
+        draw_text(&mut with, 2, 2, "A\u{1F600}B", Color::WHITE, 1);
+        draw_text(&mut without, 2, 2, "A B", Color::WHITE, 1);
+        assert_eq!(
+            lit(&with),
+            lit(&without),
+            "an emoji should take a space, not draw one"
+        );
+    }
+
+    #[test]
+    fn lines_stack_downward_without_overlapping() {
+        let mut target = Framebuffer::new(200, 80);
+        let bottom = draw_text_lines(
+            &mut target,
+            4,
+            4,
+            &["FIRST", "SECOND", "THIRD"],
+            Color::WHITE,
+            1,
+        );
+        assert_eq!(bottom, 4 + font::line_height(1) as i32 * 3);
+
+        // There is a blank row between lines, which is what makes them legible.
+        let gap_row = 4 + font::GLYPH_HEIGHT;
+        let blank = (0..target.width()).all(|x| target.get_pixel(x, gap_row).luminance() < 0.01);
+        assert!(blank, "row {gap_row} should be the gap between lines");
+    }
+
+    #[test]
+    fn a_panel_darkens_what_is_behind_it_without_hiding_it() {
+        let mut target = Framebuffer::new(160, 40);
+        for y in 0..target.height() {
+            for x in 0..target.width() {
+                target.set_pixel(x, y, Color::rgb(0.8, 0.8, 0.8));
+            }
+        }
+        draw_text_panel(&mut target, 10, 10, &["STATS"], Color::WHITE, 1);
+
+        // Just inside the panel's padding, where no glyph reaches.
+        let darkened = target.get_pixel(9, 9);
+        assert!(
+            darkened.luminance() < 0.8,
+            "the panel should be darker than the sky behind it"
+        );
+        assert!(darkened.luminance() > 0.0, "but not opaque");
+        let outside = target.get_pixel(150, 35);
+        assert!((outside.luminance() - Color::rgb(0.8, 0.8, 0.8).luminance()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn shading_a_rectangle_off_the_edge_is_harmless() {
+        let mut target = Framebuffer::new(32, 32);
+        shade_rect(&mut target, -100, -100, 500, 500, 0.5);
+        shade_rect(&mut target, 100, 100, 10, 10, 0.5);
+        shade_rect(&mut target, 0, 0, -5, -5, 0.5);
+    }
+
     use super::*;
     use crate::shader::Vertex;
     use runity_math::{Vec2, Vec4};

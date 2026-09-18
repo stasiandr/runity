@@ -557,6 +557,37 @@ impl Game for Foragers {
         engine.world = world;
     }
 
+    fn overlay(&mut self, engine: &mut Engine) {
+        // Debug text, drawn straight into the frame — no font files, no
+        // second window, and it works headless.
+        let jobs = |wanted: Job| {
+            self.villagers
+                .iter()
+                .filter(|entity| {
+                    engine.world.get::<Villager>(**entity).map(|v| v.job) == Some(wanted)
+                })
+                .count()
+        };
+        let date = engine.clock.date();
+        let lines = [
+            format!("day {}  {}", date.day + 1, date.season.name()),
+            format!("wood {:>5.0}   food {:>5.0}", self.wood, self.food),
+            format!(
+                "foraging {}  chopping {}  hauling {}",
+                jobs(Job::Forage),
+                jobs(Job::Chop),
+                jobs(Job::Deliver)
+            ),
+            format!(
+                "{:>4.1} fps   tick {}",
+                engine.time.fps(),
+                engine.clock.tick()
+            ),
+        ];
+        let borrowed: Vec<&str> = lines.iter().map(String::as_str).collect();
+        engine.draw_panel(10, 10, &borrowed);
+    }
+
     fn render(&mut self, engine: &mut Engine) {
         engine.draw_pbr(
             &self.ground,
@@ -705,6 +736,9 @@ impl Game for Reported {
     }
     fn render(&mut self, engine: &mut Engine) {
         self.inner.render(engine);
+    }
+    fn overlay(&mut self, engine: &mut Engine) {
+        self.inner.overlay(engine);
     }
 }
 
