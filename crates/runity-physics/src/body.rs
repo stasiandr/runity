@@ -184,6 +184,38 @@ impl RigidBody {
         self
     }
 
+    /// Change what kind of body this is.
+    ///
+    /// Becoming dynamic re-derives mass and inertia from the shape at density
+    /// 1; set a mass or density afterwards if this body had a custom one.
+    /// Becoming static or kinematic clears mass, inertia and velocity, since
+    /// a body with infinite mass that is still drifting makes no sense.
+    ///
+    /// Worth having as a method rather than a field assignment: mass is
+    /// cached as its inverse, and a body left "static" with a non-zero
+    /// inverse mass is one the solver will happily push around.
+    pub fn set_body_type(&mut self, body_type: BodyType) {
+        if self.body_type == body_type {
+            return;
+        }
+        self.body_type = body_type;
+        match body_type {
+            BodyType::Dynamic => {
+                self.set_density(1.0);
+                self.wake();
+            }
+            BodyType::Static | BodyType::Kinematic => {
+                self.make_infinite();
+                self.linear_velocity = Vec3::ZERO;
+                self.angular_velocity = Vec3::ZERO;
+                self.force = Vec3::ZERO;
+                self.torque = Vec3::ZERO;
+                self.sleeping = false;
+                self.sleep_timer = 0.0;
+            }
+        }
+    }
+
     /// Recompute mass and inertia from the shape at this density.
     pub fn set_density(&mut self, density: f32) {
         if self.body_type != BodyType::Dynamic || self.shape.is_infinite() {

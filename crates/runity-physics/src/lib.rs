@@ -8,6 +8,7 @@ pub mod collide;
 pub mod raycast;
 pub mod shape;
 pub mod solver;
+pub mod world;
 
 pub use body::{BodyType, Material, RigidBody};
 pub use broadphase::{BroadPhase, Proxy};
@@ -15,3 +16,4 @@ pub use collide::{collide, ContactPoint, Manifold};
 pub use raycast::{ray_shape, Ray, RayHit};
 pub use shape::{Aabb, Isometry, MassProperties, Shape};
 pub use solver::{ContactSolver, ImpulseCache, PairManifold, SolverSettings};
+pub use world::{BodyHandle, ContactEvent, PhysicsStats, PhysicsWorld, RayCast};
