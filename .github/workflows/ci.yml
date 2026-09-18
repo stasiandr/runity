@@ -56,6 +56,13 @@ jobs:
         env:
           RUNITY_HEADLESS: "1"
 
+      - name: Walk around in first person
+        run: cargo run --release --example first_person
+        env:
+          RUNITY_HEADLESS: "1"
+          RUNITY_WIDTH: "320"
+          RUNITY_HEIGHT: "180"
+
       # Small, because the point is that the AI runs end to end — terrain to
       # navigation to decisions — not that the frame looks good.
       - name: Run the foragers

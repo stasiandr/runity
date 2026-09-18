@@ -4,6 +4,7 @@
 
 pub mod body;
 pub mod broadphase;
+pub mod character;
 pub mod collide;
 pub mod raycast;
 pub mod shape;
@@ -12,6 +13,7 @@ pub mod world;
 
 pub use body::{BodyType, Material, RigidBody};
 pub use broadphase::{BroadPhase, Proxy};
+pub use character::{Character, CharacterSettings, MoveReport};
 pub use collide::{collide, ContactPoint, Manifold};
 pub use raycast::{ray_shape, Ray, RayHit};
 pub use shape::{Aabb, Isometry, MassProperties, Shape};
