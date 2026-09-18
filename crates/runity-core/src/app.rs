@@ -43,6 +43,8 @@ pub struct Engine {
     pub overdraw_saturation: u32,
     running: bool,
     frame_stats: DrawStats,
+    title: String,
+    /// A title the loop has not handed to the window yet.
     pending_title: Option<String>,
 }
 
@@ -62,6 +64,7 @@ impl Engine {
             overdraw_saturation: 4,
             running: true,
             frame_stats: DrawStats::default(),
+            title: String::new(),
             pending_title: None,
         }
     }
@@ -71,13 +74,26 @@ impl Engine {
         self.running = false;
     }
 
-    pub fn is_running(&self) -> bool {
-        self.running
+    /// Retitle the window. The main loop applies it before presenting.
+    ///
+    /// Setting the title it already has costs nothing, so a game can call this
+    /// every frame with a string it rebuilds every frame — only a real change
+    /// reaches the window.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        let title = title.into();
+        if title != self.title {
+            self.title = title.clone();
+            self.pending_title = Some(title);
+        }
     }
 
-    /// Request that the window title be changed on the next frame.
-    pub fn set_title(&mut self, title: impl Into<String>) {
-        self.pending_title = Some(title.into());
+    /// The title the window currently carries.
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -231,6 +247,9 @@ impl App {
     ) -> io::Result<Engine> {
         let (width, height) = window.size();
         let mut engine = Engine::new(width as usize, height as usize);
+        // The window already wears the configured title, so a game that asks
+        // for that same title does not make the loop set it again.
+        engine.title = self.window_config.title.clone();
         game.start(&mut engine)?;
 
         while engine.is_running() {
@@ -256,9 +275,6 @@ impl App {
                 None => engine.time.tick(),
             }
             game.update(&mut engine);
-            if let Some(title) = engine.pending_title.take() {
-                window.set_title(&title)?;
-            }
             let mut steps = 0;
             while steps < self.options.max_fixed_steps && engine.time.next_fixed_step() {
                 game.fixed_update(&mut engine);
@@ -289,6 +305,10 @@ impl App {
                     let saturation = engine.overdraw_saturation;
                     engine.framebuffer = debug::overdraw_view(&engine.framebuffer, saturation);
                 }
+            }
+
+            if let Some(title) = engine.pending_title.take() {
+                window.set_title(&title)?;
             }
 
             let (w, h) = (
@@ -388,5 +408,21 @@ mod tests {
         assert!(engine.pending_title.is_none());
         engine.set_title("test title");
         assert_eq!(engine.pending_title, Some("test title".to_string()));
+    }
+
+    #[test]
+    fn a_title_reaches_the_loop_once_per_change() {
+        let mut engine = Engine::new(4, 4);
+        engine.set_title("first");
+        assert_eq!(engine.title(), "first");
+        assert_eq!(engine.pending_title.take(), Some("first".to_string()));
+
+        // The loop has applied it; asking for the same text again is a no-op,
+        // which is what lets a game rebuild its title string every frame.
+        engine.set_title("first");
+        assert_eq!(engine.pending_title, None);
+
+        engine.set_title("second");
+        assert_eq!(engine.pending_title.as_deref(), Some("second"));
     }
 }

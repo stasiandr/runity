@@ -12,3 +12,10 @@ runity-math = { path = "../runity-math", version = "0.1.0" }
 runity-render = { path = "../runity-render", version = "0.1.0" }
 runity-platform = { path = "../runity-platform", version = "0.1.0" }
 runity-core = { path = "../runity-core", version = "0.1.0" }
+
+# The showcase keeps its unit tests where the convention puts them — at the
+# bottom of the file they cover — so `cargo test` has to run them.
+[[example]]
+name = "smallworld"
+path = "examples/smallworld.rs"
+test = true
