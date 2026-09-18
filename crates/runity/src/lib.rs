@@ -54,9 +54,10 @@ pub mod prelude {
     pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
     pub use runity_render::{debug, golden};
     pub use runity_render::{
-        Blend, CameraView, Color, CullMode, DrawStats, Filter, Framebuffer, GBuffer,
-        GeometryShader, Image, Light, LightKind, Material, Mesh, PolygonMode, Rasterizer,
-        RenderSettings, Renderer, Shader, Sky, SkyParams, Surface, Texture, ToneMap, UnlitShader,
-        Varying, Vertex, VertexOutput, Wrap,
+        Blend, Bloom, BloomSettings, CameraView, Color, CullMode, DrawStats, Filter, Framebuffer,
+        GBuffer, GeometryShader, Image, Light, LightKind, Material, Mesh, OcclusionBuffer,
+        PolygonMode, PostSettings, Rasterizer, RenderSettings, Renderer, Shader, ShadowSettings,
+        Sky, SkyParams, SsaoSettings, SsrSettings, Surface, Texture, ToneMap, UnlitShader, Varying,
+        Vertex, VertexOutput, Wrap,
     };
 }

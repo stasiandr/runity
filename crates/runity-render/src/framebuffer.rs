@@ -116,6 +116,40 @@ impl Framebuffer {
         );
     }
 
+    /// Average `factor` x `factor` blocks into a smaller frame.
+    ///
+    /// Supersampling done right: the averaging happens in linear light, before
+    /// the tone curve, because averaging display values is not averaging light
+    /// — that is the difference between clean edges and grey ones.
+    pub fn downsample(&self, factor: usize) -> Framebuffer {
+        let factor = factor.max(1);
+        if factor == 1 {
+            return self.clone();
+        }
+        let width = (self.width / factor).max(1);
+        let height = (self.height / factor).max(1);
+        let mut out = Framebuffer::new(width, height);
+        out.tone_map = self.tone_map;
+        out.exposure = self.exposure;
+        let scale = 1.0 / (factor * factor) as f32;
+        for y in 0..height {
+            for x in 0..width {
+                let mut sum = Color::rgba(0.0, 0.0, 0.0, 0.0);
+                for dy in 0..factor {
+                    for dx in 0..factor {
+                        let sx = (x * factor + dx).min(self.width - 1);
+                        let sy = (y * factor + dy).min(self.height - 1);
+                        let c = self.color[sy * self.width + sx];
+                        sum = Color::rgba(sum.r + c.r, sum.g + c.g, sum.b + c.b, sum.a + c.a);
+                    }
+                }
+                out.color[y * width + x] =
+                    Color::rgba(sum.r * scale, sum.g * scale, sum.b * scale, sum.a * scale);
+            }
+        }
+        out
+    }
+
     /// Count how many times each pixel is written, for [`crate::debug::overdraw_view`].
     ///
     /// Off by default: it costs an allocation and a branch per written
@@ -308,6 +342,26 @@ mod tests {
             capacity,
             "no reallocation on the second frame"
         );
+    }
+
+    #[test]
+    fn downsampling_averages_light_not_display_values() {
+        let mut fb = Framebuffer::new(2, 2);
+        // One very bright pixel among three black ones. Averaged as light, the
+        // result is a quarter of it; averaged after tone mapping it would be
+        // far darker.
+        fb.set_pixel(0, 0, Color::rgb(8.0, 8.0, 8.0));
+        let small = fb.downsample(2);
+        assert_eq!((small.width(), small.height()), (1, 1));
+        assert_eq!(small.get_pixel(0, 0).r, 2.0);
+        assert_eq!(small.tone_map, fb.tone_map, "display settings carry over");
+    }
+
+    #[test]
+    fn downsampling_by_one_is_a_copy() {
+        let mut fb = Framebuffer::new(3, 2);
+        fb.clear(Color::rgb(0.3, 0.4, 0.5));
+        assert_eq!(fb.downsample(1).colors(), fb.colors());
     }
 
     #[test]

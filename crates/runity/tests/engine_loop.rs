@@ -23,8 +23,9 @@ impl Game for Counter {
         self.calls.borrow_mut().start += 1;
         engine.clear_color = Color::rgb(0.0, 0.0, 0.25);
         // A flat background makes "how much of the frame is geometry" easy to
-        // count; the sky would fill every pixel.
+        // count: no sky, and no bloom bleeding the cube into it.
         engine.renderer.settings.draw_sky = false;
+        engine.renderer.settings.bloom.enabled = false;
         Ok(())
     }
 

@@ -8,10 +8,11 @@
 //!
 //! Controls: arrows or WASD orbit the camera, Q/E zoom, Escape quits.
 //! Debug views: 1 shaded, 2 wireframe, 3 depth, 4 overdraw, 5 albedo,
-//! 6 normals, 7 material; N toggles the normal and axis overlay.
+//! 6 normals, 7 material, 8 ambient occlusion; N toggles the normal and axis
+//! overlay.
 //!
 //! Headless, the view is picked with `RUNITY_DEBUG_VIEW=shaded|wireframe|depth|
-//! overdraw|albedo|normals|material`.
+//! overdraw|albedo|normals|material|occlusion`.
 
 use runity::prelude::*;
 
@@ -95,6 +96,7 @@ impl Game for Demo {
             (Key::Num5, DebugView::Albedo),
             (Key::Num6, DebugView::Normals),
             (Key::Num7, DebugView::Material),
+            (Key::Num8, DebugView::Occlusion),
         ] {
             if engine.input.key_pressed(key) {
                 engine.debug_view = view;
@@ -174,6 +176,7 @@ fn debug_view_from_env() -> DebugView {
         "albedo" => DebugView::Albedo,
         "normals" => DebugView::Normals,
         "material" => DebugView::Material,
+        "occlusion" | "ao" => DebugView::Occlusion,
         _ => DebugView::Shaded,
     }
 }

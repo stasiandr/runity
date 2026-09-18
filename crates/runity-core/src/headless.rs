@@ -29,11 +29,23 @@ use std::rc::Rc;
 /// sky and the post effects happen after it returns — exactly as in the main
 /// loop.
 pub fn render(width: usize, height: usize, draw: impl FnOnce(&mut Engine)) -> Framebuffer {
-    let mut engine = Engine::new(width, height);
+    render_at(width, height, 1, draw)
+}
+
+/// As [`render`], but rendered at `supersample` times the size and averaged
+/// back down — the cheapest good anti-aliasing available offline.
+pub fn render_at(
+    width: usize,
+    height: usize,
+    supersample: usize,
+    draw: impl FnOnce(&mut Engine),
+) -> Framebuffer {
+    let factor = supersample.max(1);
+    let mut engine = Engine::new(width * factor, height * factor);
     engine.begin_frame();
     draw(&mut engine);
     engine.shade();
-    engine.framebuffer.clone()
+    engine.framebuffer.downsample(factor)
 }
 
 /// Run a game for a fixed number of frames at a fixed delta, with no window.

@@ -267,6 +267,43 @@ impl Mesh {
         mesh
     }
 
+    /// Torus in the XZ plane: a circle of radius `radius` swept by a circle of
+    /// radius `tube`.
+    pub fn torus(radius: f32, tube: f32, segments: usize, rings: usize) -> Self {
+        let segments = segments.max(3);
+        let rings = rings.max(3);
+        let mut vertices = Vec::with_capacity((segments + 1) * (rings + 1));
+        for i in 0..=segments {
+            let u = i as f32 / segments as f32;
+            let theta = u * core::f32::consts::TAU;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            for j in 0..=rings {
+                let v = j as f32 / rings as f32;
+                let phi = v * core::f32::consts::TAU;
+                let (sin_phi, cos_phi) = phi.sin_cos();
+                // Center of the tube at this angle, then out along the tube.
+                let center = Vec3::new(cos_theta * radius, 0.0, sin_theta * radius);
+                let normal = Vec3::new(cos_theta * cos_phi, sin_phi, sin_theta * cos_phi);
+                vertices.push(Vertex::new(center + normal * tube, normal, Vec2::new(u, v)));
+            }
+        }
+        let mut indices = Vec::with_capacity(segments * rings * 6);
+        let stride = (rings + 1) as u32;
+        for i in 0..segments as u32 {
+            for j in 0..rings as u32 {
+                let a = i * stride + j;
+                let b = a + 1;
+                let c = a + stride;
+                let d = c + 1;
+                // Wound so the face normal agrees with the outward tube normal.
+                indices.extend_from_slice(&[a, b, c, b, d, c]);
+            }
+        }
+        let mut mesh = Self::new(vertices, indices);
+        mesh.recompute_tangents();
+        mesh
+    }
+
     /// Parse a Wavefront OBJ file: `v`, `vt`, `vn` and `f` (polygons are
     /// fan-triangulated). Everything else — materials, groups, smoothing — is
     /// skipped.
@@ -418,6 +455,27 @@ mod tests {
         assert_outward(&s);
         for v in &s.vertices {
             assert!((v.position.length() - 1.5).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn a_torus_is_closed_and_wound_outward() {
+        let torus = Mesh::torus(2.0, 0.5, 24, 12);
+        assert_eq!(torus.triangle_count(), 24 * 12 * 2);
+        for tri in torus.indices.chunks_exact(3) {
+            let v: Vec<Vec3> = tri
+                .iter()
+                .map(|i| torus.vertices[*i as usize].position)
+                .collect();
+            let face_normal = (v[1] - v[0]).cross(v[2] - v[0]);
+            // The outward direction at a point is away from the tube's center
+            // circle, which is the point projected onto the XZ circle.
+            let centroid = (v[0] + v[1] + v[2]) * (1.0 / 3.0);
+            let ring_center = Vec3::new(centroid.x, 0.0, centroid.z).normalized() * 2.0;
+            assert!(
+                face_normal.dot(centroid - ring_center) > 0.0,
+                "face {v:?} winds inward"
+            );
         }
     }
 

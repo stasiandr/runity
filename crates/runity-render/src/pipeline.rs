@@ -11,6 +11,7 @@
 //! all: by the time lighting runs, every pixel knows its normal, position and
 //! material, and a pass can walk the buffer instead of the scene.
 
+use crate::bloom::{Bloom, BloomSettings};
 use crate::color::Color;
 use crate::framebuffer::Framebuffer;
 use crate::gbuffer::Surface;
@@ -19,9 +20,12 @@ use crate::mesh::Mesh;
 use crate::pbr::{
     direct_light, environment_brdf, f0_for, fresnel_schlick_roughness, Light, Material,
 };
+use crate::post::{self, PostSettings};
 use crate::raster::{DrawStats, Rasterizer};
 use crate::shadow::{ShadowMap, ShadowSettings};
 use crate::sky::Sky;
+use crate::ssao::{self, OcclusionBuffer, SsaoSettings};
+use crate::ssr::{self, SsrSettings};
 use crate::view::CameraView;
 use runity_math::{Mat4, Vec3};
 
@@ -33,6 +37,10 @@ pub struct RenderSettings {
     /// Multiplier on image-based lighting.
     pub ambient_intensity: f32,
     pub shadows: ShadowSettings,
+    pub ssao: SsaoSettings,
+    pub ssr: SsrSettings,
+    pub bloom: BloomSettings,
+    pub post: PostSettings,
 }
 
 impl Default for RenderSettings {
@@ -41,6 +49,10 @@ impl Default for RenderSettings {
             draw_sky: true,
             ambient_intensity: 1.0,
             shadows: ShadowSettings::default(),
+            ssao: SsaoSettings::default(),
+            ssr: SsrSettings::default(),
+            bloom: BloomSettings::default(),
+            post: PostSettings::default(),
         }
     }
 }
@@ -53,6 +65,9 @@ pub struct Renderer {
     pub settings: RenderSettings,
     /// One per light, index-aligned; inactive for lights that cannot cast.
     shadow_maps: Vec<ShadowMap>,
+    occlusion: OcclusionBuffer,
+    bloom: Bloom,
+    frame: u64,
     camera: CameraView,
     stats: DrawStats,
 }
@@ -73,6 +88,9 @@ impl Renderer {
             lights,
             settings: RenderSettings::default(),
             shadow_maps: Vec::new(),
+            occlusion: OcclusionBuffer::default(),
+            bloom: Bloom::new(),
+            frame: 0,
             camera: CameraView::new(Mat4::IDENTITY, Mat4::IDENTITY, Vec3::ZERO, 0.1, 100.0),
             stats: DrawStats::default(),
         }
@@ -107,6 +125,7 @@ impl Renderer {
     ) {
         self.camera = camera;
         self.stats = DrawStats::default();
+        self.frame = self.frame.wrapping_add(1);
         if target.gbuffer().is_none() {
             target.enable_gbuffer(true);
         }
@@ -127,6 +146,11 @@ impl Renderer {
     /// The depth maps rendered this frame, for debug views.
     pub fn shadow_maps(&self) -> &[ShadowMap] {
         &self.shadow_maps
+    }
+
+    /// Ambient visibility computed for this frame, for debug views.
+    pub fn occlusion(&self) -> &OcclusionBuffer {
+        &self.occlusion
     }
 
     /// Geometry pass for one mesh.
@@ -165,12 +189,21 @@ impl Renderer {
             return;
         };
 
+        // Ambient occlusion has to run before lighting: it is an input to it,
+        // not a filter applied afterwards.
+        ssao::compute(
+            &gbuffer,
+            &self.camera,
+            &self.settings.ssao,
+            &mut self.occlusion,
+        );
+
         for y in 0..height {
             for x in 0..width {
                 let index = y * width + x;
                 let surface = gbuffer.at(index);
                 let color = if surface.is_geometry() {
-                    self.shade_surface(surface, 1.0)
+                    self.shade_surface(surface, self.occlusion.at(index))
                 } else if self.settings.draw_sky {
                     let direction =
                         self.camera
@@ -182,6 +215,22 @@ impl Renderer {
                 target.set_pixel(x, y, color);
             }
         }
+
+        // Screen-space reflections run on the lit frame: they reflect light,
+        // not albedo, so they have to come after shading.
+        ssr::apply(
+            target,
+            &gbuffer,
+            &self.camera,
+            &self.sky,
+            &self.settings.ssr,
+        );
+
+        // Then the camera's own contribution: glare around the highlights, and
+        // the lens and sensor treatment. Both still in linear light — tone
+        // mapping is the last thing that happens, at resolve.
+        self.bloom.apply(target, &self.settings.bloom);
+        post::apply(target, &self.settings.post, self.frame);
 
         target.put_gbuffer(gbuffer);
     }
@@ -488,6 +537,75 @@ mod tests {
         assert!(
             luminance(&target, under_the_cube) > lit * 0.8,
             "shadows can be switched off"
+        );
+    }
+
+    #[test]
+    fn a_mirror_floor_reflects_what_is_standing_on_it() {
+        let mut renderer = renderer();
+        renderer.lights.clear();
+        renderer.settings.ambient_intensity = 0.15;
+        renderer.settings.ssao.enabled = false;
+
+        let position = Vec3::new(0.0, 1.2, 4.0);
+        let camera = CameraView::new(
+            Mat4::look_at(position, Vec3::new(0.0, 0.4, 0.0), Vec3::Y),
+            Mat4::perspective(55f32.to_radians(), 1.0, 0.1, 100.0),
+            position,
+            0.1,
+            100.0,
+        );
+
+        // A glowing green box above a polished floor: whatever shows up in the
+        // floor's reflection can only have come from the box.
+        let render = |renderer: &mut Renderer| {
+            let mut target = Framebuffer::new(96, 96);
+            renderer.begin_frame(&mut target, camera, Color::BLACK);
+            renderer.draw(
+                &mut target,
+                &Mesh::plane(20.0, 1),
+                Mat4::IDENTITY,
+                &Material {
+                    roughness: 0.05,
+                    metallic: 1.0,
+                    base_color: Color::WHITE,
+                    ..Material::default()
+                },
+            );
+            renderer.draw(
+                &mut target,
+                &Mesh::cube(1.0),
+                Mat4::from_translation(Vec3::new(0.0, 0.9, 0.0)),
+                &Material {
+                    emissive: Color::rgb(0.0, 6.0, 0.0),
+                    ..Material::default()
+                },
+            );
+            renderer.shade(&mut target);
+            target
+        };
+
+        let with_ssr = render(&mut renderer);
+        renderer.settings.ssr.enabled = false;
+        let without_ssr = render(&mut renderer);
+
+        // Where the box's mirror image lands: the line from the eye to the
+        // box reflected through the floor plane crosses y = 0 here.
+        let view_projection = camera.view_projection();
+        let (x, y, _) = camera
+            .project(Vec3::new(0.0, 0.0, 1.71), 96, 96, &view_projection)
+            .expect("visible");
+        let (x, y) = (x as usize, y as usize);
+
+        let reflected = with_ssr.get_pixel(x, y);
+        let plain = without_ssr.get_pixel(x, y);
+        assert!(
+            reflected.g > plain.g + 0.05,
+            "the floor should pick up the green box: {reflected:?} vs {plain:?}"
+        );
+        assert!(
+            reflected.g > reflected.r * 1.5,
+            "and it should be green: {reflected:?}"
         );
     }
 

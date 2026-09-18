@@ -29,6 +29,8 @@ pub enum DebugView {
     Normals,
     /// Roughness in green, metallic in blue.
     Material,
+    /// Screen-space ambient occlusion on its own.
+    Occlusion,
 }
 
 /// Everything a game is handed each frame: the world, timing, input, the
@@ -212,6 +214,12 @@ pub struct RunOptions {
     /// Upper bound on fixed-update catch-up steps, so a slow frame cannot
     /// spiral into running fixed steps forever.
     pub max_fixed_steps: u32,
+    /// Render at this multiple of the window size and average back down.
+    ///
+    /// The cheapest anti-aliasing there is, and on a software rasterizer the
+    /// only one worth having: 2 costs four times the fragments and removes
+    /// every jagged edge, including the ones inside reflections.
+    pub supersample: u32,
 }
 
 impl Default for RunOptions {
@@ -221,6 +229,7 @@ impl Default for RunOptions {
             frame_delta: None,
             target_fps: Some(60.0),
             max_fixed_steps: 8,
+            supersample: 1,
         }
     }
 }
@@ -254,6 +263,12 @@ impl App {
         self
     }
 
+    /// Render at `factor` times the window resolution and average back down.
+    pub fn with_supersampling(mut self, factor: u32) -> Self {
+        self.options.supersample = factor.max(1);
+        self
+    }
+
     /// Open a window and run until the game quits or the window closes.
     ///
     /// Returns the final [`Engine`], so a caller can inspect — or save — the
@@ -271,7 +286,8 @@ impl App {
         mut game: impl Game,
     ) -> io::Result<Engine> {
         let (width, height) = window.size();
-        let mut engine = Engine::new(width as usize, height as usize);
+        let supersample = self.options.supersample.max(1) as usize;
+        let mut engine = Engine::new(width as usize * supersample, height as usize * supersample);
         // Reused every frame: tone mapping is the only place the renderer
         // produces 8-bit pixels, and it should not allocate to do it.
         let mut resolved: Vec<u32> = Vec::with_capacity(engine.framebuffer.len());
@@ -286,7 +302,9 @@ impl App {
                 match event {
                     Event::CloseRequested => engine.quit(),
                     Event::Resized { width, height } if width > 0 && height > 0 => {
-                        engine.framebuffer.resize(width as usize, height as usize);
+                        engine
+                            .framebuffer
+                            .resize(width as usize * supersample, height as usize * supersample);
                     }
                     _ => {}
                 }
@@ -334,6 +352,9 @@ impl App {
                 DebugView::Albedo => Some(debug::albedo_view(&engine.framebuffer)),
                 DebugView::Normals => Some(debug::normal_view(&engine.framebuffer)),
                 DebugView::Material => Some(debug::material_view(&engine.framebuffer)),
+                DebugView::Occlusion => Some(runity_render::ssao::occlusion_view(
+                    engine.renderer.occlusion(),
+                )),
             };
             match view {
                 Some(view) => {
@@ -351,11 +372,15 @@ impl App {
                 }
             }
 
-            let (w, h) = (
-                engine.framebuffer.width() as u32,
-                engine.framebuffer.height() as u32,
-            );
-            engine.framebuffer.resolve_into(&mut resolved);
+            // Supersampled frames are averaged down before tone mapping, which
+            // is what makes the edges clean rather than merely grey.
+            let presented = if supersample > 1 {
+                engine.framebuffer.downsample(supersample)
+            } else {
+                engine.framebuffer.clone()
+            };
+            let (w, h) = (presented.width() as u32, presented.height() as u32);
+            presented.resolve_into(&mut resolved);
             window.present(&resolved, w, h)?;
 
             if let Some(max) = self.options.max_frames {
