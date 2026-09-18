@@ -13,8 +13,10 @@ use runity_math::{Mat4, Vec3};
 /// Project a clip-space position to pixel coordinates.
 ///
 /// Returns `None` for anything at or behind the near plane, which is where the
-/// perspective divide stops meaning anything.
-fn project(clip: runity_math::Vec4, width: f32, height: f32) -> Option<(f32, f32)> {
+/// perspective divide stops meaning anything. Public so callers outside this
+/// crate — `runity-core`'s world-space text, among them — place things on
+/// screen exactly where this crate's own debug overlays do.
+pub fn project(clip: runity_math::Vec4, width: f32, height: f32) -> Option<(f32, f32)> {
     if clip.w <= 1e-6 || clip.z < 0.0 {
         return None;
     }

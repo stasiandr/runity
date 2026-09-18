@@ -305,9 +305,7 @@ impl Rasterizer {
                     Blend::Replace => src.to_argb8(),
                     Blend::Alpha => {
                         let dst = Color::from_argb8(target.pixels()[index]);
-                        let alpha = src.a.clamp(0.0, 1.0);
-                        dst.lerp(Color::rgba(src.r, src.g, src.b, 1.0), alpha)
-                            .to_argb8()
+                        dst.blend_over(src, src.a).to_argb8()
                     }
                 };
                 target.write_packed(index, packed);
