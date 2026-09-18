@@ -31,6 +31,7 @@ pub mod post;
 pub mod raster;
 pub mod shader;
 pub mod shadow;
+pub mod skin;
 pub mod sky;
 pub mod ssao;
 pub mod ssr;
@@ -52,6 +53,9 @@ pub use post::PostSettings;
 pub use raster::{Blend, CullMode, DrawStats, PolygonMode, Rasterizer};
 pub use shader::{Shader, UnlitShader, Varying, Vertex, VertexOutput};
 pub use shadow::{ShadowMap, ShadowSettings};
+pub use skin::{
+    Animation, Channel, Influence, Interpolation, Joint, Pose, Skeleton, SkinnedMesh, Track,
+};
 pub use sky::{Sky, SkyParams};
 pub use ssao::{OcclusionBuffer, SsaoSettings};
 pub use ssr::SsrSettings;

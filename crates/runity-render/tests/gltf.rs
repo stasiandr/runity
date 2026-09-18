@@ -497,3 +497,174 @@ fn rubbish_never_panics() {
         let _ = gltf::parse(&bytes, None);
     }
 }
+
+/// A skinned triangle with two joints, one clip, and everything the loader
+/// reads: influences, inverse bind matrices, a node hierarchy and keyframes.
+fn skinned_document() -> String {
+    // Three vertices: the first bound to the shoulder, the others to the elbow.
+    let mut bytes = floats(&[0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0]);
+    // JOINTS_0 as unsigned bytes, four per vertex.
+    bytes.extend_from_slice(&[0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+    // WEIGHTS_0 as floats, four per vertex.
+    bytes.extend(floats(&[
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    ]));
+    // Inverse bind matrices: identity for the shoulder, a step back along x
+    // for the elbow, which is one metre out in the bind pose.
+    bytes.extend(floats(&[
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]));
+    bytes.extend(floats(&[
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0,
+    ]));
+    // Keyframe times, then where the elbow is at each of them.
+    bytes.extend(floats(&[0.0, 1.0]));
+    bytes.extend(floats(&[1.0, 0.0, 0.0, 3.0, 0.0, 0.0]));
+
+    format!(
+        r#"{{
+            "asset": {{"version": "2.0"}},
+            "scene": 0,
+            "scenes": [{{"nodes": [0]}}],
+            "nodes": [
+                {{"mesh": 0, "skin": 0, "children": [1], "name": "body"}},
+                {{"children": [2], "name": "shoulder"}},
+                {{"translation": [1.0, 0.0, 0.0], "name": "elbow"}}
+            ],
+            "meshes": [{{"primitives": [{{
+                "attributes": {{"POSITION": 0, "JOINTS_0": 1, "WEIGHTS_0": 2}}
+            }}]}}],
+            "skins": [{{"joints": [1, 2], "inverseBindMatrices": 3}}],
+            "animations": [{{
+                "name": "reach",
+                "channels": [{{"sampler": 0, "target": {{"node": 2, "path": "translation"}}}}],
+                "samplers": [{{"input": 4, "output": 5, "interpolation": "LINEAR"}}]
+            }}],
+            "accessors": [
+                {{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3"}},
+                {{"bufferView": 1, "componentType": 5121, "count": 3, "type": "VEC4"}},
+                {{"bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4"}},
+                {{"bufferView": 3, "componentType": 5126, "count": 2, "type": "MAT4"}},
+                {{"bufferView": 4, "componentType": 5126, "count": 2, "type": "SCALAR"}},
+                {{"bufferView": 5, "componentType": 5126, "count": 2, "type": "VEC3"}}
+            ],
+            "bufferViews": [
+                {{"buffer": 0, "byteOffset": 0, "byteLength": 36}},
+                {{"buffer": 0, "byteOffset": 36, "byteLength": 12}},
+                {{"buffer": 0, "byteOffset": 48, "byteLength": 48}},
+                {{"buffer": 0, "byteOffset": 96, "byteLength": 128}},
+                {{"buffer": 0, "byteOffset": 224, "byteLength": 8}},
+                {{"buffer": 0, "byteOffset": 232, "byteLength": 24}}
+            ],
+            "buffers": [{{"byteLength": {length}, "uri": "data:application/octet-stream;base64,{data}"}}]
+        }}"#,
+        length = bytes.len(),
+        data = base64(&bytes),
+    )
+}
+
+#[test]
+fn a_skeleton_is_read_with_its_joints_in_order() {
+    let model = gltf::parse(skinned_document().as_bytes(), None).expect("a skinned glTF");
+    assert_eq!(model.skins.len(), 1);
+    let skin = &model.skins[0];
+    assert_eq!(skin.skeleton.len(), 2);
+    assert!(
+        skin.skeleton.is_sorted(),
+        "parents must come before children"
+    );
+    assert_eq!(
+        skin.skeleton.joints[0].parent, None,
+        "the shoulder is the root"
+    );
+    assert_eq!(
+        skin.skeleton.joints[1].parent,
+        Some(0),
+        "and the elbow hangs off it"
+    );
+    assert_eq!(skin.nodes, vec![1, 2]);
+    assert_eq!(model.instances[0].skin, Some(0));
+}
+
+#[test]
+fn vertex_influences_are_read_and_normalized() {
+    let model = gltf::parse(skinned_document().as_bytes(), None).unwrap();
+    let influences = &model.influences[0];
+    assert_eq!(influences.len(), 3);
+    assert_eq!(influences[0].joints[0], 0);
+    assert_eq!(influences[1].joints[0], 1);
+    for influence in influences {
+        let total: f32 = influence.weights.iter().sum();
+        assert!((total - 1.0).abs() < 1e-5);
+    }
+    assert!(model.skinned_mesh(0).is_some());
+}
+
+#[test]
+fn a_clip_is_retargeted_from_nodes_onto_joints() {
+    // glTF animates nodes; a pose is in terms of joints. Without the
+    // translation a clip cannot drive a skeleton at all.
+    let model = gltf::parse(skinned_document().as_bytes(), None).unwrap();
+    assert_eq!(model.animations.len(), 1);
+    assert_eq!(model.animations[0].name, "reach");
+    assert_eq!(model.animations[0].channels[0].node, 2);
+
+    let clip = model.animation_for(0, 0).expect("the clip should retarget");
+    assert_eq!(clip.channels.len(), 1);
+    assert_eq!(
+        clip.channels[0].joint, 1,
+        "node 2 is the skin's second joint"
+    );
+    assert!((clip.duration - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn the_loaded_skeleton_and_clip_actually_deform_the_mesh() {
+    // The end-to-end check: file in, moved vertices out.
+    let model = gltf::parse(skinned_document().as_bytes(), None).unwrap();
+    let skin = &model.skins[0];
+    let clip = model.animation_for(0, 0).unwrap();
+    let skinned = model.skinned_mesh(0).unwrap();
+
+    let mut matrices = Vec::new();
+    let mut out = runity_render::Mesh::default();
+
+    // At rest the skinning matrix is the joint's world transform times its
+    // inverse bind, which cancel — so the mesh must come out where it was
+    // modelled.
+    skin.skeleton
+        .skinning_matrices(&clip.pose_at(&skin.skeleton, 0.0), &mut matrices);
+    skinned.apply(&matrices, &mut out);
+    assert!(
+        (out.vertices[1].position.x - 1.0).abs() < 1e-4,
+        "at rest: {:?}",
+        out.vertices[1].position
+    );
+
+    // The clip slides the elbow from one metre out to three, so everything
+    // bound to it moves by two.
+    skin.skeleton
+        .skinning_matrices(&clip.pose_at(&skin.skeleton, 1.0), &mut matrices);
+    skinned.apply(&matrices, &mut out);
+    assert!(
+        (out.vertices[1].position.x - 3.0).abs() < 1e-4,
+        "reaching: {:?}",
+        out.vertices[1].position
+    );
+    assert!(
+        out.vertices[0].position.x.abs() < 1e-4,
+        "the root vertex stays put"
+    );
+}
+
+#[test]
+fn an_unskinned_model_has_no_skins_and_no_clips() {
+    let model = gltf::parse(triangle_document("").as_bytes(), None).unwrap();
+    assert!(model.skins.is_empty());
+    assert!(model.animations.is_empty());
+    assert!(
+        model.skinned_mesh(0).is_none(),
+        "a mesh with no influences does not bend"
+    );
+    assert_eq!(model.animation_for(0, 0), None);
+}

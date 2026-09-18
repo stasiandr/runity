@@ -21,6 +21,10 @@ use crate::color::Color;
 use crate::json::{Json, JsonError};
 use crate::mesh::Mesh;
 use crate::shader::Vertex;
+use crate::skin::{
+    Animation, Channel, Influence, Interpolation, Joint, Skeleton, SkinnedMesh, Track,
+    Transform as JointTransform,
+};
 use crate::texture::Texture;
 
 /// Why a model could not be loaded.
@@ -110,6 +114,40 @@ pub struct Instance {
     pub transform: Mat4,
     /// The node's name, for finding a particular part.
     pub name: String,
+    /// Which skeleton deforms it, if any.
+    pub skin: Option<usize>,
+}
+
+/// A skeleton, and which glTF node each of its joints is.
+///
+/// The node mapping is kept because animation channels name nodes, not
+/// joints: without it a clip cannot be pointed at a skeleton.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Skin {
+    /// The joints, parents before children.
+    pub skeleton: Skeleton,
+    /// Joint index to glTF node index.
+    pub nodes: Vec<usize>,
+}
+
+/// One animated node in a clip, before it is retargeted onto a skeleton.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeChannel {
+    /// Which glTF node it drives.
+    pub node: usize,
+    /// What it drives.
+    pub track: Track,
+    /// How it moves between keys.
+    pub interpolation: Interpolation,
+}
+
+/// A clip as the file stores it: channels against nodes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeAnimation {
+    /// Name from the file.
+    pub name: String,
+    /// The channels, in file order.
+    pub channels: Vec<NodeChannel>,
 }
 
 /// A loaded model: meshes, where they go, and what they are made of.
@@ -118,13 +156,57 @@ pub struct Model {
     /// One mesh per glTF primitive, since a primitive is one material's worth
     /// of triangles and that is what a draw call is.
     pub meshes: Vec<Mesh>,
+    /// Per mesh, the joints that move each vertex. Empty for meshes that do
+    /// not bend.
+    pub influences: Vec<Vec<Influence>>,
     /// Every placement of every mesh, flattened out of the node tree.
     pub instances: Vec<Instance>,
     /// Materials, indexed by [`Instance::material`].
     pub materials: Vec<MaterialData>,
+    /// Skeletons, indexed by [`Instance::skin`].
+    pub skins: Vec<Skin>,
+    /// Clips, still in terms of nodes; see [`Model::animation_for`].
+    pub animations: Vec<NodeAnimation>,
 }
 
 impl Model {
+    /// A clip retargeted onto one of the model's skeletons.
+    ///
+    /// glTF animates nodes, and a skeleton's joints are a subset of them, so
+    /// a clip has to be translated before it can drive a pose. Channels that
+    /// name nodes outside the skin are dropped: a clip that also moves the
+    /// camera should still animate the character.
+    pub fn animation_for(&self, skin: usize, animation: usize) -> Option<Animation> {
+        let skin = self.skins.get(skin)?;
+        let source = self.animations.get(animation)?;
+        let mut clip = Animation {
+            name: source.name.clone(),
+            ..Animation::default()
+        };
+        for channel in &source.channels {
+            let Some(joint) = skin.nodes.iter().position(|node| *node == channel.node) else {
+                continue;
+            };
+            clip.channels.push(Channel {
+                joint: joint as u16,
+                track: channel.track.clone(),
+                interpolation: channel.interpolation,
+            });
+        }
+        clip.recompute_duration();
+        Some(clip)
+    }
+
+    /// A mesh together with its influences, ready to be skinned.
+    pub fn skinned_mesh(&self, mesh: usize) -> Option<SkinnedMesh> {
+        let rest = self.meshes.get(mesh)?.clone();
+        let influences = self.influences.get(mesh)?.clone();
+        if influences.is_empty() {
+            return None;
+        }
+        Some(SkinnedMesh { rest, influences })
+    }
+
     /// How many triangles the whole model holds, counting instances.
     pub fn triangle_count(&self) -> usize {
         self.instances
@@ -248,6 +330,7 @@ fn build(json: &Json, binary: Option<Vec<u8>>, base: Option<&Path>) -> Result<Mo
     // Each primitive becomes one mesh: a primitive is one material's worth of
     // triangles, which is exactly what a draw call is.
     let mut meshes = Vec::new();
+    let mut influences: Vec<Vec<Influence>> = Vec::new();
     let mut primitive_index: Vec<Vec<usize>> = Vec::new();
     let mut primitive_material: Vec<Vec<Option<usize>>> = Vec::new();
 
@@ -264,10 +347,11 @@ fn build(json: &Json, binary: Option<Vec<u8>>, base: Option<&Path>) -> Result<Mo
             if mode != 4 {
                 return Err(GltfError::Unsupported(format!("primitive mode {mode}")));
             }
-            let built = read_primitive(primitive, &buffers, views, accessors)?;
+            let (built, bends) = read_primitive(primitive, &buffers, views, accessors)?;
             indices.push(meshes.len());
             used_materials.push(primitive.get("material").and_then(Json::as_usize));
             meshes.push(built);
+            influences.push(bends);
         }
         primitive_index.push(indices);
         primitive_material.push(used_materials);
@@ -314,6 +398,7 @@ fn build(json: &Json, binary: Option<Vec<u8>>, base: Option<&Path>) -> Result<Mo
                     material: materials_for.get(slot).copied().flatten(),
                     transform: world,
                     name: name.clone(),
+                    skin: node.get("skin").and_then(Json::as_usize),
                 });
             }
         }
@@ -324,11 +409,235 @@ fn build(json: &Json, binary: Option<Vec<u8>>, base: Option<&Path>) -> Result<Mo
         }
     }
 
+    let skins = read_skins(json, nodes, &buffers, views, accessors)?;
+    let animations = read_animations(json, &buffers, views, accessors)?;
     Ok(Model {
         meshes,
+        influences,
         instances,
         materials,
+        skins,
+        animations,
     })
+}
+
+/// Skeletons, with each joint's rest transform taken from its node.
+fn read_skins(
+    json: &Json,
+    nodes: &[Json],
+    buffers: &[Vec<u8>],
+    views: &[Json],
+    accessors: &[Json],
+) -> Result<Vec<Skin>, GltfError> {
+    let mut skins = Vec::new();
+    for skin in json.get("skins").and_then(Json::as_array).unwrap_or(&[]) {
+        let joint_nodes: Vec<usize> = skin
+            .get("joints")
+            .and_then(Json::as_array)
+            .map(|joints| joints.iter().filter_map(Json::as_usize).collect())
+            .unwrap_or_default();
+
+        // Inverse bind matrices are optional; without them the bind pose is
+        // the identity, which is what the specification says.
+        let matrices = match skin.get("inverseBindMatrices").and_then(Json::as_usize) {
+            Some(index) => read_accessor(index, buffers, views, accessors)?,
+            None => Vec::new(),
+        };
+
+        let mut joints = Vec::with_capacity(joint_nodes.len());
+        for (slot, node_index) in joint_nodes.iter().enumerate() {
+            let node = nodes.get(*node_index);
+            let rest = node.map(node_local).unwrap_or_default();
+            let inverse_bind = matrices
+                .get(slot * 16..slot * 16 + 16)
+                .map(|values| {
+                    let mut m = [0.0f32; 16];
+                    m.copy_from_slice(values);
+                    Mat4::from_array(m)
+                })
+                .unwrap_or(Mat4::IDENTITY);
+            // A joint's parent is whichever joint of this skin lists it as a
+            // child; joints whose parent is outside the skin become roots.
+            let parent = joint_nodes.iter().position(|candidate| {
+                nodes
+                    .get(*candidate)
+                    .and_then(|node| node.get("children"))
+                    .and_then(Json::as_array)
+                    .is_some_and(|children| {
+                        children
+                            .iter()
+                            .filter_map(Json::as_usize)
+                            .any(|child| child == *node_index)
+                    })
+            });
+            joints.push(Joint {
+                parent: parent.map(|p| p as u16),
+                rest,
+                inverse_bind,
+            });
+        }
+
+        skins.push(Skin {
+            skeleton: Skeleton { joints },
+            nodes: joint_nodes,
+        });
+    }
+    Ok(skins)
+}
+
+/// A node's own transform, as a skeleton stores it.
+fn node_local(node: &Json) -> JointTransform {
+    // Taking the matrix apart covers both spellings a file may use, and is
+    // exact for the translate-rotate-scale form every exporter writes.
+    let matrix = node_transform(node);
+    let column = |index: usize| {
+        let c = matrix.cols[index];
+        Vec3::new(c.x, c.y, c.z)
+    };
+    let (x, y, z) = (column(0), column(1), column(2));
+    let mut scale = Vec3::new(x.length(), y.length(), z.length());
+    if x.cross(y).dot(z) < 0.0 {
+        scale.x = -scale.x;
+    }
+    let safe = |value: f32| if value.abs() < 1e-8 { 1.0 } else { value };
+    let rotation = Quat::from_axes(x / safe(scale.x), y / safe(scale.y), z / safe(scale.z));
+    JointTransform {
+        position: column(3),
+        rotation,
+        scale,
+    }
+}
+
+/// Clips, still pointing at nodes.
+fn read_animations(
+    json: &Json,
+    buffers: &[Vec<u8>],
+    views: &[Json],
+    accessors: &[Json],
+) -> Result<Vec<NodeAnimation>, GltfError> {
+    let mut animations = Vec::new();
+    for animation in json
+        .get("animations")
+        .and_then(Json::as_array)
+        .unwrap_or(&[])
+    {
+        let samplers = animation
+            .get("samplers")
+            .and_then(Json::as_array)
+            .unwrap_or(&[]);
+        let mut clip = NodeAnimation {
+            name: animation
+                .get("name")
+                .and_then(Json::as_str)
+                .unwrap_or("")
+                .to_string(),
+            channels: Vec::new(),
+        };
+
+        for channel in animation
+            .get("channels")
+            .and_then(Json::as_array)
+            .unwrap_or(&[])
+        {
+            let Some(sampler) = channel
+                .get("sampler")
+                .and_then(Json::as_usize)
+                .and_then(|index| samplers.get(index))
+            else {
+                continue;
+            };
+            let Some(node) = channel.path(&["target", "node"]).and_then(Json::as_usize) else {
+                continue;
+            };
+            let path = channel
+                .path(&["target", "path"])
+                .and_then(Json::as_str)
+                .unwrap_or("");
+
+            let interpolation = match sampler.get("interpolation").and_then(Json::as_str) {
+                Some("STEP") => Interpolation::Step,
+                // Cubic splines carry tangents this loader does not read, and
+                // treating them as linear is visibly wrong on fast motion.
+                Some("CUBICSPLINE") => {
+                    return Err(GltfError::Unsupported("cubic spline animation".into()))
+                }
+                _ => Interpolation::Linear,
+            };
+
+            let times = read_accessor(
+                sampler
+                    .get("input")
+                    .and_then(Json::as_usize)
+                    .ok_or(GltfError::Missing("sampler input"))?,
+                buffers,
+                views,
+                accessors,
+            )?;
+            let values = read_accessor(
+                sampler
+                    .get("output")
+                    .and_then(Json::as_usize)
+                    .ok_or(GltfError::Missing("sampler output"))?,
+                buffers,
+                views,
+                accessors,
+            )?;
+
+            let track = match path {
+                "translation" | "scale" => {
+                    let keys: Vec<(f32, Vec3)> = times
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, time)| {
+                            let base = index * 3;
+                            Some((
+                                *time,
+                                Vec3::new(
+                                    *values.get(base)?,
+                                    *values.get(base + 1)?,
+                                    *values.get(base + 2)?,
+                                ),
+                            ))
+                        })
+                        .collect();
+                    if path == "translation" {
+                        Track::Translation(keys)
+                    } else {
+                        Track::Scale(keys)
+                    }
+                }
+                "rotation" => Track::Rotation(
+                    times
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, time)| {
+                            let base = index * 4;
+                            Some((
+                                *time,
+                                Quat {
+                                    x: *values.get(base)?,
+                                    y: *values.get(base + 1)?,
+                                    z: *values.get(base + 2)?,
+                                    w: *values.get(base + 3)?,
+                                },
+                            ))
+                        })
+                        .collect(),
+                ),
+                // Morph target weights are not read; skipping the channel
+                // leaves the rest of the clip usable.
+                _ => continue,
+            };
+
+            clip.channels.push(NodeChannel {
+                node,
+                track,
+                interpolation,
+            });
+        }
+        animations.push(clip);
+    }
+    Ok(animations)
 }
 
 /// The indices of the default scene's root nodes.
@@ -553,7 +862,7 @@ fn read_primitive(
     buffers: &[Vec<u8>],
     views: &[Json],
     accessors: &[Json],
-) -> Result<Mesh, GltfError> {
+) -> Result<(Mesh, Vec<Influence>), GltfError> {
     let attributes = primitive
         .get("attributes")
         .ok_or(GltfError::Missing("primitive attribute"))?;
@@ -617,13 +926,41 @@ fn read_primitive(
         None => (0..count as u32).collect(),
     };
 
+    // Skinning attributes, when the mesh bends.
+    let joint_indices = attributes
+        .get("JOINTS_0")
+        .and_then(Json::as_usize)
+        .map(|index| read_accessor(index, buffers, views, accessors))
+        .transpose()?;
+    let joint_weights = attributes
+        .get("WEIGHTS_0")
+        .and_then(Json::as_usize)
+        .map(|index| read_accessor(index, buffers, views, accessors))
+        .transpose()?;
+    let influences: Vec<Influence> = match (joint_indices, joint_weights) {
+        (Some(joints), Some(weights)) => (0..count)
+            .map(|index| {
+                let base = index * 4;
+                let mut influence = Influence::default();
+                for slot in 0..4 {
+                    influence.joints[slot] = joints.get(base + slot).copied().unwrap_or(0.0) as u16;
+                    influence.weights[slot] = weights.get(base + slot).copied().unwrap_or(0.0);
+                }
+                // Exporters round weights; a vertex whose weights sum to 0.98
+                // shrinks toward the origin without this.
+                influence.normalized()
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
     let mut mesh = Mesh::new(vertices, indices);
     if normals.is_none() {
         // A file without normals is legal, and unlit without them.
         mesh.recompute_normals();
     }
     mesh.recompute_tangents();
-    Ok(mesh)
+    Ok((mesh, influences))
 }
 
 /// Read an accessor as floats, whatever it is stored as.
@@ -651,6 +988,9 @@ fn read_accessor(
         "VEC2" => 2,
         "VEC3" => 3,
         "VEC4" => 4,
+        // Inverse bind matrices are the one place a 4x4 turns up, and they
+        // are read as sixteen floats in column order.
+        "MAT4" => 16,
         other => return Err(GltfError::Unsupported(format!("accessor type {other}"))),
     };
     let size = match component {
