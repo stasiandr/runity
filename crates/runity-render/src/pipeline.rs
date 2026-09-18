@@ -20,6 +20,7 @@ use crate::pbr::{
     direct_light, environment_brdf, f0_for, fresnel_schlick_roughness, Light, Material,
 };
 use crate::raster::{DrawStats, Rasterizer};
+use crate::shadow::{ShadowMap, ShadowSettings};
 use crate::sky::Sky;
 use crate::view::CameraView;
 use runity_math::{Mat4, Vec3};
@@ -31,6 +32,7 @@ pub struct RenderSettings {
     pub draw_sky: bool,
     /// Multiplier on image-based lighting.
     pub ambient_intensity: f32,
+    pub shadows: ShadowSettings,
 }
 
 impl Default for RenderSettings {
@@ -38,6 +40,7 @@ impl Default for RenderSettings {
         Self {
             draw_sky: true,
             ambient_intensity: 1.0,
+            shadows: ShadowSettings::default(),
         }
     }
 }
@@ -48,6 +51,8 @@ pub struct Renderer {
     pub sky: Sky,
     pub lights: Vec<Light>,
     pub settings: RenderSettings,
+    /// One per light, index-aligned; inactive for lights that cannot cast.
+    shadow_maps: Vec<ShadowMap>,
     camera: CameraView,
     stats: DrawStats,
 }
@@ -67,6 +72,7 @@ impl Renderer {
             sky,
             lights,
             settings: RenderSettings::default(),
+            shadow_maps: Vec::new(),
             camera: CameraView::new(Mat4::IDENTITY, Mat4::IDENTITY, Vec3::ZERO, 0.1, 100.0),
             stats: DrawStats::default(),
         }
@@ -105,6 +111,22 @@ impl Renderer {
             target.enable_gbuffer(true);
         }
         target.clear(clear_color);
+
+        // Point every shadow-casting light's map at what the camera is looking
+        // at. Meshes go into them during the geometry pass.
+        let resolution = self.settings.shadows.resolution;
+        while self.shadow_maps.len() < self.lights.len() {
+            self.shadow_maps.push(ShadowMap::new(resolution));
+        }
+        self.shadow_maps.truncate(self.lights.len());
+        for (map, light) in self.shadow_maps.iter_mut().zip(&self.lights) {
+            map.begin(light, &self.camera, &self.settings.shadows);
+        }
+    }
+
+    /// The depth maps rendered this frame, for debug views.
+    pub fn shadow_maps(&self) -> &[ShadowMap] {
+        &self.shadow_maps
     }
 
     /// Geometry pass for one mesh.
@@ -115,6 +137,12 @@ impl Renderer {
         model: Mat4,
         material: &Material<'_>,
     ) -> DrawStats {
+        // The same geometry goes into every active shadow map. Depth-only, so
+        // it costs a fraction of the main pass.
+        for map in &mut self.shadow_maps {
+            map.draw(mesh, model);
+        }
+
         let shader = GeometryShader::new(model, self.camera.view_projection(), *material);
         let stats = self.rasterizer.draw_mesh(target, mesh, &shader);
         self.stats.triangles_in += stats.triangles_in;
@@ -167,10 +195,18 @@ impl Renderer {
         let to_eye = (self.camera.position - surface.position).normalized();
 
         let mut total = Color::BLACK;
-        for light in &self.lights {
+        for (index, light) in self.lights.iter().enumerate() {
             let Some((to_light, radiance)) = light.sample(surface.position) else {
                 continue;
             };
+            let visibility = match self.shadow_maps.get(index) {
+                Some(map) => map.visibility(surface.position, normal, &self.settings.shadows),
+                None => 1.0,
+            };
+            if visibility <= 0.0 {
+                continue;
+            }
+            let radiance = radiance.scale_rgb(visibility);
             let contribution = direct_light(surface, normal, to_eye, to_light, radiance);
             total = Color::rgb(
                 total.r + contribution.r,
@@ -380,6 +416,78 @@ mod tests {
         assert_eq!(
             color.r, 3.0,
             "emission passes through untouched, above white"
+        );
+    }
+
+    #[test]
+    fn a_caster_darkens_the_ground_under_it() {
+        let mut renderer = renderer();
+        renderer.settings.ambient_intensity = 0.0; // isolate the sun
+        renderer.settings.shadows.extent = 10.0;
+        renderer.settings.shadows.resolution = 512;
+        // Straight down, so the shadow lands directly under the cube.
+        renderer.lights = vec![Light::directional(-Vec3::Y, Color::WHITE, 3.0)];
+
+        // Off to the side and above, with a clear line of sight to the ground
+        // beneath the caster.
+        let position = Vec3::new(6.0, 4.0, 6.0);
+        let camera = CameraView::new(
+            Mat4::look_at(position, Vec3::ZERO, Vec3::Y),
+            Mat4::perspective(60f32.to_radians(), 1.0, 0.1, 100.0),
+            position,
+            0.1,
+            100.0,
+        );
+
+        let (width, height) = (96, 96);
+        let mut target = Framebuffer::new(width, height);
+        renderer.begin_frame(&mut target, camera, Color::BLACK);
+        let ground = Material::dielectric(Color::rgb(0.8, 0.8, 0.8), 0.9);
+        renderer.draw(&mut target, &Mesh::plane(24.0, 1), Mat4::IDENTITY, &ground);
+        renderer.draw(
+            &mut target,
+            &Mesh::cube(2.0),
+            Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0)),
+            &ground,
+        );
+        renderer.shade(&mut target);
+
+        // Ask the camera where each ground point landed rather than guessing.
+        let view_projection = camera.view_projection();
+        let pixel = |world: Vec3| {
+            let (x, y, _) = camera
+                .project(world, width, height, &view_projection)
+                .expect("visible");
+            (x as usize, y as usize)
+        };
+        let under_the_cube = pixel(Vec3::ZERO);
+        // Off to the side, where the cube does not block the view of the floor.
+        let open_ground = pixel(Vec3::new(3.0, 0.0, -3.0));
+        let luminance =
+            |target: &Framebuffer, (x, y): (usize, usize)| target.get_pixel(x, y).luminance();
+
+        let shadowed = luminance(&target, under_the_cube);
+        let lit = luminance(&target, open_ground);
+        assert!(lit > 0.05, "the open ground is lit: {lit}");
+        assert!(
+            shadowed < lit * 0.2,
+            "under the cube is dark: {shadowed} vs {lit}"
+        );
+
+        // And with shadows off, the same point is lit again.
+        renderer.settings.shadows.enabled = false;
+        renderer.begin_frame(&mut target, camera, Color::BLACK);
+        renderer.draw(&mut target, &Mesh::plane(24.0, 1), Mat4::IDENTITY, &ground);
+        renderer.draw(
+            &mut target,
+            &Mesh::cube(2.0),
+            Mat4::from_translation(Vec3::new(0.0, 3.0, 0.0)),
+            &ground,
+        );
+        renderer.shade(&mut target);
+        assert!(
+            luminance(&target, under_the_cube) > lit * 0.8,
+            "shadows can be switched off"
         );
     }
 

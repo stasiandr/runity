@@ -76,6 +76,18 @@ impl CameraView {
         ))
     }
 
+    /// Where the camera looks, in world space.
+    #[inline]
+    pub fn forward(&self) -> Vec3 {
+        // The view matrix's third row is the camera's backwards axis.
+        -Vec3::new(
+            self.view.cols[0].z,
+            self.view.cols[1].z,
+            self.view.cols[2].z,
+        )
+        .normalized()
+    }
+
     /// Distance from the eye along the view direction — what SSAO compares.
     #[inline]
     pub fn view_depth(&self, world: Vec3) -> f32 {
@@ -115,6 +127,17 @@ mod tests {
             assert!((py - (y as f32 + 0.5)).abs() < 0.01, "y: {py} vs {y}");
             assert!((0.0..=1.0).contains(&depth));
         }
+    }
+
+    #[test]
+    fn forward_points_where_the_camera_looks() {
+        let camera = camera();
+        let expected = (Vec3::ZERO - camera.position).normalized();
+        assert!(
+            (camera.forward() - expected).length() < 1e-5,
+            "{:?}",
+            camera.forward()
+        );
     }
 
     #[test]
