@@ -9,6 +9,7 @@
 //! * [`runity_platform`] — windows and input, straight from the OS (the X11
 //!   wire protocol over a Unix socket; `user32`/`gdi32` on Windows).
 //! * [`runity_physics`] — rigid bodies, collision and the simulation step.
+//! * [`runity_ai`] — spatial queries, navigation, steering and decisions.
 //! * [`runity_serialize`] — versioned binary encoding shared by saves, the
 //!   network and snapshot tests.
 //! * [`runity_core`] — entities, timing, input state and the main loop.
@@ -41,6 +42,7 @@
 
 #![forbid(unsafe_code)]
 
+pub use runity_ai as ai;
 pub use runity_core as core;
 pub use runity_math as math;
 pub use runity_physics as physics;
@@ -50,6 +52,10 @@ pub use runity_serialize as serialize;
 
 /// Everything you normally need, in one `use`.
 pub mod prelude {
+    pub use runity_ai::{
+        arrive, choose, choose_near_best, curve, score, seek, separation, Awareness, FlowField,
+        Locomotion, NavGrid, Path, PathFinder, PathFollower, PathSettings, Senses, SpatialGrid,
+    };
     pub use runity_core::headless;
     pub use runity_core::{
         App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Game, Input, Mut,

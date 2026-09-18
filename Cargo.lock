@@ -6,6 +6,7 @@ version = 3
 name = "runity"
 version = "0.1.0"
 dependencies = [
+ "runity-ai",
  "runity-core",
  "runity-math",
  "runity-physics",
