@@ -84,10 +84,10 @@ fn embedded_font_metrics_are_the_ones_roboto_ships() {
     let font = Font::embedded();
     assert_eq!(font.units_per_em(), 2048, "Roboto is a 2048-unit font");
     assert_eq!(font.num_glyphs(), 3387);
-    assert!(font.ascender() > 0);
-    assert!(font.descender() < 0);
+    assert!(font.ascender_units() > 0);
+    assert!(font.descender_units() < 0);
     assert!(
-        font.line_height() > font.units_per_em() as i32,
+        font.line_height_units() > font.units_per_em() as i32,
         "lines must not overlap by default"
     );
 }

@@ -42,6 +42,31 @@ impl Builder {
             )
     }
 
+    /// Replace `glyf`, and the tables whose size has to agree with it: `loca`,
+    /// `maxp` and `hmtx`, one advance per glyph.
+    ///
+    /// Glyph 0 is `.notdef` and is normally passed as an empty entry; the rest
+    /// come from [`glyf_simple`] and [`glyf_composite`].
+    pub(crate) fn with_glyphs(self, glyphs: &[Vec<u8>]) -> Self {
+        let mut glyf = Vec::new();
+        let mut offsets = vec![0u32];
+        for glyph in glyphs {
+            glyf.extend_from_slice(glyph);
+            // `loca` offsets of a short table are halved, so keep every glyph
+            // on an even boundary whichever format the caller asks for.
+            while glyf.len() % 4 != 0 {
+                glyf.push(0);
+            }
+            offsets.push(glyf.len() as u32);
+        }
+        let metrics: Vec<(u16, i16)> = glyphs.iter().map(|_| (600, 0)).collect();
+        self.with(b"glyf", glyf)
+            .with(b"loca", loca_long(&offsets))
+            .with(b"maxp", maxp(glyphs.len() as u16))
+            .with(b"hhea", hhea(800, -200, 100, glyphs.len() as u16))
+            .with(b"hmtx", hmtx(&metrics, &[]))
+    }
+
     /// Add or replace a table.
     pub(crate) fn with(mut self, tag: &[u8; 4], data: Vec<u8>) -> Self {
         self.tables.retain(|(t, _)| t != tag);
@@ -285,6 +310,246 @@ pub(crate) fn cmap_table(encodings: &[(u16, u16, Vec<u8>)]) -> Vec<u8> {
     }
     t.extend_from_slice(&body);
     t
+}
+
+/// One point of a glyph contour, in font units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pt {
+    pub(crate) x: i16,
+    pub(crate) y: i16,
+    pub(crate) on_curve: bool,
+}
+
+impl Pt {
+    /// A point the outline passes through.
+    pub(crate) fn on(x: i16, y: i16) -> Pt {
+        Pt {
+            x,
+            y,
+            on_curve: true,
+        }
+    }
+
+    /// A quadratic control point.
+    pub(crate) fn off(x: i16, y: i16) -> Pt {
+        Pt {
+            x,
+            y,
+            on_curve: false,
+        }
+    }
+}
+
+/// A simple glyph with every coordinate spelled out as a signed word.
+pub(crate) fn glyf_simple(contours: &[Vec<Pt>]) -> Vec<u8> {
+    glyf_encode(contours, false)
+}
+
+/// The same glyph in the encoding a real font uses: one-byte deltas, repeated
+/// coordinates left out, and runs of equal flags collapsed.
+pub(crate) fn glyf_simple_packed(contours: &[Vec<Pt>]) -> Vec<u8> {
+    glyf_encode(contours, true)
+}
+
+fn glyf_encode(contours: &[Vec<Pt>], packed: bool) -> Vec<u8> {
+    let points: Vec<Pt> = contours.iter().flatten().copied().collect();
+    let mut t = Vec::new();
+    t.extend_from_slice(&(contours.len() as i16).to_be_bytes());
+    for extreme in [
+        points.iter().map(|p| p.x).min().unwrap_or(0),
+        points.iter().map(|p| p.y).min().unwrap_or(0),
+        points.iter().map(|p| p.x).max().unwrap_or(0),
+        points.iter().map(|p| p.y).max().unwrap_or(0),
+    ] {
+        t.extend_from_slice(&extreme.to_be_bytes());
+    }
+
+    let mut end = 0usize;
+    for contour in contours {
+        end += contour.len();
+        t.extend_from_slice(&((end - 1) as u16).to_be_bytes());
+    }
+    t.extend_from_slice(&0u16.to_be_bytes()); // instructionLength
+
+    // Coordinates are stored as deltas from the previous point, starting at the
+    // origin, and each axis says in the flags how it is encoded.
+    let mut deltas = Vec::with_capacity(points.len());
+    let (mut x, mut y) = (0i32, 0i32);
+    for point in &points {
+        deltas.push((point.x as i32 - x, point.y as i32 - y));
+        x = point.x as i32;
+        y = point.y as i32;
+    }
+
+    let mut flags = Vec::with_capacity(points.len());
+    for (point, &(dx, dy)) in points.iter().zip(&deltas) {
+        let mut flag = if point.on_curve { 0x01u8 } else { 0x00 };
+        if packed {
+            flag |= axis_flags(dx, 0x02, 0x10);
+            flag |= axis_flags(dy, 0x04, 0x20);
+        }
+        flags.push(flag);
+    }
+
+    let mut at = 0;
+    while at < flags.len() {
+        let flag = flags[at];
+        let run = flags[at..]
+            .iter()
+            .take(256)
+            .take_while(|&&f| f == flag)
+            .count();
+        if packed && run > 1 {
+            t.push(flag | 0x08); // REPEAT
+            t.push((run - 1) as u8);
+        } else {
+            t.extend(std::iter::repeat(flag).take(run));
+        }
+        at += run;
+    }
+
+    for axis in 0..2 {
+        for (&flag, &(dx, dy)) in flags.iter().zip(&deltas) {
+            let (delta, short, same) = if axis == 0 {
+                (dx, flag & 0x02 != 0, flag & 0x10 != 0)
+            } else {
+                (dy, flag & 0x04 != 0, flag & 0x20 != 0)
+            };
+            if short {
+                t.push(delta.unsigned_abs() as u8);
+            } else if !same {
+                t.extend_from_slice(&(delta as i16).to_be_bytes());
+            }
+        }
+    }
+    t
+}
+
+/// The short/same pair of flag bits for one axis of one delta.
+fn axis_flags(delta: i32, short: u8, same_or_positive: u8) -> u8 {
+    if delta == 0 {
+        same_or_positive
+    } else if delta.abs() <= 255 {
+        short | if delta > 0 { same_or_positive } else { 0 }
+    } else {
+        0
+    }
+}
+
+/// One component of a composite glyph.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Comp {
+    glyph: u16,
+    dx: i16,
+    dy: i16,
+    matrix: Option<[f32; 4]>,
+    scaled_offset: bool,
+    xy_values: bool,
+}
+
+impl Comp {
+    /// A component placed by an offset, which is how nearly all of them are.
+    pub(crate) fn at(glyph: u16, dx: i16, dy: i16) -> Comp {
+        Comp {
+            glyph,
+            dx,
+            dy,
+            matrix: None,
+            scaled_offset: false,
+            xy_values: true,
+        }
+    }
+
+    /// Scale both axes by the same factor. F2Dot14 holds -2.0 up to 2.0.
+    pub(crate) fn scaled(mut self, scale: f32) -> Comp {
+        self.matrix = Some([scale, 0.0, 0.0, scale]);
+        self
+    }
+
+    /// Scale each axis on its own.
+    pub(crate) fn scaled_xy(mut self, x: f32, y: f32) -> Comp {
+        self.matrix = Some([x, 0.0, 0.0, y]);
+        self
+    }
+
+    /// A full 2×2 matrix, in the order the font stores it: xx, xy, yx, yy.
+    pub(crate) fn matrix(mut self, matrix: [f32; 4]) -> Comp {
+        self.matrix = Some(matrix);
+        self
+    }
+
+    /// Ask for the offset to be scaled by the matrix as well.
+    pub(crate) fn scaled_offset(mut self) -> Comp {
+        self.scaled_offset = true;
+        self
+    }
+
+    /// Store the arguments as point numbers rather than as an offset.
+    pub(crate) fn point_matched(mut self) -> Comp {
+        self.xy_values = false;
+        self
+    }
+}
+
+/// A composite glyph built from components.
+pub(crate) fn glyf_composite(components: &[Comp]) -> Vec<u8> {
+    let mut t = Vec::new();
+    t.extend_from_slice(&(-1i16).to_be_bytes());
+    t.extend_from_slice(&[0; 8]); // bbox, which a composite glyph gets wrong anyway
+
+    for (i, component) in components.iter().enumerate() {
+        let words =
+            component.dx < -128 || component.dx > 127 || component.dy < -128 || component.dy > 127;
+        let mut flags = 0u16;
+        if words {
+            flags |= 0x0001; // ARG_1_AND_2_ARE_WORDS
+        }
+        if component.xy_values {
+            flags |= 0x0002; // ARGS_ARE_XY_VALUES
+        }
+        if component.scaled_offset {
+            flags |= 0x0800; // SCALED_COMPONENT_OFFSET
+        }
+        let matrix = component.matrix.map(matrix_fields);
+        if let Some((bit, _)) = matrix {
+            flags |= bit;
+        }
+        if i + 1 < components.len() {
+            flags |= 0x0020; // MORE_COMPONENTS
+        }
+
+        t.extend_from_slice(&flags.to_be_bytes());
+        t.extend_from_slice(&component.glyph.to_be_bytes());
+        if words {
+            t.extend_from_slice(&component.dx.to_be_bytes());
+            t.extend_from_slice(&component.dy.to_be_bytes());
+        } else {
+            t.push(component.dx as i8 as u8);
+            t.push(component.dy as i8 as u8);
+        }
+        for value in matrix.into_iter().flat_map(|(_, values)| values) {
+            t.extend_from_slice(&f2dot14(value));
+        }
+    }
+    t
+}
+
+/// Which flag a component's matrix needs and which of its values are stored:
+/// one factor for a plain scale, two for a per-axis one, four otherwise.
+fn matrix_fields(matrix: [f32; 4]) -> (u16, Vec<f32>) {
+    let [a, b, c, d] = matrix;
+    if b != 0.0 || c != 0.0 {
+        (0x0080, vec![a, b, c, d]) // WE_HAVE_A_TWO_BY_TWO
+    } else if a == d {
+        (0x0008, vec![a]) // WE_HAVE_A_SCALE
+    } else {
+        (0x0040, vec![a, d]) // WE_HAVE_AN_X_AND_Y_SCALE
+    }
+}
+
+/// A scale factor as the 2.14 fixed point a component stores.
+fn f2dot14(value: f32) -> [u8; 2] {
+    (((value * 16384.0).round() as i32) as i16).to_be_bytes()
 }
 
 /// A version 0 `kern` table with a single horizontal format 0 subtable.
