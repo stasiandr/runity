@@ -1,0 +1,12 @@
+[package]
+name = "runity-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Networking for the runity engine: UDP, reliability and replication. No dependencies."
+
+[dependencies]
+runity-math = { path = "../runity-math", version = "0.1.0" }
+runity-serialize = { path = "../runity-serialize", version = "0.1.0" }

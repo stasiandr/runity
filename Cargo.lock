@@ -39,6 +39,14 @@ name = "runity-math"
 version = "0.1.0"
 
 [[package]]
+name = "runity-net"
+version = "0.1.0"
+dependencies = [
+ "runity-math",
+ "runity-serialize",
+]
+
+[[package]]
 name = "runity-physics"
 version = "0.1.0"
 dependencies = [
