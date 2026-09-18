@@ -99,11 +99,13 @@ RGB, палитру и варианты с альфой, со всеми пят�
 ## Запуск
 
 ```bash
+cargo run --release --example smallworld         # витрина: шесть сцен в одном окне
 cargo run --release --example spinning_cube      # окно: macOS, X11 или Win32
 cargo run --release --example hello_triangle
 
+RUNITY_HEADLESS=1 cargo run --release --example smallworld      # шесть PNG: 01-lit-scene … 06-world
 RUNITY_HEADLESS=1 cargo run --release --example spinning_cube   # без дисплея, пишет cube.png
-cargo test --workspace                                          # 129 тестов, дисплей не нужен
+cargo test --workspace                                          # тесты, дисплей не нужен
 
 # кросс-проверка бэкендов, которые нельзя собрать на текущей машине
 cargo check --workspace --target aarch64-apple-darwin
@@ -113,6 +115,17 @@ cargo check --workspace --target x86_64-pc-windows-gnu
 
 Управление в `spinning_cube`: стрелки или WASD — орбита камеры, Q/E — зум,
 Escape — выход.
+
+`smallworld` — шесть сцен (Lit scene, Triangle, Meshes, Textures, Depth &
+blending, World) в одном окне 960×540: Tab и Shift+Tab листают их по кругу,
+стрелки или WASD крутят камеру текущей сцены, Q/E — зум, пробел — действие
+сцены (в World — ещё десять сущностей), Backspace — обратное (в World — снять
+последние десять), 1–4 и N — отладочные виды, Escape — выход. Каждая сцена
+помнит свою камеру и замирает, пока не на экране; отладочный вид общий и
+переживает переключение. `RUNITY_SCENE=1..6` открывает нужную сцену сразу,
+`RUNITY_HEADLESS=1` прогоняет все шесть по 60 кадров с шагом 1/60 и раскладывает
+их по PNG. Полный список клавиш — в док-комментарии
+`crates/runity/examples/smallworld.rs`.
 
 ## Свой шейдер
 
