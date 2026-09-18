@@ -266,6 +266,28 @@ unsafe fn menu_item(title: &str, action: Sel, key_equivalent: &str) -> Id {
     item
 }
 
+/// Hang one submenu, with the items it contains, off the menu bar.
+///
+/// Each item is a title, the selector it sends up the responder chain, and its
+/// key equivalent (the plain letter; Cmd is implied).
+///
+/// # Safety
+/// Must run on the main thread, with every `action` a selector or null.
+unsafe fn add_submenu(menu_bar: Id, title: &str, items: &[(&str, Sel, &str)]) {
+    let menu = msg_id(msg_id(class(b"NSMenu\0"), sel(b"alloc\0")), sel(b"init\0"));
+    for (item_title, action, key) in items {
+        let item = menu_item(item_title, *action, key);
+        msg_with_id(menu, sel(b"addItem:\0"), item);
+        msg(item, sel(b"release\0"));
+    }
+    // A submenu reaches the menu bar through a carrier item of its own.
+    let carrier = menu_item(title, std::ptr::null(), "");
+    msg_with_id(menu_bar, sel(b"addItem:\0"), carrier);
+    msg_with_two_ids(menu_bar, sel(b"setSubmenu:forItem:\0"), menu, carrier);
+    msg(carrier, sel(b"release\0"));
+    msg(menu, sel(b"release\0"));
+}
+
 /// Give the application the smallest main menu that still behaves like a Mac
 /// application.
 ///
@@ -281,44 +303,27 @@ unsafe fn menu_item(title: &str, action: Sel, key_equivalent: &str) -> Id {
 /// # Safety
 /// Must run on the main thread, before `finishLaunching`.
 unsafe fn install_main_menu(app: Id, app_name: &str) {
-    let new_menu = || msg_id(msg_id(class(b"NSMenu\0"), sel(b"alloc\0")), sel(b"init\0"));
-    let menu_bar = new_menu();
+    let menu_bar = msg_id(msg_id(class(b"NSMenu\0"), sel(b"alloc\0")), sel(b"init\0"));
 
     // The first submenu is the application menu, whatever it is called.
-    let application_menu = new_menu();
-    let window_menu = new_menu();
-    let menus: [(Id, &str, &[(String, Sel, &str)]); 2] = [
-        (
-            application_menu,
-            app_name,
-            &[
-                (format!("Hide {app_name}"), sel(b"hide:\0"), "h"),
-                (format!("Quit {app_name}"), sel(b"performClose:\0"), "q"),
-            ],
-        ),
-        (
-            window_menu,
-            "Window",
-            &[
-                ("Minimize".to_string(), sel(b"performMiniaturize:\0"), "m"),
-                ("Close".to_string(), sel(b"performClose:\0"), "w"),
-            ],
-        ),
-    ];
-
-    for (menu, title, items) in menus {
-        for (item_title, action, key) in items {
-            let item = menu_item(item_title, *action, key);
-            msg_with_id(menu, sel(b"addItem:\0"), item);
-            msg(item, sel(b"release\0"));
-        }
-        // A submenu reaches the menu bar through a carrier item of its own.
-        let carrier = menu_item(title, std::ptr::null(), "");
-        msg_with_id(menu_bar, sel(b"addItem:\0"), carrier);
-        msg_with_two_ids(menu_bar, sel(b"setSubmenu:forItem:\0"), menu, carrier);
-        msg(carrier, sel(b"release\0"));
-        msg(menu, sel(b"release\0"));
-    }
+    let hide = format!("Hide {app_name}");
+    let quit = format!("Quit {app_name}");
+    add_submenu(
+        menu_bar,
+        app_name,
+        &[
+            (hide.as_str(), sel(b"hide:\0"), "h"),
+            (quit.as_str(), sel(b"performClose:\0"), "q"),
+        ],
+    );
+    add_submenu(
+        menu_bar,
+        "Window",
+        &[
+            ("Minimize", sel(b"performMiniaturize:\0"), "m"),
+            ("Close", sel(b"performClose:\0"), "w"),
+        ],
+    );
 
     msg_with_id(app, sel(b"setMainMenu:\0"), menu_bar);
     msg(menu_bar, sel(b"release\0"));
