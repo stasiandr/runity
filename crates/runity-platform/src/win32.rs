@@ -431,6 +431,9 @@ impl Window for Win32Window {
         unsafe {
             let mut msg = std::mem::zeroed::<MSG>();
             while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                // Alt+letter still beeps here: TranslateMessage turns it into
+                // WM_SYSCHAR, which DefWindowProcW answers with MessageBeep.
+                // Same bug the macOS backend just fixed; its own card will come.
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }

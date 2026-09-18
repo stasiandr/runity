@@ -157,12 +157,44 @@ loop {
                                untilDate:[NSDate distantPast]
                                   inMode:NSDefaultRunLoopMode dequeue:YES];
     if (!event) break;
-    // разобрать [event type], [event keyCode], [event locationInWindow]
-    [NSApp sendEvent:event];   // без этого не работают перетаскивание и крестик
+    switch (route([event type], [event modifierFlags])) {
+      case Swallow:     /* клавиша — разобрать и проглотить, sendEvent: нет */
+      case OfferToMenu: /* Cmd+клавиша — [[NSApp mainMenu] performKeyEquivalent:event];
+                           не взяли — отдать игре; sendEvent: нет и тут       */
+      case AppKit:      /* всё остальное — разобрать и отдать: */
+                        [NSApp sendEvent:event];
+    }
 }
 ```
 
+**Клавиши в `sendEvent:` не уходят.** Content view — обычный `NSView`, у него
+`acceptsFirstResponder == NO`, поэтому first responder — окно; `-[NSWindow
+keyDown:]` не знает, что делать с клавишей, зовёт `-[NSResponder
+noResponderFor:]`, а тот — `NSBeep()`. То есть каждое нажатие в игре звенело бы
+системным звуком. Решение — не свой подкласс `NSView` (он окупится в день, когда
+понадобится текстовое поле или консоль), а чистая функция `route(event_type,
+modifier_flags) -> Route` в `macos_keys.rs`: она тестируется без AppKit на любой
+машине, а цикл опроса только исполняет её решение.
+
+Cmd — исключение из исключения: эквиваленты клавиш раздаёт строка меню, и раз
+событие туда не попадает, `Cmd+клавиша` предлагается меню руками —
+`[[NSApp mainMenu] performKeyEquivalent:event]`. Взяло (Cmd+W, Cmd+Q, Cmd+M,
+Cmd+H) — игре не достаётся ничего; не взяло (Cmd+K) — уходит в очередь обычным
+`KeyDown`. Только `MOD_COMMAND`: Ctrl и Option — это биндинги игры, их спрашивать
+не у кого. `KeyUp` отдаётся игре всегда, в том числе для клавиши, чьё нажатие
+забрало меню: помнить keyCode между опросами опаснее (macOS под зажатым Cmd
+может не прислать парный `keyUp`, и клавиша залипнет), а сегодня лишний `KeyUp`
+ничего не стоит.
+
+Теряется при этом клавиатура самого AppKit: обход контролов по Tab, IME,
+системный Ctrl+F2. Ни одного контрола и ни одного текстового поля в движке нет,
+так что терять нечего.
+
 Грабли, которые стоит знать заранее:
+
+* **Клавиша без first responder звенит.** `-[NSResponder noResponderFor:]` →
+  `NSBeep()`; см. выше. Тот же баг есть и в Win32-бэкенде (Alt+буква →
+  `WM_SYSCHAR` → `DefWindowProcW` → `MessageBeep`), и чинится отдельной картой.
 
 * **Модификаторы не присылают key-события.** Cocoa шлёт `FlagsChanged` со всей
   маской, и нажатие/отпускание — это разница двух масок.

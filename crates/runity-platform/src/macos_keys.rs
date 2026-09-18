@@ -146,6 +146,40 @@ pub fn modifier_changes(previous: u64, current: u64) -> Vec<(Key, bool)> {
     changes
 }
 
+/// What the poll loop does with one `NSEvent`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    /// Decode it for the game and drop it; AppKit never sees it.
+    Swallow,
+    /// Offer it to the main menu by hand. Either way it is not passed on to
+    /// `-[NSApplication sendEvent:]`; the game gets it only if no menu item
+    /// claimed it.
+    OfferToMenu,
+    /// Hand it to `-[NSApplication sendEvent:]`, which is where window
+    /// dragging, the close button and the menu bar live.
+    AppKit,
+}
+
+/// Where one `NSEvent` has to go.
+///
+/// Everything but keys goes to AppKit, as it always did. Keys cannot: the
+/// content view is a plain `NSView`, whose `acceptsFirstResponder` is `NO`, so
+/// the first responder is the window, `-[NSWindow keyDown:]` has nothing to do
+/// with the key, and `-[NSResponder noResponderFor:]` answers with `NSBeep()`.
+/// Every keystroke in a game would ring.
+///
+/// Cmd is the exception to the exception: key equivalents are dispatched by the
+/// menu bar, so Cmd+W and friends have to be offered to it explicitly — see
+/// [`Route::OfferToMenu`]. Only `MOD_COMMAND` counts; Ctrl and Option belong to
+/// the game, which binds them like any other key.
+pub fn route(event_type: u64, modifier_flags: u64) -> Route {
+    match event_type {
+        NS_KEY_DOWN if modifier_flags & MOD_COMMAND != 0 => Route::OfferToMenu,
+        NS_KEY_DOWN | NS_KEY_UP => Route::Swallow,
+        _ => Route::AppKit,
+    }
+}
+
 /// Cocoa's window origin is bottom-left; ours is top-left.
 #[inline]
 pub fn flip_y(y: f64, view_height: f64) -> f64 {
@@ -257,6 +291,66 @@ mod tests {
             "hiding an app whose window is already in the Dock is still not a close"
         );
         assert!(!window_was_closed(true, false, false), "plainly on screen");
+    }
+
+    #[test]
+    fn plain_keys_never_reach_appkit() {
+        // The whole point: a key AppKit sees with no responder for it beeps.
+        assert_eq!(route(NS_KEY_DOWN, 0), Route::Swallow, "W is just W");
+        assert_eq!(route(NS_KEY_DOWN, MOD_SHIFT), Route::Swallow);
+        assert_eq!(
+            route(NS_KEY_DOWN, MOD_CONTROL | MOD_OPTION),
+            Route::Swallow,
+            "Ctrl and Option are the game's to bind"
+        );
+        assert_eq!(route(NS_KEY_UP, 0), Route::Swallow);
+        assert_eq!(
+            route(NS_KEY_UP, MOD_COMMAND),
+            Route::Swallow,
+            "a release is never a key equivalent"
+        );
+    }
+
+    #[test]
+    fn cmd_keys_are_offered_to_the_menu() {
+        assert_eq!(route(NS_KEY_DOWN, MOD_COMMAND), Route::OfferToMenu);
+        assert_eq!(
+            route(NS_KEY_DOWN, MOD_COMMAND | MOD_CONTROL),
+            Route::OfferToMenu,
+            "Cmd anywhere in the mask is still Cmd"
+        );
+        assert_eq!(
+            route(NS_KEY_DOWN, MOD_COMMAND | MOD_SHIFT | MOD_OPTION),
+            Route::OfferToMenu
+        );
+    }
+
+    #[test]
+    fn everything_that_is_not_a_key_still_goes_to_appkit() {
+        // Dragging the title bar, the close button and the menu bar all need it.
+        for event_type in [
+            NS_LEFT_MOUSE_DOWN,
+            NS_LEFT_MOUSE_UP,
+            NS_RIGHT_MOUSE_DOWN,
+            NS_MOUSE_MOVED,
+            NS_LEFT_MOUSE_DRAGGED,
+            NS_SCROLL_WHEEL,
+            NS_OTHER_MOUSE_DOWN,
+            NS_FLAGS_CHANGED,
+            0,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                route(event_type, 0),
+                Route::AppKit,
+                "event type {event_type} must keep going to sendEvent:"
+            );
+            assert_eq!(
+                route(event_type, MOD_COMMAND),
+                Route::AppKit,
+                "holding Cmd does not turn event type {event_type} into a key"
+            );
+        }
     }
 
     #[test]
