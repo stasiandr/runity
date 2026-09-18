@@ -10,6 +10,7 @@
 //!   wire protocol over a Unix socket; `user32`/`gdi32` on Windows).
 //! * [`runity_physics`] — rigid bodies, collision and the simulation step.
 //! * [`runity_ai`] — spatial queries, navigation, steering and decisions.
+//! * [`runity_net`] — UDP with reliability chosen per message.
 //! * [`runity_serialize`] — versioned binary encoding shared by saves, the
 //!   network and snapshot tests.
 //! * [`runity_core`] — entities, timing, input state and the main loop.
@@ -45,6 +46,7 @@
 pub use runity_ai as ai;
 pub use runity_core as core;
 pub use runity_math as math;
+pub use runity_net as net;
 pub use runity_physics as physics;
 pub use runity_platform as platform;
 pub use runity_render as render;
@@ -58,8 +60,9 @@ pub mod prelude {
     };
     pub use runity_core::headless;
     pub use runity_core::{
-        App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Game, Input, Mut,
-        RunOptions, Season, Time, Transform, World, WorldClock,
+        App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Everything, Game, Input,
+        Interest, Mut, Nearby, Replica, Replication, RunOptions, Season, SnapshotStats, Time,
+        Transform, World, WorldClock,
     };
     pub use runity_math::{vec2, vec3, vec4, Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
     pub use runity_physics::{

@@ -189,6 +189,14 @@ pub struct World {
     free: Vec<u32>,
     storages: HashMap<TypeId, Box<dyn Storage>>,
     events: HashMap<TypeId, Box<dyn AnyQueue>>,
+    /// Who was despawned and when.
+    ///
+    /// The `Despawned` event is readable for one tick, which is right for
+    /// gameplay and useless for anything that catches up later — a client
+    /// three ticks behind, or a system that runs every tenth tick. The log
+    /// answers "what has gone since tick N" for as long as the caller needs
+    /// it to.
+    despawned: Vec<(Entity, u64)>,
     change_tick: u64,
 }
 
@@ -243,6 +251,7 @@ impl World {
             storage.clear_slot(slot);
         }
         self.free.push(entity.index);
+        self.despawned.push((entity, self.change_tick));
         self.send(Despawned(entity));
         true
     }
@@ -269,6 +278,28 @@ impl World {
                 index: slot as u32,
                 generation: self.generations[slot],
             })
+    }
+
+    /// Entities despawned after `tick`.
+    pub fn despawned_since(&self, tick: u64) -> impl Iterator<Item = Entity> + '_ {
+        self.despawned
+            .iter()
+            .filter(move |(_, when)| *when > tick)
+            .map(|(entity, _)| *entity)
+    }
+
+    /// Drop despawn records up to and including `tick`.
+    ///
+    /// Call it with the oldest tick any observer still needs — for a server,
+    /// the tick every client has acknowledged. Never calling it grows a list
+    /// by one entry per despawn, forever.
+    pub fn forget_despawns_before(&mut self, tick: u64) {
+        self.despawned.retain(|(_, when)| *when > tick);
+    }
+
+    /// How many despawns are still remembered.
+    pub fn despawn_log(&self) -> usize {
+        self.despawned.len()
     }
 
     // ----------------------------------------------------------- change tick
@@ -839,6 +870,43 @@ mod tests {
         // so the despawn itself is an event.
         world.advance_tick();
         assert_eq!(world.events::<Despawned>(), &[Despawned(e)]);
+    }
+
+    #[test]
+    fn the_despawn_log_outlives_the_event() {
+        // An event is readable for one tick, which is no use to anyone
+        // catching up: a client three ticks behind still has to be told.
+        let mut world = World::new();
+        let gone = world.spawn();
+        world.insert(gone, Health(1));
+        let before = world.change_tick();
+        world.advance_tick();
+        world.despawn(gone);
+
+        world.advance_tick();
+        world.advance_tick();
+        world.advance_tick();
+        assert!(
+            world.events::<Despawned>().is_empty(),
+            "the event is long gone"
+        );
+        assert_eq!(
+            world.despawned_since(before).collect::<Vec<_>>(),
+            vec![gone]
+        );
+        assert_eq!(
+            world.despawned_since(world.change_tick()).count(),
+            0,
+            "nothing since now"
+        );
+
+        assert_eq!(world.despawn_log(), 1);
+        world.forget_despawns_before(world.change_tick());
+        assert_eq!(
+            world.despawn_log(),
+            0,
+            "and it can be forgotten once everyone has heard"
+        );
     }
 
     #[test]

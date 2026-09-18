@@ -11,5 +11,6 @@ description = "Entity storage, scheduling and the main loop of the runity engine
 runity-math = { path = "../runity-math", version = "0.1.0" }
 runity-render = { path = "../runity-render", version = "0.1.0" }
 runity-physics = { path = "../runity-physics", version = "0.1.0" }
+runity-net = { path = "../runity-net", version = "0.1.0" }
 runity-serialize = { path = "../runity-serialize", version = "0.1.0" }
 runity-platform = { path = "../runity-platform", version = "0.1.0" }

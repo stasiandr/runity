@@ -9,6 +9,7 @@ dependencies = [
  "runity-ai",
  "runity-core",
  "runity-math",
+ "runity-net",
  "runity-physics",
  "runity-platform",
  "runity-render",
@@ -28,6 +29,7 @@ name = "runity-core"
 version = "0.1.0"
 dependencies = [
  "runity-math",
+ "runity-net",
  "runity-physics",
  "runity-platform",
  "runity-render",
