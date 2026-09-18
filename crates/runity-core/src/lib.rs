@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod app;
+pub mod clock;
 pub mod headless;
 pub mod input;
 pub mod time;
@@ -11,6 +12,7 @@ pub mod transform;
 pub mod world;
 
 pub use app::{App, DebugView, Engine, Game, RunOptions};
+pub use clock::{Calendar, Date, Season, WorldClock};
 pub use input::Input;
 pub use time::Time;
 pub use transform::{Camera, Transform};

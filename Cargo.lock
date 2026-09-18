@@ -22,6 +22,7 @@ dependencies = [
  "runity-physics",
  "runity-platform",
  "runity-render",
+ "runity-serialize",
 ]
 
 [[package]]
