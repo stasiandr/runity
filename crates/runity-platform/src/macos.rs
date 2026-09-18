@@ -16,6 +16,19 @@
 //! with a past deadline is a non-blocking poll of the real event queue, and the
 //! window's own state says when it was closed or lost focus.
 //!
+//! Most of what is polled is handed straight on to `-[NSApplication
+//! sendEvent:]` — keys are the exception. Without a view subclass the content
+//! view does not accept first responder, so a key reaching AppKit ends up at
+//! `-[NSResponder noResponderFor:]`, which is `NSBeep()`: every keystroke in a
+//! game would ring. So [`keys::route`] decides first, and keys are swallowed.
+//! Cmd+key is offered to `-[NSMenu performKeyEquivalent:]` by hand, because
+//! that dispatch is the menu bar's and nothing else does it for us.
+//!
+//! What a game gives up by swallowing keys is AppKit's own keyboard handling —
+//! Tab moving focus between controls, IME composition, the system's Ctrl+F2
+//! menu focus. There is no control and no text field in this engine, so there
+//! is nothing for any of them to act on.
+//!
 //! The one piece of AppKit furniture that cannot be skipped is a main menu:
 //! key equivalents are dispatched by the menu bar, so without one Cmd+M, Cmd+H
 //! and Cmd+W do nothing at all.
@@ -198,6 +211,7 @@ msg_send_fn!(msg_f64() -> f64);
 msg_send_fn!(msg_bool() -> Bool);
 msg_send_fn!(msg_point() -> NSPoint);
 msg_send_fn!(msg_with_id(a: Id) -> ());
+msg_send_fn!(msg_bool_with_id(a: Id) -> Bool);
 msg_send_fn!(msg_with_bool(a: Bool) -> ());
 msg_send_fn!(msg_with_f64(a: f64) -> ());
 msg_send_fn!(msg_with_i64(a: i64) -> ());
@@ -608,10 +622,38 @@ impl Window for CocoaWindow {
                 if event.is_null() {
                     break;
                 }
-                self.translate(event, &mut events);
-                // AppKit still needs the event: window dragging, the close
-                // button and the menu bar all live on this path.
-                msg_with_id(self.app, sel(b"sendEvent:\0"), event);
+
+                // Route first, translate second: whether the game hears a key
+                // at all depends on what the menu does with it.
+                let event_type = msg_u64(event, sel(b"type\0"));
+                // `modifierFlags` is only meaningful on key and mouse events,
+                // and `route` only reads it for a key down.
+                let modifier_flags = match event_type {
+                    keys::NS_KEY_DOWN | keys::NS_KEY_UP => msg_u64(event, sel(b"modifierFlags\0")),
+                    _ => 0,
+                };
+                match keys::route(event_type, modifier_flags) {
+                    // Keys never reach AppKit: with no responder for them,
+                    // `-[NSResponder noResponderFor:]` answers with NSBeep().
+                    keys::Route::Swallow => self.translate(event, &mut events),
+                    keys::Route::OfferToMenu => {
+                        // Key equivalents are the menu bar's to dispatch, so
+                        // Cmd+W and friends are handed to it by name instead.
+                        let menu = msg_id(self.app, sel(b"mainMenu\0"));
+                        let claimed = !menu.is_null()
+                            && msg_bool_with_id(menu, sel(b"performKeyEquivalent:\0"), event) != NO;
+                        // Cmd+K means nothing to the menu, so it is the game's.
+                        if !claimed {
+                            self.translate(event, &mut events);
+                        }
+                    }
+                    keys::Route::AppKit => {
+                        self.translate(event, &mut events);
+                        // AppKit still needs everything else: window dragging,
+                        // the close button and the menu bar all live here.
+                        msg_with_id(self.app, sel(b"sendEvent:\0"), event);
+                    }
+                }
             }
 
             objc_autoreleasePoolPop(pool);
