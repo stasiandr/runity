@@ -27,7 +27,7 @@ use crate::sky::Sky;
 use crate::ssao::{self, OcclusionBuffer, SsaoSettings};
 use crate::ssr::{self, SsrSettings};
 use crate::view::CameraView;
-use runity_math::{Mat4, Vec3};
+use runity_math::{Frustum, Mat4, Vec3};
 
 /// What the renderer does beyond plain shading.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,11 +45,18 @@ pub struct RenderSettings {
     /// full-resolution texture, which aliases as soon as a surface is small or
     /// far away.
     pub mip_mapping: bool,
+    /// Skip meshes whose bounds are entirely outside the view.
+    ///
+    /// Shadow casters are still drawn into the shadow maps: something behind
+    /// the camera can cast a shadow into the frame, and culling it makes the
+    /// shadow vanish.
+    pub frustum_culling: bool,
 }
 
 impl Default for RenderSettings {
     fn default() -> Self {
         Self {
+            frustum_culling: true,
             draw_sky: true,
             ambient_intensity: 1.0,
             shadows: ShadowSettings::default(),
@@ -158,6 +165,29 @@ impl Renderer {
         &self.occlusion
     }
 
+    /// Whether a mesh, placed by `model`, can be seen at all.
+    ///
+    /// The bounding sphere is transformed rather than recomputed: scaling its
+    /// radius by the largest axis scale is conservative under a non-uniform
+    /// scale, and conservative is the only direction this test may err in —
+    /// the other mistake is a hole in the picture.
+    pub fn visible(&self, mesh: &Mesh, model: Mat4) -> bool {
+        let (centre, radius) = mesh.bounding_sphere();
+        if radius <= 0.0 {
+            return false;
+        }
+        let projected = model.transform_point(centre);
+        let world_centre = Vec3::new(projected.x, projected.y, projected.z);
+        let scale = model
+            .cols
+            .iter()
+            .take(3)
+            .map(|column| Vec3::new(column.x, column.y, column.z).length())
+            .fold(0.0f32, f32::max);
+        let frustum = Frustum::from_view_projection(self.camera.view_projection());
+        frustum.contains_sphere(world_centre, radius * scale.max(1e-6))
+    }
+
     /// Geometry pass for one mesh.
     pub fn draw(
         &mut self,
@@ -166,6 +196,18 @@ impl Renderer {
         model: Mat4,
         material: &Material<'_>,
     ) -> DrawStats {
+        // Off-screen geometry costs as much as on-screen geometry to throw
+        // away one triangle at a time; six plane tests throw it away once.
+        if self.settings.frustum_culling && !self.visible(mesh, model) {
+            for map in &mut self.shadow_maps {
+                map.draw(mesh, model);
+            }
+            return DrawStats {
+                meshes_culled: 1,
+                ..DrawStats::default()
+            };
+        }
+
         // The same geometry goes into every active shadow map. Depth-only, so
         // it costs a fraction of the main pass.
         for map in &mut self.shadow_maps {

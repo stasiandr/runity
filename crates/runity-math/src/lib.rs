@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod frustum;
 mod mat;
 mod mat3;
 mod noise;
@@ -13,6 +14,7 @@ mod quat;
 mod rng;
 mod vec;
 
+pub use frustum::{Frustum, Plane};
 pub use mat::Mat4;
 pub use mat3::Mat3;
 pub use noise::{Cell, Fbm, Noise};

@@ -41,6 +41,8 @@ pub struct DrawStats {
     pub triangles_rasterized: usize,
     pub fragments_shaded: usize,
     pub fragments_written: usize,
+    /// Meshes skipped whole because they were outside the frustum.
+    pub meshes_culled: usize,
 }
 
 impl DrawStats {
@@ -48,6 +50,7 @@ impl DrawStats {
         self.triangles_in += o.triangles_in;
         self.triangles_rasterized += o.triangles_rasterized;
         self.fragments_shaded += o.fragments_shaded;
+        self.meshes_culled += o.meshes_culled;
         self.fragments_written += o.fragments_written;
     }
 }

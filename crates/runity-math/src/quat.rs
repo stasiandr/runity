@@ -38,6 +38,48 @@ impl Quat {
     }
 
     /// Intrinsic Y-X-Z ("yaw, pitch, roll") Euler rotation.
+    /// The rotation whose axes are these three (already normalized) vectors.
+    ///
+    /// Shepperd's method: pick the largest of the four components to divide
+    /// by, because dividing by the smallest is where the numerically unstable
+    /// versions of this conversion go wrong.
+    pub fn from_axes(x: Vec3, y: Vec3, z: Vec3) -> Self {
+        let trace = x.x + y.y + z.z;
+        if trace > 0.0 {
+            let s = (trace + 1.0).sqrt() * 2.0;
+            Quat {
+                x: (y.z - z.y) / s,
+                y: (z.x - x.z) / s,
+                z: (x.y - y.x) / s,
+                w: 0.25 * s,
+            }
+        } else if x.x > y.y && x.x > z.z {
+            let s = (1.0 + x.x - y.y - z.z).sqrt() * 2.0;
+            Quat {
+                x: 0.25 * s,
+                y: (y.x + x.y) / s,
+                z: (z.x + x.z) / s,
+                w: (y.z - z.y) / s,
+            }
+        } else if y.y > z.z {
+            let s = (1.0 + y.y - x.x - z.z).sqrt() * 2.0;
+            Quat {
+                x: (y.x + x.y) / s,
+                y: 0.25 * s,
+                z: (z.y + y.z) / s,
+                w: (z.x - x.z) / s,
+            }
+        } else {
+            let s = (1.0 + z.z - x.x - y.y).sqrt() * 2.0;
+            Quat {
+                x: (z.x + x.z) / s,
+                y: (z.y + y.z) / s,
+                z: 0.25 * s,
+                w: (x.y - y.x) / s,
+            }
+        }
+    }
+
     pub fn from_euler(yaw: f32, pitch: f32, roll: f32) -> Self {
         Self::from_axis_angle(Vec3::Y, yaw)
             * Self::from_axis_angle(Vec3::X, pitch)

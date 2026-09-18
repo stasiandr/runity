@@ -42,6 +42,34 @@ impl Transform {
         self
     }
 
+    /// Take a transform apart from a matrix.
+    ///
+    /// Position is the last column, scale the lengths of the first three, and
+    /// rotation what is left once the scale is divided out. A matrix carrying
+    /// shear cannot be described this way, and comes back as the nearest
+    /// rotation — which is the honest answer, and the reason a scene graph
+    /// stores transforms rather than matrices.
+    pub fn from_matrix(matrix: Mat4) -> Self {
+        let column = |index: usize| {
+            let c = matrix.cols[index];
+            Vec3::new(c.x, c.y, c.z)
+        };
+        let (x, y, z) = (column(0), column(1), column(2));
+        let mut scale = Vec3::new(x.length(), y.length(), z.length());
+        // A negative determinant means the matrix mirrors; put that in one
+        // axis rather than trying to express it as a rotation, which cannot.
+        if x.cross(y).dot(z) < 0.0 {
+            scale.x = -scale.x;
+        }
+        let safe = |value: f32| if value.abs() < 1e-8 { 1.0 } else { value };
+        let rotation = Quat::from_axes(x / safe(scale.x), y / safe(scale.y), z / safe(scale.z));
+        Transform {
+            position: column(3),
+            rotation,
+            scale,
+        }
+    }
+
     /// Local-to-world matrix: translate ∘ rotate ∘ scale.
     pub fn matrix(&self) -> Mat4 {
         Mat4::from_translation(self.position)

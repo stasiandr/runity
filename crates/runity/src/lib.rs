@@ -65,10 +65,12 @@ pub mod prelude {
     pub use runity_core::{
         App, Authority, Cadence, Calendar, Camera, Command, CommandQueue, Correction, Date,
         DebugView, Despawned, Detail, Due, Engine, Entity, Everything, Game, Input, Interest,
-        Lease, Mut, Nearby, PeerId, Predictable, Prediction, Region, Regions, Replica, Replication,
-        RunOptions, Season, SnapshotStats, Time, Transform, World, WorldClock,
+        Lease, Mut, Nearby, Node, PeerId, Predictable, Prediction, Region, Regions, Replica,
+        Replication, RunOptions, Scene, Season, SnapshotStats, Time, Transform, World, WorldClock,
     };
-    pub use runity_math::{vec2, vec3, vec4, Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
+    pub use runity_math::{
+        vec2, vec3, vec4, Fbm, Frustum, Mat4, Noise, Plane, Quat, Rng, Vec2, Vec3, Vec4,
+    };
     pub use runity_physics::{
         BodyHandle, BodyType, ContactEvent, PhysicsStats, PhysicsWorld, Ray, RayCast, RigidBody,
         Shape,

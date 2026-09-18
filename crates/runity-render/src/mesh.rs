@@ -10,6 +10,35 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// The smallest axis-aligned box containing every vertex, in model space.
+    ///
+    /// Returned rather than cached: a mesh is a plain struct whose vertices
+    /// the game may edit at any time, and a cached bound that quietly goes
+    /// stale is worse than none — it makes geometry disappear.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        for vertex in &self.vertices {
+            min = min.min(vertex.position);
+            max = max.max(vertex.position);
+        }
+        if self.vertices.is_empty() {
+            (Vec3::ZERO, Vec3::ZERO)
+        } else {
+            (min, max)
+        }
+    }
+
+    /// Centre and radius of a sphere containing every vertex.
+    pub fn bounding_sphere(&self) -> (Vec3, f32) {
+        let (min, max) = self.bounds();
+        let centre = (min + max) * 0.5;
+        let radius = self.vertices.iter().fold(0.0f32, |worst, vertex| {
+            worst.max((vertex.position - centre).length())
+        });
+        (centre, radius)
+    }
+
     pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> Self {
         debug_assert!(
             indices.len() % 3 == 0,
