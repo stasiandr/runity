@@ -8,6 +8,7 @@
 //!   fragment stages.
 //! * [`runity_platform`] — windows and input, straight from the OS (the X11
 //!   wire protocol over a Unix socket; `user32`/`gdi32` on Windows).
+//! * [`runity_physics`] — rigid bodies, collision and the simulation step.
 //! * [`runity_serialize`] — versioned binary encoding shared by saves, the
 //!   network and snapshot tests.
 //! * [`runity_core`] — entities, timing, input state and the main loop.
@@ -42,6 +43,7 @@
 
 pub use runity_core as core;
 pub use runity_math as math;
+pub use runity_physics as physics;
 pub use runity_platform as platform;
 pub use runity_render as render;
 pub use runity_serialize as serialize;
@@ -53,7 +55,11 @@ pub mod prelude {
         App, Calendar, Camera, Date, DebugView, Despawned, Engine, Entity, Game, Input, Mut,
         RunOptions, Season, Time, Transform, World, WorldClock,
     };
-    pub use runity_math::{Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
+    pub use runity_math::{vec2, vec3, vec4, Fbm, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
+    pub use runity_physics::{
+        BodyHandle, BodyType, ContactEvent, PhysicsStats, PhysicsWorld, Ray, RayCast, RigidBody,
+        Shape,
+    };
     pub use runity_platform::{Event, HeadlessWindow, Key, MouseButton, Window, WindowConfig};
     pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
     pub use runity_render::{debug, golden};
@@ -64,5 +70,8 @@ pub mod prelude {
         Sky, SkyParams, SsaoSettings, SsrSettings, Surface, Texture, ToneMap, UnlitShader, Varying,
         Vertex, VertexOutput, Wrap,
     };
-    pub use runity_serialize::{from_bytes, to_bytes, Archive, Deserialize, Serialize};
+    pub use runity_serialize::{
+        from_bytes, serializable, serializable_enum, to_bytes, Archive, Deserialize, Reader,
+        Serialize, Writer,
+    };
 }

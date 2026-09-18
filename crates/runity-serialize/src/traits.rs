@@ -2,7 +2,7 @@
 //! stores.
 
 use crate::{Error, Reader, Result, Writer};
-use runity_math::{Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
+use runity_math::{Mat3, Mat4, Noise, Quat, Rng, Vec2, Vec3, Vec4};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// A type that can be written to a [`Writer`].
@@ -461,5 +461,34 @@ impl Deserialize for Mat4 {
         Ok(Mat4 {
             cols: <[Vec4; 4]>::deserialize(reader)?,
         })
+    }
+}
+
+/// Generators are saved by their state, not their seed: resuming from the
+/// seed would replay rolls the world has already used.
+impl Serialize for Rng {
+    fn serialize(&self, writer: &mut Writer) {
+        let (state, increment) = self.parts();
+        writer.u64(state).u64(increment);
+    }
+}
+
+impl Deserialize for Rng {
+    fn deserialize(reader: &mut Reader) -> Result<Self> {
+        Ok(Rng::from_parts(reader.u64()?, reader.u64()?))
+    }
+}
+
+/// A noise field has no state at all — only its seed, which is the whole
+/// reason chunk generation can be resumed from nothing.
+impl Serialize for Noise {
+    fn serialize(&self, writer: &mut Writer) {
+        writer.u64(self.seed());
+    }
+}
+
+impl Deserialize for Noise {
+    fn deserialize(reader: &mut Reader) -> Result<Self> {
+        Ok(Noise::from_raw_seed(reader.u64()?))
     }
 }

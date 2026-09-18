@@ -122,6 +122,12 @@ impl<G: Game> Game for Recorder<G> {
     fn fixed_update(&mut self, engine: &mut Engine) {
         self.inner.fixed_update(engine);
     }
+    fn world_tick(&mut self, engine: &mut Engine) {
+        self.inner.world_tick(engine);
+    }
+    fn overlay(&mut self, engine: &mut Engine) {
+        self.inner.overlay(engine);
+    }
     fn render(&mut self, engine: &mut Engine) {
         self.inner.render(engine);
         // After the game has drawn, before the loop presents.

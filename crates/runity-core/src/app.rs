@@ -1,8 +1,10 @@
+use crate::clock::WorldClock;
 use crate::input::Input;
 use crate::time::Time;
 use crate::transform::Camera;
 use crate::world::World;
 use runity_math::Mat4;
+use runity_physics::PhysicsWorld;
 use runity_platform::{open_window, Event, Window, WindowConfig};
 use runity_render::{
     debug, CameraView, Color, DrawStats, Framebuffer, Material, Mesh, PolygonMode, Renderer,
@@ -38,6 +40,17 @@ pub enum DebugView {
 pub struct Engine {
     pub world: World,
     pub time: Time,
+    /// Simulation time: whole ticks, speed, pause and the calendar.
+    ///
+    /// Separate from [`Engine::time`] on purpose. `time` is how fast this
+    /// machine is drawing; `clock` is how fast the world is living, and only
+    /// the second one may decide what happens in it.
+    pub clock: WorldClock,
+    /// Rigid bodies, stepped once per fixed update unless
+    /// [`Engine::auto_step_physics`] is off.
+    pub physics: PhysicsWorld,
+    /// Whether the main loop steps [`Engine::physics`] itself.
+    pub auto_step_physics: bool,
     pub input: Input,
     pub camera: Camera,
     pub framebuffer: Framebuffer,
@@ -62,6 +75,9 @@ impl Engine {
         Self {
             world: World::new(),
             time: Time::new(),
+            clock: WorldClock::default(),
+            physics: PhysicsWorld::new(),
+            auto_step_physics: true,
             input: Input::new(),
             camera: Camera::default(),
             framebuffer: Framebuffer::new(width, height),
@@ -190,8 +206,19 @@ pub trait Game {
     fn on_event(&mut self, _engine: &mut Engine, _event: &Event) {}
     /// Called once per frame with a variable delta.
     fn update(&mut self, _engine: &mut Engine) {}
-    /// Called zero or more times per frame with `Time::fixed_delta`.
+    /// Called zero or more times per frame with `Time::fixed_delta`, after
+    /// the physics step.
     fn fixed_update(&mut self, _engine: &mut Engine) {}
+
+    /// Called once per world tick — the simulation's own clock, which runs at
+    /// its own rate, can be paused and sped up, and does not care how fast
+    /// the frame is.
+    ///
+    /// This is where a world that keeps developing while nobody watches does
+    /// its developing. Render from the state it leaves behind, interpolating
+    /// with [`WorldClock::interpolation`], rather than moving anything here
+    /// per frame.
+    fn world_tick(&mut self, _engine: &mut Engine) {}
     /// Called once per frame to draw the scene's geometry. Lighting happens
     /// after it returns.
     fn render(&mut self, _engine: &mut Engine) {}
@@ -320,8 +347,19 @@ impl App {
             game.update(&mut engine);
             let mut steps = 0;
             while steps < self.options.max_fixed_steps && engine.time.next_fixed_step() {
+                if engine.auto_step_physics {
+                    let dt = engine.time.fixed_delta;
+                    engine.physics.step(dt);
+                }
                 game.fixed_update(&mut engine);
                 steps += 1;
+            }
+
+            // The world's own clock, which the frame rate does not govern.
+            engine.clock.advance(engine.time.delta());
+            while engine.clock.next_tick().is_some() {
+                engine.world.advance_tick();
+                game.world_tick(&mut engine);
             }
 
             // --- rendering ------------------------------------------------

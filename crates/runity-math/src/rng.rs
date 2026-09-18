@@ -67,6 +67,26 @@ impl Rng {
     ///
     /// Use it to give a new entity its own generator without threading the
     /// parent's through everything it does.
+    /// The generator's raw state, for saving.
+    ///
+    /// A save that restores the world but not its generators is not a save:
+    /// the next thing the world rolls would differ from what it would have
+    /// rolled, and every derived decision after it drifts.
+    pub fn parts(&self) -> (u64, u64) {
+        (self.state, self.increment)
+    }
+
+    /// Rebuild a generator from [`Rng::parts`].
+    ///
+    /// The increment is forced odd, as the algorithm requires, so a corrupted
+    /// save produces a different sequence rather than a broken generator.
+    pub fn from_parts(state: u64, increment: u64) -> Self {
+        Self {
+            state,
+            increment: increment | 1,
+        }
+    }
+
     pub fn fork(&mut self) -> Rng {
         let seed = self.next_u64();
         let stream = self.next_u64();
@@ -358,6 +378,24 @@ mod tests {
         }
         let share = inner as f64 / SAMPLES as f64;
         assert!((share - 0.5).abs() < 0.02, "{share}");
+    }
+
+    #[test]
+    fn a_generator_can_be_saved_and_resumed() {
+        let mut rng = Rng::named(9, "combat");
+        for _ in 0..37 {
+            rng.next_u32();
+        }
+        let (state, increment) = rng.parts();
+        let mut restored = Rng::from_parts(state, increment);
+        let expected: Vec<u32> = (0..16).map(|_| rng.next_u32()).collect();
+        let actual: Vec<u32> = (0..16).map(|_| restored.next_u32()).collect();
+        assert_eq!(
+            actual, expected,
+            "a resumed generator continues the same sequence"
+        );
+        // An even increment would break the period; it is corrected.
+        assert_eq!(Rng::from_parts(1, 4).parts().1, 5);
     }
 
     #[test]

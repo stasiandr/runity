@@ -43,6 +43,19 @@ jobs:
         env:
           RUNITY_HEADLESS: "1"
 
+      # The example asserts that a save survives a round trip, that a loaded
+      # world lives the next year identically, and that one seed always grows
+      # the same village. Running it here keeps those claims honest.
+      - name: Simulate a village
+        run: cargo run --release --example settlement
+        env:
+          RUNITY_YEARS: "4"
+
+      - name: Simulate and render physics headlessly
+        run: cargo run --release --example physics_playground
+        env:
+          RUNITY_HEADLESS: "1"
+
   cross-check:
     name: cross-check every backend
     runs-on: ubuntu-latest

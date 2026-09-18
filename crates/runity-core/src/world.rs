@@ -655,7 +655,14 @@ impl World {
         writer
             .write(&self.change_tick)
             .write(&self.generations)
-            .write(&self.alive);
+            .write(&self.alive)
+            // The free list is state, not a derived convenience: it decides
+            // which slot the next spawn takes, and so the order everything is
+            // iterated in afterwards. Rebuilding it by scanning would let a
+            // loaded world drift from the one that was saved — slowly, and
+            // only in the last decimal place, which is the worst way for a
+            // world to drift.
+            .write(&self.free);
     }
 
     /// Restore an entity table written by [`World::save_entities`].
@@ -664,14 +671,14 @@ impl World {
         self.generations = reader.read()?;
         self.alive = reader.read()?;
         self.alive.resize(self.generations.len(), false);
+        self.free = reader.read()?;
+        // Nothing in the file may be trusted: a free list naming a live or
+        // non-existent slot would hand out a handle to an occupied entity.
+        let alive = &self.alive;
+        self.free
+            .retain(|index| alive.get(*index as usize).is_some_and(|live| !live));
         self.storages.clear();
         self.clear_events();
-        self.free = (0..self.generations.len() as u32)
-            .filter(|i| !self.alive[*i as usize])
-            .collect();
-        // Pop order decides which slot the next spawn takes; reversing makes
-        // it the lowest free slot, which keeps saves tidy and reproducible.
-        self.free.reverse();
         Ok(())
     }
 
@@ -1290,9 +1297,14 @@ mod tests {
         );
         assert_eq!(loaded.change_tick(), world.change_tick());
 
-        // The freed slot is still free, and reusing it still invalidates the
-        // old handle.
+        // The freed slot is still free, in the same order, so the loaded
+        // world hands out exactly the slots the saved one would have.
         let reborn = loaded.spawn();
+        assert_eq!(
+            reborn,
+            world.spawn(),
+            "the same slot, at the same generation"
+        );
         assert_eq!(reborn.index(), doomed.index());
         assert_ne!(reborn.generation(), doomed.generation());
     }

@@ -40,6 +40,14 @@ impl Noise {
         self.seed
     }
 
+    /// Rebuild a field from [`Noise::seed`].
+    ///
+    /// Takes the already-hashed seed, so a saved field comes back as exactly
+    /// the same field rather than as one hashed a second time.
+    pub fn from_raw_seed(seed: u64) -> Self {
+        Self { seed }
+    }
+
     // ---------------------------------------------------------------- value
 
     /// Smoothed random values on the integer lattice, in `[-1, 1]`.
@@ -772,6 +780,18 @@ mod tests {
             assert!(
                 (predicted - measured).abs() < 5e-4,
                 "{predicted} vs {measured}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_field_survives_being_saved_by_seed() {
+        let field = Noise::named(3, "caves");
+        let restored = Noise::from_raw_seed(field.seed());
+        for p in samples(100) {
+            assert_eq!(
+                restored.fbm_2d(p, Fbm::TERRAIN),
+                field.fbm_2d(p, Fbm::TERRAIN)
             );
         }
     }
