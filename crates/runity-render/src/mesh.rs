@@ -1,6 +1,6 @@
 use crate::color::Color;
 use crate::shader::Vertex;
-use runity_math::{Vec2, Vec3};
+use runity_math::{Vec2, Vec3, Vec4};
 
 /// An indexed triangle list. Front faces wind counter-clockwise.
 #[derive(Debug, Default, Clone)]
@@ -52,6 +52,59 @@ impl Mesh {
             if n.length_squared() > 0.0 {
                 v.normal = n.normalized();
             }
+        }
+    }
+
+    /// Recompute per-vertex tangents from the UV layout.
+    ///
+    /// A normal map stores directions in *tangent space* — relative to how the
+    /// texture is laid out on the surface — so the shader needs to know which
+    /// way "along U" points in world space. This is the standard
+    /// area-weighted accumulation (Lengyel): solve the 2x2 UV system per
+    /// triangle, average per vertex, then Gram-Schmidt against the normal.
+    pub fn recompute_tangents(&mut self) {
+        let mut tangents = vec![Vec3::ZERO; self.vertices.len()];
+        let mut bitangents = vec![Vec3::ZERO; self.vertices.len()];
+
+        for tri in self.indices.chunks_exact(3) {
+            let (i0, i1, i2) = (tri[0] as usize, tri[1] as usize, tri[2] as usize);
+            let (v0, v1, v2) = (&self.vertices[i0], &self.vertices[i1], &self.vertices[i2]);
+            let edge1 = v1.position - v0.position;
+            let edge2 = v2.position - v0.position;
+            let duv1 = v1.uv - v0.uv;
+            let duv2 = v2.uv - v0.uv;
+
+            let determinant = duv1.x * duv2.y - duv2.x * duv1.y;
+            if determinant.abs() < 1e-12 {
+                continue; // degenerate UVs contribute nothing
+            }
+            let r = 1.0 / determinant;
+            let tangent = (edge1 * duv2.y - edge2 * duv1.y) * r;
+            let bitangent = (edge2 * duv1.x - edge1 * duv2.x) * r;
+            for index in [i0, i1, i2] {
+                tangents[index] += tangent;
+                bitangents[index] += bitangent;
+            }
+        }
+
+        for (vertex, (tangent, bitangent)) in self
+            .vertices
+            .iter_mut()
+            .zip(tangents.into_iter().zip(bitangents))
+        {
+            if tangent.length_squared() <= 0.0 {
+                continue;
+            }
+            let n = vertex.normal;
+            // Gram-Schmidt: the tangent must be perpendicular to the normal.
+            let t = (tangent - n * n.dot(tangent)).normalized();
+            // Handedness tells the shader which way the bitangent runs.
+            let handedness = if n.cross(t).dot(bitangent) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            vertex.tangent = Vec4::new(t.x, t.y, t.z, handedness);
         }
     }
 
@@ -136,7 +189,9 @@ impl Mesh {
             }
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.recompute_tangents();
+        mesh
     }
 
     /// Grid on the XZ plane facing +Y, centered on the origin.
@@ -167,7 +222,9 @@ impl Mesh {
                 indices.extend_from_slice(&[a, c, b, b, c, d]);
             }
         }
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.recompute_tangents();
+        mesh
     }
 
     /// UV sphere with `segments` meridians and `rings` parallels.
@@ -205,7 +262,9 @@ impl Mesh {
                 }
             }
         }
-        Self::new(vertices, indices)
+        let mut mesh = Self::new(vertices, indices);
+        mesh.recompute_tangents();
+        mesh
     }
 
     /// Parse a Wavefront OBJ file: `v`, `vt`, `vn` and `f` (polygons are
@@ -284,6 +343,7 @@ impl Mesh {
         if !had_normals {
             mesh.recompute_normals();
         }
+        mesh.recompute_tangents();
         Ok(mesh)
     }
 }
@@ -384,6 +444,27 @@ mod tests {
             // assertion is a direction check, not an equality.
             assert!(a.dot(v.normal) > 0.95, "{a:?} vs {:?}", v.normal);
         }
+    }
+
+    #[test]
+    fn tangents_follow_the_uv_layout() {
+        let cube = Mesh::cube(2.0);
+        for vertex in &cube.vertices {
+            let t = Vec3::new(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z);
+            assert!((t.length() - 1.0).abs() < 1e-4, "tangents are unit length");
+            assert!(
+                t.dot(vertex.normal).abs() < 1e-4,
+                "and perpendicular to the normal"
+            );
+            assert!(vertex.tangent.w.abs() == 1.0, "handedness is +1 or -1");
+        }
+        // The +Z face has U running along +X, so its tangent must too.
+        let front = cube
+            .vertices
+            .iter()
+            .find(|v| v.normal == Vec3::Z)
+            .expect("a +Z face");
+        assert!(front.tangent.x > 0.9, "{:?}", front.tangent);
     }
 
     #[test]

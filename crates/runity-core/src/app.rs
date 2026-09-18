@@ -5,8 +5,8 @@ use crate::world::World;
 use runity_math::Mat4;
 use runity_platform::{open_window, Event, Window, WindowConfig};
 use runity_render::{
-    debug, BasicShader, Color, DirectionalLight, DrawStats, Framebuffer, Mesh, PolygonMode,
-    Rasterizer, Shader, ToneMap,
+    debug, CameraView, Color, DrawStats, Framebuffer, Material, Mesh, PolygonMode, Renderer,
+    Shader, ToneMap,
 };
 use std::io;
 
@@ -23,6 +23,12 @@ pub enum DebugView {
     Depth,
     /// How many times each pixel was written.
     Overdraw,
+    /// Surface color straight out of the geometry pass, before any lighting.
+    Albedo,
+    /// World-space normals, `n * 0.5 + 0.5`.
+    Normals,
+    /// Roughness in green, metallic in blue.
+    Material,
 }
 
 /// Everything a game is handed each frame: the world, timing, input, the
@@ -33,9 +39,9 @@ pub struct Engine {
     pub input: Input,
     pub camera: Camera,
     pub framebuffer: Framebuffer,
-    pub rasterizer: Rasterizer,
-    pub light: DirectionalLight,
-    pub ambient: Color,
+    /// The deferred renderer: lights, environment and passes.
+    pub renderer: Renderer,
+    /// Background where the sky is switched off.
     pub clear_color: Color,
     /// Which debug view the main loop presents after `render`.
     pub debug_view: DebugView,
@@ -57,9 +63,7 @@ impl Engine {
             input: Input::new(),
             camera: Camera::default(),
             framebuffer: Framebuffer::new(width, height),
-            rasterizer: Rasterizer::new(),
-            light: DirectionalLight::default(),
-            ambient: Color::rgb(0.12, 0.13, 0.16),
+            renderer: Renderer::default(),
             clear_color: Color::rgb(0.05, 0.06, 0.09),
             debug_view: DebugView::Shaded,
             overdraw_saturation: 4,
@@ -87,23 +91,56 @@ impl Engine {
         self.camera.view_projection(self.aspect_ratio())
     }
 
-    /// A [`BasicShader`] already wired to this frame's camera and light.
-    pub fn lit_shader(&self, model: Mat4) -> BasicShader<'static> {
-        BasicShader::new(model, self.view_projection())
-            .with_light(self.light)
-            .with_camera_position(self.camera.position)
+    /// The camera as the renderer needs it: matrices, position and range.
+    pub fn camera_view(&self) -> CameraView {
+        CameraView::new(
+            self.camera.view(),
+            self.camera.projection(self.aspect_ratio()),
+            self.camera.position,
+            self.camera.near,
+            self.camera.far,
+        )
     }
 
-    /// Draw a mesh, accumulating this frame's statistics.
+    /// Start the frame: clear, attach the G-buffer, tell the renderer where the
+    /// camera is. The main loop does this before `Game::render`.
+    pub fn begin_frame(&mut self) {
+        let camera = self.camera_view();
+        self.frame_stats = DrawStats::default();
+        self.renderer
+            .begin_frame(&mut self.framebuffer, camera, self.clear_color);
+    }
+
+    /// Light everything the geometry pass wrote, then fill in the sky. The main
+    /// loop does this after `Game::render`, before `Game::overlay`.
+    pub fn shade(&mut self) {
+        self.renderer.shade(&mut self.framebuffer);
+    }
+
+    /// Draw a mesh into the G-buffer with a material — the usual way to draw.
+    pub fn draw_pbr(&mut self, mesh: &Mesh, model: Mat4, material: &Material<'_>) -> DrawStats {
+        let stats = self
+            .renderer
+            .draw(&mut self.framebuffer, mesh, model, material);
+        self.accumulate(stats);
+        stats
+    }
+
+    /// Draw a mesh with a shader you wrote yourself.
     pub fn draw<S: Shader>(&mut self, mesh: &Mesh, shader: &S) -> DrawStats {
         let stats = self
+            .renderer
             .rasterizer
             .draw_mesh(&mut self.framebuffer, mesh, shader);
+        self.accumulate(stats);
+        stats
+    }
+
+    fn accumulate(&mut self, stats: DrawStats) {
         self.frame_stats.triangles_in += stats.triangles_in;
         self.frame_stats.triangles_rasterized += stats.triangles_rasterized;
         self.frame_stats.fragments_shaded += stats.fragments_shaded;
         self.frame_stats.fragments_written += stats.fragments_written;
-        stats
     }
 
     /// What the previous frame cost.
@@ -153,8 +190,13 @@ pub trait Game {
     fn update(&mut self, _engine: &mut Engine) {}
     /// Called zero or more times per frame with `Time::fixed_delta`.
     fn fixed_update(&mut self, _engine: &mut Engine) {}
-    /// Called once per frame, after the framebuffer has been cleared.
+    /// Called once per frame to draw the scene's geometry. Lighting happens
+    /// after it returns.
     fn render(&mut self, _engine: &mut Engine) {}
+
+    /// Called after the scene has been lit — for anything that should sit on
+    /// top of the finished image: gizmos, wireframes, UI.
+    fn overlay(&mut self, _engine: &mut Engine) {}
 }
 
 /// How the main loop should run.
@@ -265,8 +307,7 @@ impl App {
             }
 
             // --- rendering ------------------------------------------------
-            engine.frame_stats = DrawStats::default();
-            engine.rasterizer.polygon_mode = match engine.debug_view {
+            engine.renderer.rasterizer.polygon_mode = match engine.debug_view {
                 DebugView::Wireframe => PolygonMode::Line,
                 _ => PolygonMode::Fill,
             };
@@ -275,9 +316,10 @@ impl App {
                 engine.framebuffer.track_overdraw(counting);
             }
 
-            let clear = engine.clear_color;
-            engine.framebuffer.clear(clear);
-            game.render(&mut engine);
+            engine.begin_frame();
+            game.render(&mut engine); // geometry
+            engine.shade(); // lighting, then the sky behind it
+            game.overlay(&mut engine); // gizmos on top of the finished image
 
             // Debug views replace the frame's contents after the game has drawn
             // it, so a game needs no awareness of them. The buffer itself is
@@ -289,6 +331,9 @@ impl App {
                     &engine.framebuffer,
                     engine.overdraw_saturation,
                 )),
+                DebugView::Albedo => Some(debug::albedo_view(&engine.framebuffer)),
+                DebugView::Normals => Some(debug::normal_view(&engine.framebuffer)),
+                DebugView::Material => Some(debug::material_view(&engine.framebuffer)),
             };
             match view {
                 Some(view) => {

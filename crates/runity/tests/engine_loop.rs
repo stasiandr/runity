@@ -22,6 +22,9 @@ impl Game for Counter {
     fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
         self.calls.borrow_mut().start += 1;
         engine.clear_color = Color::rgb(0.0, 0.0, 0.25);
+        // A flat background makes "how much of the frame is geometry" easy to
+        // count; the sky would fill every pixel.
+        engine.renderer.settings.draw_sky = false;
         Ok(())
     }
 
@@ -43,8 +46,7 @@ impl Game for Counter {
 
     fn render(&mut self, engine: &mut Engine) {
         self.calls.borrow_mut().render += 1;
-        let shader = engine.lit_shader(Mat4::IDENTITY);
-        engine.draw(&Mesh::cube(1.0), &shader);
+        engine.draw_pbr(&Mesh::cube(1.0), Mat4::IDENTITY, &Material::default());
     }
 }
 

@@ -17,19 +17,22 @@ use std::rc::Rc;
 /// ```
 /// use runity_core::headless;
 /// use runity_math::Mat4;
-/// use runity_render::{Color, Mesh};
+/// use runity_render::{Material, Mesh};
 ///
 /// let frame = headless::render(64, 48, |engine| {
-///     let shader = engine.lit_shader(Mat4::IDENTITY);
-///     engine.draw(&Mesh::cube(1.0), &shader);
+///     engine.draw_pbr(&Mesh::cube(1.0), Mat4::IDENTITY, &Material::default());
 /// });
 /// assert_eq!(frame.width(), 64);
 /// ```
+///
+/// The full pass sequence runs: the closure draws geometry, and lighting, the
+/// sky and the post effects happen after it returns — exactly as in the main
+/// loop.
 pub fn render(width: usize, height: usize, draw: impl FnOnce(&mut Engine)) -> Framebuffer {
     let mut engine = Engine::new(width, height);
-    let clear = engine.clear_color;
-    engine.framebuffer.clear(clear);
+    engine.begin_frame();
     draw(&mut engine);
+    engine.shade();
     engine.framebuffer.clone()
 }
 
@@ -118,7 +121,7 @@ impl<G: Game> Game for Recorder<G> {
 mod tests {
     use super::*;
     use runity_math::{Mat4, Vec3};
-    use runity_render::{Color, Mesh};
+    use runity_render::{Color, Material, Mesh};
 
     struct Spinner {
         angle: f32,
@@ -134,8 +137,12 @@ mod tests {
             self.angle += engine.time.delta();
         }
         fn render(&mut self, engine: &mut Engine) {
-            let shader = engine.lit_shader(Mat4::from_rotation_y(self.angle));
-            engine.draw(&Mesh::cube(1.5), &shader);
+            let material = Material::dielectric(Color::rgb(0.8, 0.3, 0.2), 0.4);
+            engine.draw_pbr(
+                &Mesh::cube(1.5),
+                Mat4::from_rotation_y(self.angle),
+                &material,
+            );
         }
     }
 
@@ -143,14 +150,16 @@ mod tests {
     fn a_single_frame_needs_no_loop_and_no_window() {
         let frame = render(40, 30, |engine| {
             engine.camera.position = Vec3::new(0.0, 0.0, 3.0);
-            let shader = engine.lit_shader(Mat4::IDENTITY);
-            engine.draw(&Mesh::cube(1.0), &shader);
+            engine.draw_pbr(&Mesh::cube(1.0), Mat4::IDENTITY, &Material::default());
         });
         assert_eq!((frame.width(), frame.height()), (40, 30));
-        let background = Color::rgb(0.05, 0.06, 0.09);
-        assert!(
-            frame.colors().iter().any(|c| *c != background),
-            "something was drawn"
+        // The cube is lit, and the sky fills everything around it.
+        let center = frame.get_pixel(20, 15);
+        assert!(center.luminance() > 0.01, "the cube is lit: {center:?}");
+        assert_ne!(
+            center,
+            frame.get_pixel(0, 0),
+            "and it is not the background"
         );
     }
 

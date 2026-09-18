@@ -25,8 +25,7 @@
 //!
 //!     fn render(&mut self, engine: &mut Engine) {
 //!         let model = Mat4::from_rotation_y(self.angle);
-//!         let shader = engine.lit_shader(model);
-//!         engine.draw(&self.cube, &shader);
+//!         engine.draw_pbr(&self.cube, model, &Material::metal(Color::WHITE, 0.25));
 //!     }
 //! }
 //!
@@ -55,8 +54,9 @@ pub mod prelude {
     pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
     pub use runity_render::{debug, golden};
     pub use runity_render::{
-        BasicShader, Blend, Color, CullMode, DirectionalLight, DrawStats, Filter, Framebuffer,
-        Image, Mesh, PolygonMode, Rasterizer, Shader, Texture, UnlitShader, Varying, Vertex,
-        VertexOutput, Wrap,
+        Blend, CameraView, Color, CullMode, DrawStats, Filter, Framebuffer, GBuffer,
+        GeometryShader, Image, Light, LightKind, Material, Mesh, PolygonMode, Rasterizer,
+        RenderSettings, Renderer, Shader, Sky, SkyParams, Surface, Texture, ToneMap, UnlitShader,
+        Varying, Vertex, VertexOutput, Wrap,
     };
 }

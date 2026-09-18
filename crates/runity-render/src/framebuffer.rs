@@ -146,6 +146,18 @@ impl Framebuffer {
         self.gbuffer.as_mut()
     }
 
+    /// Detach the G-buffer so a pass can read it while writing color, and hand
+    /// it back with [`Framebuffer::put_gbuffer`] when done.
+    #[inline]
+    pub fn take_gbuffer(&mut self) -> Option<GBuffer> {
+        self.gbuffer.take()
+    }
+
+    #[inline]
+    pub fn put_gbuffer(&mut self, gbuffer: GBuffer) {
+        self.gbuffer = Some(gbuffer);
+    }
+
     /// Write a depth value directly. Useful for tools and tests; the rasterizer
     /// has its own path.
     #[inline]

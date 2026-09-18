@@ -7,44 +7,46 @@
 use runity::prelude::*;
 use runity_render::golden::Tolerance;
 
-/// A deliberately boring scene: no specular term and no random input, so the
-/// only thing that can move the pixels is a change in the renderer.
+/// A small scene with nothing random in it, so the only thing that can move the
+/// pixels is a change in the renderer.
 ///
-/// `powf` and friends are avoided on purpose — a platform's `libm` is not
-/// bit-identical to another's, and the point of the reference is to catch our
-/// own regressions, not the C library's rounding.
+/// A platform's `libm` is not bit-identical to another's, and the shading path
+/// is full of `powf`, so the comparison is deliberately tolerant: this exists
+/// to catch our own regressions, not the C library's rounding.
 fn reference_scene() -> Framebuffer {
     headless::render(128, 96, |engine| {
-        engine.clear_color = Color::rgb(0.04, 0.05, 0.08);
         engine.camera.position = Vec3::new(2.5, 2.0, 3.5);
         engine.camera.target = Vec3::new(0.0, 0.3, 0.0);
-        engine.light = DirectionalLight {
-            direction: Vec3::new(-0.5, -0.85, -0.35).normalized(),
-            color: Color::WHITE,
-            intensity: 1.1,
-        };
+        engine.renderer.set_sky(Sky::new(SkyParams::default()));
 
         let floor_texture = Texture::checker(
             64,
             8,
-            Color::rgb(0.20, 0.22, 0.26),
-            Color::rgb(0.32, 0.34, 0.40),
+            Color::rgb(0.05, 0.055, 0.06),
+            Color::rgb(0.2, 0.21, 0.23),
         );
-        let mut shader = engine.lit_shader(Mat4::from_translation(Vec3::new(0.0, -0.7, 0.0)));
-        shader.texture = Some(&floor_texture);
-        shader.specular_strength = 0.0;
-        engine.draw(&Mesh::plane(8.0, 1), &shader);
+        let floor = Material {
+            roughness: 0.6,
+            base_color_texture: Some(&floor_texture),
+            ..Material::default()
+        };
+        engine.draw_pbr(
+            &Mesh::plane(8.0, 1),
+            Mat4::from_translation(Vec3::new(0.0, -0.7, 0.0)),
+            &floor,
+        );
 
-        let model = Mat4::from_rotation_y(0.6);
-        let mut shader = engine.lit_shader(model);
-        shader.base_color = Color::rgb(0.85, 0.55, 0.25);
-        shader.specular_strength = 0.0;
-        engine.draw(&Mesh::cube(1.2), &shader);
+        engine.draw_pbr(
+            &Mesh::cube(1.2),
+            Mat4::from_rotation_y(0.6),
+            &Material::dielectric(Color::rgb(0.5, 0.25, 0.08), 0.55),
+        );
 
-        let mut shader = engine.lit_shader(Mat4::from_translation(Vec3::new(-1.4, 0.0, 0.8)));
-        shader.base_color = Color::rgb(0.35, 0.65, 0.95);
-        shader.specular_strength = 0.0;
-        engine.draw(&Mesh::sphere(0.55, 24, 16), &shader);
+        engine.draw_pbr(
+            &Mesh::sphere(0.55, 24, 16),
+            Mat4::from_translation(Vec3::new(-1.4, 0.0, 0.8)),
+            &Material::metal(Color::rgb(0.9, 0.75, 0.4), 0.2),
+        );
     })
 }
 

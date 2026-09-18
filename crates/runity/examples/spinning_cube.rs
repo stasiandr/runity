@@ -1,5 +1,5 @@
-//! The engine's "does it all work" demo: a lit, textured cube over a
-//! checkerboard floor, with an orbiting camera.
+//! A lit, textured crate over a checkerboard floor, with an orbiting camera —
+//! the "does it all still work" demo.
 //!
 //! ```text
 //! cargo run --release --example spinning_cube
@@ -7,10 +7,11 @@
 //! ```
 //!
 //! Controls: arrows or WASD orbit the camera, Q/E zoom, Escape quits.
-//! Debug views: 1 shaded, 2 wireframe, 3 depth buffer, 4 overdraw; N overlays
-//! vertex normals and the world axes.
+//! Debug views: 1 shaded, 2 wireframe, 3 depth, 4 overdraw, 5 albedo,
+//! 6 normals, 7 material; N toggles the normal and axis overlay.
 //!
-//! Headless, the view is picked with `RUNITY_DEBUG_VIEW=shaded|wireframe|depth|overdraw`.
+//! Headless, the view is picked with `RUNITY_DEBUG_VIEW=shaded|wireframe|depth|
+//! overdraw|albedo|normals|material`.
 
 use runity::prelude::*;
 
@@ -24,31 +25,31 @@ struct Demo {
     yaw: f32,
     pitch: f32,
     distance: f32,
-    show_normals: bool,
+    show_overlay: bool,
 }
 
 impl Demo {
     fn new() -> Self {
         let crate_texture = Texture::from_fn(64, 64, |x, y| {
-            // A plank-ish pattern, generated so the example needs no asset files.
+            // Plank-ish, generated so the example needs no asset files.
             let plank = (y / 16) % 2;
             let grain = ((x * 7 + y * 3) % 32) as f32 / 32.0;
             let shade = 0.55 + grain * 0.25;
             let edge = x % 16 == 0 || y % 16 == 0;
             if edge {
-                Color::rgb(0.25, 0.16, 0.10)
+                Color::rgb(0.06, 0.03, 0.02)
             } else if plank == 0 {
-                Color::rgb(0.72 * shade, 0.45 * shade, 0.22 * shade)
+                Color::rgb(0.45 * shade, 0.20 * shade, 0.07 * shade)
             } else {
-                Color::rgb(0.62 * shade, 0.38 * shade, 0.18 * shade)
+                Color::rgb(0.34 * shade, 0.15 * shade, 0.05 * shade)
             }
         });
 
         let mut floor_texture = Texture::checker(
             128,
             16,
-            Color::rgb(0.20, 0.22, 0.26),
-            Color::rgb(0.32, 0.34, 0.40),
+            Color::rgb(0.06, 0.065, 0.075),
+            Color::rgb(0.22, 0.23, 0.25),
         );
         floor_texture.wrap = Wrap::Repeat;
 
@@ -62,19 +63,18 @@ impl Demo {
             yaw: 0.6,
             pitch: 0.45,
             distance: 6.0,
-            show_normals: false,
+            show_overlay: false,
         }
+    }
+
+    fn cube_transform(&self) -> Mat4 {
+        Mat4::from_rotation_y(self.angle) * Mat4::from_rotation_x(self.angle * 0.6)
     }
 }
 
 impl Game for Demo {
     fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
-        engine.clear_color = Color::rgb(0.04, 0.05, 0.08);
-        engine.light = DirectionalLight {
-            direction: Vec3::new(-0.5, -0.85, -0.35).normalized(),
-            color: Color::rgb(1.0, 0.96, 0.88),
-            intensity: 1.15,
-        };
+        engine.renderer.set_sky(Sky::new(SkyParams::default()));
         engine.camera.target = Vec3::new(0.0, 0.5, 0.0);
         Ok(())
     }
@@ -83,24 +83,25 @@ impl Game for Demo {
         let dt = engine.time.delta();
         self.angle += dt * 0.8;
 
-        let input = &engine.input;
-        if input.key_pressed(Key::Escape) {
+        if engine.input.key_pressed(Key::Escape) {
             engine.quit();
             return;
         }
-        // One switch drives every debug view; the render code below is unaware.
         for (key, view) in [
             (Key::Num1, DebugView::Shaded),
             (Key::Num2, DebugView::Wireframe),
             (Key::Num3, DebugView::Depth),
             (Key::Num4, DebugView::Overdraw),
+            (Key::Num5, DebugView::Albedo),
+            (Key::Num6, DebugView::Normals),
+            (Key::Num7, DebugView::Material),
         ] {
-            if input.key_pressed(key) {
+            if engine.input.key_pressed(key) {
                 engine.debug_view = view;
             }
         }
-        if input.key_pressed(Key::N) {
-            self.show_normals = !self.show_normals;
+        if engine.input.key_pressed(Key::N) {
+            self.show_overlay = !self.show_overlay;
         }
 
         let input = &engine.input;
@@ -109,30 +110,35 @@ impl Game for Demo {
             + (input.axis(Key::Down, Key::Up) + input.axis(Key::S, Key::W)) * dt * 1.2)
             .clamp(-1.2, 1.4);
         self.distance = (self.distance + input.axis(Key::E, Key::Q) * dt * 6.0).clamp(2.5, 20.0);
-
         engine.camera.orbit(self.yaw, self.pitch, self.distance);
     }
 
     fn render(&mut self, engine: &mut Engine) {
-        // Floor.
-        let model = Mat4::from_translation(Vec3::new(0.0, -0.75, 0.0));
-        let mut shader = engine.lit_shader(model);
-        shader.texture = Some(&self.floor_texture);
-        shader.specular_strength = 0.05;
-        engine.draw(&self.floor, &shader);
+        let floor = Material {
+            roughness: 0.55,
+            base_color_texture: Some(&self.floor_texture),
+            ..Material::default()
+        };
+        engine.draw_pbr(
+            &self.floor,
+            Mat4::from_translation(Vec3::new(0.0, -0.75, 0.0)),
+            &floor,
+        );
 
-        // Spinning crate.
-        let model = Mat4::from_rotation_y(self.angle)
-            * Mat4::from_rotation_x(self.angle * 0.6)
-            * Mat4::from_translation(Vec3::ZERO);
-        let mut shader = engine.lit_shader(model);
-        shader.texture = Some(&self.crate_texture);
-        engine.draw(&self.cube, &shader);
+        let wood = Material {
+            roughness: 0.75,
+            base_color_texture: Some(&self.crate_texture),
+            ..Material::default()
+        };
+        engine.draw_pbr(&self.cube, self.cube_transform(), &wood);
 
-        // Two spheres orbiting it, to show depth sorting and specular highlights.
-        for (i, tint) in [Color::rgb(0.9, 0.3, 0.35), Color::rgb(0.35, 0.65, 0.95)]
-            .into_iter()
-            .enumerate()
+        // Two spheres orbiting it: one polished metal, one painted.
+        for (i, material) in [
+            Material::metal(Color::rgb(0.95, 0.75, 0.35), 0.12),
+            Material::dielectric(Color::rgb(0.06, 0.20, 0.45), 0.25),
+        ]
+        .into_iter()
+        .enumerate()
         {
             let phase = self.angle * 1.6 + i as f32 * std::f32::consts::PI;
             let position = Vec3::new(
@@ -140,17 +146,18 @@ impl Game for Demo {
                 0.35 + (phase * 2.0).sin() * 0.45,
                 phase.sin() * 2.3,
             );
-            let mut shader = engine.lit_shader(Mat4::from_translation(position));
-            shader.base_color = tint;
-            shader.specular_strength = 0.6;
-            shader.shininess = 64.0;
-            engine.draw(&self.sphere, &shader);
+            engine.draw_pbr(&self.sphere, Mat4::from_translation(position), &material);
         }
+    }
 
-        // Overlays go on last: they ignore depth and sit on top of the frame.
-        if self.show_normals {
-            let model = Mat4::from_rotation_y(self.angle) * Mat4::from_rotation_x(self.angle * 0.6);
-            engine.draw_normals(&self.cube, model, 0.35, Color::rgb(0.2, 1.0, 0.4));
+    fn overlay(&mut self, engine: &mut Engine) {
+        if self.show_overlay {
+            engine.draw_normals(
+                &self.cube,
+                self.cube_transform(),
+                0.35,
+                Color::rgb(0.2, 1.0, 0.4),
+            );
             engine.draw_axes(1.5);
         }
     }
@@ -164,7 +171,35 @@ fn debug_view_from_env() -> DebugView {
         "wireframe" => DebugView::Wireframe,
         "depth" => DebugView::Depth,
         "overdraw" => DebugView::Overdraw,
+        "albedo" => DebugView::Albedo,
+        "normals" => DebugView::Normals,
+        "material" => DebugView::Material,
         _ => DebugView::Shaded,
+    }
+}
+
+/// Wraps the demo so a headless run can script what an interactive one does
+/// with the keyboard.
+struct Scripted {
+    demo: Demo,
+    view: DebugView,
+    overlay: bool,
+}
+
+impl Game for Scripted {
+    fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
+        engine.debug_view = self.view;
+        self.demo.show_overlay = self.overlay;
+        self.demo.start(engine)
+    }
+    fn update(&mut self, engine: &mut Engine) {
+        self.demo.update(engine);
+    }
+    fn render(&mut self, engine: &mut Engine) {
+        self.demo.render(engine);
+    }
+    fn overlay(&mut self, engine: &mut Engine) {
+        self.demo.overlay(engine);
     }
 }
 
@@ -186,35 +221,21 @@ fn main() -> std::io::Result<()> {
 
     let mut app = App::new(config);
     if headless {
-        // Deterministic run so the screenshot is always the same frame.
+        // Deterministic run, so the screenshot is always the same frame.
         app = app
             .with_max_frames(90)
             .with_frame_delta(1.0 / 60.0)
             .with_target_fps(None);
     }
 
-    let mut demo = Demo::new();
-    demo.show_normals = std::env::var("RUNITY_SHOW_NORMALS").is_ok();
-
     let engine = if headless {
-        // Headless runs are scripted rather than interactive.
-        let view = debug_view_from_env();
-        struct Configured(Demo, DebugView);
-        impl Game for Configured {
-            fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
-                engine.debug_view = self.1;
-                self.0.start(engine)
-            }
-            fn update(&mut self, engine: &mut Engine) {
-                self.0.update(engine);
-            }
-            fn render(&mut self, engine: &mut Engine) {
-                self.0.render(engine);
-            }
-        }
-        app.run(Configured(demo, view))?
+        app.run(Scripted {
+            demo: Demo::new(),
+            view: debug_view_from_env(),
+            overlay: std::env::var("RUNITY_SHOW_NORMALS").is_ok(),
+        })?
     } else {
-        app.run(demo)?
+        app.run(Demo::new())?
     };
 
     if headless {

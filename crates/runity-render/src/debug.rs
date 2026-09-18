@@ -157,6 +157,49 @@ pub fn draw_axes(target: &mut Framebuffer, view_projection: Mat4, length: f32) {
     }
 }
 
+/// Render the G-buffer's albedo — the surface color before any light touched it.
+pub fn albedo_view(source: &Framebuffer) -> Framebuffer {
+    gbuffer_view(source, |surface| surface.albedo)
+}
+
+/// Render world-space normals as color, the usual `n * 0.5 + 0.5` mapping:
+/// +X red, +Y green, +Z blue.
+pub fn normal_view(source: &Framebuffer) -> Framebuffer {
+    gbuffer_view(source, |surface| {
+        let n = surface.normal;
+        Color::rgb(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5, n.z * 0.5 + 0.5)
+    })
+}
+
+/// Roughness in green, metallic in blue — the two numbers that decide how a
+/// surface responds to light.
+pub fn material_view(source: &Framebuffer) -> Framebuffer {
+    gbuffer_view(source, |surface| {
+        Color::rgb(0.0, surface.roughness, surface.metallic)
+    })
+}
+
+/// Shared plumbing: walk the G-buffer, leave pixels with no geometry black.
+fn gbuffer_view(
+    source: &Framebuffer,
+    map: impl Fn(&crate::gbuffer::Surface) -> Color,
+) -> Framebuffer {
+    let mut out = Framebuffer::new_raw(source.width(), source.height());
+    out.clear(Color::BLACK);
+    let Some(gbuffer) = source.gbuffer() else {
+        return out;
+    };
+    for y in 0..source.height() {
+        for x in 0..source.width() {
+            let surface = gbuffer.get(x, y);
+            if surface.is_geometry() {
+                out.set_pixel(x, y, map(surface));
+            }
+        }
+    }
+    out
+}
+
 /// Render the depth buffer as greyscale: near is white, far is black, pixels
 /// nothing was drawn to stay black.
 ///
@@ -303,6 +346,43 @@ mod tests {
             Color::BLACK,
             "untouched pixels stay black"
         );
+    }
+
+    #[test]
+    fn gbuffer_views_show_what_the_geometry_pass_wrote() {
+        use crate::gbuffer::Surface;
+        let mut fb = Framebuffer::new(2, 1);
+        fb.enable_gbuffer(true);
+        fb.gbuffer_mut().unwrap().set(
+            0,
+            Surface {
+                albedo: Color::rgb(0.8, 0.1, 0.1),
+                normal: Vec3::Y,
+                roughness: 0.25,
+                metallic: 1.0,
+                ..Surface::default()
+            },
+        );
+
+        assert_eq!(albedo_view(&fb).get_pixel(0, 0), Color::rgb(0.8, 0.1, 0.1));
+        assert_eq!(
+            albedo_view(&fb).get_pixel(1, 0),
+            Color::BLACK,
+            "no geometry, no color"
+        );
+
+        // +Y maps to green at full brightness.
+        let normal = normal_view(&fb).get_pixel(0, 0);
+        assert_eq!((normal.r, normal.g, normal.b), (0.5, 1.0, 0.5));
+
+        let material = material_view(&fb).get_pixel(0, 0);
+        assert_eq!((material.g, material.b), (0.25, 1.0));
+    }
+
+    #[test]
+    fn gbuffer_views_are_black_without_a_gbuffer() {
+        let fb = Framebuffer::new(4, 4);
+        assert!(albedo_view(&fb).colors().iter().all(|c| *c == Color::BLACK));
     }
 
     #[test]

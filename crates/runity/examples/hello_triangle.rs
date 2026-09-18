@@ -76,7 +76,7 @@ fn main() -> std::io::Result<()> {
 
     let mut engine = app.run(Demo { triangle })?;
     // A triangle has no back, so let both sides show.
-    engine.rasterizer.cull = CullMode::None;
+    engine.renderer.rasterizer.cull = CullMode::None;
 
     if headless {
         let path =
