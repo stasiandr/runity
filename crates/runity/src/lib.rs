@@ -55,8 +55,8 @@ pub mod prelude {
     pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
     pub use runity_render::{debug, golden};
     pub use runity_render::{
-        BasicShader, Blend, Color, CullMode, DirectionalLight, DrawStats, Filter, Framebuffer,
-        Image, Mesh, PolygonMode, Rasterizer, Shader, Texture, UnlitShader, Varying, Vertex,
-        VertexOutput, Wrap,
+        Align, BasicShader, Blend, Color, CullMode, DirectionalLight, DrawStats, Filter, Font,
+        Framebuffer, Image, Mesh, PolygonMode, Rasterizer, Shader, TextStyle, Texture, UnlitShader,
+        Varying, Vertex, VertexOutput, Wrap,
     };
 }

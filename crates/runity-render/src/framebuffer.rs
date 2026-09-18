@@ -140,6 +140,63 @@ impl Framebuffer {
         Color::from_argb8(self.color[y * self.width + x])
     }
 
+    /// Alpha-blend a solid rectangle, top-left at `(x, y)`, `width` by `height`.
+    ///
+    /// Clipped to the framebuffer before the pixel loop runs, so a rectangle
+    /// far outside it costs nothing. `color.a` is the blend strength — 1.0
+    /// replaces the covered pixels outright, 0.0 draws nothing.
+    pub fn fill_rect(&mut self, x: i32, y: i32, width: usize, height: usize, color: Color) {
+        let alpha = color.a.clamp(0.0, 1.0);
+        if width == 0 || height == 0 || alpha <= 0.0 {
+            return;
+        }
+        let x0 = x.max(0) as usize;
+        let y0 = y.max(0) as usize;
+        let x1 = (x.saturating_add(width as i32)).clamp(0, self.width as i32) as usize;
+        let y1 = (y.saturating_add(height as i32)).clamp(0, self.height as i32) as usize;
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let blended = self.get_pixel(px, py).blend_over(color, alpha);
+                self.set_pixel(px, py, blended);
+            }
+        }
+    }
+
+    /// Alpha-blend a rectangle's border, `thickness` pixels wide, drawn inward
+    /// from `(x, y)` and `width` by `height` — the frame around a panel rather
+    /// than a filled one.
+    ///
+    /// A `thickness` that would make the two opposite edges of the border meet
+    /// or overlap just fills the whole rectangle, so a caller cannot double up
+    /// the blend at the corners by asking for a heavier border than fits.
+    pub fn stroke_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: usize,
+        height: usize,
+        thickness: usize,
+        color: Color,
+    ) {
+        if width == 0 || height == 0 || thickness == 0 {
+            return;
+        }
+        if thickness.saturating_mul(2) >= width || thickness.saturating_mul(2) >= height {
+            self.fill_rect(x, y, width, height, color);
+            return;
+        }
+        let t = thickness as i32;
+        self.fill_rect(x, y, width, thickness, color); // top
+        self.fill_rect(x, y + height as i32 - t, width, thickness, color); // bottom
+        let middle_height = height - 2 * thickness;
+        self.fill_rect(x, y + t, thickness, middle_height, color); // left
+        self.fill_rect(x + width as i32 - t, y + t, thickness, middle_height, color);
+        // right
+    }
+
     #[inline]
     pub(crate) fn set_depth(&mut self, index: usize, z: f32) {
         self.depth[index] = z;
@@ -194,6 +251,79 @@ mod tests {
         assert_eq!(fb.overdraw().unwrap()[1], 0);
         fb.clear(Color::BLACK);
         assert_eq!(fb.overdraw().unwrap()[0], 0);
+    }
+
+    #[test]
+    fn fill_rect_is_opaque_at_full_alpha_and_clipped_to_the_frame() {
+        let mut fb = Framebuffer::new(4, 4);
+        fb.clear(Color::BLACK);
+        fb.fill_rect(1, 1, 2, 2, Color::WHITE);
+        for y in 0..4 {
+            for x in 0..4 {
+                let expected = if (1..3).contains(&x) && (1..3).contains(&y) {
+                    Color::WHITE
+                } else {
+                    Color::BLACK
+                };
+                assert_eq!(fb.get_pixel(x, y), expected, "at ({x}, {y})");
+            }
+        }
+
+        // Straddling the edges: only the in-bounds part is touched, and no
+        // iteration wraps or panics.
+        let mut fb = Framebuffer::new(4, 4);
+        fb.clear(Color::BLACK);
+        fb.fill_rect(-1, -1, 3, 3, Color::WHITE);
+        assert_eq!(fb.get_pixel(1, 1), Color::WHITE);
+        assert_eq!(fb.get_pixel(2, 2), Color::BLACK);
+
+        // Entirely outside: a no-op, not a crash.
+        let mut fb = Framebuffer::new(4, 4);
+        fb.clear(Color::BLACK);
+        fb.fill_rect(100, 100, 5, 5, Color::WHITE);
+        fb.fill_rect(-100, -100, 5, 5, Color::WHITE);
+        assert!(fb.pixels().iter().all(|p| *p == Color::BLACK.to_argb8()));
+    }
+
+    #[test]
+    fn fill_rect_blends_by_the_same_formula_as_blend_alpha() {
+        let mut fb = Framebuffer::new(1, 1);
+        let base = Color::rgb(0.2, 0.4, 0.6);
+        fb.clear(base);
+        let src = Color::rgba(1.0, 0.0, 0.0, 0.4);
+        fb.fill_rect(0, 0, 1, 1, src);
+        // Both `base` and the blended result round-trip through the packed
+        // u32 store, so the expectation goes through the same round trips.
+        let stored_base = Color::from_argb8(base.to_argb8());
+        let expected = Color::from_argb8(stored_base.blend_over(src, src.a).to_argb8());
+        assert_eq!(fb.get_pixel(0, 0), expected);
+    }
+
+    #[test]
+    fn stroke_rect_lights_the_border_and_leaves_the_middle_alone() {
+        let mut fb = Framebuffer::new(6, 6);
+        fb.clear(Color::BLACK);
+        fb.stroke_rect(1, 1, 4, 4, 1, Color::WHITE);
+        for y in 1..5 {
+            for x in 1..5 {
+                let on_border = x == 1 || x == 4 || y == 1 || y == 4;
+                let expected = if on_border {
+                    Color::WHITE
+                } else {
+                    Color::BLACK
+                };
+                assert_eq!(fb.get_pixel(x, y), expected, "at ({x}, {y})");
+            }
+        }
+        assert_eq!(fb.get_pixel(2, 2), Color::BLACK, "the middle is untouched");
+    }
+
+    #[test]
+    fn stroke_rect_thicker_than_the_rectangle_just_fills_it() {
+        let mut fb = Framebuffer::new(4, 4);
+        fb.clear(Color::BLACK);
+        fb.stroke_rect(0, 0, 4, 4, 10, Color::WHITE);
+        assert!(fb.pixels().iter().all(|p| *p == Color::WHITE.to_argb8()));
     }
 
     #[test]

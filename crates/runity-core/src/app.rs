@@ -2,11 +2,11 @@ use crate::input::Input;
 use crate::time::Time;
 use crate::transform::Camera;
 use crate::world::World;
-use runity_math::Mat4;
+use runity_math::{Mat4, Vec3};
 use runity_platform::{open_window, Event, Window, WindowConfig};
 use runity_render::{
     debug, BasicShader, Color, DirectionalLight, DrawStats, Framebuffer, Mesh, PolygonMode,
-    Rasterizer, Shader,
+    Rasterizer, Shader, TextStyle,
 };
 use std::io;
 
@@ -154,6 +154,37 @@ impl Engine {
     pub fn draw_axes(&mut self, length: f32) {
         let view_projection = self.view_projection();
         debug::draw_axes(&mut self.framebuffer, view_projection, length);
+    }
+
+    /// Draw screen-space text with the top-left corner of its first line at
+    /// `(x, y)` in framebuffer pixels.
+    pub fn draw_text(&mut self, text: &str, x: i32, y: i32, style: &TextStyle) {
+        style.draw(&mut self.framebuffer, text, x, y);
+    }
+
+    /// Draw a label anchored to a point in world space, at a constant size —
+    /// no perspective scaling, the way a debug caption should read the same
+    /// whether it is tagging something near the camera or far from it.
+    ///
+    /// Projects `world_pos` with the same [`debug::project`] the debug overlays
+    /// use, so a label lines up with `draw_axes` or a wireframe drawn the same
+    /// frame. Draws nothing and returns `None` for a point at or behind the
+    /// near plane, exactly where `project` itself gives up.
+    pub fn draw_text_at(
+        &mut self,
+        world_pos: Vec3,
+        text: &str,
+        style: &TextStyle,
+    ) -> Option<(i32, i32)> {
+        let clip = self.view_projection().transform_point(world_pos);
+        let (width, height) = (
+            self.framebuffer.width() as f32,
+            self.framebuffer.height() as f32,
+        );
+        let (x, y) = debug::project(clip, width, height)?;
+        let (x, y) = (x.round() as i32, y.round() as i32);
+        style.draw(&mut self.framebuffer, text, x, y);
+        Some((x, y))
     }
 }
 
@@ -424,5 +455,63 @@ mod tests {
 
         engine.set_title("second");
         assert_eq!(engine.pending_title.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn draw_text_lands_at_the_top_left_anchor() {
+        let font = runity_render::Font::embedded();
+        let style = TextStyle::new(&font).size(24.0).color(Color::WHITE);
+        let mut engine = Engine::new(64, 64);
+        engine.framebuffer.clear(Color::BLACK);
+        engine.draw_text("W", 4, 4, &style);
+        let lit = engine
+            .framebuffer
+            .pixels()
+            .iter()
+            .filter(|p| **p != Color::BLACK.to_argb8())
+            .count();
+        assert!(lit > 0, "draw_text must have put something on the frame");
+    }
+
+    #[test]
+    fn draw_text_at_projects_through_the_camera_and_draws() {
+        let font = runity_render::Font::embedded();
+        let style = TextStyle::new(&font).size(16.0).color(Color::WHITE);
+        let mut engine = Engine::new(200, 150);
+        engine.framebuffer.clear(Color::BLACK);
+
+        // In front of the default camera, which sits at (0, 1.5, 4) looking
+        // at the origin.
+        let drawn = engine.draw_text_at(Vec3::ZERO, "here", &style);
+        assert!(
+            drawn.is_some(),
+            "a point in front of the camera must project"
+        );
+        let lit = engine
+            .framebuffer
+            .pixels()
+            .iter()
+            .filter(|p| **p != Color::BLACK.to_argb8())
+            .count();
+        assert!(lit > 0);
+    }
+
+    #[test]
+    fn draw_text_at_draws_nothing_for_a_point_behind_the_near_plane() {
+        let font = runity_render::Font::embedded();
+        let style = TextStyle::new(&font).size(16.0).color(Color::WHITE);
+        let mut engine = Engine::new(64, 64);
+        engine.framebuffer.clear(Color::BLACK);
+
+        // Further along the camera-to-target axis than the camera itself,
+        // i.e. behind it.
+        let behind = engine.camera.position + (engine.camera.position - engine.camera.target) * 4.0;
+        let drawn = engine.draw_text_at(behind, "behind", &style);
+        assert_eq!(drawn, None);
+        assert!(engine
+            .framebuffer
+            .pixels()
+            .iter()
+            .all(|p| *p == Color::BLACK.to_argb8()));
     }
 }

@@ -30,6 +30,7 @@
 mod outline;
 mod raster;
 mod tables;
+mod text;
 
 #[cfg(test)]
 mod fixture;
@@ -46,6 +47,7 @@ use std::rc::Rc;
 pub use outline::{Contour, Outline, Segment, MAX_COMPOSITE_DEPTH};
 pub use raster::GlyphBitmap;
 pub use tables::GlyphMetrics;
+pub use text::{Align, TextSize, TextStyle};
 
 use tables::{Cmap, Directory, KernPair};
 

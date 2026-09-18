@@ -69,6 +69,17 @@ impl Color {
         }
     }
 
+    /// Alpha-blend `src` over `self`: `self * (1 - t) + opaque(src) * t`.
+    ///
+    /// `src`'s own alpha is ignored — `t` is the coverage the caller already
+    /// folded it into — so a full-strength blend replaces color but leaves
+    /// `self`'s alpha sliding towards 1 rather than jumping there, the same
+    /// [`raster::Blend::Alpha`](crate::raster::Blend::Alpha) formula.
+    #[inline]
+    pub fn blend_over(self, src: Self, t: f32) -> Self {
+        self.lerp(Color::rgba(src.r, src.g, src.b, 1.0), t.clamp(0.0, 1.0))
+    }
+
     /// Multiply components (a "modulate" blend).
     #[inline]
     pub fn modulate(self, o: Self) -> Self {
@@ -130,6 +141,25 @@ mod tests {
             Color::rgba(f32::NAN, 0.0, 0.0, 1.0).to_argb8(),
             0xff_00_00_00
         );
+    }
+
+    #[test]
+    fn blend_over_matches_the_alpha_blend_formula() {
+        let dst = Color::rgb(0.2, 0.2, 0.2);
+        let src = Color::rgba(1.0, 0.0, 0.0, 0.3); // src.a is ignored; t drives it
+        assert_eq!(
+            dst.blend_over(src, 0.0),
+            dst,
+            "no coverage leaves dst alone"
+        );
+        let full = dst.blend_over(src, 1.0);
+        assert_eq!((full.r, full.g, full.b, full.a), (1.0, 0.0, 0.0, 1.0));
+        let half = dst.blend_over(src, 0.5);
+        assert!((half.r - 0.6).abs() < 1e-6);
+        assert!((half.a - 1.0).abs() < 1e-6, "dst had a=1, so it stays 1");
+        // Out-of-range t is clamped rather than extrapolated.
+        assert_eq!(dst.blend_over(src, 2.0), dst.blend_over(src, 1.0));
+        assert_eq!(dst.blend_over(src, -1.0), dst.blend_over(src, 0.0));
     }
 
     #[test]
