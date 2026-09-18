@@ -13,10 +13,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod decide;
 pub mod nav;
 pub mod path;
+pub mod sense;
 pub mod spatial;
+pub mod steer;
 
+pub use decide::{choose, choose_near_best, choose_weighted, curve, score};
 pub use nav::{NavGrid, BLOCKED, OPEN};
 pub use path::{find_path, FlowField, Path, PathError, PathFinder, PathSettings};
+pub use sense::{Awareness, Senses};
 pub use spatial::{ground_distance, SpatialGrid};
+pub use steer::{arrive, avoid, integrate, seek, separation, Locomotion, PathFollower};
