@@ -71,6 +71,42 @@ pub fn record(
         .into_inner())
 }
 
+/// Drive `ticks` fixed-update steps with no rendering at all — no
+/// framebuffer clear, no [`Game::render`], no [`Game::update`], no window.
+///
+/// [`run`] still rasterizes every frame, which is fine for a handful of them
+/// but far too slow for the multi-million-tick verification runs a
+/// deterministic simulation wants: this is the render-free alternative for
+/// that. Each step advances [`Engine::time`] with [`crate::time::Time::advance_tick`]
+/// and calls [`Game::fixed_update`]; nothing else in the loop runs.
+///
+/// ```
+/// use runity_core::{headless, App, Engine, Game};
+///
+/// struct Counter(u64);
+/// impl Game for Counter {
+///     fn fixed_update(&mut self, _engine: &mut Engine) {
+///         self.0 += 1;
+///     }
+/// }
+///
+/// let engine = headless::simulate(Counter(0), 100);
+/// assert_eq!(engine.time.elapsed_ticks(), 100);
+/// ```
+pub fn simulate(mut game: impl Game, ticks: u64) -> Engine {
+    // Engine carries a Framebuffer unconditionally, and Framebuffer::new
+    // refuses a zero size, so 1x1 is the smallest one simulate can hold
+    // without ever clearing or drawing into it.
+    let mut engine = Engine::new(1, 1);
+    game.start(&mut engine)
+        .expect("Game::start must not fail in headless::simulate");
+    for _ in 0..ticks {
+        engine.time.advance_tick();
+        game.fixed_update(&mut engine);
+    }
+    engine
+}
+
 /// Write frames as `<prefix>0000.png`, `<prefix>0001.png`, ... into `directory`.
 pub fn save_frames(
     directory: impl AsRef<Path>,
@@ -119,6 +155,8 @@ mod tests {
     use super::*;
     use runity_math::{Mat4, Vec3};
     use runity_render::{Color, Mesh};
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Spinner {
         angle: f32,
@@ -173,6 +211,54 @@ mod tests {
             frames[3].pixels(),
             "the cube rotates, so the frames must not be identical"
         );
+    }
+
+    #[derive(Default)]
+    struct CallCounts {
+        starts: Rc<Cell<u32>>,
+        updates: Rc<Cell<u32>>,
+        fixed_updates: Rc<Cell<u32>>,
+        renders: Rc<Cell<u32>>,
+    }
+
+    struct CountingGame(CallCounts);
+
+    impl Game for CountingGame {
+        fn start(&mut self, _engine: &mut Engine) -> io::Result<()> {
+            self.0.starts.set(self.0.starts.get() + 1);
+            Ok(())
+        }
+        fn update(&mut self, _engine: &mut Engine) {
+            self.0.updates.set(self.0.updates.get() + 1);
+        }
+        fn fixed_update(&mut self, _engine: &mut Engine) {
+            self.0.fixed_updates.set(self.0.fixed_updates.get() + 1);
+        }
+        fn render(&mut self, _engine: &mut Engine) {
+            self.0.renders.set(self.0.renders.get() + 1);
+        }
+    }
+
+    #[test]
+    fn simulate_runs_fixed_update_only_and_never_renders_or_clears() {
+        let counts = CallCounts::default();
+        let game = CountingGame(CallCounts {
+            starts: Rc::clone(&counts.starts),
+            updates: Rc::clone(&counts.updates),
+            fixed_updates: Rc::clone(&counts.fixed_updates),
+            renders: Rc::clone(&counts.renders),
+        });
+
+        let engine = simulate(game, 1_000);
+
+        assert_eq!(counts.starts.get(), 1);
+        assert_eq!(counts.fixed_updates.get(), 1_000);
+        assert_eq!(counts.updates.get(), 0, "simulate must not call update()");
+        assert_eq!(counts.renders.get(), 0, "simulate must not call render()");
+        assert_eq!(engine.time.elapsed_ticks(), 1_000);
+        // The framebuffer was never cleared or drawn into: it still holds the
+        // zeroed pixel Engine::new allocated it with.
+        assert!(engine.framebuffer.pixels().iter().all(|p| *p == 0));
     }
 
     #[test]

@@ -8,6 +8,14 @@ pub struct Time {
     delta: f32,
     elapsed: f32,
     frame: u64,
+    /// Fixed simulation steps taken so far — bumped by [`Time::next_fixed_step`]
+    /// and [`Time::advance_tick`], never by [`Time::advance`] itself, since a
+    /// render frame and a fixed tick run at different cadences.
+    ///
+    /// This is the counter a multi-million-tick run should read: as a `u64` it
+    /// cannot accumulate the float error `elapsed` slowly does over that many
+    /// additions.
+    ticks: u64,
     /// Upper bound on a single frame's delta, so a stall (a debugger breakpoint,
     /// a dragged window) cannot make simulation explode.
     pub max_delta: f32,
@@ -36,6 +44,7 @@ impl Time {
             delta: 0.0,
             elapsed: 0.0,
             frame: 0,
+            ticks: 0,
             max_delta: 0.25,
             fixed_delta: 1.0 / 60.0,
             accumulator: 0.0,
@@ -61,6 +70,16 @@ impl Time {
     #[inline]
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+
+    /// Fixed simulation steps taken so far.
+    ///
+    /// Seed a [`crate::Rng`] with this alongside a world seed: it is stable
+    /// across a 4.3M-step campaign in a way a frame count of the same length
+    /// spent as `f32` seconds would not be.
+    #[inline]
+    pub fn elapsed_ticks(&self) -> u64 {
+        self.ticks
     }
 
     #[inline]
@@ -145,10 +164,22 @@ impl Time {
     pub fn next_fixed_step(&mut self) -> bool {
         if self.fixed_delta > 0.0 && self.accumulator >= self.fixed_delta {
             self.accumulator -= self.fixed_delta;
+            self.ticks += 1;
             true
         } else {
             false
         }
+    }
+
+    /// Take one fixed step directly, without an accumulator to drain.
+    ///
+    /// [`headless::simulate`](crate::headless::simulate) has no per-frame
+    /// delta to feed [`Time::advance`] — it just wants `ticks` fixed steps —
+    /// so this bumps the tick counter and `elapsed` by exactly `fixed_delta`
+    /// and nothing else.
+    pub fn advance_tick(&mut self) {
+        self.ticks += 1;
+        self.elapsed += self.fixed_delta;
     }
 }
 
@@ -272,6 +303,39 @@ mod tests {
             (t.average_fps() - 50.0).abs() < 0.01,
             "the first window has not filled, so there is nothing to average"
         );
+    }
+
+    #[test]
+    fn fixed_steps_advance_the_tick_counter() {
+        let mut t = Time::new();
+        t.fixed_delta = 0.01;
+        t.advance(0.035);
+        let mut steps = 0;
+        while t.next_fixed_step() {
+            steps += 1;
+        }
+        assert_eq!(steps, 3);
+        assert_eq!(t.elapsed_ticks(), 3);
+    }
+
+    #[test]
+    fn advance_tick_does_not_touch_the_frame_counter() {
+        let mut t = Time::new();
+        t.fixed_delta = 1.0 / 60.0;
+        t.advance_tick();
+        t.advance_tick();
+        assert_eq!(t.elapsed_ticks(), 2);
+        assert_eq!(t.frame(), 0, "advance_tick is not a render frame");
+        assert!((t.elapsed() - 2.0 / 60.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tick_count_does_not_drift_over_millions_of_steps() {
+        let mut t = Time::new();
+        for _ in 0..4_300_000u64 {
+            t.advance_tick();
+        }
+        assert_eq!(t.elapsed_ticks(), 4_300_000);
     }
 
     #[test]

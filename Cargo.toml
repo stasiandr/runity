@@ -6,6 +6,7 @@ members = [
     "crates/runity-gpu",
     "crates/runity-platform",
     "crates/runity-core",
+    "crates/runity-sim",
     "crates/runity",
 ]
 
