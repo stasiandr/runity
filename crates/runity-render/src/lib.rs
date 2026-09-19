@@ -28,7 +28,10 @@ pub use color::Color;
 pub use font::{Align, Font, FontError, GlyphBitmap, GlyphMetrics, TextSize, TextStyle};
 pub use framebuffer::Framebuffer;
 pub use mesh::{Mesh, ObjError};
-pub use png::{decode_png, encode_png, load_png, save_png, save_ppm, Image, PngError};
+pub use png::{
+    decode_png, encode_png, encode_png_rgba, load_png, save_png, save_png_rgba, save_ppm, Image,
+    PngError,
+};
 pub use raster::{Blend, CullMode, DrawStats, PolygonMode, Rasterizer};
 pub use shader::{
     BasicShader, BasicVarying, DirectionalLight, Shader, UnlitShader, Varying, Vertex, VertexOutput,
