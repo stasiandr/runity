@@ -177,6 +177,11 @@ impl Surface {
         self.begin();
     }
 
+    /// Whether the layer is presenting in step with the display.
+    pub fn vsync(&self) -> bool {
+        self.vsync
+    }
+
     pub fn set_vsync(&mut self, enabled: bool) {
         if enabled == self.vsync {
             return;

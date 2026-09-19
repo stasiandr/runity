@@ -665,8 +665,8 @@ impl App {
                 }
             }
 
-            if let Some(fps) = self.options.target_fps.filter(|f| *f > 0.0) {
-                let budget = std::time::Duration::from_secs_f32(1.0 / fps);
+            let paced_by_vsync = engine.gpu.as_ref().is_some_and(|gpu| gpu.paces_frames());
+            if let Some(budget) = frame_budget(self.options.target_fps, paced_by_vsync) {
                 if let Some(remaining) = budget.checked_sub(frame_started.elapsed()) {
                     std::thread::sleep(remaining);
                 }
@@ -674,6 +674,25 @@ impl App {
         }
         Ok(engine)
     }
+}
+
+/// How long a frame is allowed to take, or `None` for no sleeping at all.
+///
+/// Presenting in step with the display is already a frame limiter, and a
+/// better one: `nextDrawable` blocks until the display is ready, so the loop
+/// runs at the refresh rate. A `thread::sleep` on top of that is a second
+/// limiter fighting the first — the sleep keeps ending just after the display
+/// was ready, one vsync is missed, and the loop settles *below* the refresh
+/// rate instead of on it. Measured on a 120 Hz panel: 57 fps with both, 120
+/// with vsync alone. So when the GPU paces the frame, the target is its
+/// business and the loop does not sleep.
+fn frame_budget(target_fps: Option<f32>, paced_by_vsync: bool) -> Option<std::time::Duration> {
+    if paced_by_vsync {
+        return None;
+    }
+    target_fps
+        .filter(|fps| *fps > 0.0)
+        .map(|fps| std::time::Duration::from_secs_f32(1.0 / fps))
 }
 
 /// Open the device and, when there is a view, put a `CAMetalLayer` on it.
@@ -798,6 +817,25 @@ mod tests {
         );
         let app = App::new(WindowConfig::default()).with_renderer(Renderer::Cpu);
         assert_eq!(app.renderer, Some(Renderer::Cpu));
+    }
+
+    #[test]
+    fn vsync_is_the_only_frame_limiter_when_it_is_pacing_the_frame() {
+        // Two limiters are worse than one: the sleep keeps landing just after
+        // the display was ready, and the loop settles below the refresh rate.
+        assert_eq!(frame_budget(Some(60.0), true), None);
+        assert_eq!(frame_budget(None, true), None);
+    }
+
+    #[test]
+    fn the_frame_target_still_paces_every_path_vsync_does_not() {
+        let sixtieth = std::time::Duration::from_secs_f32(1.0 / 60.0);
+        assert_eq!(frame_budget(Some(60.0), false), Some(sixtieth));
+        // The benchmark asks for no target at all, and must not get one.
+        assert_eq!(frame_budget(None, false), None);
+        // A nonsense target is not a zero-length sleep, it is no sleep.
+        assert_eq!(frame_budget(Some(0.0), false), None);
+        assert_eq!(frame_budget(Some(-1.0), false), None);
     }
 
     #[test]

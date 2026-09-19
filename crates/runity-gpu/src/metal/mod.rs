@@ -295,6 +295,17 @@ impl Gpu {
         }
     }
 
+    /// Whether presenting already paces the loop, so a frame limiter would
+    /// only be a second one.
+    ///
+    /// True exactly when there is a window to present to and it is in step
+    /// with the display: `nextDrawable` then blocks until the display is ready
+    /// and the frame rate is the refresh rate. Sleeping to a target on top of
+    /// that does not make the loop steadier — it makes it miss vsyncs.
+    pub fn paces_frames(&self) -> bool {
+        self.surface.as_ref().is_some_and(|s| s.vsync())
+    }
+
     /// Present in step with the display (the default), or as fast as the
     /// device will go (the benchmark).
     pub fn set_vsync(&mut self, enabled: bool) {

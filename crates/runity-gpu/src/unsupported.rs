@@ -43,6 +43,10 @@ impl Gpu {
 
     pub fn force_scale(&mut self, _scale: Option<f64>) {}
 
+    pub fn paces_frames(&self) -> bool {
+        false
+    }
+
     pub fn set_vsync(&mut self, _enabled: bool) {}
 
     pub fn set_depth_readback(&mut self, _wanted: bool) {}
