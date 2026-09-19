@@ -20,3 +20,10 @@ runity-core = { path = "../runity-core", version = "0.1.0" }
 name = "smallworld"
 path = "examples/smallworld.rs"
 test = true
+
+# Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
+# `test = true` is what makes `cargo test -p runity` actually run them.
+[[example]]
+name = "valley"
+path = "examples/valley/main.rs"
+test = true
