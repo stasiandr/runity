@@ -20,3 +20,10 @@ runity-core = { path = "../runity-core", version = "0.1.0" }
 name = "smallworld"
 path = "examples/smallworld.rs"
 test = true
+
+# Valley's game color lives in code, not in the engine crates (see
+# examples/valley/look.rs); its unit tests run the same way smallworld's do.
+[[example]]
+name = "valley-look"
+path = "examples/valley/look.rs"
+test = true
