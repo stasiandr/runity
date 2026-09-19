@@ -32,3 +32,19 @@ test = true
 name = "valley-look"
 path = "examples/valley/look.rs"
 test = true
+
+# Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
+# `test = true` is what makes `cargo test -p runity` actually run them. This
+# is a standalone scene-file validator, not part of the `valley` binary above.
+[[example]]
+name = "valley-scene"
+path = "examples/valley/main.rs"
+test = true
+
+# One-shot generator for the ownership-marks atlas (card #63): run once with
+# RUNITY_UPDATE_GOLDEN-style intent to bake assets/valley/textures/marks.png,
+# then it's edited by hand and doesn't need to run again.
+[[example]]
+name = "valley_marks"
+path = "examples/valley_marks.rs"
+test = true
