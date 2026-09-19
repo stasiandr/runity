@@ -32,3 +32,11 @@ test = true
 name = "valley-look"
 path = "examples/valley/look.rs"
 test = true
+
+# Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
+# `test = true` is what makes `cargo test -p runity` actually run them. This
+# is a standalone scene-file validator, not part of the `valley` binary above.
+[[example]]
+name = "valley-scene"
+path = "examples/valley/main.rs"
+test = true
