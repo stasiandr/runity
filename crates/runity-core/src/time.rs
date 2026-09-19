@@ -116,6 +116,29 @@ impl Time {
         }
     }
 
+    /// How far this frame sits between the last fixed tick and the next one,
+    /// in `[0, 1]`.
+    ///
+    /// Read it after the fixed steps of a frame have been drained, and hand it
+    /// to [`crate::physics::Body::render_position`]. The simulation runs at
+    /// [`Time::fixed_delta`] — 20 Hz in the valley — while frames arrive at 60
+    /// or 144, so several frames fall between two ticks. Drawing the latest
+    /// tick's position on each of them makes a body visibly step; drawing
+    /// `alpha` of the way from the previous tick to the latest makes the same
+    /// simulation look smooth, and costs the simulation nothing, because
+    /// interpolation happens on the way out and is never written back.
+    ///
+    /// It is what remains in the accumulator over the step size, so it is 0 on
+    /// a frame that has just ticked and approaches 1 just before the next one.
+    #[inline]
+    pub fn fixed_alpha(&self) -> f32 {
+        if self.fixed_delta > 0.0 {
+            (self.accumulator / self.fixed_delta).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Take one fixed step if enough time has accumulated.
     ///
     /// Call in a `while` loop; it drains the accumulator one step at a time.
@@ -161,6 +184,55 @@ mod tests {
             "the leftover plus the new frame is one more step"
         );
         assert!(!t.next_fixed_step());
+    }
+
+    #[test]
+    fn fixed_alpha_walks_from_one_tick_to_the_next() {
+        let mut t = Time::new();
+        t.fixed_delta = 1.0 / 20.0;
+        assert_eq!(t.fixed_alpha(), 0.0, "nothing has accumulated yet");
+
+        // Three 60 Hz frames fit inside one 20 Hz tick: the first two only
+        // fill the accumulator, and alpha climbs a third at a time.
+        t.advance(1.0 / 60.0);
+        assert!(!t.next_fixed_step());
+        assert!(
+            (t.fixed_alpha() - 1.0 / 3.0).abs() < 1e-5,
+            "{}",
+            t.fixed_alpha()
+        );
+        t.advance(1.0 / 60.0);
+        assert!(!t.next_fixed_step());
+        assert!(
+            (t.fixed_alpha() - 2.0 / 3.0).abs() < 1e-5,
+            "{}",
+            t.fixed_alpha()
+        );
+
+        // The third frame ticks, and alpha falls back to the fresh tick.
+        t.advance(1.0 / 60.0);
+        assert!(t.next_fixed_step());
+        assert!(!t.next_fixed_step());
+        assert!(t.fixed_alpha() < 1e-5, "{}", t.fixed_alpha());
+    }
+
+    #[test]
+    fn fixed_alpha_never_leaves_the_tick_it_describes() {
+        let mut t = Time::new();
+        t.fixed_delta = 1.0 / 20.0;
+        // A frame far longer than a tick, with the steps left undrained: the
+        // accumulator holds more than a whole tick, but extrapolating past the
+        // latest position would draw a body where physics never put it.
+        t.advance(0.2);
+        assert_eq!(t.fixed_alpha(), 1.0);
+
+        let mut stopped = Time::new();
+        stopped.fixed_delta = 0.0;
+        assert_eq!(
+            stopped.fixed_alpha(),
+            0.0,
+            "no fixed step, no interpolation"
+        );
     }
 
     #[test]
