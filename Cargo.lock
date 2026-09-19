@@ -45,3 +45,10 @@ version = "0.1.0"
 dependencies = [
  "runity-math",
 ]
+
+[[package]]
+name = "runity-sim"
+version = "0.1.0"
+dependencies = [
+ "runity-math",
+]
