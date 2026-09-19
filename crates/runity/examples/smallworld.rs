@@ -17,6 +17,8 @@
 //! | `Backspace` | undo it — in *World*, drop the last ten entities |
 //! | `1` `2` `3` `4` | shaded, wireframe, depth buffer, overdraw |
 //! | `N` | overlay vertex normals and the world axes |
+//! | `H` | open or close the key list, centered over a dimmed scene |
+//! | `F` | show or hide the HUD entirely (the key list included) |
 //! | `Escape`, or the close button | quit |
 //!
 //! What `Space` does, scene by scene: *Lit scene* pauses the animation,
@@ -125,21 +127,6 @@ impl SceneId {
     fn previous(self) -> Self {
         Self::from_index(self.index() + SCENE_COUNT - 1)
     }
-}
-
-/// `SmallWorld — 3/6 Meshes — 60 fps`.
-///
-/// Rebuilt every frame and handed to [`Engine::set_title`], which only forwards
-/// it when it actually changed — and the frame rate is averaged over half a
-/// second, so that is roughly twice a second.
-fn window_title(scene: SceneId, fps: f32) -> String {
-    format!(
-        "SmallWorld — {}/{} {} — {:.0} fps",
-        scene.index() + 1,
-        SCENE_COUNT,
-        scene.name(),
-        fps
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1019,15 @@ struct SmallWorld {
     scenes: [Option<Box<dyn Scene>>; SCENE_COUNT],
     debug_view: DebugView,
     overlays: bool,
+    /// Loaded once and kept: [`Font::rasterize`] caches every glyph it
+    /// rasterizes, so one instance means the HUD costs nothing after its
+    /// first frame.
+    font: Font,
+    /// `F` toggles this; a headless run starts with it off and never touches
+    /// a key, so it stays off for the run's whole duration.
+    hud_enabled: bool,
+    /// `H` toggles this; only looked at while `hud_enabled` is true.
+    keys_panel_open: bool,
 }
 
 impl SmallWorld {
@@ -1041,7 +1037,18 @@ impl SmallWorld {
             scenes: std::array::from_fn(|_| None),
             debug_view,
             overlays: false,
+            font: Font::embedded(),
+            hud_enabled: true,
+            keys_panel_open: false,
         }
+    }
+
+    /// Headless runs draw no HUD: the six screenshots `run_headless` writes,
+    /// and the `smallworld-triangle.png` / `smallworld-textures.png` goldens,
+    /// stay exactly the pixels they were before this card.
+    fn without_hud(mut self) -> Self {
+        self.hud_enabled = false;
+        self
     }
 
     /// The scene on screen, built if this is the first visit.
@@ -1051,7 +1058,94 @@ impl SmallWorld {
             .get_or_insert_with(|| build_scene(SceneId::ALL[index], engine))
             .as_mut()
     }
+
+    /// What the stats panel says: scene, fps, debug view, and the triangles
+    /// and fragments the last frame's draws cost — [`DrawStats`], already
+    /// counted, shown for free.
+    fn hud_text(&self, engine: &Engine) -> String {
+        let stats = engine.frame_stats();
+        format!(
+            "{}/{} {}\nFPS: {:.0}\nВид: {}\nТреугольники: {}  Фрагменты: {}",
+            self.current.index() + 1,
+            SCENE_COUNT,
+            self.current.name(),
+            engine.time.average_fps(),
+            debug_view_label(engine.debug_view),
+            stats.triangles_rasterized,
+            stats.fragments_shaded,
+        )
+    }
+
+    /// Top-left stats panel, and — while `keys_panel_open` — the key list
+    /// centered over a dimmed scene.
+    fn draw_hud(&self, engine: &mut Engine) {
+        let text = self.hud_text(engine);
+        let style = TextStyle::new(&self.font)
+            .size(HUD_TEXT_SIZE)
+            .color(Color::WHITE)
+            .tabular_digits(true)
+            .panel(Color::rgba(0.0, 0.0, 0.0, HUD_PANEL_ALPHA));
+        style.draw(&mut engine.framebuffer, &text, HUD_MARGIN, HUD_MARGIN);
+
+        if self.keys_panel_open {
+            self.draw_keys_panel(engine);
+        }
+    }
+
+    /// The key list, centered over a scene dimmed by one flat overlay.
+    fn draw_keys_panel(&self, engine: &mut Engine) {
+        let (width, height) = (engine.framebuffer.width(), engine.framebuffer.height());
+        engine
+            .framebuffer
+            .fill_rect(0, 0, width, height, Color::rgba(0.0, 0.0, 0.0, 0.55));
+
+        let text = KEY_HELP
+            .iter()
+            .map(|(key, action)| format!("{key}\t{action}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let style = TextStyle::new(&self.font)
+            .size(HUD_TEXT_SIZE)
+            .color(Color::WHITE)
+            .panel(Color::rgba(0.0, 0.0, 0.0, HUD_PANEL_ALPHA));
+        let size = style.measure(&text);
+        let x = ((width as f32 - size.width) * 0.5).round() as i32;
+        let y = ((height as f32 - size.height) * 0.5).round() as i32;
+        style.draw(&mut engine.framebuffer, &text, x, y);
+    }
 }
+
+/// Pixel size every HUD panel is set in, and the alpha its background panel
+/// is filled with — 60%, per the card.
+const HUD_TEXT_SIZE: f32 = 16.0;
+const HUD_PANEL_ALPHA: f32 = 0.6;
+/// Distance of the stats panel from the frame's top-left corner.
+const HUD_MARGIN: i32 = 8;
+
+/// The Russian name `H`'s panel shows for each [`DebugView`].
+fn debug_view_label(view: DebugView) -> &'static str {
+    match view {
+        DebugView::Shaded => "обычный",
+        DebugView::Wireframe => "каркас",
+        DebugView::Depth => "глубина",
+        DebugView::Overdraw => "перекрытие",
+    }
+}
+
+/// The key list `H` opens — the same keys as the module doc comment and the
+/// README, tab-separated so [`TextStyle`] lines them into two columns.
+const KEY_HELP: &[(&str, &str)] = &[
+    ("Tab / Shift+Tab", "следующая / предыдущая сцена по кругу"),
+    ("Стрелки / WASD", "вращать камеру текущей сцены"),
+    ("Q / E", "отдалить / приблизить"),
+    ("Space", "действие текущей сцены"),
+    ("Backspace", "отменить его"),
+    ("1 2 3 4", "обычный вид, каркас, глубина, овердрав"),
+    ("N", "нормали вершин и оси мира"),
+    ("H", "открыть или закрыть этот список"),
+    ("F", "показать или скрыть HUD целиком"),
+    ("Escape", "выход"),
+];
 
 impl Game for SmallWorld {
     fn start(&mut self, engine: &mut Engine) -> io::Result<()> {
@@ -1087,6 +1181,12 @@ impl Game for SmallWorld {
         if engine.input.key_pressed(Key::N) {
             self.overlays = !self.overlays;
         }
+        if engine.input.key_pressed(Key::H) {
+            self.keys_panel_open = !self.keys_panel_open;
+        }
+        if engine.input.key_pressed(Key::F) {
+            self.hud_enabled = !self.hud_enabled;
+        }
 
         let dt = engine.time.delta();
         let action = engine.input.key_pressed(Key::Space);
@@ -1104,8 +1204,6 @@ impl Game for SmallWorld {
         scene.orbit_mut().steer(&engine.input, dt);
         scene.orbit_mut().apply(&mut engine.camera);
         scene.update(engine, dt);
-
-        engine.set_title(window_title(self.current, engine.time.average_fps()));
     }
 
     fn fixed_update(&mut self, engine: &mut Engine) {
@@ -1127,6 +1225,10 @@ impl Game for SmallWorld {
             scene.overlay(engine);
             engine.draw_axes(1.5);
         }
+
+        if self.hud_enabled {
+            self.draw_hud(engine);
+        }
     }
 }
 
@@ -1134,7 +1236,7 @@ impl Game for SmallWorld {
 // Starting up
 // ---------------------------------------------------------------------------
 
-/// `RUNITY_SCENE` counts from 1, like the number in the title.
+/// `RUNITY_SCENE` counts from 1, like the number the HUD shows.
 fn scene_from_env(value: Option<&str>) -> SceneId {
     match value.and_then(|v| v.trim().parse::<usize>().ok()) {
         Some(n) if (1..=SCENE_COUNT).contains(&n) => SceneId::from_index(n - 1),
@@ -1152,10 +1254,13 @@ fn debug_view_from_env(value: Option<&str>) -> DebugView {
 }
 
 /// Render every scene with no display and write the six screenshots.
+///
+/// No HUD: a screenshot from this path is the scene alone, the same pixels
+/// whether the HUD panel and key list exist or not.
 fn run_headless(debug_view: DebugView) -> io::Result<()> {
     let frames_directory = std::env::var_os("RUNITY_FRAMES");
     for id in SceneId::ALL {
-        let game = SmallWorld::new(id, debug_view);
+        let game = SmallWorld::new(id, debug_view).without_hud();
         let frame = match &frames_directory {
             Some(directory) => {
                 let frames =
@@ -1270,14 +1375,20 @@ mod tests {
     }
 
     #[test]
-    fn the_title_says_which_scene_and_how_fast() {
-        assert_eq!(
-            window_title(SceneId::Lit, 59.8),
-            "SmallWorld — 1/6 Lit scene — 60 fps"
+    fn the_hud_text_names_the_scene_fps_view_and_draw_stats() {
+        let (mut app, mut engine) = started(SceneId::DepthAndBlending);
+        app.update(&mut engine);
+        app.render(&mut engine);
+        let text = app.hud_text(&engine);
+        assert!(
+            text.starts_with("5/6 Depth & blending\n"),
+            "scene number and name lead the panel: {text:?}"
         );
-        assert_eq!(
-            window_title(SceneId::DepthAndBlending, 30.2),
-            "SmallWorld — 5/6 Depth & blending — 30 fps"
+        assert!(text.contains("FPS: "));
+        assert!(text.contains("Вид: обычный"));
+        assert!(
+            text.contains("Треугольники: ") && text.contains("Фрагменты: "),
+            "DrawStats reach the panel: {text:?}"
         );
     }
 
@@ -1586,10 +1697,11 @@ mod tests {
         );
     }
 
-    /// Run one scene with no window, exactly as `RUNITY_HEADLESS=1` does.
+    /// Run one scene with no window and no HUD, exactly as `RUNITY_HEADLESS=1`
+    /// does.
     fn headless_scene(id: SceneId, width: u32, height: u32, frames: u64) -> Engine {
         headless::run(
-            SmallWorld::new(id, DebugView::Shaded),
+            SmallWorld::new(id, DebugView::Shaded).without_hud(),
             width,
             height,
             frames,
@@ -1613,11 +1725,6 @@ mod tests {
                 second.framebuffer.pixels(),
                 "{} is not deterministic",
                 id.name()
-            );
-            assert_eq!(
-                first.title(),
-                window_title(id, first.time.average_fps()),
-                "the title names the scene that is on screen"
             );
         }
     }
@@ -1643,6 +1750,106 @@ mod tests {
             "tests/golden/smallworld-textures.png",
             &frame,
             Tolerance::new(8, 0.04),
+        );
+    }
+
+    #[test]
+    fn the_hud_looks_the_way_it_did() {
+        // Same scene and frame count as the triangle golden above, HUD left
+        // on this time: the only difference between the two references is
+        // the panel in the corner.
+        let frame = headless::run(
+            SmallWorld::new(SceneId::Triangle, DebugView::Shaded),
+            192,
+            108,
+            30,
+            HEADLESS_DELTA,
+        )
+        .expect("a headless run needs no display")
+        .framebuffer;
+        golden::assert_matches(
+            "tests/golden/smallworld-hud.png",
+            &frame,
+            Tolerance::new(8, 0.04),
+        );
+    }
+
+    #[test]
+    fn h_opens_the_key_list_and_f_hides_the_whole_hud() {
+        let (mut app, mut engine) = started(SceneId::Triangle);
+        assert!(app.hud_enabled);
+        assert!(!app.keys_panel_open);
+
+        tap(&mut app, &mut engine, &[Key::H]);
+        assert!(app.keys_panel_open, "H opens the key list");
+        tap(&mut app, &mut engine, &[Key::H]);
+        assert!(!app.keys_panel_open, "H again closes it");
+
+        tap(&mut app, &mut engine, &[Key::F]);
+        assert!(!app.hud_enabled, "F hides the HUD");
+        tap(&mut app, &mut engine, &[Key::F]);
+        assert!(app.hud_enabled, "F again brings it back");
+    }
+
+    #[test]
+    fn without_hud_starts_with_the_hud_off_and_keeps_it_off() {
+        let mut app = SmallWorld::new(SceneId::Triangle, DebugView::Shaded).without_hud();
+        assert!(!app.hud_enabled);
+        let mut engine = Engine::new(64, 48);
+        app.start(&mut engine).unwrap();
+        app.update(&mut engine);
+        assert!(!app.hud_enabled, "no key was pressed to turn it back on");
+    }
+
+    #[test]
+    fn the_hud_panel_lights_the_top_left_corner_only_when_enabled() {
+        let (mut app, mut engine) = started(SceneId::Triangle);
+        app.update(&mut engine);
+        // The clear color, rounded through the same 8-bit framebuffer the
+        // corner pixel is read back from, so an untouched pixel compares equal.
+        let clear = Color::from_argb8(engine.clear_color.to_argb8());
+        let corner = |engine: &Engine| {
+            engine
+                .framebuffer
+                .get_pixel(HUD_MARGIN as usize + 2, HUD_MARGIN as usize + 2)
+        };
+
+        engine.framebuffer.clear(engine.clear_color);
+        app.render(&mut engine);
+        assert_ne!(
+            corner(&engine),
+            clear,
+            "the stats panel starts near the top-left corner"
+        );
+
+        app.hud_enabled = false;
+        engine.framebuffer.clear(engine.clear_color);
+        app.render(&mut engine);
+        assert_eq!(corner(&engine), clear, "F takes the panel away entirely");
+    }
+
+    #[test]
+    fn the_key_list_dims_the_scene_behind_it() {
+        let (mut app, mut engine) = started(SceneId::Triangle);
+        app.update(&mut engine);
+        engine.framebuffer.clear(engine.clear_color);
+        app.render(&mut engine);
+        let corner_closed = engine.framebuffer.get_pixel(
+            engine.framebuffer.width() - 1,
+            engine.framebuffer.height() - 1,
+        );
+
+        app.keys_panel_open = true;
+        engine.framebuffer.clear(engine.clear_color);
+        app.render(&mut engine);
+        let corner_open = engine.framebuffer.get_pixel(
+            engine.framebuffer.width() - 1,
+            engine.framebuffer.height() - 1,
+        );
+
+        assert_ne!(
+            corner_closed, corner_open,
+            "opening the key list dims even a corner no glyph reaches"
         );
     }
 }
