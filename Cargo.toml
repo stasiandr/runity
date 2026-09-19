@@ -7,6 +7,7 @@ members = [
     "crates/runity-platform",
     "crates/runity-core",
     "crates/runity-net",
+    "crates/runity-sim",
     "crates/runity",
 ]
 

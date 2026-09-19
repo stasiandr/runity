@@ -20,3 +20,38 @@ runity-core = { path = "../runity-core", version = "0.1.0" }
 name = "smallworld"
 path = "examples/smallworld.rs"
 test = true
+
+[[example]]
+name = "valley"
+path = "examples/valley.rs"
+test = true
+
+# Valley's game color lives in code, not in the engine crates (see
+# examples/valley/look.rs); its unit tests run the same way smallworld's do.
+[[example]]
+name = "valley-look"
+path = "examples/valley/look.rs"
+test = true
+
+# The loading side of the valley's content, and the checklist its committed
+# models and atlas have to pass — same arrangement, tests in the file.
+[[example]]
+name = "valley-assets"
+path = "examples/valley/assets.rs"
+test = true
+
+# Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
+# `test = true` is what makes `cargo test -p runity` actually run them. This
+# is a standalone scene-file validator, not part of the `valley` binary above.
+[[example]]
+name = "valley-scene"
+path = "examples/valley/main.rs"
+test = true
+
+# One-shot generator for the ownership-marks atlas (card #63): run once with
+# RUNITY_UPDATE_GOLDEN-style intent to bake assets/valley/textures/marks.png,
+# then it's edited by hand and doesn't need to run again.
+[[example]]
+name = "valley_marks"
+path = "examples/valley_marks.rs"
+test = true

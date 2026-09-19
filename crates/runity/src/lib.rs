@@ -57,7 +57,9 @@ pub mod prelude {
     pub use runity_gpu::{GpuShader, PulseUniforms, ENGINE_SOURCE, PULSE_FRAGMENT, PULSE_VERTEX};
     pub use runity_math::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use runity_platform::{Event, HeadlessWindow, Key, MouseButton, Window, WindowConfig};
-    pub use runity_render::png::{decode_png, encode_png, load_png, save_png, save_ppm};
+    pub use runity_render::png::{
+        decode_png, encode_png, encode_png_rgba, load_png, save_png, save_png_rgba, save_ppm,
+    };
     pub use runity_render::{debug, golden};
     pub use runity_render::{
         Align, BasicShader, Blend, Color, CullMode, DirectionalLight, DrawStats, Filter, Font,
