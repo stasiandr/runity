@@ -49,5 +49,5 @@ mod system;
 
 pub use environment::{Hearth, SleepingSpot};
 pub use log::DeficitLog;
-pub use settler::{Needs, NeedsRates};
+pub use settler::{NeedKind, Needs, NeedsRates};
 pub use system::{tick_settlement, NightWatch};
