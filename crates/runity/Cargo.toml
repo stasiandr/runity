@@ -33,6 +33,13 @@ name = "valley-look"
 path = "examples/valley/look.rs"
 test = true
 
+# The loading side of the valley's content, and the checklist its committed
+# models and atlas have to pass — same arrangement, tests in the file.
+[[example]]
+name = "valley-assets"
+path = "examples/valley/assets.rs"
+test = true
+
 # Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
 # `test = true` is what makes `cargo test -p runity` actually run them. This
 # is a standalone scene-file validator, not part of the `valley` binary above.
