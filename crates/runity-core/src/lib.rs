@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod assets;
+pub mod economy;
 pub mod headless;
 pub mod input;
 pub mod needs;
