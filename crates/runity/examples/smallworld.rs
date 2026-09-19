@@ -50,9 +50,11 @@
 //!   it applies to every scene.
 //! * `RUNITY_FRAMES=<dir>` — headless only: also keep all 60 frames of every
 //!   scene as PNGs in `<dir>`.
-//! * `RUNITY_ACTIONS=n` — headless only: press `Space` n times for each scene
-//!   before the first frame, so a capture can show a grown teapot grid rather
-//!   than the single teapot every run starts from.
+//! * `RUNITY_ACTIONS=n` — headless and bench: press `Space` n times for each
+//!   scene before the first frame, so a capture can show a grown teapot grid
+//!   rather than the single teapot every run starts from.
+//! * `RUNITY_BENCH_SIZE=WxH` — bench only: the drawable to time, instead of
+//!   960x540. `1920x1080` is what a retina window presents at 2x.
 
 use runity::prelude::*;
 use std::cell::RefCell;
@@ -1545,9 +1547,9 @@ struct BenchGame {
 }
 
 impl BenchGame {
-    fn new(scene: SceneId, samples: Rc<RefCell<Samples>>) -> Self {
+    fn new(scene: SceneId, actions: u32, samples: Rc<RefCell<Samples>>) -> Self {
         Self {
-            inner: SmallWorld::new(scene, DebugView::Shaded),
+            inner: SmallWorld::new(scene, DebugView::Shaded).with_actions(actions),
             frame: 0,
             previous: None,
             samples,
@@ -1596,9 +1598,42 @@ impl Game for BenchGame {
     }
 }
 
+/// How many frames of the grid the bench starts from, and how big a drawable
+/// it times.
+///
+/// Both default to what the table is normally printed at. They are knobs
+/// because the one question the table cannot answer on its own is how much of
+/// the seventh scene the hardware will carry: `RUNITY_ACTIONS=4
+/// RUNITY_BENCH_SIZE=1920x1080` times a grown grid at the pixel count a retina
+/// window actually presents (960x540 at 2x), which is where the 60 fps floor
+/// is claimed.
+fn bench_actions() -> u32 {
+    std::env::var("RUNITY_ACTIONS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// `RUNITY_BENCH_SIZE=WxH`, or the usual [`WIDTH`] by [`HEIGHT`].
+fn bench_size() -> (u32, u32) {
+    bench_size_from_env(std::env::var("RUNITY_BENCH_SIZE").ok().as_deref())
+}
+
+/// Anything unparseable falls back to the default rather than failing: the
+/// bench is a measuring tool, and refusing to measure is the worse answer.
+fn bench_size_from_env(value: Option<&str>) -> (u32, u32) {
+    let parsed = value.and_then(|value| {
+        let (w, h) = value.trim().split_once(['x', 'X'])?;
+        let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+        (w > 0 && h > 0).then_some((w, h))
+    });
+    parsed.unwrap_or((WIDTH, HEIGHT))
+}
+
 /// Time one scene in one lane.
 fn bench_one(scene: SceneId, lane: BenchLane) -> io::Result<BenchRow> {
-    let mut config = WindowConfig::new("SmallWorld — bench", WIDTH, HEIGHT);
+    let (width, height) = bench_size();
+    let mut config = WindowConfig::new("SmallWorld — bench", width, height);
     config.resizable = false;
     let window: Box<dyn Window> = match lane {
         // The offscreen lane must not have a surface to present to, or the GPU
@@ -1613,7 +1648,10 @@ fn bench_one(scene: SceneId, lane: BenchLane) -> io::Result<BenchRow> {
         // No sleeping and no fixed step: this measures how fast the frame can
         // be made, not how long the loop was told to wait.
         .with_target_fps(None)
-        .run_with_window(window, BenchGame::new(scene, Rc::clone(&samples)))?;
+        .run_with_window(
+            window,
+            BenchGame::new(scene, bench_actions(), Rc::clone(&samples)),
+        )?;
     let row = samples.borrow_mut().row(lane);
     Ok(row)
 }
@@ -1623,9 +1661,12 @@ fn run_bench() -> io::Result<()> {
     let device = runity::gpu::Gpu::new()
         .map(|gpu| gpu.device_name())
         .unwrap_or_else(|error| format!("none ({error})"));
+    let (width, height) = bench_size();
+    let actions = bench_actions();
     println!(
         "SmallWorld benchmark — {BENCH_FRAMES} frames per scene per renderer, \
-         {WIDTH}x{HEIGHT} at 1x, no vsync\nMetal device: {device}\n"
+         {width}x{height} at 1x, no vsync, {actions} action(s) first\n\
+         Metal device: {device}\n"
     );
     println!(
         "{:<16} {:>22} {:>22} {:>22}",
@@ -1893,6 +1934,19 @@ mod tests {
         engine.input.handle(&Event::KeyDown(Key::Escape));
         app.update(&mut engine);
         assert!(!engine.is_running());
+    }
+
+    #[test]
+    fn the_bench_size_falls_back_to_the_default_on_anything_it_cannot_read() {
+        assert_eq!(bench_size_from_env(Some("1920x1080")), (1920, 1080));
+        assert_eq!(bench_size_from_env(Some(" 640X480 ")), (640, 480));
+        for bad in [None, Some(""), Some("1920"), Some("axb"), Some("0x1080")] {
+            assert_eq!(
+                bench_size_from_env(bad),
+                (WIDTH, HEIGHT),
+                "{bad:?} should have left the default alone"
+            );
+        }
     }
 
     #[test]
