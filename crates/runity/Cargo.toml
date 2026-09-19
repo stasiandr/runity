@@ -40,3 +40,11 @@ test = true
 name = "valley-scene"
 path = "examples/valley/main.rs"
 test = true
+
+# One-shot generator for the ownership-marks atlas (card #63): run once with
+# RUNITY_UPDATE_GOLDEN-style intent to bake assets/valley/textures/marks.png,
+# then it's edited by hand and doesn't need to run again.
+[[example]]
+name = "valley_marks"
+path = "examples/valley_marks.rs"
+test = true

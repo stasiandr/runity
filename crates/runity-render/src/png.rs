@@ -84,41 +84,83 @@ pub(crate) fn zlib_stored(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Encode `0xAARRGGBB` pixels as an 8-bit RGB PNG.
+/// Scanlines for pixels, each prefixed with filter type 0 (None), with a
+/// caller-supplied number of channels per pixel.
+fn scanlines(
+    width: usize,
+    pixels: &[u32],
+    channels: usize,
+    mut push: impl FnMut(u32, &mut Vec<u8>),
+) -> Vec<u8> {
+    let mut raw = Vec::with_capacity((pixels.len() / width) * (1 + width * channels));
+    for row in pixels.chunks(width) {
+        raw.push(0);
+        for p in row {
+            push(*p, &mut raw);
+        }
+    }
+    raw
+}
+
+/// Wrap already-filtered scanlines in the IHDR/IDAT/IEND chunk framing.
+fn assemble(width: usize, height: usize, color_type: u8, raw: &[u8]) -> Vec<u8> {
+    let mut ihdr = Vec::with_capacity(13);
+    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, color_type, 0, 0, 0]); // 8 bits, no interlace
+
+    let mut out = Vec::with_capacity(raw.len() + 1024);
+    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &zlib_stored(raw));
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// Encode `0xAARRGGBB` pixels as an 8-bit RGB PNG. Alpha is dropped — for a
+/// texture that needs it, use [`encode_png_rgba`].
 pub fn encode_png(width: usize, height: usize, pixels: &[u32]) -> Vec<u8> {
     assert_eq!(
         pixels.len(),
         width * height,
         "pixel count must match the image size"
     );
+    let raw = scanlines(width, pixels, 3, |p, raw| {
+        raw.push((p >> 16) as u8);
+        raw.push((p >> 8) as u8);
+        raw.push(p as u8);
+    });
+    assemble(width, height, 2, &raw) // color type 2: truecolor RGB
+}
 
-    // Scanlines, each prefixed with filter type 0 (None).
-    let mut raw = Vec::with_capacity(height * (1 + width * 3));
-    for row in pixels.chunks(width) {
-        raw.push(0);
-        for p in row {
-            raw.push((p >> 16) as u8);
-            raw.push((p >> 8) as u8);
-            raw.push(*p as u8);
-        }
-    }
-
-    let mut ihdr = Vec::with_capacity(13);
-    ihdr.extend_from_slice(&(width as u32).to_be_bytes());
-    ihdr.extend_from_slice(&(height as u32).to_be_bytes());
-    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]); // 8 bits, truecolor RGB, no interlace
-
-    let mut out = Vec::with_capacity(raw.len() + 1024);
-    out.extend_from_slice(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
-    chunk(&mut out, b"IHDR", &ihdr);
-    chunk(&mut out, b"IDAT", &zlib_stored(&raw));
-    chunk(&mut out, b"IEND", &[]);
-    out
+/// Encode `0xAARRGGBB` pixels as an 8-bit RGBA PNG, alpha channel intact —
+/// for textures that are cut out rather than filled edge to edge.
+pub fn encode_png_rgba(width: usize, height: usize, pixels: &[u32]) -> Vec<u8> {
+    assert_eq!(
+        pixels.len(),
+        width * height,
+        "pixel count must match the image size"
+    );
+    let raw = scanlines(width, pixels, 4, |p, raw| {
+        raw.push((p >> 16) as u8);
+        raw.push((p >> 8) as u8);
+        raw.push(p as u8);
+        raw.push((p >> 24) as u8);
+    });
+    assemble(width, height, 6, &raw) // color type 6: truecolor RGBA
 }
 
 /// Write a framebuffer to a PNG file.
 pub fn save_png(path: impl AsRef<Path>, fb: &Framebuffer) -> io::Result<()> {
     let bytes = encode_png(fb.width(), fb.height(), fb.pixels());
+    let mut file = BufWriter::new(File::create(path)?);
+    file.write_all(&bytes)?;
+    file.flush()
+}
+
+/// Write a framebuffer to a PNG file, keeping its alpha channel.
+pub fn save_png_rgba(path: impl AsRef<Path>, fb: &Framebuffer) -> io::Result<()> {
+    let bytes = encode_png_rgba(fb.width(), fb.height(), fb.pixels());
     let mut file = BufWriter::new(File::create(path)?);
     file.write_all(&bytes)?;
     file.flush()
@@ -426,6 +468,26 @@ mod tests {
         }
         assert_eq!(kinds, ["IHDR", "IDAT", "IEND"]);
         assert_eq!(at, png.len(), "no trailing bytes");
+    }
+
+    #[test]
+    fn rgba_png_round_trips_with_alpha_intact() {
+        // Half the pixels transparent, half opaque, with distinct colors, so a
+        // decoder that dropped or misplaced the alpha channel would show up.
+        let pixels: Vec<u32> = [
+            0x00_112233, // fully transparent
+            0xff_445566,
+            0x80_778899,
+            0xff_aabbcc,
+        ]
+        .to_vec();
+        let encoded = encode_png_rgba(2, 2, &pixels);
+        assert_eq!(&encoded[12..16], b"IHDR");
+        assert_eq!(encoded[25], 6, "color type 6: truecolor with alpha");
+
+        let image = decode_png(&encoded).expect("our own RGBA file decodes");
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(image.pixels, pixels);
     }
 
     #[test]
