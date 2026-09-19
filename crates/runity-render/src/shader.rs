@@ -185,6 +185,35 @@ impl Default for DirectionalLight {
     }
 }
 
+/// Linear distance fog: blends a fragment's color toward [`Fog::color`] as its
+/// distance from the camera goes from `start` to `end`. Alpha is left alone —
+/// fog thickens what you see, it does not make it transparent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fog {
+    pub color: Color,
+    /// Distance at which the fog has no effect yet.
+    pub start: f32,
+    /// Distance beyond which a fragment is entirely the fog color.
+    pub end: f32,
+}
+
+impl Fog {
+    /// Blend `color` toward [`Fog::color`] for a fragment `distance` away from
+    /// the camera. Distances outside `[start, end]` saturate rather than
+    /// extrapolate.
+    fn apply(&self, color: Color, distance: f32) -> Color {
+        let t = if self.end > self.start {
+            ((distance - self.start) / (self.end - self.start)).clamp(0.0, 1.0)
+        } else if distance >= self.start {
+            1.0
+        } else {
+            0.0
+        };
+        let blended = color.lerp(self.color, t);
+        Color::rgba(blended.r, blended.g, blended.b, color.a)
+    }
+}
+
 /// Lambert diffuse + Blinn-Phong specular over an optional texture.
 ///
 /// This is deliberately a plain `Shader` implementation: anything it does, a
@@ -200,6 +229,11 @@ pub struct BasicShader<'a> {
     pub camera_position: Vec3,
     pub specular_strength: f32,
     pub shininess: f32,
+    /// Discard a fragment whose final alpha is below this threshold instead of
+    /// drawing it. `None` (the default) disables the test.
+    pub alpha_cutoff: Option<f32>,
+    /// Distance fog mixed into the final color. `None` (the default) disables it.
+    pub fog: Option<Fog>,
 }
 
 impl<'a> BasicShader<'a> {
@@ -215,6 +249,8 @@ impl<'a> BasicShader<'a> {
             camera_position: Vec3::ZERO,
             specular_strength: 0.25,
             shininess: 32.0,
+            alpha_cutoff: None,
+            fog: None,
         }
     }
 
@@ -235,6 +271,16 @@ impl<'a> BasicShader<'a> {
 
     pub fn with_camera_position(mut self, eye: Vec3) -> Self {
         self.camera_position = eye;
+        self
+    }
+
+    pub fn with_alpha_cutoff(mut self, threshold: f32) -> Self {
+        self.alpha_cutoff = Some(threshold);
+        self
+    }
+
+    pub fn with_fog(mut self, fog: Fog) -> Self {
+        self.fog = Some(fog);
         self
     }
 }
@@ -280,7 +326,54 @@ impl Shader for BasicShader<'_> {
             albedo.b * (self.ambient.b + self.light.color.b * diffuse) + specular,
             albedo.a,
         );
-        Some(lit)
+
+        if self.alpha_cutoff.is_some_and(|threshold| lit.a < threshold) {
+            return None;
+        }
+
+        Some(match self.fog {
+            Some(fog) => {
+                let distance = (self.camera_position - f.world_position).length();
+                fog.apply(lit, distance)
+            }
+            None => lit,
+        })
+    }
+}
+
+/// Interpolants used by [`UnlitShader`].
+#[derive(Debug, Clone, Copy)]
+pub struct UnlitVarying {
+    pub color: Color,
+    pub uv: Vec2,
+    /// Distance from the camera along its view axis, for [`Fog`].
+    ///
+    /// `UnlitShader` only ever sees a combined `mvp`, so it has no world
+    /// position to measure a true Euclidean distance from. This is instead the
+    /// clip-space `w` a perspective projection already produces (`-z` in view
+    /// space) recovered per-fragment by storing it as an ordinary
+    /// perspective-interpolated attribute: `w_i * (w_clip_i / w_clip_i) = w_i`
+    /// sums to `1`, which perspective-correct interpolation then divides back
+    /// out to the exact per-fragment `w`.
+    pub view_distance: f32,
+}
+
+impl Varying for UnlitVarying {
+    #[inline]
+    fn scale(self, s: f32) -> Self {
+        Self {
+            color: self.color.scale(s),
+            uv: self.uv * s,
+            view_distance: self.view_distance * s,
+        }
+    }
+    #[inline]
+    fn add(self, o: Self) -> Self {
+        Self {
+            color: self.color.add(o.color),
+            uv: self.uv + o.uv,
+            view_distance: self.view_distance + o.view_distance,
+        }
     }
 }
 
@@ -289,6 +382,11 @@ pub struct UnlitShader<'a> {
     pub mvp: Mat4,
     pub tint: Color,
     pub texture: Option<&'a Texture>,
+    /// Discard a fragment whose final alpha is below this threshold instead of
+    /// drawing it. `None` (the default) disables the test.
+    pub alpha_cutoff: Option<f32>,
+    /// Distance fog mixed into the final color. `None` (the default) disables it.
+    pub fog: Option<Fog>,
 }
 
 impl<'a> UnlitShader<'a> {
@@ -297,25 +395,176 @@ impl<'a> UnlitShader<'a> {
             mvp,
             tint: Color::WHITE,
             texture: None,
+            alpha_cutoff: None,
+            fog: None,
         }
+    }
+
+    pub fn with_alpha_cutoff(mut self, threshold: f32) -> Self {
+        self.alpha_cutoff = Some(threshold);
+        self
+    }
+
+    pub fn with_fog(mut self, fog: Fog) -> Self {
+        self.fog = Some(fog);
+        self
     }
 }
 
 impl Shader for UnlitShader<'_> {
-    type Varying = (Color, Vec2);
+    type Varying = UnlitVarying;
 
     fn vertex(&self, v: &Vertex) -> VertexOutput<Self::Varying> {
+        let clip_position = self.mvp.transform_point(v.position);
         VertexOutput {
-            clip_position: self.mvp.transform_point(v.position),
-            varying: (v.color, v.uv),
+            clip_position,
+            varying: UnlitVarying {
+                color: v.color,
+                uv: v.uv,
+                view_distance: clip_position.w,
+            },
         }
     }
 
-    fn fragment(&self, (color, uv): &Self::Varying) -> Option<Color> {
+    fn fragment(&self, f: &Self::Varying) -> Option<Color> {
         let base = match self.texture {
-            Some(t) => t.sample(uv.x, uv.y),
+            Some(t) => t.sample(f.uv.x, f.uv.y),
             None => Color::WHITE,
         };
-        Some(base.modulate(*color).modulate(self.tint))
+        let color = base.modulate(f.color).modulate(self.tint);
+
+        if self
+            .alpha_cutoff
+            .is_some_and(|threshold| color.a < threshold)
+        {
+            return None;
+        }
+
+        Some(match self.fog {
+            Some(fog) => fog.apply(color, f.view_distance),
+            None => color,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn basic_varying_at(world_position: Vec3, color: Color) -> BasicVarying {
+        BasicVarying {
+            world_position,
+            normal: Vec3::Y,
+            uv: Vec2::ZERO,
+            color,
+        }
+    }
+
+    #[test]
+    fn basic_shader_keeps_fragments_by_default() {
+        let shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY);
+        let v = basic_varying_at(Vec3::ZERO, Color::rgba(1.0, 1.0, 1.0, 0.0));
+        assert!(shader.fragment(&v).is_some());
+    }
+
+    #[test]
+    fn basic_shader_alpha_cutoff_discards_below_and_keeps_above() {
+        let shader = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY).with_alpha_cutoff(0.5);
+        let below = basic_varying_at(Vec3::ZERO, Color::rgba(1.0, 1.0, 1.0, 0.4));
+        let above = basic_varying_at(Vec3::ZERO, Color::rgba(1.0, 1.0, 1.0, 0.6));
+        assert!(shader.fragment(&below).is_none());
+        assert!(shader.fragment(&above).is_some());
+    }
+
+    #[test]
+    fn basic_shader_fog_leaves_near_fragments_alone_and_dominates_far_ones() {
+        let fog = Fog {
+            color: Color::rgb(0.7, 0.75, 0.85),
+            start: 10.0,
+            end: 20.0,
+        };
+        let unfogged = BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
+            .with_base_color(Color::rgb(1.0, 0.2, 0.2))
+            .with_camera_position(Vec3::ZERO);
+        let fogged = BasicShader {
+            fog: Some(fog),
+            ..BasicShader::new(Mat4::IDENTITY, Mat4::IDENTITY)
+                .with_base_color(Color::rgb(1.0, 0.2, 0.2))
+                .with_camera_position(Vec3::ZERO)
+        };
+
+        let near = basic_varying_at(Vec3::new(0.0, 0.0, -1.0), Color::WHITE);
+        let far = basic_varying_at(Vec3::new(0.0, 0.0, -1000.0), Color::WHITE);
+
+        assert_eq!(fogged.fragment(&near), unfogged.fragment(&near));
+
+        let far_unfogged = unfogged.fragment(&far).unwrap();
+        assert_eq!(
+            fogged.fragment(&far),
+            Some(Color::rgba(
+                fog.color.r,
+                fog.color.g,
+                fog.color.b,
+                far_unfogged.a
+            ))
+        );
+    }
+
+    #[test]
+    fn unlit_shader_keeps_fragments_by_default() {
+        let shader = UnlitShader::new(Mat4::IDENTITY);
+        let v = UnlitVarying {
+            color: Color::rgba(1.0, 1.0, 1.0, 0.0),
+            uv: Vec2::ZERO,
+            view_distance: 1.0,
+        };
+        assert!(shader.fragment(&v).is_some());
+    }
+
+    #[test]
+    fn unlit_shader_alpha_cutoff_discards_below_and_keeps_above() {
+        let shader = UnlitShader::new(Mat4::IDENTITY).with_alpha_cutoff(0.5);
+        let below = UnlitVarying {
+            color: Color::rgba(1.0, 1.0, 1.0, 0.4),
+            uv: Vec2::ZERO,
+            view_distance: 1.0,
+        };
+        let above = UnlitVarying {
+            color: Color::rgba(1.0, 1.0, 1.0, 0.6),
+            uv: Vec2::ZERO,
+            view_distance: 1.0,
+        };
+        assert!(shader.fragment(&below).is_none());
+        assert!(shader.fragment(&above).is_some());
+    }
+
+    #[test]
+    fn unlit_shader_fog_leaves_near_fragments_alone_and_dominates_far_ones() {
+        let fog = Fog {
+            color: Color::rgb(0.7, 0.75, 0.85),
+            start: 10.0,
+            end: 20.0,
+        };
+        let shader = UnlitShader {
+            fog: Some(fog),
+            ..UnlitShader::new(Mat4::IDENTITY)
+        };
+
+        let near = UnlitVarying {
+            color: Color::WHITE,
+            uv: Vec2::ZERO,
+            view_distance: 1.0,
+        };
+        let far = UnlitVarying {
+            color: Color::WHITE,
+            uv: Vec2::ZERO,
+            view_distance: 1000.0,
+        };
+
+        assert_eq!(shader.fragment(&near), Some(Color::WHITE));
+        assert_eq!(
+            shader.fragment(&far),
+            Some(Color::rgba(fog.color.r, fog.color.g, fog.color.b, 1.0))
+        );
     }
 }
