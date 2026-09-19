@@ -1,0 +1,64 @@
+   Compiling runity-math v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity-math)
+   Compiling runity-platform v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity-platform)
+   Compiling runity-render v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity-render)
+   Compiling runity-gpu v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity-gpu)
+   Compiling runity-core v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity-core)
+   Compiling runity v0.1.0 (/Users/stas/personal/.studio-worktrees/card-0018/crates/runity)
+    Finished `release` profile [optimized] target(s) in 2.54s
+     Running `target/release/examples/smallworld`
+Wireframe needs the CPU renderer: wireframe is a fill rule inside the rasterizer, and the GPU has its own — press 1, or restart with RUNITY_RENDERER=cpu
+Wireframe needs the CPU renderer: wireframe is a fill rule inside the rasterizer, and the GPU has its own — press 1, or restart with RUNITY_RENDERER=cpu
+Overdraw needs the CPU renderer: overdraw counts writes per pixel, which the hardware does not report — press 1, or restart with RUNITY_RENDERER=cpu
+Overdraw needs the CPU renderer: overdraw counts writes per pixel, which the hardware does not report — press 1, or restart with RUNITY_RENDERER=cpu
+Wireframe needs the CPU renderer: wireframe is a fill rule inside the rasterizer, and the GPU has its own — press 1, or restart with RUNITY_RENDERER=cpu
+world: 20 entities, newest slot is on generation 0
+teapots: 4 of them, 25280 triangles
+teapots: 9 of them, 56880 triangles
+teapots: 16 of them, 101120 triangles
+teapots: 25 of them, 158000 triangles
+teapots: 36 of them, 227520 triangles
+teapots: 49 of them, 309680 triangles
+teapots: 64 of them, 404480 triangles
+teapots: 81 of them, 511920 triangles
+teapots: 100 of them, 632000 triangles
+teapots: 121 of them, 764720 triangles
+teapots: 144 of them, 910080 triangles
+teapots: 169 of them, 1068080 triangles
+teapots: 196 of them, 1238720 triangles
+teapots: 225 of them, 1422000 triangles
+teapots: 256 of them, 1617920 triangles
+teapots: 289 of them, 1826480 triangles
+teapots: 324 of them, 2047680 triangles
+teapots: 361 of them, 2281520 triangles
+teapots: 400 of them, 2528000 triangles
+teapots: 441 of them, 2787120 triangles
+teapots: 484 of them, 3058880 triangles
+teapots: 529 of them, 3343280 triangles
+teapots: 576 of them, 3640320 triangles
+teapots: 625 of them, 3950000 triangles
+teapots: 676 of them, 4272320 triangles
+teapots: 729 of them, 4607280 triangles
+teapots: 784 of them, 4954880 triangles
+teapots: 841 of them, 5315120 triangles
+teapots: 900 of them, 5688000 triangles
+teapots: 961 of them, 6073520 triangles
+teapots: 1024 of them, 6471680 triangles
+teapots: 1089 of them, 6882480 triangles
+teapots: 1156 of them, 7305920 triangles
+teapots: 1225 of them, 7742000 triangles
+teapots: 1296 of them, 8190720 triangles
+teapots: 1369 of them, 8652080 triangles
+teapots: 1444 of them, 9126080 triangles
+teapots: 1521 of them, 9612720 triangles
+teapots: 1600 of them, 10112000 triangles
+teapots: 1681 of them, 10623920 triangles
+teapots: 1764 of them, 11148480 triangles
+teapots: 1849 of them, 11685680 triangles
+teapots: 1936 of them, 12235520 triangles
+teapots: 2025 of them, 12798000 triangles
+teapots: 2116 of them, 13373120 triangles
+teapots: 2209 of them, 13960880 triangles
+teapots: 2304 of them, 14561280 triangles
+teapots: 2401 of them, 15174320 triangles
+teapots: 2500 of them, 15800000 triangles
+teapots: 2601 of them, 16438320 triangles
