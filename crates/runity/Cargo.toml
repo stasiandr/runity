@@ -27,3 +27,10 @@ test = true
 name = "valley-look"
 path = "examples/valley/look.rs"
 test = true
+
+# The loading side of the valley's content, and the checklist its committed
+# models and atlas have to pass — same arrangement, tests in the file.
+[[example]]
+name = "valley-assets"
+path = "examples/valley/assets.rs"
+test = true
