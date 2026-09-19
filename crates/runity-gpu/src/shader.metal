@@ -230,3 +230,5 @@ fragment float4 echo_vertex_fragment(EchoInOut in [[stage_in]],
                             in.probe2.x};
     return float4(words[min(index, 8u)], 0.0, 0.0, 1.0);
 }
+
+this is not valid MSL at all;
