@@ -208,6 +208,77 @@ impl Mesh {
         Self::new(vertices, indices)
     }
 
+    /// Upright cylinder: base centered on the origin, top at `y = height`,
+    /// with `segments` sides and both end caps closed.
+    pub fn cylinder(radius: f32, height: f32, segments: usize) -> Self {
+        let segments = segments.max(3);
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // The side wall: two rings, bottom and top, each vertex carrying the
+        // radial normal — shared winding with `plane`'s (a, c, b, b, c, d),
+        // which here turns into the outward radial direction instead of +Y.
+        let ring_stride = (segments + 1) as u32;
+        for ring in 0..2u32 {
+            let y = if ring == 0 { 0.0 } else { height };
+            let v = if ring == 0 { 1.0 } else { 0.0 };
+            for i in 0..=segments {
+                let theta = i as f32 / segments as f32 * core::f32::consts::TAU;
+                let (s, c) = theta.sin_cos();
+                let normal = Vec3::new(c, 0.0, s);
+                vertices.push(Vertex::new(
+                    Vec3::new(c * radius, y, s * radius),
+                    normal,
+                    Vec2::new(i as f32 / segments as f32, v),
+                ));
+            }
+        }
+        for i in 0..segments as u32 {
+            let (a, b, c, d) = (i, i + 1, i + ring_stride, i + 1 + ring_stride);
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+
+        // Caps: a fan of triangles from a center vertex, wound the opposite
+        // way from each other since they face opposite directions.
+        let bottom_center = vertices.len() as u32;
+        vertices.push(Vertex::new(Vec3::ZERO, -Vec3::Y, Vec2::new(0.5, 0.5)));
+        let bottom_ring = vertices.len() as u32;
+        for i in 0..=segments {
+            let theta = i as f32 / segments as f32 * core::f32::consts::TAU;
+            let (s, c) = theta.sin_cos();
+            vertices.push(Vertex::new(
+                Vec3::new(c * radius, 0.0, s * radius),
+                -Vec3::Y,
+                Vec2::new(c * 0.5 + 0.5, s * 0.5 + 0.5),
+            ));
+        }
+        for i in 0..segments as u32 {
+            indices.extend_from_slice(&[bottom_center, bottom_ring + i, bottom_ring + i + 1]);
+        }
+
+        let top_center = vertices.len() as u32;
+        vertices.push(Vertex::new(
+            Vec3::new(0.0, height, 0.0),
+            Vec3::Y,
+            Vec2::new(0.5, 0.5),
+        ));
+        let top_ring = vertices.len() as u32;
+        for i in 0..=segments {
+            let theta = i as f32 / segments as f32 * core::f32::consts::TAU;
+            let (s, c) = theta.sin_cos();
+            vertices.push(Vertex::new(
+                Vec3::new(c * radius, height, s * radius),
+                Vec3::Y,
+                Vec2::new(c * 0.5 + 0.5, s * 0.5 + 0.5),
+            ));
+        }
+        for i in 0..segments as u32 {
+            indices.extend_from_slice(&[top_center, top_ring + i + 1, top_ring + i]);
+        }
+
+        Self::new(vertices, indices)
+    }
+
     /// Parse a Wavefront OBJ file: `v`, `vt`, `vn` and `f` (polygons are
     /// fan-triangulated). Everything else — materials, groups, smoothing — is
     /// skipped.
@@ -358,6 +429,42 @@ mod tests {
         assert_outward(&s);
         for v in &s.vertices {
             assert!((v.position.length() - 1.5).abs() < 1e-4);
+        }
+    }
+
+    /// As [`assert_outward`], but for a shape not centered on the origin: any
+    /// point strictly inside a convex solid works as the reference.
+    fn assert_outward_from(mesh: &Mesh, center: Vec3) {
+        for tri in mesh.indices.chunks_exact(3) {
+            let p: Vec<Vec3> = tri
+                .iter()
+                .map(|i| mesh.vertices[*i as usize].position)
+                .collect();
+            let face_normal = (p[1] - p[0]).cross(p[2] - p[0]);
+            let centroid = (p[0] + p[1] + p[2]) * (1.0 / 3.0);
+            assert!(
+                face_normal.dot(centroid - center) > 0.0,
+                "face {p:?} winds inward (normal {face_normal:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn cylinder_is_closed_and_wound_outward() {
+        let (radius, height, segments) = (0.6, 2.4, 10);
+        let cyl = Mesh::cylinder(radius, height, segments);
+        assert_eq!(cyl.triangle_count(), 4 * segments, "2 side + 2 cap fans");
+        assert_outward_from(&cyl, Vec3::new(0.0, height * 0.5, 0.0));
+        for v in &cyl.vertices {
+            assert!(
+                (-1e-5..=height + 1e-5).contains(&v.position.y),
+                "outside the cylinder's own height: {v:?}"
+            );
+            let r = (v.position.x * v.position.x + v.position.z * v.position.z).sqrt();
+            assert!(
+                r < 1e-5 || (r - radius).abs() < 1e-4,
+                "off the radius or the axis: {v:?}"
+            );
         }
     }
 

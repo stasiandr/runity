@@ -696,6 +696,8 @@ impl Gpu {
             mvp: runity_math::Mat4::IDENTITY,
             tint: Color::WHITE,
             texture: Some(&texture),
+            alpha_cutoff: None,
+            fog: None,
         };
         let mesh = crate::lines::fullscreen_quad();
         self.draw(&mesh, &shader, CullMode::None, Blend::Replace, false, false);

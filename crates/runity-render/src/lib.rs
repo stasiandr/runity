@@ -34,6 +34,7 @@ pub use png::{
 };
 pub use raster::{Blend, CullMode, DrawStats, PolygonMode, Rasterizer};
 pub use shader::{
-    BasicShader, BasicVarying, DirectionalLight, Shader, UnlitShader, Varying, Vertex, VertexOutput,
+    BasicShader, BasicVarying, DirectionalLight, Fog, Shader, UnlitShader, UnlitVarying, Varying,
+    Vertex, VertexOutput,
 };
 pub use texture::{Filter, Texture, Wrap};
