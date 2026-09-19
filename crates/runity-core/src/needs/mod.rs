@@ -11,6 +11,10 @@
 //!   found no food or a marked item aged into forgetting. Every entry reads
 //!   `None` until the event it measures has happened at least once —
 //!   undefined, not a defaulted `0.0` — per `12-minds.md` §2.1.
+//! * [`Hurt`] — the same four deficits counted the other way round, per
+//!   settler rather than per settlement. The log says how much of the
+//!   village went cold; this says which of them it was, which is the half
+//!   `12-minds.md` §2.4 needs to pick who plants a stake.
 //!
 //! [`Hearth`] and [`SleepingSpot`] are the two things a settler's needs are
 //! relieved against, and [`tick_settlement`] is the one system that ties all
@@ -48,6 +52,6 @@ mod settler;
 mod system;
 
 pub use environment::{Hearth, SleepingSpot};
-pub use log::DeficitLog;
+pub use log::{DeficitLog, Hurt};
 pub use settler::{NeedKind, Needs, NeedsRates};
 pub use system::{tick_settlement, NightWatch};
