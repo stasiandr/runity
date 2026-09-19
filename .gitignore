@@ -10,3 +10,12 @@ target/
 # Written by a failing golden-image test, next to the reference it failed against.
 *.actual.png
 *.diff.png
+
+# The cpu/gpu/diff triptych a failing differential test leaves behind.
+*.cpu.png
+*.gpu.png
+crates/runity-gpu/tests/diff/
+
+# The shader library tools/package-macos.sh compiles into the bundle. The MSL
+# source in the tree is the only copy that is committed.
+*.metallib

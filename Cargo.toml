@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/runity-math",
     "crates/runity-render",
+    "crates/runity-gpu",
     "crates/runity-platform",
     "crates/runity-core",
     "crates/runity",
