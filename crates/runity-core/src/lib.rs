@@ -7,6 +7,7 @@ pub mod app;
 pub mod assets;
 pub mod headless;
 pub mod input;
+pub mod needs;
 pub mod physics;
 pub mod rng;
 pub mod time;
