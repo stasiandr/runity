@@ -10,6 +10,7 @@ description = "runity: a dependency-free game engine in Rust."
 [dependencies]
 runity-math = { path = "../runity-math", version = "0.1.0" }
 runity-render = { path = "../runity-render", version = "0.1.0" }
+runity-gpu = { path = "../runity-gpu", version = "0.1.0" }
 runity-platform = { path = "../runity-platform", version = "0.1.0" }
 runity-core = { path = "../runity-core", version = "0.1.0" }
 

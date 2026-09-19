@@ -39,7 +39,7 @@
 #![allow(non_snake_case, non_upper_case_globals)]
 
 use crate::macos_keys as keys;
-use crate::window::{Event, Window, WindowConfig};
+use crate::window::{Event, NativeSurface, Window, WindowConfig};
 use std::ffi::{c_char, c_void};
 use std::io;
 
@@ -727,6 +727,16 @@ impl Window for CocoaWindow {
 
     fn backend_name(&self) -> &'static str {
         "macos"
+    }
+
+    /// The content view, for a renderer that wants to put a `CAMetalLayer`
+    /// where this backend's `CGImage`-fed layer is.
+    ///
+    /// Handing it over does not change anything here: on the CPU path the
+    /// layer stays as `open` left it, `setContentsScale:1.0` and all, and
+    /// `present` keeps working exactly as before.
+    fn native_surface(&self) -> Option<NativeSurface> {
+        (!self.view.is_null()).then(|| NativeSurface::AppKitView(self.view.cast()))
     }
 }
 

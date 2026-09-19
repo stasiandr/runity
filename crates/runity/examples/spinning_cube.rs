@@ -6,6 +6,9 @@
 //! RUNITY_HEADLESS=1 cargo run --release --example spinning_cube   # writes a PNG
 //! ```
 //!
+//! In a window it runs on Metal; `RUNITY_RENDERER=cpu` puts it back on the
+//! software rasterizer, which is also what a headless run uses.
+//!
 //! Controls: arrows or WASD orbit the camera, Q/E zoom, Escape quits.
 //! Debug views: 1 shaded, 2 wireframe, 3 depth buffer, 4 overdraw; N overlays
 //! vertex normals and the world axes.
@@ -89,17 +92,24 @@ impl Game for Demo {
             return;
         }
         // One switch drives every debug view; the render code below is unaware.
-        for (key, view) in [
+        let requested = [
             (Key::Num1, DebugView::Shaded),
             (Key::Num2, DebugView::Wireframe),
             (Key::Num3, DebugView::Depth),
             (Key::Num4, DebugView::Overdraw),
-        ] {
-            if input.key_pressed(key) {
-                engine.debug_view = view;
+        ]
+        .into_iter()
+        .find(|(key, _)| input.key_pressed(*key))
+        .map(|(_, view)| view);
+        let toggle_normals = input.key_pressed(Key::N);
+        if let Some(view) = requested {
+            // Two of the four are CPU-only; on the GPU the switch says so and
+            // the view stays where it was.
+            if let Err(refused) = engine.set_debug_view(view) {
+                println!("{refused}");
             }
         }
-        if input.key_pressed(Key::N) {
+        if toggle_normals {
             self.show_normals = !self.show_normals;
         }
 
@@ -202,7 +212,9 @@ fn main() -> std::io::Result<()> {
         struct Configured(Demo, DebugView);
         impl Game for Configured {
             fn start(&mut self, engine: &mut Engine) -> std::io::Result<()> {
-                engine.debug_view = self.1;
+                if let Err(refused) = engine.set_debug_view(self.1) {
+                    println!("{refused}");
+                }
                 self.0.start(engine)
             }
             fn update(&mut self, engine: &mut Engine) {
