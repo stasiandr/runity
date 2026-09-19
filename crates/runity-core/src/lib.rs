@@ -8,6 +8,7 @@ pub mod assets;
 pub mod economy;
 pub mod headless;
 pub mod input;
+pub mod mind;
 pub mod needs;
 pub mod physics;
 pub mod placement;
