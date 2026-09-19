@@ -1,0 +1,15 @@
+[package]
+name = "runity-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Length-prefixed frame transport for runity: loopback and TCP behind one trait."
+
+[dependencies]
+# This crate is meant to depend on runity-sim (card #43), which lays out the
+# Tick/Simulation/Wire/CommandLog contract the rest of the netplay feature is
+# built on. That crate does not exist in the workspace yet, and this card's
+# code does not need any type from it, so the dependency is left out here
+# until #43 lands rather than pointing at a path that doesn't resolve.

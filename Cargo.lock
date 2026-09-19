@@ -36,6 +36,10 @@ name = "runity-math"
 version = "0.1.0"
 
 [[package]]
+name = "runity-net"
+version = "0.1.0"
+
+[[package]]
 name = "runity-platform"
 version = "0.1.0"
 
