@@ -94,6 +94,40 @@ pub fn draw_line(target: &mut Framebuffer, from: (f32, f32), to: (f32, f32), col
     }
 }
 
+/// Draw a circle outline in pixel coordinates, approximated by a `segments`
+/// sided polygon — plenty for a debug overlay, which never needs a perfect
+/// circle, only a recognizable one.
+pub fn draw_circle(
+    target: &mut Framebuffer,
+    center: (f32, f32),
+    radius: f32,
+    segments: usize,
+    color: Color,
+) {
+    let segments = segments.max(3);
+    let point = |i: usize| {
+        let theta = i as f32 / segments as f32 * core::f32::consts::TAU;
+        (
+            center.0 + radius * theta.cos(),
+            center.1 + radius * theta.sin(),
+        )
+    };
+    let mut prev = point(0);
+    for i in 1..=segments {
+        let next = point(i);
+        draw_line(target, prev, next, color);
+        prev = next;
+    }
+}
+
+/// Draw the outline of a quadrilateral given its four corners, in order, in
+/// pixel coordinates — a footprint of any facing, not just axis-aligned.
+pub fn draw_quad(target: &mut Framebuffer, corners: [(f32, f32); 4], color: Color) {
+    for i in 0..4 {
+        draw_line(target, corners[i], corners[(i + 1) % 4], color);
+    }
+}
+
 /// Draw every triangle edge of a mesh. `mvp` is model-view-projection.
 pub fn draw_wireframe(target: &mut Framebuffer, mesh: &Mesh, mvp: Mat4, color: Color) {
     let (width, height) = (target.width() as f32, target.height() as f32);
@@ -253,6 +287,34 @@ mod tests {
             .filter(|p| **p == Color::WHITE.to_argb8())
             .count();
         assert_eq!(lit, 16, "the whole row, and nothing else");
+    }
+
+    #[test]
+    fn a_circle_touches_its_four_cardinal_points() {
+        let mut fb = Framebuffer::new(32, 32);
+        fb.clear(Color::BLACK);
+        draw_circle(&mut fb, (16.0, 16.0), 10.0, 32, Color::WHITE);
+        assert_eq!(fb.get_pixel(26, 16), Color::WHITE, "east");
+        assert_eq!(fb.get_pixel(6, 16), Color::WHITE, "west");
+        assert_eq!(fb.get_pixel(16, 26), Color::WHITE, "south");
+        assert_eq!(fb.get_pixel(16, 6), Color::WHITE, "north");
+        assert_eq!(fb.get_pixel(16, 16), Color::BLACK, "the centre stays empty");
+    }
+
+    #[test]
+    fn a_quad_draws_its_four_corners_and_leaves_the_interior_empty() {
+        let mut fb = Framebuffer::new(16, 16);
+        fb.clear(Color::BLACK);
+        draw_quad(
+            &mut fb,
+            [(2.0, 2.0), (12.0, 2.0), (12.0, 12.0), (2.0, 12.0)],
+            Color::WHITE,
+        );
+        assert_eq!(fb.get_pixel(2, 2), Color::WHITE);
+        assert_eq!(fb.get_pixel(12, 2), Color::WHITE);
+        assert_eq!(fb.get_pixel(12, 12), Color::WHITE);
+        assert_eq!(fb.get_pixel(2, 12), Color::WHITE);
+        assert_eq!(fb.get_pixel(8, 8), Color::BLACK, "the interior stays empty");
     }
 
     #[test]

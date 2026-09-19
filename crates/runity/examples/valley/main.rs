@@ -4,7 +4,7 @@
 //! cards on top of this.
 //!
 //! ```text
-//! cargo run --example valley -- assets/valley/scene/first-ten-minutes.txt
+//! cargo run --example valley-scene -- assets/valley/scene/first-ten-minutes.txt
 //! ```
 
 mod scene;
