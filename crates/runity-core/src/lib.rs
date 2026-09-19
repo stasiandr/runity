@@ -10,6 +10,7 @@ pub mod headless;
 pub mod input;
 pub mod needs;
 pub mod physics;
+pub mod placement;
 pub mod rng;
 pub mod time;
 pub mod transform;
