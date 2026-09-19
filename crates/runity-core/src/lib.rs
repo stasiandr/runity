@@ -6,6 +6,7 @@
 pub mod app;
 pub mod headless;
 pub mod input;
+pub mod physics;
 pub mod time;
 pub mod transform;
 pub mod world;
