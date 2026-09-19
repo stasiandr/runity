@@ -159,7 +159,10 @@ struct Frame {
 pub struct Gpu {
     device: Id,
     queue: Id,
-    libraries: Vec<(*const u8, Id)>,
+    /// Keyed by the MSL itself, not by where it sits: `ENGINE_SOURCE` is a
+    /// `const`, so two uses of it need not be the same pointer, and keying on
+    /// the address would compile the same shaders again per use site.
+    libraries: Vec<(&'static str, Id)>,
     functions: Vec<(&'static str, Id)>,
     pipelines: Vec<(PipelineKey, Id)>,
     /// Indexed by `depth_index(test, write)`; all four built at start-up.
@@ -704,8 +707,7 @@ impl Gpu {
 
     /// Compile an MSL source once per process and keep the library.
     fn library(&mut self, source: &'static str) -> Result<Id, GpuError> {
-        let key = source.as_ptr();
-        if let Some((_, library)) = self.libraries.iter().find(|(k, _)| *k == key) {
+        if let Some((_, library)) = self.libraries.iter().find(|(k, _)| *k == source) {
             return Ok(*library);
         }
         // SAFETY: `newLibraryWithSource:options:error:` with an NSString, the
@@ -734,9 +736,11 @@ impl Gpu {
             release(&mut options);
             if library.is_null() {
                 let text = error_text(error);
-                // The bundled library is the fallback for a machine with no
-                // Metal toolchain to compile with at runtime.
-                match surface::load_bundled_library(self.device) {
+                let bundled = match may_fall_back_to_bundle(source) {
+                    true => surface::load_bundled_library(self.device),
+                    false => None,
+                };
+                match bundled {
                     Some(bundled) => bundled,
                     None => return Err(GpuError::ShaderCompilation(text)),
                 }
@@ -744,7 +748,7 @@ impl Gpu {
                 library
             }
         };
-        self.libraries.push((key, library));
+        self.libraries.push((source, library));
         Ok(library)
     }
 
@@ -1297,6 +1301,22 @@ fn depth_index(test: bool, write: bool) -> usize {
     (test as usize) * 2 + (write as usize)
 }
 
+/// Whether a source that would not compile may be answered with the bundled
+/// shader library instead.
+///
+/// Only the engine's own MSL may: `tools/package-macos.sh` compiles
+/// `shader.metal` and nothing else, so that is the only source whose functions
+/// are in there. A game's own shader that will not compile is a mistake in that
+/// game, and it keeps the Metal compiler's own words rather than being handed a
+/// library its functions are not in and failing later with a vaguer complaint
+/// about a missing function.
+///
+/// Compared by text rather than by address: `ENGINE_SOURCE` is a `const`, and
+/// two uses of one are not obliged to be the same pointer.
+fn may_fall_back_to_bundle(source: &str) -> bool {
+    source == crate::shader::ENGINE_SOURCE
+}
+
 fn sampler_index(filter: Filter, wrap: Wrap) -> usize {
     let f = match filter {
         Filter::Nearest => 0,
@@ -1418,6 +1438,90 @@ mod tests {
         }
         seen.sort_unstable();
         assert_eq!(seen, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    /// MSL the compiler is certain to reject, and certain to say why.
+    const BROKEN: &str = "#include <metal_stdlib>\nthis is not a declaration;\n";
+
+    #[test]
+    fn only_the_engines_own_shaders_may_fall_back_to_the_bundled_library() {
+        assert!(may_fall_back_to_bundle(crate::shader::ENGINE_SOURCE));
+        assert!(!may_fall_back_to_bundle(BROKEN));
+        // By text, not by address: `ENGINE_SOURCE` is a `const`, so a second
+        // use of it is not obliged to be the same pointer, and a game shipping
+        // a byte-identical copy really is in the bundled library.
+        let elsewhere: String = crate::shader::ENGINE_SOURCE.chars().collect();
+        assert!(may_fall_back_to_bundle(&elsewhere));
+        assert!(!may_fall_back_to_bundle(&format!(
+            "{}\n// one line more\n",
+            crate::shader::ENGINE_SOURCE
+        )));
+    }
+
+    #[test]
+    fn a_games_own_shader_that_will_not_compile_keeps_the_compilers_words() {
+        let Some(mut gpu) = test_device("a_games_own_shader_that_will_not_compile") else {
+            return;
+        };
+        match gpu.library(BROKEN) {
+            Err(GpuError::ShaderCompilation(text)) => {
+                // The compiler's own complaint, not a later one about a
+                // function missing from a library we fell back to.
+                assert!(
+                    text.contains("program_source"),
+                    "the Metal compiler's message did not survive: {text}"
+                );
+                assert!(
+                    !text.contains("has no function named"),
+                    "the bundled library answered for a shader that is not in it: {text}"
+                );
+            }
+            Err(other) => panic!("expected a compilation failure, got {other:?}"),
+            Ok(_) => panic!("`{BROKEN}` compiled, which it must not"),
+        }
+    }
+
+    #[test]
+    fn the_same_msl_reached_by_two_pointers_is_compiled_once() {
+        let Some(mut gpu) = test_device("the_same_msl_reached_by_two_pointers") else {
+            return;
+        };
+        // A second copy of the engine's MSL at an address of its own — which is
+        // what two uses of a `const` are entitled to look like.
+        let copy: &'static str =
+            Box::leak(crate::shader::ENGINE_SOURCE.to_string().into_boxed_str());
+        let first = gpu
+            .library(crate::shader::ENGINE_SOURCE)
+            .expect("the engine's own MSL compiles");
+        let second = gpu.library(copy).expect("the same MSL compiles again");
+        assert_eq!(
+            first, second,
+            "the same shader text was compiled twice: the library cache is \
+             keyed by address rather than by text"
+        );
+    }
+
+    /// Open a device, or explain and skip, the way `tests/pipeline.rs` does.
+    fn test_device(test: &str) -> Option<Gpu> {
+        match Gpu::new() {
+            Ok(gpu) => Some(gpu),
+            Err(error) => {
+                let required = std::env::var(crate::diff::REQUIRE_ENV)
+                    .map(|v| !matches!(v.as_str(), "" | "0" | "false"))
+                    .unwrap_or(false);
+                assert!(
+                    !required,
+                    "{} is set, but {test} could not run: {error}",
+                    crate::diff::REQUIRE_ENV
+                );
+                eprintln!(
+                    "\n=== SKIPPED: {test} — no GPU ===\n    {error}\n    set {}=1 to make \
+                     this a failure\n",
+                    crate::diff::REQUIRE_ENV
+                );
+                None
+            }
+        }
     }
 
     #[test]

@@ -43,8 +43,9 @@ cp "$target_dir/release/examples/smallworld" "$macos_dir/$app_name"
 
 echo "==> Compiling shaders to $resources_dir/runity.metallib"
 metal_source="$repo_root/crates/runity-gpu/src/shader.metal"
-metal_air="$(mktemp -t runity-shader).air"
-trap 'rm -f "$metal_air"' EXIT
+metal_scratch="$(mktemp -d -t runity-shader)"
+metal_air="$metal_scratch/shader.air"
+trap 'rm -rf "$metal_scratch"' EXIT
 # Not fatal. The metallib is the fallback for a machine with no Metal compiler;
 # a machine building the bundle without one still produces a bundle that runs,
 # because the runtime compiles shader.metal from source first anyway. Warn
