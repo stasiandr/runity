@@ -213,12 +213,14 @@ RGB, палитру и варианты с альфой, со всеми пят�
 ```bash
 cargo run --release --example smallworld         # витрина: семь сцен в одном окне
 cargo run --release --example spinning_cube      # окно: macOS, X11 или Win32
+cargo run --release --example valley             # первое лицо в долине: рельеф, лес, поселенцы
 cargo run --release --example hello_triangle
 
 RUNITY_RENDERER=cpu cargo run --release --example smallworld    # то же, но растеризатором
 
 RUNITY_HEADLESS=1 cargo run --release --example smallworld      # семь PNG: 01-lit-scene … 07-teapots
 RUNITY_HEADLESS=1 cargo run --release --example spinning_cube   # без дисплея, пишет cube.png
+RUNITY_HEADLESS=1 cargo run --release --example valley          # без дисплея, пишет valley.png
 cargo test --workspace                                          # тесты, дисплей не нужен
 
 # кросс-проверка бэкендов, которые нельзя собрать на текущей машине
@@ -256,6 +258,17 @@ F — HUD целиком, Escape — выход. Каждая сцена пом�
 | `05-depth-blending.png` | Depth & blending |
 | `06-world.png` | World |
 | `07-teapots.png` | Teapots |
+
+`valley` — первое лицо в процедурно сгенерированной долине: рельеф (чаша с ручьём
+и ободом гор), лес (деревья, размещённые случайной выборкой), поселенцы
+(двенадцать фигур с физикой твёрдого тела) и игрок (ноги на земле, голова
+независимо от мыши). Управление: WASD — ходьба в направлении взгляда, мышь —
+поворот головы, Space — прыжок, E — топор (валка ближайшего дерева),
+B — стена под ногами, T — переключение частоты физики (60/30/20/15 Hz на лету),
+M — вид сверху, F — скрыть панели. Ключ T показывает, что симуляция отвязана от
+кадра: число фиксированных шагов за один кадр может быть разным, и всё остаётся
+детерминированным. Цикл сам разбирается, сколько шагов физики нужно сделать,
+чтобы наверстать отставание от реального времени.
 
 `tools/package-macos.sh` собирает `smallworld` в `dist/SmallWorld.app` —
 приложение, которое открывается двойным кликом из Finder, без терминала и
