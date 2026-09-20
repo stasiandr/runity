@@ -1,5 +1,26 @@
 //! A settler's biological needs.
 
+/// Which of the three needs a level or an action is about.
+///
+/// [`NeedKind::ALL`] fixes the order — hunger, warmth, rest — and that order
+/// is the tie break wherever two needs are equally bad. A mind that broke such
+/// a tie by iteration order of a map would not be deterministic, and
+/// `08-scale.md` asks that it be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum NeedKind {
+    /// Голод.
+    Hunger,
+    /// Холод.
+    Warmth,
+    /// Отдых.
+    Rest,
+}
+
+impl NeedKind {
+    /// All three, in the order every tie is broken by.
+    pub const ALL: [NeedKind; 3] = [NeedKind::Hunger, NeedKind::Warmth, NeedKind::Rest];
+}
+
 /// How fast [`Needs`] decays and how fast each relieving action restores it.
 ///
 /// Placeholder tuning, in the spirit of [`crate::physics::Tuning`]: the real
@@ -58,6 +79,39 @@ impl Needs {
             warmth: 1.0,
             rest: 1.0,
             rates,
+        }
+    }
+
+    /// One need's level, `[0, 1]`.
+    pub fn level(&self, kind: NeedKind) -> f32 {
+        match kind {
+            NeedKind::Hunger => self.hunger,
+            NeedKind::Warmth => self.warmth,
+            NeedKind::Rest => self.rest,
+        }
+    }
+
+    /// The need in the worst shape, ties broken by [`NeedKind::ALL`]'s order.
+    pub fn lowest(&self) -> NeedKind {
+        NeedKind::ALL
+            .into_iter()
+            .reduce(|worst, kind| {
+                if self.level(kind) < self.level(worst) {
+                    kind
+                } else {
+                    worst
+                }
+            })
+            .expect("NeedKind::ALL is never empty")
+    }
+
+    /// Relieve `kind` by `dt` seconds of the action that treats it. Eating is
+    /// the odd one out — it finishes in a single call, no matter the `dt`.
+    pub fn relieve(&mut self, kind: NeedKind, dt: f32) {
+        match kind {
+            NeedKind::Hunger => self.eat(),
+            NeedKind::Warmth => self.warm(dt),
+            NeedKind::Rest => self.sleep(dt),
         }
     }
 
@@ -152,6 +206,51 @@ mod tests {
         assert!(needs.rest > rest_before);
         needs.sleep(100.0);
         assert_eq!(needs.rest, 1.0);
+    }
+
+    #[test]
+    fn the_lowest_need_is_the_worst_one_with_a_fixed_tie_break() {
+        let mut needs = Needs {
+            warmth: 0.2,
+            rest: 0.5,
+            ..Needs::default()
+        };
+        assert_eq!(needs.lowest(), NeedKind::Warmth);
+
+        // All three equal: the first of NeedKind::ALL wins, every time.
+        needs.hunger = 0.4;
+        needs.warmth = 0.4;
+        needs.rest = 0.4;
+        assert_eq!(needs.lowest(), NeedKind::Hunger);
+    }
+
+    #[test]
+    fn relieve_routes_to_the_action_that_treats_that_need() {
+        let mut needs = Needs::new(fast_rates());
+        needs.decay(2.0);
+        let (warmth, rest) = (needs.warmth, needs.rest);
+
+        needs.relieve(NeedKind::Hunger, 0.0);
+        assert_eq!(needs.hunger, 1.0, "a meal ignores dt entirely");
+        assert_eq!(needs.warmth, warmth, "and touches nothing else");
+
+        needs.relieve(NeedKind::Warmth, 1.0);
+        assert!(needs.warmth > warmth);
+        needs.relieve(NeedKind::Rest, 1.0);
+        assert!(needs.rest > rest);
+    }
+
+    #[test]
+    fn level_reads_the_field_the_kind_names() {
+        let needs = Needs {
+            hunger: 0.1,
+            warmth: 0.2,
+            rest: 0.3,
+            ..Needs::default()
+        };
+        assert_eq!(needs.level(NeedKind::Hunger), 0.1);
+        assert_eq!(needs.level(NeedKind::Warmth), 0.2);
+        assert_eq!(needs.level(NeedKind::Rest), 0.3);
     }
 
     #[test]
