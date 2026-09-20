@@ -150,6 +150,30 @@ impl PhysicsWorld {
         self.fixed_delta
     }
 
+    /// Change the tick length of a running world.
+    ///
+    /// This is what lets a game offer a live 60/30/20/15 Hz switch instead of
+    /// a restart, and it is the only supported way to do it: physics and
+    /// [`crate::Time::fixed_delta`] have to be moved together, or the
+    /// simulation quietly runs fast or slow. The anti-tunnelling invariant of
+    /// [`PhysicsWorld::new`] is re-checked here, because with a setter it is no
+    /// longer a property of startup alone.
+    ///
+    /// The tick a switch lands in is one tick of a different length; nothing
+    /// carries over from the old one, and nothing has to.
+    pub fn set_fixed_delta(&mut self, fixed_delta: f32) {
+        assert!(fixed_delta > 0.0, "a physics tick must take some time");
+        debug_assert!(
+            self.tuning.max_speed * fixed_delta < self.tuning.min_body_radius,
+            "a body moving {} m/s covers {} m per {fixed_delta} s tick, which is \
+             more than its {} m radius: it can tunnel through a wall",
+            self.tuning.max_speed,
+            self.tuning.max_speed * fixed_delta,
+            self.tuning.min_body_radius
+        );
+        self.fixed_delta = fixed_delta;
+    }
+
     /// The static index, for a caller that wants to look at it.
     #[inline]
     pub fn statics(&self) -> &StaticGrid {
@@ -270,6 +294,25 @@ mod tests {
         let ground = Heightfield::new(Vec2::ZERO, 1.0, 2, 2, vec![0.0; 4]);
         // A tenth of a second at 3.4 m/s is 0.34 m — further than a body is wide.
         let _ = PhysicsWorld::new(ground, Tuning::default(), 0.1);
+    }
+
+    #[test]
+    fn the_tick_length_can_be_changed_without_rebuilding_the_world() {
+        // The valley's live 60/30/20/15 Hz switch: every rate the game offers
+        // has to be one physics will take, and 15 Hz is the slowest of them.
+        let mut physics = flat_world();
+        assert!((physics.fixed_delta() - 1.0 / 20.0).abs() < 1e-7);
+        for rate in [60.0, 30.0, 20.0, 15.0] {
+            physics.set_fixed_delta(1.0 / rate);
+            assert!((physics.fixed_delta() - 1.0 / rate).abs() < 1e-7, "{rate}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "tunnel")]
+    fn a_tick_length_long_enough_to_tunnel_is_refused_by_the_setter_too() {
+        let mut physics = flat_world();
+        physics.set_fixed_delta(0.1);
     }
 
     #[test]
