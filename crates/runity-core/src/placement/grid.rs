@@ -92,22 +92,6 @@ impl Default for PlacementWeights {
     }
 }
 
-fn deficit_slot(kind: DeficitKind) -> usize {
-    match kind {
-        DeficitKind::Shelter => 0,
-        DeficitKind::Warmth => 1,
-        DeficitKind::Storage => 2,
-        DeficitKind::Drying => 3,
-    }
-}
-
-const DEFICIT_KINDS: [DeficitKind; 4] = [
-    DeficitKind::Shelter,
-    DeficitKind::Warmth,
-    DeficitKind::Storage,
-    DeficitKind::Drying,
-];
-
 #[inline]
 fn horizontal(position: Vec3) -> Vec2 {
     Vec2::new(position.x, position.z)
@@ -301,8 +285,8 @@ impl PlacementGrid {
             }
         }
 
-        for kind in DEFICIT_KINDS {
-            let slot = deficit_slot(kind);
+        for kind in DeficitKind::ALL {
+            let slot = kind.slot();
             let targets: &[Vec2] = match kind {
                 DeficitKind::Storage => &hearths,
                 DeficitKind::Drying => &water_sources,
@@ -336,14 +320,14 @@ impl PlacementGrid {
     /// (built on, claimed, path-crossed) or the grid has never been
     /// recomputed.
     pub fn score(&self, kind: DeficitKind, cell: GridCell) -> f32 {
-        self.scores[deficit_slot(kind)][cell.index()]
+        self.scores[kind.slot()][cell.index()]
     }
 
     /// The best cell for a stake of `kind`, from the scores as of the last
     /// [`PlacementGrid::recompute`]. `None` if every cell is excluded — the
     /// caller has no ground left to plant on.
     pub fn best_cell_for(&self, kind: DeficitKind) -> Option<GridCell> {
-        let scores = &self.scores[deficit_slot(kind)];
+        let scores = &self.scores[kind.slot()];
         let mut best: Option<(usize, f32)> = None;
         for (idx, &score) in scores.iter().enumerate() {
             if !score.is_finite() {
@@ -497,7 +481,7 @@ mod tests {
         let claimed_cell = GridCell { col: 5, row: 5 };
         let path_cell = GridCell { col: 7, row: 5 };
 
-        for kind in DEFICIT_KINDS {
+        for kind in DeficitKind::ALL {
             assert!(
                 !grid.score(kind, built_cell).is_finite(),
                 "built-on cell must be excluded for {kind:?}"

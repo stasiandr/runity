@@ -3,10 +3,11 @@
 //! [`super::SleepingSpot`], and log rollover.
 
 use super::environment::{Hearth, SleepingSpot};
-use super::log::DeficitLog;
+use super::log::{DeficitLog, Hurt};
 use super::settler::Needs;
+use crate::economy::DeficitKind;
 use crate::transform::Transform;
-use crate::world::World;
+use crate::world::{Entity, World};
 use runity_math::Vec3;
 
 /// Per-settler bookkeeping for the two night-bound deficits: whether this
@@ -66,12 +67,29 @@ pub fn tick_settlement(world: &mut World, log: &mut DeficitLog, current_tick: u6
     log.advance(current_tick);
 
     if log.dawn_due(current_tick) {
-        let watches: Vec<NightWatch> = world.iter::<NightWatch>().map(|(_, w)| *w).collect();
+        let watches: Vec<(Entity, NightWatch)> =
+            world.iter::<NightWatch>().map(|(e, w)| (e, *w)).collect();
         if !watches.is_empty() {
             let population = watches.len() as f32;
-            let cold = watches.iter().filter(|w| !w.warmed).count() as f32;
-            let unsheltered = watches.iter().filter(|w| !w.sheltered).count() as f32;
+            let cold = watches.iter().filter(|(_, w)| !w.warmed).count() as f32;
+            let unsheltered = watches.iter().filter(|(_, w)| !w.sheltered).count() as f32;
             log.record_night(cold / population, unsheltered / population, current_tick);
+
+            // The same night, counted the other way round: the log says how
+            // much of the settlement went cold, a settler's own [`Hurt`] says
+            // that it was them. `12-minds.md` §2.4 picks a planter out of the
+            // second, which the first cannot answer.
+            for (entity, watch) in &watches {
+                if let Some(hurt) = world.get_mut::<Hurt>(*entity) {
+                    if !watch.warmed {
+                        hurt.record(DeficitKind::Warmth);
+                    }
+                    if !watch.sheltered {
+                        hurt.record(DeficitKind::Shelter);
+                    }
+                }
+            }
+
             for (_, watch) in world.iter_mut::<NightWatch>() {
                 *watch = NightWatch::default();
             }
@@ -197,6 +215,56 @@ mod tests {
             Some(0.5),
             "one of two was never warmed"
         );
+    }
+
+    #[test]
+    fn dawn_writes_the_night_into_each_settler_s_own_tally_not_just_the_log_s() {
+        let mut world = World::new();
+        let warm = settler_with_watch(&mut world);
+        world.insert(warm, Transform::from_position(Vec3::ZERO));
+        world.insert(warm, Hurt::new());
+        let cold = settler_with_watch(&mut world);
+        world.insert(cold, Transform::from_position(Vec3::new(100.0, 0.0, 0.0)));
+        world.insert(cold, Hurt::new());
+
+        let hearth = world.spawn();
+        world.insert(hearth, Transform::from_position(Vec3::ZERO));
+        world.insert(hearth, Hearth::new(2.0));
+
+        let ticks_per_day = 5;
+        let mut log = DeficitLog::new(ticks_per_day);
+        for tick in 1..=(2 * ticks_per_day) {
+            tick_settlement(&mut world, &mut log, tick, 1.0);
+        }
+
+        // Two nights, one of them by a fire: only the settler who was
+        // actually out in the cold carries the count, and they carry it once
+        // per night rather than once per tick.
+        assert_eq!(
+            world.get::<Hurt>(warm).unwrap().count(DeficitKind::Warmth),
+            0
+        );
+        assert_eq!(
+            world.get::<Hurt>(cold).unwrap().count(DeficitKind::Warmth),
+            2
+        );
+        // Nobody has a sleeping spot, so shelter fell on both alike.
+        assert_eq!(
+            world.get::<Hurt>(warm).unwrap().count(DeficitKind::Shelter),
+            2
+        );
+    }
+
+    #[test]
+    fn a_settler_with_no_tally_still_counts_towards_the_settlement_s_reading() {
+        let mut world = World::new();
+        settler_with_watch(&mut world);
+        let ticks_per_day = 4;
+        let mut log = DeficitLog::new(ticks_per_day);
+        for tick in 1..=ticks_per_day {
+            tick_settlement(&mut world, &mut log, tick, 1.0);
+        }
+        assert_eq!(log.cold_last_night(), Some(1.0));
     }
 
     #[test]

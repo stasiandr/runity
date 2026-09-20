@@ -1,6 +1,9 @@
-//! The settlement's day-log of deficits.
+//! The settlement's day-log of deficits, and each settler's own tally of the
+//! ones they personally lived through.
 
 use std::collections::VecDeque;
+
+use crate::economy::DeficitKind;
 
 /// One recorded attempt inside a day-bound rolling window: the tick it
 /// happened on, and whether it counted against the settlement (no food found,
@@ -139,6 +142,50 @@ impl DeficitLog {
     }
 }
 
+/// One settler's own count of each of the four deficits they have personally
+/// lived through: nights spent cold or unsheltered, and their own losses to
+/// nothing to eat and nowhere to put anything.
+///
+/// [`DeficitLog`] is the settlement's reading, and it deliberately says
+/// nothing about whom the shortage fell on. `12-minds.md` §2.4 needs exactly
+/// that missing half: the settler sent to plant a stake is the nearest to the
+/// site *among those this exact deficit hit hardest personally*, and no
+/// settlement-wide fraction can name them. Attach one of these alongside
+/// [`super::NightWatch`] on any settler who should be eligible.
+///
+/// [`super::tick_settlement`] fills the two night-bound kinds in at dawn: a
+/// settler who was never warmed all night takes one
+/// [`DeficitKind::Warmth`], one who was never sheltered takes one
+/// [`DeficitKind::Shelter`]. The other two arrive through
+/// [`Hurt::record`] from whoever owns the event, exactly the way
+/// [`DeficitLog::record_item_aged`] does — this type only keeps the count.
+///
+/// The tally never decays. A deficit lived through is a thing that happened
+/// (part 4: прожита, не предсказана), and forgetting it on a schedule would
+/// be a second window to keep in step with the log's one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Hurt {
+    counts: [u32; 4],
+}
+
+impl Hurt {
+    /// A settler nothing has happened to yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many times `kind` has hit this settler personally.
+    pub fn count(&self, kind: DeficitKind) -> u32 {
+        self.counts[kind.slot()]
+    }
+
+    /// Record one more time `kind` hit this settler.
+    pub fn record(&mut self, kind: DeficitKind) {
+        let count = &mut self.counts[kind.slot()];
+        *count = count.saturating_add(1);
+    }
+}
+
 fn fraction(events: &VecDeque<DayEvent>) -> Option<f32> {
     if events.is_empty() {
         return None;
@@ -229,5 +276,22 @@ mod tests {
         // Recording hunger events must not disturb this window.
         log.record_eat_attempt(5, true);
         assert_eq!(log.forgotten_items_deficit(), Some(0.5));
+    }
+
+    #[test]
+    fn a_settler_starts_untouched_and_counts_each_kind_apart() {
+        let mut hurt = Hurt::new();
+        for kind in DeficitKind::ALL {
+            assert_eq!(hurt.count(kind), 0);
+        }
+
+        hurt.record(DeficitKind::Warmth);
+        hurt.record(DeficitKind::Warmth);
+        hurt.record(DeficitKind::Shelter);
+
+        assert_eq!(hurt.count(DeficitKind::Warmth), 2);
+        assert_eq!(hurt.count(DeficitKind::Shelter), 1);
+        assert_eq!(hurt.count(DeficitKind::Storage), 0);
+        assert_eq!(hurt.count(DeficitKind::Drying), 0);
     }
 }

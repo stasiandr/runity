@@ -1,4 +1,7 @@
-//! The personal mind: need against common work against own business.
+//! Two minds: the settler deciding for themselves, the settlement deciding
+//! for everyone.
+//!
+//! # The personal mind: need against common work against own business
 //!
 //! `12-minds.md` §3. A settler keeps no plan — every tick they might look at
 //! the facts in front of them and pick the next thing. This module is the
@@ -70,14 +73,41 @@
 //!     Activity::OwnBusiness,
 //! );
 //! ```
+//!
+//! # The settlement mind: one stake, chosen by severity ÷ cost
+//!
+//! `12-minds.md` part 2. No reactive mind ever concludes "we need a second
+//! hearth", because that is not a fact about anybody's own needs — so
+//! [`SettlementMind`] looks at the settlement whole, every
+//! [`PlannerTuning::period_ticks`] and on four events, and does the one thing
+//! it can do: plant a stake.
+//!
+//! * [`severities`] — the four readings of [`crate::needs::DeficitLog`],
+//!   paired with the building each asks for. Undefined stays undefined.
+//! * [`SettlementMind::ranking`] — severity ÷ build cost, best first, minus
+//!   anything on a three-strikes hold.
+//! * [`planter_for`] — §2.4: nearest to the site among those the deficit hit
+//!   hardest personally, by [`crate::needs::Hurt`].
+//! * [`Plan`] — the decision as a value: one stake, one cell, one settler
+//!   sent. Not an order, and not a handle on anyone.
+//!
+//! It is the same trick as the personal mind applied one level up, and it is
+//! deliberately just as powerless: it cannot assign a builder, cannot hurry
+//! anyone along, and cannot touch a settler at all — which is a property of
+//! its signatures, not of anybody's restraint.
 
 mod decide;
+mod planner;
 mod score;
 mod settlement;
 mod tuning;
 mod work;
 
 pub use decide::{staggered_recompute, Mind, Trigger};
+pub use planner::{
+    planter_for, severities, BuildCost, Candidate, Plan, PlannerTuning, SettlementMind, Severities,
+    Survey, Wake,
+};
 pub use score::{candidates, need_urgency, work_urgency, Activity, Scored, Situation};
 pub use settlement::{Chore, Settlement, SettlerSpec, SwitchLog, SwitchReport};
 pub use tuning::{hour_of_day, MindTuning};

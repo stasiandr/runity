@@ -22,6 +22,28 @@ pub enum DeficitKind {
     Drying,
 }
 
+impl DeficitKind {
+    /// All four kinds, in the order everything that indexes by kind uses.
+    pub const ALL: [DeficitKind; 4] = [
+        DeficitKind::Shelter,
+        DeficitKind::Warmth,
+        DeficitKind::Storage,
+        DeficitKind::Drying,
+    ];
+
+    /// This kind's position in [`DeficitKind::ALL`], for anything that keeps
+    /// a four-element array indexed by kind rather than a map of four
+    /// entries.
+    pub fn slot(self) -> usize {
+        match self {
+            DeficitKind::Shelter => 0,
+            DeficitKind::Warmth => 1,
+            DeficitKind::Storage => 2,
+            DeficitKind::Drying => 3,
+        }
+    }
+}
+
 /// A stake's lifecycle. Only [`Stake::abandon`] leaves [`Active`](Self::Active)
 /// for good; [`Frozen`](Self::Frozen) is round-trippable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,6 +247,13 @@ mod tests {
 
     fn stake(tick: u64) -> Stake {
         Stake::new(DeficitKind::Shelter, Tag::Hard, 30, DAY, tick)
+    }
+
+    #[test]
+    fn every_kind_has_its_own_slot_and_all_lists_them_in_slot_order() {
+        for (expected, kind) in DeficitKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.slot(), expected);
+        }
     }
 
     #[test]
