@@ -27,6 +27,8 @@ pub mod scene;
 pub mod shell;
 pub mod surface;
 pub mod time;
+pub mod ui;
+pub mod ui_render;
 pub mod world;
 
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
@@ -41,6 +43,8 @@ pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
-pub use surface::SurfaceError;
+pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
+pub use ui::{Quad, TextRun, Ui};
+pub use ui_render::UiRenderer;
 pub use world::{build_frame, spawn_scene, Model, Shape, Surface, Textured};

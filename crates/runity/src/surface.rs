@@ -67,6 +67,9 @@ impl Surface {
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: capabilities.alpha_modes[0],
             view_formats: vec![],
+            // The default: the format already says sRGB, and naming a wider
+            // space here would change what the encode step means.
+            color_space: Default::default(),
             // One frame in flight past the one being shown. More adds
             // latency, which on a first-person camera is felt immediately.
             desired_maximum_frame_latency: 2,
@@ -126,10 +129,44 @@ impl Surface {
         }
     }
 
+    /// A frame that has been acquired but not yet presented.
+    ///
+    /// It exists because the overlay draws over the scene: both passes need
+    /// the same texture, and acquiring twice would present an empty frame
+    /// over a full one.
+    pub fn begin_frame(&self) -> Result<AcquiredFrame, SurfaceError> {
+        let texture = self.acquire()?;
+        let view = texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        Ok(AcquiredFrame {
+            texture,
+            view,
+            width: self.config.width,
+            height: self.config.height,
+        })
+    }
+
     /// Reconfigure with the size already held — the answer to
     /// [`SurfaceError::Outdated`].
     pub fn reconfigure(&self, gpu: &Gpu) {
         self.inner.configure(&gpu.device, &self.config);
+    }
+}
+
+/// A frame in progress: acquired, drawn into, not yet shown.
+pub struct AcquiredFrame {
+    pub(crate) texture: wgpu::SurfaceTexture,
+    pub(crate) view: wgpu::TextureView,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl AcquiredFrame {
+    /// Hand it to the compositor. Everything drawn into it must already be
+    /// submitted.
+    pub fn present(self, gpu: &Gpu) {
+        gpu.queue.present(self.texture);
     }
 }
 

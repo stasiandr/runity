@@ -13,7 +13,7 @@ use runity::builtin;
 use runity::glam::Vec3;
 use runity::render::{Camera, FogSettings, Frame, Lighting};
 use runity::shell::{run, Context, Game, WindowConfig};
-use runity::{Key, MeshHandle, Scene};
+use runity::{Key, MeshHandle, Scene, TextRun, Ui};
 
 struct Walk {
     scene: Scene,
@@ -27,6 +27,7 @@ struct Walk {
     pitch: f32,
     uploaded: Vec<(String, MeshHandle)>,
     started: bool,
+    ui: Ui,
 }
 
 impl Walk {
@@ -39,6 +40,7 @@ impl Walk {
             pitch: -0.1,
             uploaded: Vec::new(),
             started: false,
+            ui: Ui::new(),
         }
     }
 
@@ -115,7 +117,29 @@ impl Game for Walk {
             target: self.eye + self.forward(),
             ..Camera::default()
         };
+        // The overlay is rebuilt every frame from scratch: there is no
+        // retained widget tree to keep in step with anything.
+        self.ui.clear();
+        self.ui.text(TextRun::new(
+            12.0,
+            12.0,
+            18.0,
+            runity::glam::Vec4::new(0.9, 0.9, 0.88, 0.85),
+            format!(
+                "{:.0} кадр/с   такт {:.0} Гц   {:.1}, {:.1}, {:.1}",
+                1.0 / ctx.time.delta().max(1e-4),
+                1.0 / ctx.time.settings().fixed_delta,
+                self.eye.x,
+                self.eye.y,
+                self.eye.z
+            ),
+        ));
+
         runity::build_frame(&self.world, camera, Lighting::default(), fog)
+    }
+
+    fn overlay(&mut self) -> &Ui {
+        &self.ui
     }
 }
 

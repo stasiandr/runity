@@ -72,6 +72,9 @@ impl Gpu {
                 power_preference: wgpu::PowerPreference::None,
                 force_fallback_adapter: prefer_software,
                 compatible_surface: None,
+                // Defaults: we ask for downlevel limits anyway, so there is
+                // nothing to bucket.
+                apply_limit_buckets: Default::default(),
             })
             .await
             .map_err(|_| GpuError::NoAdapter)?;
@@ -215,7 +218,9 @@ impl OffscreenTarget {
             .expect("the map callback outlives this function")
             .expect("mapping a buffer we own for reading");
 
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .expect("the buffer was just mapped for reading");
         let mut pixels = Vec::with_capacity((self.width * self.height * 4) as usize);
         for row in 0..self.height {
             let start = (row * self.padded_bytes_per_row) as usize;

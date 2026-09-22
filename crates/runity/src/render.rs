@@ -469,21 +469,21 @@ impl Renderer {
                     entry_point: Some("vs"),
                     compilation_options: Default::default(),
                     buffers: &[
-                        wgpu::VertexBufferLayout {
+                        Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &wgpu::vertex_attr_array![
                                 0 => Float32x3, 1 => Float32x3, 2 => Float32x2
                             ],
-                        },
-                        wgpu::VertexBufferLayout {
+                        }),
+                        Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<InstanceRaw>() as u64,
                             step_mode: wgpu::VertexStepMode::Instance,
                             attributes: &wgpu::vertex_attr_array![
                                 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
                                 6 => Float32x4, 7 => Float32x4
                             ],
-                        },
+                        }),
                     ],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -522,21 +522,21 @@ impl Renderer {
                     entry_point: Some("vs_shadow"),
                     compilation_options: Default::default(),
                     buffers: &[
-                        wgpu::VertexBufferLayout {
+                        Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
                             step_mode: wgpu::VertexStepMode::Vertex,
                             attributes: &wgpu::vertex_attr_array![
                                 0 => Float32x3, 1 => Float32x3, 2 => Float32x2
                             ],
-                        },
-                        wgpu::VertexBufferLayout {
+                        }),
+                        Some(wgpu::VertexBufferLayout {
                             array_stride: std::mem::size_of::<InstanceRaw>() as u64,
                             step_mode: wgpu::VertexStepMode::Instance,
                             attributes: &wgpu::vertex_attr_array![
                                 3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
                                 6 => Float32x4, 7 => Float32x4
                             ],
-                        },
+                        }),
                     ],
                 },
                 fragment: None,
@@ -891,20 +891,33 @@ impl Renderer {
             self.depth = depth_view(gpu, width, height);
             self.depth_size = (width, height);
         }
-        let texture = surface.acquire()?;
-        let view = texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_into(gpu, &view, width, height, frame);
-        // Presented after the encoder is submitted, which `render_into`
-        // already did.
-        texture.present();
+        let acquired = surface.begin_frame()?;
+        self.render_to_frame(gpu, &acquired, frame);
+        acquired.present(gpu);
         Ok(())
     }
 
     /// What the last frame cost.
     pub fn stats(&self) -> FrameStats {
         self.stats
+    }
+
+    /// Draw into a frame someone else acquired, leaving it unpresented.
+    ///
+    /// This is the one to use when an overlay follows: the caller holds the
+    /// frame, draws the scene, draws the UI over it, and presents once.
+    pub fn render_to_frame(
+        &mut self,
+        gpu: &Gpu,
+        acquired: &crate::surface::AcquiredFrame,
+        frame: &Frame,
+    ) {
+        let (width, height) = (acquired.width, acquired.height);
+        if self.depth_size != (width, height) {
+            self.depth = depth_view(gpu, width, height);
+            self.depth_size = (width, height);
+        }
+        self.render_into(gpu, &acquired.view, width, height, frame);
     }
 
     /// Whether this renderer's pipeline matches a target's pixel format.

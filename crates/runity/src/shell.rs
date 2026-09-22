@@ -84,6 +84,14 @@ pub trait Game {
     /// Once per frame. Camera and animation belong here, where the delta is
     /// the real one and motion stays smooth.
     fn frame(&mut self, ctx: &mut Context) -> Frame;
+
+    /// What to draw over the scene. Empty by default.
+    fn overlay(&mut self) -> &crate::ui::Ui {
+        // A shared empty list, so a game with no overlay allocates nothing
+        // and the shell still has something to hand the renderer.
+        static EMPTY: std::sync::OnceLock<crate::ui::Ui> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(crate::ui::Ui::new)
+    }
 }
 
 /// Open a window and run until the game or the user says otherwise.
@@ -110,6 +118,7 @@ struct Running {
     gpu: Gpu,
     surface: Surface,
     renderer: Renderer,
+    overlay: crate::ui_render::UiRenderer,
 }
 
 struct Shell<G: Game> {
@@ -153,11 +162,19 @@ impl<G: Game> Shell<G> {
         let frame = self.game.frame(&mut ctx);
         quit |= ctx.quit;
 
-        match state
-            .renderer
-            .render_to_surface(&state.gpu, &state.surface, &frame)
-        {
-            Ok(()) => {}
+        // One acquired frame for both passes: the scene, then the overlay
+        // over it, then a single present. Acquiring twice would show an
+        // empty frame on top of a full one.
+        match state.surface.begin_frame() {
+            Ok(acquired) => {
+                state
+                    .renderer
+                    .render_to_frame(&state.gpu, &acquired, &frame);
+                state
+                    .overlay
+                    .render_to_frame(&state.gpu, &acquired, self.game.overlay());
+                acquired.present(&state.gpu);
+            }
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
             Err(SurfaceError::Outdated) => state.surface.reconfigure(&state.gpu),
@@ -217,12 +234,14 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             }
         };
         let renderer = Renderer::for_surface(&gpu, &surface);
+        let overlay = crate::ui_render::UiRenderer::for_surface(&gpu, &surface);
 
         let mut state = Running {
             window,
             gpu,
             surface,
             renderer,
+            overlay,
         };
         let mut ctx = Self::context(&mut state, &self.time, &self.input);
         self.game.start(&mut ctx);
