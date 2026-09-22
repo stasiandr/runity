@@ -71,6 +71,15 @@ impl AssetId {
     }
 }
 
+impl From<&ArchivedAssetId> for AssetId {
+    /// The archived form is a distinct type, so reading an id out of a
+    /// mapped asset needs one conversion. It is a widening of one integer,
+    /// not a deserialization of the asset.
+    fn from(archived: &ArchivedAssetId) -> Self {
+        AssetId(archived.0.to_native())
+    }
+}
+
 impl std::fmt::Display for AssetId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_hex())
@@ -81,7 +90,17 @@ impl std::fmt::Display for AssetId {
 ///
 /// `repr(C)` because this is uploaded to the GPU as-is; the archived form and
 /// the in-memory form have to agree on padding.
-#[derive(Debug, Clone, Copy, PartialEq, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Archive,
+    Serialize,
+    Deserialize,
+    bytemuck::Pod,
+    bytemuck::Zeroable,
+)]
 #[repr(C)]
 pub struct Vertex {
     pub position: [f32; 3],

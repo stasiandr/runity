@@ -114,9 +114,9 @@ impl Gpu {
 pub struct OffscreenTarget {
     pub width: u32,
     pub height: u32,
-    pub format: wgpu::TextureFormat,
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) texture: wgpu::Texture,
+    pub(crate) view: wgpu::TextureView,
     /// Readback needs rows padded to `COPY_BYTES_PER_ROW_ALIGNMENT`; this is
     /// the padded stride, which is usually larger than `width * 4`.
     padded_bytes_per_row: u32,
