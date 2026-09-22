@@ -37,3 +37,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [[example]]
 name = "scene_shot"
 path = "examples/scene_shot.rs"
+
+# A window you can walk around in. Needs the shell feature, so it is not
+# built by a plain `cargo build`.
+[[example]]
+name = "walk"
+path = "examples/walk.rs"
+required-features = ["desktop-shell"]

@@ -255,15 +255,21 @@ pub struct Renderer {
     shadow_map: wgpu::TextureView,
     shadow_sampler: wgpu::Sampler,
     shadow_resolution: u32,
+    format: wgpu::TextureFormat,
     meshes: Vec<GpuMesh>,
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 impl Renderer {
-    /// Build a renderer for frames of a given format and size.
+    /// Build a renderer for an offscreen target.
     pub fn new(gpu: &Gpu, target: &OffscreenTarget) -> Self {
         Self::with_format(gpu, target.format, target.width, target.height)
+    }
+
+    /// Build a renderer for a window's surface.
+    pub fn for_surface(gpu: &Gpu, surface: &crate::surface::Surface) -> Self {
+        Self::with_format(gpu, surface.format(), surface.width(), surface.height())
     }
 
     pub(crate) fn with_format(
@@ -505,6 +511,7 @@ impl Renderer {
             shadow_map,
             shadow_sampler,
             shadow_resolution,
+            format,
             meshes: Vec::new(),
         }
     }
@@ -653,6 +660,51 @@ impl Renderer {
             }
             _ => 0.0,
         }
+    }
+
+    /// Draw one frame into a window's surface.
+    ///
+    /// Returns [`SurfaceError::Outdated`] when the swapchain needs
+    /// rebuilding, which is routine: a resize, a move between monitors, a
+    /// display waking up. The caller reconfigures and draws again.
+    pub fn render_to_surface(
+        &mut self,
+        gpu: &Gpu,
+        surface: &crate::surface::Surface,
+        frame: &Frame,
+    ) -> Result<(), crate::surface::SurfaceError> {
+        if !self.format_matches(surface.format()) {
+            // A renderer is built for one pixel format and cannot draw into
+            // another. Saying so here beats the backend's version of this
+            // error, which names neither format.
+            return Err(crate::surface::SurfaceError::Other(format!(
+                "renderer built for {:?}, surface is {:?}",
+                self.format,
+                surface.format()
+            )));
+        }
+        let (width, height) = (surface.width(), surface.height());
+        if self.depth_size != (width, height) {
+            self.depth = depth_view(gpu, width, height);
+            self.depth_size = (width, height);
+        }
+        let texture = surface.acquire()?;
+        let view = texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.render_into(gpu, &view, width, height, frame);
+        // Presented after the encoder is submitted, which `render_into`
+        // already did.
+        texture.present();
+        Ok(())
+    }
+
+    /// Whether this renderer's pipeline matches a target's pixel format.
+    ///
+    /// A renderer built for one format cannot draw into another, and the
+    /// error a backend gives for that names neither of them.
+    pub(crate) fn format_matches(&self, format: wgpu::TextureFormat) -> bool {
+        self.format == format
     }
 
     /// Draw one frame into an offscreen target.

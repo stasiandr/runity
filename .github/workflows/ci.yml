@@ -33,5 +33,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The window shell is behind a feature, so a plain clippy run never
+      # sees it. It is the one part of the engine CI cannot execute — no
+      # runner has a display — so type-checking it is all the safety net
+      # there is, and it has to be deliberate.
+      - name: Clippy (desktop shell)
+        run: cargo clippy --workspace --all-targets --features desktop-shell -- -D warnings
       - name: Test
         run: cargo test --workspace

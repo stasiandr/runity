@@ -22,6 +22,9 @@ pub mod library;
 pub mod material;
 pub mod render;
 pub mod scene;
+#[cfg(feature = "desktop-shell")]
+pub mod shell;
+pub mod surface;
 pub mod time;
 pub mod world;
 
@@ -29,10 +32,13 @@ pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::Library;
+// `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
+// read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings,
 };
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
+pub use surface::SurfaceError;
 pub use time::{Time, TimeSettings};
 pub use world::{build_frame, spawn_scene, Model, Surface};
