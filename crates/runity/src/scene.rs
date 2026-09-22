@@ -91,6 +91,39 @@ pub struct EntityDesc {
     pub material: MaterialRef,
     #[serde(default)]
     pub body: Body,
+    /// Things attached to this one. A child's transform is relative to its
+    /// parent, so moving the parent moves the lot — which is what makes a
+    /// cart with wheels, or a settler carrying a log, one thing to place
+    /// rather than several to keep in step.
+    ///
+    /// Nested rather than a `parent:` field pointing at a name, because a
+    /// tree written as a tree cannot describe a cycle or a dangling parent,
+    /// and both of those are states an editor would otherwise have to guard
+    /// against every time it saves.
+    #[serde(default)]
+    pub children: Vec<EntityDesc>,
+}
+
+impl EntityDesc {
+    /// This entity and everything under it, depth first, each with the
+    /// transform that stacks its ancestors' on top of its own.
+    pub fn flatten(&self) -> Vec<(&EntityDesc, glam::Mat4)> {
+        let mut out = Vec::new();
+        self.flatten_into(glam::Mat4::IDENTITY, &mut out);
+        out
+    }
+
+    pub(crate) fn flatten_into<'a>(
+        &'a self,
+        parent: glam::Mat4,
+        out: &mut Vec<(&'a EntityDesc, glam::Mat4)>,
+    ) {
+        let world = parent * self.transform.matrix();
+        out.push((self, world));
+        for child in &self.children {
+            child.flatten_into(world, out);
+        }
+    }
 }
 
 /// How an entity names its surface.
@@ -175,6 +208,29 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Every entity in the scene, roots and descendants alike, each with the
+    /// world transform its ancestors give it.
+    ///
+    /// Anything that asks "what is in this scene" wants this rather than
+    /// `entities`, which holds only the roots. An editor's tree, a search, a
+    /// count — all of them get the nesting wrong exactly once and then use
+    /// this.
+    pub fn flatten(&self) -> Vec<(&EntityDesc, glam::Mat4)> {
+        let mut out = Vec::new();
+        for entity in &self.entities {
+            entity.flatten_into(glam::Mat4::IDENTITY, &mut out);
+        }
+        out
+    }
+
+    /// The first entity with this name, at any depth.
+    pub fn find(&self, name: &str) -> Option<&EntityDesc> {
+        self.flatten()
+            .into_iter()
+            .find(|(e, _)| e.name == name)
+            .map(|(e, _)| e)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)
@@ -218,6 +274,7 @@ mod tests {
                 },
                 material: MaterialRef::Named("needle".into()),
                 body: Body::Static,
+                children: Vec::new(),
             }],
         };
         let dir = std::env::temp_dir().join("runity-scene-test");
@@ -237,6 +294,32 @@ mod tests {
         let mut back = Transform::default();
         back.set_rotation(q);
         assert!((back.rotation_deg - t.rotation_deg).length() < 0.01);
+    }
+
+    #[test]
+    fn flatten_reaches_every_depth_and_stacks_the_transforms() {
+        let scene: Scene = ron::from_str(
+            r#"(entities: [(
+                name: "cart", model: "m", transform: (position: (10.0, 0.0, 0.0)),
+                children: [(
+                    name: "wheel", model: "m", transform: (position: (1.0, 0.0, 0.0)),
+                    children: [(name: "bolt", model: "m", transform: (position: (0.5, 0.0, 0.0)))],
+                )],
+            )])"#,
+        )
+        .unwrap();
+
+        assert_eq!(scene.entities.len(), 1, "one root");
+        let all = scene.flatten();
+        assert_eq!(all.len(), 3, "three entities once the nesting is walked");
+        let bolt = scene.find("bolt").expect("found at depth two");
+        assert_eq!(bolt.transform.position.x, 0.5, "its own transform is local");
+        let bolt_world = all
+            .iter()
+            .find(|(e, _)| e.name == "bolt")
+            .map(|(_, m)| m.w_axis.x)
+            .unwrap();
+        assert_eq!(bolt_world, 11.5, "10 + 1 + 0.5");
     }
 
     #[test]

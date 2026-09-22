@@ -43,13 +43,30 @@
             body: Static,
         ),
 
-        // The one unlit thing in the scene. It should stay the same colour
-        // at dawn and at midnight, and fog should not touch it.
+        // A campfire built as one thing out of several: the ring of stones
+        // and the ember are children of the fire, so moving the fire moves
+        // all of it. Placed off the origin and turned, so that a child laid
+        // out at its parent's feet has to be rotated into place — which is
+        // what tells a hierarchy apart from an offset.
         (
-            name: "ember",
-            model: "builtin:sphere",
-            transform: (position: (0.7, 0.18, 3.0), scale: (0.34, 0.34, 0.34)),
-            material: "ember",
+            name: "campfire",
+            model: "builtin:plane",
+            transform: (position: (0.7, 0.01, 3.0), rotation_deg: (0.0, 35.0, 0.0), scale: (1.4, 1.0, 1.4)),
+            material: "earth",
+            children: [
+                // The one unlit thing in the scene. It should stay the same
+                // colour at dawn and at midnight, and fog should not touch it.
+                (
+                    name: "ember",
+                    model: "builtin:sphere",
+                    transform: (position: (0.0, 0.18, 0.0), scale: (0.24, 0.24, 0.24)),
+                    material: "ember",
+                ),
+                (name: "stone north", model: "builtin:cube", transform: (position: ( 0.0, 0.06, -0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (name: "stone south", model: "builtin:cube", transform: (position: ( 0.0, 0.06,  0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (name: "stone east",  model: "builtin:cube", transform: (position: ( 0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (name: "stone west",  model: "builtin:cube", transform: (position: (-0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
+            ],
         ),
     ],
 )

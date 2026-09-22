@@ -135,9 +135,7 @@ fn an_unlit_material_ignores_the_sun_while_everything_else_follows_it() {
     // merely intended.
     assert_eq!(
         scene
-            .entities
-            .iter()
-            .find(|e| e.name == "ember")
+            .find("ember")
             .expect("the scene has an ember")
             .material()
             .shading,
