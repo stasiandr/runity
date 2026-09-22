@@ -4,9 +4,10 @@
 # ceiling. It replaced the opposite rule — an engine assembled from `std`
 # alone — and `docs/stack.md` records what that cost and bought.
 #
-# There is no game crate here. What the engine is tested against is its own:
+# There is no game code here. What the engine is tested against is its own:
 # builtin meshes and materials, example assets and example scenes, all under
-# `assets/` and `scenes/`. A game gets its own repository when there is one.
+# `assets/` and `scenes/`. `docs/design/` says what the engine is growing
+# toward.
 [workspace]
 resolver = "2"
 members = [
