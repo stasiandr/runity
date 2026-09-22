@@ -49,4 +49,4 @@ pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
-pub use world::{build_frame, spawn_scene, Model, Shape, Surface, Textured};
+pub use world::{build_frame, spawn_scene, Model, Posed, Shape, Surface, Textured};

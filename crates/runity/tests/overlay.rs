@@ -33,6 +33,7 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
             shadows: ShadowSettings::OFF,
             clear_color: Vec3::new(0.5, 0.0, 0.0),
             draws: Vec::new(),
+            poses: Vec::new(),
         },
     );
     overlay.render(gpu, &target, ui);

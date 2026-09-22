@@ -52,7 +52,9 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
             transform: Mat4::IDENTITY,
             texture,
             material: runity::Material::new(1.0, 1.0, 1.0),
+            pose: None,
         }],
+        poses: Vec::new(),
     };
     renderer.render(gpu, &target, &frame);
     target.read_rgba(gpu)

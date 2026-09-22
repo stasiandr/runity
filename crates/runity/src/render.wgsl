@@ -51,6 +51,59 @@ struct VertexOutput {
     @location(4) uv: vec2<f32>,
 };
 
+// One pose's skinning matrices. Bound per draw with a dynamic offset, so
+// two characters in different poses cost two offsets rather than two
+// pipelines.
+struct Pose {
+    joints: array<mat4x4<f32>, 64>,
+};
+@group(2) @binding(0) var<uniform> pose: Pose;
+
+struct SkinInput {
+    @location(8) joints: vec4<u32>,
+    @location(9) weights: vec4<f32>,
+};
+
+/// The skinned vertex stage.
+///
+/// The weighted sum of matrices is taken first and applied once, rather than
+/// transforming the vertex by each joint and averaging the results. The two
+/// agree for rigid motion and differ under scale, and the first is both
+/// cheaper and what every exporter assumes.
+@vertex
+fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
+    var skinning =
+        pose.joints[skin.joints.x] * skin.weights.x +
+        pose.joints[skin.joints.y] * skin.weights.y +
+        pose.joints[skin.joints.z] * skin.weights.z +
+        pose.joints[skin.joints.w] * skin.weights.w;
+
+    // Weights that sum to nothing would collapse the vertex onto the origin.
+    // An identity keeps it where the artist put it.
+    let total = skin.weights.x + skin.weights.y + skin.weights.z + skin.weights.w;
+    if total < 0.0001 {
+        skinning = mat4x4<f32>(
+            vec4<f32>(1.0, 0.0, 0.0, 0.0),
+            vec4<f32>(0.0, 1.0, 0.0, 0.0),
+            vec4<f32>(0.0, 0.0, 1.0, 0.0),
+            vec4<f32>(0.0, 0.0, 0.0, 1.0),
+        );
+    }
+
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    let posed = skinning * vec4<f32>(in.position, 1.0);
+    let world = model * posed;
+
+    var out: VertexOutput;
+    out.clip_position = frame.view_projection * world;
+    out.world_position = world.xyz;
+    out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
+    out.base_color = in.color_and_shading.rgb;
+    out.unlit = in.color_and_shading.w;
+    out.uv = in.uv;
+    return out;
+}
+
 /// The depth-only pass, seen from the sun.
 @vertex
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {

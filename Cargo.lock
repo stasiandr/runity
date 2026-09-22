@@ -2220,6 +2220,7 @@ dependencies = [
  "glam",
  "gltf",
  "image",
+ "rkyv",
  "ron",
  "runity",
  "serde",

@@ -113,6 +113,7 @@ fn a_source_model_becomes_a_frame() {
                 transform: runity::glam::Mat4::IDENTITY,
                 texture: runity::TextureHandle::WHITE,
                 material: runity::material::builtin::NEEDLE,
+                pose: None,
             },
             Draw {
                 mesh: handle,
@@ -123,8 +124,10 @@ fn a_source_model_becomes_a_frame() {
                 )),
                 texture: runity::TextureHandle::WHITE,
                 material: runity::material::builtin::NEEDLE,
+                pose: None,
             },
         ],
+        poses: Vec::new(),
     };
     renderer.render(&gpu, &target, &frame);
     let pixels = target.read_rgba(&gpu);

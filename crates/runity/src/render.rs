@@ -193,6 +193,17 @@ impl ShadowSettings {
     };
 }
 
+/// The most joints one pose may have.
+///
+/// Sized so a pose fits comfortably in a uniform buffer on the downlevel
+/// limits this engine asks for. A skeleton past this is split or simplified
+/// at import; silently dropping joints would put a limb at the origin.
+pub const MAX_JOINTS: usize = 64;
+
+/// A skeleton's joints, already turned into skinning matrices.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pose(pub Vec<Mat4>);
+
 /// One thing to draw: a mesh, where it is, and what colour it takes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Draw {
@@ -201,6 +212,9 @@ pub struct Draw {
     /// Multiplied by the material's colour. [`TextureHandle::WHITE`] leaves
     /// the colour alone, which is what an untextured surface wants.
     pub texture: TextureHandle,
+    /// Index into [`Frame::poses`], for a skinned mesh. `None` draws the
+    /// mesh in its bind pose through the ordinary pipeline.
+    pub pose: Option<u32>,
     /// What the surface is made of. One mesh drawn with four materials is
     /// how four settlers get four shirts (`07-look.md`, "тинт инстанса").
     pub material: Material,
@@ -215,6 +229,10 @@ pub struct Frame {
     pub shadows: ShadowSettings,
     pub clear_color: Vec3,
     pub draws: Vec<Draw>,
+    /// Skinning matrices, one entry per animated thing on screen. Held here
+    /// rather than on each draw so that two draws sharing a skeleton share
+    /// one upload.
+    pub poses: Vec<Pose>,
 }
 
 impl Default for Frame {
@@ -226,6 +244,7 @@ impl Default for Frame {
             shadows: ShadowSettings::default(),
             clear_color: Vec3::new(0.62, 0.68, 0.74),
             draws: Vec::new(),
+            poses: Vec::new(),
         }
     }
 }
@@ -252,6 +271,14 @@ struct FrameUniform {
     shadow_params: [f32; 4],
 }
 
+/// One vertex's binding to the skeleton, in its own buffer.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SkinVertex {
+    joints: [u16; 4],
+    weights: [f32; 4],
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw {
@@ -267,6 +294,8 @@ struct GpuTexture {
 
 struct GpuMesh {
     vertices: wgpu::Buffer,
+    /// Joint indices and weights, when the mesh has them.
+    skin: Option<wgpu::Buffer>,
     indices: wgpu::Buffer,
     index_count: u32,
     /// Kept so the shadow pass can fit its frustum to what is actually being
@@ -294,6 +323,13 @@ pub struct Renderer {
     shadow_sampler: wgpu::Sampler,
     shadow_resolution: u32,
     format: wgpu::TextureFormat,
+    skinned_pipeline: wgpu::RenderPipeline,
+    pose_layout: wgpu::BindGroupLayout,
+    pose_bind_group: wgpu::BindGroup,
+    poses: wgpu::Buffer,
+    /// One pose's slot, padded up to the device's dynamic-offset alignment.
+    pose_stride: u64,
+    pose_capacity: u64,
     stats: FrameStats,
     meshes: Vec<GpuMesh>,
     textures: Vec<GpuTexture>,
@@ -565,6 +601,103 @@ impl Renderer {
                 cache: None,
             });
 
+        // Skinning: a second pipeline, an extra vertex buffer of joint
+        // bindings, and one bind group of matrices switched per draw with a
+        // dynamic offset.
+        let pose_layout = gpu
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("pose"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(
+                            (MAX_JOINTS * std::mem::size_of::<[[f32; 4]; 4]>()) as u64,
+                        ),
+                    },
+                    count: None,
+                }],
+            });
+        let alignment = gpu
+            .device
+            .limits()
+            .min_uniform_buffer_offset_alignment
+            .max(1) as u64;
+        let pose_size = (MAX_JOINTS * std::mem::size_of::<[[f32; 4]; 4]>()) as u64;
+        let pose_stride = pose_size.div_ceil(alignment) * alignment;
+        let pose_capacity = 16;
+        let poses = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("poses"),
+            size: pose_stride * pose_capacity,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pose_bind_group = pose_bind_group(gpu, &pose_layout, &poses, pose_size);
+
+        let skinned_layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("runity::skinned"),
+                bind_group_layouts: &[Some(&layout), Some(&texture_layout), Some(&pose_layout)],
+                immediate_size: 0,
+            });
+        let skinned_pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("runity::skinned"),
+                layout: Some(&skinned_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_skinned"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                            ],
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![
+                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                                6 => Float32x4, 7 => Float32x4
+                            ],
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4],
+                        }),
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         let instance_capacity = 256;
         let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
@@ -588,6 +721,12 @@ impl Renderer {
             shadow_sampler,
             shadow_resolution,
             format,
+            skinned_pipeline,
+            pose_layout,
+            pose_bind_group,
+            poses,
+            pose_stride,
+            pose_capacity,
             stats: FrameStats::default(),
             meshes: Vec::new(),
             textures: Vec::new(),
@@ -608,7 +747,45 @@ impl Renderer {
     /// asset format exists.
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
         let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
-        self.upload(gpu, vertex_slice(mesh), &indices)
+        let handle = self.upload(gpu, vertex_slice(mesh), &indices);
+        if let Some(skin) = mesh.skin.as_ref() {
+            let bindings: Vec<SkinVertex> = skin
+                .joints
+                .iter()
+                .zip(skin.weights.iter())
+                .map(|(joints, weights)| SkinVertex {
+                    joints: [
+                        joints[0].to_native(),
+                        joints[1].to_native(),
+                        joints[2].to_native(),
+                        joints[3].to_native(),
+                    ],
+                    weights: [
+                        weights[0].to_native(),
+                        weights[1].to_native(),
+                        weights[2].to_native(),
+                        weights[3].to_native(),
+                    ],
+                })
+                .collect();
+            self.attach_skin(gpu, handle, &bindings);
+        }
+        handle
+    }
+
+    /// Give an uploaded mesh its per-vertex joint bindings.
+    fn attach_skin(&mut self, gpu: &Gpu, handle: MeshHandle, bindings: &[SkinVertex]) {
+        use wgpu::util::DeviceExt;
+        let buffer = gpu
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("skin"),
+                contents: bytemuck::cast_slice(bindings),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        if let Some(mesh) = self.meshes.get_mut(handle.0 as usize) {
+            mesh.skin = Some(buffer);
+        }
     }
 
     fn upload(
@@ -637,6 +814,7 @@ impl Renderer {
 
         self.meshes.push(GpuMesh {
             vertices: vertex_buffer,
+            skin: None,
             indices: index_buffer,
             index_count: indices.len() as u32,
             bounds,
@@ -1000,6 +1178,7 @@ impl Renderer {
         let planes = frustum_planes(frame.camera.view_projection(aspect));
         let mut shadow_batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
         let mut batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
+        let mut skinned_draws: Vec<(MeshHandle, TextureHandle, u32, InstanceRaw)> = Vec::new();
         let mut stats = FrameStats {
             submitted: frame.draws.len() as u32,
             ..Default::default()
@@ -1017,23 +1196,36 @@ impl Renderer {
             push(&mut shadow_batches, key, raw);
             stats.shadow_casters += 1;
 
+            let skinned = draw.pose.is_some()
+                && self
+                    .meshes
+                    .get(draw.mesh.0 as usize)
+                    .is_some_and(|m| m.skin.is_some());
             let visible = match self.meshes.get(draw.mesh.0 as usize) {
                 Some(mesh) => aabb_in_frustum(&planes, mesh.bounds, draw.transform),
                 // A handle pointing at nothing draws nothing; it should not
                 // also be reported as culled.
                 None => false,
             };
-            if visible {
-                push(&mut batches, key, raw);
-                stats.drawn += 1;
-            } else {
+            if !visible {
                 stats.culled += 1;
+                continue;
+            }
+            stats.drawn += 1;
+            if skinned {
+                // Skinned draws are not batched: each one has its own pose,
+                // so two of them cannot share an instanced call anyway.
+                skinned_draws.push((draw.mesh, draw.texture, draw.pose.unwrap_or(0), raw));
+            } else {
+                push(&mut batches, key, raw);
             }
         }
         self.stats = stats;
 
         let shadow_total: u64 = shadow_batches.iter().map(|(_, l)| l.len() as u64).sum();
-        let total: u64 = shadow_total + batches.iter().map(|(_, l)| l.len() as u64).sum::<u64>();
+        let total: u64 = shadow_total
+            + batches.iter().map(|(_, l)| l.len() as u64).sum::<u64>()
+            + skinned_draws.len() as u64;
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1046,14 +1238,51 @@ impl Renderer {
         // Both sets share one buffer: the shadow pass's instances first, then
         // the colour pass's, which is why the colour pass draws from
         // `shadow_total` onward.
+        let flat_colour_count: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
         let flat: Vec<InstanceRaw> = shadow_batches
             .iter()
             .chain(batches.iter())
             .flat_map(|(_, l)| l.iter().copied())
+            .chain(skinned_draws.iter().map(|(_, _, _, raw)| *raw))
             .collect();
         if !flat.is_empty() {
             gpu.queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&flat));
+        }
+
+        // Poses go in before the pass: one slot each, padded to the device's
+        // dynamic-offset alignment, and a pose longer than MAX_JOINTS is
+        // truncated rather than overrunning its neighbour's slot.
+        if !frame.poses.is_empty() {
+            if frame.poses.len() as u64 > self.pose_capacity {
+                self.pose_capacity = (frame.poses.len() as u64).next_power_of_two();
+                self.poses = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("poses"),
+                    size: self.pose_stride * self.pose_capacity,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                let pose_size = (MAX_JOINTS * std::mem::size_of::<[[f32; 4]; 4]>()) as u64;
+                self.pose_bind_group =
+                    pose_bind_group(gpu, &self.pose_layout, &self.poses, pose_size);
+            }
+            for (slot, pose) in frame.poses.iter().enumerate() {
+                let mut matrices = [[[0.0f32; 4]; 4]; MAX_JOINTS];
+                for (i, matrix) in pose.0.iter().take(MAX_JOINTS).enumerate() {
+                    matrices[i] = matrix.to_cols_array_2d();
+                }
+                // Anything past the pose's own joints stays identity, so a
+                // stray index reads as "no movement" rather than as a
+                // collapse to the origin.
+                for slot in matrices.iter_mut().skip(pose.0.len().min(MAX_JOINTS)) {
+                    *slot = Mat4::IDENTITY.to_cols_array_2d();
+                }
+                gpu.queue.write_buffer(
+                    &self.poses,
+                    slot as u64 * self.pose_stride,
+                    bytemuck::cast_slice(&matrices),
+                );
+            }
         }
 
         let mut encoder = gpu
@@ -1115,6 +1344,38 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             self.draw_batches(&mut pass, &batches, shadow_total as u32, true);
+
+            if !skinned_draws.is_empty() {
+                pass.set_pipeline(&self.skinned_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                let mut instance = shadow_total as u32 + flat_colour_count;
+                for (mesh_handle, texture, pose, _) in &skinned_draws {
+                    let Some(mesh) = self.meshes.get(mesh_handle.0 as usize) else {
+                        continue;
+                    };
+                    let Some(skin) = mesh.skin.as_ref() else {
+                        continue;
+                    };
+                    if let Some(bound) = self
+                        .textures
+                        .get(texture.0 as usize)
+                        .or_else(|| self.textures.first())
+                    {
+                        pass.set_bind_group(1, &bound.bind_group, &[]);
+                    }
+                    pass.set_bind_group(
+                        2,
+                        &self.pose_bind_group,
+                        &[*pose as u32 * self.pose_stride as u32],
+                    );
+                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                    pass.set_vertex_buffer(1, self.instances.slice(..));
+                    pass.set_vertex_buffer(2, skin.slice(..));
+                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
+                    instance += 1;
+                }
+            }
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
@@ -1242,6 +1503,28 @@ fn frame_bind_group(
                 resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
         ],
+    })
+}
+
+fn pose_bind_group(
+    gpu: &Gpu,
+    layout: &wgpu::BindGroupLayout,
+    poses: &wgpu::Buffer,
+    pose_size: u64,
+) -> wgpu::BindGroup {
+    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("pose"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: poses,
+                offset: 0,
+                // Bound to one pose's worth, not the whole buffer: the
+                // dynamic offset picks which one.
+                size: wgpu::BufferSize::new(pose_size),
+            }),
+        }],
     })
 }
 
