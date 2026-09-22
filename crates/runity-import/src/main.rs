@@ -28,11 +28,14 @@ fn main() -> Result<()> {
                     .unwrap_or(settings.scale);
             }
             "--keep-origin" => settings.origin_to_base = false,
+            // A normal map, a roughness map or a mask is not colour, and
+            // decoding it from sRGB bends every value in it.
+            "--linear" => settings.srgb = false,
             "--recompute-normals" => settings.recompute_normals = true,
             "--help" | "-h" => {
                 println!(
                     "runity-import <source>... [--library DIR] [--scale F] \
-                     [--keep-origin] [--recompute-normals]"
+                     [--keep-origin] [--recompute-normals] [--linear]"
                 );
                 return Ok(());
             }

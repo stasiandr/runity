@@ -36,9 +36,9 @@ pub use library::Library;
 // read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};
 pub use render::{
-    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings,
+    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
 pub use surface::SurfaceError;
 pub use time::{Time, TimeSettings};
-pub use world::{build_frame, spawn_scene, Model, Surface};
+pub use world::{build_frame, spawn_scene, Model, Surface, Textured};

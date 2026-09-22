@@ -111,6 +111,7 @@ fn a_source_model_becomes_a_frame() {
             Draw {
                 mesh: handle,
                 transform: runity::glam::Mat4::IDENTITY,
+                texture: runity::TextureHandle::WHITE,
                 material: runity::material::builtin::NEEDLE,
             },
             Draw {
@@ -120,6 +121,7 @@ fn a_source_model_becomes_a_frame() {
                 transform: runity::glam::Mat4::from_translation(runity::glam::Vec3::new(
                     9.0, 0.0, -38.0,
                 )),
+                texture: runity::TextureHandle::WHITE,
                 material: runity::material::builtin::NEEDLE,
             },
         ],
@@ -219,14 +221,17 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
     let dir = std::env::temp_dir().join("runity-first-frame-bad");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let mut bytes = runity::asset::to_bytes(&MeshAsset {
-        id: runity::AssetId::from_source("x", 0),
-        name: "x".into(),
-        vertices: Vec::new(),
-        indices: Vec::new(),
-        submeshes: Vec::new(),
-        bounds: runity::Bounds::of(&[]),
-    })
+    let mut bytes = runity::asset::to_bytes(
+        &MeshAsset {
+            id: runity::AssetId::from_source("x", 0),
+            name: "x".into(),
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            submeshes: Vec::new(),
+            bounds: runity::Bounds::of(&[]),
+        },
+        runity::asset::AssetKind::Mesh,
+    )
     .unwrap();
     bytes[8] = 0;
     std::fs::write(dir.join("stale.rasset"), bytes).unwrap();

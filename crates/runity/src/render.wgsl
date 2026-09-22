@@ -25,6 +25,12 @@ struct Frame {
 // filter in one fetch, so every tap is already a 2x2 average.
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
+// The surface's own image. Every draw binds one; an untextured material
+// binds a single white pixel, so the shader never needs a branch and an
+// untextured surface is its colour times one.
+@group(1) @binding(0) var surface_texture: texture_2d<f32>;
+@group(1) @binding(1) var surface_sampler: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -42,6 +48,7 @@ struct VertexOutput {
     @location(1) normal: vec3<f32>,
     @location(2) base_color: vec3<f32>,
     @location(3) unlit: f32,
+    @location(4) uv: vec2<f32>,
 };
 
 /// The depth-only pass, seen from the sun.
@@ -102,6 +109,7 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
     out.base_color = in.color_and_shading.rgb;
     out.unlit = in.color_and_shading.w;
+    out.uv = in.uv;
     return out;
 }
 
@@ -117,7 +125,9 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     let sky_amount = normal.y * 0.5 + 0.5;
     let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, sky_amount);
 
-    var color = in.base_color * (ambient + frame.sun_color.rgb * lambert);
+    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
+    let albedo = in.base_color * sampled.rgb;
+    var color = albedo * (ambient + frame.sun_color.rgb * lambert);
 
     let distance = length(in.world_position - frame.camera_position.xyz);
     let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
@@ -128,5 +138,5 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
-    return vec4<f32>(mix(color, in.base_color, in.unlit), 1.0);
+    return vec4<f32>(mix(color, albedo, in.unlit), 1.0);
 }

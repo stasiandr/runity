@@ -22,13 +22,26 @@
 
 use glam::{Mat4, Vec3};
 
-use crate::asset::ArchivedMeshAsset;
+use crate::asset::{ArchivedMeshAsset, ArchivedTextureAsset};
 use crate::gpu::{Gpu, OffscreenTarget};
 use crate::material::{Material, Shading};
 
 /// A mesh that lives on the GPU. Opaque on purpose — the index is ours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MeshHandle(u32);
+
+/// An image that lives on the GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TextureHandle(u32);
+
+impl TextureHandle {
+    /// The one every renderer has: a single white pixel.
+    ///
+    /// It exists so the shader always samples something and never needs a
+    /// branch, and so an untextured material is a colour times one rather
+    /// than a second pipeline.
+    pub const WHITE: TextureHandle = TextureHandle(0);
+}
 
 impl MeshHandle {
     /// A handle that refers to nothing, for tests that build a draw list
@@ -167,6 +180,9 @@ impl ShadowSettings {
 pub struct Draw {
     pub mesh: MeshHandle,
     pub transform: Mat4,
+    /// Multiplied by the material's colour. [`TextureHandle::WHITE`] leaves
+    /// the colour alone, which is what an untextured surface wants.
+    pub texture: TextureHandle,
     /// What the surface is made of. One mesh drawn with four materials is
     /// how four settlers get four shirts (`07-look.md`, "тинт инстанса").
     pub material: Material,
@@ -227,6 +243,10 @@ struct InstanceRaw {
     color_and_shading: [f32; 4],
 }
 
+struct GpuTexture {
+    bind_group: wgpu::BindGroup,
+}
+
 struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -257,6 +277,9 @@ pub struct Renderer {
     shadow_resolution: u32,
     format: wgpu::TextureFormat,
     meshes: Vec<GpuMesh>,
+    textures: Vec<GpuTexture>,
+    texture_layout: wgpu::BindGroupLayout,
+    texture_sampler: wgpu::Sampler,
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -344,11 +367,45 @@ impl Renderer {
         let bind_group =
             frame_bind_group(gpu, &layout, &frame_buffer, &shadow_map, &shadow_sampler);
 
+        let texture_layout =
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("surface texture"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
+        let texture_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("surface"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         let pipeline_layout = gpu
             .device
             .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("runity::render"),
-                bind_group_layouts: &[Some(&layout)],
+                bind_group_layouts: &[Some(&layout), Some(&texture_layout)],
                 immediate_size: 0,
             });
 
@@ -497,7 +554,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        Self {
+        let mut renderer = Self {
             pipeline,
             shadow_pipeline,
             layout,
@@ -513,7 +570,15 @@ impl Renderer {
             shadow_resolution,
             format,
             meshes: Vec::new(),
-        }
+            textures: Vec::new(),
+            texture_layout,
+            texture_sampler,
+        };
+
+        // Handle 0 is always the white pixel, so `TextureHandle::WHITE` is a
+        // constant rather than something every caller has to be handed.
+        renderer.upload_texture_rgba(gpu, 1, 1, &[255, 255, 255, 255], true);
+        renderer
     }
 
     /// Upload a mesh straight out of an imported asset.
@@ -559,6 +624,85 @@ impl Renderer {
         MeshHandle(self.meshes.len() as u32 - 1)
     }
 
+    /// Upload an image straight out of an imported asset.
+    pub fn upload_texture(&mut self, gpu: &Gpu, texture: &ArchivedTextureAsset) -> TextureHandle {
+        self.upload_texture_rgba(
+            gpu,
+            texture.width.to_native(),
+            texture.height.to_native(),
+            texture.pixels.as_slice(),
+            texture.srgb,
+        )
+    }
+
+    /// Upload raw RGBA8 pixels.
+    ///
+    /// `srgb` says whether the bytes are colour. A colour map is sRGB and has
+    /// to be decoded on the way in so that shading stays linear; a normal
+    /// map, a roughness map or a mask is not, and decoding one bends every
+    /// value in it.
+    pub fn upload_texture_rgba(
+        &mut self,
+        gpu: &Gpu,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+        srgb: bool,
+    ) -> TextureHandle {
+        let format = if srgb {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        } else {
+            wgpu::TextureFormat::Rgba8Unorm
+        };
+        let size = wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        };
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.width * 4),
+                rows_per_image: Some(size.height),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("surface texture"),
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                },
+            ],
+        });
+        self.textures.push(GpuTexture { bind_group });
+        TextureHandle(self.textures.len() as u32 - 1)
+    }
+
     /// Upload a mesh that is already in memory rather than in an asset.
     ///
     /// The builtins come this way. Everything else should go through the
@@ -575,13 +719,26 @@ impl Renderer {
     fn draw_batches<'pass>(
         &'pass self,
         pass: &mut wgpu::RenderPass<'pass>,
-        batches: &[(MeshHandle, Vec<InstanceRaw>)],
+        batches: &[((MeshHandle, TextureHandle), Vec<InstanceRaw>)],
+        textured: bool,
     ) {
         let mut first = 0u32;
-        for (handle, list) in batches {
+        for ((handle, texture), list) in batches {
             let Some(mesh) = self.meshes.get(handle.0 as usize) else {
                 continue;
             };
+            if textured {
+                // Falls back to white rather than skipping the draw: a
+                // missing texture should leave a flat-coloured object, not a
+                // hole where one used to be.
+                let bound = self
+                    .textures
+                    .get(texture.0 as usize)
+                    .or_else(|| self.textures.first());
+                if let Some(bound) = bound {
+                    pass.set_bind_group(1, &bound.bind_group, &[]);
+                }
+            }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
@@ -772,7 +929,7 @@ impl Renderer {
         // costs one call. A forest is the same tree over and over, so this is
         // not a micro-optimisation, it is the difference between one draw and
         // a thousand.
-        let mut batches: Vec<(MeshHandle, Vec<InstanceRaw>)> = Vec::new();
+        let mut batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
         for draw in &frame.draws {
             let unlit = match draw.material.shading {
                 Shading::Lit => 0.0,
@@ -782,9 +939,10 @@ impl Renderer {
                 model: draw.transform.to_cols_array_2d(),
                 color_and_shading: extend(draw.material.color(), unlit),
             };
-            match batches.iter_mut().find(|(mesh, _)| *mesh == draw.mesh) {
+            let key = (draw.mesh, draw.texture);
+            match batches.iter_mut().find(|(k, _)| *k == key) {
                 Some((_, list)) => list.push(raw),
-                None => batches.push((draw.mesh, vec![raw])),
+                None => batches.push((key, vec![raw])),
             }
         }
 
@@ -831,7 +989,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            self.draw_batches(&mut pass, &batches);
+            self.draw_batches(&mut pass, &batches, false);
         }
 
         {
@@ -865,7 +1023,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            self.draw_batches(&mut pass, &batches);
+            self.draw_batches(&mut pass, &batches, true);
         }
         gpu.queue.submit(Some(encoder.finish()));
     }

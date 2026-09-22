@@ -31,9 +31,31 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// refused with a sentence rather than a cast into nonsense.
 pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
-/// Bumped whenever an archived type below changes shape. An asset built by an
-/// older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 1;
+/// Bumped whenever an archived type below changes shape, or the header does.
+/// An asset built by an older importer is re-imported, never guessed at.
+pub const FORMAT_VERSION: u32 = 2;
+
+/// What kind of asset a file holds.
+///
+/// Stored in the header rather than inferred from the extension, because a
+/// library reads whatever is in a directory and casting a texture's bytes to
+/// a mesh is not an error any type system catches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AssetKind {
+    Mesh = 1,
+    Texture = 2,
+}
+
+impl AssetKind {
+    fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(AssetKind::Mesh),
+            2 => Some(AssetKind::Texture),
+            _ => None,
+        }
+    }
+}
 
 /// A stable name for an asset, assigned once at import and never reused.
 ///
@@ -157,6 +179,26 @@ impl Bounds {
     }
 }
 
+/// An image, ready to upload: straight RGBA8, one byte per channel.
+///
+/// Uncompressed for now. Block compression (BC7 on desktop, ASTC on mobile)
+/// is the obvious next step and belongs at import, where it is paid for once
+/// rather than every load — but it is a per-platform decision, and the
+/// pipeline has to exist before it is worth making.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct TextureAsset {
+    pub id: AssetId,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// `width * height * 4` bytes, top row first.
+    pub pixels: Vec<u8>,
+    /// Whether the values are sRGB-encoded. Colour maps are; normal maps,
+    /// roughness and masks are not, and sampling those through an sRGB view
+    /// bends every value in them.
+    pub srgb: bool,
+}
+
 /// A mesh, ready to upload.
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 pub struct MeshAsset {
@@ -181,6 +223,13 @@ pub enum AssetError {
         found: u32,
         expected: u32,
     },
+    /// The header names a kind this build does not know.
+    UnknownKind(u8),
+    /// Asked for one kind, the file holds another.
+    WrongKind {
+        found: AssetKind,
+        wanted: AssetKind,
+    },
     /// The body did not survive validation.
     Corrupt(String),
 }
@@ -194,6 +243,12 @@ impl std::fmt::Display for AssetError {
                 f,
                 "asset format v{found}, this build reads v{expected} — re-import it"
             ),
+            AssetError::UnknownKind(byte) => {
+                write!(f, "asset kind {byte} is not one this build knows")
+            }
+            AssetError::WrongKind { found, wanted } => {
+                write!(f, "asset holds a {found:?}, not a {wanted:?}")
+            }
             AssetError::Corrupt(e) => write!(f, "corrupt asset: {e}"),
         }
     }
@@ -212,7 +267,7 @@ impl From<std::io::Error> for AssetError {
 const HEADER: usize = 16;
 
 /// Serialize an asset into the bytes of a `.rasset` file.
-pub fn to_bytes<T>(value: &T) -> Result<Vec<u8>, AssetError>
+pub fn to_bytes<T>(value: &T, kind: AssetKind) -> Result<Vec<u8>, AssetError>
 where
     T: for<'a> Serialize<
         rkyv::api::high::HighSerializer<
@@ -227,15 +282,24 @@ where
     let mut out = Vec::with_capacity(HEADER + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    out.extend_from_slice(&[0u8; 4]);
+    out.push(kind as u8);
+    out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&body);
     Ok(out)
 }
 
+/// What kind of asset these bytes hold, from the header alone.
+pub fn kind_of(bytes: &[u8]) -> Result<AssetKind, AssetError> {
+    if bytes.len() < HEADER || bytes[..8] != MAGIC {
+        return Err(AssetError::BadMagic);
+    }
+    AssetKind::from_byte(bytes[12]).ok_or(AssetError::UnknownKind(bytes[12]))
+}
+
 /// Check the header and hand back the body, without touching it.
 ///
-/// Split out from [`load`] so that a caller who has mapped a file can
-/// validate the first sixteen bytes without paging in the rest.
+/// Split out so that a caller who has mapped a file can validate the first
+/// sixteen bytes without paging in the rest.
 pub fn split_header(bytes: &[u8]) -> Result<&[u8], AssetError> {
     if bytes.len() < HEADER || bytes[..8] != MAGIC {
         return Err(AssetError::BadMagic);
@@ -308,7 +372,7 @@ mod tests {
     #[test]
     fn an_asset_is_read_back_without_being_decoded() {
         let mesh = cube();
-        let bytes = to_bytes(&mesh).unwrap();
+        let bytes = to_bytes(&mesh, AssetKind::Mesh).unwrap();
         let archived = view::<MeshAsset>(&bytes).unwrap();
         assert_eq!(archived.vertices.len(), 8);
         assert_eq!(archived.name.as_str(), "cube");
@@ -339,7 +403,7 @@ mod tests {
 
     #[test]
     fn an_older_format_asks_for_a_re_import_instead_of_guessing() {
-        let mut bytes = to_bytes(&cube()).unwrap();
+        let mut bytes = to_bytes(&cube(), AssetKind::Mesh).unwrap();
         bytes[8] = 0; // pretend it was written by format v0
         match view::<MeshAsset>(&bytes) {
             Err(AssetError::Version { found, expected }) => {

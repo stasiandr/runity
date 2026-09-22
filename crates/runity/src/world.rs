@@ -7,7 +7,7 @@
 use hecs::World;
 
 use crate::material::Material;
-use crate::render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle};
+use crate::render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, TextureHandle};
 use crate::scene::{Body, Scene, Transform};
 
 /// Which mesh an entity draws with.
@@ -17,6 +17,14 @@ pub struct Model(pub MeshHandle);
 /// What the entity's surface is made of.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Surface(pub Material);
+
+/// The image on an entity's surface, already uploaded.
+///
+/// Separate from [`Surface`] because a material is data a scene can hold and
+/// a handle is not: one survives a save, the other is valid only for the
+/// renderer that issued it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Textured(pub crate::render::TextureHandle);
 
 /// Where an entity ends up in the world, with its parents already applied.
 ///
@@ -163,10 +171,14 @@ pub fn apply_hierarchy(world: &mut World) {
 /// Collect everything drawable in the world into a frame.
 pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSettings) -> Frame {
     let mut draws = Vec::new();
-    for (placed, model, surface) in world.query::<(&WorldTransform, &Model, &Surface)>().iter() {
+    for (placed, model, surface, textured) in world
+        .query::<(&WorldTransform, &Model, &Surface, Option<&Textured>)>()
+        .iter()
+    {
         draws.push(Draw {
             mesh: model.0,
             transform: placed.0,
+            texture: textured.map(|t| t.0).unwrap_or(TextureHandle::WHITE),
             material: surface.0,
         });
     }

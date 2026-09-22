@@ -22,7 +22,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use runity::asset::{AssetId, Bounds, MeshAsset, Submesh, Vertex};
+use runity::asset::{AssetId, AssetKind, Bounds, MeshAsset, Submesh, TextureAsset, Vertex};
 use serde::{Deserialize, Serialize};
 
 /// What the importer was told to do, stored beside its output.
@@ -39,6 +39,11 @@ pub struct ImportSettings {
     /// Recompute normals from the faces instead of trusting the file's.
     /// Needed for sources that carry none, which is most hand-made OBJ.
     pub recompute_normals: bool,
+    /// Whether an image holds colour, and so needs decoding from sRGB on
+    /// the way to the GPU. True for an albedo map; false for a normal map, a
+    /// roughness map or a mask, where decoding bends every value.
+    #[serde(default = "yes")]
+    pub srgb: bool,
     /// Move the mesh so its base sits at y = 0. A tree whose origin is in the
     /// middle of its trunk has to be placed by feel; one whose origin is at
     /// its foot can be dropped on the ground.
@@ -51,6 +56,7 @@ impl Default for ImportSettings {
             source: String::new(),
             scale: 1.0,
             recompute_normals: false,
+            srgb: true,
             origin_to_base: true,
         }
     }
@@ -75,6 +81,10 @@ impl ImportSettings {
         std::fs::write(path.as_ref(), ron::ser::to_string_pretty(self, pretty)?)?;
         Ok(())
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Where an import put its two files.
@@ -226,6 +236,34 @@ fn recompute_normals(vertices: &mut [Vertex], indices: &[u32]) {
     }
 }
 
+/// Read an image and build a texture asset from it.
+///
+/// Everything becomes RGBA8, including greyscale and palette images, because
+/// one layout on the GPU is worth more than the bytes a narrower one saves —
+/// and the place to save those bytes is block compression at import, not a
+/// second code path at load.
+pub fn texture_from_image(
+    path: impl AsRef<Path>,
+    settings: &ImportSettings,
+) -> Result<TextureAsset> {
+    let path = path.as_ref();
+    let image = image::open(path)
+        .with_context(|| format!("{}", path.display()))?
+        .to_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(TextureAsset {
+        id: AssetId::from_source(&settings.source, 0),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "texture".into()),
+        width,
+        height,
+        pixels: image.into_raw(),
+        srgb: settings.srgb,
+    })
+}
+
 /// Import one source file into `library`, writing both the asset and its
 /// sidecar.
 pub fn import_file(
@@ -241,8 +279,23 @@ pub fn import_file(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let mesh = match extension.as_str() {
-        "obj" => mesh_from_obj(source, &settings)?,
+    let (bytes, id, kind) = match extension.as_str() {
+        "obj" => {
+            let mesh = mesh_from_obj(source, &settings)?;
+            (
+                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                mesh.id,
+                AssetKind::Mesh,
+            )
+        }
+        "png" | "jpg" | "jpeg" | "tga" | "bmp" => {
+            let texture = texture_from_image(source, &settings)?;
+            (
+                runity::asset::to_bytes(&texture, AssetKind::Texture)?,
+                texture.id,
+                AssetKind::Texture,
+            )
+        }
         other => anyhow::bail!("no importer for .{other} yet"),
     };
 
@@ -253,11 +306,12 @@ pub fn import_file(
     let asset_path = library.join(format!("{stem}.rasset"));
     let sidecar_path = library.join(format!("{stem}.rimport"));
 
-    std::fs::write(&asset_path, runity::asset::to_bytes(&mesh)?)?;
+    std::fs::write(&asset_path, bytes)?;
     settings.save(&sidecar_path)?;
+    let _ = kind;
 
     Ok(Imported {
-        id: mesh.id,
+        id,
         asset: asset_path,
         sidecar: sidecar_path,
     })
@@ -348,6 +402,50 @@ f 1 4 3
 
         // And the sidecar says exactly how to build it again.
         assert_eq!(ImportSettings::load(&out.sidecar).unwrap(), settings);
+    }
+
+    #[test]
+    fn a_png_imports_as_a_texture_and_keeps_its_pixels() {
+        let dir = temp("texture");
+        // Two by two, one red pixel, so a flipped row or a swapped channel
+        // shows up as a different number rather than as nothing.
+        let path = dir.join("swatch.png");
+        let mut image = image::RgbaImage::new(2, 2);
+        image.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        image.save(&path).unwrap();
+
+        let out = import_file(
+            &path,
+            dir.join("library"),
+            ImportSettings::for_source("swatch.png"),
+        )
+        .unwrap();
+        let bytes = runity::asset::read(&out.asset).unwrap();
+        assert_eq!(
+            runity::asset::kind_of(&bytes).unwrap(),
+            runity::asset::AssetKind::Texture,
+            "the header says what it is, so a library never casts one for the other"
+        );
+        let texture = runity::asset::view::<runity::asset::TextureAsset>(&bytes).unwrap();
+        assert_eq!(texture.width.to_native(), 2);
+        assert_eq!(texture.pixels.len(), 16, "two by two, four bytes each");
+        assert_eq!(texture.pixels[0], 255, "the red pixel is first");
+        assert!(texture.srgb, "a colour map is sRGB unless told otherwise");
+    }
+
+    #[test]
+    fn a_mask_can_be_imported_without_being_treated_as_colour() {
+        let dir = temp("linear");
+        let path = dir.join("mask.png");
+        image::RgbaImage::new(1, 1).save(&path).unwrap();
+        let settings = ImportSettings {
+            srgb: false,
+            ..ImportSettings::for_source("mask.png")
+        };
+        let out = import_file(&path, dir.join("library"), settings).unwrap();
+        let bytes = runity::asset::read(&out.asset).unwrap();
+        let texture = runity::asset::view::<runity::asset::TextureAsset>(&bytes).unwrap();
+        assert!(!texture.srgb);
     }
 
     #[test]

@@ -11,6 +11,7 @@ repository.workspace = true
 # parser on a phone, no image decoder on the hot path.
 [dependencies]
 anyhow = "1.0.104"
+image = { version = "0.25.6", default-features = false, features = ["png"] }
 ron = "0.12.2"
 runity = { version = "0.1.0", path = "../runity" }
 serde = { version = "1.0.229", features = ["derive"] }

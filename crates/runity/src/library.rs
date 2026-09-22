@@ -13,11 +13,15 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::asset::{self, ArchivedMeshAsset, AssetError, AssetId, MeshAsset};
+use crate::asset::{
+    self, ArchivedMeshAsset, ArchivedTextureAsset, AssetError, AssetId, AssetKind, MeshAsset,
+    TextureAsset,
+};
 
 /// One asset's bytes, plus where they came from.
 struct Entry {
     bytes: Vec<u8>,
+    kind: AssetKind,
     path: PathBuf,
     /// The file stem, which is what a hand-written scene uses to name a model
     /// before an editor exists to write ids.
@@ -63,7 +67,11 @@ impl Library {
     pub fn add(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
         let path = path.as_ref();
         let bytes = asset::read(path)?;
-        let id = AssetId::from(&asset::view::<MeshAsset>(&bytes)?.id);
+        let kind = asset::kind_of(&bytes)?;
+        let id = match kind {
+            AssetKind::Mesh => AssetId::from(&asset::view::<MeshAsset>(&bytes)?.id),
+            AssetKind::Texture => AssetId::from(&asset::view::<TextureAsset>(&bytes)?.id),
+        };
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -72,6 +80,7 @@ impl Library {
         let index = self.entries.len();
         self.entries.push(Entry {
             bytes,
+            kind,
             path: path.to_path_buf(),
             name: name.clone(),
         });
@@ -90,7 +99,20 @@ impl Library {
 
     pub fn mesh(&self, id: AssetId) -> Option<&ArchivedMeshAsset> {
         let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        asset::view::<MeshAsset>(&entry.bytes).ok()
+        (entry.kind == AssetKind::Mesh).then(|| asset::view::<MeshAsset>(&entry.bytes).ok())?
+    }
+
+    pub fn texture(&self, id: AssetId) -> Option<&ArchivedTextureAsset> {
+        let entry = self.entries.get(*self.by_id.get(&id)?)?;
+        (entry.kind == AssetKind::Texture)
+            .then(|| asset::view::<TextureAsset>(&entry.bytes).ok())?
+    }
+
+    /// Look a texture up by file stem.
+    pub fn texture_by_name(&self, name: &str) -> Option<&ArchivedTextureAsset> {
+        let entry = self.entries.get(*self.by_name.get(name)?)?;
+        (entry.kind == AssetKind::Texture)
+            .then(|| asset::view::<TextureAsset>(&entry.bytes).ok())?
     }
 
     /// Look an asset up by file stem.
@@ -100,14 +122,23 @@ impl Library {
     /// anything important takes.
     pub fn mesh_by_name(&self, name: &str) -> Option<&ArchivedMeshAsset> {
         let entry = self.entries.get(*self.by_name.get(name)?)?;
-        asset::view::<MeshAsset>(&entry.bytes).ok()
+        (entry.kind == AssetKind::Mesh).then(|| asset::view::<MeshAsset>(&entry.bytes).ok())?
     }
 
     pub fn id_by_name(&self, name: &str) -> Option<AssetId> {
         let entry = self.entries.get(*self.by_name.get(name)?)?;
-        asset::view::<MeshAsset>(&entry.bytes)
-            .ok()
-            .map(|m| AssetId::from(&m.id))
+        match entry.kind {
+            AssetKind::Mesh => asset::view::<MeshAsset>(&entry.bytes)
+                .ok()
+                .map(|m| AssetId::from(&m.id)),
+            AssetKind::Texture => asset::view::<TextureAsset>(&entry.bytes)
+                .ok()
+                .map(|t| AssetId::from(&t.id)),
+        }
+    }
+
+    pub fn kind(&self, id: AssetId) -> Option<AssetKind> {
+        Some(self.entries.get(*self.by_id.get(&id)?)?.kind)
     }
 
     pub fn path(&self, id: AssetId) -> Option<&Path> {
