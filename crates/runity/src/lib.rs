@@ -38,7 +38,7 @@ pub use library::Library;
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};
-pub use physics::{BodyHandle, PhysicsWorld};
+pub use physics::{BodyHandle, CharacterMove, CharacterSettings, PhysicsWorld, RayHit};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
