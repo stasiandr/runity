@@ -44,6 +44,10 @@ pub struct Parent(pub hecs::Entity);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physics(pub Body);
 
+/// The shape physics sees, kept from the scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape(pub crate::scene::Collider);
+
 /// What could not be spawned, and why. Returned rather than logged: a missing
 /// model is a fact the editor wants to show next to the entity, not a line in
 /// a terminal nobody is reading.
@@ -96,6 +100,7 @@ fn spawn_subtree(
         desc.transform,
         WorldTransform(world_matrix),
         Physics(desc.body),
+        Shape(desc.collider),
     ));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
@@ -206,6 +211,7 @@ mod tests {
             transform: Transform::default(),
             material: Default::default(),
             body: Body::None,
+            collider: crate::scene::Collider::None,
             children: Vec::new(),
         }
     }
@@ -224,6 +230,7 @@ mod tests {
                     },
                     material: Default::default(),
                     body: Body::Static,
+                    collider: crate::scene::Collider::None,
                     children: Vec::new(),
                 })
                 .collect(),

@@ -62,6 +62,31 @@ impl Transform {
     }
 }
 
+/// The shape physics uses for an entity, which is not the mesh.
+///
+/// A collider is always a primitive here. Colliding against the triangles a
+/// thing is drawn from is available and almost always the wrong trade: it is
+/// slower, it cannot be a dynamic body at all in most engines, and a box
+/// around a crate behaves better than the crate's own bevelled corners.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum Collider {
+    #[default]
+    None,
+    /// Half the size on each axis, before the transform's scale.
+    Box {
+        half: Vec3,
+    },
+    Sphere {
+        radius: f32,
+    },
+    /// A cylinder with hemispherical caps: what a person is, because a box
+    /// catches on corners and a sphere rolls.
+    Capsule {
+        half_height: f32,
+        radius: f32,
+    },
+}
+
 /// How an entity takes part in the physics world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Body {
@@ -91,6 +116,11 @@ pub struct EntityDesc {
     pub material: MaterialRef,
     #[serde(default)]
     pub body: Body,
+    /// The shape physics sees. Without one, `body` does nothing: a thing can
+    /// be declared solid and still have no shape to be solid with, and
+    /// saying so in one place beats guessing a box from the mesh.
+    #[serde(default)]
+    pub collider: Collider,
     /// Things attached to this one. A child's transform is relative to its
     /// parent, so moving the parent moves the lot — which is what makes a
     /// cart with wheels, or a settler carrying a log, one thing to place
@@ -274,6 +304,7 @@ mod tests {
                 },
                 material: MaterialRef::Named("needle".into()),
                 body: Body::Static,
+                collider: Collider::None,
                 children: Vec::new(),
             }],
         };
