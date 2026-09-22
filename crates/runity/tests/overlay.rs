@@ -33,6 +33,7 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
             shadows: ShadowSettings::OFF,
             clear_color: Vec3::new(0.5, 0.0, 0.0),
             draws: Vec::new(),
+            overlay_draws: Vec::new(),
             poses: Vec::new(),
         },
     );
@@ -121,5 +122,87 @@ fn cyrillic_text_produces_glyphs() {
         changed > 100,
         "eleven Cyrillic letters at 28px should mark more than {changed} pixels; \
          a font that cannot shape them draws nothing and says nothing"
+    );
+}
+
+#[test]
+fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    // A wall right in front of the camera, and a small thing behind it.
+    // Drawn normally the small thing is invisible; as an overlay it is not.
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = runity::builtin::cube(1.0);
+    let mesh = renderer.upload_mesh_owned(&gpu, &cube);
+
+    let wall = runity::render::Draw {
+        mesh,
+        transform: runity::glam::Mat4::from_scale(Vec3::new(20.0, 20.0, 0.2)),
+        texture: runity::TextureHandle::WHITE,
+        material: runity::Material::new(0.05, 0.05, 0.05),
+        pose: None,
+    };
+    let behind = runity::render::Draw {
+        mesh,
+        transform: runity::glam::Mat4::from_translation(Vec3::new(0.0, 0.0, -4.0)),
+        texture: runity::TextureHandle::WHITE,
+        material: runity::Material {
+            base_color: [1.0, 0.3, 0.0],
+            shading: runity::Shading::Unlit,
+        },
+        pose: None,
+    };
+    let base = Frame {
+        camera: Camera {
+            position: Vec3::new(0.0, 0.0, 6.0),
+            target: Vec3::ZERO,
+            ..Camera::default()
+        },
+        lighting: Lighting::default(),
+        fog: FogSettings {
+            start: 1000.0,
+            end: 2000.0,
+            ..FogSettings::default()
+        },
+        shadows: ShadowSettings::OFF,
+        clear_color: Vec3::ZERO,
+        draws: vec![wall],
+        overlay_draws: Vec::new(),
+        poses: Vec::new(),
+    };
+
+    let hidden = Frame {
+        draws: vec![wall, behind],
+        ..base.clone()
+    };
+    renderer.render(&gpu, &target, &hidden);
+    let occluded = target.read_rgba(&gpu);
+
+    let shown = Frame {
+        overlay_draws: vec![behind],
+        ..base
+    };
+    renderer.render(&gpu, &target, &shown);
+    let overlaid = target.read_rgba(&gpu);
+
+    // Looking for the orange rather than for darkness: the wall is grey, not
+    // black, so "is it dark" would be testing the wall's material instead of
+    // the depth behaviour.
+    let orangeness = |pixels: &[u8]| {
+        let p = OffscreenTarget::pixel(pixels, WIDTH, WIDTH / 2, HEIGHT / 2);
+        p[0] as i32 - p[2] as i32
+    };
+    assert!(
+        orangeness(&occluded) < 10,
+        "drawn normally it is behind the wall, got {:?}",
+        OffscreenTarget::pixel(&occluded, WIDTH, WIDTH / 2, HEIGHT / 2)
+    );
+    assert!(
+        orangeness(&overlaid) > 150,
+        "as an overlay it shows through, got {:?}",
+        OffscreenTarget::pixel(&overlaid, WIDTH, WIDTH / 2, HEIGHT / 2)
     );
 }

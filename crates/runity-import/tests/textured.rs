@@ -54,6 +54,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
             material: runity::Material::new(1.0, 1.0, 1.0),
             pose: None,
         }],
+        overlay_draws: Vec::new(),
         poses: Vec::new(),
     };
     renderer.render(gpu, &target, &frame);

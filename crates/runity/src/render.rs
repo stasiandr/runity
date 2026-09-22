@@ -229,6 +229,14 @@ pub struct Frame {
     pub shadows: ShadowSettings,
     pub clear_color: Vec3,
     pub draws: Vec<Draw>,
+    /// Drawn after everything else with the depth test off, so they are
+    /// never hidden by the scene.
+    ///
+    /// For handles, outlines and anything else that is a tool rather than a
+    /// thing in the world. A gizmo half inside the object it sits on is the
+    /// reason this exists: you cannot grab what you cannot see, and burying
+    /// it is exactly what depth testing does.
+    pub overlay_draws: Vec<Draw>,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -244,6 +252,7 @@ impl Default for Frame {
             shadows: ShadowSettings::default(),
             clear_color: Vec3::new(0.62, 0.68, 0.74),
             draws: Vec::new(),
+            overlay_draws: Vec::new(),
             poses: Vec::new(),
         }
     }
@@ -324,6 +333,7 @@ pub struct Renderer {
     shadow_resolution: u32,
     format: wgpu::TextureFormat,
     skinned_pipeline: wgpu::RenderPipeline,
+    overlay_pipeline: wgpu::RenderPipeline,
     pose_layout: wgpu::BindGroupLayout,
     pose_bind_group: wgpu::BindGroup,
     poses: wgpu::Buffer,
@@ -698,6 +708,58 @@ impl Renderer {
                 cache: None,
             });
 
+        // The same shader and the same vertex layout, with the depth test
+        // turned off and depth writes suppressed — so an overlay neither
+        // hides behind the scene nor blocks anything drawn after it.
+        let overlay_pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("runity::overlay"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                            step_mode: wgpu::VertexStepMode::Vertex,
+                            attributes: &wgpu::vertex_attr_array![
+                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                            ],
+                        }),
+                        Some(wgpu::VertexBufferLayout {
+                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &wgpu::vertex_attr_array![
+                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                                6 => Float32x4, 7 => Float32x4
+                            ],
+                        }),
+                    ],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(format.into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(false),
+                    depth_compare: Some(wgpu::CompareFunction::Always),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         let instance_capacity = 256;
         let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
@@ -722,6 +784,7 @@ impl Renderer {
             shadow_resolution,
             format,
             skinned_pipeline,
+            overlay_pipeline,
             pose_layout,
             pose_bind_group,
             poses,
@@ -1225,7 +1288,8 @@ impl Renderer {
         let shadow_total: u64 = shadow_batches.iter().map(|(_, l)| l.len() as u64).sum();
         let total: u64 = shadow_total
             + batches.iter().map(|(_, l)| l.len() as u64).sum::<u64>()
-            + skinned_draws.len() as u64;
+            + skinned_draws.len() as u64
+            + frame.overlay_draws.len() as u64;
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1238,12 +1302,31 @@ impl Renderer {
         // Both sets share one buffer: the shadow pass's instances first, then
         // the colour pass's, which is why the colour pass draws from
         // `shadow_total` onward.
+        // Overlays are not culled and cast no shadow: they are tools, not
+        // things in the world.
+        let mut overlay_batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
+        for draw in &frame.overlay_draws {
+            let unlit = match draw.material.shading {
+                Shading::Lit => 0.0,
+                Shading::Unlit => 1.0,
+            };
+            push(
+                &mut overlay_batches,
+                (draw.mesh, draw.texture),
+                InstanceRaw {
+                    model: draw.transform.to_cols_array_2d(),
+                    color_and_shading: extend(draw.material.color(), unlit),
+                },
+            );
+        }
+
         let flat_colour_count: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
         let flat: Vec<InstanceRaw> = shadow_batches
             .iter()
             .chain(batches.iter())
             .flat_map(|(_, l)| l.iter().copied())
             .chain(skinned_draws.iter().map(|(_, _, _, raw)| *raw))
+            .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
             .collect();
         if !flat.is_empty() {
             gpu.queue
@@ -1375,6 +1458,13 @@ impl Renderer {
                     pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
                     instance += 1;
                 }
+            }
+
+            if !overlay_batches.is_empty() {
+                pass.set_pipeline(&self.overlay_pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                let base = shadow_total as u32 + flat_colour_count + skinned_draws.len() as u32;
+                self.draw_batches(&mut pass, &overlay_batches, base, true);
             }
         }
         gpu.queue.submit(Some(encoder.finish()));

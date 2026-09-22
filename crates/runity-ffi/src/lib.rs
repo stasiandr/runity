@@ -415,7 +415,7 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
                 arm
             }
         };
-        frame.draws.extend(runity::gizmo::draws(
+        frame.overlay_draws.extend(runity::gizmo::draws(
             arm,
             &editor.camera,
             &editor.gizmo_style,

@@ -6,11 +6,10 @@
 //! * a hit test, so a click picks one;
 //! * a drag solver, which turns mouse movement into motion along an axis.
 //!
-//! Known gap: the arms are depth-tested with the scene, so the part of an
-//! arm inside the object it sits on is hidden. Editors normally draw a gizmo
-//! with depth off so it is always whole. Picking is unaffected — the hit
-//! test is geometry against a ray, not a read of the depth buffer — so what
-//! this costs today is looks, not reach.
+//! The draws belong in [`crate::render::Frame::overlay_draws`], which is
+//! drawn with the depth test off. A gizmo half inside the object it sits on
+//! cannot be grabbed by anyone who cannot see it, and burying it is exactly
+//! what depth testing does.
 //!
 //! The solver does not follow the cursor. It finds the point on the axis
 //! closest to the ray under the cursor, and moves the object so that the

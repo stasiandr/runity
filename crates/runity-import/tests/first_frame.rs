@@ -127,6 +127,7 @@ fn a_source_model_becomes_a_frame() {
                 pose: None,
             },
         ],
+        overlay_draws: Vec::new(),
         poses: Vec::new(),
     };
     renderer.render(&gpu, &target, &frame);

@@ -215,6 +215,7 @@ pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSe
         fog,
         shadows: crate::render::ShadowSettings::default(),
         draws,
+        overlay_draws: Vec::new(),
         poses,
     }
 }

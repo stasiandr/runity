@@ -53,6 +53,7 @@ fn shoot(
             material: runity::Material::new(1.0, 1.0, 1.0),
             pose: pose.as_ref().map(|_| 0),
         }],
+        overlay_draws: Vec::new(),
         poses: pose.into_iter().collect(),
     };
     renderer.render(gpu, &target, &frame);
