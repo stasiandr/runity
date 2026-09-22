@@ -203,8 +203,8 @@ impl PhysicsWorld {
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
         let mut moved: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
-        for (entity, handle, physics) in world
-            .query::<(hecs::Entity, &BodyHandle, &Physics)>()
+        for (entity, handle, physics, placed) in world
+            .query::<(hecs::Entity, &BodyHandle, &Physics, &WorldTransform)>()
             .iter()
         {
             if physics.0 != Body::Dynamic {
@@ -225,9 +225,15 @@ impl PhysicsWorld {
                 position.rotation.k,
                 position.rotation.w,
             );
+            // Rapier knows where a body is and how it is turned; it does not
+            // know how big the thing being drawn is, because scale lives in
+            // the collider's shape rather than the body. Keeping the
+            // entity's own scale is the difference between a crate falling
+            // and a crate falling while shrinking to a unit cube.
+            let (scale, _, _) = placed.0.to_scale_rotation_translation();
             moved.push((
                 entity,
-                glam::Mat4::from_scale_rotation_translation(Vec3::ONE, rotation, translation),
+                glam::Mat4::from_scale_rotation_translation(scale, rotation, translation),
             ));
         }
         for (entity, matrix) in moved {
@@ -438,6 +444,56 @@ mod tests {
         assert!(
             (y - 0.6).abs() < 0.05,
             "the ball should come to rest on the floor, got y = {y}"
+        );
+    }
+
+    #[test]
+    fn a_falling_thing_keeps_the_size_the_scene_gave_it() {
+        // Rapier knows where a body is, not how big the thing drawn from it
+        // is — scale lives in the collider's shape. Taking the position back
+        // without the scale makes everything dynamic snap to a unit cube on
+        // the first step, which reads as the physics being wrong.
+        let scene = Scene {
+            entities: vec![crate::EntityDesc {
+                name: "boulder".into(),
+                model: "m".into(),
+                prefab: String::new(),
+                transform: crate::Transform {
+                    position: Vec3::new(0.0, 4.0, 0.0),
+                    scale: Vec3::splat(3.0),
+                    ..Default::default()
+                },
+                material: Default::default(),
+                body: Body::Dynamic,
+                collider: ColliderShape::Sphere { radius: 0.5 },
+                children: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.sync_from_world(&mut world);
+        for _ in 0..30 {
+            physics.step();
+        }
+        physics.sync_to_world(&mut world);
+
+        let placed = world
+            .query::<(&WorldTransform, &Physics)>()
+            .iter()
+            .map(|(placed, _)| placed.0)
+            .next()
+            .unwrap();
+        let (scale, _, translation) = placed.to_scale_rotation_translation();
+        assert!(
+            translation.y < 3.9,
+            "it should have fallen, y = {}",
+            translation.y
+        );
+        assert!(
+            (scale - Vec3::splat(3.0)).length() < 1e-3,
+            "and kept its size, got {scale}"
         );
     }
 

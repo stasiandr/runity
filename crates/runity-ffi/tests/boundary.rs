@@ -189,6 +189,11 @@ fn every_call_survives_a_null_editor() {
         assert_eq!(runity_editor_palette_count(null), 0);
         assert_eq!(runity_editor_prefab_count(null), 0);
         assert!(!runity_editor_set_tool(null, 1));
+        assert!(!runity_editor_play(null));
+        assert_eq!(runity_editor_step(null, 0.016), 0);
+        assert!(!runity_editor_stop(null));
+        assert!(!runity_editor_is_playing(null));
+        assert!(!runity_editor_world_position(null, 0, std::ptr::null_mut()));
         assert_eq!(runity_editor_tool(null), 0);
         assert_eq!(runity_editor_add_instance(null, -1, std::ptr::null()), -1);
         assert!(!runity_editor_make_prefab(null, 0, std::ptr::null()));
@@ -904,4 +909,108 @@ fn the_scale_tool_stretches_one_axis_and_leaves_the_rest() {
         [0.0, 0.5, 0.0],
         "and it did not move"
     );
+}
+
+/// A scene with something to drop: a floor, and a crate above it.
+const FALLING: &str = r#"(
+    entities: [
+        (name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
+         body: Static, collider: Box(half: (10.0, 0.05, 10.0))),
+        (name: "crate", model: "builtin:cube", transform: (position: (0.0, 4.0, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+    ],
+)"#;
+
+fn falling_scene(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("runity-ffi-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scene.ron");
+    std::fs::write(&path, FALLING).unwrap();
+    path
+}
+
+/// Where an entity actually is in the world, which during play is not what
+/// the document says.
+fn drawn_height(editor: *mut Editor) -> f32 {
+    let mut three = [0.0f32; 3];
+    assert!(unsafe { runity_editor_world_position(editor, 1, three.as_mut_ptr()) });
+    three[1]
+}
+
+#[test]
+fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
+    let editor = unsafe { runity_editor_create_offscreen(192, 128) };
+    if editor.is_null() {
+        return;
+    }
+    let editor = Handle(editor);
+    let path = falling_scene("play");
+    assert!(unsafe { runity_editor_open_scene(editor.0, c(&path).as_ptr()) });
+    assert!(!unsafe { runity_editor_is_playing(editor.0) });
+
+    let before = drawn_height(editor.0);
+    assert!(
+        (before - 4.0).abs() < 1e-3,
+        "it starts up in the air: {before}"
+    );
+
+    assert!(unsafe { runity_editor_play(editor.0) });
+    assert!(unsafe { runity_editor_is_playing(editor.0) });
+
+    // Two seconds of frames. The count of fixed steps is what the engine
+    // decides, not what the host asks for: sixty a second at the default
+    // rate.
+    let mut steps = 0;
+    for _ in 0..120 {
+        steps += unsafe { runity_editor_step(editor.0, 1.0 / 60.0) };
+    }
+    assert!(
+        (100..=140).contains(&steps),
+        "about two seconds of fixed steps, got {steps}"
+    );
+
+    let landed = drawn_height(editor.0);
+    assert!(
+        (landed - 0.55).abs() < 0.2,
+        "the crate should be resting on the floor, got {landed}"
+    );
+
+    // The document never moved: play is a preview, not an edit.
+    let mut nine = [0.0f32; 9];
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    assert!(
+        (nine[1] - 4.0).abs() < 1e-3,
+        "the file still says 4: {}",
+        nine[1]
+    );
+    assert!(
+        !unsafe { runity_editor_can_undo(editor.0) },
+        "and nothing to undo"
+    );
+
+    // Editing while playing is refused rather than thrown away later.
+    let values: [f32; 9] = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+    assert!(!unsafe { runity_editor_set_transform(editor.0, 1, values.as_ptr()) });
+    let mut message = vec![0u8; 256];
+    unsafe { runity_last_error(message.as_mut_ptr() as *mut c_char, 256) };
+    let message = String::from_utf8_lossy(&message);
+    assert!(message.contains("playing"), "it should say why: {message}");
+
+    assert!(unsafe { runity_editor_stop(editor.0) });
+    assert!(!unsafe { runity_editor_is_playing(editor.0) });
+    let back = drawn_height(editor.0);
+    assert!((back - 4.0).abs() < 1e-3, "back up in the air: {back}");
+    assert_eq!(
+        unsafe { runity_editor_step(editor.0, 0.1) },
+        0,
+        "and stopped"
+    );
+
+    // Editing works again, and stopping did not cost a step of real history.
+    assert!(unsafe { runity_editor_set_transform(editor.0, 1, values.as_ptr()) });
+    assert!(unsafe { runity_editor_can_undo(editor.0) });
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    assert!((nine[1] - 4.0).abs() < 1e-3);
 }

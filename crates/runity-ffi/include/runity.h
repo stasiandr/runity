@@ -89,6 +89,14 @@ bool runity_editor_set_transform(RunityEditor *editor,
                                  unsigned int index,
                                  const float *nine);
 
+/* Where the entity actually is, in world space. Not the same as its
+ * transform, which is local and belongs to the file: this is where it ends
+ * up once its parents — and, while play is running, the simulation — have
+ * had their say. */
+bool runity_editor_world_position(RunityEditor *editor,
+                                  unsigned int index,
+                                  float *out_three);
+
 /* --- prefabs -------------------------------------------------------- */
 
 /* A prefab is one entity subtree in its own file, and a scene points at it
@@ -207,6 +215,23 @@ bool runity_editor_undo(RunityEditor *editor);
 bool runity_editor_redo(RunityEditor *editor);
 bool runity_editor_can_undo(RunityEditor *editor);
 bool runity_editor_can_redo(RunityEditor *editor);
+
+/* --- play mode ------------------------------------------------------ */
+
+/* Simulate the scene instead of editing it. The document is kept aside and
+ * put back when play stops, so a thing that fell over stays fallen only
+ * while you are watching it.
+ *
+ * The engine owns no loop: step it with however long your frame took, in
+ * seconds, and it decides how many fixed steps that is worth — zero on a
+ * fast frame, several on a slow one. The count is what comes back.
+ *
+ * Editing while playing is refused with a message rather than allowed and
+ * thrown away on stop, which is the version people lose an hour to. */
+bool runity_editor_play(RunityEditor *editor);
+unsigned int runity_editor_step(RunityEditor *editor, float seconds);
+bool runity_editor_stop(RunityEditor *editor);
+bool runity_editor_is_playing(RunityEditor *editor);
 
 /* --- the view ------------------------------------------------------- */
 

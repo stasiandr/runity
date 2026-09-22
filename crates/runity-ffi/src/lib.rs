@@ -70,6 +70,26 @@ pub struct Editor {
     drag_from: Option<runity::Transform>,
     /// A unit cube, uploaded once, that the gizmo's three arms are made of.
     gizmo_arm: Option<MeshHandle>,
+    /// Set while the scene is being simulated rather than edited.
+    play: Option<Play>,
+}
+
+/// What play mode holds while it runs.
+///
+/// The engine is a guest, so this does not own a loop or a thread: the host
+/// calls [`runity_editor_step`] with however long its frame took, and the
+/// clock inside decides how many fixed steps that is worth. An editor that
+/// started a thread here would be an editor whose simulation kept running
+/// while a modal dialog was open.
+struct Play {
+    physics: runity::PhysicsWorld,
+    clock: runity::Time,
+    /// The document as it was when play began, restored when it stops.
+    ///
+    /// Play mode is a preview. Unity lets you edit while it runs and throws
+    /// the changes away when you stop, which is famous for losing an hour's
+    /// work; here an edit is refused with a sentence instead.
+    before: Scene,
 }
 
 thread_local! {
@@ -174,6 +194,7 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         drag: None,
         drag_from: None,
         gizmo_arm: None,
+        play: None,
     }))
 }
 
@@ -239,6 +260,7 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             drag: None,
             drag_from: None,
             gizmo_arm: None,
+            play: None,
         }));
     }
     #[cfg(not(target_os = "macos"))]
@@ -485,6 +507,10 @@ pub unsafe extern "C" fn runity_editor_set_transform(
     // Recorded: a value typed into an inspector is one undoable edit. A
     // drag is not, because `gizmo_begin` already took the snapshot that
     // covers the whole gesture.
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let scene = editor.history.edit();
     let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
         return false;
@@ -561,6 +587,10 @@ pub unsafe extern "C" fn runity_editor_capture_camera(editor: *mut Editor) -> bo
         return false;
     };
     let view = runity::captured_view(&editor.camera);
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     editor.history.edit().view = view;
     true
 }
@@ -789,6 +819,10 @@ pub unsafe extern "C" fn runity_editor_gizmo_begin(
     };
     // One snapshot for the whole gesture: everything until the next one
     // undoes as a single step, however many frames the drag lasts.
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return -1;
+    }
     editor.history.snapshot();
     editor.drag_from = editor.selected.and_then(|index| {
         editor
@@ -834,6 +868,10 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
     let parent = editor.parent_matrix(index);
     let started = editor.drag_from;
     // Untracked: the snapshot for this gesture was taken at `gizmo_begin`.
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let Some(desc) = runity::edit::nth_mut(editor.history.scene_mut_untracked(), index) else {
         return false;
     };
@@ -946,6 +984,10 @@ pub unsafe extern "C" fn runity_editor_add(
         children: Vec::new(),
     };
     let parent = (parent >= 0).then_some(parent as usize);
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return -1;
+    }
     let scene = editor.history.edit();
     let Some(index) = runity::edit::add(scene, parent, desc) else {
         return -1;
@@ -1029,6 +1071,10 @@ pub unsafe extern "C" fn runity_editor_set_material(
     // One undoable step, like a value typed into an inspector. A drag along
     // a colour slider that wants to be one step takes its own snapshot the
     // way a gizmo drag does.
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let scene = editor.history.edit();
     let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
         return false;
@@ -1093,6 +1139,10 @@ pub unsafe extern "C" fn runity_editor_set_material_name(
         return false;
     }
     let name = name.to_string();
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let scene = editor.history.edit();
     let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
         return false;
@@ -1303,6 +1353,10 @@ pub unsafe extern "C" fn runity_editor_add_instance(
         ..Default::default()
     };
     let parent = (parent >= 0).then_some(parent as usize);
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return -1;
+    }
     let Some(index) = runity::edit::add(editor.history.edit(), parent, desc) else {
         return -1;
     };
@@ -1328,6 +1382,10 @@ pub unsafe extern "C" fn runity_editor_make_prefab(
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return false;
     };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let Some(name) = (unsafe { path_from(name) }) else {
         fail("no name");
         return false;
@@ -1371,6 +1429,10 @@ pub unsafe extern "C" fn runity_editor_make_prefab(
 
     // The entity becomes an instance: its children now live in the file, and
     // leaving a copy of them in the scene is how the two start to drift.
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let scene = editor.history.edit();
     let Some(entity) = runity::edit::nth_mut(scene, index as usize) else {
         return false;
@@ -1382,6 +1444,125 @@ pub unsafe extern "C" fn runity_editor_make_prefab(
     true
 }
 
+/// Where an entity actually is: three floats, in world space.
+///
+/// Not the same as its transform. The transform is local and belongs to the
+/// file; this is where the thing ends up once its parents — and, while play
+/// is running, the simulation — have had their say. An inspector that showed
+/// only the local one would say a falling crate is still four metres up.
+///
+/// # Safety
+/// `out_three` must be writable for three floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_world_position(
+    editor: *mut Editor,
+    index: c_uint,
+    out_three: *mut c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out_three.is_null() {
+        return false;
+    }
+    let Some(position) = editor.world_position(index as usize) else {
+        return false;
+    };
+    let values = position.to_array();
+    unsafe { ptr::copy_nonoverlapping(values.as_ptr(), out_three, 3) };
+    true
+}
+
+/// Start simulating the scene.
+///
+/// The document is kept aside and restored when play stops, so a thing that
+/// fell over stays fallen only as long as you are watching it.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_play(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if editor.play.is_some() {
+        return true;
+    }
+    let fixed = runity::TimeSettings::default().fixed_delta;
+    let mut physics = runity::PhysicsWorld::new(fixed);
+    // Built from the world rather than the scene, so what is simulated is
+    // exactly what is drawn — prefabs already expanded, hierarchy already
+    // applied.
+    physics.sync_from_world(&mut editor.world);
+    editor.play = Some(Play {
+        physics,
+        clock: runity::Time::new(runity::TimeSettings::default()),
+        before: editor.history.scene().clone(),
+    });
+    editor.drag = None;
+    editor.drag_from = None;
+    true
+}
+
+/// Advance the simulation by however long the host's frame took, in seconds.
+///
+/// Returns how many fixed steps were taken, which can be zero on a fast
+/// frame and several on a slow one. Nothing happens unless play has started.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_step(editor: *mut Editor, seconds: c_float) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let Some(play) = editor.play.as_mut() else {
+        return 0;
+    };
+    play.clock.advance(seconds.max(0.0));
+    let mut steps = 0;
+    while play.clock.next_step().is_some() {
+        play.physics.step();
+        steps += 1;
+    }
+    if steps > 0 {
+        play.physics.sync_to_world(&mut editor.world);
+    }
+    // Animation runs on the frame rather than the step: a pose interpolates
+    // and does not need to be deterministic the way a solver does.
+    runity::advance_animations(&mut editor.world, seconds.max(0.0));
+    steps
+}
+
+/// Stop simulating and put the scene back as it was.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_stop(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let Some(play) = editor.play.take() else {
+        return false;
+    };
+    // Untracked: starting and stopping a preview is not something to undo,
+    // and putting it on the stack would mean pressing play cost a step of
+    // real editing history.
+    *editor.history.scene_mut_untracked() = play.before;
+    editor.respawn();
+    true
+}
+
+/// Whether the scene is being simulated.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_is_playing(editor: *mut Editor) -> bool {
+    unsafe { borrow(editor) }.is_some_and(|e| e.play.is_some())
+}
+
 /// Delete an entity and everything under it.
 ///
 /// # Safety
@@ -1391,6 +1572,10 @@ pub unsafe extern "C" fn runity_editor_delete(editor: *mut Editor, index: c_uint
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return false;
     };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let removed = runity::edit::remove(editor.history.edit(), index as usize).is_some();
     if removed {
         // The selection is an index into a list that just changed shape.
@@ -1411,6 +1596,10 @@ pub unsafe extern "C" fn runity_editor_duplicate(editor: *mut Editor, index: c_u
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return -1;
     };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return -1;
+    }
     let Some(copy) = runity::edit::duplicate(editor.history.edit(), index as usize) else {
         return -1;
     };
@@ -1434,6 +1623,10 @@ pub unsafe extern "C" fn runity_editor_reparent(
         return false;
     };
     let parent = (new_parent >= 0).then_some(new_parent as usize);
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let moved = runity::edit::reparent(editor.history.edit(), index as usize, parent);
     if moved {
         editor.selected = None;
@@ -1451,6 +1644,10 @@ pub unsafe extern "C" fn runity_editor_undo(editor: *mut Editor) -> bool {
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return false;
     };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let stepped = editor.history.undo();
     if stepped {
         editor.selected = None;
@@ -1469,6 +1666,10 @@ pub unsafe extern "C" fn runity_editor_redo(editor: *mut Editor) -> bool {
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return false;
     };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
     let stepped = editor.history.redo();
     if stepped {
         editor.selected = None;
@@ -1539,6 +1740,39 @@ impl Editor {
             },
             |name| library?.material_by_name(name),
         );
+    }
+
+    fn playing(&self) -> bool {
+        self.play.is_some()
+    }
+
+    /// Where the entity at a document index has ended up.
+    ///
+    /// Read out of the world rather than off the scene, because the world is
+    /// what the simulation moves. The first spawned entity belonging to that
+    /// row is the answer: for an instance that is the prefab's root, which
+    /// is the thing the row stands for.
+    fn world_position(&self, index: usize) -> Option<Vec3> {
+        let mut best: Option<(usize, Vec3)> = None;
+        for (scene_index, placed) in self
+            .world
+            .query::<(&runity::SceneIndex, &runity::world::WorldTransform)>()
+            .iter()
+        {
+            let row = self
+                .instanced
+                .source
+                .get(scene_index.0)
+                .copied()
+                .unwrap_or(scene_index.0);
+            if row != index {
+                continue;
+            }
+            if best.is_none_or(|(first, _)| scene_index.0 < first) {
+                best = Some((scene_index.0, placed.0.w_axis.truncate()));
+            }
+        }
+        best.map(|(_, position)| position)
     }
 
     /// The material an entity is actually drawn with.
