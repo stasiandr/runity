@@ -488,6 +488,30 @@ pub fn update(drag: &Drag, ray_origin: Vec3, ray_direction: Vec3) -> Vec3 {
     drag.origin + axis * (along - drag.grab_offset)
 }
 
+/// Round a value to the nearest multiple of `step`, or leave it alone when
+/// `step` is zero or less.
+///
+/// The thing snapping is for: a wall laid out by eye is a wall with a
+/// half-centimetre gap in it, and the gap is invisible until something walks
+/// through it. Applied to the *result* rather than to the movement, so a
+/// drag lands on the grid rather than on wherever it started plus a whole
+/// number of steps.
+pub fn snap(value: f32, step: f32) -> f32 {
+    if step <= 0.0 || !step.is_finite() {
+        return value;
+    }
+    (value / step).round() * step
+}
+
+/// Snap each component of a vector.
+pub fn snap_all(value: Vec3, step: f32) -> Vec3 {
+    Vec3::new(
+        snap(value.x, step),
+        snap(value.y, step),
+        snap(value.z, step),
+    )
+}
+
 /// Where a line and a ray come closest: how far along the line, and how far
 /// apart they are there.
 ///
@@ -754,6 +778,25 @@ mod tests {
                 "{tool:?} handles must not sink into a shadow"
             );
         }
+    }
+
+    #[test]
+    fn snapping_lands_on_the_grid_and_not_on_a_multiple_of_where_it_started() {
+        // Snapping the movement rather than the result is the version that
+        // feels right for one drag and leaves everything off-grid by the
+        // same stubborn fraction forever.
+        assert_eq!(snap(1.13, 0.25), 1.25);
+        assert_eq!(snap(-1.13, 0.25), -1.25);
+        assert_eq!(snap(0.1, 0.25), 0.0);
+        assert_eq!(
+            snap_all(Vec3::new(0.3, 2.61, -0.9), 0.5),
+            Vec3::new(0.5, 2.5, -1.0)
+        );
+        // Off, and nonsense, leave the value alone rather than making it
+        // NaN — a snap of zero is what "no snapping" is spelled as.
+        assert_eq!(snap(1.37, 0.0), 1.37);
+        assert_eq!(snap(1.37, -1.0), 1.37);
+        assert_eq!(snap(1.37, f32::NAN), 1.37);
     }
 
     #[test]

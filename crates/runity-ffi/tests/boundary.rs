@@ -190,6 +190,9 @@ fn every_call_survives_a_null_editor() {
         assert_eq!(runity_editor_prefab_count(null), 0);
         assert!(!runity_editor_set_tool(null, 1));
         assert!(!runity_editor_play(null));
+        assert!(!runity_editor_set_snap(null, 0.25, 15.0, 0.1));
+        assert!(!runity_editor_snap(null, std::ptr::null_mut()));
+        assert!(!runity_editor_focus_selected(null));
         assert_eq!(runity_editor_step(null, 0.016), 0);
         assert!(!runity_editor_stop(null));
         assert!(!runity_editor_is_playing(null));
@@ -1013,4 +1016,94 @@ fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
     assert!(unsafe { runity_editor_undo(editor.0) });
     assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
     assert!((nine[1] - 4.0).abs() < 1e-3);
+}
+
+#[test]
+fn a_drag_with_snapping_on_lands_on_the_grid() {
+    let Some((editor, _)) = open("snap") else {
+        return;
+    };
+    assert!(unsafe { runity_editor_select(editor.0, 1) });
+    assert!(unsafe { runity_editor_set_snap(editor.0, 0.5, 15.0, 0.25) });
+    let mut three = [0.0f32; 3];
+    assert!(unsafe { runity_editor_snap(editor.0, three.as_mut_ptr()) });
+    assert_eq!(three, [0.5, 15.0, 0.25]);
+
+    // Grab the X arm and drag it somewhere off-grid.
+    let eye = [0.0f32, 1.0, 6.0];
+    let at = [0.0f32, 0.5, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), at.as_ptr()) });
+    let width = unsafe { runity_editor_width(editor.0) };
+    let height = unsafe { runity_editor_height(editor.0) };
+    let (cx, cy) = (width / 2, height / 2);
+    let mut radius = 0;
+    for r in 4..(width / 2) {
+        if unsafe { runity_editor_gizmo_begin(editor.0, cx + r, cy) } == 0 {
+            radius = r;
+            break;
+        }
+    }
+    assert!(radius > 0, "the X arm is somewhere to the right of centre");
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, cx + radius + 37, cy) });
+    unsafe { runity_editor_gizmo_end(editor.0) };
+
+    let mut nine = [0.0f32; 9];
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    assert!(nine[0] != 0.0, "it should have moved at all: {nine:?}");
+    assert!(
+        (nine[0] / 0.5 - (nine[0] / 0.5).round()).abs() < 1e-4,
+        "x should be a multiple of half a metre, got {}",
+        nine[0]
+    );
+    // And the other two are still exactly where they were: snapping must
+    // not drag an untouched axis onto the grid behind your back.
+    assert_eq!((nine[1], nine[2]), (0.5, 0.0));
+}
+
+#[test]
+fn focusing_frames_the_selection_whatever_size_it_is() {
+    let Some((editor, _)) = open("focus") else {
+        return;
+    };
+    // Start looking somewhere else entirely.
+    let away = [40.0f32, 30.0, 40.0];
+    let at = [40.0f32, 0.0, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, away.as_ptr(), at.as_ptr()) });
+    assert!(
+        !unsafe { runity_editor_focus_selected(editor.0) },
+        "nothing selected, nothing to focus"
+    );
+
+    assert!(unsafe { runity_editor_select(editor.0, 1) });
+    assert!(unsafe { runity_editor_focus_selected(editor.0) });
+
+    let (mut eye, mut target) = ([0.0f32; 3], [0.0f32; 3]);
+    assert!(unsafe { runity_editor_get_camera(editor.0, eye.as_mut_ptr(), target.as_mut_ptr()) });
+    let mut three = [0.0f32; 3];
+    assert!(unsafe { runity_editor_world_position(editor.0, 1, three.as_mut_ptr()) });
+    assert_eq!(target, three, "it looks at the thing");
+
+    let distance = ((eye[0] - target[0]).powi(2)
+        + (eye[1] - target[1]).powi(2)
+        + (eye[2] - target[2]).powi(2))
+    .sqrt();
+    assert!(
+        (1.0..12.0).contains(&distance),
+        "a metre-wide crate should be framed from a few metres, got {distance}"
+    );
+
+    // The big one is framed from further away, which is the whole point of
+    // sizing it from what is selected.
+    let nine: [f32; 9] = [0.0, 5.0, 0.0, 0.0, 0.0, 0.0, 10.0, 10.0, 10.0];
+    assert!(unsafe { runity_editor_set_transform(editor.0, 1, nine.as_ptr()) });
+    assert!(unsafe { runity_editor_focus_selected(editor.0) });
+    assert!(unsafe { runity_editor_get_camera(editor.0, eye.as_mut_ptr(), target.as_mut_ptr()) });
+    let bigger = ((eye[0] - target[0]).powi(2)
+        + (eye[1] - target[1]).powi(2)
+        + (eye[2] - target[2]).powi(2))
+    .sqrt();
+    assert!(
+        bigger > distance * 3.0,
+        "ten times the size should be much further back: {distance} then {bigger}"
+    );
 }

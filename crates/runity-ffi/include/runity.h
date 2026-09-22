@@ -274,6 +274,19 @@ int runity_editor_selected(RunityEditor *editor);
 bool runity_editor_set_tool(RunityEditor *editor, int tool);
 int runity_editor_tool(RunityEditor *editor);
 
+/* The grid a drag lands on: metres, degrees, scale steps. Zero turns one
+ * off. Applied to the result, so a drag lands on the grid rather than on
+ * wherever it started plus a whole number of steps. */
+bool runity_editor_set_snap(RunityEditor *editor,
+                            float meters,
+                            float degrees,
+                            float scale_step);
+bool runity_editor_snap(RunityEditor *editor, float *out_three);
+
+/* Point the camera at the selection, close enough to fill the view. Sized
+ * from what is selected, so a boulder and a pebble both end up framed. */
+bool runity_editor_focus_selected(RunityEditor *editor);
+
 /* Which handle is under a point: 0 X, 1 Y, 2 Z, -1 none — an arm for move
  * and scale, a ring for rotate. `hover` only looks; `begin` grabs. */
 int runity_editor_gizmo_hover(RunityEditor *editor,

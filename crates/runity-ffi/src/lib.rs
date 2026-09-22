@@ -60,6 +60,8 @@ pub struct Editor {
     gizmo_style: GizmoStyle,
     /// Which handles are shown and what a drag does with them.
     tool: Tool,
+    /// Grid for a drag: metres, degrees, and scale steps. Zero means off.
+    snap: (f32, f32, f32),
     drag: Option<Drag>,
     /// The selected entity's transform when the drag began.
     ///
@@ -191,6 +193,7 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         selected: None,
         gizmo_style: GizmoStyle::default(),
         tool: Tool::default(),
+        snap: (0.0, 0.0, 0.0),
         drag: None,
         drag_from: None,
         gizmo_arm: None,
@@ -257,6 +260,7 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
+            snap: (0.0, 0.0, 0.0),
             drag: None,
             drag_from: None,
             gizmo_arm: None,
@@ -867,6 +871,7 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
     // parent by however much the parent is offset.
     let parent = editor.parent_matrix(index);
     let started = editor.drag_from;
+    let snap = editor.snap;
     // Untracked: the snapshot for this gesture was taken at `gizmo_begin`.
     if editor.playing() {
         fail("stop playing first — an edit made in play mode is an edit you lose");
@@ -877,7 +882,11 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
     };
     match motion {
         Motion::Position(moved) => {
-            desc.transform.position = parent.inverse().transform_point3(moved);
+            // Snapped in local space, which is the space the file holds and
+            // the space a person means: a child snapped in world space lands
+            // on a grid its parent is not on.
+            let local = parent.inverse().transform_point3(moved);
+            desc.transform.position = gizmo::snap_all(local, snap.0);
         }
         Motion::Rotation(delta) => {
             let Some(started) = started else {
@@ -889,12 +898,15 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
             let (_, parent_rotation, _) = parent.to_scale_rotation_translation();
             let local = parent_rotation.inverse() * delta * parent_rotation;
             desc.transform.set_rotation(local * started.rotation());
+            // Snapped as degrees, which is what the file holds and what an
+            // inspector shows; snapping a quaternion is not a thing.
+            desc.transform.rotation_deg = gizmo::snap_all(desc.transform.rotation_deg, snap.1);
         }
         Motion::Scale(factor) => {
             let Some(started) = started else {
                 return false;
             };
-            desc.transform.scale = started.scale * factor;
+            desc.transform.scale = gizmo::snap_all(started.scale * factor, snap.2);
         }
     }
     editor.respawn();
@@ -1444,6 +1456,83 @@ pub unsafe extern "C" fn runity_editor_make_prefab(
     true
 }
 
+/// Set the grid a drag lands on: metres, degrees, and scale steps.
+///
+/// Zero on any of them turns that one off. Applied to the result rather than
+/// to the movement, so a drag lands on the grid instead of on wherever it
+/// started plus a whole number of steps.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_snap(
+    editor: *mut Editor,
+    meters: c_float,
+    degrees: c_float,
+    scale_step: c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let sane = |v: c_float| if v.is_finite() && v > 0.0 { v } else { 0.0 };
+    editor.snap = (sane(meters), sane(degrees), sane(scale_step));
+    true
+}
+
+/// Read the grid back: metres, degrees, scale steps.
+///
+/// # Safety
+/// `out_three` must be writable for three floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_snap(editor: *mut Editor, out_three: *mut c_float) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out_three.is_null() {
+        return false;
+    }
+    let values = [editor.snap.0, editor.snap.1, editor.snap.2];
+    unsafe { ptr::copy_nonoverlapping(values.as_ptr(), out_three, 3) };
+    true
+}
+
+/// Point the camera at the selected entity, close enough to fill the view.
+///
+/// The one editor command nobody notices until it is missing: without it,
+/// selecting something in a list means hunting for it by flying around, and
+/// anything small enough to be hard to see is also too small to fly to.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_focus_selected(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let Some(index) = editor.selected else {
+        return false;
+    };
+    let Some(target) = editor.world_position(index) else {
+        return false;
+    };
+    // How big the thing is, so a boulder and a pebble both end up filling
+    // the frame rather than one of them being a dot.
+    let radius = editor.selected_radius(index).max(0.05);
+    let half_fov = (editor.camera.fov_y_degrees * 0.5).to_radians().max(1e-3);
+    // A little further than the geometry needs, so the thing is framed
+    // rather than touching the edges.
+    let distance = radius / half_fov.sin() * 1.3;
+    let back = (editor.camera.position - editor.camera.target).normalize_or_zero();
+    let back = if back.length_squared() < 1e-6 {
+        Vec3::new(0.0, 0.4, 1.0).normalize()
+    } else {
+        back
+    };
+    editor.camera.target = target;
+    editor.camera.position = target + back * distance;
+    true
+}
+
 /// Where an entity actually is: three floats, in world space.
 ///
 /// Not the same as its transform. The transform is local and belongs to the
@@ -1744,6 +1833,41 @@ impl Editor {
 
     fn playing(&self) -> bool {
         self.play.is_some()
+    }
+
+    /// How big the thing at a document index is, as a radius around it.
+    ///
+    /// Measured over the expanded subtree, so focusing on a campfire frames
+    /// the ring of stones rather than the patch of earth under it.
+    fn selected_radius(&self, index: usize) -> f32 {
+        let Some(centre) = self.world_position(index) else {
+            return 0.0;
+        };
+        let mut radius: f32 = 0.0;
+        for (i, (desc, world)) in self.instanced.scene.flatten().iter().enumerate() {
+            if self.instanced.source.get(i).copied().unwrap_or(i) != index {
+                continue;
+            }
+            let Some(bounds) = self.bounds_of(&desc.model) else {
+                continue;
+            };
+            let (low, high) = bounds;
+            for corner in 0..8u32 {
+                // Every corner of the box, transformed: the far corner of a
+                // rotated box is further away than the box's own extents
+                // suggest, and framing by extents alone clips it.
+                let pick = |axis: usize| {
+                    if corner & (1 << axis) == 0 {
+                        low[axis]
+                    } else {
+                        high[axis]
+                    }
+                };
+                let local = Vec3::new(pick(0), pick(1), pick(2));
+                radius = radius.max((world.transform_point3(local) - centre).length());
+            }
+        }
+        radius
     }
 
     /// Where the entity at a document index has ended up.
