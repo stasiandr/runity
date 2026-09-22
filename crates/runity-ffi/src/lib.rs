@@ -314,6 +314,11 @@ pub unsafe extern "C" fn runity_editor_open_scene(
     };
     match Scene::load(&path) {
         Ok(scene) => {
+            // The scene says where it is looked at from, and opening it puts
+            // the view there: a file that renders one way headlessly and
+            // opens pointing somewhere else in the editor is a file whose
+            // picture nobody can predict.
+            editor.camera = runity::scene_camera(&scene.view);
             editor.history.replace(scene);
             editor.scene_path = Some(path);
             editor.respawn();
@@ -474,6 +479,50 @@ pub unsafe extern "C" fn runity_editor_set_camera(
     let t = unsafe { std::slice::from_raw_parts(target, 3) };
     editor.camera.position = Vec3::new(e[0], e[1], e[2]);
     editor.camera.target = Vec3::new(t[0], t[1], t[2]);
+    true
+}
+
+/// Read the camera: eye xyz, then target xyz.
+///
+/// # Safety
+/// `out_eye` and `out_target` must each be writable for three floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_get_camera(
+    editor: *mut Editor,
+    out_eye: *mut c_float,
+    out_target: *mut c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out_eye.is_null() || out_target.is_null() {
+        return false;
+    }
+    let eye = editor.camera.position.to_array();
+    let target = editor.camera.target.to_array();
+    unsafe {
+        ptr::copy_nonoverlapping(eye.as_ptr(), out_eye, 3);
+        ptr::copy_nonoverlapping(target.as_ptr(), out_target, 3);
+    }
+    true
+}
+
+/// Write where the editor is looking into the scene, as one undoable step.
+///
+/// Separate from [`runity_editor_set_camera`] on purpose: flying around is
+/// not an edit, and a scene that changed every time someone looked at it
+/// from a different angle would produce a diff on every open. Saving the
+/// viewpoint is a decision, so it is a call.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_capture_camera(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let view = runity::captured_view(&editor.camera);
+    editor.history.edit().view = view;
     true
 }
 

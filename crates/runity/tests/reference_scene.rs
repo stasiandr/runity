@@ -67,11 +67,10 @@ fn shoot_with(gpu: &Gpu, scene: &Scene, sun_direction: Vec3, shadows: ShadowSett
 
     let mut frame = runity::build_frame(
         &world,
-        Camera {
-            position: Vec3::new(0.0, 3.4, 12.0),
-            target: Vec3::new(0.0, 1.4, -4.0),
-            ..Camera::default()
-        },
+        // From the scene, not from here: the assertions below are about a
+        // framing, and a framing that lives in the test is one the file
+        // cannot be changed to match.
+        runity::scene_camera(&scene.view),
         Lighting {
             sun_direction,
             sun_intensity: scene.sun.intensity,

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use runity::builtin;
 use runity::glam::Vec3;
-use runity::render::{Camera, FogSettings, Lighting};
+use runity::render::{FogSettings, Lighting};
 use runity::{Gpu, Library, MeshHandle, OffscreenTarget, Renderer, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -101,11 +101,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         start: scene.fog.start,
         end: scene.fog.end,
     };
-    let camera = Camera {
-        position: Vec3::new(0.0, 3.4, 12.0),
-        target: Vec3::new(0.0, 1.4, -4.0),
-        ..Camera::default()
-    };
+    // The scene says where it is looked at from, so two renders of the same
+    // file are the same picture — and so an agent can frame a shot by
+    // editing a line rather than by patching this file.
+    let camera = runity::scene_camera(&scene.view);
 
     let frame = runity::build_frame(&world, camera, lighting, fog);
     renderer.render(&gpu, &target, &frame);

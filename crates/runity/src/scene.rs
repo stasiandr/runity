@@ -258,9 +258,41 @@ impl Default for Fog {
     }
 }
 
+/// Where the scene is looked at from.
+///
+/// In the file, because a picture has to be reproducible. The loop this
+/// engine is built for is "change something, render it, look" — and a
+/// viewpoint that lives in whichever tool happened to render means the
+/// picture moves for reasons the scene never recorded, which makes two
+/// renders impossible to compare. Putting it here also gives an agent a way
+/// to frame a shot: it is a line of text like everything else.
+///
+/// Three numbers and a field of view, not a whole [`Camera`](crate::Camera).
+/// Near and far planes and an up vector are renderer business; a scene says
+/// where it is looked at from.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct View {
+    pub position: Vec3,
+    pub target: Vec3,
+    /// Vertical field of view, in degrees.
+    pub fov_deg: f32,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            position: Vec3::new(0.0, 3.4, 12.0),
+            target: Vec3::new(0.0, 1.4, -4.0),
+            fov_deg: 55.0,
+        }
+    }
+}
+
 /// A whole scene, as it sits on disk.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Scene {
+    #[serde(default)]
+    pub view: View,
     #[serde(default)]
     pub sun: Sun,
     #[serde(default)]
@@ -363,6 +395,7 @@ mod tests {
     #[test]
     fn a_scene_survives_a_round_trip_through_the_file() {
         let scene = Scene {
+            view: View::default(),
             sun: Sun {
                 hour: 17.5,
                 intensity: 0.8,
@@ -445,6 +478,28 @@ mod tests {
         let typo: Scene =
             ron::from_str(r#"(entities: [(name: "a", model: "m", material: "grsas")])"#).unwrap();
         assert_eq!(typo.entities[0].material(), Material::default());
+    }
+
+    #[test]
+    fn a_scene_remembers_where_it_is_looked_at_from() {
+        let scene = Scene {
+            view: View {
+                position: Vec3::new(3.0, 9.0, -2.0),
+                target: Vec3::new(0.0, 1.0, 0.0),
+                fov_deg: 35.0,
+            },
+            ..Scene::default()
+        };
+        let dir = std::env::temp_dir().join("runity-scene-view");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("view.ron");
+        scene.save(&path).unwrap();
+        assert_eq!(Scene::load(&path).unwrap().view, scene.view);
+
+        // And a scene written before there was a camera in the format still
+        // opens, framed the way everything used to be.
+        let older: Scene = ron::from_str(r#"(entities: [])"#).unwrap();
+        assert_eq!(older.view, View::default());
     }
 
     #[test]

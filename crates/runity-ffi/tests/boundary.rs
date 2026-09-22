@@ -187,6 +187,12 @@ fn every_call_survives_a_null_editor() {
             0
         );
         assert_eq!(runity_editor_palette_count(null), 0);
+        assert!(!runity_editor_get_camera(
+            null,
+            std::ptr::null_mut(),
+            std::ptr::null_mut()
+        ));
+        assert!(!runity_editor_capture_camera(null));
         assert!(!runity_editor_palette_color(null, 0, std::ptr::null_mut()));
         runity_editor_free(null);
     }
@@ -616,4 +622,53 @@ fn the_colour_conversions_are_the_engines_own_and_round_trip() {
     // Mid grey in sRGB is not half in linear, which is the whole reason this
     // is not a multiplication.
     assert!((runity_srgb_to_linear(0.5) - 0.2140).abs() < 0.001);
+}
+
+#[test]
+fn opening_a_scene_looks_where_the_scene_says_and_keeping_a_view_is_a_decision() {
+    let Some((editor, path)) = open("camera") else {
+        return;
+    };
+
+    // The test scene carries no view, so it opens at the format's default
+    // rather than at whatever the last document left behind.
+    let (mut eye, mut target) = ([0.0f32; 3], [0.0f32; 3]);
+    assert!(unsafe { runity_editor_get_camera(editor.0, eye.as_mut_ptr(), target.as_mut_ptr()) });
+    let default = runity::View::default();
+    assert_eq!(eye, default.position.to_array());
+
+    // Flying around is not an edit: nothing is dirtied and nothing is saved.
+    let moved = [4.0f32, 9.0, 1.0];
+    let at = [0.0f32, 1.0, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, moved.as_ptr(), at.as_ptr()) });
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    assert_eq!(
+        runity::Scene::load(&path).unwrap().view,
+        default,
+        "looking around should not have changed the file"
+    );
+
+    // Keeping it is. And it survives the round trip.
+    assert!(unsafe { runity_editor_capture_camera(editor.0) });
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    let kept = runity::Scene::load(&path).unwrap().view;
+    assert_eq!(kept.position.to_array(), moved);
+    assert_eq!(kept.target.to_array(), at);
+
+    // One undoable step, like anything else typed into an inspector.
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    assert_eq!(runity::Scene::load(&path).unwrap().view, default);
+
+    // And reopening a scene with a view in it points the camera there.
+    let framed = path.parent().unwrap().join("framed.ron");
+    std::fs::write(
+        &framed,
+        r#"(view: (position: (1.0, 2.0, 3.0), target: (0.0, 0.0, 0.0), fov_deg: 40.0), entities: [])"#,
+    )
+    .unwrap();
+    assert!(unsafe { runity_editor_open_scene(editor.0, c(&framed).as_ptr()) });
+    assert!(unsafe { runity_editor_get_camera(editor.0, eye.as_mut_ptr(), target.as_mut_ptr()) });
+    assert_eq!(eye, [1.0, 2.0, 3.0]);
+    assert_eq!(target, [0.0, 0.0, 0.0]);
 }

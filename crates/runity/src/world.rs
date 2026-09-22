@@ -212,6 +212,29 @@ pub fn apply_hierarchy(world: &mut World) {
     }
 }
 
+/// The camera a scene's view describes.
+///
+/// Here rather than on either type: a scene is not allowed to know about the
+/// renderer, and the renderer is not allowed to know about scene files. This
+/// module is where the two already meet.
+pub fn scene_camera(view: &crate::scene::View) -> Camera {
+    Camera {
+        position: view.position,
+        target: view.target,
+        fov_y_degrees: view.fov_deg,
+        ..Camera::default()
+    }
+}
+
+/// The view to write back into a scene for a camera.
+pub fn captured_view(camera: &Camera) -> crate::scene::View {
+    crate::scene::View {
+        position: camera.position,
+        target: camera.target,
+        fov_deg: camera.fov_y_degrees,
+    }
+}
+
 /// Collect everything drawable in the world into a frame.
 pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSettings) -> Frame {
     let mut draws = Vec::new();

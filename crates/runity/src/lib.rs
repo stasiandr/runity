@@ -58,11 +58,12 @@ pub use physics::{BodyHandle, CharacterMove, CharacterSettings, PhysicsWorld, Ra
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
-pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
+pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use world::{
-    build_frame, spawn_scene, spawn_scene_with, Model, Posed, Shape, Surface, Textured,
+    build_frame, captured_view, scene_camera, spawn_scene, spawn_scene_with, Model, Posed, Shape,
+    Surface, Textured,
 };

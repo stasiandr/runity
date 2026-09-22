@@ -32,12 +32,18 @@ struct Walk {
 
 impl Walk {
     fn new(scene: Scene) -> Self {
+        // Start where the scene says it is looked at from, so walking in and
+        // rendering headlessly begin from the same place. A hardcoded
+        // viewpoint here meant the two disagreed, and the one you were
+        // looking at was whichever tool you happened to run.
+        let eye = scene.view.position;
+        let look = (scene.view.target - eye).normalize_or_zero();
         Self {
             scene,
             world: hecs::World::new(),
-            eye: Vec3::new(0.0, 1.7, 12.0),
-            yaw: 0.0,
-            pitch: -0.1,
+            eye,
+            yaw: look.x.atan2(-look.z),
+            pitch: look.y.clamp(-1.0, 1.0).asin(),
             uploaded: Vec::new(),
             started: false,
             ui: Ui::new(),

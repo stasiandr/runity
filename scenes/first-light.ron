@@ -5,6 +5,10 @@
 // opens on a fresh clone with no library and no asset pipeline. That is the
 // point of it: the shortest path from `git clone` to a picture.
 (
+    // Where it is looked at from. In the file so that the headless render,
+    // the editor and the walk-around all start from the same place — and so
+    // that reframing a shot is an edit to a scene rather than to a tool.
+    view: (position: (0.0, 3.4, 12.0), target: (0.0, 1.4, -4.0), fov_deg: 55.0),
     sun: (hour: 9.0, intensity: 1.15),
     fog: (color: (0.62, 0.68, 0.74), start: 18.0, end: 90.0),
     entities: [

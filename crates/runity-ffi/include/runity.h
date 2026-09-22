@@ -175,6 +175,17 @@ bool runity_editor_set_camera(RunityEditor *editor,
                               const float *eye_xyz,
                               const float *target_xyz);
 
+bool runity_editor_get_camera(RunityEditor *editor,
+                              float *out_eye_xyz,
+                              float *out_target_xyz);
+
+/* Write where the editor is looking into the scene, as one undoable step.
+ * Flying around is not an edit — a scene that changed every time someone
+ * looked at it from another angle would produce a diff on every open — so
+ * keeping a viewpoint is a decision, and a call. Opening a scene puts the
+ * camera where the file says. */
+bool runity_editor_capture_camera(RunityEditor *editor);
+
 bool runity_editor_render(RunityEditor *editor);
 
 unsigned int runity_editor_width(RunityEditor *editor);
