@@ -13,6 +13,7 @@
 resolver = "2"
 members = [
     "crates/runity",
+    "crates/runity-import",
     "crates/smallworld",
 ]
 
@@ -25,6 +26,7 @@ repository = "https://github.com/stasiandr/runity"
 
 [workspace.dependencies]
 runity = { path = "crates/runity", version = "0.1.0" }
+runity-import = { path = "crates/runity-import", version = "0.1.0" }
 smallworld = { path = "crates/smallworld", version = "0.1.0" }
 
 # Release builds keep debug info: a profiler that cannot name a frame is
