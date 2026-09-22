@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// What kind of asset a file holds.
 ///
@@ -191,12 +191,27 @@ pub struct TextureAsset {
     pub name: String,
     pub width: u32,
     pub height: u32,
-    /// `width * height * 4` bytes, top row first.
+    /// `width * height * 4` bytes, top row first. The base level.
     pub pixels: Vec<u8>,
+    /// Levels 1 and down, each half the previous, ending at 1x1.
+    ///
+    /// Built at import rather than on the GPU at load. Without them a
+    /// texture seen at a distance samples one texel out of many and
+    /// shimmers as the camera moves — the artifact that looks like the
+    /// renderer is broken and is only a missing chain.
+    pub mips: Vec<TextureLevel>,
     /// Whether the values are sRGB-encoded. Colour maps are; normal maps,
     /// roughness and masks are not, and sampling those through an sRGB view
     /// bends every value in them.
     pub srgb: bool,
+}
+
+/// One step down the mip chain.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct TextureLevel {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 /// A mesh, ready to upload.

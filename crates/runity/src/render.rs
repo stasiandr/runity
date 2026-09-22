@@ -646,13 +646,19 @@ impl Renderer {
 
     /// Upload an image straight out of an imported asset.
     pub fn upload_texture(&mut self, gpu: &Gpu, texture: &ArchivedTextureAsset) -> TextureHandle {
-        self.upload_texture_rgba(
-            gpu,
+        let mut levels: Vec<(u32, u32, &[u8])> = vec![(
             texture.width.to_native(),
             texture.height.to_native(),
             texture.pixels.as_slice(),
-            texture.srgb,
-        )
+        )];
+        for mip in texture.mips.iter() {
+            levels.push((
+                mip.width.to_native(),
+                mip.height.to_native(),
+                mip.pixels.as_slice(),
+            ));
+        }
+        self.upload_texture_levels(gpu, &levels, texture.srgb)
     }
 
     /// Upload raw RGBA8 pixels.
@@ -669,6 +675,19 @@ impl Renderer {
         pixels: &[u8],
         srgb: bool,
     ) -> TextureHandle {
+        self.upload_texture_levels(gpu, &[(width, height, pixels)], srgb)
+    }
+
+    /// Upload a whole mip chain. Level 0 first, each half the last.
+    pub fn upload_texture_levels(
+        &mut self,
+        gpu: &Gpu,
+        levels: &[(u32, u32, &[u8])],
+        srgb: bool,
+    ) -> TextureHandle {
+        let Some(&(width, height, _)) = levels.first() else {
+            return TextureHandle::WHITE;
+        };
         let format = if srgb {
             wgpu::TextureFormat::Rgba8UnormSrgb
         } else {
@@ -682,28 +701,34 @@ impl Renderer {
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("surface texture"),
             size,
-            mip_level_count: 1,
+            mip_level_count: levels.len() as u32,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        gpu.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size.width * 4),
-                rows_per_image: Some(size.height),
-            },
-            size,
-        );
+        for (level, (w, h, pixels)) in levels.iter().enumerate() {
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(*h),
+                },
+                wgpu::Extent3d {
+                    width: *w,
+                    height: *h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("surface texture"),

@@ -22,7 +22,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use runity::asset::{AssetId, AssetKind, Bounds, MeshAsset, Submesh, TextureAsset, Vertex};
+use runity::asset::{
+    AssetId, AssetKind, Bounds, MeshAsset, Submesh, TextureAsset, TextureLevel, Vertex,
+};
 use serde::{Deserialize, Serialize};
 
 /// What the importer was told to do, stored beside its output.
@@ -251,6 +253,8 @@ pub fn texture_from_image(
         .with_context(|| format!("{}", path.display()))?
         .to_rgba8();
     let (width, height) = image.dimensions();
+    let pixels = image.into_raw();
+    let mips = build_mips(width, height, &pixels, settings.srgb);
     Ok(TextureAsset {
         id: AssetId::from_source(&settings.source, 0),
         name: path
@@ -259,9 +263,80 @@ pub fn texture_from_image(
             .unwrap_or_else(|| "texture".into()),
         width,
         height,
-        pixels: image.into_raw(),
+        pixels,
+        mips,
         srgb: settings.srgb,
     })
+}
+
+/// Halve an image repeatedly, down to one pixel.
+///
+/// A colour map is averaged in linear space, not in sRGB. Averaging the
+/// encoded bytes darkens every mip — the values are not proportional to
+/// light — and the result is a texture that dims as it recedes.
+fn build_mips(width: u32, height: u32, pixels: &[u8], srgb: bool) -> Vec<TextureLevel> {
+    let to_linear = |b: u8| -> f32 {
+        let c = b as f32 / 255.0;
+        if !srgb {
+            c
+        } else if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let from_linear = |v: f32| -> u8 {
+        let c = if !srgb {
+            v
+        } else if v <= 0.0031308 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    };
+
+    let mut levels = Vec::new();
+    let (mut w, mut h) = (width, height);
+    let mut source = pixels.to_vec();
+    while w > 1 || h > 1 {
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut next = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                for channel in 0..4 {
+                    // Alpha stays linear whatever the colour channels do:
+                    // coverage is not light and encoding it would be wrong.
+                    let mut sum = 0.0;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(w - 1);
+                        let sy = (y * 2 + dy).min(h - 1);
+                        let i = ((sy * w + sx) * 4 + channel) as usize;
+                        sum += if channel == 3 {
+                            source[i] as f32 / 255.0
+                        } else {
+                            to_linear(source[i])
+                        };
+                    }
+                    let average = sum / 4.0;
+                    next[((y * nw + x) * 4 + channel) as usize] = if channel == 3 {
+                        (average.clamp(0.0, 1.0) * 255.0).round() as u8
+                    } else {
+                        from_linear(average)
+                    };
+                }
+            }
+        }
+        levels.push(TextureLevel {
+            width: nw,
+            height: nh,
+            pixels: next.clone(),
+        });
+        source = next;
+        w = nw;
+        h = nh;
+    }
+    levels
 }
 
 /// Import one source file into `library`, writing both the asset and its
@@ -431,6 +506,39 @@ f 1 4 3
         assert_eq!(texture.pixels.len(), 16, "two by two, four bytes each");
         assert_eq!(texture.pixels[0], 255, "the red pixel is first");
         assert!(texture.srgb, "a colour map is sRGB unless told otherwise");
+    }
+
+    #[test]
+    fn a_texture_arrives_with_a_full_mip_chain() {
+        let dir = temp("mips");
+        let path = dir.join("checker.png");
+        let mut image = image::RgbaImage::new(8, 8);
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            let on = (x + y) % 2 == 0;
+            *pixel = image::Rgba(if on { [255; 4] } else { [0, 0, 0, 255] });
+        }
+        image.save(&path).unwrap();
+
+        let settings = ImportSettings::for_source("checker.png");
+        let texture = texture_from_image(&path, &settings).unwrap();
+        // 8, 4, 2, 1 — three levels below the base.
+        assert_eq!(texture.mips.len(), 3);
+        assert_eq!((texture.mips[0].width, texture.mips[0].height), (4, 4));
+        assert_eq!(
+            texture.mips[2].pixels.len(),
+            4,
+            "the last level is one pixel"
+        );
+
+        // A checkerboard of black and white averages to mid grey. In sRGB
+        // that is 188, not 128: averaging the encoded bytes instead would
+        // give the darker number, and every texture would dim as it
+        // receded.
+        let grey = texture.mips[0].pixels[0];
+        assert!(
+            (grey as i32 - 188).abs() <= 2,
+            "mips must be averaged in linear space, got {grey}"
+        );
     }
 
     #[test]
