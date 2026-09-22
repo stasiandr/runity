@@ -1,6 +1,11 @@
-//! The whole path, end to end: a source model from the repository becomes an
-//! asset, the asset becomes a mesh on the GPU, and the GPU produces a frame —
-//! on a machine with no graphics card.
+//! The whole path, end to end: a source model becomes an asset, the asset
+//! becomes a mesh on the GPU, and the GPU produces a frame — on a machine
+//! with no graphics card.
+//!
+//! The model is `tests/fixtures/conifer.obj`, which belongs to the engine and
+//! not to any game. The engine has to be testable on its own; borrowing a
+//! game's art for that would make the two repositories depend on each other
+//! in the one direction that is supposed to stay closed.
 //!
 //! This is the test the rest of the visual work hangs off. It is not a golden
 //! image, deliberately: a software adapter does not produce the same bytes as
@@ -20,12 +25,10 @@ use runity_import::{import_file, ImportSettings};
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 
-fn repository_root() -> PathBuf {
+fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("crates/runity-import is two levels down")
-        .to_path_buf()
+        .join("tests/fixtures")
+        .join(name)
 }
 
 fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
@@ -50,7 +53,7 @@ fn to_linear(byte: u8) -> f32 {
 }
 
 #[test]
-fn a_model_from_the_repository_becomes_a_frame() {
+fn a_source_model_becomes_a_frame() {
     let Ok(gpu) = Gpu::headless_blocking(false) else {
         eprintln!("skipping: no adapter — install mesa-vulkan-drivers to render here");
         return;
@@ -58,25 +61,22 @@ fn a_model_from_the_repository_becomes_a_frame() {
     eprintln!("rendering on {}", gpu.describe());
 
     // 1. Import a real model, not a fixture.
-    let source = repository_root().join("assets/valley/models/pine_large.obj");
+    let source = fixture("conifer.obj");
     let out_dir = std::env::temp_dir().join("runity-first-frame");
     let _ = std::fs::remove_dir_all(&out_dir);
     let library_dir = out_dir.join("library");
-    let mut settings = ImportSettings::for_source("assets/valley/models/pine_large.obj");
+    let mut settings = ImportSettings::for_source("tests/fixtures/conifer.obj");
     settings.recompute_normals = true;
-    import_file(&source, &library_dir, settings).expect("importing a committed model");
+    import_file(&source, &library_dir, settings).expect("importing the fixture");
 
     // 2. Open it the way the game will: by library, with no parser in sight.
     let (library, problems) = Library::open(&library_dir).expect("opening the library");
     assert!(problems.is_empty(), "{problems:?}");
     let mesh = library
-        .mesh_by_name("pine_large")
-        .expect("the pine we just imported");
+        .mesh_by_name("conifer")
+        .expect("the tree we just imported");
     let height = mesh.bounds.max[1].to_native();
-    assert!(
-        height > 1.0,
-        "a large pine should be metres tall, got {height}"
-    );
+    assert!(height > 1.0, "the tree should be metres tall, got {height}");
 
     // 3. Upload and draw: one near, one far, so fog has something to do.
     let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
