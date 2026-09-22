@@ -102,6 +102,10 @@ fn a_source_model_becomes_a_frame() {
         },
         lighting,
         fog,
+        // Off: this test is about the path from a file to pixels, and a
+        // shadow falling across the tree it measures would make the
+        // lit-versus-shaded comparison mean something else.
+        shadows: runity::ShadowSettings::OFF,
         clear_color: fog.color,
         draws: vec![
             Draw {
