@@ -1,0 +1,345 @@
+<title>Движки без прикрас</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700&family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+:root{
+  --bg:#F3F4F7; --surface:#FFFFFF; --ink:#141821; --ink-2:#434A59; --muted:#6B7282;
+  --line:#DDE0E7; --accent:#2F55D4; --accent-soft:#E6ECFD;
+  --good:#1E7A4C; --good-soft:#E3F3EA; --bad:#B23A2E; --bad-soft:#FBE8E5;
+  --adm:#6A3FB5; --adm-soft:#EFE8FA;
+  --s1:#C07614; --s2:#3F63E0;
+  --display:"Unbounded","Onest",system-ui,sans-serif;
+  --body:"Onest",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#10131A; --surface:#181C25; --ink:#E8EAF0; --ink-2:#B7BCC8; --muted:#8A90A0;
+    --line:#2A303C; --accent:#7F9BF5; --accent-soft:#1E2640;
+    --good:#5CC78E; --good-soft:#15291F; --bad:#F08A7E; --bad-soft:#321A18;
+    --adm:#B89AF0; --adm-soft:#241C36;
+    --s1:#C27F24; --s2:#6A88EE;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#10131A; --surface:#181C25; --ink:#E8EAF0; --ink-2:#B7BCC8; --muted:#8A90A0;
+  --line:#2A303C; --accent:#7F9BF5; --accent-soft:#1E2640;
+  --good:#5CC78E; --good-soft:#15291F; --bad:#F08A7E; --bad-soft:#321A18;
+  --adm:#B89AF0; --adm-soft:#241C36;
+  --s1:#C27F24; --s2:#6A88EE;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:16px;line-height:1.6;padding-inline:16px;padding-block:0 48px}
+a{color:var(--accent);text-decoration-thickness:1px;text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:760px;margin:0 auto}
+header.hero{padding-block:40px 24px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(28px,7vw,44px);line-height:1.1;margin:10px 0 16px;text-wrap:balance;letter-spacing:-.01em}
+h2{font-family:var(--display);font-weight:500;font-size:clamp(20px,4.6vw,26px);line-height:1.25;margin:0 0 14px;text-wrap:balance}
+h3{font-size:15px;font-weight:700;margin:0 0 6px;letter-spacing:.02em}
+p{margin:0 0 12px}
+.lede{font-size:17px;color:var(--ink-2)}
+nav.chips{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);margin-inline:-16px;padding:10px 16px;border-bottom:1px solid var(--line);overflow-x:auto;white-space:nowrap;scrollbar-width:none}
+nav.chips::-webkit-scrollbar{display:none}
+nav.chips a{display:inline-block;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--ink);text-decoration:none;margin-right:6px}
+nav.chips a:hover{border-color:var(--accent)}
+section{padding-block:36px 8px;scroll-margin-top:60px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:18px 0 6px}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.kpi b{display:block;font-family:var(--mono);font-size:24px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+.kpi span{font-size:13px;color:var(--ink-2);line-height:1.35;display:block;margin-top:4px}
+.chart{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px;margin:18px 0}
+.chart-title{font-weight:700;font-size:15px;margin-bottom:2px}
+.chart-sub{font-size:13px;color:var(--muted);margin-bottom:12px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--ink-2);margin-bottom:10px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.row{display:grid;grid-template-columns:92px 1fr;gap:10px;align-items:center;padding-block:6px;border-top:1px solid var(--line)}
+.row:first-of-type{border-top:0}
+.row .lab{font-size:13px;font-weight:600}
+.bars{display:flex;flex-direction:column;gap:3px}
+.bar{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:12px;color:var(--ink-2);font-variant-numeric:tabular-nums;position:relative}
+.bar i{display:block;height:10px;border-radius:0 4px 4px 0;min-width:2px}
+.bar.r i{background:var(--s1)}
+.bar.u i{background:var(--s2)}
+.src{font-size:12px;color:var(--muted);margin-top:10px}
+.tip{position:absolute;left:0;bottom:16px;background:var(--ink);color:var(--bg);font-family:var(--body);font-size:12px;padding:4px 8px;border-radius:6px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .12s}
+.bar:hover .tip{opacity:1}
+.engine{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:20px 18px;margin-top:8px}
+.engine .verdict{font-size:15px;color:var(--ink-2);margin-bottom:16px}
+.tri{display:grid;gap:12px}
+.blk{border-radius:10px;padding:12px 14px}
+.blk ul{margin:0;padding-left:18px}
+.blk li{margin-bottom:8px}
+.blk li:last-child{margin-bottom:0}
+.blk.good{background:var(--good-soft)} .blk.good h3{color:var(--good)}
+.blk.bad{background:var(--bad-soft)} .blk.bad h3{color:var(--bad)}
+.blk.adm{background:var(--adm-soft)} .blk.adm h3{color:var(--adm)}
+q{font-style:italic;quotes:"«" "»"}
+.en{font-style:italic}
+.inh{display:grid;gap:10px;margin-top:12px}
+.inh article{border-top:1px solid var(--line);padding-top:12px}
+.inh article:first-child{border-top:0;padding-top:0}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:5px;margin-left:6px;vertical-align:2px;letter-spacing:.03em}
+.tag.dead{background:var(--bad-soft);color:var(--bad)}
+.tag.alive{background:var(--good-soft);color:var(--good)}
+.tbl{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:12px}
+table{border-collapse:collapse;min-width:720px;font-size:13.5px;line-height:1.45}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;background:var(--bg);position:sticky;top:0}
+td:first-child{font-weight:700;white-space:nowrap;position:sticky;left:0;background:var(--surface)}
+tr:last-child td{border-bottom:0}
+.scroll-hint{font-size:12px;color:var(--muted);margin-top:6px}
+.themes{display:grid;gap:12px}
+.theme{border-left:3px solid var(--accent);padding:4px 0 4px 14px}
+.theme h3{font-size:16px}
+.picks{display:grid;gap:8px;margin-top:10px}
+.pick{display:grid;grid-template-columns:120px 1fr;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.pick b{font-family:var(--mono);font-size:13px}
+@media (max-width:520px){
+  .pick{grid-template-columns:1fr;gap:4px}
+  .kpis{grid-template-columns:1fr}
+  .row{grid-template-columns:78px 1fr}
+}
+footer{margin-top:40px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:16px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+<header class="hero">
+  <div class="eyebrow">Обзор игровых движков · сентябрь 2026</div>
+  <h1>Движки проигрывают не в графике, а в доверии и организации</h1>
+  <p class="lede">У каждого крупного движка одна явная сила и одна системная слабость — и почти все разработчики движков эту слабость уже публично признали. Что хвалят, на что жалуются и где признаются сами авторы: Unity, Unreal, Godot, Bevy и inhouse-движки.</p>
+</header>
+
+<nav class="chips" aria-label="Разделы">
+  <a href="#market">Рынок</a><a href="#unity">Unity</a><a href="#unreal">Unreal</a><a href="#godot">Godot</a><a href="#bevy">Bevy</a><a href="#inhouse">Inhouse</a><a href="#other">Прочие</a><a href="#table">Таблица</a><a href="#themes">Выводы</a>
+</nav>
+
+<section id="market">
+  <div class="eyebrow">Рынок</div>
+  <h2>Три яруса: Unity по релизам, Unreal по продажам и у профи, Godot у новичков</h2>
+  <div class="kpis">
+    <div class="kpi"><b>42% vs 30%</b><span>Unreal впервые обошёл Unity как основной движок (GDC 2026)</span></div>
+    <div class="kpi"><b>47%</b><span>Godot — первое место на GMTK Jam 2026, конец 9-летнего лидерства Unity</span></div>
+    <div class="kpi"><b>74% → 42%</b><span>доля собственных движков в продажах Steam, 2014 → 2024</span></div>
+  </div>
+
+  <div class="chart" role="figure" aria-label="Доля движков в релизах и продажах Steam, 2024">
+    <div class="chart-title">Steam, 2024: доля релизов против доли проданных копий</div>
+    <div class="chart-sub">Один и тот же масштаб, 0–51%. Продажи — именно копии (units), не выручка.</div>
+    <div class="legend"><span><i style="background:var(--s1)"></i>Релизы</span><span><i style="background:var(--s2)"></i>Проданные копии</span></div>
+    <div id="bars"></div>
+    <div class="src">Источник: <a href="https://app.sensortower.com/vgi/assets/reports/The_Big_Game_Engines_Report_of_2025.pdf">VG Insights, Big Game Engine Report 2025</a>. «≈1» — оценка около 1%.</div>
+  </div>
+
+  <p>Масштаб игры решает всё: среди крошечных игр (до 1 тыс. копий) у Unity 50%, среди миллионников — лишь 22%, а у собственных движков — 46%. Action RPG, soulslike, шутеры и open-world survival тяготеют к Unreal; стратегии, симуляторы и пошаговые — к Unity.</p>
+  <p>В опросе <a href="https://gdconf.com/article/gdc-2026-state-of-the-game-industry-reveals-impact-of-layoffs-generative-ai-and-more/">GDC 2026</a> Unreal используют 59% AA- и 47% AAA-студий, но 54% давних инди-студий остаются на Unity. Геймджемы — опережающий индикатор: доля Godot на GMTK выросла 16% → 19% → 37% → 39% → 47% за 2022–2026 (<a href="https://gameworldobserver.com/2026/07/29/unity-is-no-longer-the-leader-godot-has-become-the-most-popular-engine-at-gmtk-game-jam-2026">GWO</a>). В релизах Steam Godot вырос с 0,9% (2020) до 7,1% (2025), и этот рост <span class="en">«hasn't come at the expense of Unity or Unreal»</span> (<a href="https://newsletter.gamediscover.co/p/hows-pc-game-engine-usage-changing">GameDiscoverCo</a>).</p>
+</section>
+
+<section id="unity">
+  <div class="eyebrow">Unity 6</div>
+  <h2>Экосистема всё ещё лучшая, но компания признала почти всё, в чём её обвиняли</h2>
+  <div class="engine">
+    <p class="verdict">Лучшее — окружение, а не ядро. Худшее — доверие, фрагментация и устаревший рантайм.</p>
+    <div class="tri">
+      <div class="blk good"><h3>Хвалят</h3><ul>
+        <li>Asset Store (<q>gold</q>), гибкий инспектор, доступ к Apple и Nintendo (<a href="https://news.ycombinator.com/item?id=46414819">HN</a>).</li>
+        <li>Мобильный билд-пайплайн и 2D-инструменты; Unity-разработчиков проще нанять (<a href="https://www.strayspark.studio/blog/unity-engine-2026-state-comeback-runtime-fee-aftermath">обзор</a>, мнение).</li>
+        <li>Предсказуемый ритм: один LTS в год с 2 годами поддержки (<a href="https://unity.com/releases/unity-6/support">Unity</a>).</li>
+      </ul></div>
+      <div class="blk bad"><h3>Жалуются</h3><ul>
+        <li><b>Доверие.</b> Runtime Fee (сент. 2023) — Mega Crit назвала это <q>a violation of trust</q> и перенесла Slay the Spire 2 на Godot; игра продала ~3 млн за первую неделю (<a href="https://www.gamedeveloper.com/business/slay-the-spire-devs-followed-through-on-abandoning-unity">GD</a>).</li>
+        <li><b>Фрагментация:</b> Built-in / URP / HDRP, GameObjects / ECS, UGUI / UI Toolkit, два Netcode. На форуме: <q>BIRP + DX11 is significantly faster than URP + DX12… I don't feel I have the performance budget to take a 10 FPS hit</q> (<a href="https://discussions.unity.com/t/render-pipelines-strategy-for-2026/1710004/print">Unity Discussions</a>). Netcode for GameObjects — тред <q>More Agony</q>.</li>
+        <li><b>Рантайм:</b> тот же код на современном .NET ~в 3 раза быстрее, чем на Mono в Unity; Boehm GC (<a href="https://news.ycombinator.com/item?id=46414819">HN</a>).</li>
+        <li><b>Нестабильность:</b> 1 800 уволенных (25%) в 2024, в 2025 — вся команда пакета Behavior, письма в 5 утра (<a href="https://www.gamedeveloper.com/business/report-unity-continues-layoffs-with-abrupt-communications-and-5am-emails">GD</a>).</li>
+      </ul></div>
+      <div class="blk adm"><h3>Unity признала сама</h3><ul>
+        <li>Уиттен, 2023: <q>I am sorry. We should have spoken with more of you</q>. Бромберг отменил плату (2024), но поднял Pro на 8%, Enterprise на 25% (<a href="https://unity.com/blog/unity-is-canceling-the-runtime-fee">Unity</a>); компания <q>stretched across too many products</q>.</li>
+        <li>Февраль 2026: <q>We've heard your feedback about the complexity that comes from fragmented options</q>. Built-in устарел, HDRP — <q>No new features are planned</q>, всё в URP.</li>
+        <li>Июнь 2026: 6.7 LTS — последний на Mono, Unity 7 — CoreCLR и .NET 10. <b><q>We are explicitly delaying major performance optimization work until the subsequent LTS release following Unity 7.0 in 2027</q></b> (<a href="https://discussions.unity.com/t/coreclr-scripting-and-serialization-update-june-2026/1723299">Unity</a>).</li>
+        <li>Q2 2026: движковый Create — $158 млн (почти без роста), рекламный Grow — $389 млн (<a href="https://investors.unity.com/news/news-details/2026/Unity-Reports-Second-Quarter-2026-Financial-Results/default.aspx">IR</a>).</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<section id="unreal">
+  <div class="eyebrow">Unreal Engine 5</div>
+  <h2>Лучший рендер «из коробки» стал синонимом статтера на PC</h2>
+  <div class="engine">
+    <p class="verdict">Лучшее — картинка, Blueprints и честные 5% роялти. Худшее — производительность на PC и traversal-статтер.</p>
+    <div class="tri">
+      <div class="blk good"><h3>Хвалят</h3><ul>
+        <li><b>Clair Obscur: Expedition 33</b> — ~30 человек, 4 программиста, игра на <q>95 percent</q> на Blueprints (<a href="https://www.gamedeveloper.com/programming/clair-obscur-expedition-33-was-built-95-percent-with-unreal-blueprints">GD</a>). CTO: <q>We take all the tools that are natively present and we push them to their limits</q>.</li>
+        <li>Лицензия: бесплатно до $1 млн, дальше 5%; Epic сдержала слово не менять условия для игр (<a href="https://www.videogameschronicle.com/news/epic-confirms-its-new-unreal-engine-pricing-keeps-its-promise-not-to-change-it-for-game-developers/">VGC</a>).</li>
+        <li>UE 5.7: до ~25% GPU и ~35% CPU против 5.4; разработчик ARK — <q>as close to a magic bullet</q>. В 5.8 шейдеров Fortnite на 68% меньше. Демо Witcher 4 — 60 fps на базовой PS5.</li>
+      </ul></div>
+      <div class="blk bad"><h3>Жалуются</h3><ul>
+        <li>Игроки: «UE5 = работает плохо». Шейдерный статтер — чаще недонастроенный PSO precaching студии; <b>traversal-статтер — проблема движка</b>, Digital Foundry видит его даже в Fortnite (<a href="https://wccftech.com/silent-hill-2-remake-pc-is-yet-another-unreal-engine-case-of-stutter-struggle/">Silent Hill 2</a>).</li>
+        <li>Oblivion Remastered — «одна из худших по производительности» (DF); Borderlands 4 проседает с 60 до 40–50 fps за сессию. Питчфорд: игра <q>very optimal</q>, недовольным — <q>code their own engine</q>.</li>
+        <li>Размытие, гостинг и шум Lumen от TAA/TSR (форумы, не измерения).</li>
+      </ul></div>
+      <div class="blk adm"><h3>Epic признала сама</h3><ul>
+        <li>Техблог, февраль 2025: при компиляции шейдера <q>everything stops while waiting for the driver</q>, решения <q>already in development</q> (<a href="https://www.unrealengine.com/tech-blog/game-engines-and-shader-stuttering-unreal-engines-solution-to-the-problem">Epic</a>).</li>
+        <li>Вассмер, июнь 2026, передаёт слова студий: <q>The features are great, but we want better optimization for actual performance</q>.</li>
+        <li>Суини, август 2025, винит процесс: <q>Many developers develop games for high-end hardware, then perform optimization… in the final stages</q> (<a href="https://www.videogameschronicle.com/news/unreal-engine-5-performance-issues-are-mainly-due-to-devs-not-optimising-properly-epic-ceo-tim-sweeney-says/">VGC</a>) — сообщество восприняло как перекладывание вины.</li>
+        <li>UE6 (early access конец 2027) объединяет UE5 и UEFN вокруг Verse. Март 2026 — 1 000+ увольнений: <q>We're spending significantly more than we're making</q>.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<section id="godot">
+  <div class="eyebrow">Godot 4.7</div>
+  <h2>Свобода и 2D выиграли поколение новичков; 3D и консоли — за бортом</h2>
+  <div class="engine">
+    <p class="verdict">Лучшее — MIT и отсутствие вендорского риска. Худшее — 3D, консоли и нехватка людей на ревью.</p>
+    <div class="tri">
+      <div class="blk good"><h3>Хвалят</h3><ul>
+        <li>MIT: нет NDA и вендора, который поменяет условия. Mega Crit: у открытого движка нет <q>dead ends</q>, они ведут форк MegaDot.</li>
+        <li>Сцены и узлы: <q>Godot does composition at a higher level than in a traditional ECS</q> — Линьецкий (<a href="https://godotengine.org/article/why-isnt-godot-ecs-based-game-engine/">Godot</a>).</li>
+        <li><b>Slay the Spire 2</b> — пик ~574 тыс. онлайна в Steam, ~97% положительных. Ещё: Brotato, Dome Keeper, Cassette Beasts, Buckshot Roulette — почти всё 2D или стилизация.</li>
+        <li>4.6: Jolt — физика по умолчанию, D3D12 на Windows; 4.7: HDR, новый Asset Store.</li>
+      </ul></div>
+      <div class="blk bad"><h3>Жалуются</h3><ul>
+        <li>3D: Cosmic Trinity ушла на Unity — <q>FBX import felt inconsistent</q>, <q>shadow bugs, broken colliders, and unpredictable lighting</q> (<a href="https://dev.to/cosmictrinitygames/why-we-switched-from-godot-to-unity-5-hard-lessons-from-an-indie-studio-1ke4">dev.to</a>, единичный случай).</li>
+        <li>Консоли: официальной поддержки нет, только 8 сторонних портировщиков с закрытыми ценами (<a href="https://godotengine.org/consoles/">Godot</a>).</li>
+        <li>C# не экспортируется в веб; регрессии в минорных релизах.</li>
+      </ul></div>
+      <div class="blk adm"><h3>Мейнтейнеры признали сами</h3><ul>
+        <li>Страница <a href="https://godotengine.org/priorities/">Priorities</a>: постобработка — <q>a weak spot</q>, GDScript на тяжёлых данных — <q>lackluster</q>, размер для веба — <q>a pain point</q>, физический API не раскрывает Jolt.</li>
+        <li>Политика контрибуций 2026: <q>we can't keep up</q>, очередь PR — <q>a meme</q>, нехватка ревьюеров — <q>that we successfully ignored</q> (<a href="https://godotengine.org/article/contribution-policy-2026/">Godot</a>).</li>
+        <li>Деньги: ~€35,7 тыс./мес.; <q>donations don't track with the increase in users</q>. Вершельд: <q>I don't know how long we can keep it up</q>.</li>
+        <li>История #Wokot (2024) — извинения совета Foundation; прошлое, но его вспоминают.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<section id="bevy">
+  <div class="eyebrow">Bevy 0.19 и Rust</div>
+  <h2>Сильная архитектура без редактора и без стабильного API</h2>
+  <div class="engine">
+    <p class="verdict">Лучшее — ECS, Rust и скорость развития рендера. Худшее — шесть лет без редактора и ломающий релиз раз в квартал.</p>
+    <div class="tri">
+      <div class="blk good"><h3>Хвалят</h3><ul>
+        <li>Tiny Glade: Rust <q>very ergonomic, doesn't crash in your face… a breath of fresh air compared to something like C++</q>; 616 тыс. копий меньше чем за месяц. Но рендер свой: <q>our needs outscaled what Bevy could provide</q> (<a href="https://80.lv/articles/exclusive-tiny-glade-developers-discuss-bevy-proceduralism-publishers-cozy-games">80.lv</a>).</li>
+        <li>GPU-driven рендер — <q>3x or more</q>; many_cubes в 0.19: 49,5 → 18,8 мс. Hot patching, BSN, DLSS; 170–290 контрибьюторов на релиз.</li>
+      </ul></div>
+      <div class="blk bad"><h3>Жалуются</h3><ul>
+        <li>LogLog Games, <a href="https://loglog.games/blog/leaving-rust-gamedev/">«Leaving Rust gamedev after 3 years»</a>: <q>I don't want "better code", I want "game faster"</q>; borrow checker, orphan rule, GUI — <q>catastrophe</q>. Hot reload и ввод текста с тех пор появились, претензии к языку остались.</li>
+        <li>Пользователь, ушедший в 2025: <q>I always find myself chasing the next version, never get to stabilize the games, it always breaks</q> (<a href="https://github.com/bevyengine/bevy/discussions/21838">GitHub</a>).</li>
+      </ul></div>
+      <div class="blk adm"><h3>Мейнтейнеры признали сами</h3><ul>
+        <li>JMS55: <q>Editor absence continues to be a big, big hole</q>; <q>hard to say Bevy is production ready</q>; анимация <q>clunky</q> (<a href="https://jms55.github.io/posts/2025-09-03-bevy-fifth-birthday/">блог</a>).</li>
+        <li>Карт: <q>we are drastically under-funded for our ambitions</q>; два штатных сотрудника с зарплатой на 50%+ ниже рынка; BSN шёл два года из-за <q>keeping my cards too close to my chest</q>.</li>
+        <li><q>I've let the arbitrary whims of individual contributors dictate how those resources are spent. This needs to change</q>. Sixth Birthday (авг. 2026): редактора всё ещё нет, политика против AI привела к <q>toxic witch hunts</q>.</li>
+        <li>Rust в целом: arewegameyet — <q>Almost. We have the blocks, bring your own glue</q>. Fyrox 1.0 (с редактором) вышел в марте 2026, заметных игр нет.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<section id="inhouse">
+  <div class="eyebrow">Собственные движки</div>
+  <h2>В своём жанре блестят, за его пределами режут руки</h2>
+  <p>Движок, сделанный одной командой под один жанр, хвалят за производительность и контроль. Проблемы начинаются, когда его переносят в чужой жанр или чужую организацию.</p>
+  <div class="engine inh">
+    <article><h3>Frostbite (EA) <span class="tag alive">жив</span></h3>
+      <p>Стал обязательным для всех студий EA. В RPG BioWare пришлось с нуля писать сохранения, камеру и анимацию. Из расследования Шрайера: <q>Frostbite is full of razor blades</q>, <q>poorly documented, hacked together</q>, <q>If it takes you a week to make a little bug fix, it discourages people from fixing bugs</q> (<a href="https://kotaku.com/how-biowares-anthem-went-wrong-1833731964">Kotaku</a>). На родной территории — Battlefield 6: <q>rock-solid performance</q> (DF), хорошо даже на Series S.</p></article>
+    <article><h3>RE Engine (Capcom) <span class="tag alive">жив</span></h3>
+      <p>Блестит в линейных Resident Evil. В открытых мирах упирается в CPU: Capcom признала, что в Dragon's Dogma 2 каждый NPC грузит процессор, а снижение графики <q>may currently have a limited effect</q>; после Monster Hunter Wilds — <q>increasing program complexity and performance challenges</q>.</p></article>
+    <article><h3>REDengine (CD Projekt) <span class="tag dead">заменён UE5</span></h3>
+      <p>Шарль Трамбле: <q>extremely proud… it is not about, "This is so bad that we need to switch"</q>. Причина — параллельные проекты: <q>all the technical people in the company working together on different projects</q> (<a href="https://www.gamepressure.com/newsroom/cd-projekt-explained-its-decision-to-switch-from-redengine-to-ue5/z67609">Eurogamer</a>). UE5 для их жанра сначала был «не готов» — дорабатывали вместе с Epic.</p></article>
+    <article><h3>Slipspace (Halo Studios) <span class="tag dead">заменён UE5</span></h3>
+      <p><q>Respectfully, some components of Slipspace are almost 25 years old</q>. И найм: <q>How long does it take to ramp somebody up to be able to actually create assets that show up in your game?</q> (<a href="https://news.xbox.com/en-us/2024/10/06/halo-studios-unreal-engine-interview/">Xbox Wire</a>).</p></article>
+    <article><h3>Luminous (Square Enix) <span class="tag dead">заброшен</span></h3>
+      <p>Две игры — FFXV и Forspoken. FFXVI отказалась: команда FFXV занята DLC, руководства нет, поддержки нет. Знания ушли с людьми.</p></article>
+    <article><h3>Decima (Guerrilla / Kojima Productions) <span class="tag alive">жив</span></h3>
+      <p>Кодзима: <q>well suited to the tools and systems of an open-world game</q>. В 2026 CTO KojiPro: 13-летний движок позволяет то, что <q>would be difficult to achieve elsewhere</q>. Общая кодовая база двух студий.</p></article>
+    <article><h3>id Tech 8 (id Software) <span class="tag alive">жив</span></h3>
+      <p>Doom: The Dark Ages — обязательная аппаратная трассировка и прямая цель избежать <q>stutter struggle</q> чужих движков. Свой движок оправдан ровно той слабостью, которую признаёт Epic.</p></article>
+    <article><h3>Creation Engine 2 (Bethesda) <span class="tag alive">жив</span></h3>
+      <p>Starfield ругают за загрузочные экраны и отсутствие бесшовного полёта; комментариев Bethesda нет. Oblivion Remastered — гибрид: логика на старом движке, UE5 только рендерит.</p></article>
+  </div>
+  <p class="src">По Source 2, Northlight, Fox, Glacier, RAGE, 4A, Anvil и Snowdrop первоисточников не нашлось.</p>
+</section>
+
+<section id="other">
+  <div class="eyebrow">Прочие</div>
+  <h2>Ниши: ~10% релизов и ~2% продаж</h2>
+  <div class="picks">
+    <div class="pick"><b>GameMaker</b><span>Бесплатен для некоммерческого, разовая лицензия $99,99; консоли — только Enterprise. 4% релизов Steam, 5% GMTK.</span></div>
+    <div class="pick"><b>Defold</b><span>Бывший движок King, открыт, без сборов и роялти; силён в вебе и мобайле.</span></div>
+    <div class="pick"><b>Cocos</b><span>Доминирует в китайском мобайле и мини-играх WeChat.</span></div>
+    <div class="pick"><b>Flax</b><span>Бесплатен до $250 тыс. за квартал, дальше 4% роялти.</span></div>
+    <div class="pick"><b>O3DE</b><span>Бывший Lumberyard; упор сместился на симуляцию робототехники.</span></div>
+    <div class="pick"><b>Без движка</b><span>Ноэл Берри (Celeste): C#, SDL3, FMOD, Dear ImGui — для малых команд, но не для большого 3D (<a href="https://noelberry.ca/posts/making_games_in_2025/">блог</a>).</span></div>
+  </div>
+</section>
+
+<section id="table">
+  <div class="eyebrow">Сравнение</div>
+  <h2>Лучшее и худшее каждого движка</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Движок</th><th>Лучшее</th><th>Худшее</th><th>Признал разработчик движка</th><th>Доля (данные)</th></tr></thead>
+    <tbody>
+      <tr><td>Unity 6</td><td>Asset Store, мобайл, 2D, найм, C#</td><td>Доверие после Runtime Fee; три пайплайна; Mono</td><td>«fragmented options»; оптимизация отложена до 2027</td><td>51% релизов, 26% продаж; 30% у профи</td></tr>
+      <tr><td>Unreal 5</td><td>Рендер из коробки; Blueprints; 5% роялти</td><td>Статтер; требования; мыло TAA</td><td>Блог о статтере; Суини винит студии</td><td>28% релизов, 31% продаж; 42% у профи</td></tr>
+      <tr><td>Godot 4.7</td><td>MIT; лёгкость; 2D; STS2</td><td>3D, постобработка; нет консолей; C# без веба</td><td>«weak spot», «lackluster»; ревью «successfully ignored»</td><td>5% релизов, ~1% продаж; 47% GMTK</td></tr>
+      <tr><td>Bevy 0.19</td><td>ECS; Rust; быстрый рост рендера</td><td>Нет редактора; ломает API раз в квартал</td><td>«drastically under-funded»; «big, big hole»</td><td>Ниша; Tiny Glade на своём рендере</td></tr>
+      <tr><td>Frostbite</td><td>Шутеры: BF6 «rock-solid»</td><td>RPG: «full of razor blades»</td><td>Анонимные разработчики BioWare</td><td>Внутренний, EA</td></tr>
+      <tr><td>RE Engine</td><td>Линейные RE</td><td>Открытые миры упираются в CPU</td><td>Capcom: «performance challenges»</td><td>Внутренний, Capcom</td></tr>
+      <tr><td>REDengine</td><td>Cyberpunk 2077</td><td>Не масштабируется на параллельные проекты</td><td>«not about "This is so bad"»</td><td>Заменён UE5</td></tr>
+      <tr><td>Slipspace</td><td>Halo Infinite</td><td>Компонентам ~25 лет; онбординг</td><td>«almost 25 years old»</td><td>Заменён UE5</td></tr>
+      <tr><td>Decima</td><td>Инструменты open world</td><td>Данных о проблемах нет</td><td>CTO KojiPro хвалит</td><td>Внутренний, Sony</td></tr>
+      <tr><td>id Tech 8</td><td>Производительность без статтера</td><td>Обязательная RT</td><td>Цель — избежать «stutter struggle»</td><td>Внутренний, id</td></tr>
+      <tr><td>Creation 2</td><td>Моды (не проверено)</td><td>Загрузочные экраны</td><td>Заявлений нет</td><td>Внутренний, Bethesda</td></tr>
+      <tr><td>Luminous</td><td>Визуал FFXV</td><td>Нет доков и поддержки</td><td>FFXVI отказалась</td><td>Заброшен</td></tr>
+    </tbody>
+  </table></div>
+  <div class="scroll-hint">Таблицу можно листать вбок →</div>
+</section>
+
+<section id="themes">
+  <div class="eyebrow">Сквозные темы</div>
+  <h2>Что объединяет жалобы на все движки</h2>
+  <div class="themes">
+    <div class="theme"><h3>Доверие к лицензии стало техническим требованием</h3><p>После 2023 года движок выбирают и по тому, может ли вендор задним числом поменять условия. Godot удвоил базу за месяц после Runtime Fee; Unreal выигрывает, потому что сдержал слово по роялти.</p></div>
+    <div class="theme"><h3>Свою главную болезнь признают все — различается тон</h3><p>Unity и Godot признают прямо, у Epic две линии (инженеры признают, CEO винит студии), Питчфорд отвечает агрессией. Открытость Godot и Bevy сама по себе стала плюсом их управления.</p></div>
+    <div class="theme"><h3>Узкое место — люди и деньги, а не код</h3><p>Ревьюеры и €36 тыс./мес. у Godot, два недоплачиваемых сотрудника у Bevy, недоукомплектованная команда Frostbite, отсутствие руководства у Luminous. CDPR и Halo Studios ушли на UE5 ради найма и параллельных проектов, не ради картинки.</p></div>
+    <div class="theme"><h3>Движок хорош в жанре, под который создан</h3><p>Frostbite — шутеры, RE Engine — линейные игры, Godot — 2D, Bevy — кодовые симуляции. Универсальных движков нет, есть более или менее широкие зоны комфорта.</p></div>
+    <div class="theme"><h3>Переходы идут с лагом, на старте новых проектов</h3><p>Сначала джемы (Godot 19% → 47% за три года), потом опросы профи, и только потом Steam, где Unity сдвинулась лишь с ~53% до ~50%. Сколько коммерческих проектов реально сменили движок — данных нет.</p></div>
+  </div>
+
+  <h2 style="margin-top:32px">Практический выбор</h2>
+  <div class="picks">
+    <div class="pick"><b>Unreal</b><span>AAA и AA с упором на визуал — но заранее заложите бюджет на оптимизацию и PSO.</span></div>
+    <div class="pick"><b>Unity</b><span>Мобайл и средние инди: лучшая экосистема, но вендорский риск и производительность отложены до 2027.</span></div>
+    <div class="pick"><b>Godot</b><span>2D и небольшое 3D, если устраивают сторонние консольные порты.</span></div>
+    <div class="pick"><b>Bevy</b><span>Сильные программисты, готовые жить без редактора и заменять подсистемы, как Tiny Glade.</span></div>
+    <div class="pick"><b>Свой движок</b><span>Только при постоянной команде, узком жанре и поддержке платформодержателя (id, Guerrilla, DICE). Иначе — долг, как Frostbite в BioWare и Luminous.</span></div>
+  </div>
+  <p style="margin-top:20px">2026–2027 решающие почти для всех: Unity 7 должна быть «nothing broken», Epic — перейти на UE6 и Verse без новой статтер-эпопеи, Bevy — выпустить редактор, Godot — масштабировать ревью. Каждый из этих рисков разработчики уже назвали сами.</p>
+</section>
+
+<footer>Сводка открытых источников на сентябрь 2026. Цитаты — на языке оригинала; ссылки ведут на первоисточники или их пересказ. Полный отчёт с подробными ссылками лежит в репозитории: reports/Игровые движки плюсы и минусы.md.</footer>
+</div>
+
+<script>
+(function(){
+  var data=[["Unity",51,26,"26"],["Unreal",28,31,"31"],["Свои AAA",13,41,"41"],["Godot",5,1,"≈1"],["GameMaker",4,1,"≈1"]];
+  var max=51, el=document.getElementById("bars"), html="";
+  data.forEach(function(d){
+    html+='<div class="row"><div class="lab">'+d[0]+'</div><div class="bars">'+
+      '<div class="bar r"><i style="width:'+(d[1]/max*80)+'%"></i>'+d[1]+'%<span class="tip">'+d[0]+': '+d[1]+'% релизов</span></div>'+
+      '<div class="bar u"><i style="width:'+(d[2]/max*80)+'%"></i>'+d[3]+'%<span class="tip">'+d[0]+': '+d[3]+'% проданных копий</span></div>'+
+      '</div></div>';
+  });
+  el.innerHTML=html;
+})();
+</script>
