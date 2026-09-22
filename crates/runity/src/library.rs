@@ -15,8 +15,29 @@ use std::path::{Path, PathBuf};
 
 use crate::asset::{
     self, ArchivedMeshAsset, ArchivedSoundAsset, ArchivedTextureAsset, AssetError, AssetId,
-    AssetKind, MeshAsset, SoundAsset, TextureAsset,
+    AssetKind, MaterialAsset, MeshAsset, SoundAsset, TextureAsset,
 };
+use crate::material::Material;
+
+/// Read an asset's id out of its bytes, whatever kind it is.
+///
+/// One function rather than a `match` repeated at every call site: adding a
+/// kind used to mean finding three of these, and missing one meant an asset
+/// that loaded but could not be looked up.
+fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
+    match kind {
+        AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok().map(|a| (&a.id).into()),
+        AssetKind::Texture => asset::view::<TextureAsset>(bytes)
+            .ok()
+            .map(|a| (&a.id).into()),
+        AssetKind::Sound => asset::view::<SoundAsset>(bytes)
+            .ok()
+            .map(|a| (&a.id).into()),
+        AssetKind::Material => asset::view::<MaterialAsset>(bytes)
+            .ok()
+            .map(|a| (&a.id).into()),
+    }
+}
 
 /// One asset's bytes, plus where they came from.
 struct Entry {
@@ -52,7 +73,14 @@ fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
 pub struct Library {
     entries: Vec<Entry>,
     by_id: HashMap<AssetId, usize>,
-    by_name: HashMap<String, usize>,
+    /// A list rather than one slot, because a stem is not unique. One
+    /// directory cannot hold two assets with the same stem — the importer
+    /// writes `<stem>.rasset` — but a library assembled from several
+    /// directories with [`Library::add`] can, and `boulder.rmat` beside a
+    /// `boulder.obj` is a reasonable thing to want. With one slot the second
+    /// one read replaces the first, and the symptom is an asset that is on
+    /// disk and cannot be found by name.
+    by_name: HashMap<String, Vec<usize>>,
 }
 
 impl Library {
@@ -87,11 +115,10 @@ impl Library {
         let path = path.as_ref();
         let bytes = asset::read(path)?;
         let kind = asset::kind_of(&bytes)?;
-        let id = match kind {
-            AssetKind::Mesh => AssetId::from(&asset::view::<MeshAsset>(&bytes)?.id),
-            AssetKind::Texture => AssetId::from(&asset::view::<TextureAsset>(&bytes)?.id),
-            AssetKind::Sound => AssetId::from(&asset::view::<SoundAsset>(&bytes)?.id),
-        };
+        // The body is validated here, on the way in, so that every later
+        // lookup is a cast into bytes already known to be sound.
+        let id = id_of(&bytes, kind)
+            .ok_or_else(|| AssetError::Corrupt(format!("{kind:?} body did not validate")))?;
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -106,7 +133,7 @@ impl Library {
             name: name.clone(),
         });
         self.by_id.insert(id, index);
-        self.by_name.insert(name, index);
+        self.by_name.entry(name).or_default().push(index);
         Ok(id)
     }
 
@@ -134,17 +161,46 @@ impl Library {
         (entry.kind == AssetKind::Sound).then(|| asset::view::<SoundAsset>(&entry.bytes).ok())?
     }
 
+    /// The one asset of this kind with this file stem.
+    fn named(&self, name: &str, kind: AssetKind) -> Option<&Entry> {
+        self.by_name
+            .get(name)?
+            .iter()
+            .filter_map(|i| self.entries.get(*i))
+            .find(|e| e.kind == kind)
+    }
+
+    /// The material an id names.
+    ///
+    /// Returned by value: a material is four numbers, and a borrow would tie
+    /// every surface in a scene to the library's lifetime for nothing.
+    pub fn material(&self, id: AssetId) -> Option<Material> {
+        let entry = self.entries.get(*self.by_id.get(&id)?)?;
+        (entry.kind == AssetKind::Material)
+            .then(|| asset::view::<MaterialAsset>(&entry.bytes).ok())
+            .flatten()
+            .map(|a| Material::from(&a.material))
+    }
+
+    /// Look a material up by file stem, which is what a scene writes.
+    ///
+    /// This is the palette: `material: "mossy_stone"` in any scene finds the
+    /// one asset, and changing that asset changes every scene that used it.
+    pub fn material_by_name(&self, name: &str) -> Option<Material> {
+        let entry = self.named(name, AssetKind::Material)?;
+        asset::view::<MaterialAsset>(&entry.bytes)
+            .ok()
+            .map(|a| Material::from(&a.material))
+    }
+
     /// Look a sound up by file stem.
     pub fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
-        let entry = self.entries.get(*self.by_name.get(name)?)?;
-        (entry.kind == AssetKind::Sound).then(|| asset::view::<SoundAsset>(&entry.bytes).ok())?
+        asset::view::<SoundAsset>(&self.named(name, AssetKind::Sound)?.bytes).ok()
     }
 
     /// Look a texture up by file stem.
     pub fn texture_by_name(&self, name: &str) -> Option<&ArchivedTextureAsset> {
-        let entry = self.entries.get(*self.by_name.get(name)?)?;
-        (entry.kind == AssetKind::Texture)
-            .then(|| asset::view::<TextureAsset>(&entry.bytes).ok())?
+        asset::view::<TextureAsset>(&self.named(name, AssetKind::Texture)?.bytes).ok()
     }
 
     /// Look an asset up by file stem.
@@ -153,23 +209,30 @@ impl Library {
     /// editor writes scenes, it writes ids, and this stops being on the path
     /// anything important takes.
     pub fn mesh_by_name(&self, name: &str) -> Option<&ArchivedMeshAsset> {
-        let entry = self.entries.get(*self.by_name.get(name)?)?;
-        (entry.kind == AssetKind::Mesh).then(|| asset::view::<MeshAsset>(&entry.bytes).ok())?
+        asset::view::<MeshAsset>(&self.named(name, AssetKind::Mesh)?.bytes).ok()
     }
 
+    /// The id of the first asset read with this file stem, of any kind.
+    ///
+    /// First rather than "the" because a name is not unique across kinds;
+    /// anything that cares which one it is asking for calls the by-kind
+    /// lookup instead.
     pub fn id_by_name(&self, name: &str) -> Option<AssetId> {
-        let entry = self.entries.get(*self.by_name.get(name)?)?;
-        match entry.kind {
-            AssetKind::Mesh => asset::view::<MeshAsset>(&entry.bytes)
-                .ok()
-                .map(|m| AssetId::from(&m.id)),
-            AssetKind::Texture => asset::view::<TextureAsset>(&entry.bytes)
-                .ok()
-                .map(|t| AssetId::from(&t.id)),
-            AssetKind::Sound => asset::view::<SoundAsset>(&entry.bytes)
-                .ok()
-                .map(|s| AssetId::from(&s.id)),
-        }
+        let index = *self.by_name.get(name)?.first()?;
+        let entry = self.entries.get(index)?;
+        id_of(&entry.bytes, entry.kind)
+    }
+
+    /// Every asset of one kind, by the name a scene would use.
+    ///
+    /// What the editor's content browser lists, and what makes a palette
+    /// visible: the materials in a project are whatever this returns for
+    /// [`AssetKind::Material`], in the order they were read.
+    pub fn names_of(&self, kind: AssetKind) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(move |e| e.kind == kind)
+            .map(|e| e.name.as_str())
     }
 
     /// Re-read every asset whose file has changed since it was loaded.
@@ -192,18 +255,9 @@ impl Library {
             let Ok(kind) = asset::kind_of(&bytes) else {
                 continue;
             };
-            let id = match kind {
-                AssetKind::Mesh => asset::view::<MeshAsset>(&bytes)
-                    .ok()
-                    .map(|m| AssetId::from(&m.id)),
-                AssetKind::Texture => asset::view::<TextureAsset>(&bytes)
-                    .ok()
-                    .map(|t| AssetId::from(&t.id)),
-                AssetKind::Sound => asset::view::<SoundAsset>(&bytes)
-                    .ok()
-                    .map(|s| AssetId::from(&s.id)),
+            let Some(id) = id_of(&bytes, kind) else {
+                continue;
             };
-            let Some(id) = id else { continue };
 
             // An id is derived from the source path, so a re-import keeps
             // it — but a file replaced by a different asset entirely would

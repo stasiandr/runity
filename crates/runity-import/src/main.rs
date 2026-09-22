@@ -37,7 +37,7 @@ fn main() -> Result<()> {
                     "runity-import <source>... [--library DIR] [--scale F] \
                      [--keep-origin] [--recompute-normals] [--linear]\n\
                      \n\
-                     sources: .gltf .glb .obj .png .jpg .tga .bmp .wav"
+                     sources: .gltf .glb .obj .png .jpg .tga .bmp .wav .rmat"
                 );
                 return Ok(());
             }

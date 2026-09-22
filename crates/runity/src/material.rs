@@ -14,7 +14,24 @@ use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
 /// Whether the sun touches a surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// Archivable as well as serde-serializable: a material is both something a
+/// scene spells out in text and something the library stores as a compiled
+/// asset, and those have to be the same type or the two paths drift.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub enum Shading {
     /// Lit by the sun and the hemisphere ambient. Everything in the world.
     #[default]
@@ -27,7 +44,18 @@ pub enum Shading {
 }
 
 /// A surface.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct Material {
     /// Linear RGB, not sRGB. Lighting happens in linear and only the final
     /// write is encoded, so a colour picked off a screen has to be converted
@@ -69,6 +97,29 @@ impl Material {
 
     pub fn color(&self) -> Vec3 {
         Vec3::from_array(self.base_color)
+    }
+}
+
+impl From<&ArchivedMaterial> for Material {
+    /// Read a material out of a mapped asset.
+    ///
+    /// A copy rather than a borrow, deliberately: a material is four numbers,
+    /// and handing out a view into the library's bytes would tie every
+    /// surface in the world to the lifetime of a file on disk for no saving
+    /// worth having. Meshes are borrowed because a mesh is megabytes; this is
+    /// sixteen bytes.
+    fn from(archived: &ArchivedMaterial) -> Self {
+        Self {
+            base_color: [
+                archived.base_color[0].to_native(),
+                archived.base_color[1].to_native(),
+                archived.base_color[2].to_native(),
+            ],
+            shading: match archived.shading {
+                ArchivedShading::Unlit => Shading::Unlit,
+                ArchivedShading::Lit => Shading::Lit,
+            },
+        }
     }
 }
 

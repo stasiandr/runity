@@ -24,9 +24,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use runity::animation::{Channel, Clip, Joint, Path as AnimPath, PoseTransform, Skeleton};
 use runity::asset::{
-    AssetId, AssetKind, Bounds, MeshAsset, MeshSkin, SoundAsset, Submesh, TextureAsset,
-    TextureLevel, Vertex,
+    AssetId, AssetKind, Bounds, MaterialAsset, MeshAsset, MeshSkin, SoundAsset, Submesh,
+    TextureAsset, TextureLevel, Vertex,
 };
+use runity::material::{Material, Shading};
 use serde::{Deserialize, Serialize};
 
 /// What the importer was told to do, stored beside its output.
@@ -667,6 +668,82 @@ pub fn sound_from_wav(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     })
 }
 
+/// A colour as it is written down.
+///
+/// Two spellings, because there are two situations. A person or an agent
+/// picking a colour has a hex code — that is what every colour picker, every
+/// palette site and every screenshot gives you — and hex is sRGB. Something
+/// that computed a colour has linear floats already. Accepting only the
+/// second would mean every hand-written material carried a conversion done
+/// by hand, which is exactly the arithmetic that silently comes out washed
+/// out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Color {
+    /// `"#7f8c99"`, or the same without the hash: sRGB, converted on import.
+    Hex(String),
+    /// Linear RGB, in `0..=1`, already converted.
+    Linear([f32; 3]),
+}
+
+impl Color {
+    /// The linear triple the shader wants.
+    pub fn linear(&self) -> Result<[f32; 3]> {
+        match self {
+            Color::Linear(rgb) => Ok(*rgb),
+            Color::Hex(text) => {
+                let hex = text.trim().trim_start_matches('#');
+                if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                    anyhow::bail!("{text:?} is not a six-digit hex colour like \"#7f8c99\"");
+                }
+                let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
+                Ok(Material::from_srgb(byte(0), byte(2), byte(4)).base_color)
+            }
+        }
+    }
+}
+
+/// A material as it is authored: the source form of a `.rmat`.
+///
+/// Its own type rather than reusing [`Material`] because the two are not the
+/// same thing. This one is written by hand in sRGB and reads like a paint
+/// swatch; the asset is linear and reads like something a GPU wants. Keeping
+/// them apart is what lets the source stay editable and the asset stay fast.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MaterialSource {
+    pub color: Color,
+    /// Unlit surfaces ignore the sun and the fog. For embers and gizmos —
+    /// things that are a light rather than something lit.
+    #[serde(default)]
+    pub unlit: bool,
+}
+
+/// Read a `.rmat` and build a material asset from it.
+pub fn material_from_ron(
+    path: impl AsRef<Path>,
+    settings: &ImportSettings,
+) -> Result<MaterialAsset> {
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let source: MaterialSource =
+        ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    Ok(MaterialAsset {
+        id: AssetId::from_source(&settings.source, 0),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "material".into()),
+        material: Material {
+            base_color: source.color.linear()?,
+            shading: if source.unlit {
+                Shading::Unlit
+            } else {
+                Shading::Lit
+            },
+        },
+    })
+}
+
 /// Import one source file into `library`, writing both the asset and its
 /// sidecar.
 pub fn import_file(
@@ -705,6 +782,14 @@ pub fn import_file(
                 runity::asset::to_bytes(&sound, AssetKind::Sound)?,
                 sound.id,
                 AssetKind::Sound,
+            )
+        }
+        "rmat" => {
+            let material = material_from_ron(source, &settings)?;
+            (
+                runity::asset::to_bytes(&material, AssetKind::Material)?,
+                material.id,
+                AssetKind::Material,
             )
         }
         "png" | "jpg" | "jpeg" | "tga" | "bmp" => {

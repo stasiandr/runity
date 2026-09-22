@@ -108,10 +108,11 @@ pub struct EntityDesc {
     pub model: String,
     #[serde(default)]
     pub transform: Transform,
-    /// A builtin material by name (`grass`, `bark`, `ember`, …), or a
-    /// material written out in full. Named first because that is what keeps a
-    /// scene readable and a palette consistent: a colour spelled out in
-    /// twenty places drifts in nineteen of them.
+    /// A material by name — a `.rmat` asset in the library, or one of the
+    /// engine's builtins (`grass`, `bark`, `ember`, …) — or a material
+    /// written out in full. Named first because that is what keeps a scene
+    /// readable and a palette consistent: a colour spelled out in twenty
+    /// places drifts in nineteen of them.
     /// Left out of the file entirely when it is the default, so a scene
     /// full of plain grey things stays readable.
     #[serde(default, skip_serializing_if = "MaterialRef::is_default")]
@@ -166,7 +167,9 @@ impl EntityDesc {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaterialRef {
-    /// One of the engine's builtins, by name.
+    /// A material asset in the library by file stem, or one of the engine's
+    /// builtins. `builtin:stone` forces the builtin even when a project has
+    /// an asset of that name.
     Named(String),
     /// Spelled out, for a colour that has not earned a name yet.
     Inline(Material),
@@ -185,13 +188,34 @@ impl MaterialRef {
 }
 
 impl EntityDesc {
-    /// The material to draw with: the named builtin, the inline one, or the
-    /// default. An unknown name falls back rather than failing to load —
-    /// a scene with a typo should still open, showing plain grey where the
-    /// mistake is, which is more useful than an error and no scene at all.
+    /// The material to draw with, using the engine's builtins only.
+    ///
+    /// What a test and the reference scene want, since neither has a library.
+    /// Anything that does have one calls [`EntityDesc::material_from`].
     pub fn material(&self) -> Material {
+        self.material_from(|_| None)
+    }
+
+    /// The material to draw with, asking `lookup` first.
+    ///
+    /// The order is the project's palette, then the engine's builtins, then
+    /// plain grey. A project's own `stone` therefore shadows the engine's,
+    /// which is the useful direction: the builtins exist so that an example
+    /// scene can be written before a palette exists, not to reserve seven
+    /// names forever. `builtin:stone` reaches past the shadow when that is
+    /// what was meant.
+    ///
+    /// An unknown name falls back rather than failing to load — a scene with
+    /// a typo should still open, showing plain grey where the mistake is,
+    /// which is more useful than an error and no scene at all.
+    pub fn material_from(&self, lookup: impl Fn(&str) -> Option<Material>) -> Material {
         match &self.material {
-            MaterialRef::Named(name) => crate::material::builtin::by_name(name).unwrap_or_default(),
+            MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
+                Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
+                None => lookup(name)
+                    .or_else(|| crate::material::builtin::by_name(name))
+                    .unwrap_or_default(),
+            },
             MaterialRef::Inline(material) => *material,
         }
     }

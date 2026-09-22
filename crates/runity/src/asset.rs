@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// What kind of asset a file holds.
 ///
@@ -46,6 +46,7 @@ pub enum AssetKind {
     Mesh = 1,
     Texture = 2,
     Sound = 3,
+    Material = 4,
 }
 
 impl AssetKind {
@@ -54,6 +55,7 @@ impl AssetKind {
             1 => Some(AssetKind::Mesh),
             2 => Some(AssetKind::Texture),
             3 => Some(AssetKind::Sound),
+            4 => Some(AssetKind::Material),
             _ => None,
         }
     }
@@ -232,6 +234,24 @@ impl SoundAsset {
     pub fn duration_seconds(&self) -> f32 {
         self.frames() as f32 / self.sample_rate.max(1) as f32
     }
+}
+
+/// A surface, as an asset in its own right.
+///
+/// Materials were inline in scenes first, and inline is where a palette goes
+/// to die: the same brown spelled out in twenty scenes drifts in nineteen of
+/// them, and changing it means a find-and-replace across text files. As an
+/// asset it is named once, referenced by name, and edited in one place — the
+/// same deal meshes and textures already have.
+///
+/// It holds a [`Material`](crate::material::Material) rather than repeating
+/// its fields, so adding a roughness later is one change rather than two
+/// definitions to keep in step.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct MaterialAsset {
+    pub id: AssetId,
+    pub name: String,
+    pub material: crate::material::Material,
 }
 
 /// One step down the mip chain.

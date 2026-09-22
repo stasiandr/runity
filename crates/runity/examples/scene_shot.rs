@@ -66,19 +66,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut world = hecs_world();
     let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
-    let missing = runity::spawn_scene(&scene, &mut world, |name| {
-        if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-            return Some(found.1);
-        }
-        let handle = if let Some(mesh) = builtin::by_name(name) {
-            renderer.upload_mesh_owned(&gpu, &mesh)
-        } else {
-            let mesh = library.as_ref()?.mesh_by_name(name)?;
-            renderer.upload_mesh(&gpu, mesh)
-        };
-        uploaded.push((name.to_string(), handle));
-        Some(handle)
-    });
+    // Materials resolve the same way models do: the library first, then the
+    // engine's builtins. With no library the scene still draws, in the
+    // builtin palette — which is why the reference scene needs no pipeline.
+    let missing = runity::spawn_scene_with(
+        &scene,
+        &mut world,
+        |name| {
+            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                return Some(found.1);
+            }
+            let handle = if let Some(mesh) = builtin::by_name(name) {
+                renderer.upload_mesh_owned(&gpu, &mesh)
+            } else {
+                let mesh = library.as_ref()?.mesh_by_name(name)?;
+                renderer.upload_mesh(&gpu, mesh)
+            };
+            uploaded.push((name.to_string(), handle));
+            Some(handle)
+        },
+        |name| library.as_ref()?.material_by_name(name),
+    );
     for m in &missing {
         eprintln!("{}: no model named {}", m.entity_name, m.model);
     }

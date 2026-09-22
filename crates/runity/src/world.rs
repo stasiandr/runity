@@ -75,7 +75,25 @@ pub struct Unresolved {
 pub fn spawn_scene(
     scene: &Scene,
     world: &mut World,
+    resolve: impl FnMut(&str) -> Option<MeshHandle>,
+) -> Vec<Unresolved> {
+    // No palette: named materials fall through to the engine's builtins.
+    // That is what the reference scene and every test want, neither of which
+    // has a library.
+    spawn_scene_with(scene, world, resolve, |_| None)
+}
+
+/// Put a scene into a world, resolving named materials through a palette.
+///
+/// The second closure is what makes a material asset worth having: pass
+/// `|name| library.material_by_name(name)` and every scene that says
+/// `material: "mossy_stone"` picks up the one asset, so changing it changes
+/// every scene at once.
+pub fn spawn_scene_with(
+    scene: &Scene,
+    world: &mut World,
     mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    palette: impl Fn(&str) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut missing = Vec::new();
     for desc in &scene.entities {
@@ -85,6 +103,7 @@ pub fn spawn_scene(
             glam::Mat4::IDENTITY,
             world,
             &mut resolve,
+            &palette,
             &mut missing,
         );
     }
@@ -96,12 +115,14 @@ pub fn spawn_scene(
 /// A child whose model is missing still spawns, because its own children may
 /// be fine and dropping the branch would move them. It just gets nothing to
 /// draw.
+#[allow(clippy::too_many_arguments)]
 fn spawn_subtree(
     desc: &crate::scene::EntityDesc,
     parent: Option<hecs::Entity>,
     parent_matrix: glam::Mat4,
     world: &mut World,
     resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
@@ -116,7 +137,8 @@ fn spawn_subtree(
     }
     match resolve(&desc.model) {
         Some(mesh) => {
-            let _ = world.insert(entity, (Model(mesh), Surface(desc.material())));
+            let surface = Surface(desc.material_from(palette));
+            let _ = world.insert(entity, (Model(mesh), surface));
         }
         None => missing.push(Unresolved {
             entity_name: desc.name.clone(),
@@ -124,7 +146,15 @@ fn spawn_subtree(
         }),
     }
     for child in &desc.children {
-        spawn_subtree(child, Some(entity), world_matrix, world, resolve, missing);
+        spawn_subtree(
+            child,
+            Some(entity),
+            world_matrix,
+            world,
+            resolve,
+            palette,
+            missing,
+        );
     }
 }
 

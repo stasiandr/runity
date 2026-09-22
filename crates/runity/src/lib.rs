@@ -12,7 +12,11 @@
 
 // Re-exported so that a game or a tool uses the engine's version rather
 // than pinning its own and discovering the mismatch at a function boundary.
+// `hecs` for the same reason and one more: an `Entity` from a different
+// version of it is a different type, and the engine's world is the one that
+// issues them.
 pub use glam;
+pub use hecs;
 
 pub mod animation;
 pub mod animator;
@@ -38,7 +42,9 @@ pub mod world;
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
 pub use animator::{advance_animations, Animator, Playing};
-pub use asset::{AssetError, AssetId, Bounds, MeshAsset, SoundAsset, Submesh, Vertex};
+pub use asset::{
+    AssetError, AssetId, Bounds, MaterialAsset, MeshAsset, SoundAsset, Submesh, Vertex,
+};
 pub use audio::{Audio, Falloff};
 pub use edit::History;
 pub use gizmo::{Drag, GizmoStyle, Handle};
@@ -57,4 +63,6 @@ pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
-pub use world::{build_frame, spawn_scene, Model, Posed, Shape, Surface, Textured};
+pub use world::{
+    build_frame, spawn_scene, spawn_scene_with, Model, Posed, Shape, Surface, Textured,
+};
