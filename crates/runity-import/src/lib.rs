@@ -676,6 +676,71 @@ pub fn import_file(
     })
 }
 
+/// Re-import everything in a library whose source has changed since the
+/// asset was built.
+///
+/// This is the drag-and-drop workflow without the dragging: the sidecar
+/// says where each asset came from and with which settings, so a changed
+/// source can be rebuilt without anyone remembering what was done to it.
+/// It is also what makes the importer improvable — a better importer is
+/// worth nothing if every asset has to be re-added by hand.
+///
+/// `root` is what the sidecars' relative source paths are relative to.
+pub fn reimport_changed(library: impl AsRef<Path>, root: impl AsRef<Path>) -> Vec<Reimported> {
+    let (library, root) = (library.as_ref(), root.as_ref());
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(library) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let sidecar = entry.path();
+        if sidecar.extension().and_then(|e| e.to_str()) != Some("rimport") {
+            continue;
+        }
+        let Ok(settings) = ImportSettings::load(&sidecar) else {
+            continue;
+        };
+        let source = root.join(&settings.source);
+        let asset = sidecar.with_extension("rasset");
+
+        let newer = match (modified(&source), modified(&asset)) {
+            (Some(source_time), Some(asset_time)) => source_time > asset_time,
+            // A source that has gone is reported rather than rebuilt: the
+            // asset still works, and deleting it because a file moved would
+            // be worse than saying so.
+            (None, _) => {
+                out.push(Reimported {
+                    source: source.clone(),
+                    result: Err(format!("{} is gone", settings.source)),
+                });
+                continue;
+            }
+            // No asset yet — build it.
+            (Some(_), None) => true,
+        };
+        if !newer {
+            continue;
+        }
+
+        let result = import_file(&source, library, settings)
+            .map(|imported| imported.id)
+            .map_err(|e| e.to_string());
+        out.push(Reimported { source, result });
+    }
+    out
+}
+
+/// What one re-import attempt did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reimported {
+    pub source: PathBuf,
+    pub result: std::result::Result<runity::AssetId, String>,
+}
+
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

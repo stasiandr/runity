@@ -38,7 +38,7 @@ pub use animator::{advance_animations, Animator, Playing};
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use input::{Input, InputEvent, Key, MouseButton};
-pub use library::Library;
+pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};

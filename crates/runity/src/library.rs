@@ -23,9 +23,28 @@ struct Entry {
     bytes: Vec<u8>,
     kind: AssetKind,
     path: PathBuf,
+    /// When the file was last written, as of the last read.
+    ///
+    /// Polled rather than watched. A watcher means a thread, a channel and a
+    /// debounce, and the engine is a guest — the editor already has a loop
+    /// and can ask. Polling a few dozen timestamps costs nothing beside a
+    /// frame.
+    modified: Option<std::time::SystemTime>,
     /// The file stem, which is what a hand-written scene uses to name a model
     /// before an editor exists to write ids.
     name: String,
+}
+
+/// An asset that changed on disk and has been re-read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reloaded {
+    pub id: AssetId,
+    pub kind: AssetKind,
+    pub path: PathBuf,
+}
+
+fn modified_at(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Everything imported, indexed by id and by name.
@@ -82,6 +101,7 @@ impl Library {
             bytes,
             kind,
             path: path.to_path_buf(),
+            modified: modified_at(path),
             name: name.clone(),
         });
         self.by_id.insert(id, index);
@@ -135,6 +155,63 @@ impl Library {
                 .ok()
                 .map(|t| AssetId::from(&t.id)),
         }
+    }
+
+    /// Re-read every asset whose file has changed since it was loaded.
+    ///
+    /// Returns what changed, so the caller can re-upload exactly those and
+    /// nothing else. An asset that now fails to read keeps its old bytes:
+    /// a half-written file caught mid-save should not blank a model on
+    /// screen, and the next poll will pick up the finished one.
+    pub fn reload_changed(&mut self) -> Vec<Reloaded> {
+        let mut changed = Vec::new();
+        for index in 0..self.entries.len() {
+            let path = self.entries[index].path.clone();
+            let now = modified_at(&path);
+            if now.is_none() || now == self.entries[index].modified {
+                continue;
+            }
+            let Ok(bytes) = asset::read(&path) else {
+                continue;
+            };
+            let Ok(kind) = asset::kind_of(&bytes) else {
+                continue;
+            };
+            let id = match kind {
+                AssetKind::Mesh => asset::view::<MeshAsset>(&bytes)
+                    .ok()
+                    .map(|m| AssetId::from(&m.id)),
+                AssetKind::Texture => asset::view::<TextureAsset>(&bytes)
+                    .ok()
+                    .map(|t| AssetId::from(&t.id)),
+            };
+            let Some(id) = id else { continue };
+
+            // An id is derived from the source path, so a re-import keeps
+            // it — but a file replaced by a different asset entirely would
+            // change it, and the index has to follow.
+            let previous = self
+                .by_id
+                .iter()
+                .find(|(_, i)| **i == index)
+                .map(|(id, _)| *id);
+            if let Some(previous) = previous {
+                if previous != id {
+                    self.by_id.remove(&previous);
+                }
+            }
+            self.by_id.insert(id, index);
+
+            self.entries[index].bytes = bytes;
+            self.entries[index].kind = kind;
+            self.entries[index].modified = now;
+            changed.push(Reloaded {
+                id,
+                kind,
+                path: path.clone(),
+            });
+        }
+        changed
     }
 
     pub fn kind(&self, id: AssetId) -> Option<AssetKind> {
