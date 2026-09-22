@@ -328,3 +328,45 @@ fn what_is_behind_the_camera_is_not_drawn_but_still_casts() {
         "every object casts, however the camera is pointed"
     );
 }
+
+#[test]
+fn the_shadow_map_is_spent_on_what_the_camera_can_see() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let renderer = Renderer::new(&gpu, &target);
+
+    let mut frame = runity::build_frame(
+        &hecs::World::new(),
+        Camera {
+            position: Vec3::new(0.0, 3.4, 12.0),
+            target: Vec3::new(0.0, 1.4, -4.0),
+            ..Camera::default()
+        },
+        Lighting::default(),
+        FogSettings::default(),
+    );
+    let aspect = WIDTH as f32 / HEIGHT as f32;
+
+    // The ground in the reference scene is 120 metres across. Spreading the
+    // map over all of it is what made every shadow a staircase; spending it
+    // on the near view is what makes the same map sharp.
+    frame.shadows.max_distance = 40.0;
+    let near = renderer.shadow_texel_size(&frame, aspect);
+    frame.shadows.max_distance = 400.0;
+    let far = renderer.shadow_texel_size(&frame, aspect);
+
+    assert!(near > 0.0 && far > 0.0);
+    assert!(
+        far > near * 5.0,
+        "a longer shadow distance must spend the same texels over more \
+         ground: {near:.4} m per texel against {far:.4}"
+    );
+    assert!(
+        near < 0.05,
+        "at forty metres a 2048 map should give centimetres per texel, got \
+         {near:.4} m"
+    );
+}

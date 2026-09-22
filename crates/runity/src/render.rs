@@ -171,6 +171,15 @@ pub struct ShadowSettings {
     /// grazing angles a constant bias cannot, because the error there grows
     /// with the slope rather than with depth.
     pub normal_bias: f32,
+    /// How far from the camera shadows are drawn, in metres.
+    ///
+    /// This is the single biggest lever on how a shadow looks. The map has a
+    /// fixed number of texels, and they are spread over whatever the frustum
+    /// covers — so fitting the light to the whole scene spends most of them
+    /// on ground nobody is looking at, and a valley's worth of them leaves
+    /// each shadow a staircase. Fitting to the near part of the view instead
+    /// is what makes the same map sharp.
+    pub max_distance: f32,
 }
 
 impl Default for ShadowSettings {
@@ -180,6 +189,7 @@ impl Default for ShadowSettings {
             resolution: 2048,
             depth_bias: 0.0015,
             normal_bias: 0.05,
+            max_distance: 40.0,
         }
     }
 }
@@ -190,6 +200,7 @@ impl ShadowSettings {
         resolution: 1,
         depth_bias: 0.0,
         normal_bias: 0.0,
+        max_distance: 0.0,
     };
 }
 
@@ -1065,17 +1076,50 @@ impl Renderer {
         any.then_some((min, max))
     }
 
-    /// An orthographic frustum along the sun, fitted to the scene.
+    /// The sphere the shadow map covers: the near part of what the camera
+    /// can see, not the whole scene.
     ///
-    /// Fitted rather than fixed because the map has a texel budget and
-    /// spreading it over empty ground is how shadows turn to stairs.
-    fn fit_light_frustum(&self, frame: &Frame, sun: Vec3) -> Mat4 {
-        let Some((min, max)) = self.scene_bounds(frame) else {
+    /// A sphere rather than a box, and centred on the view rather than on
+    /// the world, for one reason: the size of what the map covers must not
+    /// change as the camera turns. A box fitted to the frustum's corners
+    /// grows and shrinks with every rotation, and the shadows crawl as its
+    /// texels resize under them.
+    fn shadow_sphere(&self, frame: &Frame, aspect: f32) -> Option<(Vec3, f32)> {
+        let camera = &frame.camera;
+        let far = frame.shadows.max_distance.min(camera.far).max(camera.near);
+        let forward = (camera.target - camera.position).normalize_or_zero();
+        if forward.length_squared() < 0.5 {
+            return None;
+        }
+        let up = camera.up.normalize_or_zero();
+        let right = forward.cross(up).normalize_or_zero();
+        let up = right.cross(forward);
+
+        let tan = (camera.fov_y_degrees.to_radians() * 0.5).tan();
+        let mut corners = Vec::with_capacity(8);
+        for distance in [camera.near, far] {
+            let half_height = tan * distance;
+            let half_width = half_height * aspect;
+            let centre = camera.position + forward * distance;
+            for (sx, sy) in [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)] {
+                corners.push(centre + right * half_width * sx + up * half_height * sy);
+            }
+        }
+        let centre = corners.iter().copied().sum::<Vec3>() / corners.len() as f32;
+        let radius = corners
+            .iter()
+            .map(|c| (*c - centre).length())
+            .fold(0.0f32, f32::max);
+        Some((centre, radius.max(0.01)))
+    }
+
+    /// An orthographic frustum along the sun, fitted to what the camera can
+    /// actually see.
+    fn fit_light_frustum(&self, frame: &Frame, sun: Vec3, aspect: f32) -> Mat4 {
+        let Some((centre, radius)) = self.shadow_sphere(frame, aspect) else {
             return Mat4::IDENTITY;
         };
-        let centre = (min + max) * 0.5;
-        let radius = (max - min).length() * 0.5;
-        if radius <= f32::EPSILON || sun.length_squared() < 0.5 {
+        if sun.length_squared() < 0.5 {
             return Mat4::IDENTITY;
         }
 
@@ -1085,24 +1129,33 @@ impl Renderer {
         } else {
             Vec3::Y
         };
-        let eye = centre - sun * radius * 2.0;
+        // Pulled back far enough that casters behind the view still land in
+        // the map: something off screen is often the thing casting the
+        // shadow you are looking at. The scene's own extent is how far back
+        // that has to be — anything nearer clips a caster and loses its
+        // shadow, which reads as an object that does not cast one.
+        let behind = self
+            .scene_bounds(frame)
+            .map_or(radius * 2.0, |(min, max)| (max - min).length())
+            .max(radius * 2.0);
+        let eye = centre - sun * behind;
         let view = Mat4::look_at_rh(eye, centre, up);
-        // The near plane sits behind the scene so that a caster outside the
-        // camera's view still lands in the map; something off screen can
-        // easily be the thing casting the shadow you are looking at.
-        let projection =
-            Mat4::orthographic_rh(-radius, radius, -radius, radius, 0.01, radius * 4.0);
+        let projection = Mat4::orthographic_rh(
+            -radius,
+            radius,
+            -radius,
+            radius,
+            0.01,
+            behind + radius * 2.0,
+        );
         projection * view
     }
 
     /// How much world a single shadow texel covers.
-    fn light_texel_size(&self, frame: &Frame, sun: Vec3) -> f32 {
-        match self.scene_bounds(frame) {
-            Some((min, max)) if sun.length_squared() > 0.5 => {
-                let radius = (max - min).length() * 0.5;
-                2.0 * radius / self.shadow_resolution.max(1) as f32
-            }
-            _ => 0.0,
+    pub fn shadow_texel_size(&self, frame: &Frame, aspect: f32) -> f32 {
+        match self.shadow_sphere(frame, aspect) {
+            Some((_, radius)) => 2.0 * radius / self.shadow_resolution.max(1) as f32,
+            None => 0.0,
         }
     }
 
@@ -1202,13 +1255,13 @@ impl Renderer {
 
         let sun = frame.lighting.sun_direction.normalize_or_zero();
         let light_view_projection = if frame.shadows.enabled {
-            self.fit_light_frustum(frame, sun)
+            self.fit_light_frustum(frame, sun, aspect)
         } else {
             Mat4::IDENTITY
         };
         // Half the world span one texel covers, which is what the normal
         // offset has to clear at a grazing angle.
-        let texel_world = self.light_texel_size(frame, sun);
+        let texel_world = self.shadow_texel_size(frame, aspect);
 
         let uniform = FrameUniform {
             view_projection: frame.camera.view_projection(aspect).to_cols_array_2d(),
