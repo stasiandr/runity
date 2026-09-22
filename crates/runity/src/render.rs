@@ -1366,7 +1366,7 @@ impl Renderer {
                     pass.set_bind_group(
                         2,
                         &self.pose_bind_group,
-                        &[*pose as u32 * self.pose_stride as u32],
+                        &[*pose * self.pose_stride as u32],
                     );
                     pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                     pass.set_vertex_buffer(1, self.instances.slice(..));
