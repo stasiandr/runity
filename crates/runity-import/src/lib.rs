@@ -22,8 +22,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use runity::animation::{Channel, Clip, Joint, Path as AnimPath, PoseTransform, Skeleton};
 use runity::asset::{
-    AssetId, AssetKind, Bounds, MeshAsset, Submesh, TextureAsset, TextureLevel, Vertex,
+    AssetId, AssetKind, Bounds, MeshAsset, MeshSkin, Submesh, TextureAsset, TextureLevel, Vertex,
 };
 use serde::{Deserialize, Serialize};
 
@@ -188,6 +189,8 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         vertices,
         indices,
         submeshes,
+        // OBJ has no concept of a skeleton.
+        skin: None,
     })
 }
 
@@ -256,6 +259,8 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut submeshes: Vec<Submesh> = Vec::new();
+    let mut joint_indices: Vec<[u16; 4]> = Vec::new();
+    let mut joint_weights: Vec<[f32; 4]> = Vec::new();
 
     // Walked through the scene graph rather than over `document.meshes()`,
     // because a node carries the transform that places its mesh. Reading the
@@ -299,8 +304,31 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                 let uvs: Option<Vec<[f32; 2]>> =
                     reader.read_tex_coords(0).map(|uv| uv.into_f32().collect());
 
+                let skin_joints: Option<Vec<[u16; 4]>> =
+                    reader.read_joints(0).map(|j| j.into_u16().collect());
+                let skin_weights: Option<Vec<[f32; 4]>> =
+                    reader.read_weights(0).map(|w| w.into_f32().collect());
+
                 let base = vertices.len() as u32;
                 for (i, position) in positions.iter().enumerate() {
+                    joint_indices.push(
+                        skin_joints
+                            .as_ref()
+                            .and_then(|j| j.get(i))
+                            .copied()
+                            .unwrap_or([0; 4]),
+                    );
+                    joint_weights.push(
+                        skin_weights
+                            .as_ref()
+                            .and_then(|w| w.get(i))
+                            .copied()
+                            // A vertex with no weights would collapse to the
+                            // origin once skinning multiplies it by nothing.
+                            // Bound entirely to joint zero leaves it where it
+                            // is.
+                            .unwrap_or([1.0, 0.0, 0.0, 0.0]),
+                    );
                     let p =
                         world.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
                     let n = normals
@@ -349,6 +377,8 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         }
     }
 
+    let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
+
     Ok(MeshAsset {
         id: AssetId::from_source(&settings.source, 0),
         name: path
@@ -359,7 +389,129 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         vertices,
         indices,
         submeshes,
+        skin,
     })
+}
+
+/// The skeleton and animations, if the file has any.
+fn read_skin(
+    document: &gltf::Document,
+    buffers: &[gltf::buffer::Data],
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
+) -> Option<MeshSkin> {
+    let gltf_skin = document.skins().next()?;
+    let reader = gltf_skin.reader(|buffer| Some(&buffers[buffer.index()]));
+    let inverse_binds: Vec<[[f32; 4]; 4]> = reader
+        .read_inverse_bind_matrices()
+        .map(|m| m.collect())
+        .unwrap_or_default();
+
+    // A joint's parent is whichever node in the skin lists it as a child.
+    let node_indices: Vec<usize> = gltf_skin.joints().map(|j| j.index()).collect();
+    let slot_of = |node: usize| {
+        node_indices
+            .iter()
+            .position(|n| *n == node)
+            .map(|i| i as u16)
+    };
+    let mut parents: Vec<Option<u16>> = vec![None; node_indices.len()];
+    for (slot, node) in gltf_skin.joints().enumerate() {
+        for child in node.children() {
+            if let Some(child_slot) = slot_of(child.index()) {
+                parents[child_slot as usize] = Some(slot as u16);
+            }
+        }
+    }
+
+    let skeleton = Skeleton {
+        joints: gltf_skin
+            .joints()
+            .enumerate()
+            .map(|(slot, node)| {
+                let (translation, rotation, scale) = node.transform().decomposed();
+                Joint {
+                    name: node.name().unwrap_or("joint").to_string(),
+                    parent: parents[slot],
+                    inverse_bind: inverse_binds
+                        .get(slot)
+                        .copied()
+                        // The default is identity, which glTF allows and
+                        // which means the bind pose is the model's own.
+                        .unwrap_or_else(|| glam::Mat4::IDENTITY.to_cols_array_2d()),
+                    rest: PoseTransform {
+                        translation,
+                        rotation,
+                        scale,
+                    },
+                }
+            })
+            .collect(),
+    };
+
+    let clips = document
+        .animations()
+        .map(|animation| read_clip(&animation, buffers, &node_indices))
+        .collect();
+
+    Some(MeshSkin {
+        joints,
+        weights,
+        skeleton,
+        clips,
+    })
+}
+
+fn read_clip(
+    animation: &gltf::Animation,
+    buffers: &[gltf::buffer::Data],
+    node_indices: &[usize],
+) -> Clip {
+    let mut channels = Vec::new();
+    let mut duration: f32 = 0.0;
+
+    for channel in animation.channels() {
+        let Some(joint) = node_indices
+            .iter()
+            .position(|n| *n == channel.target().node().index())
+        else {
+            // A channel animating something outside the skeleton — a camera,
+            // a light, a prop. Not ours to apply.
+            continue;
+        };
+        let path = match channel.target().property() {
+            gltf::animation::Property::Translation => AnimPath::Translation,
+            gltf::animation::Property::Rotation => AnimPath::Rotation,
+            gltf::animation::Property::Scale => AnimPath::Scale,
+            // Morph target weights are a different mechanism entirely.
+            gltf::animation::Property::MorphTargetWeights => continue,
+        };
+        let reader = channel.reader(|buffer| Some(&buffers[buffer.index()]));
+        let Some(times) = reader.read_inputs().map(|t| t.collect::<Vec<f32>>()) else {
+            continue;
+        };
+        let values: Vec<f32> = match reader.read_outputs() {
+            Some(gltf::animation::util::ReadOutputs::Translations(v)) => v.flatten().collect(),
+            Some(gltf::animation::util::ReadOutputs::Scales(v)) => v.flatten().collect(),
+            Some(gltf::animation::util::ReadOutputs::Rotations(v)) => {
+                v.into_f32().flatten().collect()
+            }
+            _ => continue,
+        };
+        duration = duration.max(times.last().copied().unwrap_or(0.0));
+        channels.push(Channel {
+            joint: joint as u16,
+            path,
+            times,
+            values,
+        });
+    }
+
+    Clip {
+        name: animation.name().unwrap_or("clip").to_string(),
+        duration,
+        channels,
+    }
 }
 
 /// Read an image and build a texture asset from it.
@@ -632,6 +784,61 @@ f 1 4 3
         assert_eq!(mesh.submeshes.len(), 1);
         assert_eq!(mesh.bounds.min[1], 3.0, "the node's translation applied");
         assert_eq!(mesh.bounds.max[1], 3.0);
+    }
+
+    #[test]
+    fn a_skinned_gltf_brings_its_skeleton_and_its_animation() {
+        let settings = ImportSettings {
+            origin_to_base: false,
+            ..ImportSettings::for_source("skinned_banner.gltf")
+        };
+        let mesh = mesh_from_gltf(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/skinned_banner.gltf"),
+            &settings,
+        )
+        .unwrap();
+
+        let skin = mesh.skin.expect("the file has a skin");
+        assert_eq!(skin.skeleton.len(), 2);
+        assert!(skin.skeleton.is_sorted(), "root before tip");
+        // The parent link comes from the node graph, not from the joint
+        // list's order: a skin that lists joints in any order still has to
+        // come out with the right hierarchy.
+        assert_eq!(skin.skeleton.joints[0].parent, None);
+        assert_eq!(skin.skeleton.joints[1].parent, Some(0));
+        assert_eq!(skin.skeleton.joints[1].name, "tip");
+
+        assert_eq!(skin.joints.len(), mesh.vertices.len());
+        assert_eq!(skin.weights.len(), mesh.vertices.len());
+        // The middle pair is shared evenly between the two joints.
+        assert_eq!(skin.weights[2], [0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(skin.joints[2], [0, 1, 0, 0]);
+
+        assert_eq!(skin.clips.len(), 1);
+        let clip = &skin.clips[0];
+        assert_eq!(clip.name, "furl");
+        assert_eq!(clip.duration, 1.0);
+        assert_eq!(clip.channels[0].joint, 1, "the channel points at the tip");
+
+        // And the pose it produces actually turns that joint.
+        let posed = clip.sample(&skin.skeleton, 1.0, false);
+        let rotated = runity::glam::Quat::from_array(posed[1].rotation);
+        let angle = rotated.to_euler(runity::glam::EulerRot::ZYX).0;
+        assert!(
+            (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
+            "a quarter turn, got {angle}"
+        );
+    }
+
+    #[test]
+    fn an_unskinned_gltf_carries_no_skeleton_and_costs_nothing() {
+        let settings = ImportSettings::for_source("floating_quad.gltf");
+        let mesh = mesh_from_gltf(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/floating_quad.gltf"),
+            &settings,
+        )
+        .unwrap();
+        assert!(mesh.skin.is_none());
     }
 
     #[test]

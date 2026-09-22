@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// What kind of asset a file holds.
 ///
@@ -214,6 +214,22 @@ pub struct TextureLevel {
     pub pixels: Vec<u8>,
 }
 
+/// What binds a mesh's vertices to a skeleton.
+///
+/// Held apart from [`Vertex`] rather than widened into it, so a static mesh
+/// pays nothing: most meshes in most scenes have no skeleton, and putting
+/// four joint indices and four weights on every vertex in the world would
+/// cost a third more memory and bandwidth for nothing.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct MeshSkin {
+    /// Four joint indices per vertex, parallel to `vertices`.
+    pub joints: Vec<[u16; 4]>,
+    /// Four weights per vertex, summing to one.
+    pub weights: Vec<[f32; 4]>,
+    pub skeleton: crate::animation::Skeleton,
+    pub clips: Vec<crate::animation::Clip>,
+}
+
 /// A mesh, ready to upload.
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 pub struct MeshAsset {
@@ -225,6 +241,8 @@ pub struct MeshAsset {
     pub indices: Vec<u32>,
     pub submeshes: Vec<Submesh>,
     pub bounds: Bounds,
+    /// Present only when the mesh is skinned.
+    pub skin: Option<MeshSkin>,
 }
 
 /// Errors that mean "do not cast these bytes".
@@ -376,6 +394,7 @@ mod tests {
             bounds: Bounds::of(&vertices),
             vertices,
             indices: (0..12u32).collect(),
+            skin: None,
             submeshes: vec![Submesh {
                 first_index: 0,
                 index_count: 12,

@@ -11,3 +11,9 @@ metres up, holding one quad at the origin. An importer that reads meshes
 without walking the scene graph puts the quad back at zero, and that is the
 mistake the fixture exists to catch — a model exported as placed parts
 collapses into a heap in exactly this way.
+
+`skinned_banner.gltf` is a six-vertex strip bound to two joints, with one
+rotation clip. It exercises the parts of a skin that are easy to get wrong
+and hard to see: joint parents come from the node graph rather than from the
+order the skin lists them, the middle vertices are shared evenly between two
+joints, and the inverse bind matrices are not identity.

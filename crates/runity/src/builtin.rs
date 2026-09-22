@@ -26,6 +26,7 @@ fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset {
         }],
         vertices,
         indices,
+        skin: None,
     }
 }
 

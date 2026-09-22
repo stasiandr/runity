@@ -228,6 +228,7 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
             vertices: Vec::new(),
             indices: Vec::new(),
             submeshes: Vec::new(),
+            skin: None,
             bounds: runity::Bounds::of(&[]),
         },
         runity::asset::AssetKind::Mesh,
