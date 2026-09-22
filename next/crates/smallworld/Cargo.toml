@@ -1,5 +1,5 @@
 [package]
-name = "valley-game"
+name = "smallworld"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,4 +11,4 @@ glam = "0.32"
 hecs = "0.11.0"
 rapier3d = "0.26.1"
 serde = { version = "1.0.229", features = ["derive"] }
-valley-engine = { version = "0.1.0", path = "../valley-engine" }
+runity = { version = "0.1.0", path = "../runity" }

@@ -1,0 +1,43 @@
+# The new stack: `runity` the engine, `smallworld` the game.
+#
+# This is a separate workspace from the one in `crates/` rather than new
+# members inside it, because the two live by opposite rules: that one is a
+# dependency-free engine and its CI enforces an empty dependency tree, while
+# this one takes the proven crate first and writes its own only where it hits
+# a ceiling. Two rules that contradict each other need two workspaces.
+#
+# The directory name is scaffolding. When the dependency-free workspace
+# retires, this one moves to the repository root and the crate names — which
+# are already the real ones — do not change.
+[workspace]
+resolver = "2"
+members = [
+    "crates/runity",
+    "crates/smallworld",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stasiandr/runity"
+
+[workspace.dependencies]
+runity = { path = "crates/runity", version = "0.1.0" }
+smallworld = { path = "crates/smallworld", version = "0.1.0" }
+
+# Release builds keep debug info: a profiler that cannot name a frame is
+# worth nothing, and Tracy wants symbols.
+[profile.release]
+opt-level = 3
+debug = 1
+
+# Dependencies go to full optimization so that wgpu and rapier are not the
+# reason a debug build crawls, while our own crates stay at opt-level 0 and
+# keep compiling fast.
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 3

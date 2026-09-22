@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
-# The Valley workspace has its own manifest and its own rules about
+# The new workspace has its own manifest and its own rules about
 # dependencies; it is not a member of this one.
-exclude = ["valley"]
+exclude = ["next"]
 members = [
     "crates/runity-math",
     "crates/runity-render",

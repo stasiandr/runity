@@ -183,7 +183,7 @@ mod tests {
                 body: Body::Static,
             }],
         };
-        let dir = std::env::temp_dir().join("valley-scene-test");
+        let dir = std::env::temp_dir().join("runity-scene-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scene.ron");
         scene.save(&path).unwrap();
