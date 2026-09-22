@@ -193,6 +193,9 @@ fn every_call_survives_a_null_editor() {
         assert!(!runity_editor_set_snap(null, 0.25, 15.0, 0.1));
         assert!(!runity_editor_snap(null, std::ptr::null_mut()));
         assert!(!runity_editor_focus_selected(null));
+        assert!(!runity_editor_import(null, std::ptr::null()));
+        assert_eq!(runity_editor_reload_assets(null), 0);
+        assert!(!runity_editor_save_material(null, 0, std::ptr::null()));
         assert_eq!(runity_editor_step(null, 0.016), 0);
         assert!(!runity_editor_stop(null));
         assert!(!runity_editor_is_playing(null));
@@ -1106,4 +1109,109 @@ fn focusing_frames_the_selection_whatever_size_it_is() {
         bigger > distance * 3.0,
         "ten times the size should be much further back: {distance} then {bigger}"
     );
+}
+
+#[test]
+fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
+    let Some((editor, path)) = open("save-material") else {
+        return;
+    };
+    let library = path.parent().unwrap().join("library");
+    std::fs::create_dir_all(&library).unwrap();
+    assert!(unsafe { runity_editor_set_library(editor.0, c(&library).as_ptr()) });
+
+    // Tune a colour on one object, the way a slider would.
+    let wanted = [0.31f32, 0.12, 0.05, 0.0];
+    assert!(unsafe { runity_editor_set_material(editor.0, 1, wanted.as_ptr()) });
+
+    let name = CString::new("clay").unwrap();
+    assert!(unsafe { runity_editor_save_material(editor.0, 1, name.as_ptr()) });
+
+    // What came out is a file a person could have written.
+    let source = path.parent().unwrap().join("materials/clay.rmat");
+    let text = std::fs::read_to_string(&source).expect("the .rmat source");
+    assert!(
+        text.contains("color: \"#"),
+        "sRGB hex, not a dump of floats: {text}"
+    );
+    assert!(library.join("clay.rasset").exists(), "and it was imported");
+
+    // The entity now names it, and still draws the colour — to within the
+    // eight bits a hex code has.
+    assert_eq!(material_name_of(editor.0, 1), "clay");
+    let drawn = material_of(editor.0, 1);
+    for axis in 0..3 {
+        assert!(
+            (drawn[axis] - wanted[axis]).abs() < 0.005,
+            "channel {axis}: {} against {}",
+            drawn[axis],
+            wanted[axis]
+        );
+    }
+
+    // And it is in the palette, so the next object can be given the same
+    // colour by name rather than by eye.
+    let count = unsafe { runity_editor_palette_count(editor.0) };
+    let mut names = Vec::new();
+    for i in 0..count {
+        names.push(text_from(|b, c| unsafe {
+            runity_editor_palette_name(editor.0, i, b, c)
+        }));
+    }
+    assert!(names.contains(&"clay".to_string()), "{names:?}");
+
+    // Editing the source and asking for a reload changes what is drawn,
+    // with nothing reopened: the loop the whole asset pipeline is for.
+    std::fs::write(&source, "(color: \"#3c5a8a\")\n").unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    assert_eq!(unsafe { runity_editor_reload_assets(editor.0) }, 1);
+    let after = material_of(editor.0, 1);
+    assert!(
+        after[2] > after[0],
+        "warm clay should have become cool: {after:?}"
+    );
+}
+
+#[test]
+fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
+    let Some((editor, path)) = open("import") else {
+        return;
+    };
+    let library = path.parent().unwrap().join("library");
+    std::fs::create_dir_all(&library).unwrap();
+    assert!(unsafe { runity_editor_set_library(editor.0, c(&library).as_ptr()) });
+
+    // A triangle is enough: what is being tested is the path, not the
+    // parser, which has its own tests next door.
+    let source = path.parent().unwrap().join("wedge.obj");
+    std::fs::write(
+        &source,
+        "v -1.0 0.0 -1.0\nv  1.0 0.0 -1.0\nv  1.0 0.0  1.0\nf 1 3 2\n",
+    )
+    .unwrap();
+    assert!(unsafe { runity_editor_import(editor.0, c(&source).as_ptr()) });
+    assert!(library.join("wedge.rasset").exists());
+
+    // And a scene can use it straight away, by the name the file had.
+    let model = CString::new("wedge").unwrap();
+    let added = unsafe { runity_editor_add(editor.0, -1, model.as_ptr()) };
+    assert!(added >= 0);
+    let mut three = [0.0f32; 3];
+    assert!(unsafe { runity_editor_world_position(editor.0, added as u32, three.as_mut_ptr()) });
+
+    // Importing without a library says so rather than writing somewhere
+    // surprising.
+    let Some((fresh, _)) = open("import-nowhere") else {
+        return;
+    };
+    assert!(!unsafe { runity_editor_import(fresh.0, c(&source).as_ptr()) });
+    let mut message = vec![0u8; 256];
+    unsafe { runity_last_error(message.as_mut_ptr() as *mut c_char, 256) };
+    assert!(String::from_utf8_lossy(&message).contains("library"));
 }

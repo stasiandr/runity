@@ -38,6 +38,11 @@ pub struct Editor {
     history: runity::edit::History,
     scene_path: Option<PathBuf>,
     library: Option<Library>,
+    /// Where that library sits, so the editor can import into it.
+    library_dir: Option<PathBuf>,
+    /// Where `.rmat` sources go: `materials/` beside the scene, by the same
+    /// convention prefabs follow.
+    material_dir: Option<PathBuf>,
     /// Prefabs a scene's instances name. Loaded from `prefabs/` beside the
     /// scene when one is opened, so the editor finds the same ones the
     /// headless render does.
@@ -183,6 +188,8 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         history: runity::edit::History::new(Scene::default(), 64),
         scene_path: None,
         library: None,
+        library_dir: None,
+        material_dir: None,
         prefabs: runity::Prefabs::new(),
         prefab_dir: None,
         instanced: runity::Instanced::default(),
@@ -250,6 +257,8 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             history: runity::edit::History::new(Scene::default(), 64),
             scene_path: None,
             library: None,
+            library_dir: None,
+            material_dir: None,
             prefabs: runity::Prefabs::new(),
             prefab_dir: None,
             instanced: runity::Instanced::default(),
@@ -343,6 +352,7 @@ pub unsafe extern "C" fn runity_editor_set_library(
                 fail(format!("{} asset(s) skipped", problems.len()));
             }
             editor.library = Some(library);
+            editor.library_dir = Some(path);
             // Handles from the old library refer to meshes uploaded for it.
             editor.uploaded.clear();
             true
@@ -383,6 +393,7 @@ pub unsafe extern "C" fn runity_editor_open_scene(
                 fail(format!("{} prefab(s) skipped", problems.len()));
             }
             editor.prefab_dir = path.parent().map(|d| d.join("prefabs"));
+            editor.material_dir = path.parent().map(|d| d.join("materials"));
             editor.prefabs = prefabs;
             editor.history.replace(scene);
             editor.scene_path = Some(path);
@@ -1533,6 +1544,167 @@ pub unsafe extern "C" fn runity_editor_focus_selected(editor: *mut Editor) -> bo
     true
 }
 
+/// Import a source file into the library the editor has open.
+///
+/// This is drag-and-drop: the editor is the one side that links the
+/// importer, so a model dropped on a window becomes an asset without
+/// anybody running a command. The shipped game still links none of it.
+///
+/// # Safety
+/// `source` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_import(editor: *mut Editor, source: *const c_char) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let Some(source) = (unsafe { path_from(source) }) else {
+        fail("no source");
+        return false;
+    };
+    let Some(library_dir) = editor.library_dir.clone() else {
+        fail("no library — call set_library first");
+        return false;
+    };
+    // The sidecar records the path as given. An editor knows where a file
+    // was dropped from and not what the project's root is, so an absolute
+    // path is the honest answer; a command line importing the same file
+    // with a relative one is what makes a library rebuildable anywhere.
+    let settings = runity_import::ImportSettings::for_source(source.to_string_lossy().into_owned());
+    if let Err(e) = runity_import::import_file(&source, &library_dir, settings) {
+        fail(format!("{e:#}"));
+        return false;
+    }
+    editor.reopen_library()
+}
+
+/// Rebuild what changed on disk and re-read it: the hot loop.
+///
+/// Returns how many assets came back different. Sources are rebuilt first —
+/// a changed `.png` becomes a changed `.rasset` — and then the library
+/// re-reads exactly those, so a colour tweaked in a text file shows up in
+/// the viewport without anything being reopened.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_reload_assets(editor: *mut Editor) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let Some(library_dir) = editor.library_dir.clone() else {
+        return 0;
+    };
+    // Sidecars written by this editor hold absolute paths, which ignore the
+    // root; ones written by the command line are relative to the project,
+    // and the scene's directory is the closest thing to it the editor knows.
+    let root = editor
+        .scene_path
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| library_dir.clone());
+    runity_import::reimport_changed(&library_dir, &root);
+
+    let Some(library) = editor.library.as_mut() else {
+        return 0;
+    };
+    let changed = library.reload_changed();
+    if !changed.is_empty() {
+        // Mesh handles point at what was uploaded from the old bytes.
+        editor.uploaded.clear();
+        editor.respawn();
+    }
+    changed.len() as c_uint
+}
+
+/// Save an entity's colour as a named material, and point it at it.
+///
+/// The other half of tuning a colour: a value dragged on one object stays on
+/// that object until it is given a name, and a name is what every other
+/// scene can use. Writes a `.rmat` source into `materials/` beside the scene
+/// and imports it, so the thing the editor produced is the same kind of file
+/// a person would have written.
+///
+/// # Safety
+/// `name` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_save_material(
+    editor: *mut Editor,
+    index: c_uint,
+    name: *const c_char,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if editor.playing() {
+        fail("stop playing first — an edit made in play mode is an edit you lose");
+        return false;
+    }
+    let Some(name) = (unsafe { path_from(name) }) else {
+        fail("no name");
+        return false;
+    };
+    let name = name.to_string_lossy().into_owned();
+    if name.is_empty() {
+        fail("a material needs a name");
+        return false;
+    }
+    let (Some(source_dir), Some(library_dir)) =
+        (editor.material_dir.clone(), editor.library_dir.clone())
+    else {
+        fail("no scene or no library — a material needs somewhere to live");
+        return false;
+    };
+
+    let flat = editor.history.scene().flatten();
+    let Some((desc, _)) = flat.get(index as usize) else {
+        fail("no entity at that index");
+        return false;
+    };
+    let material = editor.resolve_material(desc);
+
+    // Written as sRGB hex, which is what the format is for: the file that
+    // comes out is one a person can read and edit, not a dump of the
+    // editor's floats.
+    let channel = |value: f32| (runity::material::linear_to_srgb(value) * 255.0).round() as u8;
+    let text = format!(
+        "(color: \"#{:02x}{:02x}{:02x}\"{})\n",
+        channel(material.base_color[0]),
+        channel(material.base_color[1]),
+        channel(material.base_color[2]),
+        if material.shading == runity::Shading::Unlit {
+            ", unlit: true"
+        } else {
+            ""
+        }
+    );
+    if let Err(e) = std::fs::create_dir_all(&source_dir) {
+        fail(e.to_string());
+        return false;
+    }
+    let source = source_dir.join(format!("{name}.rmat"));
+    if let Err(e) = std::fs::write(&source, text) {
+        fail(e.to_string());
+        return false;
+    }
+    let settings = runity_import::ImportSettings::for_source(source.to_string_lossy().into_owned());
+    if let Err(e) = runity_import::import_file(&source, &library_dir, settings) {
+        fail(format!("{e:#}"));
+        return false;
+    }
+    if !editor.reopen_library() {
+        return false;
+    }
+
+    let scene = editor.history.edit();
+    let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
+        return false;
+    };
+    desc.material = runity::scene::MaterialRef::Named(name);
+    editor.respawn();
+    true
+}
+
 /// Where an entity actually is: three floats, in world space.
 ///
 /// Not the same as its transform. The transform is local and belongs to the
@@ -1829,6 +2001,28 @@ impl Editor {
             },
             |name| library?.material_by_name(name),
         );
+    }
+
+    /// Re-read the library from disk, keeping nothing uploaded from before.
+    fn reopen_library(&mut self) -> bool {
+        let Some(directory) = self.library_dir.clone() else {
+            return false;
+        };
+        match Library::open(&directory) {
+            Ok((library, problems)) => {
+                if !problems.is_empty() {
+                    fail(format!("{} asset(s) skipped", problems.len()));
+                }
+                self.library = Some(library);
+                self.uploaded.clear();
+                self.respawn();
+                true
+            }
+            Err(e) => {
+                fail(e.to_string());
+                false
+            }
+        }
     }
 
     fn playing(&self) -> bool {

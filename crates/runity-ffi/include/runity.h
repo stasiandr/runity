@@ -97,6 +97,26 @@ bool runity_editor_world_position(RunityEditor *editor,
                                   unsigned int index,
                                   float *out_three);
 
+/* --- the library ---------------------------------------------------- */
+
+/* Drag-and-drop: import a source file into the open library. The editor is
+ * the one side that links the importer; the shipped game links none of it.
+ * Needs a library — call runity_editor_set_library first. */
+bool runity_editor_import(RunityEditor *editor, const char *source);
+
+/* The hot loop: rebuild whatever source changed, re-read whatever asset
+ * changed, and return how many. A colour tweaked in a text file shows up in
+ * the viewport without the scene being reopened. */
+unsigned int runity_editor_reload_assets(RunityEditor *editor);
+
+/* Save an entity's colour as a named material and point it at it: the other
+ * half of tuning a colour, since a value dragged on one object stays on that
+ * object until it has a name. Writes a .rmat into materials/ beside the
+ * scene — the same file a person would have written — and imports it. */
+bool runity_editor_save_material(RunityEditor *editor,
+                                 unsigned int index,
+                                 const char *name);
+
 /* --- prefabs -------------------------------------------------------- */
 
 /* A prefab is one entity subtree in its own file, and a scene points at it
