@@ -772,6 +772,233 @@ pub unsafe extern "C" fn runity_editor_add(
     index as c_int
 }
 
+/// Read the material an entity is drawn with: r, g, b in **linear** space,
+/// then 1 or 0 for unlit.
+///
+/// Resolved rather than raw: an entity naming `stone` reports the colour
+/// `stone` actually is, so an inspector's swatch shows what is on screen
+/// rather than the word. [`runity_editor_material_name`] is how the host
+/// tells the two apart.
+///
+/// Linear because that is what the engine holds and what a lossless round
+/// trip needs. A picker working in sRGB converts with
+/// [`runity_linear_to_srgb`] rather than carrying its own formula.
+///
+/// # Safety
+/// `out_four` must be writable for four floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_get_material(
+    editor: *mut Editor,
+    index: c_uint,
+    out_four: *mut c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out_four.is_null() {
+        return false;
+    }
+    let flat = editor.history.scene().flatten();
+    let Some((desc, _)) = flat.get(index as usize) else {
+        return false;
+    };
+    let material = editor.resolve_material(desc);
+    let values = [
+        material.base_color[0],
+        material.base_color[1],
+        material.base_color[2],
+        (material.shading == runity::Shading::Unlit) as u8 as f32,
+    ];
+    unsafe { ptr::copy_nonoverlapping(values.as_ptr(), out_four, values.len()) };
+    true
+}
+
+/// Give an entity a colour of its own: r, g, b linear, then unlit as 1 or 0.
+///
+/// This breaks any link to a named material, which is what dragging a slider
+/// on one object means. Pointing it back at the palette is
+/// [`runity_editor_set_material_name`] — a separate call, because the
+/// difference between "this rock is a bit greener" and "this rock is moss"
+/// is a difference the scene file has to keep.
+///
+/// # Safety
+/// `four` must be readable for four floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_material(
+    editor: *mut Editor,
+    index: c_uint,
+    four: *const c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if four.is_null() {
+        return false;
+    }
+    let v = unsafe { std::slice::from_raw_parts(four, 4) };
+    let material = runity::Material {
+        base_color: [v[0], v[1], v[2]],
+        shading: if v[3] != 0.0 {
+            runity::Shading::Unlit
+        } else {
+            runity::Shading::Lit
+        },
+    };
+    // One undoable step, like a value typed into an inspector. A drag along
+    // a colour slider that wants to be one step takes its own snapshot the
+    // way a gizmo drag does.
+    let scene = editor.history.edit();
+    let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
+        return false;
+    };
+    desc.material = runity::scene::MaterialRef::Inline(material);
+    editor.respawn();
+    true
+}
+
+/// The name of the material an entity points at, or nothing when it carries
+/// its own colour.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_material_name(
+    editor: *mut Editor,
+    index: c_uint,
+    buffer: *mut c_char,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let flat = editor.history.scene().flatten();
+    let name = match flat.get(index as usize).map(|(desc, _)| &desc.material) {
+        Some(runity::scene::MaterialRef::Named(name)) => name.clone(),
+        _ => String::new(),
+    };
+    write_string(&name, buffer, capacity)
+}
+
+/// Point an entity at a material by name — a `.rmat` in the library, or a
+/// builtin. An empty name is refused: clearing the link means giving the
+/// entity a colour, which is [`runity_editor_set_material`].
+///
+/// An unknown name is accepted, and draws grey. Refusing it would mean an
+/// editor could not name a material before importing it, and the scene
+/// format already treats a name nothing answers to as a visible mistake
+/// rather than a failure.
+///
+/// # Safety
+/// `name` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_material_name(
+    editor: *mut Editor,
+    index: c_uint,
+    name: *const c_char,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if name.is_null() {
+        return false;
+    }
+    let Ok(name) = (unsafe { CStr::from_ptr(name) }).to_str() else {
+        fail("material name is not utf-8");
+        return false;
+    };
+    if name.is_empty() {
+        fail("a material name cannot be empty");
+        return false;
+    }
+    let name = name.to_string();
+    let scene = editor.history.edit();
+    let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
+        return false;
+    };
+    desc.material = runity::scene::MaterialRef::Named(name);
+    editor.respawn();
+    true
+}
+
+/// How many materials the editor can offer: the library's, then the
+/// builtins the library does not shadow.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_palette_count(editor: *mut Editor) -> c_uint {
+    unsafe { borrow(editor) }.map_or(0, |e| e.palette().len() as c_uint)
+}
+
+/// The name of one entry in the palette.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_palette_name(
+    editor: *mut Editor,
+    index: c_uint,
+    buffer: *mut c_char,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let palette = editor.palette();
+    let Some((name, _)) = palette.get(index as usize) else {
+        return 0;
+    };
+    write_string(name, buffer, capacity)
+}
+
+/// One palette entry's colour, in the same four floats as
+/// [`runity_editor_get_material`] — for drawing the swatch beside the name.
+///
+/// # Safety
+/// `out_four` must be writable for four floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_palette_color(
+    editor: *mut Editor,
+    index: c_uint,
+    out_four: *mut c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out_four.is_null() {
+        return false;
+    }
+    let palette = editor.palette();
+    let Some((_, material)) = palette.get(index as usize) else {
+        return false;
+    };
+    let values = [
+        material.base_color[0],
+        material.base_color[1],
+        material.base_color[2],
+        (material.shading == runity::Shading::Unlit) as u8 as f32,
+    ];
+    unsafe { ptr::copy_nonoverlapping(values.as_ptr(), out_four, values.len()) };
+    true
+}
+
+/// One channel from sRGB to linear.
+///
+/// Here so that a host with an sRGB colour picker does not carry its own
+/// copy of the curve. The usual home-made version is `powf(2.2)`, which is
+/// close enough to look right and wrong enough that a colour picked in the
+/// editor is not the colour the engine draws.
+#[no_mangle]
+pub extern "C" fn runity_srgb_to_linear(channel: c_float) -> c_float {
+    runity::material::srgb_to_linear(channel)
+}
+
+/// One channel from linear back to sRGB, for showing a colour in a picker.
+#[no_mangle]
+pub extern "C" fn runity_linear_to_srgb(channel: c_float) -> c_float {
+    runity::material::linear_to_srgb(channel)
+}
+
 /// Delete an entity and everything under it.
 ///
 /// # Safety
@@ -907,18 +1134,60 @@ impl Editor {
         let gpu = &self.gpu;
         let library = self.library.as_ref();
         let uploaded = &mut self.uploaded;
-        runity::spawn_scene(self.history.scene(), &mut self.world, |name| {
-            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-                return Some(found.1);
+        runity::spawn_scene_with(
+            self.history.scene(),
+            &mut self.world,
+            |name| {
+                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                    return Some(found.1);
+                }
+                let handle = if let Some(mesh) = builtin::by_name(name) {
+                    renderer.upload_mesh_owned(gpu, &mesh)
+                } else {
+                    renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
+                };
+                uploaded.push((name.to_string(), handle));
+                Some(handle)
+            },
+            |name| library?.material_by_name(name),
+        );
+    }
+
+    /// The material an entity is actually drawn with.
+    ///
+    /// The one place that knows the resolution order, so the inspector and
+    /// the frame cannot disagree about what colour something is.
+    fn resolve_material(&self, desc: &runity::EntityDesc) -> runity::Material {
+        desc.material_from(|name| self.library.as_ref()?.material_by_name(name))
+    }
+
+    /// Every material the editor can offer, in the order to show them:
+    /// the library's palette first, then the builtins it does not shadow.
+    fn palette(&self) -> Vec<(String, runity::Material)> {
+        let mut out: Vec<(String, runity::Material)> = Vec::new();
+        if let Some(library) = self.library.as_ref() {
+            let names: Vec<String> = library
+                .names_of(runity::asset::AssetKind::Material)
+                .map(|n| n.to_string())
+                .collect();
+            for name in names {
+                if let Some(material) = library.material_by_name(&name) {
+                    out.push((name, material));
+                }
             }
-            let handle = if let Some(mesh) = builtin::by_name(name) {
-                renderer.upload_mesh_owned(gpu, &mesh)
-            } else {
-                renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
-            };
-            uploaded.push((name.to_string(), handle));
-            Some(handle)
-        });
+        }
+        for name in runity::material::builtin::NAMES {
+            if out.iter().any(|(existing, _)| existing == name) {
+                // Shadowed by the project's own. Listing both would offer a
+                // name that means one thing in the list and another in the
+                // scene.
+                continue;
+            }
+            if let Some(material) = runity::material::builtin::by_name(name) {
+                out.push((name.to_string(), material));
+            }
+        }
+        out
     }
 
     /// The size of whatever is being drawn into.

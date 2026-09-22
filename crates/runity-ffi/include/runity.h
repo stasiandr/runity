@@ -89,6 +89,60 @@ bool runity_editor_set_transform(RunityEditor *editor,
                                  unsigned int index,
                                  const float *nine);
 
+/* --- materials ------------------------------------------------------ */
+
+/* Four floats: r, g, b in LINEAR space, then 1 or 0 for unlit.
+ *
+ * Resolved, not raw: an entity naming "stone" reports the colour stone
+ * actually is, so a swatch shows what is on screen rather than the word.
+ * runity_editor_material_name tells the two apart.
+ *
+ * Linear because that is what the engine holds and what survives a round
+ * trip. A picker working in sRGB converts with the two helpers below
+ * instead of carrying its own formula. */
+bool runity_editor_get_material(RunityEditor *editor,
+                                unsigned int index,
+                                float *out_four);
+
+/* Give one entity a colour of its own, breaking any link to a named
+ * material — which is what dragging a slider on one object means. */
+bool runity_editor_set_material(RunityEditor *editor,
+                                unsigned int index,
+                                const float *four);
+
+/* The material this entity points at, or "" when it carries its own
+ * colour. */
+unsigned int runity_editor_material_name(RunityEditor *editor,
+                                         unsigned int index,
+                                         char *buffer,
+                                         unsigned int capacity);
+
+/* Point an entity at a material by name: a .rmat in the library, or a
+ * builtin. An empty name is refused — clearing the link means giving the
+ * entity a colour. An unknown name is accepted and draws grey, so a
+ * material can be named before it is imported. */
+bool runity_editor_set_material_name(RunityEditor *editor,
+                                     unsigned int index,
+                                     const char *name);
+
+/* What the editor can offer: the library's materials, then the builtins it
+ * does not shadow. */
+unsigned int runity_editor_palette_count(RunityEditor *editor);
+unsigned int runity_editor_palette_name(RunityEditor *editor,
+                                        unsigned int index,
+                                        char *buffer,
+                                        unsigned int capacity);
+bool runity_editor_palette_color(RunityEditor *editor,
+                                 unsigned int index,
+                                 float *out_four);
+
+/* One channel, either way. Here so a host does not carry its own copy of
+ * the curve: the home-made version is usually powf(2.2), close enough to
+ * look right and wrong enough that a colour picked in the editor is not the
+ * colour the engine draws. */
+float runity_srgb_to_linear(float channel);
+float runity_linear_to_srgb(float channel);
+
 /* --- editing, and taking it back ------------------------------------ */
 
 /* Add an entity with a model, under `parent` or at the top with -1.

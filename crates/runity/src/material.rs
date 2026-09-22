@@ -84,8 +84,9 @@ impl Material {
 
     /// Build a material from the sRGB bytes a colour picker gives you.
     pub fn from_srgb(r: u8, g: u8, b: u8) -> Self {
+        let channel = |byte: u8| srgb_to_linear(byte as f32 / 255.0);
         Self {
-            base_color: [srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b)],
+            base_color: [channel(r), channel(g), channel(b)],
             shading: Shading::Lit,
         }
     }
@@ -123,12 +124,28 @@ impl From<&ArchivedMaterial> for Material {
     }
 }
 
-fn srgb_to_linear(byte: u8) -> f32 {
-    let c = byte as f32 / 255.0;
+/// One channel, sRGB to linear, both in `0..=1`.
+///
+/// Public because the editor needs it and must not carry its own copy. A
+/// host that reimplements this gets it slightly wrong — usually as a plain
+/// `powf(2.2)`, which is close enough to look right and wrong enough that
+/// colours picked in the editor do not match the ones the engine draws.
+pub fn srgb_to_linear(channel: f32) -> f32 {
+    let c = channel.clamp(0.0, 1.0);
     if c <= 0.04045 {
         c / 12.92
     } else {
         ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// One channel, linear back to sRGB: what a colour picker should be shown.
+pub fn linear_to_srgb(channel: f32) -> f32 {
+    let c = channel.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
     }
 }
 
@@ -178,6 +195,23 @@ mod tests {
         assert_eq!(black.base_color, [0.0, 0.0, 0.0]);
         let white = Material::from_srgb(255, 255, 255);
         assert!((white.base_color[0] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_two_colour_conversions_are_each_others_inverse() {
+        // They are separate functions with separate constants, which is
+        // exactly how one of them ends up subtly wrong.
+        for step in 0..=20 {
+            let c = step as f32 / 20.0;
+            assert!(
+                (srgb_to_linear(linear_to_srgb(c)) - c).abs() < 1e-4,
+                "round trip broke at {c}"
+            );
+        }
+        assert_eq!(linear_to_srgb(0.0), 0.0);
+        // `1.055 * 1 - 0.055` is not exactly one in f32, and a picker that
+        // demanded it were would clamp white to something just under.
+        assert!((linear_to_srgb(1.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]

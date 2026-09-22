@@ -179,6 +179,15 @@ fn every_call_survives_a_null_editor() {
             runity_editor_entity_name(null, 0, std::ptr::null_mut(), 0),
             0
         );
+        assert!(!runity_editor_get_material(null, 0, std::ptr::null_mut()));
+        assert!(!runity_editor_set_material(null, 0, std::ptr::null()));
+        assert!(!runity_editor_set_material_name(null, 0, std::ptr::null()));
+        assert_eq!(
+            runity_editor_material_name(null, 0, std::ptr::null_mut(), 0),
+            0
+        );
+        assert_eq!(runity_editor_palette_count(null), 0);
+        assert!(!runity_editor_palette_color(null, 0, std::ptr::null_mut()));
         runity_editor_free(null);
     }
 }
@@ -425,4 +434,186 @@ fn deleting_clears_a_selection_that_would_otherwise_point_at_a_stranger() {
         1,
         "the lid went too"
     );
+}
+
+/// Read one entity's material through the boundary.
+fn material_of(editor: *mut Editor, index: u32) -> [f32; 4] {
+    let mut four = [0.0f32; 4];
+    assert!(unsafe { runity_editor_get_material(editor, index, four.as_mut_ptr()) });
+    four
+}
+
+/// The name it points at, or "" when it carries its own colour.
+fn material_name_of(editor: *mut Editor, index: u32) -> String {
+    let mut buffer = vec![0u8; 128];
+    unsafe { runity_editor_material_name(editor, index, buffer.as_mut_ptr() as *mut c_char, 128) };
+    std::ffi::CStr::from_bytes_until_nul(&buffer)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn a_colour_can_be_tuned_on_one_object_and_taken_back() {
+    // The thing a person actually wants an editor for: nudge a colour, look
+    // at it, undo it. A scene file cannot do this, which is why the editor
+    // exists at all.
+    let Some((editor, path)) = open("material") else {
+        return;
+    };
+    let before = material_of(editor.0, 1);
+    assert_eq!(before, [0.8, 0.8, 0.8, 0.0], "the default grey, lit");
+
+    let wanted = [0.31, 0.12, 0.05, 0.0];
+    assert!(unsafe { runity_editor_set_material(editor.0, 1, wanted.as_ptr()) });
+    assert_eq!(material_of(editor.0, 1), wanted);
+    assert_eq!(
+        material_name_of(editor.0, 1),
+        "",
+        "a tuned colour belongs to the object, not to a name"
+    );
+
+    // It reaches the file, and it comes back.
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    let reopened = runity::Scene::load(&path).unwrap();
+    assert_eq!(
+        reopened.find("crate").unwrap().material().base_color[0],
+        0.31
+    );
+
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert_eq!(
+        material_of(editor.0, 1),
+        before,
+        "one step, all the way back"
+    );
+}
+
+#[test]
+fn an_entity_can_be_pointed_at_the_palette_and_reports_what_it_became() {
+    let Some((editor, path)) = open("palette") else {
+        return;
+    };
+    let stone = CString::new("stone").unwrap();
+    assert!(unsafe { runity_editor_set_material_name(editor.0, 1, stone.as_ptr()) });
+    assert_eq!(material_name_of(editor.0, 1), "stone");
+
+    // The colour reported is the colour stone is, not the word: an
+    // inspector's swatch has to match what is on screen.
+    let reported = material_of(editor.0, 1);
+    let builtin = runity::material::builtin::STONE;
+    assert_eq!(
+        [reported[0], reported[1], reported[2]],
+        builtin.base_color,
+        "the name should resolve to a colour"
+    );
+
+    // And the file keeps the name rather than the colour, which is the whole
+    // point of a palette.
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    assert!(std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("\"stone\""));
+
+    // An empty name is refused: clearing a link means giving a colour.
+    let empty = CString::new("").unwrap();
+    assert!(!unsafe { runity_editor_set_material_name(editor.0, 1, empty.as_ptr()) });
+    assert_eq!(material_name_of(editor.0, 1), "stone", "nothing changed");
+}
+
+#[test]
+fn the_palette_offers_the_builtins_and_the_librarys_own() {
+    let Some((editor, _)) = open("palette-list") else {
+        return;
+    };
+
+    // With no library it is the builtins, each with a colour to draw a
+    // swatch with.
+    let count = unsafe { runity_editor_palette_count(editor.0) };
+    assert_eq!(count as usize, runity::material::builtin::NAMES.len());
+    let mut names = Vec::new();
+    for i in 0..count {
+        let mut buffer = vec![0u8; 64];
+        unsafe {
+            runity_editor_palette_name(editor.0, i, buffer.as_mut_ptr() as *mut c_char, 64);
+        }
+        names.push(
+            std::ffi::CStr::from_bytes_until_nul(&buffer)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let mut colour = [0.0f32; 4];
+        assert!(unsafe { runity_editor_palette_color(editor.0, i, colour.as_mut_ptr()) });
+        assert!(colour[..3].iter().all(|c| (0.0..=1.0).contains(c)));
+    }
+    assert!(names.contains(&"ember".to_string()));
+
+    // Nothing past the end, rather than whatever is next in memory.
+    assert!(!unsafe { runity_editor_palette_color(editor.0, count, [0.0f32; 4].as_mut_ptr()) });
+
+    // Point it at a library holding two materials: one new, one shadowing a
+    // builtin. The palette should gain one entry, not two, and `stone`
+    // should now be the project's.
+    let library = std::env::temp_dir().join("runity-ffi-palette-library");
+    let _ = std::fs::remove_dir_all(&library);
+    std::fs::create_dir_all(&library).unwrap();
+    write_material(&library, "moss", runity::Material::new(0.1, 0.3, 0.05));
+    write_material(&library, "stone", runity::Material::new(0.9, 0.0, 0.0));
+    assert!(unsafe { runity_editor_set_library(editor.0, c(&library).as_ptr()) });
+
+    let after = unsafe { runity_editor_palette_count(editor.0) };
+    assert_eq!(
+        after,
+        count + 1,
+        "one new name, and `stone` listed once rather than twice"
+    );
+
+    let stone = CString::new("stone").unwrap();
+    assert!(unsafe { runity_editor_set_material_name(editor.0, 1, stone.as_ptr()) });
+    let reported = material_of(editor.0, 1);
+    assert!(
+        reported[0] > 0.8 && reported[1] < 0.01,
+        "the project's stone, not the engine's: {reported:?}"
+    );
+
+    let forced = CString::new("builtin:stone").unwrap();
+    assert!(unsafe { runity_editor_set_material_name(editor.0, 1, forced.as_ptr()) });
+    assert_eq!(
+        material_of(editor.0, 1)[..3],
+        runity::material::builtin::STONE.base_color,
+        "and the engine's is still reachable"
+    );
+}
+
+/// Write a material asset straight into a library directory.
+///
+/// No importer here on purpose: the editor's boundary should not depend on
+/// `runity-import`, and a test that reached for it would hide the day it
+/// started to.
+fn write_material(directory: &std::path::Path, name: &str, material: runity::Material) {
+    let bytes = runity::asset::to_bytes(
+        &runity::MaterialAsset {
+            id: runity::AssetId::from_source(name, 0),
+            name: name.into(),
+            material,
+        },
+        runity::asset::AssetKind::Material,
+    )
+    .unwrap();
+    std::fs::write(directory.join(format!("{name}.rasset")), bytes).unwrap();
+}
+
+#[test]
+fn the_colour_conversions_are_the_engines_own_and_round_trip() {
+    // A host that carries its own curve gets it slightly wrong — usually as
+    // powf(2.2) — and the colour picked is not the colour drawn.
+    for step in 0..=10 {
+        let c = step as f32 / 10.0;
+        let back = runity_linear_to_srgb(runity_srgb_to_linear(c));
+        assert!((back - c).abs() < 1e-4, "{c} came back as {back}");
+    }
+    // Mid grey in sRGB is not half in linear, which is the whole reason this
+    // is not a multiplication.
+    assert!((runity_srgb_to_linear(0.5) - 0.2140).abs() < 0.001);
 }
