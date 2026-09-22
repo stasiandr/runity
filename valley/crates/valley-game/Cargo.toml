@@ -1,0 +1,14 @@
+[package]
+name = "valley-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam = "0.32"
+hecs = "0.11.0"
+rapier3d = "0.26.1"
+serde = { version = "1.0.229", features = ["derive"] }
+valley-engine = { version = "0.1.0", path = "../valley-engine" }

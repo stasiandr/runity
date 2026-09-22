@@ -1,0 +1,36 @@
+# The Valley workspace: the game, built on industry-standard
+# crates rather than from scratch.
+#
+# It lives beside the original `crates/` workspace rather than inside it on
+# purpose. That one is a dependency-free engine and its CI enforces it; this
+# one is the opposite bet — take the proven crate, and only write our own when
+# we hit its ceiling. Two rules that contradict each other need two
+# workspaces.
+[workspace]
+resolver = "2"
+members = [
+    "crates/valley-engine",
+    "crates/valley-game",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/stasiandr/runity"
+
+# Release builds keep debug info: a profiler that cannot name a frame is
+# worth nothing, and `puffin`/`tracy` both want symbols.
+[profile.release]
+opt-level = 3
+debug = 1
+
+# The editor is run, not shipped. Dependencies go to full optimization so that
+# wgpu and rapier are not the reason a debug build crawls, while our own
+# crates stay at opt-level 0 and compile fast.
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 3
