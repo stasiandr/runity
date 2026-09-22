@@ -14,6 +14,16 @@
 //!
 //! `N` comes from the clock, not from the frame rate, so the world runs at
 //! the same speed on every machine and a fast one simply draws it more often.
+//!
+//! Both game callbacks go through `subsecond::call`, so a rebuilt `step` or
+//! `frame` takes effect in the running process. That is why there is no
+//! scripting language here: the reason to embed one is to avoid waiting for
+//! a compile, and hot-patching Rust avoids it without a second language, a
+//! second set of types and a boundary between them.
+//!
+//! ```text
+//! dx serve --hotpatch     # rebuilds and patches while the window stays open
+//! ```
 
 use std::sync::Arc;
 
@@ -153,13 +163,20 @@ impl<G: Game> Shell<G> {
 
         let mut quit = false;
         while self.time.next_step().is_some() {
+            // Through `subsecond::call`, so a rebuilt `step` takes effect in
+            // the running process. It costs one indirection through a jump
+            // table and buys not restarting to see a rule change — which is
+            // the entire reason gameplay is not behind a scripting language
+            // here.
             let mut ctx = Self::context(state, &self.time, &self.input);
-            self.game.step(&mut ctx);
+            let game = &mut self.game;
+            subsecond::call(|| game.step(&mut ctx));
             quit |= ctx.quit;
         }
 
         let mut ctx = Self::context(state, &self.time, &self.input);
-        let frame = self.game.frame(&mut ctx);
+        let game = &mut self.game;
+        let frame = subsecond::call(|| game.frame(&mut ctx));
         quit |= ctx.quit;
 
         // One acquired frame for both passes: the scene, then the overlay
