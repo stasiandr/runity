@@ -14,6 +14,7 @@
 // than pinning its own and discovering the mismatch at a function boundary.
 pub use glam;
 
+pub mod animation;
 pub mod asset;
 pub mod builtin;
 pub mod gpu;
@@ -31,6 +32,7 @@ pub mod ui;
 pub mod ui_render;
 pub mod world;
 
+pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use input::{Input, InputEvent, Key, MouseButton};
