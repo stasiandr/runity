@@ -238,6 +238,130 @@ fn recompute_normals(vertices: &mut [Vertex], indices: &[u32]) {
     }
 }
 
+/// Read a glTF file and build one mesh asset from everything in it.
+///
+/// glTF is the format real tools export, so this is the path art actually
+/// arrives by; OBJ stays because the kits this repository ships are OBJ.
+///
+/// Every primitive in every mesh becomes a submesh of one asset. Splitting a
+/// file into several assets is the other reasonable choice and a worse one
+/// here: a model exported as a dozen parts is still one thing to place, and
+/// an importer that scatters it makes a scene author reassemble what the
+/// artist already assembled.
+pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<MeshAsset> {
+    let path = path.as_ref();
+    let (document, buffers, _images) =
+        gltf::import(path).with_context(|| format!("{}", path.display()))?;
+
+    let mut vertices: Vec<Vertex> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut submeshes: Vec<Submesh> = Vec::new();
+
+    // Walked through the scene graph rather than over `document.meshes()`,
+    // because a node carries the transform that places its mesh. Reading the
+    // meshes directly gives every part the same origin, and a model built
+    // from placed parts collapses into a heap.
+    let mut stack: Vec<(gltf::Node, glam::Mat4)> = document
+        .default_scene()
+        .map(|scene| scene.nodes().map(|n| (n, glam::Mat4::IDENTITY)).collect())
+        .unwrap_or_else(|| {
+            document
+                .nodes()
+                .map(|n| (n, glam::Mat4::IDENTITY))
+                .collect()
+        });
+
+    while let Some((node, parent)) = stack.pop() {
+        let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
+        let world = parent * local;
+        let normal_matrix = glam::Mat3::from_mat4(world).inverse().transpose();
+
+        if let Some(mesh) = node.mesh() {
+            for primitive in mesh.primitives() {
+                if primitive.mode() != gltf::mesh::Mode::Triangles {
+                    // Strips and fans are legal glTF and vanishingly rare
+                    // from real exporters. Skipped loudly rather than
+                    // misread as triangles.
+                    anyhow::bail!(
+                        "{}: primitive mode {:?} is not triangles",
+                        path.display(),
+                        primitive.mode()
+                    );
+                }
+                let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
+                let positions: Vec<[f32; 3]> = reader
+                    .read_positions()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("{}: a primitive has no positions", path.display())
+                    })?
+                    .collect();
+                let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
+                let uvs: Option<Vec<[f32; 2]>> =
+                    reader.read_tex_coords(0).map(|uv| uv.into_f32().collect());
+
+                let base = vertices.len() as u32;
+                for (i, position) in positions.iter().enumerate() {
+                    let p =
+                        world.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
+                    let n = normals
+                        .as_ref()
+                        .and_then(|n| n.get(i))
+                        .map(|n| (normal_matrix * glam::Vec3::from_array(*n)).normalize_or_zero())
+                        .unwrap_or(glam::Vec3::ZERO);
+                    vertices.push(Vertex {
+                        position: p.to_array(),
+                        normal: n.to_array(),
+                        uv: uvs
+                            .as_ref()
+                            .and_then(|uv| uv.get(i))
+                            .copied()
+                            .unwrap_or([0.0, 0.0]),
+                    });
+                }
+
+                let first_index = indices.len() as u32;
+                match reader.read_indices() {
+                    Some(read) => indices.extend(read.into_u32().map(|i| i + base)),
+                    // An unindexed primitive is a plain vertex list.
+                    None => indices.extend(base..base + positions.len() as u32),
+                }
+                submeshes.push(Submesh {
+                    first_index,
+                    index_count: indices.len() as u32 - first_index,
+                    material: None,
+                });
+            }
+        }
+
+        for child in node.children() {
+            stack.push((child, world));
+        }
+    }
+
+    let missing_normals = vertices.iter().all(|v| v.normal == [0.0, 0.0, 0.0]);
+    if settings.recompute_normals || missing_normals {
+        recompute_normals(&mut vertices, &indices);
+    }
+    if settings.origin_to_base {
+        let base = Bounds::of(&vertices).min[1];
+        for v in &mut vertices {
+            v.position[1] -= base;
+        }
+    }
+
+    Ok(MeshAsset {
+        id: AssetId::from_source(&settings.source, 0),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "mesh".into()),
+        bounds: Bounds::of(&vertices),
+        vertices,
+        indices,
+        submeshes,
+    })
+}
+
 /// Read an image and build a texture asset from it.
 ///
 /// Everything becomes RGBA8, including greyscale and palette images, because
@@ -355,6 +479,14 @@ pub fn import_file(
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     let (bytes, id, kind) = match extension.as_str() {
+        "gltf" | "glb" => {
+            let mesh = mesh_from_gltf(source, &settings)?;
+            (
+                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                mesh.id,
+                AssetKind::Mesh,
+            )
+        }
         "obj" => {
             let mesh = mesh_from_obj(source, &settings)?;
             (
@@ -477,6 +609,47 @@ f 1 4 3
 
         // And the sidecar says exactly how to build it again.
         assert_eq!(ImportSettings::load(&out.sidecar).unwrap(), settings);
+    }
+
+    #[test]
+    fn a_gltf_node_transform_reaches_the_vertices() {
+        // The fixture's quad sits at the origin under a node that lifts it
+        // three metres. Reading `document.meshes()` directly — the obvious
+        // way — loses that, and a model exported as placed parts collapses
+        // into a heap.
+        let settings = ImportSettings {
+            origin_to_base: false,
+            ..ImportSettings::for_source("floating_quad.gltf")
+        };
+        let mesh = mesh_from_gltf(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/floating_quad.gltf"),
+            &settings,
+        )
+        .unwrap();
+
+        assert_eq!(mesh.vertices.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
+        assert_eq!(mesh.submeshes.len(), 1);
+        assert_eq!(mesh.bounds.min[1], 3.0, "the node's translation applied");
+        assert_eq!(mesh.bounds.max[1], 3.0);
+    }
+
+    #[test]
+    fn a_gltf_without_normals_gets_them_computed_like_an_obj_does() {
+        let settings = ImportSettings::for_source("floating_quad.gltf");
+        let mesh = mesh_from_gltf(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/floating_quad.gltf"),
+            &settings,
+        )
+        .unwrap();
+        for v in &mesh.vertices {
+            assert!(
+                (v.normal[1] - 1.0).abs() < 1e-5,
+                "a floor faces up, got {:?}",
+                v.normal
+            );
+        }
+        assert_eq!(mesh.bounds.min[1], 0.0, "origin_to_base still applies");
     }
 
     #[test]

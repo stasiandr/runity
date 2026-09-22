@@ -73,6 +73,10 @@ cargo run -p runity-import -- assets/examples/models/pine_large.obj --library li
 cargo run --release --example scene_shot -- my-scene.ron --library library
 ```
 
+Понимает `.gltf`/`.glb` (то, чем экспортируют настоящие инструменты), `.obj`
+и растровые картинки. Узлы сцены glTF при этом обходятся: модель, собранная из
+расставленных частей, остаётся собранной.
+
 Рядом с `.rasset` ложится `.rimport` — из чего и с какими настройками он
 собран, текстом. Без этого импорт был бы дорогой в одну сторону.
 

@@ -35,7 +35,9 @@ fn main() -> Result<()> {
             "--help" | "-h" => {
                 println!(
                     "runity-import <source>... [--library DIR] [--scale F] \
-                     [--keep-origin] [--recompute-normals] [--linear]"
+                     [--keep-origin] [--recompute-normals] [--linear]\n\
+                     \n\
+                     sources: .gltf .glb .obj .png .jpg .tga .bmp"
                 );
                 return Ok(());
             }
