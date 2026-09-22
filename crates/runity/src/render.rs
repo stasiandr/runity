@@ -132,6 +132,24 @@ impl Default for FogSettings {
     }
 }
 
+/// What one frame cost, in things drawn and things skipped.
+///
+/// Worth reporting rather than merely doing: culling that silently removes
+/// something you meant to see is indistinguishable from a bug in placement,
+/// and the count is the first thing to look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FrameStats {
+    /// Draws the frame asked for.
+    pub submitted: u32,
+    /// Draws that reached the colour pass.
+    pub drawn: u32,
+    /// Draws outside the camera's frustum.
+    pub culled: u32,
+    /// Draws in the shadow pass, which is not culled by the camera: a
+    /// caster behind you still throws a shadow in front of you.
+    pub shadow_casters: u32,
+}
+
 /// How shadows are cast, or that they are not.
 ///
 /// A shadow map is the cheapest way to make something touch the ground, and
@@ -276,6 +294,7 @@ pub struct Renderer {
     shadow_sampler: wgpu::Sampler,
     shadow_resolution: u32,
     format: wgpu::TextureFormat,
+    stats: FrameStats,
     meshes: Vec<GpuMesh>,
     textures: Vec<GpuTexture>,
     texture_layout: wgpu::BindGroupLayout,
@@ -569,6 +588,7 @@ impl Renderer {
             shadow_sampler,
             shadow_resolution,
             format,
+            stats: FrameStats::default(),
             meshes: Vec::new(),
             textures: Vec::new(),
             texture_layout,
@@ -720,9 +740,10 @@ impl Renderer {
         &'pass self,
         pass: &mut wgpu::RenderPass<'pass>,
         batches: &[((MeshHandle, TextureHandle), Vec<InstanceRaw>)],
+        base: u32,
         textured: bool,
     ) {
-        let mut first = 0u32;
+        let mut first = base;
         for ((handle, texture), list) in batches {
             let Some(mesh) = self.meshes.get(handle.0 as usize) else {
                 continue;
@@ -856,6 +877,11 @@ impl Renderer {
         Ok(())
     }
 
+    /// What the last frame cost.
+    pub fn stats(&self) -> FrameStats {
+        self.stats
+    }
+
     /// Whether this renderer's pipeline matches a target's pixel format.
     ///
     /// A renderer built for one format cannot draw into another, and the
@@ -925,11 +951,21 @@ impl Renderer {
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        // Draws are grouped by mesh so that one mesh drawn a hundred times
-        // costs one call. A forest is the same tree over and over, so this is
-        // not a micro-optimisation, it is the difference between one draw and
-        // a thousand.
+        // Draws are grouped by mesh and texture so that one mesh drawn a
+        // hundred times costs one call. A forest is the same tree over and
+        // over, so this is not a micro-optimisation, it is the difference
+        // between one draw and a thousand.
+        //
+        // Two sets, because the shadow pass must not use the camera's
+        // frustum: something behind you can cast a shadow in front of you,
+        // and culling it leaves a hole in the ground where its shadow was.
+        let planes = frustum_planes(frame.camera.view_projection(aspect));
+        let mut shadow_batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
         let mut batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
+        let mut stats = FrameStats {
+            submitted: frame.draws.len() as u32,
+            ..Default::default()
+        };
         for draw in &frame.draws {
             let unlit = match draw.material.shading {
                 Shading::Lit => 0.0,
@@ -940,13 +976,26 @@ impl Renderer {
                 color_and_shading: extend(draw.material.color(), unlit),
             };
             let key = (draw.mesh, draw.texture);
-            match batches.iter_mut().find(|(k, _)| *k == key) {
-                Some((_, list)) => list.push(raw),
-                None => batches.push((key, vec![raw])),
+            push(&mut shadow_batches, key, raw);
+            stats.shadow_casters += 1;
+
+            let visible = match self.meshes.get(draw.mesh.0 as usize) {
+                Some(mesh) => aabb_in_frustum(&planes, mesh.bounds, draw.transform),
+                // A handle pointing at nothing draws nothing; it should not
+                // also be reported as culled.
+                None => false,
+            };
+            if visible {
+                push(&mut batches, key, raw);
+                stats.drawn += 1;
+            } else {
+                stats.culled += 1;
             }
         }
+        self.stats = stats;
 
-        let total: u64 = batches.iter().map(|(_, l)| l.len() as u64).sum();
+        let shadow_total: u64 = shadow_batches.iter().map(|(_, l)| l.len() as u64).sum();
+        let total: u64 = shadow_total + batches.iter().map(|(_, l)| l.len() as u64).sum::<u64>();
         if total > self.instance_capacity {
             self.instance_capacity = total.next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -956,8 +1005,12 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        let flat: Vec<InstanceRaw> = batches
+        // Both sets share one buffer: the shadow pass's instances first, then
+        // the colour pass's, which is why the colour pass draws from
+        // `shadow_total` onward.
+        let flat: Vec<InstanceRaw> = shadow_batches
             .iter()
+            .chain(batches.iter())
             .flat_map(|(_, l)| l.iter().copied())
             .collect();
         if !flat.is_empty() {
@@ -989,7 +1042,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
-            self.draw_batches(&mut pass, &batches, false);
+            self.draw_batches(&mut pass, &shadow_batches, 0, false);
         }
 
         {
@@ -1023,10 +1076,81 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            self.draw_batches(&mut pass, &batches, true);
+            self.draw_batches(&mut pass, &batches, shadow_total as u32, true);
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
+}
+
+fn push(
+    batches: &mut Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)>,
+    key: (MeshHandle, TextureHandle),
+    raw: InstanceRaw,
+) {
+    match batches.iter_mut().find(|(k, _)| *k == key) {
+        Some((_, list)) => list.push(raw),
+        None => batches.push((key, vec![raw])),
+    }
+}
+
+/// The six planes of a view-projection's frustum, each as `(normal, d)` with
+/// the inside on the positive side.
+///
+/// Pulled straight out of the matrix rows (the Gribb-Hartmann trick) rather
+/// than reconstructed from corners: the matrix already contains them, and
+/// rebuilding the frustum from a field of view and an aspect is how the two
+/// end up disagreeing after someone changes the projection.
+fn frustum_planes(view_projection: Mat4) -> [glam::Vec4; 6] {
+    let m = view_projection.to_cols_array_2d();
+    let row = |i: usize| glam::Vec4::new(m[0][i], m[1][i], m[2][i], m[3][i]);
+    let (x, y, z, w) = (row(0), row(1), row(2), row(3));
+    // Near is `z` alone, not `w + z`: wgpu's clip space runs z from 0 to 1,
+    // where OpenGL's runs -1 to 1. Using the OpenGL form here keeps things
+    // alive for one extra near-plane's depth, which is invisible until
+    // something large sits behind the camera.
+    let mut planes = [w + x, w - x, w + y, w - y, z, w - z];
+    for plane in &mut planes {
+        let length = plane.truncate().length();
+        if length > 1e-6 {
+            *plane /= length;
+        }
+    }
+    planes
+}
+
+/// Whether a box, placed by a transform, has any part inside the frustum.
+///
+/// Conservative: it tests the box's worst corner against each plane, so it
+/// keeps some things that are just outside. Keeping a thing that cannot be
+/// seen costs a draw; dropping one that can costs a hole.
+fn aabb_in_frustum(
+    planes: &[glam::Vec4; 6],
+    bounds: crate::asset::Bounds,
+    transform: Mat4,
+) -> bool {
+    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        let world = transform.transform_point3(corner);
+        min = min.min(world);
+        max = max.max(world);
+    }
+    planes.iter().all(|plane| {
+        // The corner furthest along the plane's normal. If even that one is
+        // behind, the whole box is.
+        let furthest = Vec3::new(
+            if plane.x >= 0.0 { max.x } else { min.x },
+            if plane.y >= 0.0 { max.y } else { min.y },
+            if plane.z >= 0.0 { max.z } else { min.z },
+        );
+        plane.truncate().dot(furthest) + plane.w >= 0.0
+    })
 }
 
 fn extend(v: Vec3, w: f32) -> [f32; 4] {
@@ -1117,4 +1241,55 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32) -> wgpu::TextureView {
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unit_box() -> crate::asset::Bounds {
+        crate::asset::Bounds {
+            min: [-0.5, -0.5, -0.5],
+            max: [0.5, 0.5, 0.5],
+        }
+    }
+
+    fn looking_down_minus_z() -> [glam::Vec4; 6] {
+        let camera = Camera {
+            position: Vec3::new(0.0, 0.0, 5.0),
+            target: Vec3::ZERO,
+            ..Camera::default()
+        };
+        frustum_planes(camera.view_projection(16.0 / 9.0))
+    }
+
+    #[test]
+    fn a_box_in_front_of_the_camera_is_inside_the_frustum() {
+        let planes = looking_down_minus_z();
+        assert!(aabb_in_frustum(&planes, unit_box(), Mat4::IDENTITY));
+    }
+
+    #[test]
+    fn a_box_behind_the_camera_is_outside_it() {
+        let planes = looking_down_minus_z();
+        let behind = Mat4::from_translation(Vec3::new(0.0, 0.0, 40.0));
+        assert!(!aabb_in_frustum(&planes, unit_box(), behind));
+    }
+
+    #[test]
+    fn a_box_far_off_to_the_side_is_outside_it() {
+        let planes = looking_down_minus_z();
+        let aside = Mat4::from_translation(Vec3::new(60.0, 0.0, 0.0));
+        assert!(!aabb_in_frustum(&planes, unit_box(), aside));
+    }
+
+    #[test]
+    fn a_huge_box_straddling_the_camera_is_inside_it() {
+        // A ground plane is bigger than the frustum and contains it. Testing
+        // only the box's centre, or only its corners against each plane
+        // independently, gets this one wrong and culls the floor.
+        let planes = looking_down_minus_z();
+        let ground = Mat4::from_scale(Vec3::new(200.0, 1.0, 200.0));
+        assert!(aabb_in_frustum(&planes, unit_box(), ground));
+    }
 }

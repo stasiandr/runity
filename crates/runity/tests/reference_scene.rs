@@ -254,3 +254,77 @@ fn nothing_shadows_itself_into_stripes() {
          which is what shadow acne looks like"
     );
 }
+
+#[test]
+fn what_is_behind_the_camera_is_not_drawn_but_still_casts() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let scene = Scene::load(scene_path()).expect("the reference scene");
+    let target = OffscreenTarget::new(&gpu, WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(&gpu, &target);
+
+    let mut world = hecs::World::new();
+    let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
+    runity::spawn_scene(&scene, &mut world, |name| {
+        if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+            return Some(found.1);
+        }
+        let mesh = builtin::by_name(name)?;
+        let handle = renderer.upload_mesh_owned(&gpu, &mesh);
+        uploaded.push((name.to_string(), handle));
+        Some(handle)
+    });
+
+    let looking_at_it = Camera {
+        position: Vec3::new(0.0, 3.4, 12.0),
+        target: Vec3::new(0.0, 1.4, -4.0),
+        ..Camera::default()
+    };
+    // Same spot, turned around. The ground is enormous and stays visible
+    // either way; what changes is everything standing on it.
+    let looking_away = Camera {
+        target: Vec3::new(0.0, 3.4, 40.0),
+        ..looking_at_it
+    };
+
+    let frame = |camera| {
+        runity::build_frame(
+            &world,
+            camera,
+            Lighting::default(),
+            FogSettings {
+                color: Vec3::from_array(scene.fog.color),
+                start: scene.fog.start,
+                end: scene.fog.end,
+            },
+        )
+    };
+
+    renderer.render(&gpu, &target, &frame(looking_at_it));
+    let facing = renderer.stats();
+    renderer.render(&gpu, &target, &frame(looking_away));
+    let away = renderer.stats();
+
+    assert_eq!(facing.submitted, away.submitted, "the scene did not change");
+    assert!(
+        away.culled > facing.culled,
+        "turning around should cull more, not the same ({} against {})",
+        away.culled,
+        facing.culled
+    );
+    assert!(
+        facing.drawn > 4,
+        "facing the scene should draw most of it, drew {}",
+        facing.drawn
+    );
+
+    // The shadow pass is deliberately not culled by the camera. Something
+    // behind you casts into what is in front of you, and culling it leaves a
+    // hole in the ground where its shadow was.
+    assert_eq!(
+        away.shadow_casters, away.submitted,
+        "every object casts, however the camera is pointed"
+    );
+}
