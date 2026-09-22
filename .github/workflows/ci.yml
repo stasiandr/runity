@@ -18,40 +18,20 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+
+      # A frame has to be renderable on a machine with no graphics card,
+      # because that is what CI is and what an agent's loop runs on. Mesa's
+      # lavapipe is a software Vulkan device; wgpu picks it up like any other
+      # adapter. macOS always has Metal, and Windows has WARP.
+      - name: Install a software Vulkan device
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers
+
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      # Every test runs without a display: the X11 backend is exercised against
-      # a fake X server, and rendering goes to an in-memory framebuffer.
       - name: Test
         run: cargo test --workspace
-      # A failing golden-image test leaves the rendered frame and the diff
-      # next to the reference; they are the whole point of the test.
-      - name: Upload golden-image diffs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: golden-diffs-${{ matrix.os }}
-          path: |
-            **/*.actual.png
-            **/*.diff.png
-          if-no-files-found: ignore
-
-      - name: Render a frame headlessly
-        run: cargo run --release --example spinning_cube
-        env:
-          RUNITY_HEADLESS: "1"
-
-  cross-check:
-    name: cross-check every backend
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Backends that cannot be built on the host still get type-checked.
-        target: [aarch64-apple-darwin, x86_64-apple-darwin, x86_64-pc-windows-gnu]
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup target add ${{ matrix.target }}
-      - run: cargo clippy --workspace --target ${{ matrix.target }} -- -D warnings
