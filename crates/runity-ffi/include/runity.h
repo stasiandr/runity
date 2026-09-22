@@ -89,6 +89,32 @@ bool runity_editor_set_transform(RunityEditor *editor,
                                  unsigned int index,
                                  const float *nine);
 
+/* --- editing, and taking it back ------------------------------------ */
+
+/* Add an entity with a model, under `parent` or at the top with -1.
+ * Returns the new entity's index, or -1. */
+int runity_editor_add(RunityEditor *editor, int parent, const char *model);
+
+/* Delete an entity and everything under it. */
+bool runity_editor_delete(RunityEditor *editor, unsigned int index);
+
+/* Copy an entity beside itself; returns the copy's index or -1. */
+int runity_editor_duplicate(RunityEditor *editor, unsigned int index);
+
+/* Move an entity under another, or to the top with -1. Refuses to make
+ * something its own ancestor. */
+bool runity_editor_reparent(RunityEditor *editor,
+                            unsigned int index,
+                            int new_parent);
+
+/* A gizmo drag is one step however many frames it lasts: the snapshot is
+ * taken when the drag begins. A value typed into an inspector is its own
+ * step. */
+bool runity_editor_undo(RunityEditor *editor);
+bool runity_editor_redo(RunityEditor *editor);
+bool runity_editor_can_undo(RunityEditor *editor);
+bool runity_editor_can_redo(RunityEditor *editor);
+
 /* --- the view ------------------------------------------------------- */
 
 bool runity_editor_set_camera(RunityEditor *editor,

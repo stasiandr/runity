@@ -35,7 +35,7 @@ pub struct Editor {
     /// Set when a host gave us its layer; absent when rendering offscreen.
     surface: Option<runity::surface::Surface>,
     world: hecs::World,
-    scene: Scene,
+    history: runity::edit::History,
     scene_path: Option<PathBuf>,
     library: Option<Library>,
     uploaded: Vec<(String, MeshHandle)>,
@@ -139,7 +139,7 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         target,
         surface: None,
         world: hecs::World::new(),
-        scene: Scene::default(),
+        history: runity::edit::History::new(Scene::default(), 64),
         scene_path: None,
         library: None,
         uploaded: Vec::new(),
@@ -199,7 +199,7 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             target,
             surface: Some(surface),
             world: hecs::World::new(),
-            scene: Scene::default(),
+            history: runity::edit::History::new(Scene::default(), 64),
             scene_path: None,
             library: None,
             uploaded: Vec::new(),
@@ -314,7 +314,7 @@ pub unsafe extern "C" fn runity_editor_open_scene(
     };
     match Scene::load(&path) {
         Ok(scene) => {
-            editor.scene = scene;
+            editor.history.replace(scene);
             editor.scene_path = Some(path);
             editor.respawn();
             true
@@ -344,7 +344,7 @@ pub unsafe extern "C" fn runity_editor_save_scene(
         fail("no path to save to");
         return false;
     };
-    match editor.scene.save(&target) {
+    match editor.history.scene().save(&target) {
         Ok(()) => true,
         Err(e) => {
             fail(e.to_string());
@@ -376,7 +376,7 @@ pub unsafe extern "C" fn runity_editor_entity_name(
     let Some(editor) = (unsafe { borrow(editor) }) else {
         return 0;
     };
-    let flat = editor.scene.flatten();
+    let flat = editor.history.scene().flatten();
     let Some((desc, _)) = flat.get(index as usize) else {
         return 0;
     };
@@ -401,7 +401,7 @@ pub unsafe extern "C" fn runity_editor_get_transform(
     if out.is_null() {
         return false;
     }
-    let flat = editor.scene.flatten();
+    let flat = editor.history.scene().flatten();
     let Some((desc, _)) = flat.get(index as usize) else {
         return false;
     };
@@ -438,7 +438,11 @@ pub unsafe extern "C" fn runity_editor_set_transform(
         return false;
     }
     let v = unsafe { std::slice::from_raw_parts(values, 9) };
-    let Some(desc) = nth_mut(&mut editor.scene, index as usize) else {
+    // Recorded: a value typed into an inspector is one undoable edit. A
+    // drag is not, because `gizmo_begin` already took the snapshot that
+    // covers the whole gesture.
+    let scene = editor.history.edit();
+    let Some(desc) = runity::edit::nth_mut(scene, index as usize) else {
         return false;
     };
     desc.transform.position = Vec3::new(v[0], v[1], v[2]);
@@ -486,11 +490,11 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
         camera: editor.camera,
         lighting: Lighting::default(),
         fog: FogSettings {
-            color: Vec3::from_array(editor.scene.fog.color),
-            start: editor.scene.fog.start,
-            end: editor.scene.fog.end,
+            color: Vec3::from_array(editor.history.scene().fog.color),
+            start: editor.history.scene().fog.start,
+            end: editor.history.scene().fog.end,
         },
-        clear_color: Vec3::from_array(editor.scene.fog.color),
+        clear_color: Vec3::from_array(editor.history.scene().fog.color),
         ..runity::build_frame(
             &editor.world,
             editor.camera,
@@ -681,6 +685,9 @@ pub unsafe extern "C" fn runity_editor_gizmo_begin(
     else {
         return -1;
     };
+    // One snapshot for the whole gesture: everything until the next one
+    // undoes as a single step, however many frames the drag lasts.
+    editor.history.snapshot();
     editor.drag = Some(gizmo::begin(origin, handle, from, direction));
     handle_index(handle)
 }
@@ -709,7 +716,8 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
     // the move in world space without undoing it drags a child out of its
     // parent by however much the parent is offset.
     let parent = editor.parent_matrix(index);
-    let Some(desc) = nth_mut(&mut editor.scene, index) else {
+    // Untracked: the snapshot for this gesture was taken at `gizmo_begin`.
+    let Some(desc) = runity::edit::nth_mut(editor.history.scene_mut_untracked(), index) else {
         return false;
     };
     let local = parent.inverse().transform_point3(moved);
@@ -729,6 +737,155 @@ pub unsafe extern "C" fn runity_editor_gizmo_end(editor: *mut Editor) {
     }
 }
 
+/// Add an entity with a model, under `parent` or at the top with -1.
+/// Returns its index, or -1.
+///
+/// # Safety
+/// `editor` must be null or a live handle; `model` a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_add(
+    editor: *mut Editor,
+    parent: c_int,
+    model: *const c_char,
+) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    let Some(model) = (unsafe { path_from(model) }) else {
+        return -1;
+    };
+    let desc = runity::EntityDesc {
+        name: "entity".into(),
+        model: model.to_string_lossy().into_owned(),
+        transform: Default::default(),
+        material: Default::default(),
+        body: Default::default(),
+        collider: Default::default(),
+        children: Vec::new(),
+    };
+    let parent = (parent >= 0).then_some(parent as usize);
+    let scene = editor.history.edit();
+    let Some(index) = runity::edit::add(scene, parent, desc) else {
+        return -1;
+    };
+    editor.respawn();
+    index as c_int
+}
+
+/// Delete an entity and everything under it.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_delete(editor: *mut Editor, index: c_uint) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let removed = runity::edit::remove(editor.history.edit(), index as usize).is_some();
+    if removed {
+        // The selection is an index into a list that just changed shape.
+        // Keeping it would point the gizmo at whatever slid into the gap.
+        editor.selected = None;
+        editor.drag = None;
+        editor.respawn();
+    }
+    removed
+}
+
+/// Copy an entity beside itself. Returns the copy's index, or -1.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_duplicate(editor: *mut Editor, index: c_uint) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    let Some(copy) = runity::edit::duplicate(editor.history.edit(), index as usize) else {
+        return -1;
+    };
+    editor.respawn();
+    copy as c_int
+}
+
+/// Move an entity under another, or to the top with -1.
+///
+/// Refuses to make something its own ancestor.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_reparent(
+    editor: *mut Editor,
+    index: c_uint,
+    new_parent: c_int,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let parent = (new_parent >= 0).then_some(new_parent as usize);
+    let moved = runity::edit::reparent(editor.history.edit(), index as usize, parent);
+    if moved {
+        editor.selected = None;
+        editor.respawn();
+    }
+    moved
+}
+
+/// Step back. Returns false when there is nothing to undo.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_undo(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let stepped = editor.history.undo();
+    if stepped {
+        editor.selected = None;
+        editor.drag = None;
+        editor.respawn();
+    }
+    stepped
+}
+
+/// Step forward again.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_redo(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let stepped = editor.history.redo();
+    if stepped {
+        editor.selected = None;
+        editor.drag = None;
+        editor.respawn();
+    }
+    stepped
+}
+
+/// Whether there is anything to undo, for greying out a menu item.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_can_undo(editor: *mut Editor) -> bool {
+    unsafe { borrow(editor) }.is_some_and(|e| e.history.can_undo())
+}
+
+/// See [`runity_editor_can_undo`].
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_can_redo(editor: *mut Editor) -> bool {
+    unsafe { borrow(editor) }.is_some_and(|e| e.history.can_redo())
+}
+
 fn handle_index(handle: Handle) -> c_int {
     match handle {
         Handle::X => 0,
@@ -737,34 +894,9 @@ fn handle_index(handle: Handle) -> c_int {
     }
 }
 
-/// The `index`th entity in the flattened scene, mutably.
-fn nth_mut(scene: &mut Scene, index: usize) -> Option<&mut runity::EntityDesc> {
-    fn walk<'a>(
-        entities: &'a mut [runity::EntityDesc],
-        index: usize,
-        seen: &mut usize,
-    ) -> Option<&'a mut runity::EntityDesc> {
-        for entity in entities {
-            if *seen == index {
-                return Some(entity);
-            }
-            *seen += 1;
-            // Borrow-checker friendly: take the child branch by pointer, so
-            // the parent's borrow ends before the recursive call.
-            let found = walk(&mut entity.children, index, seen).map(|e| e as *mut _);
-            if let Some(found) = found {
-                return Some(unsafe { &mut *found });
-            }
-        }
-        None
-    }
-    let mut seen = 0;
-    walk(&mut scene.entities, index, &mut seen)
-}
-
 impl Editor {
     fn flat_count(&self) -> usize {
-        self.scene.flatten().len()
+        self.history.scene().flatten().len()
     }
 
     /// Rebuild the world from the scene.
@@ -775,7 +907,7 @@ impl Editor {
         let gpu = &self.gpu;
         let library = self.library.as_ref();
         let uploaded = &mut self.uploaded;
-        runity::spawn_scene(&self.scene, &mut self.world, |name| {
+        runity::spawn_scene(self.history.scene(), &mut self.world, |name| {
             if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
                 return Some(found.1);
             }
@@ -818,14 +950,14 @@ impl Editor {
     /// Where the gizmo sits: the selected entity's world position.
     fn selected_origin(&self) -> Option<Vec3> {
         let index = self.selected?;
-        let flat = self.scene.flatten();
+        let flat = self.history.scene().flatten();
         let (_, world) = flat.get(index)?;
         Some(world.w_axis.truncate())
     }
 
     /// The transform an entity's parents impose on it.
     fn parent_matrix(&self, index: usize) -> Mat4 {
-        let flat = self.scene.flatten();
+        let flat = self.history.scene().flatten();
         let Some((desc, world)) = flat.get(index) else {
             return Mat4::IDENTITY;
         };
@@ -836,7 +968,7 @@ impl Editor {
         let (near, direction) = self.ray(x, y);
 
         let mut best: Option<(f32, usize)> = None;
-        for (index, (desc, world)) in self.scene.flatten().iter().enumerate() {
+        for (index, (desc, world)) in self.history.scene().flatten().iter().enumerate() {
             let Some(bounds) = self.bounds_of(&desc.model) else {
                 continue;
             };

@@ -313,3 +313,116 @@ fn asking_for_a_layer_surface_without_a_layer_fails_rather_than_crashing() {
     let length = unsafe { runity_last_error(message.as_mut_ptr() as *mut c_char, 128) };
     assert!(length > 0, "and a reason, not silence");
 }
+
+#[test]
+fn editing_and_undoing_goes_through_the_boundary_intact() {
+    let Some((editor, _)) = open("edit") else {
+        return;
+    };
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+    assert!(!unsafe { runity_editor_can_undo(editor.0) }, "nothing yet");
+
+    let model = CString::new("builtin:sphere").unwrap();
+    let added = unsafe { runity_editor_add(editor.0, -1, model.as_ptr()) };
+    assert_eq!(added, 3, "appended at the top level");
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 4);
+    assert!(unsafe { runity_editor_can_undo(editor.0) });
+
+    // Duplicating the crate copies its child too.
+    let copy = unsafe { runity_editor_duplicate(editor.0, 1) };
+    assert!(copy > 0);
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 6);
+
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 4);
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+    assert!(
+        !unsafe { runity_editor_undo(editor.0) },
+        "back to the start"
+    );
+
+    assert!(unsafe { runity_editor_can_redo(editor.0) });
+    assert!(unsafe { runity_editor_redo(editor.0) });
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 4);
+}
+
+#[test]
+fn a_whole_drag_undoes_in_one_step() {
+    // The thing an editor gets wrong: sixty mutations a second becoming
+    // sixty undo steps, so undo appears not to work at all.
+    let Some((editor, _)) = open("drag-undo") else {
+        return;
+    };
+    let eye = [0.0f32, 1.0, 6.0];
+    let target = [0.0f32, 0.5, 0.0];
+    unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), target.as_ptr()) };
+    unsafe { runity_editor_select(editor.0, 1) };
+
+    let mut before = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, before.as_mut_ptr()) };
+
+    let height = unsafe { runity_editor_height(editor.0) };
+    let width = unsafe { runity_editor_width(editor.0) };
+    let Some((grab_x, _)) = (0..width)
+        .map(|x| {
+            (x, unsafe {
+                runity_editor_gizmo_begin(editor.0, x, height / 2)
+            })
+        })
+        .find(|(_, arm)| *arm >= 0)
+    else {
+        return;
+    };
+    for step in 1..=40 {
+        unsafe { runity_editor_gizmo_drag(editor.0, grab_x + step, height / 2) };
+    }
+    unsafe { runity_editor_gizmo_end(editor.0) };
+
+    let mut moved = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, moved.as_mut_ptr()) };
+    assert_ne!(moved[..3], before[..3], "it moved");
+
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    let mut back = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, back.as_mut_ptr()) };
+    assert_eq!(back, before, "one undo restores the whole gesture");
+    assert!(!unsafe { runity_editor_can_undo(editor.0) }, "and only one");
+}
+
+#[test]
+fn reparenting_refuses_to_make_a_loop_across_the_boundary() {
+    let Some((editor, _)) = open("reparent") else {
+        return;
+    };
+    // The lid is the crate's child; putting the crate under the lid would
+    // make a cycle, and a cycle in a scene tree is unrecoverable.
+    assert!(!unsafe { runity_editor_reparent(editor.0, 1, 2) });
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+
+    // Moving the lid to the top level is fine.
+    assert!(unsafe { runity_editor_reparent(editor.0, 2, -1) });
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+}
+
+#[test]
+fn deleting_clears_a_selection_that_would_otherwise_point_at_a_stranger() {
+    let Some((editor, _)) = open("delete") else {
+        return;
+    };
+    unsafe { runity_editor_select(editor.0, 1) };
+    assert_eq!(unsafe { runity_editor_selected(editor.0) }, 1);
+
+    assert!(unsafe { runity_editor_delete(editor.0, 1) });
+    assert_eq!(
+        unsafe { runity_editor_selected(editor.0) },
+        -1,
+        "an index into a list that changed shape points at whatever slid \
+         into the gap"
+    );
+    assert_eq!(
+        unsafe { runity_editor_entity_count(editor.0) },
+        1,
+        "the lid went too"
+    );
+}
