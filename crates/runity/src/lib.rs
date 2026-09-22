@@ -15,6 +15,7 @@
 pub use glam;
 
 pub mod animation;
+pub mod animator;
 pub mod asset;
 pub mod builtin;
 pub mod gpu;
@@ -33,6 +34,7 @@ pub mod ui_render;
 pub mod world;
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
+pub use animator::{advance_animations, Animator, Playing};
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use input::{Input, InputEvent, Key, MouseButton};
