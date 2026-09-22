@@ -1,0 +1,356 @@
+//! Getting a device, with or without a graphics card.
+//!
+//! The engine is a guest (see the crate docs), so the interesting half of
+//! this module is the half that has no window at all: a device that renders
+//! into a texture and hands back pixels. That is what CI runs, what a golden
+//! image is made of, and what an agent looks at when it is asked whether a
+//! change made the frame better or worse.
+//!
+//! It works without a GPU because Vulkan has a software implementation —
+//! Mesa's lavapipe — and wgpu will use it like any other adapter. On a
+//! machine with a card, the same code picks the card instead.
+//!
+//! One thing this buys and one it does not:
+//!
+//! * It buys a frame on any machine, including a container with no display
+//!   and no hardware. The whole headless workflow rests on that.
+//! * It does **not** buy a frame identical to the one a real GPU draws.
+//!   Rasterization rules, filtering and floating point all differ between
+//!   implementations. So a golden image is a golden image *of one adapter* —
+//!   pick it, record which one it was, and compare like with like.
+
+use std::sync::Arc;
+
+/// A device and the queue that feeds it.
+///
+/// Held behind `Arc` because everything that allocates a buffer needs it and
+/// none of them own it.
+pub struct Gpu {
+    pub instance: wgpu::Instance,
+    pub adapter: wgpu::Adapter,
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
+}
+
+/// Why a device could not be created. Worth its own type because "no adapter"
+/// and "adapter refused the limits we asked for" need different fixes, and a
+/// string would flatten them.
+#[derive(Debug)]
+pub enum GpuError {
+    /// Nothing to render with: no hardware, and no software implementation
+    /// installed either.
+    NoAdapter,
+    /// An adapter exists but would not give us a device.
+    NoDevice(String),
+}
+
+impl std::fmt::Display for GpuError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GpuError::NoAdapter => write!(
+                f,
+                "no graphics adapter; install a software one (mesa-vulkan-drivers \
+                 provides lavapipe) to render without a card"
+            ),
+            GpuError::NoDevice(e) => write!(f, "adapter refused a device: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for GpuError {}
+
+impl Gpu {
+    /// Open a device with no window and no display.
+    ///
+    /// `prefer_software` forces the fallback adapter even where a card
+    /// exists, which is what a golden-image run wants: the reference should
+    /// not change because the machine running it has a different card.
+    pub async fn headless(prefer_software: bool) -> Result<Self, GpuError> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::None,
+                force_fallback_adapter: prefer_software,
+                compatible_surface: None,
+            })
+            .await
+            .map_err(|_| GpuError::NoAdapter)?;
+
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("runity"),
+                // Deliberately the downlevel defaults: whatever runs here has
+                // to run on a phone, and asking for desktop limits is how you
+                // find that out two months late.
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| GpuError::NoDevice(e.to_string()))?;
+
+        Ok(Self {
+            instance,
+            adapter,
+            device: Arc::new(device),
+            queue: Arc::new(queue),
+        })
+    }
+
+    /// Same, for callers that are not already async.
+    pub fn headless_blocking(prefer_software: bool) -> Result<Self, GpuError> {
+        pollster::block_on(Self::headless(prefer_software))
+    }
+
+    /// One line naming what we ended up on — worth printing next to every
+    /// golden image, since the image is only meaningful against it.
+    pub fn describe(&self) -> String {
+        let info = self.adapter.get_info();
+        format!("{} ({:?}, {:?})", info.name, info.device_type, info.backend)
+    }
+}
+
+/// A texture to draw into, and the machinery to read it back as pixels.
+pub struct OffscreenTarget {
+    pub width: u32,
+    pub height: u32,
+    pub format: wgpu::TextureFormat,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    /// Readback needs rows padded to `COPY_BYTES_PER_ROW_ALIGNMENT`; this is
+    /// the padded stride, which is usually larger than `width * 4`.
+    padded_bytes_per_row: u32,
+    buffer: wgpu::Buffer,
+}
+
+impl OffscreenTarget {
+    pub fn new(gpu: &Gpu, width: u32, height: u32) -> Self {
+        // Rgba8UnormSrgb rather than Bgra: a surface would want the platform's
+        // order, but nothing here is a surface, and matching the byte order a
+        // PNG wants saves a swizzle on every readback.
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded = width * 4;
+        let padded_bytes_per_row = unpadded.div_ceil(align) * align;
+        let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size: (padded_bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            width,
+            height,
+            format,
+            texture,
+            view,
+            padded_bytes_per_row,
+            buffer,
+        }
+    }
+
+    /// Copy the texture back into RGBA8 pixels, row padding removed.
+    ///
+    /// Synchronous by design: every caller is a test or a tool that has
+    /// nothing else to do until the pixels arrive.
+    pub fn read_rgba(&self, gpu: &Gpu) -> Vec<u8> {
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_bytes_per_row),
+                    rows_per_image: Some(self.height),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit(Some(encoder.finish()));
+
+        let slice = self.buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        // The map only completes once the queue has caught up, so the poll is
+        // not optional: without it this blocks forever.
+        let _ = gpu.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        receiver
+            .recv()
+            .expect("the map callback outlives this function")
+            .expect("mapping a buffer we own for reading");
+
+        let data = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((self.width * self.height * 4) as usize);
+        for row in 0..self.height {
+            let start = (row * self.padded_bytes_per_row) as usize;
+            pixels.extend_from_slice(&data[start..start + (self.width * 4) as usize]);
+        }
+        drop(data);
+        self.buffer.unmap();
+        pixels
+    }
+
+    /// The pixel at `(x, y)` as RGBA, for tests that want to name one spot
+    /// rather than compare a whole image.
+    pub fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * width + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The smallest thing that proves the whole path: a clear color, one
+    /// triangle over it, and the pixels back in main memory.
+    fn draw_triangle(gpu: &Gpu, target: &OffscreenTarget) {
+        let shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("triangle"),
+                source: wgpu::ShaderSource::Wgsl(
+                    r#"
+@vertex
+fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    // A triangle covering the middle of the frame, from the vertex index
+    // alone — no buffers, so nothing here can fail for a reason that is not
+    // the device itself.
+    var p = array<vec2<f32>, 3>(
+        vec2<f32>(0.0, 0.6),
+        vec2<f32>(-0.6, -0.6),
+        vec2<f32>(0.6, -0.6),
+    );
+    return vec4<f32>(p[i], 0.0, 1.0);
+}
+
+@fragment
+fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+"#
+                    .into(),
+                ),
+            });
+
+        let pipeline = gpu
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("triangle"),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(target.format.into())],
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("triangle"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.draw(0..3, 0..1);
+        }
+        gpu.queue.submit(Some(encoder.finish()));
+    }
+
+    #[test]
+    fn a_frame_is_drawn_and_read_back_without_a_graphics_card() {
+        // Not `unwrap`: a machine with no adapter at all should say so in one
+        // sentence rather than fail with a backtrace into wgpu.
+        let gpu = match Gpu::headless_blocking(false) {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        eprintln!("rendering on {}", gpu.describe());
+
+        let target = OffscreenTarget::new(&gpu, 64, 64);
+        draw_triangle(&gpu, &target);
+        let pixels = target.read_rgba(&gpu);
+
+        assert_eq!(pixels.len(), 64 * 64 * 4);
+        let middle = OffscreenTarget::pixel(&pixels, 64, 32, 32);
+        assert!(
+            middle[0] > 200 && middle[2] < 60,
+            "the triangle should cover the center, got {middle:?}"
+        );
+        let corner = OffscreenTarget::pixel(&pixels, 64, 1, 1);
+        assert!(
+            corner[2] > 200 && corner[0] < 60,
+            "the clear color should survive in the corner, got {corner:?}"
+        );
+    }
+}

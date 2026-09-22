@@ -11,7 +11,9 @@
 //! writes and the runtime opens.
 
 pub mod asset;
+pub mod gpu;
 pub mod scene;
 
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
+pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};

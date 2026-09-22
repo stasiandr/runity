@@ -1,0 +1,47 @@
+# CI for the `next/` workspace — the engine on off-the-shelf crates.
+#
+# Separate from ci.yml because the two workspaces live by opposite rules and
+# neither one's checks make sense run against the other.
+name: next
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["next/**", ".github/workflows/next.yml"]
+  pull_request:
+    paths: ["next/**", ".github/workflows/next.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: next
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # A frame has to be renderable on a machine with no graphics card,
+      # because that is what CI is and what an agent's loop runs on. Mesa's
+      # lavapipe is a software Vulkan device; wgpu picks it up like any other
+      # adapter. macOS always has Metal, and Windows has WARP.
+      - name: Install a software Vulkan device
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mesa-vulkan-drivers
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
