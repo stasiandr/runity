@@ -12,6 +12,7 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 glyphon = "0.12.0"
 hecs = "0.11.0"
+kira = "0.12.4"
 pollster = "1.0.1"
 rapier3d = "0.26.1"
 rkyv = { version = "0.8", features = ["bytecheck"] }

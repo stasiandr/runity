@@ -17,6 +17,7 @@ pub use glam;
 pub mod animation;
 pub mod animator;
 pub mod asset;
+pub mod audio;
 pub mod builtin;
 pub mod gizmo;
 pub mod gpu;
@@ -36,7 +37,8 @@ pub mod world;
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
 pub use animator::{advance_animations, Animator, Playing};
-pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
+pub use asset::{AssetError, AssetId, Bounds, MeshAsset, SoundAsset, Submesh, Vertex};
+pub use audio::{Audio, Falloff};
 pub use gizmo::{Drag, GizmoStyle, Handle};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use input::{Input, InputEvent, Key, MouseButton};

@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use runity::animation::{Channel, Clip, Joint, Path as AnimPath, PoseTransform, Skeleton};
 use runity::asset::{
-    AssetId, AssetKind, Bounds, MeshAsset, MeshSkin, Submesh, TextureAsset, TextureLevel, Vertex,
+    AssetId, AssetKind, Bounds, MeshAsset, MeshSkin, SoundAsset, Submesh, TextureAsset,
+    TextureLevel, Vertex,
 };
 use serde::{Deserialize, Serialize};
 
@@ -615,6 +616,57 @@ fn build_mips(width: u32, height: u32, pixels: &[u8], srgb: bool) -> Vec<Texture
     levels
 }
 
+/// Read a WAV file and decode it to interleaved stereo floats.
+///
+/// Mono is duplicated to both channels here rather than at playback, so the
+/// mixer has one layout and no branch — and so a sound that was mono is not
+/// quietly louder than one that was stereo.
+pub fn sound_from_wav(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<SoundAsset> {
+    let path = path.as_ref();
+    let mut reader = hound::WavReader::open(path).with_context(|| format!("{}", path.display()))?;
+    let spec = reader.spec();
+
+    let mono: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
+        hound::SampleFormat::Int => {
+            // Normalised by the format's own full scale, not by a guess: a
+            // 24-bit file divided by 32768 clips into a wall of distortion.
+            let scale = match spec.bits_per_sample {
+                8 => i8::MAX as f32,
+                16 => i16::MAX as f32,
+                24 => 8_388_607.0,
+                _ => i32::MAX as f32,
+            };
+            reader
+                .samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / scale)
+                .collect()
+        }
+    };
+
+    let samples = match spec.channels {
+        0 | 1 => mono.iter().flat_map(|s| [*s, *s]).collect(),
+        2 => mono,
+        // More than two channels are downmixed to the first two rather than
+        // refused: a surround file is usable and a hard error is not.
+        channels => mono
+            .chunks(channels as usize)
+            .flat_map(|frame| [frame[0], frame.get(1).copied().unwrap_or(frame[0])])
+            .collect(),
+    };
+
+    Ok(SoundAsset {
+        id: AssetId::from_source(&settings.source, 0),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sound".into()),
+        sample_rate: spec.sample_rate,
+        samples,
+    })
+}
+
 /// Import one source file into `library`, writing both the asset and its
 /// sidecar.
 pub fn import_file(
@@ -645,6 +697,14 @@ pub fn import_file(
                 runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
                 mesh.id,
                 AssetKind::Mesh,
+            )
+        }
+        "wav" => {
+            let sound = sound_from_wav(source, &settings)?;
+            (
+                runity::asset::to_bytes(&sound, AssetKind::Sound)?,
+                sound.id,
+                AssetKind::Sound,
             )
         }
         "png" | "jpg" | "jpeg" | "tga" | "bmp" => {
@@ -999,6 +1059,38 @@ f 1 4 3
         let bytes = runity::asset::read(&out.asset).unwrap();
         let texture = runity::asset::view::<runity::asset::TextureAsset>(&bytes).unwrap();
         assert!(!texture.srgb);
+    }
+
+    #[test]
+    fn a_wav_imports_as_decoded_stereo_whatever_it_started_as() {
+        let dir = temp("sound");
+        // Mono, 16-bit: the common case, and the one that has to come out
+        // stereo so the mixer has one layout and no branch.
+        let path = dir.join("beep.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        for i in 0..800 {
+            writer
+                .write_sample(((i as f32 * 0.1).sin() * 16384.0) as i16)
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let sound = sound_from_wav(&path, &ImportSettings::for_source("beep.wav")).unwrap();
+        assert_eq!(sound.sample_rate, 8000);
+        assert_eq!(sound.frames(), 800, "one frame per mono sample");
+        assert_eq!(sound.samples.len(), 1600, "duplicated to both channels");
+        assert_eq!(sound.samples[0], sound.samples[1], "left equals right");
+        assert!((sound.duration_seconds() - 0.1).abs() < 1e-4);
+        // Normalised by the format's own full scale: dividing a 16-bit
+        // sample by the wrong number either clips or whispers.
+        assert!(sound.samples.iter().all(|s| s.abs() <= 1.0));
+        assert!(sound.samples.iter().any(|s| s.abs() > 0.4));
     }
 
     #[test]

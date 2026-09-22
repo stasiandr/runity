@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::asset::{
-    self, ArchivedMeshAsset, ArchivedTextureAsset, AssetError, AssetId, AssetKind, MeshAsset,
-    TextureAsset,
+    self, ArchivedMeshAsset, ArchivedSoundAsset, ArchivedTextureAsset, AssetError, AssetId,
+    AssetKind, MeshAsset, SoundAsset, TextureAsset,
 };
 
 /// One asset's bytes, plus where they came from.
@@ -90,6 +90,7 @@ impl Library {
         let id = match kind {
             AssetKind::Mesh => AssetId::from(&asset::view::<MeshAsset>(&bytes)?.id),
             AssetKind::Texture => AssetId::from(&asset::view::<TextureAsset>(&bytes)?.id),
+            AssetKind::Sound => AssetId::from(&asset::view::<SoundAsset>(&bytes)?.id),
         };
         let name = path
             .file_stem()
@@ -128,6 +129,17 @@ impl Library {
             .then(|| asset::view::<TextureAsset>(&entry.bytes).ok())?
     }
 
+    pub fn sound(&self, id: AssetId) -> Option<&ArchivedSoundAsset> {
+        let entry = self.entries.get(*self.by_id.get(&id)?)?;
+        (entry.kind == AssetKind::Sound).then(|| asset::view::<SoundAsset>(&entry.bytes).ok())?
+    }
+
+    /// Look a sound up by file stem.
+    pub fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
+        let entry = self.entries.get(*self.by_name.get(name)?)?;
+        (entry.kind == AssetKind::Sound).then(|| asset::view::<SoundAsset>(&entry.bytes).ok())?
+    }
+
     /// Look a texture up by file stem.
     pub fn texture_by_name(&self, name: &str) -> Option<&ArchivedTextureAsset> {
         let entry = self.entries.get(*self.by_name.get(name)?)?;
@@ -154,6 +166,9 @@ impl Library {
             AssetKind::Texture => asset::view::<TextureAsset>(&entry.bytes)
                 .ok()
                 .map(|t| AssetId::from(&t.id)),
+            AssetKind::Sound => asset::view::<SoundAsset>(&entry.bytes)
+                .ok()
+                .map(|s| AssetId::from(&s.id)),
         }
     }
 
@@ -184,6 +199,9 @@ impl Library {
                 AssetKind::Texture => asset::view::<TextureAsset>(&bytes)
                     .ok()
                     .map(|t| AssetId::from(&t.id)),
+                AssetKind::Sound => asset::view::<SoundAsset>(&bytes)
+                    .ok()
+                    .map(|s| AssetId::from(&s.id)),
             };
             let Some(id) = id else { continue };
 

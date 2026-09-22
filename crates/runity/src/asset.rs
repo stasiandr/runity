@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 /// What kind of asset a file holds.
 ///
@@ -45,6 +45,7 @@ pub const FORMAT_VERSION: u32 = 4;
 pub enum AssetKind {
     Mesh = 1,
     Texture = 2,
+    Sound = 3,
 }
 
 impl AssetKind {
@@ -52,6 +53,7 @@ impl AssetKind {
         match byte {
             1 => Some(AssetKind::Mesh),
             2 => Some(AssetKind::Texture),
+            3 => Some(AssetKind::Sound),
             _ => None,
         }
     }
@@ -204,6 +206,32 @@ pub struct TextureAsset {
     /// roughness and masks are not, and sampling those through an sRGB view
     /// bends every value in them.
     pub srgb: bool,
+}
+
+/// Decoded audio, ready to hand to the mixer.
+///
+/// Decoded at import for the same reason meshes are: a game that decodes OGG
+/// on the frame it needs a footstep stutters on the footstep. The cost is
+/// disk — a minute of stereo is about twenty megabytes — which is why music
+/// will eventually want streaming and why sound effects never will.
+#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
+pub struct SoundAsset {
+    pub id: AssetId,
+    pub name: String,
+    pub sample_rate: u32,
+    /// Interleaved stereo. Mono sources are duplicated at import, so the
+    /// mixer has one layout and no branch.
+    pub samples: Vec<f32>,
+}
+
+impl SoundAsset {
+    pub fn frames(&self) -> usize {
+        self.samples.len() / 2
+    }
+
+    pub fn duration_seconds(&self) -> f32 {
+        self.frames() as f32 / self.sample_rate.max(1) as f32
+    }
 }
 
 /// One step down the mip chain.
