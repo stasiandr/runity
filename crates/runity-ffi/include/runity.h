@@ -89,6 +89,45 @@ bool runity_editor_set_transform(RunityEditor *editor,
                                  unsigned int index,
                                  const float *nine);
 
+/* --- prefabs -------------------------------------------------------- */
+
+/* A prefab is one entity subtree in its own file, and a scene points at it
+ * by name: editing the file changes every instance, everywhere. Opening a
+ * scene loads the prefabs/ directory beside it — the convention every tool
+ * follows — so this is only for a host that keeps them elsewhere. */
+bool runity_editor_set_prefabs(RunityEditor *editor, const char *path);
+
+/* What there is to place. Sorted, so the list does not reshuffle. */
+unsigned int runity_editor_prefab_count(RunityEditor *editor);
+unsigned int runity_editor_prefab_name(RunityEditor *editor,
+                                       unsigned int index,
+                                       char *buffer,
+                                       unsigned int capacity);
+
+/* What prefab this entity is an instance of, or "" for a plain entity. The
+ * tree needs to say so: an instance is one row whose insides belong to a
+ * file, and a row that looks like every other row hides that until someone
+ * moves a stone and moves twelve. */
+unsigned int runity_editor_entity_prefab(RunityEditor *editor,
+                                         unsigned int index,
+                                         char *buffer,
+                                         unsigned int capacity);
+
+/* Place an instance, under `parent` or at the top with -1. Returns its
+ * index, or -1 — including when there is no prefab by that name, which is
+ * refused rather than left as an entity with nothing in it. */
+int runity_editor_add_instance(RunityEditor *editor,
+                               int parent,
+                               const char *prefab);
+
+/* Save an entity's subtree as a prefab and make it an instance of it: the
+ * move that turns a thing arranged once into a thing placed many times. One
+ * call and not two, because doing it by hand leaves the scene holding a copy
+ * that drifts from the file. */
+bool runity_editor_make_prefab(RunityEditor *editor,
+                               unsigned int index,
+                               const char *name);
+
 /* --- materials ------------------------------------------------------ */
 
 /* Four floats: r, g, b in LINEAR space, then 1 or 0 for unlit.

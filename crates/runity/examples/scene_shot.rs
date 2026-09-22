@@ -37,7 +37,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let scene_path = scene_path.ok_or("usage: scene_shot <scene.ron>")?;
-    let scene = Scene::load(&scene_path)?;
+    let document = Scene::load(&scene_path)?;
+
+    // Prefabs come from `prefabs/` beside the scene, and every instance is
+    // replaced by what it stands for before anything else looks at the
+    // scene. Nothing downstream knows a prefab existed.
+    let (prefabs, prefab_problems) = runity::Prefabs::beside(&scene_path);
+    for (path, e) in &prefab_problems {
+        eprintln!("skipped {}: {e}", path.display());
+    }
+    let instanced = runity::instantiate(&document, &prefabs);
+    for problem in &instanced.problems {
+        eprintln!(
+            "{}: prefab {} — {}",
+            problem.entity_name, problem.prefab, problem.reason
+        );
+    }
+    let scene = instanced.scene;
 
     let gpu = Gpu::headless_blocking(false)?;
     eprintln!(

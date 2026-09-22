@@ -153,7 +153,22 @@ fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "scenes/first-light.ron".into());
-    let scene = Scene::load(&path)?;
+    let document = Scene::load(&path)?;
+    // Instances expanded before anything spawns, the same way the headless
+    // render does it — walking into a scene and rendering it have to show
+    // the same thing.
+    let (prefabs, problems) = runity::Prefabs::beside(&path);
+    for (path, e) in &problems {
+        eprintln!("skipped {}: {e}", path.display());
+    }
+    let instanced = runity::instantiate(&document, &prefabs);
+    for problem in &instanced.problems {
+        eprintln!(
+            "{}: prefab {} — {}",
+            problem.entity_name, problem.prefab, problem.reason
+        );
+    }
+    let scene = instanced.scene;
     println!("{path}: WASD to walk, hold the left mouse button to look, Escape quits");
     run(
         WindowConfig {

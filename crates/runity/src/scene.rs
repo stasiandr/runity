@@ -100,12 +100,26 @@ pub enum Body {
 }
 
 /// One thing in the valley.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EntityDesc {
     /// Shown in the editor's tree; not required to be unique.
     pub name: String,
     /// Path under the asset root, e.g. `models/pine_large.obj`.
     pub model: String,
+    /// The prefab this entity is an instance of, by file stem, or empty.
+    ///
+    /// An instance is one line: what it is, where it stands, and what it is
+    /// called. Its model and its children come from the prefab, so `model`
+    /// is ignored while this is set. Expanding it is
+    /// [`prefab::instantiate`](crate::prefab::instantiate), and everything
+    /// downstream sees the expansion rather than the reference.
+    ///
+    /// An empty string rather than an `Option`, for the reason
+    /// [`MaterialRef`] is not one either: RON spells an option out as
+    /// `Some(...)`, and a wrapper in every line of every scene earns
+    /// nothing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefab: String,
     #[serde(default)]
     pub transform: Transform,
     /// A material by name — a `.rmat` asset in the library, or one of the
@@ -363,6 +377,7 @@ mod tests {
             entities: vec![EntityDesc {
                 name: "crate".into(),
                 model: "builtin:cube".into(),
+                prefab: String::new(),
                 transform: Transform {
                     position: Vec3::new(1.0, 2.0, 3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
@@ -376,6 +391,7 @@ mod tests {
                 children: vec![EntityDesc {
                     name: "lid".into(),
                     model: "builtin:cube".into(),
+                    prefab: String::new(),
                     material: MaterialRef::Named("stone".into()),
                     body: Body::None,
                     collider: Collider::None,
@@ -404,6 +420,7 @@ mod tests {
             entities: vec![EntityDesc {
                 name: "pine".into(),
                 model: "models/pine_large.obj".into(),
+                prefab: String::new(),
                 transform: Transform {
                     position: Vec3::new(1.0, 0.0, -3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),

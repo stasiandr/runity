@@ -272,6 +272,7 @@ mod tests {
         EntityDesc {
             name: name.into(),
             model: "builtin:cube".into(),
+            prefab: String::new(),
             transform: Transform::default(),
             material: Default::default(),
             body: Default::default(),

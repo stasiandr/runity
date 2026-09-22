@@ -284,6 +284,7 @@ mod tests {
         EntityDesc {
             name: String::new(),
             model: "m".into(),
+            prefab: String::new(),
             transform: Transform::default(),
             material: Default::default(),
             body: Body::None,
@@ -300,6 +301,7 @@ mod tests {
                 .map(|(i, model)| EntityDesc {
                     name: format!("thing {i}"),
                     model: (*model).into(),
+                    prefab: String::new(),
                     transform: Transform {
                         position: Vec3::new(i as f32, 0.0, 0.0),
                         ..Default::default()

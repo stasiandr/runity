@@ -187,6 +187,10 @@ fn every_call_survives_a_null_editor() {
             0
         );
         assert_eq!(runity_editor_palette_count(null), 0);
+        assert_eq!(runity_editor_prefab_count(null), 0);
+        assert_eq!(runity_editor_add_instance(null, -1, std::ptr::null()), -1);
+        assert!(!runity_editor_make_prefab(null, 0, std::ptr::null()));
+        assert!(!runity_editor_set_prefabs(null, std::ptr::null()));
         assert!(!runity_editor_get_camera(
             null,
             std::ptr::null_mut(),
@@ -671,4 +675,114 @@ fn opening_a_scene_looks_where_the_scene_says_and_keeping_a_view_is_a_decision()
     assert!(unsafe { runity_editor_get_camera(editor.0, eye.as_mut_ptr(), target.as_mut_ptr()) });
     assert_eq!(eye, [1.0, 2.0, 3.0]);
     assert_eq!(target, [0.0, 0.0, 0.0]);
+}
+
+/// Read a string out of one of the buffer-and-capacity calls.
+fn text_from(call: impl FnOnce(*mut c_char, u32) -> u32) -> String {
+    let mut buffer = vec![0u8; 128];
+    call(buffer.as_mut_ptr() as *mut c_char, 128);
+    std::ffi::CStr::from_bytes_until_nul(&buffer)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn a_thing_arranged_once_becomes_a_thing_placed_many_times() {
+    let Some((editor, path)) = open("prefab") else {
+        return;
+    };
+    // The crate has a lid, so it is a two-entity arrangement: exactly the
+    // kind of thing that should stop being copied by hand.
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+
+    let name = CString::new("crate").unwrap();
+    assert!(unsafe { runity_editor_make_prefab(editor.0, 1, name.as_ptr()) });
+
+    // The scene now holds one row where there were two, and it says what it
+    // is an instance of.
+    assert_eq!(
+        unsafe { runity_editor_entity_count(editor.0) },
+        2,
+        "the lid lives in the prefab file now"
+    );
+    assert_eq!(
+        text_from(|b, c| unsafe { runity_editor_entity_prefab(editor.0, 1, b, c) }),
+        "crate"
+    );
+    let written = path.parent().unwrap().join("prefabs/crate.prefab");
+    assert!(
+        written.exists(),
+        "{} should have been written",
+        written.display()
+    );
+
+    // Place a second one. Both are one row each, and both draw the whole
+    // thing — which is what `entity_count` not moving and the pick below
+    // between them prove.
+    let placed = unsafe { runity_editor_add_instance(editor.0, -1, name.as_ptr()) };
+    assert!(placed >= 0, "placing an instance");
+    assert_eq!(unsafe { runity_editor_entity_count(editor.0) }, 3);
+    assert_eq!(
+        text_from(|b, c| unsafe { runity_editor_entity_prefab(editor.0, placed as u32, b, c) }),
+        "crate"
+    );
+
+    // A prefab nothing answers to is refused rather than left as an entity
+    // with no model and no explanation.
+    let missing = CString::new("not_a_prefab").unwrap();
+    assert_eq!(
+        unsafe { runity_editor_add_instance(editor.0, -1, missing.as_ptr()) },
+        -1
+    );
+
+    // It is listed for a host to offer.
+    assert_eq!(unsafe { runity_editor_prefab_count(editor.0) }, 1);
+    assert_eq!(
+        text_from(|b, c| unsafe { runity_editor_prefab_name(editor.0, 0, b, c) }),
+        "crate"
+    );
+
+    // And the scene reopens: the reference is what was saved, and opening
+    // finds the prefabs beside it without being told where they are.
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("prefab"),
+        "the scene keeps the reference:\n{text}"
+    );
+    // `name: "lid"`, not "lid" — which also appears inside `collider`, and
+    // spent a run insisting this had failed when it had not.
+    assert!(
+        !text.contains(r#"name: "lid""#),
+        "and not a copy of what is in it"
+    );
+    assert!(unsafe { runity_editor_open_scene(editor.0, c(&path).as_ptr()) });
+    assert_eq!(unsafe { runity_editor_prefab_count(editor.0) }, 1);
+}
+
+#[test]
+fn clicking_something_a_prefab_brought_selects_the_instance() {
+    // The rule that makes an instance one thing: a click on the lid is a
+    // click on the crate, because the crate is what the document can move.
+    let Some((editor, _)) = open("prefab-pick") else {
+        return;
+    };
+    let eye = [0.0f32, 1.2, 6.0];
+    let at = [0.0f32, 0.9, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), at.as_ptr()) });
+
+    // The lid sits above the crate, so a ray through the upper middle finds
+    // the lid first. Before it is a prefab, that is its own entity.
+    let (x, y) = (96u32, 52u32);
+    let before = unsafe { runity_editor_pick(editor.0, x, y) };
+    assert_eq!(before, 2, "the lid, which has its own row");
+
+    let name = CString::new("crate").unwrap();
+    assert!(unsafe { runity_editor_make_prefab(editor.0, 1, name.as_ptr()) });
+    let after = unsafe { runity_editor_pick(editor.0, x, y) };
+    assert_eq!(
+        after, 1,
+        "the same pixel now finds the instance, not a part of it"
+    );
 }

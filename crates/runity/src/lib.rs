@@ -30,6 +30,7 @@ pub mod input;
 pub mod library;
 pub mod material;
 pub mod physics;
+pub mod prefab;
 pub mod render;
 pub mod scene;
 #[cfg(feature = "desktop-shell")]
@@ -55,6 +56,7 @@ pub use library::{Library, Reloaded};
 // read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};
 pub use physics::{BodyHandle, CharacterMove, CharacterSettings, PhysicsWorld, RayHit};
+pub use prefab::{instantiate, Instanced, Prefabs};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };

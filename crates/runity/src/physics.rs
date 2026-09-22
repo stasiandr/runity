@@ -376,6 +376,7 @@ mod tests {
         EntityDesc {
             name: name.into(),
             model: "m".into(),
+            prefab: String::new(),
             transform: Transform {
                 position: Vec3::new(0.0, y, 0.0),
                 ..Default::default()

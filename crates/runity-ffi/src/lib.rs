@@ -38,6 +38,16 @@ pub struct Editor {
     history: runity::edit::History,
     scene_path: Option<PathBuf>,
     library: Option<Library>,
+    /// Prefabs a scene's instances name. Loaded from `prefabs/` beside the
+    /// scene when one is opened, so the editor finds the same ones the
+    /// headless render does.
+    prefabs: runity::Prefabs,
+    /// Where those came from, so the editor can write a new one back.
+    prefab_dir: Option<PathBuf>,
+    /// The document with its instances expanded: what is drawn, and what a
+    /// click is tested against. Rebuilt with the world, so the two cannot
+    /// disagree about what is in the scene.
+    instanced: runity::Instanced,
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     /// Entity handles in the order the editor lists them, so an index from
@@ -142,6 +152,9 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         history: runity::edit::History::new(Scene::default(), 64),
         scene_path: None,
         library: None,
+        prefabs: runity::Prefabs::new(),
+        prefab_dir: None,
+        instanced: runity::Instanced::default(),
         uploaded: Vec::new(),
         camera: Camera::default(),
         order: Vec::new(),
@@ -202,6 +215,9 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             history: runity::edit::History::new(Scene::default(), 64),
             scene_path: None,
             library: None,
+            prefabs: runity::Prefabs::new(),
+            prefab_dir: None,
+            instanced: runity::Instanced::default(),
             uploaded: Vec::new(),
             camera: Camera::default(),
             order: Vec::new(),
@@ -319,6 +335,16 @@ pub unsafe extern "C" fn runity_editor_open_scene(
             // opens pointing somewhere else in the editor is a file whose
             // picture nobody can predict.
             editor.camera = runity::scene_camera(&scene.view);
+            // Prefabs come from `prefabs/` beside the scene, by the same
+            // convention the headless render uses. An editor that had to be
+            // told where they are would be an editor that shows a different
+            // scene than the one CI renders.
+            let (prefabs, problems) = runity::Prefabs::beside(&path);
+            if !problems.is_empty() {
+                fail(format!("{} prefab(s) skipped", problems.len()));
+            }
+            editor.prefab_dir = path.parent().map(|d| d.join("prefabs"));
+            editor.prefabs = prefabs;
             editor.history.replace(scene);
             editor.scene_path = Some(path);
             editor.respawn();
@@ -806,6 +832,7 @@ pub unsafe extern "C" fn runity_editor_add(
     let desc = runity::EntityDesc {
         name: "entity".into(),
         model: model.to_string_lossy().into_owned(),
+        prefab: String::new(),
         transform: Default::default(),
         material: Default::default(),
         body: Default::default(),
@@ -1048,6 +1075,207 @@ pub extern "C" fn runity_linear_to_srgb(channel: c_float) -> c_float {
     runity::material::linear_to_srgb(channel)
 }
 
+/// Point the editor at a directory of prefabs.
+///
+/// Opening a scene already loads the `prefabs/` beside it, which is the
+/// convention every tool follows. This is for a host that keeps them
+/// somewhere else.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_prefabs(
+    editor: *mut Editor,
+    path: *const c_char,
+) -> bool {
+    let (Some(editor), Some(path)) = (unsafe { borrow(editor) }, unsafe { path_from(path) }) else {
+        fail("no editor or no path");
+        return false;
+    };
+    match runity::Prefabs::open(&path) {
+        Ok((prefabs, problems)) => {
+            if !problems.is_empty() {
+                fail(format!("{} prefab(s) skipped", problems.len()));
+            }
+            editor.prefabs = prefabs;
+            editor.prefab_dir = Some(path);
+            editor.respawn();
+            true
+        }
+        Err(e) => {
+            fail(e.to_string());
+            false
+        }
+    }
+}
+
+/// How many prefabs there are to place.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_prefab_count(editor: *mut Editor) -> c_uint {
+    unsafe { borrow(editor) }.map_or(0, |e| e.prefabs.len() as c_uint)
+}
+
+/// One prefab's name. Sorted, so a list does not reshuffle between openings.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_prefab_name(
+    editor: *mut Editor,
+    index: c_uint,
+    buffer: *mut c_char,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let names = editor.prefabs.names();
+    let Some(name) = names.get(index as usize) else {
+        return 0;
+    };
+    write_string(name, buffer, capacity)
+}
+
+/// What prefab an entity is an instance of, or "" when it is a plain entity.
+///
+/// The editor's tree needs this to say so: an instance is one row whose
+/// insides belong to a file, and a row that looks like every other row hides
+/// the difference until someone tries to move a stone and moves twelve.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_entity_prefab(
+    editor: *mut Editor,
+    index: c_uint,
+    buffer: *mut c_char,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let flat = editor.history.scene().flatten();
+    let name = flat
+        .get(index as usize)
+        .map(|(desc, _)| desc.prefab.clone())
+        .unwrap_or_default();
+    write_string(&name, buffer, capacity)
+}
+
+/// Place an instance of a prefab, under `parent` or at the top with -1.
+/// Returns its index, or -1.
+///
+/// # Safety
+/// `prefab` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_add_instance(
+    editor: *mut Editor,
+    parent: c_int,
+    prefab: *const c_char,
+) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    let Some(name) = (unsafe { path_from(prefab) }) else {
+        return -1;
+    };
+    let name = name.to_string_lossy().into_owned();
+    if editor.prefabs.get(&name).is_none() {
+        // Refused, unlike an unknown material name. A colour that does not
+        // resolve shows grey and can be fixed by typing; an instance of
+        // nothing is an entity with no model and no way to tell why.
+        fail(format!("no prefab named {name}"));
+        return -1;
+    }
+    let desc = runity::EntityDesc {
+        name: name.clone(),
+        model: String::new(),
+        prefab: name,
+        ..Default::default()
+    };
+    let parent = (parent >= 0).then_some(parent as usize);
+    let Some(index) = runity::edit::add(editor.history.edit(), parent, desc) else {
+        return -1;
+    };
+    editor.respawn();
+    index as c_int
+}
+
+/// Save an entity's subtree as a prefab and make it an instance of it.
+///
+/// The move that turns a thing arranged once into a thing placed many times,
+/// and the reason it is one call rather than "save it, then retype it as an
+/// instance": doing it by hand leaves the scene holding a copy that drifts
+/// from the file the moment either changes.
+///
+/// # Safety
+/// `name` must be a NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_make_prefab(
+    editor: *mut Editor,
+    index: c_uint,
+    name: *const c_char,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let Some(name) = (unsafe { path_from(name) }) else {
+        fail("no name");
+        return false;
+    };
+    let name = name.to_string_lossy().into_owned();
+    if name.is_empty() {
+        fail("a prefab needs a name");
+        return false;
+    }
+    let Some(directory) = editor.prefab_dir.clone() else {
+        fail("no prefab directory — open a scene, or set one");
+        return false;
+    };
+
+    // Taken from the expanded document, so making a prefab out of something
+    // that already contains an instance writes what it stands for rather
+    // than a reference the new file's neighbours may not have.
+    let Some(desc) = editor
+        .instanced
+        .scene
+        .flatten()
+        .iter()
+        .zip(&editor.instanced.source)
+        .find(|(_, source)| **source == index as usize)
+        .map(|((desc, _), _)| (*desc).clone())
+    else {
+        fail("no entity at that index");
+        return false;
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&directory) {
+        fail(e.to_string());
+        return false;
+    }
+    let path = directory.join(format!("{name}.{}", runity::prefab::EXTENSION));
+    if let Err(e) = runity::Prefabs::save(&desc, &path) {
+        fail(e);
+        return false;
+    }
+    editor.prefabs.insert(name.clone(), desc);
+
+    // The entity becomes an instance: its children now live in the file, and
+    // leaving a copy of them in the scene is how the two start to drift.
+    let scene = editor.history.edit();
+    let Some(entity) = runity::edit::nth_mut(scene, index as usize) else {
+        return false;
+    };
+    entity.prefab = name;
+    entity.model = String::new();
+    entity.children.clear();
+    editor.respawn();
+    true
+}
+
 /// Delete an entity and everything under it.
 ///
 /// # Safety
@@ -1179,12 +1407,17 @@ impl Editor {
     fn respawn(&mut self) {
         self.world.clear();
         self.order.clear();
+        // Instances expanded first, so everything past this point — the
+        // world, the frame, a click — sees a plain tree and knows nothing
+        // about prefabs.
+        self.instanced = runity::instantiate(self.history.scene(), &self.prefabs);
         let renderer = &mut self.renderer;
         let gpu = &self.gpu;
         let library = self.library.as_ref();
         let uploaded = &mut self.uploaded;
+        let scene = &self.instanced.scene;
         runity::spawn_scene_with(
-            self.history.scene(),
+            scene,
             &mut self.world,
             |name| {
                 if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
@@ -1285,14 +1518,20 @@ impl Editor {
     fn pick(&self, x: u32, y: u32) -> Option<usize> {
         let (near, direction) = self.ray(x, y);
 
+        // Tested against the expanded scene and answered with a document
+        // index: clicking a stone that came out of a prefab selects the fire
+        // that brought it, because the fire is the thing the document can
+        // move. Testing the document instead would make everything a prefab
+        // brought unclickable.
         let mut best: Option<(f32, usize)> = None;
-        for (index, (desc, world)) in self.history.scene().flatten().iter().enumerate() {
+        for (index, (desc, world)) in self.instanced.scene.flatten().iter().enumerate() {
             let Some(bounds) = self.bounds_of(&desc.model) else {
                 continue;
             };
             if let Some(distance) = ray_box(near, direction, bounds, *world) {
+                let owner = self.instanced.source.get(index).copied().unwrap_or(index);
                 if best.is_none_or(|(closest, _)| distance < closest) {
-                    best = Some((distance, index));
+                    best = Some((distance, owner));
                 }
             }
         }
