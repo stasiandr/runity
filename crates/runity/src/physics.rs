@@ -288,18 +288,23 @@ impl PhysicsWorld {
                 grounded: false,
             };
         };
-        let mut rapier_controller = KinematicCharacterController::default();
-        rapier_controller.up = nalgebra::Unit::new_normalize(vector![0.0, 1.0, 0.0]);
-        rapier_controller.offset = CharacterLength::Absolute(0.01);
-        rapier_controller.max_slope_climb_angle = controller.max_climb_angle_radians;
-        rapier_controller.min_slope_slide_angle = controller.min_slide_angle_radians;
-        rapier_controller.autostep = Some(CharacterAutostep {
-            max_height: CharacterLength::Absolute(controller.step_height),
-            min_width: CharacterLength::Absolute(controller.step_min_width),
-            include_dynamic_bodies: false,
-        });
-        rapier_controller.snap_to_ground =
-            Some(CharacterLength::Absolute(controller.snap_to_ground));
+        let rapier_controller = KinematicCharacterController {
+            up: nalgebra::Unit::new_normalize(vector![0.0, 1.0, 0.0]),
+            // A small gap kept between the character and everything else.
+            // Touching exactly means the next frame starts in contact, and
+            // a solver that starts in contact jitters.
+            offset: CharacterLength::Absolute(0.01),
+            max_slope_climb_angle: controller.max_climb_angle_radians,
+            min_slope_slide_angle: controller.min_slide_angle_radians,
+            autostep: Some(CharacterAutostep {
+                max_height: CharacterLength::Absolute(controller.step_height),
+                min_width: CharacterLength::Absolute(controller.step_min_width),
+                // A crate should be pushed, not climbed.
+                include_dynamic_bodies: false,
+            }),
+            snap_to_ground: Some(CharacterLength::Absolute(controller.snap_to_ground)),
+            ..Default::default()
+        };
 
         let movement = rapier_controller.move_shape(
             dt,
