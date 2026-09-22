@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use runity::builtin;
 use runity::glam::Vec3;
-use runity::render::{FogSettings, Lighting};
+use runity::render::FogSettings;
 use runity::{Gpu, Library, MeshHandle, OffscreenTarget, Renderer, Scene};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -107,11 +107,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{}: no model named {}", m.entity_name, m.model);
     }
 
-    let lighting = Lighting {
-        sun_direction: sun_direction(scene.sun.hour),
-        sun_intensity: scene.sun.intensity,
-        ..Lighting::default()
-    };
+    let lighting = runity::scene_lighting(&scene.sun);
     let fog = FogSettings {
         color: Vec3::from_array(scene.fog.color),
         start: scene.fog.start,
@@ -133,15 +129,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn hecs_world() -> hecs::World {
     hecs::World::new()
-}
-
-/// Where the sun is at a given hour: up at noon, along the ground at dawn and
-/// dusk. Crude on purpose — the engine ships a plausible default so that a
-/// scene's `hour` does something, and a game replaces it with its own curve.
-fn sun_direction(hour: f32) -> Vec3 {
-    let t = ((hour - 6.0) / 12.0).clamp(0.0, 1.0);
-    let angle = t * std::f32::consts::PI;
-    Vec3::new(-angle.cos(), -angle.sin().max(0.15), -0.35).normalize()
 }
 
 fn write_png(

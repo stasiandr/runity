@@ -66,6 +66,6 @@ pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use world::{
-    build_frame, captured_view, scene_camera, spawn_scene, spawn_scene_with, Model, Posed,
+    build_frame, captured_view, scene_camera, scene_lighting, spawn_scene, spawn_scene_with, Model, Posed,
     SceneIndex, Shape, Surface, Textured,
 };

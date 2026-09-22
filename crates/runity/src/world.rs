@@ -231,6 +231,21 @@ pub fn apply_hierarchy(world: &mut World) {
     }
 }
 
+/// The lighting a scene's sun describes.
+///
+/// One place, so the headless render, the editor and the walk-around light
+/// the same scene the same way. They did not: two of them ignored the hour
+/// entirely and the third had its own curve, and the difference only showed
+/// up when a screenshot was compared with what the editor was showing.
+pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
+    Lighting {
+        sun_direction: sun.direction(),
+        sun_color: sun.color(),
+        sun_intensity: sun.intensity,
+        ..Lighting::default()
+    }
+}
+
 /// The camera a scene's view describes.
 ///
 /// Here rather than on either type: a scene is not allowed to know about the

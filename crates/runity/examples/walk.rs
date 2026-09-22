@@ -11,7 +11,7 @@
 
 use runity::builtin;
 use runity::glam::Vec3;
-use runity::render::{Camera, FogSettings, Frame, Lighting};
+use runity::render::{Camera, FogSettings, Frame};
 use runity::shell::{run, Context, Game, WindowConfig};
 use runity::{Key, MeshHandle, Scene, TextRun, Ui};
 
@@ -141,7 +141,7 @@ impl Game for Walk {
             ),
         ));
 
-        runity::build_frame(&self.world, camera, Lighting::default(), fog)
+        runity::build_frame(&self.world, camera, runity::scene_lighting(&self.scene.sun), fog)
     }
 
     fn overlay(&mut self) -> &Ui {

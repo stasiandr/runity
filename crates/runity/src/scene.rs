@@ -253,6 +253,38 @@ impl Default for Sun {
     }
 }
 
+impl Sun {
+    /// Which way the light travels: from the sun toward the ground.
+    ///
+    /// A crude arc — up at noon, along the ground at either end — and
+    /// deliberately the engine's rather than each tool's. It lived in
+    /// `scene_shot` while the editor and the walk-around used a fixed
+    /// default, which meant one scene had three different suns depending on
+    /// which program opened it, and a screenshot could not be compared with
+    /// what the editor showed. A game that wants a real ephemeris replaces
+    /// this; a scene's `hour` has to mean one thing first.
+    pub fn direction(&self) -> Vec3 {
+        let day = ((self.hour - 6.0) / 12.0).clamp(0.0, 1.0);
+        let angle = day * std::f32::consts::PI;
+        // The height is floored well above zero: a sun exactly on the
+        // horizon lights nothing but the horizon, and every shadow in the
+        // scene becomes a stripe reaching to the far plane.
+        Vec3::new(-angle.cos(), -angle.sin().max(0.15), -0.35).normalize()
+    }
+
+    /// How warm the light is: white overhead, orange near the horizon.
+    ///
+    /// Not physics — the sky is not scattering anything here — but the one
+    /// cue that reads as a time of day at a glance, and cheaper than every
+    /// scene hand-picking a colour to go with its hour.
+    pub fn color(&self) -> Vec3 {
+        let noon = Vec3::new(1.0, 0.96, 0.88);
+        let low = Vec3::new(1.0, 0.72, 0.48);
+        let height = (-self.direction().y).clamp(0.0, 1.0);
+        low + (noon - low) * height
+    }
+}
+
 /// Distance fog. On by default, unlike the old renderer's — without it
 /// nothing in a forest reads as far away.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -495,6 +527,33 @@ mod tests {
         let typo: Scene =
             ron::from_str(r#"(entities: [(name: "a", model: "m", material: "grsas")])"#).unwrap();
         assert_eq!(typo.entities[0].material(), Material::default());
+    }
+
+    #[test]
+    fn the_sun_rises_crosses_and_sets_and_warms_at_both_ends() {
+        let at = |hour| Sun { hour, intensity: 1.0 };
+
+        // Noon is overhead; morning and evening are low and on opposite
+        // sides, which is what makes shadows point somewhere believable.
+        let noon = at(12.0).direction();
+        let morning = at(7.0).direction();
+        let evening = at(17.0).direction();
+        assert!(noon.y < morning.y && noon.y < evening.y, "noon is highest");
+        assert!(
+            morning.x.signum() != evening.x.signum(),
+            "the sun should cross the sky, not wander back: {morning} then {evening}"
+        );
+
+        // Never exactly on the horizon: a sun lying flat lights nothing but
+        // the horizon and turns every shadow into a stripe to the far plane.
+        for hour in [0.0, 5.0, 6.0, 18.0, 23.0] {
+            assert!(at(hour).direction().y < -0.1, "at {hour}");
+        }
+
+        // Warm low, white high. Not physics — the one cue that reads as a
+        // time of day at a glance.
+        assert!(at(12.0).color().z > at(7.0).color().z, "noon is the bluest");
+        assert!(at(7.0).color().x >= at(7.0).color().z, "dawn is orange");
     }
 
     #[test]

@@ -621,7 +621,10 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
     };
     let frame = Frame {
         camera: editor.camera,
-        lighting: Lighting::default(),
+        // From the scene's hour, like every other tool: an editor lighting a
+        // scene differently from the render is an editor you cannot trust
+        // about anything you are looking at.
+        lighting: runity::scene_lighting(&editor.history.scene().sun),
         fog: FogSettings {
             color: Vec3::from_array(editor.history.scene().fog.color),
             start: editor.history.scene().fog.start,
