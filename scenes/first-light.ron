@@ -1,0 +1,55 @@
+// The engine's reference scene: everything it can currently draw, arranged so
+// that each thing is checking something.
+//
+// Nothing here needs an import step — every model is a builtin, so this scene
+// opens on a fresh clone with no library and no asset pipeline. That is the
+// point of it: the shortest path from `git clone` to a picture.
+(
+    sun: (hour: 9.0, intensity: 1.15),
+    fog: (color: (0.62, 0.68, 0.74), start: 18.0, end: 90.0),
+    entities: [
+        // The ground. Without it nothing has anywhere to stand and every
+        // object floats, which was most of what looked wrong before.
+        (
+            name: "ground",
+            model: "builtin:plane",
+            transform: (scale: (120.0, 1.0, 120.0)),
+            material: "grass",
+        ),
+
+        // A row of cones marching away from the camera: the same object at
+        // four distances, so fog has to show its work.
+        (name: "tree near",   model: "builtin:cone", transform: (position: (-2.2, 0.0,  1.0), scale: (1.6, 3.2, 1.6)), material: "needle"),
+        (name: "tree mid",    model: "builtin:cone", transform: (position: ( 1.8, 0.0, -6.0), scale: (1.8, 4.0, 1.8)), material: "needle"),
+        (name: "tree far",    model: "builtin:cone", transform: (position: (-4.0, 0.0, -22.0), scale: (2.0, 4.6, 2.0)), material: "needle"),
+        (name: "tree furthest", model: "builtin:cone", transform: (position: ( 5.0, 0.0, -48.0), scale: (2.2, 5.0, 2.2)), material: "needle"),
+
+        // A box, because flat faces at right angles are where hemisphere
+        // ambient is easiest to read: three faces, three different values.
+        (
+            name: "crate",
+            model: "builtin:cube",
+            transform: (position: (2.6, 0.5, 2.0), rotation_deg: (0.0, 24.0, 0.0)),
+            material: "earth",
+            body: Static,
+        ),
+
+        // A sphere, which is where a bad normal shows up first.
+        (
+            name: "boulder",
+            model: "builtin:sphere",
+            transform: (position: (-1.4, 0.55, 3.4), scale: (1.1, 1.1, 1.1)),
+            material: "stone",
+            body: Static,
+        ),
+
+        // The one unlit thing in the scene. It should stay the same colour
+        // at dawn and at midnight, and fog should not touch it.
+        (
+            name: "ember",
+            model: "builtin:sphere",
+            transform: (position: (0.7, 0.18, 3.0), scale: (0.34, 0.34, 0.34)),
+            material: "ember",
+        ),
+    ],
+)

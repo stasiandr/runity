@@ -1960,6 +1960,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "hecs",
+ "image",
  "pollster",
  "rapier3d",
  "rkyv",
@@ -2176,17 +2177,6 @@ name = "smallvec"
 version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
-
-[[package]]
-name = "smallworld"
-version = "0.1.0"
-dependencies = [
- "glam",
- "hecs",
- "rapier3d",
- "runity",
- "serde",
-]
 
 [[package]]
 name = "smithay-client-toolkit"

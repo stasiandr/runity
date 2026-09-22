@@ -4,9 +4,9 @@
 //! wanting to add a component adds one, and the renderer only asks for the
 //! three it needs to draw something.
 
-use glam::Vec3;
 use hecs::World;
 
+use crate::material::Material;
 use crate::render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle};
 use crate::scene::{Body, Scene, Transform};
 
@@ -14,9 +14,9 @@ use crate::scene::{Body, Scene, Transform};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Model(pub MeshHandle);
 
-/// Multiplied into the surface colour.
+/// What the entity's surface is made of.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Tint(pub Vec3);
+pub struct Surface(pub Material);
 
 /// Kept from the scene so that physics can pick entities up later without the
 /// scene having to be re-read.
@@ -52,11 +52,12 @@ pub fn spawn_scene(
             });
             continue;
         };
-        let tint = desc
-            .tint
-            .map(|[r, g, b]| Vec3::new(r, g, b))
-            .unwrap_or(Vec3::ONE);
-        world.spawn((desc.transform, Model(mesh), Tint(tint), Physics(desc.body)));
+        world.spawn((
+            desc.transform,
+            Model(mesh),
+            Surface(desc.material()),
+            Physics(desc.body),
+        ));
     }
     missing
 }
@@ -64,11 +65,11 @@ pub fn spawn_scene(
 /// Collect everything drawable in the world into a frame.
 pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSettings) -> Frame {
     let mut draws = Vec::new();
-    for (transform, model, tint) in world.query::<(&Transform, &Model, &Tint)>().iter() {
+    for (transform, model, surface) in world.query::<(&Transform, &Model, &Surface)>().iter() {
         draws.push(Draw {
             mesh: model.0,
             transform: transform.matrix(),
-            tint: tint.0,
+            material: surface.0,
         });
     }
     Frame {
@@ -84,6 +85,7 @@ pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSe
 mod tests {
     use super::*;
     use crate::scene::EntityDesc;
+    use glam::Vec3;
 
     fn scene_with(models: &[&str]) -> Scene {
         Scene {
@@ -97,7 +99,7 @@ mod tests {
                         position: Vec3::new(i as f32, 0.0, 0.0),
                         ..Default::default()
                     },
-                    tint: None,
+                    material: Default::default(),
                     body: Body::Static,
                 })
                 .collect(),

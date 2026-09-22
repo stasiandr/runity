@@ -24,6 +24,7 @@ use glam::{Mat4, Vec3};
 
 use crate::asset::ArchivedMeshAsset;
 use crate::gpu::{Gpu, OffscreenTarget};
+use crate::material::{Material, Shading};
 
 /// A mesh that lives on the GPU. Opaque on purpose — the index is ours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,9 +124,9 @@ impl Default for FogSettings {
 pub struct Draw {
     pub mesh: MeshHandle,
     pub transform: Mat4,
-    /// Multiplied into the surface colour. Four settlers in four shirts come
-    /// from one mesh and four tints (`07-look.md`, "тинт инстанса").
-    pub tint: Vec3,
+    /// What the surface is made of. One mesh drawn with four materials is
+    /// how four settlers get four shirts (`07-look.md`, "тинт инстанса").
+    pub material: Material,
 }
 
 /// Everything needed to produce one frame.
@@ -170,7 +171,9 @@ struct FrameUniform {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw {
     model: [[f32; 4]; 4],
-    tint: [f32; 4],
+    /// rgb is the base colour; w is 1.0 for an unlit surface, which the
+    /// shader uses to skip both the light and the fog.
+    color_and_shading: [f32; 4],
 }
 
 struct GpuMesh {
@@ -328,30 +331,49 @@ impl Renderer {
     /// so this is a copy, not a conversion — which is the whole reason the
     /// asset format exists.
     pub fn upload_mesh(&mut self, gpu: &Gpu, mesh: &ArchivedMeshAsset) -> MeshHandle {
+        let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
+        self.upload(gpu, vertex_slice(mesh), &indices)
+    }
+
+    fn upload(
+        &mut self,
+        gpu: &Gpu,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+    ) -> MeshHandle {
         use wgpu::util::DeviceExt;
 
-        let vertices = gpu
+        let vertex_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
-                contents: bytemuck::cast_slice(vertex_slice(mesh)),
+                contents: bytemuck::cast_slice(vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
-        let indices: Vec<u32> = mesh.indices.iter().map(|i| i.to_native()).collect();
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
-                contents: bytemuck::cast_slice(&indices),
+                contents: bytemuck::cast_slice(indices),
                 usage: wgpu::BufferUsages::INDEX,
             });
 
         self.meshes.push(GpuMesh {
-            vertices,
+            vertices: vertex_buffer,
             indices: index_buffer,
             index_count: indices.len() as u32,
         });
         MeshHandle(self.meshes.len() as u32 - 1)
+    }
+
+    /// Upload a mesh that is already in memory rather than in an asset.
+    ///
+    /// The builtins come this way. Everything else should go through the
+    /// asset pipeline, which is why this is separate rather than the only
+    /// entry point: an import is a decision, and making it as easy to skip
+    /// as to do is how a codebase ends up parsing OBJ at startup again.
+    pub fn upload_mesh_owned(&mut self, gpu: &Gpu, mesh: &crate::asset::MeshAsset) -> MeshHandle {
+        self.upload(gpu, &mesh.vertices, &mesh.indices)
     }
 
     /// Draw one frame into an offscreen target.
@@ -391,9 +413,13 @@ impl Renderer {
         // a thousand.
         let mut batches: Vec<(MeshHandle, Vec<InstanceRaw>)> = Vec::new();
         for draw in &frame.draws {
+            let unlit = match draw.material.shading {
+                Shading::Lit => 0.0,
+                Shading::Unlit => 1.0,
+            };
             let raw = InstanceRaw {
                 model: draw.transform.to_cols_array_2d(),
-                tint: extend(draw.tint, 1.0),
+                color_and_shading: extend(draw.material.color(), unlit),
             };
             match batches.iter_mut().find(|(mesh, _)| *mesh == draw.mesh) {
                 Some((_, list)) => list.push(raw),

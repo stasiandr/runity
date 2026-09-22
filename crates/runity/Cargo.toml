@@ -28,3 +28,12 @@ default = []
 # and Android the platform does. This is the convenience path, not the
 # architecture.
 desktop-shell = ["dep:winit"]
+
+[dev-dependencies]
+hecs = "0.11.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# The reference scene, rendered headlessly. `cargo run --example scene_shot`.
+[[example]]
+name = "scene_shot"
+path = "examples/scene_shot.rs"

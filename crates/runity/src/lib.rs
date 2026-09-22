@@ -15,8 +15,10 @@
 pub use glam;
 
 pub mod asset;
+pub mod builtin;
 pub mod gpu;
 pub mod library;
+pub mod material;
 pub mod render;
 pub mod scene;
 pub mod world;
@@ -24,6 +26,7 @@ pub mod world;
 pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use library::Library;
+pub use material::{Material, Shading};
 pub use render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer};
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
-pub use world::{build_frame, spawn_scene, Model, Tint};
+pub use world::{build_frame, spawn_scene, Model, Surface};

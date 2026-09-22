@@ -1,10 +1,10 @@
-assets/valley — где что взято и на каких условиях.
+assets/examples — где что взято и на каких условиях.
 
 Все исходники — наборы Kenney под CC0 (public domain): их можно
 использовать и переделывать без ограничений, указание автора
 желательно, но не обязательно. Ниже — строка на каждый
 закоммиченный файл: чем он был до конвертации и что с ним сделано.
-Конвертация: tools/valley-assets/build_assets.py.
+Конвертация: tools/example-assets/build_assets.py.
 
 Наборы:
   Kenney Nature Kit (CC0) — https://kenney.nl/assets/nature-kit

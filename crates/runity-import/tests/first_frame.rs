@@ -107,7 +107,7 @@ fn a_source_model_becomes_a_frame() {
             Draw {
                 mesh: handle,
                 transform: runity::glam::Mat4::IDENTITY,
-                tint: runity::glam::Vec3::new(0.30, 0.42, 0.33),
+                material: runity::material::builtin::NEEDLE,
             },
             Draw {
                 mesh: handle,
@@ -116,7 +116,7 @@ fn a_source_model_becomes_a_frame() {
                 transform: runity::glam::Mat4::from_translation(runity::glam::Vec3::new(
                     9.0, 0.0, -38.0,
                 )),
-                tint: runity::glam::Vec3::new(0.30, 0.42, 0.33),
+                material: runity::material::builtin::NEEDLE,
             },
         ],
     };

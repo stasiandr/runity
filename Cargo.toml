@@ -1,20 +1,17 @@
-# The new stack: `runity` the engine, `smallworld` the game.
+# runity: a game engine built on off-the-shelf crates.
 #
-# This is a separate workspace from the one in `crates/` rather than new
-# members inside it, because the two live by opposite rules: that one is a
-# dependency-free engine and its CI enforces an empty dependency tree, while
-# this one takes the proven crate first and writes its own only where it hits
-# a ceiling. Two rules that contradict each other need two workspaces.
+# The rule is: take the proven crate, and write our own only where we hit its
+# ceiling. It replaced the opposite rule — an engine assembled from `std`
+# alone — and `docs/stack.md` records what that cost and bought.
 #
-# The directory name is scaffolding. When the dependency-free workspace
-# retires, this one moves to the repository root and the crate names — which
-# are already the real ones — do not change.
+# There is no game crate here. What the engine is tested against is its own:
+# builtin meshes and materials, example assets and example scenes, all under
+# `assets/` and `scenes/`. A game gets its own repository when there is one.
 [workspace]
 resolver = "2"
 members = [
     "crates/runity",
     "crates/runity-import",
-    "crates/smallworld",
 ]
 
 [workspace.package]
@@ -27,7 +24,6 @@ repository = "https://github.com/stasiandr/runity"
 [workspace.dependencies]
 runity = { path = "crates/runity", version = "0.1.0" }
 runity-import = { path = "crates/runity-import", version = "0.1.0" }
-smallworld = { path = "crates/smallworld", version = "0.1.0" }
 
 # Release builds keep debug info: a profiler that cannot name a frame is
 # worth nothing, and Tracy wants symbols.

@@ -10,6 +10,8 @@ use std::path::Path;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
+use crate::material::Material;
+
 /// Position, rotation and scale, in the form a person can edit.
 ///
 /// Rotation is stored as Euler degrees rather than a quaternion on purpose:
@@ -81,12 +83,47 @@ pub struct EntityDesc {
     pub model: String,
     #[serde(default)]
     pub transform: Transform,
-    /// Multiplied into the model's own color. This is how four settlers get
-    /// four shirts out of one mesh (`docs/design/07-look.md`, "тинт инстанса").
+    /// A builtin material by name (`grass`, `bark`, `ember`, …), or a
+    /// material written out in full. Named first because that is what keeps a
+    /// scene readable and a palette consistent: a colour spelled out in
+    /// twenty places drifts in nineteen of them.
     #[serde(default)]
-    pub tint: Option<[f32; 3]>,
+    pub material: MaterialRef,
     #[serde(default)]
     pub body: Body,
+}
+
+/// How an entity names its surface.
+///
+/// Not an `Option`: RON wants `Some(...)` spelled out around an optional
+/// field, and `material: Some("grass")` is noise in every line of every
+/// scene. A default variant costs nothing and reads better.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaterialRef {
+    /// One of the engine's builtins, by name.
+    Named(String),
+    /// Spelled out, for a colour that has not earned a name yet.
+    Inline(Material),
+}
+
+impl Default for MaterialRef {
+    fn default() -> Self {
+        MaterialRef::Inline(Material::default())
+    }
+}
+
+impl EntityDesc {
+    /// The material to draw with: the named builtin, the inline one, or the
+    /// default. An unknown name falls back rather than failing to load —
+    /// a scene with a typo should still open, showing plain grey where the
+    /// mistake is, which is more useful than an error and no scene at all.
+    pub fn material(&self) -> Material {
+        match &self.material {
+            MaterialRef::Named(name) => crate::material::builtin::by_name(name).unwrap_or_default(),
+            MaterialRef::Inline(material) => *material,
+        }
+    }
 }
 
 /// The sun, which is the only light the valley has.
@@ -179,7 +216,7 @@ mod tests {
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
                     scale: Vec3::splat(1.2),
                 },
-                tint: None,
+                material: MaterialRef::Named("needle".into()),
                 body: Body::Static,
             }],
         };
@@ -203,6 +240,26 @@ mod tests {
     }
 
     #[test]
+    fn a_material_is_named_or_spelled_out_and_a_typo_still_opens() {
+        let named: Scene =
+            ron::from_str(r#"(entities: [(name: "a", model: "m", material: "grass")])"#).unwrap();
+        assert_eq!(
+            named.entities[0].material(),
+            crate::material::builtin::GRASS
+        );
+
+        let inline: Scene = ron::from_str(
+            r#"(entities: [(name: "a", model: "m", material: (base_color: (0.5, 0.1, 0.1)))])"#,
+        )
+        .unwrap();
+        assert_eq!(inline.entities[0].material().base_color, [0.5, 0.1, 0.1]);
+
+        let typo: Scene =
+            ron::from_str(r#"(entities: [(name: "a", model: "m", material: "grsas")])"#).unwrap();
+        assert_eq!(typo.entities[0].material(), Material::default());
+    }
+
+    #[test]
     fn a_missing_field_falls_back_rather_than_failing_to_load() {
         // An agent writing a scene by hand should not have to spell out
         // every default, and an older file should still open.
@@ -210,6 +267,7 @@ mod tests {
         let scene: Scene = ron::from_str(text).unwrap();
         assert_eq!(scene.entities[0].transform, Transform::default());
         assert_eq!(scene.entities[0].body, Body::None);
+        assert_eq!(scene.entities[0].material(), Material::default());
         assert_eq!(scene.sun.hour, 9.0);
     }
 }
