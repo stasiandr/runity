@@ -18,10 +18,31 @@
 //! a near-edge-on axis fly off — which is the whole reason this is written
 //! down rather than done by feel.
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 use crate::material::{Material, Shading};
 use crate::render::{Camera, Draw, MeshHandle, TextureHandle};
+
+/// What the gizmo does with a drag.
+///
+/// Three tools rather than three gizmos, because everything but the solver
+/// is the same: the same three axes, the same colours, the same rule about
+/// staying the same size on screen.
+///
+/// All three work in **world** axes, including rotate. A local-axis toggle
+/// is the obvious next step and is deliberately not here yet: it doubles
+/// every solver's cases, and the one thing worse than not having it is
+/// having it disagree with what the handles are drawn as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tool {
+    /// Arms along the axes; a drag slides along one.
+    #[default]
+    Move,
+    /// Rings around the axes; a drag turns about one.
+    Rotate,
+    /// Arms with a box at the end; a drag stretches along one.
+    Scale,
+}
 
 /// Which handle is being pointed at or held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,12 +117,30 @@ impl GizmoStyle {
 /// A grab in progress.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Drag {
+    pub tool: Tool,
     pub handle: Handle,
     /// Where the gizmo was when the grab started.
     pub origin: Vec3,
-    /// How far along the axis the grab point was, so the object does not
-    /// jump to the cursor on the first frame.
+    /// Where on the handle the grab landed, so nothing jumps on the first
+    /// frame: how far along the axis for move and scale, the angle around
+    /// the ring for rotate.
     pub grab_offset: f32,
+}
+
+/// What a drag asks the caller to do.
+///
+/// Relative to the transform the drag *started* from, never to the last
+/// frame. A caller that accumulated per-frame deltas would accumulate their
+/// rounding too, and a long drag would drift — the same reason the move
+/// solver returns a position rather than a step.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Motion {
+    /// Where the gizmo should be now.
+    Position(Vec3),
+    /// Turn the starting rotation by this, in world axes.
+    Rotation(Quat),
+    /// Multiply the starting scale by this, per axis.
+    Scale(Vec3),
 }
 
 /// Build the draw list for a gizmo.
@@ -115,36 +154,203 @@ pub fn draws(
     origin: Vec3,
     active: Option<Handle>,
 ) -> Vec<Draw> {
+    draws_for(Tool::Move, arm, camera, style, origin, active)
+}
+
+/// Build the draw list for one of the three tools.
+///
+/// Every one is made of the same unit cube: rings are a ring of short boxes.
+/// A circle mesh would be prettier and would be a second thing to upload,
+/// keep and hand around for handles that are a few dozen boxes on screen.
+pub fn draws_for(
+    tool: Tool,
+    arm: MeshHandle,
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    active: Option<Handle>,
+) -> Vec<Draw> {
+    match tool {
+        Tool::Move => arms(arm, camera, style, origin, active, false),
+        Tool::Scale => arms(arm, camera, style, origin, active, true),
+        Tool::Rotate => rings(arm, camera, style, origin, active),
+    }
+}
+
+/// The colour a handle is drawn in, white while it is the one being used.
+fn handle_material(handle: Handle, active: Option<Handle>) -> Material {
+    let mut material = handle.color();
+    if active == Some(handle) {
+        // The held one goes white, because a colour that merely brightens is
+        // hard to tell apart from the light changing.
+        material.base_color = [1.0, 1.0, 1.0];
+    }
+    material
+}
+
+/// Three arms along the axes, with a box on the end for the scale tool.
+fn arms(
+    arm: MeshHandle,
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    active: Option<Handle>,
+    knobs: bool,
+) -> Vec<Draw> {
     let length = style.arm_length(camera, origin);
     let thick = length * style.thickness;
-    Handle::ALL
-        .iter()
-        .map(|handle| {
-            let axis = handle.axis();
-            // A box from the origin outward along the axis, so the arm grows
-            // from the object rather than being centred on it.
-            let scale = axis * length + (Vec3::ONE - axis) * thick;
-            let transform =
-                Mat4::from_translation(origin + axis * length * 0.5) * Mat4::from_scale(scale);
-            let mut material = handle.color();
-            if active == Some(*handle) {
-                // The held one goes white, because a colour that merely
-                // brightens is hard to tell apart from the light changing.
-                material.base_color = [1.0, 1.0, 1.0];
-            }
-            Draw {
+    let mut out = Vec::with_capacity(if knobs { 6 } else { 3 });
+    for handle in Handle::ALL {
+        let axis = handle.axis();
+        // A box from the origin outward along the axis, so the arm grows
+        // from the object rather than being centred on it.
+        let scale = axis * length + (Vec3::ONE - axis) * thick;
+        let transform =
+            Mat4::from_translation(origin + axis * length * 0.5) * Mat4::from_scale(scale);
+        let material = handle_material(handle, active);
+        out.push(Draw {
+            mesh: arm,
+            transform,
+            texture: TextureHandle::WHITE,
+            material,
+            pose: None,
+        });
+        if knobs {
+            // A cube on the end, which is what tells scale apart from move
+            // at a glance — the arms alone are identical.
+            let knob = thick * 3.0;
+            out.push(Draw {
                 mesh: arm,
-                transform,
+                transform: Mat4::from_translation(origin + axis * length)
+                    * Mat4::from_scale(Vec3::splat(knob)),
                 texture: TextureHandle::WHITE,
                 material,
                 pose: None,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+    out
+}
+
+/// How many boxes a ring is made of. Twenty-four reads as a circle at the
+/// size a gizmo is drawn and costs nothing worth counting.
+const RING_SEGMENTS: usize = 24;
+
+/// Three rings, one around each axis.
+fn rings(
+    arm: MeshHandle,
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    active: Option<Handle>,
+) -> Vec<Draw> {
+    let radius = style.arm_length(camera, origin);
+    let thick = radius * style.thickness;
+    let mut out = Vec::with_capacity(Handle::ALL.len() * RING_SEGMENTS);
+    for handle in Handle::ALL {
+        let (u, v) = ring_plane(handle);
+        let material = handle_material(handle, active);
+        for segment in 0..RING_SEGMENTS {
+            let step = std::f32::consts::TAU / RING_SEGMENTS as f32;
+            let (a, b) = (segment as f32 * step, (segment + 1) as f32 * step);
+            let from = origin + (u * a.cos() + v * a.sin()) * radius;
+            let to = origin + (u * b.cos() + v * b.sin()) * radius;
+            let along = to - from;
+            let rotation = Quat::from_rotation_arc(Vec3::X, along.normalize_or_zero());
+            out.push(Draw {
+                mesh: arm,
+                transform: Mat4::from_scale_rotation_translation(
+                    Vec3::new(along.length(), thick, thick),
+                    rotation,
+                    (from + to) * 0.5,
+                ),
+                texture: TextureHandle::WHITE,
+                material,
+                pose: None,
+            });
+        }
+    }
+    out
+}
+
+/// The two axes a handle's ring lies in.
+///
+/// The ring for X is the one you turn *about* X, so it lies in the YZ plane.
+/// Getting this backwards draws three rings that look right and turn the
+/// wrong way, which is why the pair is named once and used everywhere.
+fn ring_plane(handle: Handle) -> (Vec3, Vec3) {
+    match handle {
+        Handle::X => (Vec3::Y, Vec3::Z),
+        Handle::Y => (Vec3::Z, Vec3::X),
+        Handle::Z => (Vec3::X, Vec3::Y),
+    }
 }
 
 /// Which handle a ray passes close enough to, nearest first.
 pub fn hit(
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<Handle> {
+    hit_for(Tool::Move, camera, style, origin, ray_origin, ray_direction)
+}
+
+/// Which handle of a given tool a ray hits.
+pub fn hit_for(
+    tool: Tool,
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<Handle> {
+    match tool {
+        Tool::Move | Tool::Scale => hit_arm(camera, style, origin, ray_origin, ray_direction),
+        Tool::Rotate => hit_ring(camera, style, origin, ray_origin, ray_direction),
+    }
+}
+
+/// Which ring a ray crosses: the one whose circle it passes nearest to.
+fn hit_ring(
+    camera: &Camera,
+    style: &GizmoStyle,
+    origin: Vec3,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Option<Handle> {
+    let radius = style.arm_length(camera, origin);
+    let slack = radius * style.grab_slack;
+    let direction = ray_direction.normalize_or_zero();
+
+    let mut best: Option<(f32, Handle)> = None;
+    for handle in Handle::ALL {
+        let axis = handle.axis();
+        let facing = axis.dot(direction);
+        if facing.abs() < 1e-4 {
+            // Edge-on: the ray runs inside the ring's plane and never
+            // crosses it. A ring seen edge-on is a line a pixel wide, and
+            // guessing here means grabbing a ring nobody could see.
+            continue;
+        }
+        let travel = axis.dot(origin - ray_origin) / facing;
+        if travel < 0.0 {
+            continue; // behind the camera
+        }
+        let point = ray_origin + direction * travel;
+        let off_circle = ((point - origin).length() - radius).abs();
+        if off_circle > slack {
+            continue;
+        }
+        if best.is_none_or(|(closest, _)| travel < closest) {
+            best = Some((travel, handle));
+        }
+    }
+    best.map(|(_, handle)| handle)
+}
+
+fn hit_arm(
     camera: &Camera,
     style: &GizmoStyle,
     origin: Vec3,
@@ -173,19 +379,97 @@ pub fn hit(
     best.map(|(_, _, handle)| handle)
 }
 
-/// Start a drag on a handle.
+/// Start a move drag on a handle.
 pub fn begin(origin: Vec3, handle: Handle, ray_origin: Vec3, ray_direction: Vec3) -> Drag {
-    let grab_offset = closest_points(origin, handle.axis(), ray_origin, ray_direction)
-        .map(|(along, _)| along)
-        // A ray exactly along the axis has no unique closest point. Treating
-        // the grab as being at the origin is wrong by less than the width of
-        // the handle, and the alternative is refusing to start a drag that
-        // the user clearly asked for.
-        .unwrap_or(0.0);
+    begin_for(Tool::Move, origin, handle, ray_origin, ray_direction)
+}
+
+/// Start a drag with a given tool.
+pub fn begin_for(
+    tool: Tool,
+    origin: Vec3,
+    handle: Handle,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> Drag {
+    let grab_offset = match tool {
+        Tool::Rotate => angle_at(origin, handle, ray_origin, ray_direction).unwrap_or(0.0),
+        Tool::Move | Tool::Scale => {
+            closest_points(origin, handle.axis(), ray_origin, ray_direction)
+                .map(|(along, _)| along)
+                // A ray exactly along the axis has no unique closest point.
+                // Treating the grab as being at the origin is wrong by less than
+                // the width of the handle, and the alternative is refusing to
+                // start a drag the user clearly asked for.
+                .unwrap_or(0.0)
+        }
+    };
     Drag {
+        tool,
         handle,
         origin,
         grab_offset,
+    }
+}
+
+/// Where the cursor's ray crosses a ring's plane, as an angle around it.
+///
+/// `None` when the ray runs inside the plane and never crosses it.
+fn angle_at(origin: Vec3, handle: Handle, ray_origin: Vec3, ray_direction: Vec3) -> Option<f32> {
+    let axis = handle.axis();
+    let direction = ray_direction.normalize_or_zero();
+    let facing = axis.dot(direction);
+    if facing.abs() < 1e-4 {
+        return None;
+    }
+    let travel = axis.dot(origin - ray_origin) / facing;
+    let point = ray_origin + direction * travel - origin;
+    let (u, v) = ring_plane(handle);
+    let (x, y) = (point.dot(u), point.dot(v));
+    if x.abs() < 1e-6 && y.abs() < 1e-6 {
+        // Dead centre: no angle. Refusing beats spinning on a rounding
+        // error at the pivot.
+        return None;
+    }
+    Some(y.atan2(x))
+}
+
+/// What a drag asks for now, given where the cursor's ray is.
+pub fn update_for(drag: &Drag, ray_origin: Vec3, ray_direction: Vec3) -> Motion {
+    match drag.tool {
+        Tool::Move => Motion::Position(update(drag, ray_origin, ray_direction)),
+        Tool::Rotate => {
+            let Some(angle) = angle_at(drag.origin, drag.handle, ray_origin, ray_direction) else {
+                // Edge-on, or exactly at the pivot: no answer. Staying put
+                // is the only sane one.
+                return Motion::Rotation(Quat::IDENTITY);
+            };
+            // Wrapped into a half turn either way, so that dragging past the
+            // far side of the ring keeps turning the same direction instead
+            // of snapping most of the way round.
+            let mut delta = angle - drag.grab_offset;
+            while delta > std::f32::consts::PI {
+                delta -= std::f32::consts::TAU;
+            }
+            while delta < -std::f32::consts::PI {
+                delta += std::f32::consts::TAU;
+            }
+            Motion::Rotation(Quat::from_axis_angle(drag.handle.axis(), delta))
+        }
+        Tool::Scale => {
+            let axis = drag.handle.axis();
+            let Some((along, _)) = closest_points(drag.origin, axis, ray_origin, ray_direction)
+            else {
+                return Motion::Scale(Vec3::ONE);
+            };
+            // Grabbing at the origin gives nothing to divide by; so does
+            // dragging through it. Both are clamped rather than refused, so
+            // a drag that passes the pivot shrinks toward nothing instead of
+            // turning the object inside out.
+            let grabbed = drag.grab_offset.abs().max(1e-3);
+            let factor = (along / grabbed).max(0.01);
+            Motion::Scale(Vec3::ONE + axis * (factor - 1.0))
+        }
     }
 }
 
@@ -319,12 +603,157 @@ mod tests {
         // Looking straight down the X axis, a drag on X has no answer. A
         // guess here is how a gizmo throws an object out of the scene.
         let drag = Drag {
+            tool: Tool::Move,
             handle: Handle::X,
             origin: Vec3::ZERO,
             grab_offset: 0.0,
         };
         let moved = update(&drag, Vec3::new(-10.0, 0.0, 0.0), Vec3::X);
         assert_eq!(moved, Vec3::ZERO);
+    }
+
+    /// Degrees of turn a rotate drag asks for, for readability below.
+    fn turned(motion: Motion) -> f32 {
+        match motion {
+            Motion::Rotation(q) => {
+                let (axis, angle) = q.to_axis_angle();
+                // `to_axis_angle` may hand back the opposite axis with the
+                // opposite angle; measured against Y so the sign means the
+                // same thing in every case here.
+                angle.to_degrees() * axis.dot(Vec3::Y).signum()
+            }
+            other => panic!("expected a rotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_ring_is_grabbed_where_the_ray_crosses_its_plane() {
+        // The Y ring lies flat, so a ray coming down from above crosses it.
+        // Aimed at the rim, not at the middle: the middle of a ring is the
+        // object, and grabbing it there would make the whole gizmo a handle.
+        let style = GizmoStyle::default();
+        let origin = Vec3::ZERO;
+        let radius = style.arm_length(&camera(), origin);
+        let above = Vec3::new(radius, 4.0, 0.0);
+        assert_eq!(
+            hit_for(Tool::Rotate, &camera(), &style, origin, above, Vec3::NEG_Y),
+            Some(Handle::Y)
+        );
+
+        // Through the middle, well inside the rim: nothing.
+        assert_eq!(
+            hit_for(
+                Tool::Rotate,
+                &camera(),
+                &style,
+                origin,
+                Vec3::new(0.0, 4.0, 0.0),
+                Vec3::NEG_Y
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_turn_is_measured_from_where_the_ring_was_grabbed() {
+        // Grab the Y ring at its +X point and drag to its +Z point: a
+        // quarter turn, and not a jump on the first frame.
+        let style = GizmoStyle::default();
+        let origin = Vec3::ZERO;
+        let radius = style.arm_length(&camera(), origin);
+        let grab = Vec3::new(radius, 4.0, 0.0);
+        let drag = begin_for(Tool::Rotate, origin, Handle::Y, grab, Vec3::NEG_Y);
+
+        assert!(
+            turned(update_for(&drag, grab, Vec3::NEG_Y)).abs() < 1e-3,
+            "a grab with no movement must not turn anything"
+        );
+
+        let quarter = Vec3::new(0.0, 4.0, radius);
+        let angle = turned(update_for(&drag, quarter, Vec3::NEG_Y));
+        assert!(
+            (angle.abs() - 90.0).abs() < 1.0,
+            "expected a quarter turn, got {angle}"
+        );
+    }
+
+    #[test]
+    fn dragging_past_the_far_side_keeps_turning_the_same_way() {
+        // The angle wraps at pi. Without unwrapping, a drag a little past
+        // half a turn snaps back the long way round — which reads as the
+        // object flipping.
+        let style = GizmoStyle::default();
+        let radius = style.arm_length(&camera(), Vec3::ZERO);
+        let grab = Vec3::new(radius, 4.0, 0.0);
+        let drag = begin_for(Tool::Rotate, Vec3::ZERO, Handle::Y, grab, Vec3::NEG_Y);
+
+        let mut previous: f32 = 0.0;
+        for step in 1..=8 {
+            let angle = step as f32 * std::f32::consts::TAU / 16.0;
+            let point = Vec3::new(radius * angle.cos(), 4.0, -radius * angle.sin());
+            let turn = turned(update_for(&drag, point, Vec3::NEG_Y));
+            assert!(
+                turn.abs() >= previous.abs() - 1.0,
+                "the turn went backwards at step {step}: {previous} then {turn}"
+            );
+            previous = turn;
+        }
+    }
+
+    #[test]
+    fn a_scale_drag_stretches_by_the_ratio_it_was_dragged() {
+        let style = GizmoStyle::default();
+        let length = style.arm_length(&camera(), Vec3::ZERO);
+        let from = Vec3::new(length, 0.0, 5.0);
+        let drag = begin_for(Tool::Scale, Vec3::ZERO, Handle::X, from, Vec3::NEG_Z);
+
+        assert_eq!(
+            update_for(&drag, from, Vec3::NEG_Z),
+            Motion::Scale(Vec3::ONE),
+            "no movement, no stretch"
+        );
+
+        let doubled = from + Vec3::X * length;
+        match update_for(&drag, doubled, Vec3::NEG_Z) {
+            Motion::Scale(factor) => {
+                assert!((factor.x - 2.0).abs() < 1e-3, "got {factor}");
+                assert_eq!((factor.y, factor.z), (1.0, 1.0), "one axis only");
+            }
+            other => panic!("expected a scale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dragging_a_scale_handle_through_the_pivot_shrinks_rather_than_inverts() {
+        // A negative factor turns an object inside out: back faces forward,
+        // lighting wrong, and no obvious way back. Clamped to very small
+        // instead.
+        let style = GizmoStyle::default();
+        let length = style.arm_length(&camera(), Vec3::ZERO);
+        let from = Vec3::new(length, 0.0, 5.0);
+        let drag = begin_for(Tool::Scale, Vec3::ZERO, Handle::X, from, Vec3::NEG_Z);
+        let past = from - Vec3::X * length * 3.0;
+        match update_for(&drag, past, Vec3::NEG_Z) {
+            Motion::Scale(factor) => assert!(factor.x > 0.0 && factor.x < 0.1, "got {factor}"),
+            other => panic!("expected a scale, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn each_tool_draws_its_own_handles() {
+        let style = GizmoStyle::default();
+        let at = |tool| draws_for(tool, MeshHandle::TEST, &camera(), &style, Vec3::ZERO, None);
+        assert_eq!(at(Tool::Move).len(), 3, "three arms");
+        assert_eq!(at(Tool::Scale).len(), 6, "three arms and three knobs");
+        assert_eq!(at(Tool::Rotate).len(), 3 * RING_SEGMENTS, "three rings");
+        for tool in [Tool::Move, Tool::Rotate, Tool::Scale] {
+            assert!(
+                at(tool)
+                    .iter()
+                    .all(|d| d.material.shading == Shading::Unlit),
+                "{tool:?} handles must not sink into a shadow"
+            );
+        }
     }
 
     #[test]

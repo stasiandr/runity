@@ -22,7 +22,7 @@ use std::ffi::{c_char, c_float, c_int, c_uint, CStr, CString};
 use std::path::PathBuf;
 use std::ptr;
 
-use runity::gizmo::{self, Drag, GizmoStyle, Handle};
+use runity::gizmo::{self, Drag, GizmoStyle, Handle, Motion, Tool};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, FogSettings, Frame, Lighting, MeshHandle};
 use runity::{builtin, Gpu, Library, OffscreenTarget, Renderer, Scene};
@@ -58,7 +58,16 @@ pub struct Editor {
     /// Which entity the gizmo is on, by flattened index.
     selected: Option<usize>,
     gizmo_style: GizmoStyle,
+    /// Which handles are shown and what a drag does with them.
+    tool: Tool,
     drag: Option<Drag>,
+    /// The selected entity's transform when the drag began.
+    ///
+    /// Rotation and scale are asked for relative to where the gesture
+    /// started, never to the last frame: a caller that multiplied a delta in
+    /// every frame would accumulate its rounding, and a long drag would
+    /// drift away from what the cursor says.
+    drag_from: Option<runity::Transform>,
     /// A unit cube, uploaded once, that the gizmo's three arms are made of.
     gizmo_arm: Option<MeshHandle>,
 }
@@ -161,7 +170,9 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         pixels: Vec::new(),
         selected: None,
         gizmo_style: GizmoStyle::default(),
+        tool: Tool::default(),
         drag: None,
+        drag_from: None,
         gizmo_arm: None,
     }))
 }
@@ -224,7 +235,9 @@ pub unsafe extern "C" fn runity_editor_create_for_layer(
             pixels: Vec::new(),
             selected: None,
             gizmo_style: GizmoStyle::default(),
+            tool: Tool::default(),
             drag: None,
+            drag_from: None,
             gizmo_arm: None,
         }));
     }
@@ -592,7 +605,8 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
                 arm
             }
         };
-        frame.overlay_draws.extend(runity::gizmo::draws(
+        frame.overlay_draws.extend(runity::gizmo::draws_for(
+            editor.tool,
             arm,
             &editor.camera,
             &editor.gizmo_style,
@@ -735,8 +749,15 @@ pub unsafe extern "C" fn runity_editor_gizmo_hover(
         return -1;
     };
     let (from, direction) = editor.ray(x, y);
-    gizmo::hit(&editor.camera, &editor.gizmo_style, origin, from, direction)
-        .map_or(-1, handle_index)
+    gizmo::hit_for(
+        editor.tool,
+        &editor.camera,
+        &editor.gizmo_style,
+        origin,
+        from,
+        direction,
+    )
+    .map_or(-1, handle_index)
 }
 
 /// Grab whatever arm is under a point. Returns the arm, or -1 if none is.
@@ -756,14 +777,34 @@ pub unsafe extern "C" fn runity_editor_gizmo_begin(
         return -1;
     };
     let (from, direction) = editor.ray(x, y);
-    let Some(handle) = gizmo::hit(&editor.camera, &editor.gizmo_style, origin, from, direction)
-    else {
+    let Some(handle) = gizmo::hit_for(
+        editor.tool,
+        &editor.camera,
+        &editor.gizmo_style,
+        origin,
+        from,
+        direction,
+    ) else {
         return -1;
     };
     // One snapshot for the whole gesture: everything until the next one
     // undoes as a single step, however many frames the drag lasts.
     editor.history.snapshot();
-    editor.drag = Some(gizmo::begin(origin, handle, from, direction));
+    editor.drag_from = editor.selected.and_then(|index| {
+        editor
+            .history
+            .scene()
+            .flatten()
+            .get(index)
+            .map(|(d, _)| d.transform)
+    });
+    editor.drag = Some(gizmo::begin_for(
+        editor.tool,
+        origin,
+        handle,
+        from,
+        direction,
+    ));
     handle_index(handle)
 }
 
@@ -784,19 +825,40 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
         return false;
     };
     let (from, direction) = editor.ray(x, y);
-    let moved = gizmo::update(&drag, from, direction);
+    let motion = gizmo::update_for(&drag, from, direction);
 
     // The gizmo sits at the entity's world position, but what is edited is
     // its local one. The difference is the parent's transform, and applying
     // the move in world space without undoing it drags a child out of its
     // parent by however much the parent is offset.
     let parent = editor.parent_matrix(index);
+    let started = editor.drag_from;
     // Untracked: the snapshot for this gesture was taken at `gizmo_begin`.
     let Some(desc) = runity::edit::nth_mut(editor.history.scene_mut_untracked(), index) else {
         return false;
     };
-    let local = parent.inverse().transform_point3(moved);
-    desc.transform.position = local;
+    match motion {
+        Motion::Position(moved) => {
+            desc.transform.position = parent.inverse().transform_point3(moved);
+        }
+        Motion::Rotation(delta) => {
+            let Some(started) = started else {
+                return false;
+            };
+            // The turn is in world axes and the file holds a local
+            // rotation, so the parent's own turn has to come out first —
+            // the same correction the move path makes for position.
+            let (_, parent_rotation, _) = parent.to_scale_rotation_translation();
+            let local = parent_rotation.inverse() * delta * parent_rotation;
+            desc.transform.set_rotation(local * started.rotation());
+        }
+        Motion::Scale(factor) => {
+            let Some(started) = started else {
+                return false;
+            };
+            desc.transform.scale = started.scale * factor;
+        }
+    }
     editor.respawn();
     true
 }
@@ -809,7 +871,51 @@ pub unsafe extern "C" fn runity_editor_gizmo_drag(
 pub unsafe extern "C" fn runity_editor_gizmo_end(editor: *mut Editor) {
     if let Some(editor) = unsafe { borrow(editor) } {
         editor.drag = None;
+        editor.drag_from = None;
     }
+}
+
+/// Choose what the gizmo does: 0 move, 1 rotate, 2 scale.
+///
+/// Anything else is refused rather than silently treated as move — a host
+/// passing a number it made up should find out, not discover later that its
+/// rotate button moves things.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_tool(editor: *mut Editor, tool: c_int) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    editor.tool = match tool {
+        0 => Tool::Move,
+        1 => Tool::Rotate,
+        2 => Tool::Scale,
+        other => {
+            fail(format!("{other} is not a tool"));
+            return false;
+        }
+    };
+    // A held handle belongs to the tool that was showing when it was
+    // grabbed; keeping it across a change would drag a ring that is no
+    // longer drawn.
+    editor.drag = None;
+    editor.drag_from = None;
+    true
+}
+
+/// Which tool is showing: 0 move, 1 rotate, 2 scale.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_tool(editor: *mut Editor) -> c_int {
+    unsafe { borrow(editor) }.map_or(0, |e| match e.tool {
+        Tool::Move => 0,
+        Tool::Rotate => 1,
+        Tool::Scale => 2,
+    })
 }
 
 /// Add an entity with a model, under `parent` or at the top with -1.

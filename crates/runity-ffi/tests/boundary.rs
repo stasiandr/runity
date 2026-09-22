@@ -188,6 +188,8 @@ fn every_call_survives_a_null_editor() {
         );
         assert_eq!(runity_editor_palette_count(null), 0);
         assert_eq!(runity_editor_prefab_count(null), 0);
+        assert!(!runity_editor_set_tool(null, 1));
+        assert_eq!(runity_editor_tool(null), 0);
         assert_eq!(runity_editor_add_instance(null, -1, std::ptr::null()), -1);
         assert!(!runity_editor_make_prefab(null, 0, std::ptr::null()));
         assert!(!runity_editor_set_prefabs(null, std::ptr::null()));
@@ -784,5 +786,122 @@ fn clicking_something_a_prefab_brought_selects_the_instance() {
     assert_eq!(
         after, 1,
         "the same pixel now finds the instance, not a part of it"
+    );
+}
+
+#[test]
+fn the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step() {
+    let Some((editor, path)) = open("rotate") else {
+        return;
+    };
+    // Looking down at the crate from above, so the flat Y ring is the one
+    // facing the camera and the one a ray can cross.
+    let eye = [0.0f32, 8.0, 0.01];
+    let at = [0.0f32, 0.5, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), at.as_ptr()) });
+    assert!(unsafe { runity_editor_select(editor.0, 1) });
+
+    assert!(unsafe { runity_editor_set_tool(editor.0, 1) });
+    assert_eq!(unsafe { runity_editor_tool(editor.0) }, 1);
+    assert!(
+        !unsafe { runity_editor_set_tool(editor.0, 7) },
+        "a tool nobody has is refused rather than treated as move"
+    );
+    assert_eq!(unsafe { runity_editor_tool(editor.0) }, 1, "and unchanged");
+
+    // Grab the Y ring where it crosses the screen, then drag a quarter of
+    // the way around it. The exact pixels do not matter; what matters is
+    // that the rotation changes and nothing else does.
+    let width = unsafe { runity_editor_width(editor.0) };
+    let height = unsafe { runity_editor_height(editor.0) };
+    let (cx, cy) = (width / 2, height / 2);
+    let mut grabbed = -1;
+    let mut radius = 0;
+    for r in 4..(width / 2) {
+        let handle = unsafe { runity_editor_gizmo_begin(editor.0, cx + r, cy) };
+        if handle >= 0 {
+            grabbed = handle;
+            radius = r;
+            break;
+        }
+    }
+    assert_eq!(grabbed, 1, "the Y ring, seen from above");
+
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, cx, cy + radius) });
+    unsafe { runity_editor_gizmo_end(editor.0) };
+
+    let mut nine = [0.0f32; 9];
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    let yaw = nine[4];
+    assert!(
+        (yaw.abs() - 90.0).abs() < 5.0,
+        "a quarter turn around the ring should be about ninety degrees, got {yaw}"
+    );
+    assert_eq!(
+        [nine[0], nine[1], nine[2]],
+        [0.0, 0.5, 0.0],
+        "it did not move"
+    );
+    assert_eq!(
+        [nine[6], nine[7], nine[8]],
+        [1.0, 1.0, 1.0],
+        "and did not grow"
+    );
+
+    // The whole gesture is one step, like a move drag.
+    assert!(unsafe { runity_editor_undo(editor.0) });
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    assert!(
+        nine[4].abs() < 1e-3,
+        "back to where it started: {}",
+        nine[4]
+    );
+
+    // And what is written is the local rotation, which is what reopens.
+    assert!(unsafe { runity_editor_redo(editor.0) });
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    let reopened = runity::Scene::load(&path).unwrap();
+    let turned = reopened.find("crate").unwrap().transform.rotation_deg.y;
+    assert!((turned.abs() - 90.0).abs() < 5.0, "got {turned}");
+}
+
+#[test]
+fn the_scale_tool_stretches_one_axis_and_leaves_the_rest() {
+    let Some((editor, _)) = open("scale") else {
+        return;
+    };
+    let eye = [0.0f32, 0.5, 6.0];
+    let at = [0.0f32, 0.5, 0.0];
+    assert!(unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), at.as_ptr()) });
+    assert!(unsafe { runity_editor_select(editor.0, 1) });
+    assert!(unsafe { runity_editor_set_tool(editor.0, 2) });
+
+    let width = unsafe { runity_editor_width(editor.0) };
+    let height = unsafe { runity_editor_height(editor.0) };
+    let (cx, cy) = (width / 2, height / 2);
+    let mut grabbed = -1;
+    let mut radius = 0;
+    for r in 4..(width / 2) {
+        let handle = unsafe { runity_editor_gizmo_begin(editor.0, cx + r, cy) };
+        if handle >= 0 {
+            grabbed = handle;
+            radius = r;
+            break;
+        }
+    }
+    assert_eq!(grabbed, 0, "the X arm");
+
+    // Drag outward: the same arm, twice as far from the middle.
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, cx + radius * 2, cy) });
+    unsafe { runity_editor_gizmo_end(editor.0) };
+
+    let mut nine = [0.0f32; 9];
+    assert!(unsafe { runity_editor_get_transform(editor.0, 1, nine.as_mut_ptr()) });
+    assert!(nine[6] > 1.2, "x should have grown, got {}", nine[6]);
+    assert_eq!((nine[7], nine[8]), (1.0, 1.0), "y and z are untouched");
+    assert_eq!(
+        [nine[0], nine[1], nine[2]],
+        [0.0, 0.5, 0.0],
+        "and it did not move"
     );
 }

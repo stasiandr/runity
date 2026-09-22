@@ -243,8 +243,14 @@ unsigned int runity_editor_frame_pixels(RunityEditor *editor,
 bool runity_editor_select(RunityEditor *editor, int index);
 int runity_editor_selected(RunityEditor *editor);
 
-/* Which arm is under a point: 0 X, 1 Y, 2 Z, -1 none. `hover` only looks;
- * `begin` grabs. */
+/* What the gizmo does: 0 move, 1 rotate, 2 scale. Anything else is refused
+ * rather than quietly treated as move. All three work in world axes; a
+ * local-axis toggle is not here yet. */
+bool runity_editor_set_tool(RunityEditor *editor, int tool);
+int runity_editor_tool(RunityEditor *editor);
+
+/* Which handle is under a point: 0 X, 1 Y, 2 Z, -1 none — an arm for move
+ * and scale, a ring for rotate. `hover` only looks; `begin` grabs. */
 int runity_editor_gizmo_hover(RunityEditor *editor,
                               unsigned int x,
                               unsigned int y);
