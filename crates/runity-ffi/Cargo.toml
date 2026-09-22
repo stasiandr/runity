@@ -1,0 +1,23 @@
+[package]
+name = "runity-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A C ABI, not generated bindings. Swift imports a C header natively, so for
+# a boundary made of ids, floats and paths there is nothing for a binding
+# generator to do that a header does not already do — and nothing to keep in
+# step when the boundary changes. UniFFI earns its place the day Android
+# needs Kotlin for the same calls.
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+hecs = "0.11.0"
+runity = { version = "0.1.0", path = "../runity" }
+runity-import = { version = "0.1.0", path = "../runity-import" }
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }

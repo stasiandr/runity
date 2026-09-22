@@ -1,0 +1,58 @@
+assets/examples — где что взято и на каких условиях.
+
+Все исходники — наборы Kenney под CC0 (public domain): их можно
+использовать и переделывать без ограничений, указание автора
+желательно, но не обязательно. Ниже — строка на каждый
+закоммиченный файл: чем он был до конвертации и что с ним сделано.
+Конвертация: tools/example-assets/build_assets.py.
+
+Наборы:
+  Kenney Nature Kit (CC0) — https://kenney.nl/assets/nature-kit
+  Kenney Survival Kit (CC0) — https://kenney.nl/assets/survival-kit
+  Kenney Blocky Characters (CC0) — https://kenney.nl/assets/blocky-characters
+
+models/:
+  models/campfire.obj — костёр: кольцо камней и обугленные поленья; из nature/campfire_stones, nature/campfire_logs; CC0 (Kenney).
+  models/shelter.obj — шалаш: остов и полотнище; из nature/tent_smallOpen; CC0 (Kenney).
+  models/wall_unfinished.obj — недостроенная стена: начатый остов и куча брёвен рядом; из survival/structure, nature/log_stack, nature/log; CC0 (Kenney).
+  models/logs_loose.obj — брёвна россыпью; из nature/log, nature/log, survival/tree-log-small; CC0 (Kenney).
+  models/logs_bundle.obj — брёвна в связке; из nature/log_stackLarge; CC0 (Kenney).
+  models/axe.obj — топор; из survival/tool-axe; CC0 (Kenney).
+  models/settler_stand.obj — поселенец: стоит; из blocky/character-a; CC0 (Kenney).
+  models/settler_carry.obj — поселенец: несёт груз перед собой; из blocky/character-a; CC0 (Kenney).
+  models/settler_walk.obj — поселенец: шагает; из blocky/character-a; CC0 (Kenney).
+  models/hands_first_person.obj — руки-предплечья от первого лица; из blocky/character-a, blocky/character-a; CC0 (Kenney).
+  models/pine_small.obj — ель, малая; из nature/tree_pineSmallA; CC0 (Kenney).
+  models/pine_medium.obj — ель, средняя; из nature/tree_pineDefaultA; CC0 (Kenney).
+  models/pine_large.obj — ель, большая; из nature/tree_pineTallA; CC0 (Kenney).
+  models/broadleaf_small.obj — лиственное дерево, малое; из nature/tree_small; CC0 (Kenney).
+  models/broadleaf_medium.obj — лиственное дерево, среднее; из nature/tree_default; CC0 (Kenney).
+  models/broadleaf_large.obj — лиственное дерево, большое; из nature/tree_tall; CC0 (Kenney).
+  models/grass_tuft.obj — трава; из nature/grass; CC0 (Kenney).
+  models/bush.obj — куст; из nature/plant_bushLarge; CC0 (Kenney).
+  models/berry_bush.obj — ягодный куст (единственное насыщенное пятно в атласе); из nature/plant_bush; CC0 (Kenney).
+  models/boulder.obj — валун; из nature/stone_largeA; CC0 (Kenney).
+  models/boulder_small.obj — валун, малый; из nature/stone_smallB; CC0 (Kenney).
+
+textures/:
+  textures/valley_atlas.png — атлас плоских цветов долины; оригинальная
+    работа для этого репозитория по палитре карточки #33 и
+    crates/runity/examples/valley/look.rs; CC0.
+
+  textures/marks.png — thirty personal ownership marks, generated. Not
+    downloaded: drawn by rule and baked once by
+    crates/runity/examples/valley_marks.rs (`cargo run --example
+    valley_marks`), the way the engine's other one-off pictures are made —
+    see crates/runity-render/src/golden.rs for the same idea applied to
+    test images. Five stroke families, six variants each: strokes across a
+    5x5 grid (a tamga-style personal mark), notches on a stem, crosses, a
+    tree silhouette, and dots on the grid. Which family and variant a mark
+    uses is a pure function of its index, so regenerating reproduces
+    today's file byte for byte — see the tests at the bottom of
+    valley_marks.rs. 8x4 cells of 32x32 pixels, 256x128 overall; the atlas
+    only draws the first 30, so the last two cells are left fully
+    transparent. Every mark is opaque ink on a transparent background — the
+    alpha channel is what cuts the shape, not a flat black-and-white fill —
+    so it can be recolored or composited over cloth, wood or skin in the
+    game. From here it is a normal committed asset: touch it up by hand if
+    a mark needs adjusting, the generator does not need to run again.

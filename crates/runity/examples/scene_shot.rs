@@ -1,0 +1,142 @@
+//! `scene_shot <scene.ron> [-o out.png]` — render a scene and write the frame.
+//!
+//! The whole headless loop in one command: change a scene or a shader, run
+//! this, look at the picture. It needs no window and no graphics card, so it
+//! is the same command in CI, on a laptop, and inside an agent's loop.
+
+use std::path::PathBuf;
+
+use runity::builtin;
+use runity::glam::Vec3;
+use runity::render::FogSettings;
+use runity::{Gpu, Library, MeshHandle, OffscreenTarget, Renderer, Scene};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    let mut scene_path: Option<PathBuf> = None;
+    let mut out = PathBuf::from("frame.png");
+    let mut library_dir: Option<PathBuf> = None;
+    let (mut width, mut height) = (960u32, 540u32);
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-o" | "--out" => out = args.next().map(PathBuf::from).unwrap_or(out),
+            "--library" => library_dir = args.next().map(PathBuf::from),
+            "--size" => {
+                if let Some(size) = args.next() {
+                    let (w, h) = size.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
+                    width = w.parse()?;
+                    height = h.parse()?;
+                }
+            }
+            "-h" | "--help" => {
+                println!("scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR]");
+                return Ok(());
+            }
+            other => scene_path = Some(PathBuf::from(other)),
+        }
+    }
+    let scene_path = scene_path.ok_or("usage: scene_shot <scene.ron>")?;
+    let document = Scene::load(&scene_path)?;
+
+    // Prefabs come from `prefabs/` beside the scene, and every instance is
+    // replaced by what it stands for before anything else looks at the
+    // scene. Nothing downstream knows a prefab existed.
+    let (prefabs, prefab_problems) = runity::Prefabs::beside(&scene_path);
+    for (path, e) in &prefab_problems {
+        eprintln!("skipped {}: {e}", path.display());
+    }
+    let instanced = runity::instantiate(&document, &prefabs);
+    for problem in &instanced.problems {
+        eprintln!(
+            "{}: prefab {} — {}",
+            problem.entity_name, problem.prefab, problem.reason
+        );
+    }
+    let scene = instanced.scene;
+
+    let gpu = Gpu::headless_blocking(false)?;
+    eprintln!(
+        "{}: {} entities on {}",
+        scene_path.display(),
+        scene.entities.len(),
+        gpu.describe()
+    );
+
+    let target = OffscreenTarget::new(&gpu, width, height);
+    let mut renderer = Renderer::new(&gpu, &target);
+
+    // Models resolve from the builtins first, then from a library if one was
+    // given. Builtins first is what lets the reference scene open with no
+    // pipeline at all.
+    let library = match &library_dir {
+        Some(dir) => {
+            let (library, problems) = Library::open(dir)?;
+            for (path, e) in &problems {
+                eprintln!("skipped {}: {e}", path.display());
+            }
+            Some(library)
+        }
+        None => None,
+    };
+
+    let mut world = hecs_world();
+    let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
+    // Materials resolve the same way models do: the library first, then the
+    // engine's builtins. With no library the scene still draws, in the
+    // builtin palette — which is why the reference scene needs no pipeline.
+    let missing = runity::spawn_scene_with(
+        &scene,
+        &mut world,
+        |name| {
+            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                return Some(found.1);
+            }
+            let handle = if let Some(mesh) = builtin::by_name(name) {
+                renderer.upload_mesh_owned(&gpu, &mesh)
+            } else {
+                let mesh = library.as_ref()?.mesh_by_name(name)?;
+                renderer.upload_mesh(&gpu, mesh)
+            };
+            uploaded.push((name.to_string(), handle));
+            Some(handle)
+        },
+        |name| library.as_ref()?.material_by_name(name),
+    );
+    for m in &missing {
+        eprintln!("{}: no model named {}", m.entity_name, m.model);
+    }
+
+    let lighting = runity::scene_lighting(&scene.sun);
+    let fog = FogSettings {
+        color: Vec3::from_array(scene.fog.color),
+        start: scene.fog.start,
+        end: scene.fog.end,
+    };
+    // The scene says where it is looked at from, so two renders of the same
+    // file are the same picture — and so an agent can frame a shot by
+    // editing a line rather than by patching this file.
+    let camera = runity::scene_camera(&scene.view);
+
+    let frame = runity::build_frame(&world, camera, lighting, fog);
+    renderer.render(&gpu, &target, &frame);
+    let pixels = target.read_rgba(&gpu);
+
+    write_png(&out, &pixels, width, height)?;
+    eprintln!("wrote {} ({width}x{height})", out.display());
+    Ok(())
+}
+
+fn hecs_world() -> hecs::World {
+    hecs::World::new()
+}
+
+fn write_png(
+    path: &std::path::Path,
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    image::save_buffer(path, pixels, width, height, image::ColorType::Rgba8)?;
+    Ok(())
+}

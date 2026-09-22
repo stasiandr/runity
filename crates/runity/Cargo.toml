@@ -5,53 +5,44 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "runity: a dependency-free game engine in Rust."
 
 [dependencies]
-runity-math = { path = "../runity-math", version = "0.1.0" }
-runity-render = { path = "../runity-render", version = "0.1.0" }
-runity-gpu = { path = "../runity-gpu", version = "0.1.0" }
-runity-platform = { path = "../runity-platform", version = "0.1.0" }
-runity-core = { path = "../runity-core", version = "0.1.0" }
+anyhow = "1.0.104"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+glyphon = "0.12.0"
+hecs = "0.11.0"
+kira = "0.12.4"
+pollster = "1.0.1"
+rapier3d = "0.26.1"
+rkyv = { version = "0.8", features = ["bytecheck"] }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+subsecond = "0.7.10"
+tracing = "0.1.44"
+wgpu = "30"
+winit = { version = "0.30.13", optional = true }
 
-# The showcase keeps its unit tests where the convention puts them — at the
-# bottom of the file they cover — so `cargo test` has to run them.
-[[example]]
-name = "smallworld"
-path = "examples/smallworld.rs"
-test = true
+[features]
+default = []
+# A plain desktop window, for running the game without a native shell. The
+# engine does not need it: on macOS the Swift editor owns the window, on iOS
+# and Android the platform does. This is the convenience path, not the
+# architecture.
+desktop-shell = ["dep:winit"]
 
-[[example]]
-name = "valley"
-path = "examples/valley.rs"
-test = true
+[dev-dependencies]
+hecs = "0.11.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
-# Valley's game color lives in code, not in the engine crates (see
-# examples/valley/look.rs); its unit tests run the same way smallworld's do.
+# The reference scene, rendered headlessly. `cargo run --example scene_shot`.
 [[example]]
-name = "valley-look"
-path = "examples/valley/look.rs"
-test = true
+name = "scene_shot"
+path = "examples/scene_shot.rs"
 
-# The loading side of the valley's content, and the checklist its committed
-# models and atlas have to pass — same arrangement, tests in the file.
+# A window you can walk around in. Needs the shell feature, so it is not
+# built by a plain `cargo build`.
 [[example]]
-name = "valley-assets"
-path = "examples/valley/assets.rs"
-test = true
-
-# Same reasoning: scene.rs's unit tests live at the bottom of scene.rs, and
-# `test = true` is what makes `cargo test -p runity` actually run them. This
-# is a standalone scene-file validator, not part of the `valley` binary above.
-[[example]]
-name = "valley-scene"
-path = "examples/valley/main.rs"
-test = true
-
-# One-shot generator for the ownership-marks atlas (card #63): run once with
-# RUNITY_UPDATE_GOLDEN-style intent to bake assets/valley/textures/marks.png,
-# then it's edited by hand and doesn't need to run again.
-[[example]]
-name = "valley_marks"
-path = "examples/valley_marks.rs"
-test = true
+name = "walk"
+path = "examples/walk.rs"
+required-features = ["desktop-shell"]

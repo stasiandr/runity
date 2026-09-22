@@ -1,0 +1,29 @@
+[package]
+name = "runity-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately not a dependency of `runity`. Everything that knows how to read
+# a source format lives here, so the shipped game links none of it: no OBJ
+# parser on a phone, no image decoder on the hot path.
+[dependencies]
+anyhow = "1.0.104"
+glam = "0.32"
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "import", "names"] }
+hound = "3.5.1"
+image = { version = "0.25.6", default-features = false, features = ["png"] }
+ron = "0.12.2"
+runity = { version = "0.1.0", path = "../runity" }
+serde = { version = "1.0.229", features = ["derive"] }
+tobj = "4.0.5"
+
+[[bin]]
+name = "runity-import"
+path = "src/main.rs"
+
+[dev-dependencies]
+image = { version = "0.25.6", default-features = false, features = ["png"] }
+rkyv = "0.8"

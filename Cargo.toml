@@ -1,28 +1,44 @@
+# runity: a game engine built on off-the-shelf crates.
+#
+# The rule is: take the proven crate, and write our own only where we hit its
+# ceiling. It replaced the opposite rule — an engine assembled from `std`
+# alone — and `docs/stack.md` records what that cost and bought.
+#
+# There is no game code here. What the engine is tested against is its own:
+# builtin meshes and materials, example assets and example scenes, all under
+# `assets/` and `scenes/`. `docs/design/` says what the engine is growing
+# toward.
 [workspace]
 resolver = "2"
 members = [
-    "crates/runity-math",
-    "crates/runity-render",
-    "crates/runity-gpu",
-    "crates/runity-platform",
-    "crates/runity-core",
-    "crates/runity-net",
-    "crates/runity-sim",
     "crates/runity",
+    "crates/runity-ffi",
+    "crates/runity-import",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stasiandr/runity"
 
+[workspace.dependencies]
+runity = { path = "crates/runity", version = "0.1.0" }
+runity-ffi = { path = "crates/runity-ffi", version = "0.1.0" }
+runity-import = { path = "crates/runity-import", version = "0.1.0" }
+
+# Release builds keep debug info: a profiler that cannot name a frame is
+# worth nothing, and Tracy wants symbols.
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 1
-panic = "abort"
+debug = 1
 
+# Dependencies go to full optimization so that wgpu and rapier are not the
+# reason a debug build crawls, while our own crates stay at opt-level 0 and
+# keep compiling fast.
 [profile.dev]
-opt-level = 1
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 3
