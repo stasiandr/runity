@@ -170,6 +170,37 @@ impl AcquiredFrame {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Surface {
+    /// Take a `CAMetalLayer` a native host already owns.
+    ///
+    /// This is the path a Swift editor uses: AppKit makes the view, the view
+    /// has a layer, and the engine draws into it. No window is created here,
+    /// which is the rule the whole crate is arranged around.
+    ///
+    /// # Safety
+    /// `layer` must be a live `CAMetalLayer` that outlives the returned
+    /// surface. Nothing in Rust can check that — the host owns the view, and
+    /// releasing it while the engine still holds a swapchain is a use after
+    /// free the type system never sees.
+    pub unsafe fn from_metal_layer(
+        gpu: &Gpu,
+        layer: *mut core::ffi::c_void,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, SurfaceError> {
+        if layer.is_null() {
+            return Err(SurfaceError::Other("null CAMetalLayer".into()));
+        }
+        let inner = unsafe {
+            gpu.instance
+                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
+        }
+        .map_err(|e| SurfaceError::Other(e.to_string()))?;
+        Ok(Self::configure(gpu, inner, width, height))
+    }
+}
+
 #[cfg(feature = "desktop-shell")]
 impl Surface {
     /// Take a winit window's surface.

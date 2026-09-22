@@ -36,6 +36,22 @@ typedef struct RunityEditor RunityEditor;
 RunityEditor *runity_editor_create_offscreen(unsigned int width,
                                              unsigned int height);
 
+/* Open an editor that draws into a layer the host already owns. On macOS
+ * `layer` is a CAMetalLayer* — the layer of the view the editor put on
+ * screen. The engine never makes a window; the host does. Returns NULL on
+ * failure, and on platforms without this path.
+ *
+ * The layer must outlive the editor. Releasing the view while the editor
+ * still holds a swapchain is a use after free nothing here can detect. */
+RunityEditor *runity_editor_create_for_layer(void *layer,
+                                             unsigned int width,
+                                             unsigned int height);
+
+/* Tell the editor its view changed size. */
+bool runity_editor_resize(RunityEditor *editor,
+                          unsigned int width,
+                          unsigned int height);
+
 /* Release an editor. NULL is a no-op. */
 void runity_editor_free(RunityEditor *editor);
 

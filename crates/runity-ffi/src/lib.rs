@@ -32,6 +32,8 @@ pub struct Editor {
     gpu: Gpu,
     renderer: Renderer,
     target: OffscreenTarget,
+    /// Set when a host gave us its layer; absent when rendering offscreen.
+    surface: Option<runity::surface::Surface>,
     world: hecs::World,
     scene: Scene,
     scene_path: Option<PathBuf>,
@@ -135,6 +137,7 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         gpu,
         renderer,
         target,
+        surface: None,
         world: hecs::World::new(),
         scene: Scene::default(),
         scene_path: None,
@@ -148,6 +151,101 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         drag: None,
         gizmo_arm: None,
     }))
+}
+
+/// Open an editor that draws into a layer the host already owns.
+///
+/// On macOS `layer` is a `CAMetalLayer*` — the layer of the view the editor
+/// put on screen. The engine never makes a window; the host does, and hands
+/// its surface over. Returns null on failure, and on a platform without this
+/// path.
+///
+/// # Safety
+/// `layer` must be a live `CAMetalLayer` that outlives the editor. Releasing
+/// the view while the editor still holds a swapchain is a use after free
+/// that nothing here can detect.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_create_for_layer(
+    layer: *mut core::ffi::c_void,
+    width: c_uint,
+    height: c_uint,
+) -> *mut Editor {
+    #[cfg(target_os = "macos")]
+    {
+        let gpu = match Gpu::headless_blocking(false) {
+            Ok(gpu) => gpu,
+            Err(e) => {
+                fail(e.to_string());
+                return ptr::null_mut();
+            }
+        };
+        let surface = match unsafe {
+            runity::surface::Surface::from_metal_layer(&gpu, layer, width.max(1), height.max(1))
+        } {
+            Ok(surface) => surface,
+            Err(e) => {
+                fail(e.to_string());
+                return ptr::null_mut();
+            }
+        };
+        let renderer = Renderer::for_surface(&gpu, &surface);
+        // The offscreen target stays, small, for `runity_editor_frame_pixels`
+        // — a thumbnail, a test, or a host that wants the image before it has
+        // a view.
+        let target = OffscreenTarget::new(&gpu, 1, 1);
+        return Box::into_raw(Box::new(Editor {
+            gpu,
+            renderer,
+            target,
+            surface: Some(surface),
+            world: hecs::World::new(),
+            scene: Scene::default(),
+            scene_path: None,
+            library: None,
+            uploaded: Vec::new(),
+            camera: Camera::default(),
+            order: Vec::new(),
+            pixels: Vec::new(),
+            selected: None,
+            gizmo_style: GizmoStyle::default(),
+            drag: None,
+            gizmo_arm: None,
+        }));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (layer, width, height);
+        fail("no native layer surface on this platform");
+        ptr::null_mut()
+    }
+}
+
+/// Tell the editor its view changed size.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_resize(
+    editor: *mut Editor,
+    width: c_uint,
+    height: c_uint,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    match editor.surface.as_mut() {
+        Some(surface) => {
+            surface.resize(&editor.gpu, width, height);
+            true
+        }
+        None => {
+            // Offscreen: a new image, because an offscreen target cannot be
+            // resized in place and pretending otherwise would silently keep
+            // rendering at the old size.
+            editor.target = OffscreenTarget::new(&editor.gpu, width.max(1), height.max(1));
+            true
+        }
+    }
 }
 
 /// Release an editor. Null is a no-op.
@@ -423,8 +521,30 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
             editor.drag.map(|d| d.handle),
         ));
     }
-    editor.renderer.render(&editor.gpu, &editor.target, &frame);
-    editor.pixels = editor.target.read_rgba(&editor.gpu);
+    match editor.surface.as_ref() {
+        Some(surface) => match surface.begin_frame() {
+            Ok(acquired) => {
+                editor
+                    .renderer
+                    .render_to_frame(&editor.gpu, &acquired, &frame);
+                acquired.present(&editor.gpu);
+            }
+            Err(runity::SurfaceError::Outdated) => {
+                // The view is mid-resize. Reconfiguring and skipping this
+                // frame is what every host does, and reporting it as a
+                // failure would make an editor log a line per drag.
+                surface.reconfigure(&editor.gpu);
+            }
+            Err(e) => {
+                fail(e.to_string());
+                return false;
+            }
+        },
+        None => {
+            editor.renderer.render(&editor.gpu, &editor.target, &frame);
+            editor.pixels = editor.target.read_rgba(&editor.gpu);
+        }
+    }
     true
 }
 
@@ -476,7 +596,7 @@ pub unsafe extern "C" fn runity_editor_pick(editor: *mut Editor, x: c_uint, y: c
 /// freed.
 #[no_mangle]
 pub unsafe extern "C" fn runity_editor_width(editor: *mut Editor) -> c_uint {
-    unsafe { borrow(editor) }.map_or(0, |e| e.target.width)
+    unsafe { borrow(editor) }.map_or(0, |e| e.view_size().0)
 }
 
 /// See [`runity_editor_width`].
@@ -485,7 +605,7 @@ pub unsafe extern "C" fn runity_editor_width(editor: *mut Editor) -> c_uint {
 /// freed.
 #[no_mangle]
 pub unsafe extern "C" fn runity_editor_height(editor: *mut Editor) -> c_uint {
-    unsafe { borrow(editor) }.map_or(0, |e| e.target.height)
+    unsafe { borrow(editor) }.map_or(0, |e| e.view_size().1)
 }
 
 /// Put the gizmo on an entity, or pass -1 to clear the selection.
@@ -669,9 +789,24 @@ impl Editor {
         });
     }
 
+    /// The size of whatever is being drawn into.
+    ///
+    /// One accessor rather than two call sites, because picking a ray
+    /// against the offscreen image while drawing into a window is a mistake
+    /// that puts the cursor somewhere else entirely.
+    fn view_size(&self) -> (u32, u32) {
+        match self.surface.as_ref() {
+            Some(surface) => (surface.width(), surface.height()),
+            None => (self.target.width, self.target.height),
+        }
+    }
+
     /// The world ray through a pixel.
     fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
-        let (width, height) = (self.target.width as f32, self.target.height as f32);
+        let (width, height) = {
+            let (w, h) = self.view_size();
+            (w as f32, h as f32)
+        };
         let ndc_x = (x as f32 + 0.5) / width * 2.0 - 1.0;
         let ndc_y = 1.0 - (y as f32 + 0.5) / height * 2.0;
         let inverse = self.camera.view_projection(width / height).inverse();

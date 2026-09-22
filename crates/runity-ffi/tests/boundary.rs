@@ -282,3 +282,34 @@ fn dragging_a_child_keeps_it_in_its_parent() {
         after[1]
     );
 }
+
+#[test]
+fn resizing_an_offscreen_editor_changes_what_it_reports_and_renders() {
+    let Some((editor, _)) = open("resize") else {
+        return;
+    };
+    assert_eq!(unsafe { runity_editor_width(editor.0) }, 192);
+
+    assert!(unsafe { runity_editor_resize(editor.0, 64, 48) });
+    assert_eq!(unsafe { runity_editor_width(editor.0) }, 64);
+    assert_eq!(unsafe { runity_editor_height(editor.0) }, 48);
+
+    // And the frame that comes out is the new size. An offscreen target
+    // cannot be resized in place, so reporting the new size while still
+    // rendering the old one is the failure this catches.
+    assert!(unsafe { runity_editor_render(editor.0) });
+    let needed = unsafe { runity_editor_frame_pixels(editor.0, std::ptr::null_mut(), 0) };
+    assert_eq!(needed, 64 * 48 * 4);
+}
+
+#[test]
+fn asking_for_a_layer_surface_without_a_layer_fails_rather_than_crashing() {
+    // A host that passes a view it has not made yet is a normal bug on the
+    // far side. It should get null and a message.
+    let editor = unsafe { runity_editor_create_for_layer(std::ptr::null_mut(), 100, 100) };
+    assert!(editor.is_null());
+
+    let mut message = vec![0u8; 128];
+    let length = unsafe { runity_last_error(message.as_mut_ptr() as *mut c_char, 128) };
+    assert!(length > 0, "and a reason, not silence");
+}
