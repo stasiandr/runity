@@ -2213,6 +2213,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-ffi"
+version = "0.1.0"
+dependencies = [
+ "hecs",
+ "runity",
+ "runity-import",
+]
+
+[[package]]
 name = "runity-import"
 version = "0.1.0"
 dependencies = [

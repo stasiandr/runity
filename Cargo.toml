@@ -12,18 +12,20 @@
 resolver = "2"
 members = [
     "crates/runity",
+    "crates/runity-ffi",
     "crates/runity-import",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/stasiandr/runity"
 
 [workspace.dependencies]
 runity = { path = "crates/runity", version = "0.1.0" }
+runity-ffi = { path = "crates/runity-ffi", version = "0.1.0" }
 runity-import = { path = "crates/runity-import", version = "0.1.0" }
 
 # Release builds keep debug info: a profiler that cannot name a frame is

@@ -1,0 +1,586 @@
+//! The editor's side of the engine, as a C ABI.
+//!
+//! A native editor — Swift on macOS today — owns its window and its event
+//! loop, and reaches the engine through these calls. The boundary is
+//! deliberately narrow and deliberately dull: ids, floats and paths. Nothing
+//! here mirrors an engine type, because the moment the editor starts
+//! declaring its own copy of a component, every new component becomes work
+//! in two languages.
+//!
+//! Two planes, as `docs/stack.md` describes. The control plane is scene and
+//! selection: opening, listing, moving, saving — called when a person does
+//! something, so it can afford to copy a string. The data plane is the
+//! frame: render, resize, input — called sixty times a second, so it
+//! allocates nothing.
+//!
+//! Every call is safe to make on a null handle. An editor's UI outlives its
+//! document, and a boundary that segfaults when a panel repaints after a
+//! close is a boundary that gets wrapped in defensive code on the other
+//! side.
+
+use std::ffi::{c_char, c_float, c_int, c_uint, CStr, CString};
+use std::path::PathBuf;
+use std::ptr;
+
+use runity::glam::{Mat4, Vec3};
+use runity::render::{Camera, FogSettings, Frame, Lighting, MeshHandle};
+use runity::{builtin, Gpu, Library, OffscreenTarget, Renderer, Scene};
+
+/// Everything one open document needs.
+pub struct Editor {
+    gpu: Gpu,
+    renderer: Renderer,
+    target: OffscreenTarget,
+    world: hecs::World,
+    scene: Scene,
+    scene_path: Option<PathBuf>,
+    library: Option<Library>,
+    uploaded: Vec<(String, MeshHandle)>,
+    camera: Camera,
+    /// Entity handles in the order the editor lists them, so an index from
+    /// the UI means the same thing on both sides for as long as the document
+    /// is open.
+    order: Vec<hecs::Entity>,
+    pixels: Vec<u8>,
+}
+
+thread_local! {
+    /// The last failure, for [`runity_last_error`]. Thread-local because an
+    /// editor may drive several documents from several threads, and one
+    /// global would let one document's error surface under another's.
+    static LAST_ERROR: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+fn fail(message: impl Into<String>) {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = message.into());
+}
+
+/// Copy a string into a caller's buffer, NUL-terminated and truncated to fit.
+///
+/// Returns the length it wanted, so a caller can size a buffer and ask
+/// again — the usual C shape, and the one that does not require the caller
+/// to trust a length it was not told.
+fn write_string(value: &str, buffer: *mut c_char, capacity: c_uint) -> c_uint {
+    let needed = value.len() as c_uint;
+    if buffer.is_null() || capacity == 0 {
+        return needed;
+    }
+    let Ok(text) = CString::new(value) else {
+        // A NUL inside the string: report nothing rather than a truncation
+        // the caller would read as the whole value.
+        unsafe { *buffer = 0 };
+        return 0;
+    };
+    let bytes = text.as_bytes_with_nul();
+    let room = (capacity as usize).min(bytes.len());
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, buffer, room);
+        *buffer.add(room - 1) = 0;
+    }
+    needed
+}
+
+unsafe fn borrow<'a>(editor: *mut Editor) -> Option<&'a mut Editor> {
+    unsafe { editor.as_mut() }
+}
+
+unsafe fn path_from(raw: *const c_char) -> Option<PathBuf> {
+    if raw.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr(raw) }
+        .to_str()
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Open an editor that renders into its own image rather than a window.
+///
+/// Marked unsafe for symmetry with the rest: every call in this module takes
+/// a handle it dereferences, and a module where some are unsafe and some are
+/// not invites a reader to think the difference is meaningful.
+///
+/// This is the whole API minus the surface, which means the editor's logic
+/// can be exercised — by tests here, and by a host before it has a view to
+/// give. Returns null on failure; [`runity_last_error`] says why.
+///
+/// # Safety
+/// The returned pointer is owned by the caller and must be released with
+/// [`runity_editor_free`].
+/// # Safety
+/// The returned pointer is owned by the caller and must be released with
+/// [`runity_editor_free`].
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_create_offscreen(
+    width: c_uint,
+    height: c_uint,
+) -> *mut Editor {
+    let gpu = match Gpu::headless_blocking(false) {
+        Ok(gpu) => gpu,
+        Err(e) => {
+            fail(e.to_string());
+            return ptr::null_mut();
+        }
+    };
+    let target = OffscreenTarget::new(&gpu, width.max(1), height.max(1));
+    let renderer = Renderer::new(&gpu, &target);
+    Box::into_raw(Box::new(Editor {
+        gpu,
+        renderer,
+        target,
+        world: hecs::World::new(),
+        scene: Scene::default(),
+        scene_path: None,
+        library: None,
+        uploaded: Vec::new(),
+        camera: Camera::default(),
+        order: Vec::new(),
+        pixels: Vec::new(),
+    }))
+}
+
+/// Release an editor. Null is a no-op.
+///
+/// # Safety
+/// `editor` must have come from a create call and must not be used again.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_free(editor: *mut Editor) {
+    if !editor.is_null() {
+        drop(unsafe { Box::from_raw(editor) });
+    }
+}
+
+/// The last failure on this thread, into a caller's buffer. Returns the
+/// length the message wanted.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_last_error(buffer: *mut c_char, capacity: c_uint) -> c_uint {
+    LAST_ERROR.with(|slot| write_string(&slot.borrow(), buffer, capacity))
+}
+
+/// Point the editor at a library of imported assets.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_library(
+    editor: *mut Editor,
+    path: *const c_char,
+) -> bool {
+    let (Some(editor), Some(path)) = (unsafe { borrow(editor) }, unsafe { path_from(path) }) else {
+        fail("no editor or no path");
+        return false;
+    };
+    match Library::open(&path) {
+        Ok((library, problems)) => {
+            if !problems.is_empty() {
+                fail(format!("{} asset(s) skipped", problems.len()));
+            }
+            editor.library = Some(library);
+            // Handles from the old library refer to meshes uploaded for it.
+            editor.uploaded.clear();
+            true
+        }
+        Err(e) => {
+            fail(e.to_string());
+            false
+        }
+    }
+}
+
+/// Open a scene file.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_open_scene(
+    editor: *mut Editor,
+    path: *const c_char,
+) -> bool {
+    let (Some(editor), Some(path)) = (unsafe { borrow(editor) }, unsafe { path_from(path) }) else {
+        fail("no editor or no path");
+        return false;
+    };
+    match Scene::load(&path) {
+        Ok(scene) => {
+            editor.scene = scene;
+            editor.scene_path = Some(path);
+            editor.respawn();
+            true
+        }
+        Err(e) => {
+            fail(e.to_string());
+            false
+        }
+    }
+}
+
+/// Write the scene back. With a null path, writes where it was opened from.
+///
+/// # Safety
+/// `path` must be a NUL-terminated string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_save_scene(
+    editor: *mut Editor,
+    path: *const c_char,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        fail("no editor");
+        return false;
+    };
+    let target = unsafe { path_from(path) }.or_else(|| editor.scene_path.clone());
+    let Some(target) = target else {
+        fail("no path to save to");
+        return false;
+    };
+    match editor.scene.save(&target) {
+        Ok(()) => true,
+        Err(e) => {
+            fail(e.to_string());
+            false
+        }
+    }
+}
+
+/// How many entities the open scene has, counting children.
+/// # Safety
+/// `editor` must be null or a handle from a create call that has not been
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_entity_count(editor: *mut Editor) -> c_uint {
+    unsafe { borrow(editor) }.map_or(0, |e| e.flat_count() as c_uint)
+}
+
+/// One entity's name.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_entity_name(
+    editor: *mut Editor,
+    index: c_uint,
+    buffer: *mut c_char,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let flat = editor.scene.flatten();
+    let Some((desc, _)) = flat.get(index as usize) else {
+        return 0;
+    };
+    let name = desc.name.clone();
+    write_string(&name, buffer, capacity)
+}
+
+/// An entity's local transform, as nine floats: position, Euler degrees,
+/// scale.
+///
+/// # Safety
+/// `out` must be writable for nine floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_get_transform(
+    editor: *mut Editor,
+    index: c_uint,
+    out: *mut c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if out.is_null() {
+        return false;
+    }
+    let flat = editor.scene.flatten();
+    let Some((desc, _)) = flat.get(index as usize) else {
+        return false;
+    };
+    let t = desc.transform;
+    let values = [
+        t.position.x,
+        t.position.y,
+        t.position.z,
+        t.rotation_deg.x,
+        t.rotation_deg.y,
+        t.rotation_deg.z,
+        t.scale.x,
+        t.scale.y,
+        t.scale.z,
+    ];
+    unsafe { ptr::copy_nonoverlapping(values.as_ptr(), out, values.len()) };
+    true
+}
+
+/// Set an entity's local transform from nine floats.
+///
+/// # Safety
+/// `values` must be readable for nine floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_transform(
+    editor: *mut Editor,
+    index: c_uint,
+    values: *const c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if values.is_null() {
+        return false;
+    }
+    let v = unsafe { std::slice::from_raw_parts(values, 9) };
+    let Some(desc) = nth_mut(&mut editor.scene, index as usize) else {
+        return false;
+    };
+    desc.transform.position = Vec3::new(v[0], v[1], v[2]);
+    desc.transform.rotation_deg = Vec3::new(v[3], v[4], v[5]);
+    desc.transform.scale = Vec3::new(v[6], v[7], v[8]);
+    // Respawned rather than patched in place: a moved parent moves its
+    // children, and keeping two ways to apply that is how they drift.
+    editor.respawn();
+    true
+}
+
+/// Move the camera: eye and target, three floats each.
+///
+/// # Safety
+/// `eye` and `target` must each be readable for three floats.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_set_camera(
+    editor: *mut Editor,
+    eye: *const c_float,
+    target: *const c_float,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if eye.is_null() || target.is_null() {
+        return false;
+    }
+    let e = unsafe { std::slice::from_raw_parts(eye, 3) };
+    let t = unsafe { std::slice::from_raw_parts(target, 3) };
+    editor.camera.position = Vec3::new(e[0], e[1], e[2]);
+    editor.camera.target = Vec3::new(t[0], t[1], t[2]);
+    true
+}
+
+/// Draw one frame into the editor's image.
+/// # Safety
+/// `editor` must be null or a handle from a create call that has not been
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let frame = Frame {
+        camera: editor.camera,
+        lighting: Lighting::default(),
+        fog: FogSettings {
+            color: Vec3::from_array(editor.scene.fog.color),
+            start: editor.scene.fog.start,
+            end: editor.scene.fog.end,
+        },
+        clear_color: Vec3::from_array(editor.scene.fog.color),
+        ..runity::build_frame(
+            &editor.world,
+            editor.camera,
+            Lighting::default(),
+            FogSettings::default(),
+        )
+    };
+    editor.renderer.render(&editor.gpu, &editor.target, &frame);
+    editor.pixels = editor.target.read_rgba(&editor.gpu);
+    true
+}
+
+/// The last rendered frame as RGBA8, copied into a caller's buffer.
+///
+/// Returns the number of bytes the frame needs. A host with a real surface
+/// never calls this; it exists so an editor can show something before it has
+/// a view, and so tests can look at what the engine drew.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_frame_pixels(
+    editor: *mut Editor,
+    buffer: *mut u8,
+    capacity: c_uint,
+) -> c_uint {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return 0;
+    };
+    let needed = editor.pixels.len() as c_uint;
+    if buffer.is_null() || capacity == 0 {
+        return needed;
+    }
+    let room = (capacity as usize).min(editor.pixels.len());
+    unsafe { ptr::copy_nonoverlapping(editor.pixels.as_ptr(), buffer, room) };
+    needed
+}
+
+/// Which entity is under a point in the image, or -1 for none.
+///
+/// Uses the entities' bounding boxes against a ray through the pixel. A
+/// triangle-exact pick is better and much slower, and for a box the
+/// difference only shows on thin diagonal geometry.
+/// # Safety
+/// `editor` must be null or a handle from a create call that has not been
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_pick(editor: *mut Editor, x: c_uint, y: c_uint) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    editor.pick(x, y).map_or(-1, |i| i as c_int)
+}
+
+/// The width and height of the editor's image.
+/// # Safety
+/// `editor` must be null or a handle from a create call that has not been
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_width(editor: *mut Editor) -> c_uint {
+    unsafe { borrow(editor) }.map_or(0, |e| e.target.width)
+}
+
+/// See [`runity_editor_width`].
+/// # Safety
+/// `editor` must be null or a handle from a create call that has not been
+/// freed.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_height(editor: *mut Editor) -> c_uint {
+    unsafe { borrow(editor) }.map_or(0, |e| e.target.height)
+}
+
+/// The `index`th entity in the flattened scene, mutably.
+fn nth_mut(scene: &mut Scene, index: usize) -> Option<&mut runity::EntityDesc> {
+    fn walk<'a>(
+        entities: &'a mut [runity::EntityDesc],
+        index: usize,
+        seen: &mut usize,
+    ) -> Option<&'a mut runity::EntityDesc> {
+        for entity in entities {
+            if *seen == index {
+                return Some(entity);
+            }
+            *seen += 1;
+            // Borrow-checker friendly: take the child branch by pointer, so
+            // the parent's borrow ends before the recursive call.
+            let found = walk(&mut entity.children, index, seen).map(|e| e as *mut _);
+            if let Some(found) = found {
+                return Some(unsafe { &mut *found });
+            }
+        }
+        None
+    }
+    let mut seen = 0;
+    walk(&mut scene.entities, index, &mut seen)
+}
+
+impl Editor {
+    fn flat_count(&self) -> usize {
+        self.scene.flatten().len()
+    }
+
+    /// Rebuild the world from the scene.
+    fn respawn(&mut self) {
+        self.world.clear();
+        self.order.clear();
+        let renderer = &mut self.renderer;
+        let gpu = &self.gpu;
+        let library = self.library.as_ref();
+        let uploaded = &mut self.uploaded;
+        runity::spawn_scene(&self.scene, &mut self.world, |name| {
+            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                return Some(found.1);
+            }
+            let handle = if let Some(mesh) = builtin::by_name(name) {
+                renderer.upload_mesh_owned(gpu, &mesh)
+            } else {
+                renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
+            };
+            uploaded.push((name.to_string(), handle));
+            Some(handle)
+        });
+    }
+
+    fn pick(&self, x: u32, y: u32) -> Option<usize> {
+        let (width, height) = (self.target.width as f32, self.target.height as f32);
+        let ndc_x = (x as f32 + 0.5) / width * 2.0 - 1.0;
+        let ndc_y = 1.0 - (y as f32 + 0.5) / height * 2.0;
+        let inverse = self.camera.view_projection(width / height).inverse();
+        let near = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+        let direction = (far - near).normalize_or_zero();
+
+        let mut best: Option<(f32, usize)> = None;
+        for (index, (desc, world)) in self.scene.flatten().iter().enumerate() {
+            let Some(bounds) = self.bounds_of(&desc.model) else {
+                continue;
+            };
+            if let Some(distance) = ray_box(near, direction, bounds, *world) {
+                if best.is_none_or(|(closest, _)| distance < closest) {
+                    best = Some((distance, index));
+                }
+            }
+        }
+        best.map(|(_, index)| index)
+    }
+
+    fn bounds_of(&self, model: &str) -> Option<(Vec3, Vec3)> {
+        if let Some(mesh) = builtin::by_name(model) {
+            return Some((
+                Vec3::from_array(mesh.bounds.min),
+                Vec3::from_array(mesh.bounds.max),
+            ));
+        }
+        let mesh = self.library.as_ref()?.mesh_by_name(model)?;
+        Some((
+            Vec3::new(
+                mesh.bounds.min[0].to_native(),
+                mesh.bounds.min[1].to_native(),
+                mesh.bounds.min[2].to_native(),
+            ),
+            Vec3::new(
+                mesh.bounds.max[0].to_native(),
+                mesh.bounds.max[1].to_native(),
+                mesh.bounds.max[2].to_native(),
+            ),
+        ))
+    }
+}
+
+/// Distance along a ray to a transformed box, if it hits.
+///
+/// The ray is moved into the box's space rather than the box into the
+/// world's: a rotated box is not a box any more, and testing its world-space
+/// bounds would pick things the cursor is nowhere near.
+fn ray_box(origin: Vec3, direction: Vec3, bounds: (Vec3, Vec3), transform: Mat4) -> Option<f32> {
+    let inverse = transform.inverse();
+    let local_origin = inverse.transform_point3(origin);
+    let local_direction = inverse.transform_vector3(direction);
+
+    let (mut near, mut far) = (f32::NEG_INFINITY, f32::INFINITY);
+    for axis in 0..3 {
+        let d = local_direction[axis];
+        let (lo, hi) = (bounds.0[axis], bounds.1[axis]);
+        if d.abs() < 1e-6 {
+            // Parallel to this slab: a miss unless it starts inside it.
+            if local_origin[axis] < lo || local_origin[axis] > hi {
+                return None;
+            }
+            continue;
+        }
+        let t0 = (lo - local_origin[axis]) / d;
+        let t1 = (hi - local_origin[axis]) / d;
+        let (t0, t1) = if t0 <= t1 { (t0, t1) } else { (t1, t0) };
+        near = near.max(t0);
+        far = far.min(t1);
+        if near > far {
+            return None;
+        }
+    }
+    (far >= 0.0).then(|| near.max(0.0))
+}

@@ -112,7 +112,9 @@ pub struct EntityDesc {
     /// material written out in full. Named first because that is what keeps a
     /// scene readable and a palette consistent: a colour spelled out in
     /// twenty places drifts in nineteen of them.
-    #[serde(default)]
+    /// Left out of the file entirely when it is the default, so a scene
+    /// full of plain grey things stays readable.
+    #[serde(default, skip_serializing_if = "MaterialRef::is_default")]
     pub material: MaterialRef,
     #[serde(default)]
     pub body: Body,
@@ -173,6 +175,12 @@ pub enum MaterialRef {
 impl Default for MaterialRef {
     fn default() -> Self {
         MaterialRef::Inline(Material::default())
+    }
+}
+
+impl MaterialRef {
+    fn is_default(&self) -> bool {
+        *self == MaterialRef::default()
     }
 }
 
@@ -273,9 +281,11 @@ impl Scene {
     /// This is the editor's save button, and the reason the editor never has
     /// to be the only way to change a scene.
     pub fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let pretty = ron::ser::PrettyConfig::new()
-            .depth_limit(4)
-            .struct_names(true);
+        // Struct names deliberately off. With them on, a material is written
+        // as `Material(...)`, and an untagged enum cannot match a named
+        // struct — so a scene the editor saved would not open again. A
+        // round trip that only fails on the way back is the worst kind.
+        let pretty = ron::ser::PrettyConfig::new().depth_limit(4);
         let text = ron::ser::to_string_pretty(self, pretty)?;
         std::fs::write(path.as_ref(), text)?;
         Ok(())
@@ -285,6 +295,46 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scene_with_every_field_set_survives_a_round_trip() {
+        // The round trip that matters is the one an editor does: write a
+        // scene out, open it again, get the same thing. It failed for a
+        // while because struct names were on and an untagged enum cannot
+        // match a named struct — a file that saved cleanly and would not
+        // reopen.
+        let scene = Scene {
+            entities: vec![EntityDesc {
+                name: "crate".into(),
+                model: "builtin:cube".into(),
+                transform: Transform {
+                    position: Vec3::new(1.0, 2.0, 3.0),
+                    rotation_deg: Vec3::new(0.0, 45.0, 0.0),
+                    scale: Vec3::splat(2.0),
+                },
+                material: MaterialRef::Inline(Material::new(0.3, 0.2, 0.1)),
+                body: Body::Dynamic,
+                collider: Collider::Box {
+                    half: Vec3::splat(0.5),
+                },
+                children: vec![EntityDesc {
+                    name: "lid".into(),
+                    model: "builtin:cube".into(),
+                    material: MaterialRef::Named("stone".into()),
+                    body: Body::None,
+                    collider: Collider::None,
+                    transform: Transform::default(),
+                    children: Vec::new(),
+                }],
+            }],
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join("runity-scene-full");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("full.ron");
+        scene.save(&path).unwrap();
+        assert_eq!(Scene::load(&path).unwrap(), scene);
+    }
 
     #[test]
     fn a_scene_survives_a_round_trip_through_the_file() {
