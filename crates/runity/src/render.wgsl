@@ -14,9 +14,16 @@ struct Frame {
     // start, end, unused, unused
     fog_range: vec4<f32>,
     camera_position: vec4<f32>,
+    light_view_projection: mat4x4<f32>,
+    // depth bias, normal offset in world units, one texel in UV, on/off
+    shadow_params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+@group(0) @binding(1) var shadow_map: texture_depth_2d;
+// A comparison sampler: the hardware does the depth test and the bilinear
+// filter in one fetch, so every tap is already a 2x2 average.
+@group(0) @binding(2) var shadow_sampler: sampler_comparison;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -36,6 +43,50 @@ struct VertexOutput {
     @location(2) base_color: vec3<f32>,
     @location(3) unlit: f32,
 };
+
+/// The depth-only pass, seen from the sun.
+@vertex
+fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    return frame.light_view_projection * model * vec4<f32>(in.position, 1.0);
+}
+
+/// How much sun reaches a point: 1.0 in the open, 0.0 in full shadow.
+fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if frame.shadow_params.w < 0.5 {
+        return 1.0;
+    }
+
+    // Offsetting along the normal before the lookup is what handles grazing
+    // angles: there the depth error grows with the slope, and no constant
+    // bias large enough to cover it is small enough to keep contact.
+    let offset = world_position + normal * frame.shadow_params.y;
+    let light_clip = frame.light_view_projection * vec4<f32>(offset, 1.0);
+    let ndc = light_clip.xyz / light_clip.w;
+
+    // Clip space is -1..1 across and 0..1 deep; the map is indexed 0..1 with
+    // v running the other way.
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        // Outside the map is lit, not shadowed. The opposite choice makes
+        // everything beyond the fitted frustum go black, which reads as a
+        // wall of darkness at the edge of the scene.
+        return 1.0;
+    }
+
+    let reference = ndc.z - frame.shadow_params.x;
+    let texel = frame.shadow_params.z;
+    // Nine taps, each of them already a hardware 2x2, so the edge is soft
+    // enough that the map's resolution stops being visible as stairs.
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let tap = uv + vec2<f32>(f32(x), f32(y)) * texel;
+            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, tap, reference);
+        }
+    }
+    return sum / 9.0;
+}
 
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
@@ -58,7 +109,7 @@ fn vs(in: VertexInput) -> VertexOutput {
 fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
     let to_sun = -normalize(frame.sun_direction.xyz);
-    let lambert = max(dot(normal, to_sun), 0.0);
+    let lambert = max(dot(normal, to_sun), 0.0) * sunlight(in.world_position, normal);
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
     // bounce off the ground. A single constant here is what makes every

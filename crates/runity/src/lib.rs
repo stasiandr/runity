@@ -27,6 +27,8 @@ pub use asset::{AssetError, AssetId, Bounds, MeshAsset, Submesh, Vertex};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use library::Library;
 pub use material::{Material, Shading};
-pub use render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer};
+pub use render::{
+    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings,
+};
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform};
 pub use world::{build_frame, spawn_scene, Model, Surface};

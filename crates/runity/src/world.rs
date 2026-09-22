@@ -77,6 +77,7 @@ pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSe
         lighting,
         clear_color: fog.color,
         fog,
+        shadows: crate::render::ShadowSettings::default(),
         draws,
     }
 }
