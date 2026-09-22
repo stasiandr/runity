@@ -91,6 +91,28 @@ unsigned int runity_editor_frame_pixels(RunityEditor *editor,
                                         uint8_t *buffer,
                                         unsigned int capacity);
 
+/* --- selection and the move gizmo ----------------------------------- */
+
+/* Put the gizmo on an entity, or pass -1 to clear the selection. */
+bool runity_editor_select(RunityEditor *editor, int index);
+int runity_editor_selected(RunityEditor *editor);
+
+/* Which arm is under a point: 0 X, 1 Y, 2 Z, -1 none. `hover` only looks;
+ * `begin` grabs. */
+int runity_editor_gizmo_hover(RunityEditor *editor,
+                              unsigned int x,
+                              unsigned int y);
+int runity_editor_gizmo_begin(RunityEditor *editor,
+                              unsigned int x,
+                              unsigned int y);
+
+/* Follow a point with the held arm. No-op without a grab. */
+bool runity_editor_gizmo_drag(RunityEditor *editor,
+                              unsigned int x,
+                              unsigned int y);
+
+void runity_editor_gizmo_end(RunityEditor *editor);
+
 /* The entity under a point, or -1. Tested against bounding boxes: a
  * triangle-exact pick is better and much slower, and the difference only
  * shows on thin diagonal geometry. */

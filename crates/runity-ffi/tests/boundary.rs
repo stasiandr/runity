@@ -182,3 +182,103 @@ fn every_call_survives_a_null_editor() {
         runity_editor_free(null);
     }
 }
+
+#[test]
+fn the_gizmo_moves_the_thing_it_is_on_and_writes_it_to_the_scene() {
+    let Some((editor, path)) = open("gizmo") else {
+        return;
+    };
+    let eye = [0.0f32, 1.0, 6.0];
+    let target = [0.0f32, 0.5, 0.0];
+    unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), target.as_ptr()) };
+
+    // Nothing selected: no handles to find.
+    assert_eq!(unsafe { runity_editor_selected(editor.0) }, -1);
+    assert_eq!(unsafe { runity_editor_gizmo_hover(editor.0, 96, 64) }, -1);
+
+    assert!(unsafe { runity_editor_select(editor.0, 1) }, "the crate");
+    assert_eq!(unsafe { runity_editor_selected(editor.0) }, 1);
+
+    // Sweep the middle band for an arm rather than guessing a pixel: where
+    // the handles land depends on the projection, and a test that hard-codes
+    // that is testing arithmetic it does not own.
+    let width = unsafe { runity_editor_width(editor.0) };
+    let height = unsafe { runity_editor_height(editor.0) };
+    let found = (0..width)
+        .map(|x| {
+            (x, unsafe {
+                runity_editor_gizmo_begin(editor.0, x, height / 2)
+            })
+        })
+        .find(|(_, arm)| *arm >= 0);
+    let (grab_x, arm) = found.expect("an arm crosses the middle of the view");
+    assert!(arm >= 0);
+
+    let mut before = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, before.as_mut_ptr()) };
+
+    // Grabbing and not moving must not move anything.
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, grab_x, height / 2) });
+    let mut still = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, still.as_mut_ptr()) };
+    assert_eq!(still, before, "a grab on its own is not a move");
+
+    // Now drag sideways.
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, grab_x + 30, height / 2) });
+    unsafe { runity_editor_gizmo_end(editor.0) };
+
+    let mut after = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 1, after.as_mut_ptr()) };
+    assert_ne!(after[..3], before[..3], "the crate moved");
+    assert_eq!(after[3..], before[3..], "and only its position changed");
+
+    // And it survives a save and reopen, which is the point of the whole
+    // boundary: a drag has to end up in a file.
+    assert!(unsafe { runity_editor_save_scene(editor.0, std::ptr::null()) });
+    let reopened = runity::Scene::load(&path).unwrap();
+    let moved = reopened.find("crate").unwrap().transform.position;
+    assert!((moved.x - after[0]).abs() < 1e-4 && (moved.y - after[1]).abs() < 1e-4);
+}
+
+#[test]
+fn dragging_a_child_keeps_it_in_its_parent() {
+    // The gizmo sits at a world position and the file holds a local one.
+    // Writing the world position straight back yanks a child out of its
+    // parent by however far the parent is offset.
+    let Some((editor, _)) = open("gizmo-child") else {
+        return;
+    };
+    let eye = [0.0f32, 1.5, 6.0];
+    let target = [0.0f32, 1.0, 0.0];
+    unsafe { runity_editor_set_camera(editor.0, eye.as_ptr(), target.as_ptr()) };
+    assert!(unsafe { runity_editor_select(editor.0, 2) }, "the lid");
+
+    let height = unsafe { runity_editor_height(editor.0) };
+    let width = unsafe { runity_editor_width(editor.0) };
+    let Some((grab_x, _)) = (0..width)
+        .map(|x| {
+            (x, unsafe {
+                runity_editor_gizmo_begin(editor.0, x, height / 2)
+            })
+        })
+        .find(|(_, arm)| *arm >= 0)
+    else {
+        return;
+    };
+
+    let mut before = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 2, before.as_mut_ptr()) };
+    assert!(unsafe { runity_editor_gizmo_drag(editor.0, grab_x, height / 2) });
+    let mut after = [0.0f32; 9];
+    unsafe { runity_editor_get_transform(editor.0, 2, after.as_mut_ptr()) };
+
+    // The crate sits at y = 0.5 and the lid at y = 0.6 above it. A drag
+    // that does not undo the parent would rewrite the lid's local y as 1.1.
+    assert!(
+        (after[1] - before[1]).abs() < 1e-3,
+        "the lid's local position should be unchanged by a grab, \
+         was {} and is now {}",
+        before[1],
+        after[1]
+    );
+}

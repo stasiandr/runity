@@ -18,3 +18,6 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 hecs = "0.11.0"
 runity = { version = "0.1.0", path = "../runity" }
 runity-import = { version = "0.1.0", path = "../runity-import" }
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }

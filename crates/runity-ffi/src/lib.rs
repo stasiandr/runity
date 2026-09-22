@@ -22,6 +22,7 @@ use std::ffi::{c_char, c_float, c_int, c_uint, CStr, CString};
 use std::path::PathBuf;
 use std::ptr;
 
+use runity::gizmo::{self, Drag, GizmoStyle, Handle};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, FogSettings, Frame, Lighting, MeshHandle};
 use runity::{builtin, Gpu, Library, OffscreenTarget, Renderer, Scene};
@@ -42,6 +43,12 @@ pub struct Editor {
     /// is open.
     order: Vec<hecs::Entity>,
     pixels: Vec<u8>,
+    /// Which entity the gizmo is on, by flattened index.
+    selected: Option<usize>,
+    gizmo_style: GizmoStyle,
+    drag: Option<Drag>,
+    /// A unit cube, uploaded once, that the gizmo's three arms are made of.
+    gizmo_arm: Option<MeshHandle>,
 }
 
 thread_local! {
@@ -136,6 +143,10 @@ pub unsafe extern "C" fn runity_editor_create_offscreen(
         camera: Camera::default(),
         order: Vec::new(),
         pixels: Vec::new(),
+        selected: None,
+        gizmo_style: GizmoStyle::default(),
+        drag: None,
+        gizmo_arm: None,
     }))
 }
 
@@ -389,6 +400,29 @@ pub unsafe extern "C" fn runity_editor_render(editor: *mut Editor) -> bool {
             FogSettings::default(),
         )
     };
+    let mut frame = frame;
+    // The gizmo goes in after the scene's own draws and before the frame is
+    // submitted, so it is part of the same pass and does not need a second
+    // one. It is unlit and drawn last, which is what keeps a handle visible
+    // against anything.
+    if let (Some(origin), true) = (editor.selected_origin(), editor.selected.is_some()) {
+        let arm = match editor.gizmo_arm {
+            Some(arm) => arm,
+            None => {
+                let cube = builtin::cube(1.0);
+                let arm = editor.renderer.upload_mesh_owned(&editor.gpu, &cube);
+                editor.gizmo_arm = Some(arm);
+                arm
+            }
+        };
+        frame.draws.extend(runity::gizmo::draws(
+            arm,
+            &editor.camera,
+            &editor.gizmo_style,
+            origin,
+            editor.drag.map(|d| d.handle),
+        ));
+    }
     editor.renderer.render(&editor.gpu, &editor.target, &frame);
     editor.pixels = editor.target.read_rgba(&editor.gpu);
     true
@@ -454,6 +488,135 @@ pub unsafe extern "C" fn runity_editor_height(editor: *mut Editor) -> c_uint {
     unsafe { borrow(editor) }.map_or(0, |e| e.target.height)
 }
 
+/// Put the gizmo on an entity, or pass -1 to clear the selection.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_select(editor: *mut Editor, index: c_int) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    if index < 0 {
+        editor.selected = None;
+        editor.drag = None;
+        return true;
+    }
+    let index = index as usize;
+    if index >= editor.flat_count() {
+        return false;
+    }
+    editor.selected = Some(index);
+    true
+}
+
+/// Which entity the gizmo is on, or -1.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_selected(editor: *mut Editor) -> c_int {
+    unsafe { borrow(editor) }.map_or(-1, |e| e.selected.map_or(-1, |i| i as c_int))
+}
+
+/// Which gizmo arm is under a point: 0 for X, 1 for Y, 2 for Z, -1 for none.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_gizmo_hover(
+    editor: *mut Editor,
+    x: c_uint,
+    y: c_uint,
+) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    let Some(origin) = editor.selected_origin() else {
+        return -1;
+    };
+    let (from, direction) = editor.ray(x, y);
+    gizmo::hit(&editor.camera, &editor.gizmo_style, origin, from, direction)
+        .map_or(-1, handle_index)
+}
+
+/// Grab whatever arm is under a point. Returns the arm, or -1 if none is.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_gizmo_begin(
+    editor: *mut Editor,
+    x: c_uint,
+    y: c_uint,
+) -> c_int {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return -1;
+    };
+    let Some(origin) = editor.selected_origin() else {
+        return -1;
+    };
+    let (from, direction) = editor.ray(x, y);
+    let Some(handle) = gizmo::hit(&editor.camera, &editor.gizmo_style, origin, from, direction)
+    else {
+        return -1;
+    };
+    editor.drag = Some(gizmo::begin(origin, handle, from, direction));
+    handle_index(handle)
+}
+
+/// Move the held arm to follow a point. Does nothing without a grab.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_gizmo_drag(
+    editor: *mut Editor,
+    x: c_uint,
+    y: c_uint,
+) -> bool {
+    let Some(editor) = (unsafe { borrow(editor) }) else {
+        return false;
+    };
+    let (Some(drag), Some(index)) = (editor.drag, editor.selected) else {
+        return false;
+    };
+    let (from, direction) = editor.ray(x, y);
+    let moved = gizmo::update(&drag, from, direction);
+
+    // The gizmo sits at the entity's world position, but what is edited is
+    // its local one. The difference is the parent's transform, and applying
+    // the move in world space without undoing it drags a child out of its
+    // parent by however much the parent is offset.
+    let parent = editor.parent_matrix(index);
+    let Some(desc) = nth_mut(&mut editor.scene, index) else {
+        return false;
+    };
+    let local = parent.inverse().transform_point3(moved);
+    desc.transform.position = local;
+    editor.respawn();
+    true
+}
+
+/// Let go. Safe to call without a grab.
+///
+/// # Safety
+/// `editor` must be null or a live handle.
+#[no_mangle]
+pub unsafe extern "C" fn runity_editor_gizmo_end(editor: *mut Editor) {
+    if let Some(editor) = unsafe { borrow(editor) } {
+        editor.drag = None;
+    }
+}
+
+fn handle_index(handle: Handle) -> c_int {
+    match handle {
+        Handle::X => 0,
+        Handle::Y => 1,
+        Handle::Z => 2,
+    }
+}
+
 /// The `index`th entity in the flattened scene, mutably.
 fn nth_mut(scene: &mut Scene, index: usize) -> Option<&mut runity::EntityDesc> {
     fn walk<'a>(
@@ -506,14 +669,36 @@ impl Editor {
         });
     }
 
-    fn pick(&self, x: u32, y: u32) -> Option<usize> {
+    /// The world ray through a pixel.
+    fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
         let (width, height) = (self.target.width as f32, self.target.height as f32);
         let ndc_x = (x as f32 + 0.5) / width * 2.0 - 1.0;
         let ndc_y = 1.0 - (y as f32 + 0.5) / height * 2.0;
         let inverse = self.camera.view_projection(width / height).inverse();
         let near = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
         let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
-        let direction = (far - near).normalize_or_zero();
+        (near, (far - near).normalize_or_zero())
+    }
+
+    /// Where the gizmo sits: the selected entity's world position.
+    fn selected_origin(&self) -> Option<Vec3> {
+        let index = self.selected?;
+        let flat = self.scene.flatten();
+        let (_, world) = flat.get(index)?;
+        Some(world.w_axis.truncate())
+    }
+
+    /// The transform an entity's parents impose on it.
+    fn parent_matrix(&self, index: usize) -> Mat4 {
+        let flat = self.scene.flatten();
+        let Some((desc, world)) = flat.get(index) else {
+            return Mat4::IDENTITY;
+        };
+        *world * desc.transform.matrix().inverse()
+    }
+
+    fn pick(&self, x: u32, y: u32) -> Option<usize> {
+        let (near, direction) = self.ray(x, y);
 
         let mut best: Option<(f32, usize)> = None;
         for (index, (desc, world)) in self.scene.flatten().iter().enumerate() {
