@@ -59,6 +59,7 @@ pub mod spelling;
 pub mod strings;
 pub mod surface;
 pub mod time;
+pub mod timers;
 pub mod tuned;
 pub mod ui;
 pub mod ui_render;
