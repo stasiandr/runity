@@ -1372,3 +1372,94 @@ fn the_project_shows_pictures_of_models_and_prefabs() {
     );
     assert!(s.bottom_pictures_pending() == 0, "drawn");
 }
+
+/// Put `text` into the field with this name, in place of what it held, and
+/// press Enter.
+fn fill(s: &mut Studio, name: &str, text: &str) {
+    click(s, name);
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(s, text);
+    s.handle(&InputEvent::KeyDown(Key::Enter));
+    s.handle(&InputEvent::KeyUp(Key::Enter));
+    s.frame();
+}
+
+#[test]
+fn ui_builder_moves_and_edits_a_screen() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("ui/menu.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"(elements: [
+    (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("The Valley"), text_size: 40),
+    (id: "play", anchor: Center, at: (0, 0), size: (240, 48), kind: Button("Play")),
+])"#,
+    )
+    .unwrap();
+    let read = || -> runity::screen::Layout {
+        runity::ron::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap()
+    };
+
+    click(&mut s, "tab screens");
+    click(&mut s, "screen menu");
+    assert!(s.ui.find("element play").is_some(), "{}", s.ui.dump());
+
+    // A press on the button in the picture picks it; a drag moves it.
+    s.ui.paint();
+    let canvas = s.ui.rect(s.ui.find("screen canvas").unwrap());
+    let (cx, cy) = canvas.center();
+    s.handle(&InputEvent::MouseMoved { x: cx, y: cy });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    assert!(s.ui.find("screen field width").is_some(), "play picked");
+    let step = canvas.width / 1280.0;
+    s.handle(&InputEvent::MouseMoved {
+        x: cx + 10.0,
+        y: cy,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved {
+        x: cx + 100.0 * step,
+        y: cy + 20.0 * step,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let play = read()
+        .elements
+        .into_iter()
+        .find(|e| e.id == "play")
+        .unwrap();
+    assert!(
+        (play.at.0 - 100.0).abs() < 2.0,
+        "moved right: {:?}",
+        play.at
+    );
+    assert!((play.at.1 - 20.0).abs() < 2.0, "moved down: {:?}", play.at);
+
+    // Boxes write to the file; a bad kind does not.
+    fill(&mut s, "screen field width", "300");
+    fill(&mut s, "screen field id", "start");
+    let layout = read();
+    let start = layout.elements.iter().find(|e| e.id == "start").unwrap();
+    assert_eq!(start.size.0, 300.0);
+    click(&mut s, "anchor BottomRight");
+    let start = read()
+        .elements
+        .into_iter()
+        .find(|e| e.id == "start")
+        .unwrap();
+    assert_eq!(start.anchor, runity::screen::Anchor::BottomRight);
+    fill(&mut s, "screen field kind", "Nonsense(");
+    assert!(read().elements.iter().any(|e| e.id == "start"), "file kept");
+
+    // The list picks too.
+    click(&mut s, "element title");
+    assert!(s.ui.find("screen field text size").is_some());
+}

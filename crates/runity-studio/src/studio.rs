@@ -34,6 +34,7 @@ use crate::dock::{Docked, Docks, Panel};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
+use crate::screens::{self, Screens};
 use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
 
@@ -202,6 +203,7 @@ pub struct Studio {
     settings: Settings,
     profiler: Profiler,
     animation: Animation,
+    screens: Screens,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The sound device, opened the first time a sound is listened to, and
@@ -482,6 +484,8 @@ impl Studio {
         roots.insert(Panel::Profiler, profiler.root);
         let animation = Animation::new(&mut ui, lower);
         roots.insert(Panel::Animation, animation.root);
+        let screens = Screens::new(&mut ui, lower);
+        roots.insert(Panel::Screens, screens.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -509,6 +513,7 @@ impl Studio {
             settings,
             profiler,
             animation,
+            screens,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -841,6 +846,10 @@ impl Studio {
             }
             if self.docks.is_active(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_active(Panel::Screens) {
+                self.screens.update(&mut self.ui, &self.session);
+                self.screens.draw(&self.session);
             }
             if self.docks.is_active(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
@@ -1259,6 +1268,12 @@ impl Studio {
                 self.cam_registered = Some(size);
             }
         }
+        if self.screens.new_target {
+            if let Some(target) = self.screens.target() {
+                renderer.set_image(self.session.gpu(), screens::CANVAS, target.view());
+                self.screens.new_target = false;
+            }
+        }
         for (image, size, pixels) in self.pending_images.drain(..) {
             renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);
         }
@@ -1559,6 +1574,9 @@ impl Studio {
                 .event(&mut self.ui, &mut self.session, node, event, requests);
         } else if self.settings.owns(&self.ui, node) {
             self.settings
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.screens.owns(&self.ui, node) {
+            self.screens
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.animation.owns(&self.ui, node) {
             self.animation

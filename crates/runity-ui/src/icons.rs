@@ -64,12 +64,17 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("image", include_bytes!("../assets/icons/image.svg")),
     ("info", include_bytes!("../assets/icons/info.svg")),
     ("layers-2", include_bytes!("../assets/icons/layers-2.svg")),
+    (
+        "layout-dashboard",
+        include_bytes!("../assets/icons/layout-dashboard.svg"),
+    ),
     ("lightbulb", include_bytes!("../assets/icons/lightbulb.svg")),
     ("list-tree", include_bytes!("../assets/icons/list-tree.svg")),
     ("lock", include_bytes!("../assets/icons/lock.svg")),
     ("lock-open", include_bytes!("../assets/icons/lock-open.svg")),
     ("magnet", include_bytes!("../assets/icons/magnet.svg")),
     ("menu", include_bytes!("../assets/icons/menu.svg")),
+    ("minus", include_bytes!("../assets/icons/minus.svg")),
     ("mountain", include_bytes!("../assets/icons/mountain.svg")),
     (
         "mouse-pointer-2",
@@ -108,6 +113,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         "triangle-alert",
         include_bytes!("../assets/icons/triangle-alert.svg"),
     ),
+    ("type", include_bytes!("../assets/icons/type.svg")),
     ("undo-2", include_bytes!("../assets/icons/undo-2.svg")),
     (
         "wand-sparkles",
