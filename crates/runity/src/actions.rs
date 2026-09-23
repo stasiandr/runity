@@ -65,6 +65,8 @@ pub struct Actions {
     pub map: ActionMap,
     path: Option<PathBuf>,
     stamp: Option<SystemTime>,
+    /// A player's own bindings, laid over the project's after every reload.
+    player: Option<PathBuf>,
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -77,6 +79,7 @@ impl Actions {
             map,
             path: None,
             stamp: None,
+            player: None,
         }
     }
 
@@ -90,6 +93,7 @@ impl Actions {
             map,
             stamp: modified(&path),
             path: Some(path),
+            player: None,
         })
     }
 
@@ -106,7 +110,10 @@ impl Actions {
         Some(match Self::load(&path) {
             Ok(fresh) => {
                 self.map = fresh.map;
-                Ok(())
+                match self.player.clone() {
+                    Some(player) => self.lay_over(&player),
+                    None => Ok(()),
+                }
             }
             Err(e) => Err(format!("{e:#}")),
         })
@@ -162,6 +169,74 @@ impl Actions {
             )
     }
 
+    /// Whatever the player pressed this frame, as a binding: "press the
+    /// key for Jump". Escape is not offered — it is how a player backs out
+    /// of choosing — and nothing is, on a frame with more than one press.
+    pub fn listen(input: &Input) -> Option<Binding> {
+        let mut found = input
+            .pressed_keys()
+            .filter(|k| *k != Key::Escape)
+            .map(Binding::Key)
+            .chain(input.pressed_buttons().map(Binding::Mouse))
+            .chain(input.pressed_pad_buttons().map(Binding::Pad));
+        let first = found.next()?;
+        found.next().is_none().then_some(first)
+    }
+
+    /// Put `binding` on `action` in place of the one at `slot` (or add it
+    /// when there are fewer), and take it off any other action that had it
+    /// — one key, one action. Returns the actions it was taken from.
+    pub fn rebind(&mut self, action: &str, slot: usize, binding: Binding) -> Vec<String> {
+        let mut taken = Vec::new();
+        for (name, bindings) in self.map.actions.iter_mut() {
+            if name != action && bindings.contains(&binding) {
+                bindings.retain(|b| *b != binding);
+                taken.push(name.clone());
+            }
+        }
+        let bindings = self.map.actions.entry(action.to_string()).or_default();
+        bindings.retain(|b| *b != binding);
+        if slot < bindings.len() {
+            bindings[slot] = binding;
+        } else {
+            bindings.push(binding);
+        }
+        taken
+    }
+
+    /// Write the bindings as a player's own file — beside their saves, not
+    /// the project's `input.ron`, which stays the defaults.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let text = ron::ser::to_string_pretty(&self.map, ron::ser::PrettyConfig::new())
+            .map_err(|e| e.to_string())?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The project's bindings with a player's file over them: every action
+    /// the player's file names is theirs, the rest — new ones a patch
+    /// added included — the project's. No player file is no change.
+    pub fn with_player(mut self, path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref().to_path_buf();
+        self.lay_over(&path)?;
+        self.player = Some(path);
+        Ok(self)
+    }
+
+    fn lay_over(&mut self, path: &Path) -> Result<(), String> {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Ok(());
+        };
+        let theirs: ActionMap =
+            ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
+        self.map.actions.extend(theirs.actions);
+        self.map.axes.extend(theirs.axes);
+        Ok(())
+    }
+
     /// The names the game asks for that the file does not define, each with
     /// the closest one it does: call it once at start, and a typo is a
     /// sentence rather than a key that silently does nothing.
@@ -201,6 +276,47 @@ fn held(input: &Input, binding: Binding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_player_rebinds_a_key_and_it_is_theirs_over_the_project() {
+        use crate::input::InputEvent;
+        let dir = std::env::temp_dir().join("runity-rebind");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("input.ron");
+        std::fs::write(
+            &project,
+            r#"(actions: { "jump": [Key(Space)], "fire": [Key(F)], "quit": [Key(Escape)] })"#,
+        )
+        .unwrap();
+        let mut actions = Actions::load(&project).unwrap();
+
+        // "Press the key for Jump": F, which Fire had.
+        let mut input = Input::new();
+        input.handle(&InputEvent::KeyDown(Key::F));
+        let pressed = Actions::listen(&input).unwrap();
+        assert_eq!(pressed, Binding::Key(Key::F));
+        assert_eq!(actions.rebind("jump", 0, pressed), ["fire"]);
+        assert_eq!(actions.map.actions["jump"], [Binding::Key(Key::F)]);
+        assert!(actions.map.actions["fire"].is_empty());
+        input.begin_frame();
+        input.handle(&InputEvent::KeyDown(Key::Escape));
+        assert_eq!(Actions::listen(&input), None, "Escape backs out");
+
+        // Saved as the player's, laid over the project's next time.
+        let player = dir.join("player/bindings.ron");
+        actions.save(&player).unwrap();
+        let again = Actions::load(&project)
+            .unwrap()
+            .with_player(&player)
+            .unwrap();
+        assert_eq!(again.map.actions["jump"], [Binding::Key(Key::F)]);
+        assert_eq!(again.map.actions["quit"], [Binding::Key(Key::Escape)]);
+        assert!(Actions::load(&project)
+            .unwrap()
+            .with_player(dir.join("none.ron"))
+            .is_ok());
+    }
     use crate::input::InputEvent;
 
     const FILE: &str = r#"(

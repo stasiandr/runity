@@ -315,6 +315,18 @@ impl Input {
         }
     }
 
+    /// Keys that went down this frame, mouse buttons and pad buttons —
+    /// what "press the key for Jump" waits for.
+    pub fn pressed_keys(&self) -> impl Iterator<Item = Key> + '_ {
+        self.pressed.iter().copied()
+    }
+    pub fn pressed_buttons(&self) -> impl Iterator<Item = MouseButton> + '_ {
+        self.buttons_pressed.iter().copied()
+    }
+    pub fn pressed_pad_buttons(&self) -> impl Iterator<Item = PadButton> + '_ {
+        self.pad_pressed.iter().copied()
+    }
+
     pub fn held(&self, key: Key) -> bool {
         self.held.contains(&key)
     }
