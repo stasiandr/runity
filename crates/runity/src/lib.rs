@@ -84,7 +84,7 @@ pub use audio::{Audio, Falloff};
 pub use edit::History;
 pub use gizmo::{Drag, GizmoStyle, Handle};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
-pub use id::EntityId;
+pub use id::{EntityId, EntityRef};
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would

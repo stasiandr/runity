@@ -1388,6 +1388,15 @@ impl Session {
             });
         }
 
+        for link in self.instanced.scene.broken_links() {
+            out.push(Diagnostic {
+                entity: Some(link.holder),
+                message: format!(
+                    "`{}` ({}): `{}` links to {}, which is not in the scene",
+                    link.holder_name, link.holder, link.component, link.target
+                ),
+            });
+        }
         let models = names_of(AssetKind::Mesh);
         let materials = names_of(AssetKind::Material);
         let components = self.project.as_ref().and_then(|p| p.component_names());

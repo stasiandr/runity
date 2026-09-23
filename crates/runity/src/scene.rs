@@ -1122,7 +1122,42 @@ pub struct Scene {
     pub entities: Vec<EntityDesc>,
 }
 
+/// A component's link to an entity the scene does not have.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrokenLink {
+    /// Who holds the link, by id and name, and in which component.
+    pub holder: EntityId,
+    pub holder_name: String,
+    pub component: String,
+    /// The entity it names.
+    pub target: EntityId,
+}
+
 impl Scene {
+    /// Every [`crate::EntityRef`] in a component whose entity is not in the
+    /// scene. Asked of an expanded scene, so that a link to a part of a
+    /// prefab instance counts as there.
+    pub fn broken_links(&self) -> Vec<BrokenLink> {
+        let all = self.flatten();
+        let ids: std::collections::HashSet<EntityId> = all.iter().map(|(e, _)| e.id).collect();
+        let mut out = Vec::new();
+        for (desc, _) in &all {
+            for (component, value) in &desc.components {
+                for target in crate::EntityRef::find_in(value.get_ron()) {
+                    if !ids.contains(&target) {
+                        out.push(BrokenLink {
+                            holder: desc.id,
+                            holder_name: desc.name.clone(),
+                            component: component.clone(),
+                            target,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Every entity in the scene, roots and descendants alike, each with the
     /// world transform its ancestors give it.
     ///

@@ -32,6 +32,9 @@ pub enum Shape {
     Enum(Vec<String>),
     /// Serde asks nothing that says: raw RON, a value of any shape.
     Any,
+    /// A link to another entity of the scene ([`crate::EntityRef`]): what
+    /// an editor shows as a picker.
+    Entity,
 }
 
 /// The shape of `T`.
@@ -75,6 +78,7 @@ impl Shape {
                     .join(", ")
             ),
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
+            Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
         }
     }
 
@@ -103,7 +107,7 @@ impl Shape {
             out.push(format!("{here} is {wanted}, not {}", describe(value)))
         };
         match (self, value) {
-            (Shape::Any | Shape::Enum(_), _) => {}
+            (Shape::Any | Shape::Enum(_) | Shape::Entity, _) => {}
             (Shape::Bool, V::Bool(_)) => {}
             (Shape::Bool, _) => wrong(out, "true or false"),
             (Shape::Int, V::Number(n)) if n.into_f64().fract() == 0.0 => {}
@@ -187,6 +191,7 @@ impl fmt::Display for Shape {
                 write!(f, "({})", fields.join(", "))
             }
             Shape::Enum(variants) => write!(f, "{}", variants.join(" | ")),
+            Shape::Entity => write!(f, "entity"),
         }
     }
 }
@@ -286,10 +291,19 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
 
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Stop> {
-        visitor.visit_newtype_struct(self)
+        let Tracer { out, depth } = self;
+        let value = visitor.visit_newtype_struct(Tracer {
+            out: &mut *out,
+            depth,
+        });
+        // A link to an entity is text inside; what it means is its name.
+        if name == crate::EntityRef::NAME {
+            *out = Shape::Entity;
+        }
+        value
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
@@ -529,6 +543,24 @@ mod tests {
     enum Kind {
         Wood,
         Iron { weight: f32 },
+    }
+
+    #[test]
+    fn a_link_to_an_entity_is_its_own_shape() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Door {
+            switch: crate::EntityRef,
+            open: bool,
+        }
+        let Shape::Struct(fields) = of::<Door>() else {
+            panic!("a struct")
+        };
+        assert_eq!(fields[0], ("switch".to_string(), Shape::Entity));
+        assert_eq!(fields[1].1, Shape::Bool);
+        assert_eq!(Shape::Entity.example(), r#"EntityRef("")"#);
+        let example: crate::EntityRef = ron::from_str(&Shape::Entity.example()).unwrap();
+        assert_eq!(example, crate::EntityRef(None));
     }
 
     #[test]

@@ -291,7 +291,17 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
     for path in files(&project.scenes(), "ron") {
         let file = relative(project, &path);
         if let Ok(scene) = Scene::load(&path) {
-            report(&file, runity::instantiate(&scene, &prefabs), out);
+            let done = runity::instantiate(&scene, &prefabs);
+            for link in done.scene.broken_links() {
+                out.push(error(
+                    &file,
+                    format!(
+                        "`{}` ({}): `{}` links to {}, which is not in the scene",
+                        link.holder_name, link.holder, link.component, link.target
+                    ),
+                ));
+            }
+            report(&file, done, out);
         }
     }
 }

@@ -1825,3 +1825,63 @@ fn a_panel_floats_in_a_window_of_its_own_and_docks_back() {
     assert!(s.ui.find("tab inspector").is_some());
     assert!(s.ui.find("float inspector").is_none());
 }
+
+#[test]
+fn an_entity_field_is_picked_from_the_scene_and_a_gone_target_is_named() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The game says it has a door that names its switch.
+    let shapes: std::collections::BTreeMap<String, runity::shape::Shape> = [(
+        "door".to_string(),
+        runity::shape::Shape::Struct(vec![
+            ("switch".into(), runity::shape::Shape::Entity),
+            ("open".into(), runity::shape::Shape::Bool),
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::create_dir_all(dir.join(runity::project::SHAPES).parent().unwrap()).unwrap();
+    std::fs::write(
+        dir.join(runity::project::SHAPES),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    let crate_ = s.session.find("crate").unwrap();
+    s.session.add_component(boulder, "door").unwrap();
+    click(&mut s, "line boulder");
+    let picker = s.ui.find("door switch").unwrap();
+    let label = s.ui.children(picker)[1];
+    assert_eq!(s.ui.text(label), Some("None (entity)"));
+
+    // The picker lists the scene; crate is chosen.
+    click(&mut s, "door switch");
+    click(&mut s, "menu crate");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.door")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(&format!("EntityRef(\"{crate_}\")")),
+        "{value}"
+    );
+    let picker = s.ui.find("door switch").unwrap();
+    let label = s.ui.children(picker)[1];
+    assert_eq!(s.ui.text(label), Some("crate"));
+
+    // Its target deleted: the link is named as broken.
+    s.session.delete(crate_).unwrap();
+    assert!(
+        s.session
+            .problems()
+            .iter()
+            .any(|p| p.message.contains("`door` links to")),
+        "{:?}",
+        s.session.problems()
+    );
+}

@@ -120,6 +120,8 @@ enum SubKind {
     Number,
     Text,
     Enum(Vec<String>),
+    /// A link to another entity: a picker, as Unity's object field.
+    Entity,
     Raw,
 }
 
@@ -489,7 +491,7 @@ impl Inspector {
             }
             self.heading(ui, name);
             for f in group {
-                self.line(ui, f);
+                self.line(ui, session, f);
                 if f.name == "material" && f.value != MIXED {
                     if let Some(m) = session.material(ids[0]) {
                         self.color_editor(ui, m.base_color);
@@ -623,8 +625,8 @@ impl Inspector {
     }
 
     /// One field: its label (with the override dot) and its boxes.
-    fn line(&mut self, ui: &mut Ui, f: &Field) {
-        if self.component_form(ui, f) {
+    fn line(&mut self, ui: &mut Ui, session: &Session, f: &Field) {
+        if self.component_form(ui, session, f) {
             return;
         }
         let line = ui.add(
@@ -731,7 +733,7 @@ impl Inspector {
     /// A game component laid out by its shape: a line per field, each with
     /// the box its type wants. `false` when there is no shape to go by —
     /// the component is then one line of RON, as before.
-    fn component_form(&mut self, ui: &mut Ui, f: &Field) -> bool {
+    fn component_form(&mut self, ui: &mut Ui, session: &Session, f: &Field) -> bool {
         use runity::shape::Shape;
         let Some(component) = f.name.strip_prefix("components.") else {
             return false;
@@ -795,6 +797,7 @@ impl Inspector {
                 Shape::Int | Shape::Float => SubKind::Number,
                 Shape::Text => SubKind::Text,
                 Shape::Enum(variants) => SubKind::Enum(variants.clone()),
+                Shape::Entity => SubKind::Entity,
                 _ => SubKind::Raw,
             };
             let node = match &sub {
@@ -839,6 +842,46 @@ impl Inspector {
                             .hover(HOVER),
                     );
                     ui.add_text(pick, text().fill(), &value);
+                    icon(ui, pick, "chevron-down", MUTED);
+                    pick
+                }
+                SubKind::Entity => {
+                    // The linked entity by name, or None; a menu to pick.
+                    let target = runity::EntityRef::find_in(&value).first().copied();
+                    let (label, known) = match target {
+                        Some(id) => match session.entity_name(id) {
+                            Some(name) => (name, true),
+                            None => (format!("missing {id}"), false),
+                        },
+                        None => ("None (entity)".to_string(), true),
+                    };
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .fill()
+                            .height(22.0)
+                            .padding_x(6.0)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, if known { DIVIDER } else { ERROR })
+                            .hover(HOVER)
+                            .clickable(),
+                    );
+                    icon(
+                        ui,
+                        pick,
+                        "crosshair",
+                        if target.is_some() { ACCENT } else { MUTED },
+                    );
+                    ui.add_text(
+                        pick,
+                        text()
+                            .fill()
+                            .nowrap()
+                            .text_color(if known { TEXT } else { ERROR }),
+                        &label,
+                    );
                     icon(ui, pick, "chevron-down", MUTED);
                     pick
                 }
@@ -1411,6 +1454,38 @@ impl Inspector {
             ) => {
                 self.set_sub(session, &component, &key, if on { "false" } else { "true" });
                 requests.refresh = true;
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Entity,
+                },
+                Event::Click { .. },
+            ) => {
+                // Unity's object picker: None, then every entity of the
+                // scene but the ones being edited, by the hierarchy's order.
+                let link = |id: Option<runity::EntityId>| {
+                    let value = format!(
+                        "{}({:?})",
+                        runity::EntityRef::NAME,
+                        id.map(|id| id.to_string()).unwrap_or_default()
+                    );
+                    Action::SetSub(component.clone(), key.clone(), value)
+                };
+                let mut items = vec![MenuItem::new("None", link(None)), MenuItem::separator()];
+                for row in session.hierarchy() {
+                    if self.showing.contains(&row.id) {
+                        continue;
+                    }
+                    let indent = "  ".repeat(row.depth);
+                    items.push(MenuItem::new(
+                        &format!("{indent}{}", row.name),
+                        link(Some(row.id)),
+                    ));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x, r.y + r.height));
             }
             (
                 Part::Sub {
