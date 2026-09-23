@@ -291,7 +291,22 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
 
     let mut shaders: std::collections::BTreeMap<String, PathBuf> = Default::default();
     for (guid, path) in unity.of_kind("material") {
-        match material::convert(&unity, path) {
+        // A shader's parameters, from the one written again if there is
+        // one, else the project's own.
+        let declared = |name: &str| {
+            let file = format!("{name}.wgsl");
+            options
+                .shaders
+                .iter()
+                .map(|d| d.join(&file))
+                .chain(std::iter::once(
+                    project.root().join(runity::project::SHADERS).join(&file),
+                ))
+                .find_map(|p| std::fs::read_to_string(p).ok())
+                .map(|t| material::declared_params(&t))
+                .unwrap_or_default()
+        };
+        match material::convert_with(&unity, path, &declared) {
             Ok(text) => {
                 let name = &unity.names[guid];
                 write(&project.materials().join(format!("{name}.rmat")), &text)?;

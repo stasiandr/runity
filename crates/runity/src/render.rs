@@ -708,6 +708,8 @@ struct InstanceRaw {
     uv: [f32; 4],
     /// Normal scale, occlusion strength.
     detail: [f32; 4],
+    /// The material's own numbers, for its shader.
+    params: [[f32; 4]; 2],
 }
 
 /// Bits of [`InstanceRaw::emission`]'s `w`.
@@ -766,6 +768,20 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
             material.occlusion_strength.clamp(0.0, 1.0),
             0.0,
             0.0,
+        ],
+        params: [
+            [
+                material.params[0],
+                material.params[1],
+                material.params[2],
+                material.params[3],
+            ],
+            [
+                material.params[4],
+                material.params[5],
+                material.params[6],
+                material.params[7],
+            ],
         ],
     }
 }
@@ -1162,9 +1178,10 @@ struct Layouts<'a> {
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
     3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-    7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4
+    7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4,
+    14 => Float32x4, 15 => Float32x4
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];

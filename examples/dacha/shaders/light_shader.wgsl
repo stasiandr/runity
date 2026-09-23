@@ -1,6 +1,7 @@
 // From Assets/Content/Art/Materials/Light_Shader.shadergraph (URP Sprite
-// Unlit, alpha blended, both faces). Values from M_Light.mat (M_Light 1.mat
-// has _Alpha 0.3 and _Color_Int 0.3).
+// Unlit, alpha blended, both faces). Values from M_Light.mat; _Color_Int
+// and _Alpha come from the material (M_Light 1 has 0.3 and 0.3).
+// runity:params _Color_Int _Alpha
 //
 // A fake light beam: _Color x _Color_Int, with alpha = streaks from
 // T_SunLines_M x _Alpha, minus a second, stretched copy of the same streaks
@@ -11,8 +12,6 @@
 // the material is made transparent the alpha has no effect.
 
 const LIGHT_COLOR: vec3<f32> = vec3<f32>(1.0, 0.6444, 0.4126);
-const LIGHT_COLOR_INT: f32 = 3.4;
-const LIGHT_ALPHA: f32 = 0.6;
 const LIGHT_TILING: vec2<f32> = vec2<f32>(0.67, 0.37);
 const LIGHT_SPEED: f32 = 0.01;
 
@@ -45,12 +44,12 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
     // Unity's v runs up the texture; runity's runs down.
     let uv = vec2<f32>(in.uv.x, 1.0 - in.uv.y);
-    let beam = light_sunlines(uv) * LIGHT_ALPHA;
+    let beam = light_sunlines(uv) * in.params[0].y;
     let moving = light_sunlines(uv * LIGHT_TILING + vec2<f32>(0.0, LIGHT_SPEED * in.time));
     o.albedo = vec3<f32>(0.0);
     o.metallic = 0.0;
     o.smoothness = 0.0;
-    o.emission = LIGHT_COLOR * LIGHT_COLOR_INT;
+    o.emission = LIGHT_COLOR * in.params[0].x;
     o.alpha = clamp(beam - moving, 0.0, 1.0);
     return o;
 }

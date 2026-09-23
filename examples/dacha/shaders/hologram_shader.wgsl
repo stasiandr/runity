@@ -1,22 +1,23 @@
 // From Assets/Content/Art/Materials/Hologram_Shader.shadergraph (URP Unlit,
-// transparent, both faces). Values from M_Hologram_01.mat.
+// transparent, both faces). _Color (sRGB), the Fresnel power and the two
+// line sets' strengths and speeds come from the material.
+// runity:params _Color.r _Color.g _Color.b _Fresnel_int _Int_Small_Lines _Int_Big_Lines _Speed_Small_Lines _Speed_Big_Lines
 //
 // The original glows in _Color by a Fresnel term and fades its alpha with a
 // vertical gradient, minus fine scrolling noise lines, plus bright scrolling
 // bands sampled from T_SunLines_M, all flickering with sin(2t) and noise.
 //
 // This port: the T_SunLines_M bands are procedural stripes; the optional
-// _Mask / _Blink texture branch (off in M_Hologram_01) is left out; the
-// colour goes to emission over a black albedo since runity lights the
-// surface. The M_Hologram_01 .mat says _Surface: 0, so unless the material
+// _Mask / _Blink texture branch (used by M_Eyes and M_Hologram_Selection)
+// is left out; the colour goes to emission over a black albedo since runity
+// lights the surface. The M_Hologram_01 .mat says _Surface: 0, so unless the material
 // is made transparent the alpha has no effect.
 
-const HOLOGRAM_COLOR: vec3<f32> = vec3<f32>(0.0, 0.8563, 0.1584);
-const HOLOGRAM_FRESNEL_POWER: f32 = 0.35;
-const HOLOGRAM_SPEED_SMALL: f32 = 0.21;
-const HOLOGRAM_SPEED_BIG: f32 = 0.25;
-const HOLOGRAM_INT_SMALL: f32 = 0.14;
-const HOLOGRAM_INT_BIG: f32 = 3.0;
+fn hologram_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
+}
 
 fn hologram_hash(p: vec2<f32>) -> f32 {
     let q = vec2<u32>(vec2<i32>(floor(p)) + vec2<i32>(32768));
@@ -80,12 +81,12 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     // Unity's v runs up the texture; runity's runs down.
     let v = 1.0 - in.uv.y;
     let view = normalize(frame.camera_position.xyz - in.world_position);
-    let fresnel = pow(1.0 - clamp(dot(normalize(in.normal), view), 0.0, 1.0), HOLOGRAM_FRESNEL_POWER);
+    let fresnel = pow(1.0 - clamp(dot(normalize(in.normal), view), 0.0, 1.0), in.params[0].w);
 
-    let small_g = v + HOLOGRAM_SPEED_SMALL * t;
-    let small = hologram_noise(vec2<f32>(small_g), 500.0) * HOLOGRAM_INT_SMALL;
-    let big_g = v + HOLOGRAM_SPEED_BIG * t;
-    let big = hologram_sunlines(big_g) * HOLOGRAM_INT_BIG;
+    let small_g = v + in.params[1].z * t;
+    let small = hologram_noise(vec2<f32>(small_g), 500.0) * in.params[1].x;
+    let big_g = v + in.params[1].w * t;
+    let big = hologram_sunlines(big_g) * in.params[1].y;
     let lines = clamp(hologram_gradient(v) * fresnel - (small - big), 0.0, 1.0);
 
     let pulse = clamp(sin(t * 2.0), 0.0, 1.0) + 0.8;
@@ -94,7 +95,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     o.albedo = vec3<f32>(0.0);
     o.metallic = 0.0;
     o.smoothness = 0.0;
-    o.emission = HOLOGRAM_COLOR * fresnel;
+    o.emission = hologram_srgb_to_linear(in.params[0].xyz) * fresnel;
     o.alpha = lines * flicker;
     return o;
 }

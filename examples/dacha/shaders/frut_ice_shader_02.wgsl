@@ -1,6 +1,7 @@
 // From Assets/Content/Art/Materials/Frut_Ice_Shader_02.shadergraph, values
-// from MI_Frut_Ice_02.mat (M_Water_01.mat uses it too, with _Ice_Int 0.2 and a
-// paler _Ice_Color).
+// from MI_Frut_Ice_02.mat; _Ice_Int and _Ice_Color come from the material
+// (M_Water_01.mat uses it too). The colour is used as written, as before.
+// runity:params _Ice_Int _Ice_Color.r _Ice_Color.g _Ice_Color.b
 //
 // The original is an unlit transparent graph: alpha is a frost texture
 // (T_Freeze__01_M) plus _Ice_Int; colour is _Ice_Color plus glints where a
@@ -15,8 +16,6 @@
 // colour in `emission`. MI_Frut_Ice_02.mat has no _Surface, so the importer
 // may bring it in as opaque and ignore `alpha`.
 
-const FRUT_ICE_SHADER_02_ICE_COLOR = vec3<f32>(0.30113026, 0.7535945, 0.95283014);
-const FRUT_ICE_SHADER_02_ICE_INT = 0.0;
 const FRUT_ICE_SHADER_02_ICE_TILING = 1.0;
 const FRUT_ICE_SHADER_02_FAR = 1000.0;
 const FRUT_ICE_SHADER_02_GLIMMER_TEXELS = 512.0;
@@ -64,7 +63,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
 
     let frost = frut_ice_shader_02_frost(in.uv * FRUT_ICE_SHADER_02_ICE_TILING);
-    o.alpha = clamp(frost + FRUT_ICE_SHADER_02_ICE_INT, 0.0, 1.0);
+    o.alpha = clamp(frost + in.params[0].x, 0.0, 1.0);
 
     // Glimmer in UV: step(1, r * 3).
     let uv_dot = frut_ice_shader_02_hash(floor(in.uv * FRUT_ICE_SHADER_02_GLIMMER_TEXELS));
@@ -80,7 +79,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let midpoint = pow(0.5, 2.2);
     let near_fade = max(1.0 - ((depth01 * 100.0 - midpoint) * 100.0 + midpoint), 0.0);
 
-    let color = FRUT_ICE_SHADER_02_ICE_COLOR + vec3<f32>(uv_glint * screen_glint * near_fade);
+    let color = in.params[0].yzw + vec3<f32>(uv_glint * screen_glint * near_fade);
     o.albedo = vec3<f32>(0.0);
     o.metallic = 0.0;
     o.smoothness = 0.0;

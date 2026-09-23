@@ -1,7 +1,9 @@
 // From Assets/Content/Art/Materials/Return_To_Shader_01.shadergraph (URP
 // Unlit, transparent, both faces). Values from the M_Return.mat in
-// _Incoming/Tools/SexyMouseTrap (the one the prefab uses; the M_Return.mat
+// _Incoming/Tools/SexyMouseTrap (the one the prefab uses); _ALL_INT,
+// _Lines_Int and _Speed_Lines_Roll come from the material (the M_Return.mat
 // in Art/Materials has _ALL_INT 0 and draws nothing).
+// runity:params _ALL_INT _Lines_Int _Speed_Lines_Roll
 //
 // A "rewind" overlay: the scene behind, read with a noise-jittered screen
 // position and made grey, darkened towards the edges, with faint posterized
@@ -13,9 +15,6 @@
 // mouse head (a disc and two ears). The .mat says _Surface: 0, so unless
 // the material is made transparent the alpha has no effect.
 
-const RETURN_TO_ALL_INT: f32 = 0.3;
-const RETURN_TO_LINES_INT: f32 = 0.1;
-const RETURN_TO_SPEED_LINES_ROLL: f32 = -0.3;
 const RETURN_TO_SCENE_GREY: f32 = 0.5;
 const RETURN_TO_POSTERIZE: vec3<f32> = vec3<f32>(5.95, 36.42, 4.0);
 
@@ -72,14 +71,14 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let r = length(vec2<f32>(in.uv.x, v) - vec2<f32>(0.5));
     let back = vec3<f32>(RETURN_TO_SCENE_GREY) * return_to_contrast(r, -0.48);
 
-    let g = v + v * 2.0 + RETURN_TO_SPEED_LINES_ROLL * in.time;
+    let g = v + v * 2.0 + in.params[0].z * in.time;
     let n = return_to_noise(vec2<f32>(g), 150.0);
     let lines = floor(vec3<f32>(n) * RETURN_TO_POSTERIZE) / RETURN_TO_POSTERIZE;
 
     o.albedo = vec3<f32>(0.0);
     o.metallic = 0.0;
     o.smoothness = 0.0;
-    o.emission = mix(back, lines, RETURN_TO_LINES_INT);
-    o.alpha = clamp(RETURN_TO_ALL_INT * return_to_mask(in.uv), 0.0, 1.0);
+    o.emission = mix(back, lines, in.params[0].y);
+    o.alpha = clamp(in.params[0].x * return_to_mask(in.uv), 0.0, 1.0);
     return o;
 }

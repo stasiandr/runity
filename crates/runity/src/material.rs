@@ -200,6 +200,10 @@ pub struct Material {
     /// before it is lit. `None` is the standard one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shader: Option<crate::asset::AssetId>,
+    /// Eight numbers of its own for its shader to read (`in.params`): what
+    /// makes two materials on one shader different — a speed, a tint.
+    #[serde(default, skip_serializing_if = "is_zeros")]
+    pub params: [f32; 8],
     /// How strongly the normal map bends the surface.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub normal_scale: f32,
@@ -221,6 +225,10 @@ fn is_no_tiling(t: &[f32; 2]) -> bool {
 }
 fn is_no_offset(o: &[f32; 2]) -> bool {
     *o == [0.0, 0.0]
+}
+
+fn is_zeros(v: &[f32; 8]) -> bool {
+    v.iter().all(|x| *x == 0.0)
 }
 
 fn is_zero(x: &f32) -> bool {
@@ -272,6 +280,7 @@ impl Material {
             mask_map: None,
             emission_map: None,
             shader: None,
+            params: [0.0; 8],
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             tiling: [1.0, 1.0],
@@ -370,6 +379,7 @@ impl From<&ArchivedMaterial> for Material {
                 .as_ref()
                 .map(crate::asset::AssetId::from),
             shader: archived.shader.as_ref().map(crate::asset::AssetId::from),
+            params: std::array::from_fn(|i| archived.params[i].to_native()),
             normal_scale: archived.normal_scale.to_native(),
             occlusion_strength: archived.occlusion_strength.to_native(),
             tiling: [

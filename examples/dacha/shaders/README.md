@@ -16,6 +16,6 @@ Not here yet: `mirror` (a camera's picture: `render_texture`), `outline`
 (a second pass), the screen and UI ones (`screen_*`, `ui_*`: overlays, not
 surfaces) and TextMesh Pro's.
 
-Where a shader is shared by materials with different settings, the file
-has one material's numbers: materials have no parameters of their own for
-a shader to read yet.
+Where a shader is shared by materials with different settings, the values
+that differ come from each material: the file's `// runity:params` line
+names them and the importer fills them in from each `.mat`.

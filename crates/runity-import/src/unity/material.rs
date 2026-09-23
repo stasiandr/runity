@@ -257,7 +257,57 @@ pub fn shader_stub(unity: &Unity, name: &str, path: &Path) -> String {
 
 /// A `.mat` as the text of a `.rmat`: what URP Lit says, with the rest of
 /// a custom shader's colour carried as far as it goes.
+/// What a shader's `// runity:params` line says its eight numbers are:
+/// Unity property names, `_Speed`, or a colour's channel, `_Tint.r`.
+pub fn declared_params(shader: &str) -> Vec<String> {
+    shader
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("// runity:params"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .take(8)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A `.mat`'s values for those names: floats as they are, colour channels
+/// as written (sRGB for a colour property); 0 for one it does not set.
+fn param_values(m: &Yaml, names: &[String]) -> Vec<f32> {
+    names
+        .iter()
+        .map(|name| match name.rsplit_once('.') {
+            Some((property, channel)) if matches!(channel, "r" | "g" | "b" | "a") => {
+                color(m, property)
+                    .map(|c| {
+                        c[match channel {
+                            "r" => 0,
+                            "g" => 1,
+                            "b" => 2,
+                            _ => 3,
+                        }]
+                    })
+                    .unwrap_or(0.0)
+            }
+            _ => float(m, name).unwrap_or(0.0),
+        })
+        .collect()
+}
+
+/// [`convert_with`] for a shader that declares no parameters.
+#[cfg(test)]
 pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
+    convert_with(unity, path, &|_| Vec::new())
+}
+
+/// A `.mat` as the text of a `.rmat`; `params` says, for a shader name,
+/// which of the material's values its eight numbers are.
+pub fn convert_with(
+    unity: &Unity,
+    path: &Path,
+    params: &dyn Fn(&str) -> Vec<String>,
+) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let doc = yaml::documents(&text)
         .into_iter()
@@ -361,6 +411,14 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
     }
     if let Some((name, path)) = &own {
         fields.push(format!("shader: {name:?}"));
+        let names = params(name);
+        if !names.is_empty() {
+            let values: Vec<String> = param_values(m, &names)
+                .into_iter()
+                .map(|v| format!("{v}"))
+                .collect();
+            fields.push(format!("params: [{}]", values.join(", ")));
+        }
         // What the shader itself says about how it is drawn, where the
         // material's own settings are silent (a graph forces them).
         let look = shader_look(path);
@@ -423,6 +481,24 @@ Material:
     - _BaseColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
     - _EmissionColor: {r: 2, g: 1, b: 0, a: 1}
 ";
+
+    #[test]
+    fn a_shaders_declared_params_are_filled_from_the_material() {
+        assert_eq!(
+            declared_params(
+                "// Light.\n// runity:params _Metallic _BaseColor.r _Nothing\nfn surface() {}"
+            ),
+            ["_Metallic", "_BaseColor.r", "_Nothing"]
+        );
+        let doc = yaml::documents(MAT)
+            .into_iter()
+            .find(|d| d.kind == "Material")
+            .unwrap();
+        let names: Vec<String> = ["_Metallic", "_EmissionColor.g", "_Nothing"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(param_values(&doc.body, &names), [0.1, 1.0, 0.0]);
+    }
 
     #[test]
     fn a_custom_shader_says_how_it_is_drawn() {

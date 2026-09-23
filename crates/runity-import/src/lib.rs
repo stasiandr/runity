@@ -870,6 +870,10 @@ pub struct MaterialSource {
     /// function over the standard one. Empty is the standard one.
     #[serde(default)]
     pub shader: String,
+    /// Up to eight numbers for its shader (`in.params`), in the order its
+    /// `// runity:params` line names them.
+    #[serde(default)]
+    pub params: Vec<f32>,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1210,6 +1214,7 @@ pub fn material_from_ron(
             mask_map: texture_id(path, &source.mask_map, true)?,
             emission_map: texture_id(path, &source.emission_map, false)?,
             shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
+            params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,

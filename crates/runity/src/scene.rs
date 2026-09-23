@@ -1115,6 +1115,9 @@ impl EntityDesc {
 /// Not an `Option`: RON wants `Some(...)` spelled out around an optional
 /// field, and `material: Some("grass")` is noise in every line of every
 /// scene. A default variant costs nothing and reads better.
+// A line of a scene, not a frame's data: the inline material's size does
+// not matter, and a box around it would be in every match on it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaterialRef {

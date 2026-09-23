@@ -163,6 +163,9 @@ struct VertexInput {
     @location(12) uv_transform: vec4<f32>,
     // normal scale, occlusion strength
     @location(13) detail: vec4<f32>,
+    // the material's own numbers, for its shader: in.params in `surface`
+    @location(14) params_0: vec4<f32>,
+    @location(15) params_1: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -176,6 +179,8 @@ struct VertexOutput {
     @location(5) surface: vec4<f32>,
     @location(6) emission: vec4<f32>,
     @location(7) detail: vec4<f32>,
+    @location(8) params_0: vec4<f32>,
+    @location(9) params_1: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -231,6 +236,8 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.surface = in.surface;
     out.emission = in.emission;
     out.detail = in.detail;
+    out.params_0 = in.params_0;
+    out.params_1 = in.params_1;
     return out;
 }
 
@@ -595,6 +602,8 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.surface = in.surface;
     out.emission = in.emission;
     out.detail = in.detail;
+    out.params_0 = in.params_0;
+    out.params_1 = in.params_1;
     return out;
 }
 
@@ -746,6 +755,9 @@ struct SurfaceIn {
     normal: vec3<f32>,
     uv: vec2<f32>,
     time: f32,
+    // The material's own eight numbers (`params` in its .rmat), in the
+    // order its shader's `// runity:params` line names them.
+    params: array<vec4<f32>, 2>,
 };
 
 // What the standard shader worked out for the fragment, before the light:
@@ -830,7 +842,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1)),
         Surface(albedo, alpha, in.surface.x * mask.r, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;

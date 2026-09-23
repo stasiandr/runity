@@ -8,12 +8,13 @@
 // procedural ragged splash. There are no custom data streams, so life is
 // read from runity's fade as 1 - alpha, and custom data follows the curves
 // in Booooom.prefab (progress = life, sharpness = 20 * life, distortion =
-// -0.1 * life). The highlight colour is white, but with the inner
-// materials' range (-10..-2) it never shows. Soft particles are dropped (no
-// scene depth). Unlit is imitated by black albedo and colour as emission.
+// -0.1 * life). The highlight colour is white; its band's range,
+// Highlight_Min and Highlight_Max, comes from the material (-10..-2 in the
+// inner ones, where it never shows; 10..2 in the outer). Soft particles are
+// dropped (no scene depth). Unlit is imitated by black albedo and colour as
+// emission.
+// runity:params Vector1_930B327D Vector1_270105AC
 
-const FXD_HIGHLIGHT_MIN: f32 = -10.0;
-const FXD_HIGHLIGHT_MAX: f32 = -2.0;
 const FXD_EMISSION_POWER: f32 = 1.0;
 const FXD_HIGHLIGHT: vec4<f32> = vec4<f32>(1.0, 1.0, 1.0, 1.0); // custom data 2: rgb, strength
 
@@ -64,7 +65,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let out_min = -(progress * sharpness);
     let mask = clamp(out_min + dissolve * (1.0 - out_min) / (1.0 + 0.1 * progress), 0.0, 1.0);
 
-    let band = clamp(FXD_HIGHLIGHT_MIN + dissolve * (FXD_HIGHLIGHT_MAX - FXD_HIGHLIGHT_MIN), 0.0, 1.0);
+    let band = clamp(in.params[0].x + dissolve * (in.params[0].y - in.params[0].x), 0.0, 1.0);
     let color = mix(out.albedo * t.r * mask, FXD_HIGHLIGHT.rgb * FXD_EMISSION_POWER, out.alpha * FXD_HIGHLIGHT.a * band);
 
     o.albedo = vec3<f32>(0.0);
