@@ -14,6 +14,7 @@ members = [
     "crates/runity",
     "crates/runity-cli",
     "crates/runity-editor",
+    "crates/runity-gen",
     "crates/runity-import",
     "crates/runity-mcp",
     "crates/runity-studio",

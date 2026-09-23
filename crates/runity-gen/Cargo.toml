@@ -1,0 +1,30 @@
+[package]
+name = "runity-gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Draft models from a neural network: a prompt or a picture in, a mesh in
+# `assets/drafts/` out, fitted into the greybox it replaces. A module on top
+# of the editor's session — the session does not know it exists, the game
+# never links it, and the MCP server takes it behind one feature (DNA,
+# postulate 3). For prototyping: what it makes is a draft, not art.
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.22.1"
+gltf = { version = "1.4.1", default-features = false, features = ["utils", "import"] }
+ron = "0.12.2"
+runity = { version = "0.1.0", path = "../runity" }
+runity-editor = { version = "0.1.0", path = "../runity-editor" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ureq = { version = "2.12", features = ["json"] }
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+
+[[example]]
+name = "generate"
+path = "examples/generate.rs"
