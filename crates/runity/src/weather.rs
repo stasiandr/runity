@@ -32,20 +32,78 @@ pub struct Weather {
     pub snow: f32,
     /// Snow falling, 0 to 1.
     pub snowfall: f32,
+    /// A sandstorm, 0 to 1: the air thick with sand rolling on the wind,
+    /// the distance gone, the sun a dim disc, grains flying past.
+    pub sandstorm: f32,
 }
+
+/// The colour of sand in the air.
+const SAND: [f32; 3] = [1.0, 0.56, 0.22];
 
 impl Weather {
     pub(crate) fn uniform(&self) -> [[f32; 4]; 2] {
         let c = |x: f32| x.clamp(0.0, 1.0);
         [
             [c(self.wetness), c(self.puddles), c(self.snow), c(self.rain)],
-            [c(self.snowfall), 0.0, 0.0, 0.0],
+            [c(self.snowfall), c(self.sandstorm), 0.0, 0.0],
         ]
     }
 
     /// Whether anything falls: the pass over the frame is drawn only then.
     pub fn falling(&self) -> bool {
-        self.rain > 0.0 || self.snowfall > 0.0
+        self.rain > 0.0 || self.snowfall > 0.0 || self.sandstorm > 0.0
+    }
+
+    /// The volumetric fog a sandstorm makes of the scene's: thick sandy
+    /// air, low and rolling, as much as the storm is strong.
+    pub(crate) fn storm_fog(
+        &self,
+        fog: &crate::volume::VolumetricFog,
+    ) -> crate::volume::VolumetricFog {
+        let s = self.sandstorm.clamp(0.0, 1.0);
+        if s <= 0.0 {
+            return *fog;
+        }
+        let base = if fog.enabled {
+            *fog
+        } else {
+            crate::volume::VolumetricFog {
+                density: 0.0,
+                ..crate::volume::VolumetricFog::OFF
+            }
+        };
+        let mix = |a: f32, b: f32| a + (b - a) * s;
+        crate::volume::VolumetricFog {
+            enabled: true,
+            density: mix(base.density, 0.055),
+            color: [
+                mix(base.color[0], SAND[0]),
+                mix(base.color[1], SAND[1]),
+                mix(base.color[2], SAND[2]),
+            ],
+            anisotropy: mix(base.anisotropy, 0.5),
+            height_falloff: mix(base.height_falloff, 0.03),
+            ambient: mix(base.ambient, 1.5),
+            ..base
+        }
+    }
+
+    /// The distance fog in a sandstorm: sand-coloured, and close.
+    pub(crate) fn storm_distance(
+        &self,
+        fog: &crate::render::FogSettings,
+    ) -> crate::render::FogSettings {
+        let s = self.sandstorm.clamp(0.0, 1.0);
+        if s <= 0.0 {
+            return *fog;
+        }
+        let mix = |a: f32, b: f32| a + (b - a) * s;
+        crate::render::FogSettings {
+            color: fog.color.lerp(glam::Vec3::from_array(SAND) * 0.8, s),
+            start: mix(fog.start, 2.0),
+            end: mix(fog.end, 140.0),
+            ..*fog
+        }
     }
 }
 

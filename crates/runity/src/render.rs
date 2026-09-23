@@ -3184,6 +3184,9 @@ impl Renderer {
             // to clear at a grazing angle.
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
+        // The fog as the weather leaves it: a sandstorm thickens both.
+        let volumetric = frame.weather.storm_fog(&frame.volumetric_fog);
+        let fog = frame.weather.storm_distance(&frame.fog);
         // With a physical sky, the sun's colour and the light from all
         // round come from the air, not from the scene's picked colours.
         let physical = frame.sky.mode == SkyMode::Physical;
@@ -3231,16 +3234,16 @@ impl Renderer {
             sun_color: extend(sun_light, 0.0),
             sky_color: extend(sky_light, 0.0),
             ground_color: extend(ground_light, 0.0),
-            fog_color: extend(frame.fog.color, 0.0),
+            fog_color: extend(fog.color, 0.0),
             fog_range: [
-                frame.fog.start,
-                frame.fog.end,
-                match frame.fog.mode {
+                fog.start,
+                fog.end,
+                match fog.mode {
                     FogMode::Linear => 0.0,
                     FogMode::Exponential => 1.0,
                     FogMode::ExponentialSquared => 2.0,
                 },
-                frame.fog.density.max(0.0),
+                fog.density.max(0.0),
             ],
             camera_position: extend(frame.camera.apparent_eye(), 1.0),
             light_view_projection,
@@ -3352,7 +3355,7 @@ impl Renderer {
                 crate::reflections::face_matrix(f).to_cols_array_2d()
             }),
             volume: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 let near = frame.camera.near.max(1e-3);
                 [
                     if v.enabled { 1.0 } else { 0.0 },
@@ -3362,11 +3365,11 @@ impl Renderer {
                 ]
             },
             fog_medium: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 [v.color[0], v.color[1], v.color[2], v.density.max(0.0)]
             },
             fog_shape: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 [
                     v.base_height,
                     v.height_falloff.max(0.0),
@@ -3374,7 +3377,7 @@ impl Renderer {
                     v.ambient.max(0.0),
                 ]
             },
-            fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
+            fog_lamps: [volumetric.lamps.max(0.0), 0.0, 0.0, 0.0],
             clear_color: extend(frame.clear_color, 1.0),
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
@@ -3786,7 +3789,7 @@ impl Renderer {
         }
 
         // The fog in the air, once every shadow it looks through is drawn.
-        if frame.volumetric_fog.enabled {
+        if volumetric.enabled {
             self.volumes.run(
                 &mut encoder,
                 &self.fog_bind_group,
@@ -3891,7 +3894,7 @@ impl Renderer {
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all. A plain colour needs no pass —
             // unless there is fog in the air in front of it.
-            if frame.sky.mode != SkyMode::Color || frame.volumetric_fog.enabled {
+            if frame.sky.mode != SkyMode::Color || volumetric.enabled {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);

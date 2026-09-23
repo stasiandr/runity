@@ -183,7 +183,7 @@ pub fn list() -> Vec<Value> {
             "screen_space_reflections": { "type": "string", "description": "(enabled: true) or None" },
             "ray_tracing": { "type": "string" }
         }), &[]),
-        tool("mood", "Give the scene a mood in one step — its sun, sky, fog, weather, wind and grading together: clear noon, golden hour, overcast, misty morning, rainy, snowy, night, storm. One undo step; returns what it set and a render of the result. Without `name`, lists the moods and what each is for. Tune further with look.", json!({ "name": { "type": "string" } }), &[]),
+        tool("mood", "Give the scene a mood in one step — its sun, sky, fog, weather, wind and grading together: clear noon, golden hour, overcast, misty morning, rainy, snowy, night, storm, desert noon, sandstorm. One undo step; returns what it set and a render of the result. Without `name`, lists the moods and what each is for. Tune further with look.", json!({ "name": { "type": "string" } }), &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
         tool("import", "Import a source file (.gltf .glb .obj .png .jpg .tga .bmp .wav .rmat) into the project.", json!({ "source": { "type": "string" } }), &["source"]),
         tool("rename_asset", "Rename or move an asset source (model, texture, sound in assets/, .rmat in materials/, .prefab in prefabs/), its .rimport with it, and rewrite every scene and prefab line that named it. Paths relative to the project root. Refused, with the reason, when the new name already means something.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),

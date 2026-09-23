@@ -712,7 +712,16 @@ fn fog_depth(t: f32) -> f32 {
 /// above it.
 fn fog_density(p: vec3<f32>) -> f32 {
     let above = max(p.y - frame.fog_shape.x, 0.0);
-    return frame.fog_medium.w * exp(-frame.fog_shape.y * above);
+    var density = frame.fog_medium.w * exp(-frame.fog_shape.y * above);
+    // A sandstorm rolls: its sand comes in billows driven by the wind.
+    let storm = frame.weather[1].y;
+    if storm > 0.0 {
+        let wind = vec3<f32>(frame.foliage.wind.x, 0.0, frame.foliage.wind.y) * max(frame.foliage.wind.z, 0.5) * 6.0;
+        let q = (p - wind * frame.foliage.wind.w) * 0.06;
+        let billow = cloud_noise(q) * 0.6 + cloud_noise(q * 2.3 + 5.0) * 0.4;
+        density *= mix(1.0, 0.25 + billow * 1.6, storm);
+    }
+    return density;
 }
 
 /// Henyey–Greenstein: how much light turning by an angle of this cosine
@@ -1337,6 +1346,30 @@ fn falling_layer(azimuth: f32, elevation: f32, layer: f32, t: f32, amount: f32, 
     return smoothstep(width, 0.0, abs(f.x - x)) * smoothstep(0.0, 0.35, f.y) * smoothstep(1.0, 0.65, f.y);
 }
 
+/// Sand flying past on the wind: short streaks along it, fast, low down
+/// thicker than high up.
+fn flying_sand(azimuth: f32, elevation: f32, d: vec3<f32>, layer: f32, t: f32, amount: f32) -> f32 {
+    let columns = 90.0 + layer * 60.0;
+    let rows = columns * 0.5;
+    var p = vec2<f32>(azimuth / 6.2831853 * columns, elevation / 3.14159 * rows);
+    // Across the view the way the wind blows past it.
+    let wind = vec2<f32>(frame.foliage.wind.x, frame.foliage.wind.y);
+    let right = normalize(vec2<f32>(-d.z, d.x) + vec2<f32>(1e-5));
+    let across = dot(wind, right) * max(frame.foliage.wind.z, 0.5);
+    p.x -= t * across * (14.0 + layer * 6.0);
+    p.y += sin(t * 3.0 + floor(p.x) * 0.7) * 0.15;
+    let cell = floor(p);
+    let f = fract(p);
+    let low = 1.0 - smoothstep(-0.1, 0.35, d.y);
+    if hash21(cell + layer * 31.0) > amount * 0.32 * (0.3 + low) {
+        return 0.0;
+    }
+    let y = hash21(cell + 4.1) * 0.8 + 0.1;
+    let x = hash21(cell + 7.3);
+    let along = abs(f.x - x);
+    return smoothstep(0.04, 0.0, abs(f.y - y)) * smoothstep(0.3, 0.0, along) * 0.7;
+}
+
 // Rain and snow falling, over the finished frame: faint streaks and flakes
 // lit by the sky, a touch of the sun, a little dimming where they cover.
 @fragment
@@ -1349,8 +1382,10 @@ fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
     let t = frame.foliage.wind.w;
     let rain = frame.weather[0].w;
     let snowfall = frame.weather[1].x;
+    let sandstorm = frame.weather[1].y;
     var cover = 0.0;
     var snow_cover = 0.0;
+    var sand_cover = 0.0;
     for (var layer = 0; layer < 3; layer = layer + 1) {
         let l = f32(layer);
         if rain > 0.0 {
@@ -1359,10 +1394,14 @@ fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
         if snowfall > 0.0 {
             snow_cover += falling_layer(azimuth, elevation, l, t, snowfall, true) * (0.9 / (1.0 + l * 0.6));
         }
+        if sandstorm > 0.0 {
+            sand_cover += flying_sand(azimuth, elevation, d, l, t, sandstorm) * (0.5 / (1.0 + l * 0.5));
+        }
     }
     let light = frame.sky_color.rgb * 1.5 + frame.sun_color.rgb * 0.15;
-    let rgb = light * cover + (light * 0.6 + vec3<f32>(0.25)) * snow_cover;
-    return vec4<f32>(rgb, clamp(cover * 0.3 + snow_cover * 0.8, 0.0, 1.0));
+    let sand = vec3<f32>(0.95, 0.6, 0.3) * (frame.sky_color.rgb + frame.sun_color.rgb * 0.5) * 1.3;
+    let rgb = light * cover + (light * 0.6 + vec3<f32>(0.25)) * snow_cover + sand * sand_cover;
+    return vec4<f32>(rgb, clamp(cover * 0.3 + snow_cover * 0.8 + sand_cover * 0.8, 0.0, 1.0));
 }
 
 /// How deep a point lies under the water above it, if any, in metres.

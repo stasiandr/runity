@@ -1,5 +1,5 @@
 //! Moods: a whole scene's look in one word — golden hour, overcast, a misty
-//! morning, rain, snow, night, a storm — for a person picking from a list
+//! morning, rain, snow, night, a storm, desert noon, a sandstorm — for a person picking from a list
 //! and an agent told "make it a stormy evening" alike (DNA 5 and 8).
 //!
 //! A mood is only a set of the scene's own fields — `sun`, `sky`, `fog`,
@@ -136,6 +136,32 @@ pub const MOODS: &[Mood] = &[
             ("wind", "(strength: 3.0)"),
             ("screen_space_reflections", "(enabled: true)"),
             ("post", "(saturation: -30.0, contrast: 12.0)"),
+        ],
+    },
+    Mood {
+        name: "desert noon",
+        about: "a white-hot sun over sand, a dusty pale sky, the air shimmering and a mirage at the horizon",
+        fields: &[
+            ("sun", "(hour: 12.5, intensity: 1.5)"),
+            ("sky", "(mode: Physical, atmosphere: (mie: 2.5))"),
+            ("fog", "(color: (0.85, 0.78, 0.66), start: 150.0, end: 900.0)"),
+            ("volumetric_fog", CLEAR),
+            ("weather", CLEAR),
+            ("wind", "(strength: 0.8)"),
+            ("post", "(heat_haze: (intensity: 0.7, mirage: 0.8), temperature: 10.0)"),
+        ],
+    },
+    Mood {
+        name: "sandstorm",
+        about: "sand thick in the air on a gale, the sun a dim disc, the distance gone",
+        fields: &[
+            ("sun", "(hour: 14.0, intensity: 0.9)"),
+            ("sky", "(mode: Physical, atmosphere: (mie: 6.0))"),
+            ("fog", "(color: (0.8, 0.62, 0.4), start: 5.0, end: 80.0)"),
+            ("volumetric_fog", CLEAR),
+            ("weather", "(sandstorm: 1.0)"),
+            ("wind", "(direction: (1.0, 0.0, 0.2), strength: 3.0)"),
+            ("post", "(temperature: 25.0, saturation: 5.0)"),
         ],
     },
 ];

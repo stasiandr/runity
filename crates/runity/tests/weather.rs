@@ -118,3 +118,61 @@ fn wet_darkens_snow_whitens_what_faces_up_and_rain_streaks_the_view() {
     let total = (SIZE * SIZE / 5) as usize;
     assert!(lit > 5 && lit < total / 2, "streaks: {lit} of {total}");
 }
+
+#[test]
+fn a_sandstorm_hides_the_distance_in_sand_coloured_air() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    // A dark blue wall a hundred metres off, filling the view.
+    let wall = Draw {
+        mesh: cube,
+        transform: Mat4::from_translation(Vec3::new(0.0, 0.0, -100.0))
+            * Mat4::from_scale(Vec3::new(400.0, 400.0, 1.0)),
+        texture: TextureHandle::WHITE,
+        material: Material::new(0.05, 0.1, 0.4),
+        pose: None,
+    };
+    let shoot = |renderer: &mut Renderer, sandstorm: f32| {
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            camera: Camera {
+                position: Vec3::new(0.0, 1.7, 0.0),
+                target: Vec3::new(0.0, 1.7, -1.0),
+                ..Camera::default()
+            },
+            fog: runity::render::FogSettings {
+                start: 1000.0,
+                end: 2000.0,
+                ..Default::default()
+            },
+            shadows: ShadowSettings::OFF,
+            clear_color: Vec3::ZERO,
+            draws: vec![wall],
+            weather: Weather {
+                sandstorm,
+                ..Default::default()
+            },
+            time: Some(1.0),
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2)
+    };
+    let clear = shoot(&mut renderer, 0.0);
+    let storm = shoot(&mut renderer, 1.0);
+    assert!(clear[2] > clear[0], "a blue wall on a clear day: {clear:?}");
+    assert!(
+        storm[0] > storm[2],
+        "gone into sand-coloured air: {storm:?}"
+    );
+}
