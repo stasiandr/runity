@@ -38,6 +38,9 @@ runity run [PROJECT] [--hot] [--release] [--scene NAME]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and tuning reload while it runs; with --hot, so does its
     own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
+runity relay [--port N]
+    Run a relay (UDP, 47778 by default): players behind NAT in different
+    homes play through it, in a room whose code the host reads out.
 runity test [PROJECT]
     The game's tests: a new project's plays its start scene for two seconds
     without a window — systems, physics — and fails if anything breaks.
@@ -131,6 +134,21 @@ fn run() -> Result<ExitCode> {
             })
         }
         "check" => check(&find(&rest)?),
+        "relay" => {
+            // A server between homes: peers in a room (a code the host reads
+            // out) hear each other through it, NAT or not.
+            let mut port = 47_778u16;
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--port" => port = args.next().context("--port wants a number")?.parse()?,
+                    other => bail!("unknown option {other}"),
+                }
+            }
+            let mut server = runity::relay::RelayServer::bind(&format!("0.0.0.0:{port}"))?;
+            eprintln!("runity relay on {}", server.local_address()?);
+            server.run()
+        }
         "test" => {
             // Play mode without a window: the game's own tests, which a new
             // project starts with one of — its start scene played headless.

@@ -49,6 +49,7 @@ pub mod prefab;
 pub mod project;
 pub mod query;
 pub mod refs;
+pub mod relay;
 pub mod render;
 mod ron_text;
 pub mod save;
