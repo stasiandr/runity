@@ -11,6 +11,8 @@
 //! produces sixty mutations a second and must be one undo step, so a
 //! snapshot is taken when a drag begins and not while it runs.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::HashSet;
 
 use crate::id::EntityId;

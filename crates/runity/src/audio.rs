@@ -7,6 +7,8 @@
 //! an OGG on the frame it needs a footstep stutters on the footstep, and the
 //! one place that cost can be paid once is the import.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use glam::Vec3;
 use kira::backend::cpal::CpalBackend;
 use kira::backend::Backend;

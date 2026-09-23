@@ -14,6 +14,8 @@
 //! is kept and the conflict is reported; the scene that comes out is always
 //! a scene that loads.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 

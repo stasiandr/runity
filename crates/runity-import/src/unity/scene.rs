@@ -1,5 +1,7 @@
 //! A `.unity` or `.prefab` file as runity entities.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use runity::glam::{Quat, Vec3};

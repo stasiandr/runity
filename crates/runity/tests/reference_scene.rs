@@ -7,6 +7,8 @@
 //! card's bytes — so what it compares are relationships inside one frame,
 //! which hold on any correct renderer.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::builtin;

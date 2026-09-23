@@ -26,6 +26,8 @@
 //! `KinematicCharacterController` is one `use` away for whoever needs it,
 //! and they will want their own numbers anyway.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use glam::{Quat, Vec3};
 use hecs::World;
 use rapier3d::prelude::*;

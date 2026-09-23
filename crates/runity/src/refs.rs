@@ -14,6 +14,8 @@
 //! to keep. `builtin:stone` names the engine's material, never the
 //! project's, and stays.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::id::EntityId;
 use crate::scene::{EntityDesc, MaterialRef, Scene};
 

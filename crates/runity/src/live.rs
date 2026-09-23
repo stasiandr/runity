@@ -24,6 +24,8 @@
 //! already has a loop, and a watcher is a thread, a channel and debouncing.
 //! The caller decides how often; a few times a second is plenty.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

@@ -10,6 +10,8 @@
 //! tool forgot to expand", which produces a scene that opens fine and shows
 //! nothing.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::{Gpu, MeshHandle, OffscreenTarget, Renderer, Scene};

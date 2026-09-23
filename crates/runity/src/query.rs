@@ -19,6 +19,8 @@
 //! only what a line carries: the game's components are `c:`, the engine's
 //! own parts of a line — a light, a camera — are `has:`.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::id::EntityId;
 use crate::scene::{Body, Collider, EntityDesc, Joint, MaterialRef, Scene};
 

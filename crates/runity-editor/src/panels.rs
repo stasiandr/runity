@@ -9,6 +9,8 @@
 //! from the game's types waits on how modules reach the editor (open
 //! question 2).
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::scene::{Body, BodyProps, Collider, EntityDesc, Joint, Lens, MaterialRef};
 use runity::EntityId;
 

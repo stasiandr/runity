@@ -7,6 +7,8 @@
 //! gets it, and changing the hex changes what the scene draws without anything
 //! being reopened.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::material::{Material, Shading};

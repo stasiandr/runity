@@ -1,5 +1,7 @@
 //! The tools: what each one takes, and the session calls it makes.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 

@@ -4,6 +4,8 @@
 //! reflection probe, a place that looks different, a picture a camera
 //! draws, prints left as it walks and grass it bends.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hecs::World;
 
 use crate::material::Material;

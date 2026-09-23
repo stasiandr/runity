@@ -9,6 +9,8 @@
 //! A box is dragged from empty space; everything whose drawn shape falls
 //! partly inside it is selected, as in Unity.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::HashSet;
 
 use runity::glam::{Vec2, Vec3};

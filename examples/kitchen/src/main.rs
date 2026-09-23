@@ -23,6 +23,8 @@
 //! `runity run --players 4` — each window is one of them over UDP, and
 //! what each owns moves in the others' windows too.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::hecs::World;
 use runity::party::{Event, Party};
 use runity::physics::PhysicsWorld;

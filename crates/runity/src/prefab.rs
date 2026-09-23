@@ -26,6 +26,8 @@
 //! The base still reaches every variant where the variant said nothing, and
 //! a scene overrides a variant's parts by the same ids as the base's.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 

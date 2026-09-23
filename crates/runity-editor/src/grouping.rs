@@ -6,6 +6,8 @@
 //! "the hut", "the bridge", "the north wall" — things that move and hide
 //! and turn into prefabs as one.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::{Mat4, Vec3};
 use runity::{EntityDesc, EntityId, Transform};
 

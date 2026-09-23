@@ -6,6 +6,8 @@
 //! this, look at the picture. It needs no window and no graphics card, so it
 //! is the same command in CI, on a laptop, and inside an agent's loop.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::PathBuf;
 
 use runity::builtin;

@@ -4,6 +4,8 @@
 //! wanting to add a component adds one, and the renderer only asks for the
 //! three it needs to draw something.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::{HashMap, HashSet};
 
 use hecs::World;

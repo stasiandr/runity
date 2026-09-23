@@ -6,6 +6,8 @@
 //! that were about the boundary — a name truncated into a buffer, a null
 //! handle, a layer the host had not made yet — went with it.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::gizmo::{Handle, Tool};

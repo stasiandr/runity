@@ -17,6 +17,8 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 mod animation;
 mod blockout;
 pub mod console;

@@ -8,6 +8,8 @@
 //! of them — routes, physics, footprints and particles run between frames
 //! as a game's loop runs them.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

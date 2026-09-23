@@ -6,6 +6,8 @@
 //! And the renames that would quietly change what a scene means are
 //! refused before anything moves.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::refs::AssetRef;

@@ -12,6 +12,8 @@
 //! Every finding names the file, the entity (by name and ID), what is wrong,
 //! and what would fix it, closest name included.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};

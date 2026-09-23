@@ -12,6 +12,8 @@
 //! once does not fail it, and a real regression — an accidental quadratic,
 //! a clone per entity per field — still does.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::time::{Duration, Instant};
 
 use runity::{EntityDesc, EntityId, MeshHandle, Scene, Transform};

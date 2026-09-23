@@ -83,7 +83,52 @@ pub mod ron_edit;
 mod ron_text;
 pub mod routes;
 pub mod save;
-pub mod scene;
+/// The scene file as the core has it: a line's identity, place and tree,
+/// its modules' fields as parts (docs/modules.md).
+pub mod scene_core;
+pub mod body;
+pub mod defaults;
+pub mod look;
+pub mod sound;
+pub mod spline;
+mod scene_tests;
+
+/// The scene file: the core's lines and scenes, and every module's types of
+/// the fields on them, under one name as before they were cut apart.
+pub mod scene {
+    pub use crate::body::*;
+    pub use crate::look::*;
+    pub use crate::motion::{AnimatorRef, BoneName};
+    pub use crate::routes::{Route, RouteEnds};
+    pub use crate::scene_core::*;
+    pub use crate::sound::*;
+    pub use crate::spline::*;
+
+    /// Every field of a line, an override or a scene's look the modules
+    /// of this build read, with how to check its text: what `check` names
+    /// a field by that no module reads.
+    pub fn part_kinds() -> Vec<crate::parts::PartKind> {
+        let mut kinds = Vec::new();
+        kinds.extend(crate::body::part_kinds());
+        kinds.extend(crate::look::part_kinds());
+        kinds.extend(crate::motion::part_kinds());
+        kinds.extend(crate::routes::part_kinds());
+        kinds.extend(crate::sound::part_kinds());
+        kinds.extend(crate::spline::part_kinds());
+        kinds
+    }
+}
+
+/// What reads a line's fields: every module's trait, to `use
+/// runity::prelude::*` once.
+pub mod prelude {
+    pub use crate::body::{PhysicsLine, PhysicsOverride};
+    pub use crate::look::{LookLine, LookOverride, SceneLook};
+    pub use crate::motion::AnimationLine;
+    pub use crate::routes::RouteLine;
+    pub use crate::sound::SoundLine;
+    pub use crate::spline::SplineLine;
+}
 pub mod screen;
 pub mod shape;
 #[cfg(feature = "desktop-shell")]

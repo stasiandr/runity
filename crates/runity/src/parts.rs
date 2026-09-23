@@ -194,6 +194,37 @@ pub fn to_text<T: Serialize>(value: &T) -> String {
         .expect("a part serializes")
 }
 
+/// Declare a module's fields: each type, the name it has on a line, and —
+/// optionally — which value is what an absent field means. Also gives the
+/// module `pub fn part_kinds()`, its fields for `check`.
+///
+/// ```ignore
+/// impl_parts! {
+///     Body => "body", default if |b| *b == Body::None;
+///     Light => "light";
+/// }
+/// ```
+#[macro_export]
+macro_rules! impl_parts {
+    ($($ty:ty => $name:literal $(, default if $default:expr)?;)*) => {
+        $(
+            impl $crate::parts::Part for $ty {
+                const NAME: &'static str = $name;
+                $(fn is_default(&self) -> bool {
+                    let check: fn(&Self) -> bool = $default;
+                    check(self)
+                })?
+            }
+        )*
+
+        /// This module's fields of a line, with how to check each one's
+        /// text.
+        pub fn part_kinds() -> Vec<$crate::parts::PartKind> {
+            vec![$($crate::parts::PartKind::of::<$ty>()),*]
+        }
+    };
+}
+
 /// A name for a serializer that wants `&'static str` field names: a part's
 /// name is one of a few, each leaked once.
 pub(crate) fn static_name(name: &str) -> &'static str {

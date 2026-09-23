@@ -8,7 +8,11 @@
 
 use glam::Vec3;
 
-use crate::scene::{Route, RouteEnds, Transform};
+use serde::{Deserialize, Serialize};
+
+#[allow(unused_imports)]
+use crate::defaults::*;
+use crate::scene::Transform;
 
 /// Pieces a smooth leg is measured and moved along.
 const PIECES: usize = 16;
@@ -255,5 +259,63 @@ impl crate::world::Dress for RouteDress {
                 let _ = world.remove_one::<Travelling>(entity);
             }
         }
+    }
+}
+
+/// A way an entity travels by itself — a moving platform, a lift, a boat
+/// on a loop, a cart on a track: Unity's Splines with SplineAnimate.
+/// `route: (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends:
+/// Back)` — points relative to where the entity stands in its parent,
+/// passed through on a smooth curve (`smooth: false` for straight legs).
+/// Give it a `Kinematic` body and what stands on it rides along.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Route {
+    pub points: Vec<Vec3>,
+    /// Metres a second along the way.
+    #[serde(default = "unit")]
+    pub speed: f32,
+    #[serde(default)]
+    pub ends: RouteEnds,
+    #[serde(default = "yes_route")]
+    pub smooth: bool,
+    /// Seconds to wait at each end (Back) or at the start of each lap (Loop).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pause: f32,
+}
+
+/// What a route does at its last point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RouteEnds {
+    /// Back the way it came: a lift, a door that slides.
+    #[default]
+    Back,
+    /// On from the last point to the first: a loop.
+    Loop,
+    /// Stop there: a drawbridge lowered once.
+    Stop,
+}
+
+fn yes_route() -> bool {
+    true
+}
+
+crate::impl_parts! {
+    Route => "route";
+}
+
+/// The way a line of a scene travels by itself, read off it.
+pub trait RouteLine {
+    fn route(&self) -> Option<Route>;
+}
+
+impl RouteLine for crate::scene::EntityDesc {
+    fn route(&self) -> Option<Route> {
+        self.part()
+    }
+}
+
+impl RouteLine for crate::scene::Override {
+    fn route(&self) -> Option<Route> {
+        self.part()
     }
 }

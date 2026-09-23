@@ -8,6 +8,8 @@
 //! as Unity does: a greybox's pivots are wherever the primitive put them,
 //! and what a person means is "on".
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::{Mat4, Vec2, Vec3};
 use runity::EntityId;
 

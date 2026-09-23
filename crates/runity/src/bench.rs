@@ -25,6 +25,8 @@
 //! so a run with peers plays at the speed of its ticks; a solo run has no
 //! link and goes as fast as it can.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

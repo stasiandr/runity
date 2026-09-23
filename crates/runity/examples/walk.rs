@@ -15,6 +15,8 @@
 //! draws with it; a shader that does not compile is reported and the old
 //! one keeps drawing.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::Vec3;
 use runity::render::{Camera, Frame};
 use runity::shell::{run, Context, Game, WindowConfig};

@@ -2,6 +2,8 @@
 //! prefab, Unity's asset preview — and what an agent looks at before
 //! placing one.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::Vec3;
 use runity::render::{Camera, FogSettings};
 use runity::{EntityDesc, OffscreenTarget, Scene};

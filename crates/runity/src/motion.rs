@@ -25,6 +25,8 @@
 //! is a switch, on from a key above one half to the next key; `Volume` is its sound's,
 //! `ParticleRate` its particles'.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -662,5 +664,49 @@ impl crate::world::Dress for MotionDress {
                 let _ = world.insert_one(entity, crate::world::OnBone(bone));
             }
         }
+    }
+}
+
+/// `animator: "door"` — the graph in `animators/` that moves it and the
+/// things under it, with the clips in `clips/` (see [`crate::motion`]).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AnimatorRef(pub String);
+
+
+/// `bone: "hand.R"` — held by this joint of the parent's skeleton, not by
+/// the parent itself: a spade in a hand, a hat on a head. `transform` is
+/// then relative to the bone.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BoneName(pub String);
+
+
+crate::impl_parts! {
+    AnimatorRef => "animator", default if |a| a.0.is_empty();
+    BoneName => "bone", default if |b| b.0.is_empty();
+}
+
+/// What moves a line of a scene, read off it: its graph, and the bone of
+/// its parent's skeleton it rides on.
+pub trait AnimationLine {
+    fn animator(&self) -> String;
+    fn bone(&self) -> String;
+    fn set_animator(&mut self, animator: impl Into<String>);
+    fn set_bone(&mut self, bone: impl Into<String>);
+}
+
+impl AnimationLine for crate::scene::EntityDesc {
+    fn animator(&self) -> String {
+        self.part::<AnimatorRef>().map(|a| a.0).unwrap_or_default()
+    }
+    fn bone(&self) -> String {
+        self.part::<BoneName>().map(|b| b.0).unwrap_or_default()
+    }
+    fn set_animator(&mut self, animator: impl Into<String>) {
+        self.set_part(&AnimatorRef(animator.into()))
+    }
+    fn set_bone(&mut self, bone: impl Into<String>) {
+        self.set_part(&BoneName(bone.into()))
     }
 }

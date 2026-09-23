@@ -3,6 +3,8 @@
 //! scene, a party, and the same frame the window runs (`session::frame`),
 //! with prefabs spawned headless.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::Vec3;
 use runity::hecs::{Entity, World};
 use runity::net::{Loopback, Transport};
