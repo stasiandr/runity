@@ -6,6 +6,7 @@
 //! list until each has its Rust type.
 
 mod animator;
+mod look;
 mod material;
 mod scene;
 pub mod yaml;
@@ -428,6 +429,11 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         if let Some(sun) = scene::sun(&text) {
             scene.sun = sun;
         }
+        // How it looks: its fog, and its global Volume's grade.
+        if let Some(fog) = look::fog(&text) {
+            scene.fog = fog;
+        }
+        scene.post = look::post(&unity, &text, &mut report);
         let name = &unity.names[guid];
         scene
             .save(project.scenes().join(format!("{name}.ron")))

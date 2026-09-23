@@ -110,6 +110,25 @@ fn own_texture(unity: &Unity, m: &Yaml) -> Option<String> {
         })
 }
 
+/// A picture the shader graph holds itself — a Sample Texture 2D with its
+/// texture set in the graph, not a property the material fills: the
+/// palette every low-poly model of a pack is coloured from by its UVs.
+fn graph_texture(unity: &Unity, graph: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(graph).ok()?;
+    text.split("\"m_SerializedTexture\"")
+        .skip(1)
+        .find_map(|rest| {
+            let value = rest.split('\n').next()?;
+            let after = &value[value.find("guid")? + 4..];
+            let start = after.find(|c: char| c.is_ascii_hexdigit())?;
+            let guid: String = after[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect();
+            (guid.len() == 32 && matches!(unity.named(&guid), Some(("texture", _)))).then_some(guid)
+        })
+}
+
 /// A colour property a custom shader named its own way (`_Main_Color`,
 /// `_Tint`): the first whose name says colour and not emission.
 fn any_colour(m: &Yaml) -> Option<[f32; 4]> {
@@ -419,7 +438,13 @@ pub fn convert_with(
     // A custom shader's picture, in a slot of its own naming: the base
     // map, for its surface function to read (there is no other).
     if own.is_some() && !fields.iter().any(|f| f.starts_with("base_map")) {
-        if let Some((_, name)) = own_texture(unity, m).and_then(|g| unity.named(&g)) {
+        let graph = own
+            .as_ref()
+            .and_then(|(_, path)| graph_texture(unity, path));
+        if let Some((_, name)) = own_texture(unity, m)
+            .or(graph)
+            .and_then(|g| unity.named(&g))
+        {
             fields.push(format!("base_map: {name:?}"));
         }
     }
