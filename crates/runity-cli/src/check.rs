@@ -55,7 +55,7 @@ struct Names {
     prefabs: HashSet<String>,
 }
 
-const MODEL_SOURCES: [&str; 3] = ["gltf", "glb", "obj"];
+const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "rterrain"];
 
 /// Look the whole project over.
 pub fn check(project: &Project) -> Vec<Finding> {
@@ -210,7 +210,7 @@ fn check_model(model: &str, who: &str, file: &str, names: &Names, out: &mut Vec<
         out.push(error(
             file,
             format!(
-                "{who}: no model named `{model}` — a model is a .gltf, .glb or .obj in assets/, named by its file name without the extension{}",
+                "{who}: no model named `{model}` — a model is a .gltf, .glb, .obj or .rterrain in assets/, named by its file name without the extension{}",
                 suggest(model, known)
             ),
         ));

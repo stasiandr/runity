@@ -203,6 +203,8 @@ impl LiveScene {
             |name| library?.material_by_name(name),
         );
         let components = self.components.apply(&self.current, world);
+        #[cfg(feature = "physics")]
+        crate::physics::attach_scene_collision_meshes(world, &self.current, self.library.as_ref());
         Spawned {
             missing,
             components,
@@ -259,6 +261,8 @@ impl LiveScene {
             .iter()
             .map(|m| format!("{}: no model named {}", m.entity_name, m.model))
             .collect();
+        #[cfg(feature = "physics")]
+        crate::physics::attach_collision_meshes(world, spawned.iter().copied(), library);
         for (entity, desc) in &spawned {
             problems.extend(
                 self.components
@@ -327,6 +331,12 @@ impl LiveScene {
                             .map(ToString::to_string),
                     );
                     self.current = scene;
+                    #[cfg(feature = "physics")]
+                    crate::physics::attach_scene_collision_meshes(
+                        world,
+                        &self.current,
+                        self.library.as_ref(),
+                    );
                 }
                 Err(e) => out.problems.push(format!("{e:#}")),
             }
@@ -412,6 +422,9 @@ impl LiveScene {
                 &mut ignored,
             );
         }
+        // A model that changed shape changes what it collides as.
+        #[cfg(feature = "physics")]
+        crate::physics::attach_scene_collision_meshes(world, &self.current, library);
     }
 }
 

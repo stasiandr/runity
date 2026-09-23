@@ -1462,6 +1462,11 @@ impl Session {
         // Built from the world rather than the scene, so what is simulated
         // is exactly what is drawn — prefabs already expanded, hierarchy
         // already applied.
+        runity::physics::attach_scene_collision_meshes(
+            &mut self.world,
+            &self.instanced.scene,
+            self.library.as_ref(),
+        );
         physics.sync_from_world(&mut self.world);
         self.play = Some(Play {
             physics,

@@ -99,6 +99,11 @@ pub enum Collider {
     Ramp {
         half: Vec3,
     },
+    /// The shape of the entity's own model: a triangle mesh for a static
+    /// body, its convex hull for a dynamic one — a solver cannot keep a
+    /// hollow mesh from tunnelling. What a level modelled elsewhere, or a
+    /// terrain, collides as.
+    Model,
     /// A flight of steps rising toward the back: what fits
     /// `builtin:stairs` with `half: (0.5, 0.5, 0.5), steps: 4`.
     Stairs {

@@ -1,0 +1,192 @@
+//! `.rterrain`: ground, described rather than modelled.
+//!
+//! ```text
+//! (
+//!     size: (200.0, 200.0),   // metres along x and z
+//!     resolution: 129,        // vertices along each side
+//!     height: 18.0,           // metres from the lowest point to the highest
+//!     noise: (seed: 7, scale: 60.0, octaves: 5, persistence: 0.5),
+//! )
+//! ```
+//!
+//! Imported into an ordinary mesh named after the file, centred on x and z
+//! with its lowest point at zero, so a scene places it like any model —
+//! `model: "hills", collider: Model, body: Static` — and it reloads like
+//! any model: change the seed, save, and the running game has new hills.
+//!
+//! Noise, not a painted heightmap, for now: a greybox wants ground with
+//! some shape to it, and a seed is a one-character diff where a heightmap
+//! is a binary one. A heightmap source is the next step.
+
+use std::path::Path;
+
+use anyhow::{ensure, Context, Result};
+use runity::asset::{Bounds, MeshAsset, Submesh, Vertex};
+use serde::Deserialize;
+
+use crate::ImportSettings;
+
+#[derive(Debug, Deserialize)]
+struct TerrainSource {
+    size: (f32, f32),
+    #[serde(default = "default_resolution")]
+    resolution: u32,
+    height: f32,
+    #[serde(default)]
+    noise: Noise,
+}
+
+fn default_resolution() -> u32 {
+    129
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct Noise {
+    seed: u64,
+    /// The width of the biggest hills, in metres.
+    scale: f32,
+    octaves: u32,
+    /// How much each finer octave counts, relative to the one before.
+    persistence: f32,
+}
+
+impl Default for Noise {
+    fn default() -> Self {
+        Self {
+            seed: 1,
+            scale: 50.0,
+            octaves: 4,
+            persistence: 0.5,
+        }
+    }
+}
+
+/// A value in `[0, 1)` for a lattice point: specified, so every machine
+/// grows the same hills from the same seed.
+fn lattice(seed: u64, x: i64, z: i64) -> f32 {
+    let mut h = seed
+        ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+        ^ (z as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    (h >> 40) as f32 / (1u64 << 24) as f32
+}
+
+/// Smooth value noise at a point, in `[0, 1)`.
+fn value(seed: u64, x: f32, z: f32) -> f32 {
+    let (x0, z0) = (x.floor(), z.floor());
+    let (fx, fz) = (x - x0, z - z0);
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let (sx, sz) = (smooth(fx), smooth(fz));
+    let (ix, iz) = (x0 as i64, z0 as i64);
+    let a = lattice(seed, ix, iz);
+    let b = lattice(seed, ix + 1, iz);
+    let c = lattice(seed, ix, iz + 1);
+    let d = lattice(seed, ix + 1, iz + 1);
+    let top = a + (b - a) * sx;
+    let bottom = c + (d - c) * sx;
+    top + (bottom - top) * sz
+}
+
+/// Octaves of noise, summed: big hills with smaller ones on them.
+fn fbm(noise: &Noise, x: f32, z: f32) -> f32 {
+    let (mut total, mut amplitude, mut frequency, mut weight) =
+        (0.0, 1.0, 1.0 / noise.scale.max(1e-3), 0.0);
+    for octave in 0..noise.octaves.max(1) {
+        total += value(
+            noise.seed.wrapping_add(octave as u64),
+            x * frequency,
+            z * frequency,
+        ) * amplitude;
+        weight += amplitude;
+        amplitude *= noise.persistence;
+        frequency *= 2.0;
+    }
+    total / weight
+}
+
+pub fn mesh_from_terrain(path: &Path, settings: &ImportSettings) -> Result<MeshAsset> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let source: TerrainSource =
+        ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let n = source.resolution;
+    ensure!(
+        (2..=1025).contains(&n),
+        "{}: resolution is between 2 and 1025 vertices a side, not {n}",
+        path.display()
+    );
+    let (width, depth) = source.size;
+    ensure!(
+        width > 0.0 && depth > 0.0,
+        "{}: size must be positive",
+        path.display()
+    );
+
+    // Heights first, normalised so the lowest point is at zero and the
+    // highest at `height`: the number in the file is the number you get.
+    let at = |i: u32, j: u32| {
+        (
+            -width * 0.5 + width * i as f32 / (n - 1) as f32,
+            -depth * 0.5 + depth * j as f32 / (n - 1) as f32,
+        )
+    };
+    let mut heights: Vec<f32> = (0..n * n)
+        .map(|k| {
+            let (x, z) = at(k % n, k / n);
+            fbm(&source.noise, x, z)
+        })
+        .collect();
+    let (low, high) = heights
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), h| (lo.min(*h), hi.max(*h)));
+    let range = (high - low).max(1e-6);
+    for h in &mut heights {
+        *h = (*h - low) / range * source.height;
+    }
+    let height = |i: u32, j: u32| heights[(j.min(n - 1) * n + i.min(n - 1)) as usize];
+
+    let (dx, dz) = (width / (n - 1) as f32, depth / (n - 1) as f32);
+    let mut vertices = Vec::with_capacity((n * n) as usize);
+    for j in 0..n {
+        for i in 0..n {
+            let (x, z) = at(i, j);
+            // Central differences: a normal that leans away from the slope.
+            let (l, r) = (height(i.saturating_sub(1), j), height(i + 1, j));
+            let (b, f) = (height(i, j.saturating_sub(1)), height(i, j + 1));
+            let normal =
+                glam::Vec3::new((l - r) / (2.0 * dx), 1.0, (b - f) / (2.0 * dz)).normalize();
+            vertices.push(Vertex {
+                position: [x, height(i, j), z],
+                normal: normal.to_array(),
+                uv: [i as f32 / (n - 1) as f32, j as f32 / (n - 1) as f32],
+            });
+        }
+    }
+    let mut indices = Vec::with_capacity(((n - 1) * (n - 1) * 6) as usize);
+    for j in 0..n - 1 {
+        for i in 0..n - 1 {
+            let a = j * n + i;
+            let (b, c, d) = (a + 1, a + n, a + n + 1);
+            // Counter-clockwise seen from above, like the plane.
+            indices.extend_from_slice(&[a, c, b, b, c, d]);
+        }
+    }
+    Ok(MeshAsset {
+        id: settings.asset_id(),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "terrain".into()),
+        bounds: Bounds::of(&vertices),
+        submeshes: vec![Submesh {
+            first_index: 0,
+            index_count: indices.len() as u32,
+            material: None,
+        }],
+        vertices,
+        indices,
+        skin: None,
+    })
+}

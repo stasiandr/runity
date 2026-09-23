@@ -24,6 +24,7 @@
 //! is derived and the settings are not (DNA, postulate 2): a sidecar in a
 //! folder nobody commits is settings nobody keeps.
 
+mod terrain;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -859,6 +860,14 @@ pub fn import_to(
                 AssetKind::Mesh,
             )
         }
+        "rterrain" => {
+            let mesh = terrain::mesh_from_terrain(source, &settings)?;
+            (
+                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                mesh.id,
+                AssetKind::Mesh,
+            )
+        }
         "wav" => {
             let sound = sound_from_wav(source, &settings)?;
             (
@@ -1153,7 +1162,19 @@ pub fn importable(path: &Path) -> bool {
         path.extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .as_deref(),
-        Some("gltf" | "glb" | "obj" | "wav" | "rmat" | "png" | "jpg" | "jpeg" | "tga" | "bmp")
+        Some(
+            "gltf"
+                | "glb"
+                | "obj"
+                | "rterrain"
+                | "wav"
+                | "rmat"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "tga"
+                | "bmp"
+        )
     )
 }
 

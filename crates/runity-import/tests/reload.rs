@@ -312,3 +312,37 @@ fn a_library_re_reads_only_what_changed() {
         "the other one is untouched"
     );
 }
+
+#[test]
+fn a_terrain_is_described_imported_as_a_mesh_and_rebuilt_when_its_seed_changes() {
+    let (project, root) = project("terrain");
+    let source = root.join("assets/hills.rterrain");
+    let text = "(size: (100.0, 60.0), resolution: 33, height: 12.0, noise: (seed: 7, scale: 30.0))";
+    write(&source, text);
+    let first = import_into(&project, &source, None).unwrap();
+    let (library, _) = Library::open(project.library()).unwrap();
+    let mesh = library.mesh_by_name("hills").expect("named after the file");
+    assert_eq!(mesh.vertices.len(), 33 * 33);
+    let (min, max) = (mesh.bounds.min, mesh.bounds.max);
+    assert!((min[1].to_native()).abs() < 1e-4, "lowest point at zero");
+    assert!((max[1].to_native() - 12.0).abs() < 1e-3, "highest at the height asked");
+    assert!((max[0].to_native() - 50.0).abs() < 1e-3 && (min[2].to_native() + 30.0).abs() < 1e-3, "centred");
+    let before = asset::read(&first.imported.asset).unwrap();
+
+    // The same file, the same hills; another seed, other hills.
+    write(&source, &text.replace("seed: 7", "seed: 8"));
+    touch_forward(&source);
+    let done = sync(&project);
+    assert_eq!(done.len(), 1);
+    assert_ne!(asset::read(&first.imported.asset).unwrap(), before);
+    write(&source, text);
+    touch_forward(&source);
+    sync(&project);
+    assert_eq!(asset::read(&first.imported.asset).unwrap(), before, "reproducible");
+
+    write(&source, "(size: (10.0, 10.0), resolution: 1, height: 1.0)");
+    touch_forward(&source);
+    let done = sync(&project);
+    let err = done[0].result.as_ref().unwrap_err();
+    assert!(err.contains("resolution"), "{err}");
+}

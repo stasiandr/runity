@@ -56,6 +56,115 @@ struct Built {
     body: Body,
     collider: ColliderShape,
     local: Transform,
+    /// Which [`CollisionMesh`] a `Model` collider was built from.
+    mesh: usize,
+}
+
+/// A model's geometry, for a [`ColliderShape::Model`]. Attached to the
+/// entity by whoever knows the mesh — [`attach_collision_meshes`] — because
+/// the physics world never sees a library.
+#[derive(Debug, Clone)]
+pub struct CollisionMesh {
+    pub vertices: std::sync::Arc<Vec<Vec3>>,
+    pub triangles: std::sync::Arc<Vec<[u32; 3]>>,
+}
+
+impl CollisionMesh {
+    pub fn of(mesh: &crate::asset::MeshAsset) -> Self {
+        Self::from_parts(
+            mesh.vertices.iter().map(|v| Vec3::from_array(v.position)),
+            mesh.indices.iter().copied(),
+        )
+    }
+
+    pub fn of_archived(mesh: &crate::asset::ArchivedMeshAsset) -> Self {
+        Self::from_parts(
+            mesh.vertices.iter().map(|v| {
+                Vec3::new(
+                    v.position[0].to_native(),
+                    v.position[1].to_native(),
+                    v.position[2].to_native(),
+                )
+            }),
+            mesh.indices.iter().map(|i| i.to_native()),
+        )
+    }
+
+    fn from_parts(
+        vertices: impl Iterator<Item = Vec3>,
+        indices: impl Iterator<Item = u32>,
+    ) -> Self {
+        let indices: Vec<u32> = indices.collect();
+        Self {
+            vertices: std::sync::Arc::new(vertices.collect()),
+            triangles: std::sync::Arc::new(
+                indices
+                    .chunks_exact(3)
+                    .map(|t| [t[0], t[1], t[2]])
+                    .collect(),
+            ),
+        }
+    }
+
+    fn key(&self) -> usize {
+        std::sync::Arc::as_ptr(&self.vertices) as usize
+    }
+}
+
+/// The geometry for a model name: a builtin, or a mesh in the library.
+pub fn collision_mesh_for(model: &str, library: Option<&crate::Library>) -> Option<CollisionMesh> {
+    match crate::builtin::by_name(model) {
+        Some(mesh) => Some(CollisionMesh::of(&mesh)),
+        None => Some(CollisionMesh::of_archived(library?.mesh_by_name(model)?)),
+    }
+}
+
+/// Give every entity whose collider is its model the geometry of that
+/// model. `lines` pairs entities with the scene lines they came from; one
+/// mesh per model name is made and shared.
+pub fn attach_collision_meshes<'a>(
+    world: &mut World,
+    lines: impl IntoIterator<Item = (hecs::Entity, &'a crate::EntityDesc)>,
+    library: Option<&crate::Library>,
+) {
+    let mut made: std::collections::HashMap<&str, Option<CollisionMesh>> = Default::default();
+    for (entity, desc) in lines {
+        if desc.collider != ColliderShape::Model {
+            continue;
+        }
+        let mesh = made
+            .entry(desc.model.as_str())
+            .or_insert_with(|| collision_mesh_for(&desc.model, library))
+            .clone();
+        match mesh {
+            Some(mesh) => {
+                let _ = world.insert_one(entity, mesh);
+            }
+            None => {
+                let _ = world.remove_one::<CollisionMesh>(entity);
+            }
+        }
+    }
+}
+
+/// [`attach_collision_meshes`] for the entities a scene spawned, found by
+/// their [`crate::SceneId`].
+pub fn attach_scene_collision_meshes(
+    world: &mut World,
+    scene: &crate::Scene,
+    library: Option<&crate::Library>,
+) {
+    let lines: std::collections::HashMap<crate::EntityId, &crate::EntityDesc> = scene
+        .flatten()
+        .into_iter()
+        .map(|(d, _)| (d.id, d))
+        .collect();
+    let pairs: Vec<(hecs::Entity, &crate::EntityDesc)> = world
+        .query::<(hecs::Entity, &crate::SceneId)>()
+        .iter()
+        .filter_map(|(entity, id)| lines.get(&id.0).map(|d| (entity, *d)))
+        .collect();
+    attach_collision_meshes(world, pairs, library);
 }
 
 /// Everything rapier needs to take a step.
@@ -118,7 +227,7 @@ impl PhysicsWorld {
         let mut stale: Vec<hecs::Entity> = Vec::new();
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform)> = Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
-        for (entity, handle, built, physics, shape, local, placed) in world
+        for (entity, handle, built, physics, shape, local, placed, mesh) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
@@ -127,10 +236,12 @@ impl PhysicsWorld {
                 &Shape,
                 &Transform,
                 &WorldTransform,
+                Option<&CollisionMesh>,
             )>()
             .iter()
         {
-            if built.body != physics.0 || built.collider != shape.0 {
+            let mesh = mesh.map_or(0, CollisionMesh::key);
+            if built.body != physics.0 || built.collider != shape.0 || built.mesh != mesh {
                 stale.push(entity);
             } else {
                 live.insert(handle.0);
@@ -170,7 +281,7 @@ impl PhysicsWorld {
         }
 
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
-        for (entity, placed, physics, shape, local, existing) in world
+        for (entity, placed, physics, shape, local, existing, mesh) in world
             .query::<(
                 hecs::Entity,
                 &WorldTransform,
@@ -178,13 +289,15 @@ impl PhysicsWorld {
                 &Shape,
                 &Transform,
                 Option<&BodyHandle>,
+                Option<&CollisionMesh>,
             )>()
             .iter()
         {
             if existing.is_some() || physics.0 == Body::None {
                 continue;
             }
-            let Some(collider) = build_collider(shape.0, placed.0) else {
+            let dynamic = physics.0 == Body::Dynamic;
+            let Some(collider) = build_collider(shape.0, placed.0, mesh, dynamic) else {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
                 // bounds is the kind of default that is wrong quietly.
@@ -206,6 +319,7 @@ impl PhysicsWorld {
                     body: physics.0,
                     collider: shape.0,
                     local: *local,
+                    mesh: mesh.map_or(0, CollisionMesh::key),
                 },
             ));
         }
@@ -371,10 +485,35 @@ fn isometry(placed: glam::Mat4) -> Isometry<Real> {
 }
 
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
-fn build_collider(shape: ColliderShape, transform: glam::Mat4) -> Option<Collider> {
+fn build_collider(
+    shape: ColliderShape,
+    transform: glam::Mat4,
+    mesh: Option<&CollisionMesh>,
+    dynamic: bool,
+) -> Option<Collider> {
     let (scale, _, _) = transform.to_scale_rotation_translation();
     Some(match shape {
         ColliderShape::None => return None,
+        ColliderShape::Model => {
+            // No geometry yet — the model is not imported, or nobody
+            // attached it: no collider, and the next sync tries again.
+            let mesh = mesh?;
+            let points: Vec<Point<Real>> = mesh
+                .vertices
+                .iter()
+                .map(|v| {
+                    let v = *v * scale;
+                    point![v.x, v.y, v.z]
+                })
+                .collect();
+            if dynamic {
+                ColliderBuilder::convex_hull(&points)?.build()
+            } else {
+                ColliderBuilder::trimesh(points, mesh.triangles.to_vec())
+                    .ok()?
+                    .build()
+            }
+        }
         ColliderShape::Box { half } => {
             let h = half * scale;
             ColliderBuilder::cuboid(h.x.max(1e-4), h.y.max(1e-4), h.z.max(1e-4)).build()
@@ -881,5 +1020,51 @@ mod tests {
         run_for(&mut physics, &mut world, 120);
         let y = world.get::<&Transform>(block).unwrap().position.y;
         assert!((y - 1.6).abs() < 0.05, "on the top of a 3 m pillar: {y}");
+    }
+
+    #[test]
+    fn a_model_collider_is_the_models_own_shape() {
+        // A static ramp that collides as the ramp it draws, and a dynamic
+        // cube that collides as its convex hull.
+        let mut ramp = entity("ramp", 0.0, Body::Static, ColliderShape::Model);
+        ramp.model = "builtin:ramp".into();
+        ramp.transform.scale = Vec3::new(4.0, 2.0, 4.0);
+        let mut ball = entity(
+            "ball",
+            0.0,
+            Body::Dynamic,
+            ColliderShape::Sphere { radius: 0.2 },
+        );
+        ball.transform.position = Vec3::new(0.0, 1.5, -1.0);
+        let scene = Scene {
+            entities: vec![ramp, ball],
+            ..Default::default()
+        };
+        let mut scene = scene;
+        scene.assign_ids();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        run_for(&mut physics, &mut world, 1);
+        assert_eq!(
+            physics.body_count(),
+            1,
+            "no geometry attached: no ramp body yet"
+        );
+
+        attach_scene_collision_meshes(&mut world, &scene, None);
+        run_for(&mut physics, &mut world, 60);
+        assert_eq!(physics.body_count(), 2, "and now there is");
+        let ball = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Dynamic)
+            .map(|(e, _)| e)
+            .unwrap();
+        let at = world.get::<&Transform>(ball).unwrap().position;
+        assert!(
+            at.z > -0.5 && at.y < 1.5,
+            "rolled down the modelled slope: {at:?}"
+        );
     }
 }
