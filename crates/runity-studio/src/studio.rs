@@ -494,12 +494,10 @@ impl Studio {
                 let (px, py) = self.ui.pointer();
                 let (vx, vy) = to_view(px, py);
                 self.dab(vx, vy, true);
-                return;
             }
             InputEvent::MouseUp(MouseButton::Left) if self.stroke.is_some() => {
                 self.stroke = None;
                 self.refresh();
-                return;
             }
             InputEvent::MouseDown(_)
                 if !self
