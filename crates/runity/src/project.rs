@@ -117,6 +117,58 @@ pub struct Manifest {
     /// the day a format changes, there is something to migrate from.
     #[serde(default)]
     pub engine: String,
+    /// How the game starts: Unity's Player and Build Settings, as a few
+    /// lines anyone can read in a diff.
+    #[serde(default)]
+    pub game: GameSettings,
+}
+
+/// The game's window, clock, first scene and language.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameSettings {
+    /// The scene the game opens: `scenes/<start_scene>.ron`.
+    pub start_scene: String,
+    /// The window's title; the project's name when empty.
+    pub title: String,
+    pub width: u32,
+    pub height: u32,
+    /// Fixed simulation steps a second: physics, saves, the network.
+    pub steps_per_second: u32,
+    /// The table in `strings/` the game speaks.
+    pub language: String,
+}
+
+impl Default for GameSettings {
+    fn default() -> Self {
+        Self {
+            start_scene: "main".into(),
+            title: String::new(),
+            width: 1280,
+            height: 720,
+            steps_per_second: 60,
+            language: "en".into(),
+        }
+    }
+}
+
+impl GameSettings {
+    /// A game's settings, from `runity.ron` beside it in a build or in its
+    /// project in development ([`data_file`]). What does not read is an
+    /// error in words, not the defaults quietly.
+    pub fn load(dev_root: &str) -> Result<(String, GameSettings), String> {
+        let path = data_file(dev_root, FILE);
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let manifest: Manifest =
+            ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
+        Ok((manifest.name, manifest.game))
+    }
+
+    /// Seconds per fixed step.
+    pub fn fixed_delta(&self) -> f32 {
+        1.0 / self.steps_per_second.max(1) as f32
+    }
 }
 
 /// An open project.
@@ -239,6 +291,7 @@ impl Project {
         let manifest = Manifest {
             name: name.to_string(),
             engine: env!("CARGO_PKG_VERSION").to_string(),
+            game: GameSettings::default(),
         };
         let pretty = ron::ser::PrettyConfig::new();
         let text = ron::ser::to_string_pretty(&manifest, pretty)
@@ -699,8 +752,11 @@ impl shell::Game for Game {
 
 fn main() -> anyhow::Result<()> {
     // `data/` beside the executable in a build, the project in development.
+    // runity.ron's `game`: window, clock, first scene, language.
+    let (project_name, settings) =
+        runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
     // `runity run --scene cave` plays scenes/cave.ron.
-    let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| "main".into());
+    let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing));
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
@@ -708,8 +764,13 @@ fn main() -> anyhow::Result<()> {
         eprintln!("{problem}");
     }
     let config = WindowConfig {
-        title: "{name}".into(),
-        ..Default::default()
+        title: if settings.title.is_empty() { project_name } else { settings.title.clone() },
+        width: settings.width,
+        height: settings.height,
+        time: runity::TimeSettings {
+            fixed_delta: settings.fixed_delta(),
+            ..Default::default()
+        },
     };
     let actions = Actions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
     for problem in actions.missing(&["quit"]) {
@@ -723,7 +784,7 @@ fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
     let strings = runity::strings::Strings::load(
         runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
-        "en",
+        &settings.language,
     )
     .map_err(anyhow::Error::msg)?;
     let game = Game {
@@ -1141,8 +1202,9 @@ mod tests {
             "relative, so the two can move together: {cargo}"
         );
         assert!(cargo.contains("[workspace]"), "its own workspace: {cargo}");
-        let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
-        assert!(main.contains("title: \"My Game\""), "{main}");
+        // The window's title is the project's name, from runity.ron.
+        let manifest = std::fs::read_to_string(root.join(FILE)).unwrap();
+        assert!(manifest.contains("name: \"My Game\""), "{manifest}");
 
         let default = Project::create(temp("engine-git"), "7 seas").unwrap();
         let cargo = std::fs::read_to_string(default.root().join("Cargo.toml")).unwrap();

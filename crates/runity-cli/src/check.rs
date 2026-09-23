@@ -133,6 +133,38 @@ pub fn check(project: &Project) -> Vec<Finding> {
         ));
     }
 
+    // The game starts on a scene and speaks a language that are there.
+    let game = &project.manifest().game;
+    let scenes = project.scene_names();
+    if !scenes.contains(&game.start_scene) {
+        out.push(error(
+            runity::project::FILE,
+            format!(
+                "start_scene `{}` is not in scenes/{}",
+                game.start_scene,
+                suggest(&game.start_scene, scenes.iter().map(String::as_str))
+            ),
+        ));
+    }
+    let languages: Vec<String> = tables.iter().map(|(l, _)| l.clone()).collect();
+    if !languages.is_empty() && !languages.contains(&game.language) {
+        out.push(error(
+            runity::project::FILE,
+            format!(
+                "language `{}` has no strings/{}.ron{}",
+                game.language,
+                game.language,
+                suggest(&game.language, languages.iter().map(String::as_str))
+            ),
+        ));
+    }
+    if game.steps_per_second == 0 || game.width == 0 || game.height == 0 {
+        out.push(error(
+            runity::project::FILE,
+            "steps_per_second, width and height are more than 0",
+        ));
+    }
+
     for path in files(&project.root().join(runity::project::TUNING), "ron") {
         let file = relative(project, &path);
         let _: Option<ron::Value> = parse(&path, &file, &mut out);

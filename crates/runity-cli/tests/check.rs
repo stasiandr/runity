@@ -287,3 +287,31 @@ fn a_word_a_language_lacks_is_listed() {
     let line = one_containing(&errors, "no `hud.quit`");
     assert!(line.contains("strings/ru.ron"), "{line}");
 }
+
+#[test]
+fn the_game_settings_name_a_scene_and_a_language_that_are_there() {
+    let project = project("settings");
+    let manifest = project.root().join("runity.ron");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(
+        text.contains("start_scene: \"main\""),
+        "the knobs are in the file: {text}"
+    );
+    write(
+        &manifest,
+        &text
+            .replace("start_scene: \"main\"", "start_scene: \"mian\"")
+            .replace("language: \"en\"", "language: \"ru\""),
+    );
+    let project = Project::open(project.root()).unwrap();
+    let lines = errors(&check(&project));
+    let scene = one_containing(&lines, "start_scene");
+    assert!(scene.contains("did you mean `main`?"), "{scene}");
+    one_containing(&lines, "language `ru` has no strings/ru.ron");
+
+    let (name, settings) =
+        runity::project::GameSettings::load(&project.root().to_string_lossy()).unwrap();
+    assert_eq!(name, "settings");
+    assert_eq!(settings.start_scene, "mian");
+    assert!((settings.fixed_delta() - 1.0 / 60.0).abs() < 1e-6);
+}
