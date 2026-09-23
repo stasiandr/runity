@@ -2929,6 +2929,12 @@ impl Session {
             self.camera
         };
         let mut frame = self.base_frame(camera);
+        // The Scene view answers at once, as Unity's does: temporal
+        // antialiasing would fade a handle or an outline in over frames.
+        // The Game view is what the player sees, and has it.
+        if !self.game_view {
+            frame.post.taa = false;
+        }
         // The maps its materials draw with, uploaded the first time they
         // are seen — an import that brought a new one shows at once.
         let _ = runity::world::upload_material_maps(

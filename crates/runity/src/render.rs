@@ -932,6 +932,11 @@ pub struct Renderer {
     decal_buffer: wgpu::Buffer,
     decal_atlases: crate::decals::DecalAtlases,
     ssao: crate::ssao::SsaoRenderer,
+    /// Temporal antialiasing's history ([`crate::taa`]).
+    taa: crate::taa::Taa,
+    /// Drawing a camera's picture for a texture, not the screen: no
+    /// antialiasing history is touched.
+    picturing: bool,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
@@ -2413,6 +2418,8 @@ impl Renderer {
             decal_buffer,
             decal_atlases,
             ssao,
+            taa: crate::taa::Taa::new(gpu),
+            picturing: false,
             ray,
             light_buffer,
             cell_buffer,
@@ -3249,7 +3256,9 @@ impl Renderer {
             .create_view(&wgpu::TextureViewDescriptor::default());
         // Motion blur's history is the screen camera's, not this one's.
         let history = self.previous_view_projection;
+        self.picturing = true;
         self.render_view(gpu, Some(&view), size.0, size.1, &frame, None);
+        self.picturing = false;
         self.previous_view_projection = history;
     }
 
@@ -3355,6 +3364,24 @@ impl Renderer {
         if probe.is_none() && self.ssao.resize(gpu, (width, height)) {
             self.rebind(gpu);
         }
+        // Temporal antialiasing: the screen's own view only, moved a
+        // fraction of a pixel each frame it has a history to blend into.
+        let taa_on = frame.post.taa && probe.is_none() && view.is_some() && !self.picturing;
+        if taa_on {
+            self.taa.resize(gpu, (width, height));
+            self.taa.follow(
+                frame.camera.position,
+                (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
+            );
+        }
+        let jitter = if taa_on {
+            self.taa.jitter()
+        } else {
+            glam::Vec2::ZERO
+        };
+        // What is drawn with: the camera, moved by the jitter.
+        let drawn = Mat4::from_translation(Vec3::new(jitter.x, jitter.y, 0.0))
+            * frame.camera.view_projection(aspect);
         if probe.is_none()
             && (frame.sky.clouds.coverage > 0.0 || frame.weather.dust_wall > 0.0)
             && self.clouds.resize(
@@ -3565,7 +3592,7 @@ impl Renderer {
         gpu.queue.write_buffer(&self.casters, 0, &casters);
 
         let uniform = FrameUniform {
-            view_projection: frame.camera.view_projection(aspect).to_cols_array_2d(),
+            view_projection: drawn.to_cols_array_2d(),
             sun_direction: extend(frame.lighting.sun_direction.normalize_or_zero(), 0.0),
             sun_color: extend(sun_light, 0.0),
             sky_color: extend(sky_light, 0.0),
@@ -3605,11 +3632,7 @@ impl Renderer {
                 [near, (far / near).ln(), width as f32, height as f32]
             },
             light_shadow: [1.0 / self.light_shadow_resolution as f32, 0.0, 0.0, 0.0],
-            inverse_view_projection: frame
-                .camera
-                .view_projection(aspect)
-                .inverse()
-                .to_cols_array_2d(),
+            inverse_view_projection: drawn.inverse().to_cols_array_2d(),
             sky_zenith: [
                 frame.sky.zenith[0],
                 frame.sky.zenith[1],
@@ -4090,11 +4113,7 @@ impl Renderer {
                 gpu,
                 &mut encoder,
                 &crate::atmosphere::AtmosphereUniform {
-                    inverse_view_projection: frame
-                        .camera
-                        .view_projection(aspect)
-                        .inverse()
-                        .to_cols_array_2d(),
+                    inverse_view_projection: drawn.inverse().to_cols_array_2d(),
                     to_sun: extend(to_sun, altitude),
                     eye: extend(frame.camera.position, frame.camera.far),
                     amounts: [
@@ -4140,7 +4159,7 @@ impl Renderer {
         let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
-        let prepass_drawn = ssao_on || lens_on || water_on || ssr_on || wall_on;
+        let prepass_drawn = ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on;
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4173,7 +4192,7 @@ impl Renderer {
                 }
             }
             if ssao_on {
-                let now = frame.camera.view_projection(aspect);
+                let now = drawn;
                 self.ssao.run(
                     gpu,
                     &mut encoder,
@@ -4203,11 +4222,7 @@ impl Renderer {
                 gpu,
                 &mut encoder,
                 crate::clouds::CloudUniform {
-                    inverse_view_projection: frame
-                        .camera
-                        .view_projection(aspect)
-                        .inverse()
-                        .to_cols_array_2d(),
+                    inverse_view_projection: drawn.inverse().to_cols_array_2d(),
                     eye: extend(frame.camera.position, foliage.wind[3]),
                     to_sun: extend(to_sun, 1.0),
                     sun: extend(sun_light, 0.0),
@@ -4315,10 +4330,22 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
+        let picture = if taa_on {
+            self.taa.run(
+                gpu,
+                &mut encoder,
+                &self.scene.resolved,
+                &self.ssao.depth,
+                drawn,
+                previous,
+            )
+        } else {
+            &self.scene.resolved
+        };
         let lensed = self.lens.run(
             gpu,
             &mut encoder,
-            &self.scene.resolved,
+            picture,
             &self.ssao.depth,
             (width, height),
             &frame.post,
@@ -4358,7 +4385,7 @@ impl Renderer {
         self.post.run(
             gpu,
             &mut encoder,
-            lensed.unwrap_or(&self.scene.resolved),
+            lensed.unwrap_or(picture),
             view,
             (width, height),
             &frame.post,

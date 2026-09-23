@@ -88,6 +88,7 @@ pub mod ssao;
 pub mod steam;
 pub mod strings;
 pub mod surface;
+pub mod taa;
 pub mod time;
 pub mod timers;
 pub mod tuned;
