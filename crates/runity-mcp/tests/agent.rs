@@ -129,6 +129,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "drop",
         "add_component",
         "import_settings",
+        "fit_collider",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

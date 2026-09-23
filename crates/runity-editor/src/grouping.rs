@@ -87,6 +87,25 @@ impl Session {
         Ok(group)
     }
 
+    /// A box collider that fits the entity's model — what Unity does when
+    /// a BoxCollider is added: its size and centre from the model's bounds,
+    /// in the entity's own space. One undo step; `false` for a thing with
+    /// no model to fit.
+    pub fn fit_collider(&mut self, id: EntityId) -> EditResult<bool> {
+        let Some(model) = self.line(id).map(|l| l.model.clone()) else {
+            return Err(EditError::NoEntity(id));
+        };
+        let Some((low, high)) = self.bounds_of(&model) else {
+            return Ok(false);
+        };
+        let collider = runity::scene::Collider::Box {
+            half: (high - low) * 0.5,
+            center: (high + low) * 0.5,
+        };
+        self.update(id, |desc| desc.collider = collider)?;
+        Ok(true)
+    }
+
     /// Select every line of the document at the top — Ctrl A.
     pub fn select_everything(&mut self) -> EditResult<usize> {
         let tops: Vec<EntityId> = self.history.scene().entities.iter().map(|e| e.id).collect();

@@ -3628,3 +3628,33 @@ fn the_hierarchy_search_shows_only_matches_and_reset_puts_a_field_back() {
     assert!(body.value.ends_with("None"), "{}", body.value);
     assert!(session.reset_field(crate_id, "name").is_err());
 }
+
+#[test]
+fn a_box_collider_is_fitted_to_the_model() {
+    let Some((mut session, path)) = open("fit-collider") else {
+        return;
+    };
+    let root = root_of(&path);
+    // A post two metres tall, its origin at its foot once imported.
+    std::fs::write(
+        root.join("assets/post.obj"),
+        "v -0.5 0 -0.5\nv 0.5 0 -0.5\nv 0.5 2 0.5\nv -0.5 2 0.5\nf 1 2 3\nf 1 3 4\n",
+    )
+    .unwrap();
+    session.import(root.join("assets/post.obj")).unwrap();
+    let post = session.add(None, "post").unwrap();
+    assert!(session.fit_collider(post).unwrap());
+    let collider = session
+        .inspect(post)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "collider")
+        .unwrap()
+        .value;
+    assert!(
+        collider.contains("half:(0.5,1.0,0.5)") && collider.contains("center:(0.0,1.0,0.0)"),
+        "{collider}"
+    );
+    let empty = session.add(None, "").unwrap();
+    assert!(!session.fit_collider(empty).unwrap(), "nothing to fit");
+}
