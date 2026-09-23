@@ -505,7 +505,59 @@ pub struct Controller {
     /// Where in its cycle the state was at the last update.
     phase: Option<f32>,
     fired: Vec<String>,
+    /// Updates so far: the clock the trail is told by.
+    updates: u64,
+    /// The last few transitions taken, oldest first.
+    trail: std::collections::VecDeque<Passage>,
 }
+
+/// A transition taken: when (the controller's update count), from which
+/// state to which, and what made it — for an agent reading a running game
+/// to see why a character is where it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Passage {
+    pub update: u64,
+    /// Empty for the start.
+    pub from: String,
+    pub to: String,
+    /// The conditions that held, in words; `start` for the first state.
+    pub when: String,
+}
+
+impl std::fmt::Display for Passage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.from.is_empty() {
+            write!(f, "#{} → {} ({})", self.update, self.to, self.when)
+        } else {
+            write!(
+                f,
+                "#{} {} → {} ({})",
+                self.update, self.from, self.to, self.when
+            )
+        }
+    }
+}
+
+/// Conditions in words: `speed > 0.1, jump pulled`.
+pub fn describe(when: &[Condition]) -> String {
+    if when.is_empty() {
+        return "always".into();
+    }
+    when.iter()
+        .map(|c| match c {
+            Condition::Above(p, v) => format!("{p} > {v}"),
+            Condition::Below(p, v) => format!("{p} < {v}"),
+            Condition::Is(p) => p.clone(),
+            Condition::Not(p) => format!("not {p}"),
+            Condition::Trigger(p) => format!("{p} pulled"),
+            Condition::Finished => "clip finished".into(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How many transitions a controller remembers.
+pub const TRAIL: usize = 16;
 
 impl Controller {
     pub fn new(graph: Graph) -> Self {
@@ -516,7 +568,14 @@ impl Controller {
             triggers: HashSet::new(),
             phase: None,
             fired: Vec::new(),
+            updates: 0,
+            trail: Default::default(),
         }
+    }
+
+    /// The last transitions taken, oldest first.
+    pub fn trail(&self) -> impl Iterator<Item = &Passage> {
+        self.trail.iter()
     }
 
     /// The state it is in; `None` before the first update.
@@ -635,6 +694,8 @@ impl Controller {
     /// Take the first transition whose conditions hold, if any, and play
     /// what the state says on `animator`. Returns the state entered.
     pub fn update(&mut self, animator: &mut Animator) -> Option<String> {
+        self.updates += 1;
+        let mut because = String::from("start");
         let entered = match &self.state {
             None => Some((self.graph.start.clone(), 0.0)),
             Some(now) => {
@@ -653,9 +714,23 @@ impl Controller {
                             Condition::Finished => finished,
                         })
                     })
-                    .map(|t| (t.to.clone(), t.fade))
+                    .map(|t| {
+                        because = describe(&t.when);
+                        (t.to.clone(), t.fade)
+                    })
             }
         };
+        if let Some((to, _)) = &entered {
+            self.trail.push_back(Passage {
+                update: self.updates,
+                from: self.state.clone().unwrap_or_default(),
+                to: to.clone(),
+                when: because,
+            });
+            while self.trail.len() > TRAIL {
+                self.trail.pop_front();
+            }
+        }
         self.triggers.clear();
         if let Some((name, fade)) = &entered {
             if let Some(state) = self
@@ -1190,6 +1265,18 @@ mod tests {
         );
         let wanted: Vec<String> = graph.parameters().into_iter().collect();
         assert_eq!(wanted, ["jump", "speed"]);
+    }
+
+    #[test]
+    fn a_controller_remembers_which_way_it_went_and_why() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.update(&mut animator);
+        controller.set("speed", 2.0);
+        controller.update(&mut animator);
+        let trail: Vec<String> = controller.trail().map(|p| p.to_string()).collect();
+        assert_eq!(trail, ["#1 → idle (start)", "#2 idle → walk (speed > 0.1)"]);
     }
 
     #[test]

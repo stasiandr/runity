@@ -72,6 +72,21 @@ pub struct Diagnostics {
     /// median and worst milliseconds over the recent frames.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub systems: Vec<(String, f32, f32)>,
+    /// Each animated entity's last transitions, `#update from → to (why)`:
+    /// how a character came to be in its state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animators: Vec<(crate::id::EntityId, Vec<String>)>,
+}
+
+/// Every controller's trail, by the entity's id.
+pub fn animator_trails(world: &hecs::World) -> Vec<(crate::id::EntityId, Vec<String>)> {
+    let mut out: Vec<(crate::id::EntityId, Vec<String>)> = world
+        .query::<(&crate::world::SceneId, &crate::animgraph::Controller)>()
+        .iter()
+        .map(|(id, c)| (id.0, c.trail().map(|p| p.to_string()).collect()))
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    out
 }
 
 /// One networked entity as a peer sees it.

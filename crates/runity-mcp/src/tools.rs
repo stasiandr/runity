@@ -139,7 +139,7 @@ pub fn list() -> Vec<Value> {
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
         tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" } }), &[]),
-        tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, and what was spawned at run time. The Inspector shows the same as game.* fields.", json!({}), &[]),
+        tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, what was spawned at run time, and each animator's last transitions (from → to, and the conditions that held). The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
@@ -792,6 +792,19 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 );
             }
             let _ = write!(out, "{unmoved} more where the scene puts them");
+            // How each animated thing came to be in its state.
+            for (id, trail) in state
+                .diagnostics
+                .as_ref()
+                .map(|d| d.animators.as_slice())
+                .unwrap_or(&[])
+            {
+                let name = session.entity_name(*id).unwrap_or_default();
+                let _ = write!(out, "\nanimator of {id} {name:?}:");
+                for passage in trail {
+                    let _ = write!(out, "\n  {passage}");
+                }
+            }
             Ok(vec![text(out)])
         }
         "stop_game" => {
