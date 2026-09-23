@@ -85,6 +85,47 @@ pub struct LightSource(pub crate::scene::Light);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A camera drawing into a picture, from its line's `render_texture`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToTexture(pub crate::scene::RenderTexture);
+
+/// Every camera that draws into a picture, as a frame of its own: what
+/// [`scene_frame`] puts on a frame for materials to show.
+pub fn texture_views(
+    world: &World,
+    scene: &crate::scene::Scene,
+) -> Vec<crate::render::TextureView> {
+    let cameras: Vec<(Camera, crate::scene::RenderTexture)> = world
+        .query::<(&CameraLens, &WorldTransform, &ToTexture)>()
+        .iter()
+        .map(|(lens, placed, picture)| (lens_camera(lens.0, placed.0), picture.0.clone()))
+        .collect();
+    cameras
+        .into_iter()
+        .map(|(camera, picture)| {
+            let hidden: std::collections::HashSet<crate::id::EntityId> = world
+                .query::<(&Layer, &SceneId)>()
+                .iter()
+                .filter(|(layer, _)| picture.hide.contains(&layer.0))
+                .map(|(_, id)| id.0)
+                .collect();
+            let mut frame = build_frame_where(
+                world,
+                camera,
+                scene_lighting(&scene.sun),
+                scene_fog(&scene.fog),
+                |line| line.is_none_or(|id| !hidden.contains(&id)),
+            );
+            scene_look(&mut frame, scene);
+            frame.post.motion_blur = Default::default();
+            crate::render::TextureView {
+                id: crate::asset::AssetId::render_target(&picture.name),
+                frame: Box::new(frame),
+            }
+        })
+        .collect()
+}
+
 /// A mesh the game rewrites as it goes — the water's surface, a rope
 /// between two hands — drawn at the entity with its material. Changing it
 /// ([`LiveMesh::set`]) uploads it again on the next frame; leaving it
@@ -382,6 +423,9 @@ fn spawn_one(
     }
     if let Some(volume) = desc.post_volume {
         let _ = world.insert_one(entity, PostVolumeBox(volume));
+    }
+    if let Some(picture) = &desc.render_texture {
+        let _ = world.insert_one(entity, ToTexture(picture.clone()));
     }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
@@ -709,6 +753,17 @@ impl Patch<'_> {
             }
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
+            match &desc.render_texture {
+                Some(picture) => {
+                    let _ = world.insert_one(entity, ToTexture(picture.clone()));
+                }
+                None => {
+                    let _ = world.remove_one::<ToTexture>(entity);
+                }
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.post_volume != desc.post_volume) {
             match desc.post_volume {
                 Some(volume) => {
@@ -934,7 +989,7 @@ pub fn upload_material_maps(
                 .flat_map(|p| p.1.maps().collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
         )
-        .filter(|id| renderer.texture_for(*id).is_none())
+        .filter(|id| !id.is_render_target() && renderer.texture_for(*id).is_none())
         .collect();
     wanted.sort();
     wanted.dedup();
@@ -964,6 +1019,7 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
     );
     scene_look(&mut frame, scene);
     post_volumes(&mut frame, world);
+    frame.texture_views = texture_views(world, scene);
     frame
 }
 
@@ -1059,17 +1115,10 @@ pub fn camera_of(world: &World) -> Option<Camera> {
     let mut best: Option<(i32, std::cmp::Reverse<crate::id::EntityId>, Camera)> = None;
     for (lens, placed, id) in world
         .query::<(&CameraLens, &WorldTransform, Option<&SceneId>)>()
+        .without::<&ToTexture>()
         .iter()
     {
-        let (_, rotation, position) = placed.0.to_scale_rotation_translation();
-        let camera = Camera {
-            position,
-            target: position + rotation * glam::Vec3::Z,
-            up: rotation * glam::Vec3::Y,
-            fov_y_degrees: lens.0.fov_deg,
-            ortho: lens.0.ortho,
-            ..Camera::default()
-        };
+        let camera = lens_camera(lens.0, placed.0);
         let key = (
             lens.0.priority,
             std::cmp::Reverse(id.map(|i| i.0).unwrap_or_default()),
@@ -1079,6 +1128,19 @@ pub fn camera_of(world: &World) -> Option<Camera> {
         }
     }
     best.map(|(_, _, camera)| camera)
+}
+
+/// What a camera on an entity sees: from where it is, along its +z.
+fn lens_camera(lens: crate::scene::Lens, placed: glam::Mat4) -> Camera {
+    let (_, rotation, position) = placed.to_scale_rotation_translation();
+    Camera {
+        position,
+        target: position + rotation * glam::Vec3::Z,
+        up: rotation * glam::Vec3::Y,
+        fov_y_degrees: lens.fov_deg,
+        ortho: lens.ortho,
+        ..Camera::default()
+    }
 }
 
 /// The view to write back into a scene for a camera.
@@ -1236,6 +1298,7 @@ pub fn build_frame_where(
         lights,
         flares,
         live_meshes,
+        texture_views: Vec::new(),
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),
@@ -1265,6 +1328,7 @@ mod tests {
             joint_break: None,
             bone: String::new(),
             post_volume: None,
+            render_texture: None,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1299,6 +1363,7 @@ mod tests {
                     joint_break: None,
                     bone: String::new(),
                     post_volume: None,
+                    render_texture: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),

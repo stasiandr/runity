@@ -478,6 +478,20 @@ pub struct Probe {
     pub blend_distance: f32,
 }
 
+/// A camera that draws into a picture a material shows — a mirror, a
+/// security monitor — rather than onto the screen: Unity's camera with a
+/// Render Texture. `render_texture: (name: "mirror", hide: ["Player
+/// head"])` on an entity with a `camera`; a material shows it with
+/// `base_map: "render:mirror"`. `hide` leaves those layers out of its
+/// picture (Unity's culling mask); whatever shows the picture itself is
+/// left out on its own. The picture is the size of the screen's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderTexture {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
+}
+
 /// A place that looks different — the cellar darker and greener, the
 /// sauna hazy — URP's local Volume. `post_volume: (size: (6.0, 3.0, 6.0),
 /// post: (exposure: -0.5, saturation: 0.6))`: inside the box (metres,
@@ -776,6 +790,10 @@ pub struct EntityDesc {
     /// A reflection probe at this entity; see [`Probe`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
+    /// This entity's camera draws into a picture, not onto the screen;
+    /// see [`RenderTexture`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_texture: Option<RenderTexture>,
     /// A place that looks different; see [`PostVolume`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub post_volume: Option<PostVolume>,
@@ -1640,6 +1658,7 @@ mod tests {
                 joint_break: None,
                 bone: String::new(),
                 post_volume: None,
+                render_texture: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1672,6 +1691,7 @@ mod tests {
                     joint_break: None,
                     bone: String::new(),
                     post_volume: None,
+                    render_texture: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1730,6 +1750,7 @@ mod tests {
                 joint_break: None,
                 bone: String::new(),
                 post_volume: None,
+                render_texture: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),

@@ -51,7 +51,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "joint" => ron(&blank.joint),
         "layer" | "bone" => String::new(),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "route" | "spline" | "along" | "joint_break" => "None".into(),
+        | "render_texture" | "route" | "spline" | "along" | "joint_break" => "None".into(),
         _ => return None,
     })
 }
@@ -306,6 +306,10 @@ impl Session {
                 "reflection_probe".into(),
                 desc.reflection_probe
                     .map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "render_texture".into(),
+                desc.render_texture.as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "post_volume".into(),
@@ -699,6 +703,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Decal>(field, text)?)
+                }
+            }
+            "render_texture" => {
+                next.render_texture = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::RenderTexture>(field, text)?)
                 }
             }
             "post_volume" => {

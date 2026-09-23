@@ -887,6 +887,11 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
     if name.is_empty() {
         return Ok(None);
     }
+    // A camera's picture: `render:mirror`, what a camera with
+    // `render_texture: (name: "mirror")` draws.
+    if let Some(target) = name.strip_prefix("render:") {
+        return Ok(Some(runity::asset::AssetId::render_target(target)));
+    }
     let project = runity::Project::find(material).map_err(|e| {
         anyhow::anyhow!(
             "{}: `{name}` is a texture, and a material that uses one has to be in a project: {e}",

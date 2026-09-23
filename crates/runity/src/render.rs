@@ -498,6 +498,10 @@ pub struct Frame {
     /// Meshes the game changes as it goes — water, a rope — drawn from
     /// their data and uploaded again only when it changed.
     pub live_meshes: Vec<LiveMeshDraw>,
+    /// Pictures other cameras take first, for materials to show — a
+    /// mirror's: each drawn with everything but post-processing's
+    /// history, the size of this frame.
+    pub texture_views: Vec<TextureView>,
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
@@ -528,6 +532,7 @@ impl Default for Frame {
             lights: Vec::new(),
             flares: Vec::new(),
             live_meshes: Vec::new(),
+            texture_views: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
@@ -647,6 +652,14 @@ pub struct LiveMeshDraw {
     pub indices: std::sync::Arc<Vec<u32>>,
     pub transform: Mat4,
     pub material: Material,
+}
+
+/// A camera's picture: under what id materials find it
+/// ([`crate::asset::AssetId::render_target`]), and what it sees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextureView {
+    pub id: crate::asset::AssetId,
+    pub frame: Box<Frame>,
 }
 
 /// A lamp's own lens flare, in the world.
@@ -830,6 +843,8 @@ pub struct Renderer {
     /// Live meshes by their key: the mesh each is drawn with, and the
     /// version last uploaded.
     live: std::collections::HashMap<u64, (MeshHandle, u64)>,
+    /// Cameras' pictures by their id: the texture drawn into, its size.
+    targets: std::collections::HashMap<crate::asset::AssetId, (wgpu::Texture, (u32, u32))>,
     textures: Vec<GpuTexture>,
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
@@ -1967,6 +1982,7 @@ impl Renderer {
             stats: FrameStats::default(),
             meshes: Vec::new(),
             live: std::collections::HashMap::new(),
+            targets: std::collections::HashMap::new(),
             textures: Vec::new(),
             by_asset: std::collections::HashMap::new(),
             map_groups: std::collections::HashMap::new(),
@@ -2616,6 +2632,9 @@ impl Renderer {
         height: u32,
         frame: &Frame,
     ) {
+        for picture in &frame.texture_views {
+            self.render_picture(gpu, picture, (width, height));
+        }
         if frame.live_meshes.is_empty() {
             self.bake_probes(gpu, frame);
             self.render_view(gpu, Some(view), width, height, frame, None);
@@ -2642,6 +2661,58 @@ impl Renderer {
         }
         self.bake_probes(gpu, &frame);
         self.render_view(gpu, Some(view), width, height, &frame, None);
+    }
+
+    /// A camera's picture, drawn into its texture before the frame that
+    /// shows it. What would show the picture in itself is left out: a
+    /// texture cannot be drawn into and read in one pass.
+    fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
+        let stale = self
+            .targets
+            .get(&picture.id)
+            .is_none_or(|(_, at)| *at != size);
+        if stale {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("camera picture"),
+                size: wgpu::Extent3d {
+                    width: size.0.max(1),
+                    height: size.1.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            match self.by_asset.get(&picture.id) {
+                Some(handle) => self.textures[handle.0 as usize] = GpuTexture { view },
+                None => {
+                    self.textures.push(GpuTexture { view });
+                    let handle = TextureHandle(self.textures.len() as u32 - 1);
+                    self.by_asset.insert(picture.id, handle);
+                }
+            }
+            // Bind groups made with the old picture point at nothing.
+            self.map_groups.clear();
+            self.targets.insert(picture.id, (texture, size));
+        }
+        let mut frame = (*picture.frame).clone();
+        let shows = |m: &Material| {
+            [m.base_map, m.normal_map, m.mask_map, m.emission_map].contains(&Some(picture.id))
+        };
+        frame.draws.retain(|d| !shows(&d.material));
+        frame.texture_views.clear();
+        let view = self.targets[&picture.id]
+            .0
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Motion blur's history is the screen camera's, not this one's.
+        let history = self.previous_view_projection;
+        self.render_view(gpu, Some(&view), size.0, size.1, &frame, None);
+        self.previous_view_projection = history;
     }
 
     /// Put new vertices and indices into a mesh already uploaded: the same

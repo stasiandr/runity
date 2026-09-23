@@ -73,6 +73,9 @@ impl AssetKind {
 #[rkyv(derive(Debug), compare(PartialEq))]
 pub struct AssetId(pub u128);
 
+/// The top bits of a camera's picture's id: "REND".
+const RENDER_TARGET: u128 = 0x5245_4e44;
+
 impl AssetId {
     /// Derive an id from the source path and a salt.
     ///
@@ -90,6 +93,19 @@ impl AssetId {
             hash = hash.wrapping_mul(PRIME);
         }
         AssetId(hash)
+    }
+
+    /// The id a camera's picture goes by (`render_texture`), for a
+    /// material to show it: `base_map: "render:mirror"`. Marked in its top
+    /// bits, so it is never taken for a texture the library should have.
+    pub fn render_target(name: &str) -> Self {
+        let hash = Self::from_source(&format!("render:{name}"), 0).0;
+        AssetId((RENDER_TARGET << 96) | (hash & ((1u128 << 96) - 1)))
+    }
+
+    /// Whether this is a camera's picture rather than an imported texture.
+    pub fn is_render_target(&self) -> bool {
+        self.0 >> 96 == RENDER_TARGET
     }
 
     pub fn as_hex(&self) -> String {
