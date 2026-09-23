@@ -66,7 +66,9 @@ impl Surface {
             height: height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: capabilities.alpha_modes[0],
-            view_formats: vec![],
+            // The same bytes seen as plain RGBA, for a UI that blends as a
+            // browser does (`AcquiredFrame::ui_view`).
+            view_formats: vec![format.remove_srgb_suffix()],
             // The default: the format already says sRGB, and naming a wider
             // space here would change what the encode step means.
             color_space: Default::default(),
@@ -103,7 +105,7 @@ impl Surface {
         self.inner.configure(&gpu.device, &self.config);
     }
 
-    pub(crate) fn format(&self) -> wgpu::TextureFormat {
+    pub fn format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
@@ -163,6 +165,23 @@ pub struct AcquiredFrame {
 }
 
 impl AcquiredFrame {
+    /// The frame as plain bytes rather than sRGB: what a UI draws into,
+    /// the same as `OffscreenTarget::ui_view`.
+    pub fn ui_view(&self) -> wgpu::TextureView {
+        let format = self.texture.texture.format().remove_srgb_suffix();
+        self.texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                format: Some(format),
+                ..Default::default()
+            })
+    }
+
+    /// The frame as it is: what the 3D renderer draws into.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
+    }
+
     /// Hand it to the compositor. Everything drawn into it must already be
     /// submitted.
     pub fn present(self, gpu: &Gpu) {

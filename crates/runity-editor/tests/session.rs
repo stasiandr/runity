@@ -146,6 +146,30 @@ fn a_transform_round_trips_and_reaches_the_file() {
 }
 
 #[test]
+fn an_edit_marks_the_document_modified_and_saving_or_undoing_clears_it() {
+    let Some((mut session, path)) = open("modified") else {
+        return;
+    };
+    assert_eq!(session.scene_path(), Some(path.as_path()));
+    assert!(
+        !session.is_modified(),
+        "as opened, it is what the file says"
+    );
+    let crate_id = id(&session, "crate");
+    let moved = transform([4.0, 0.0, 0.0], [0.0; 3], [1.0; 3]);
+    session.set_transform(crate_id, moved).unwrap();
+    assert!(session.is_modified());
+    session.undo().unwrap();
+    assert!(
+        !session.is_modified(),
+        "undone back to the file is not a change"
+    );
+    session.redo().unwrap();
+    session.save_scene(None).unwrap();
+    assert!(!session.is_modified(), "saved");
+}
+
+#[test]
 fn an_edit_to_an_entity_that_is_not_there_says_which() {
     // The reason travels with the failure now, and it has to be one an
     // agent can act on from the text alone.
@@ -4205,4 +4229,23 @@ fn snapping_the_selection_puts_a_greybox_dragged_by_eye_on_the_grid() {
     assert_eq!(t.position, Vec3::new(1.25, 0.5, -2.25));
     assert_eq!(t.rotation_deg.y, 45.0);
     assert_eq!(session.snap_selection().unwrap(), 0, "already on it");
+}
+
+#[test]
+fn the_game_view_draws_through_the_game_camera_without_the_editors_marks() {
+    let Some((mut session, _path)) = open("gameview") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.render();
+    let scene_view = session.frame_pixels().to_vec();
+    session.set_game_view(true);
+    assert!(session.is_game_view());
+    session.render();
+    let game_view = session.frame_pixels().to_vec();
+    assert_ne!(scene_view, game_view, "the gizmo and grid are gone");
+    session.set_game_view(false);
+    session.render();
+    assert_eq!(session.frame_pixels(), &scene_view[..], "and come back");
 }

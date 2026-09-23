@@ -2,30 +2,51 @@
 //!
 //! Everything the editor *does* lives in `runity-editor`: one document open
 //! for editing, and every change to it as a function, tested without a
-//! window. This binary owns the window, the layout and the keyboard, and
-//! calls those functions — the same ones an agent calls over MCP, so a
-//! person's edit and an agent's are one edit (DNA, postulate 5).
+//! window. This crate lays out the panels on `runity-ui`, routes input
+//! between them and the Scene view, and turns menu entries and buttons into
+//! those functions — the same ones an agent calls over MCP, so a person's
+//! edit and an agent's are one edit (DNA, postulate 5).
 //!
 //! ```text
 //! runity-studio [scene.ron]
 //! ```
 //!
-//! With no scene named it opens the engine's reference scene, so that a
-//! fresh clone shows a picture rather than an empty grid.
+//! With no scene named it opens the one the project last had open, or the
+//! engine's reference scene, so that a fresh clone shows a picture.
 //!
-//! **macOS only, for now.** Not because GPUI is: because how the engine's
-//! picture reaches a GPUI window is settled on macOS and nowhere else (DNA,
-//! open question 1 — Windows is a shared D3D handle, and nobody has written
-//! it). Building the window everywhere would mean every clone on every
-//! platform compiling GPUI's dependency tree for a binary that cannot draw,
-//! and postulate 1 is the reason not to.
+//! [`Studio`] is the whole editor without a window: the tests and the
+//! `shot` example drive it off-screen. [`window::run`] is winit around it.
 
-#[cfg(target_os = "macos")]
-mod keys;
-#[cfg(target_os = "macos")]
+mod bottom;
+mod clipboard;
+mod hierarchy;
+mod inspector;
+pub mod menu;
 mod studio;
-#[cfg(target_os = "macos")]
-mod viewport;
+pub mod theme;
+pub mod window;
 
-#[cfg(target_os = "macos")]
-pub use studio::{open, run, Studio, REFERENCE_SCENE};
+use std::path::Path;
+
+use runity_editor::console::Level;
+use runity_editor::Session;
+
+pub use studio::{Studio, REFERENCE_SCENE};
+
+/// A session with `scene` open, or why it could not be.
+///
+/// The size is a first guess: the Scene view resizes the session to
+/// whatever the layout gives it on the first frame.
+pub fn open(scene: &Path) -> Result<Session, String> {
+    let mut session = Session::offscreen(1280, 720).map_err(|e| {
+        format!("no renderer: {e}\nRUNITY_RENDERER and a working adapter are what this needs.")
+    })?;
+    let missing = session
+        .open_scene(scene)
+        .map_err(|e| format!("cannot open {}: {e}", scene.display()))?;
+    session.say(Level::Info, format!("opened {}", scene.display()));
+    for problem in missing {
+        session.say(Level::Warning, problem);
+    }
+    Ok(session)
+}

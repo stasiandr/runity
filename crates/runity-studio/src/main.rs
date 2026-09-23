@@ -1,18 +1,22 @@
-//! The editor. See the crate's documentation for what it is and is not.
+//! The editor. See the crate's documentation for what it is.
 
-#[cfg(target_os = "macos")]
-fn main() {
-    runity_studio::run();
-}
+use std::path::PathBuf;
 
-#[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!(
-        "the editor's window is macOS-only today: how the engine's frame reaches \
-         a GPUI window is settled there and nowhere else (docs/DNA.md, open \
-         question 1). The editor's own work — open, select, drag, undo, import, \
-         play — is in runity-editor and runs everywhere, and `runity-mcp` drives \
-         it without a window."
-    );
-    std::process::exit(1);
+    let scene = std::env::args()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(runity_studio::REFERENCE_SCENE));
+    let session = match runity_studio::open(&scene) {
+        Ok(session) => session,
+        Err(message) => {
+            eprintln!("{message}");
+            std::process::exit(1);
+        }
+    };
+    let title = scene
+        .file_name()
+        .map(|name| format!("runity — {}", name.to_string_lossy()))
+        .unwrap_or_else(|| "runity".to_string());
+    runity_studio::window::run(session, title);
 }

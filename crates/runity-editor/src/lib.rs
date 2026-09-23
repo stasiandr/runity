@@ -99,6 +99,12 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Draw what the game would show instead of the Scene view: Unity's
+    /// Game view (see [`Session::set_game_view`]).
+    game_view: bool,
+    /// Whether [`Session::render`] reads the frame back into `pixels`. A
+    /// window on the same device shows the texture itself and turns this off.
+    readback: bool,
     /// Which entity the gizmo is on.
     ///
     /// By ID, so it survives edits to everything else. When it was an index
@@ -284,6 +290,8 @@ impl Session {
             uploaded: Vec::new(),
             camera: Camera::default(),
             pixels: Vec::new(),
+            readback: true,
+            game_view: false,
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -442,6 +450,21 @@ impl Session {
     /// Whether the open document is a prefab rather than a scene.
     pub fn is_prefab(&self) -> bool {
         is_prefab(self.scene_path.as_deref())
+    }
+
+    /// Where the open document was read from, and is saved to.
+    pub fn scene_path(&self) -> Option<&Path> {
+        self.scene_path.as_deref()
+    }
+
+    /// Whether the document says something its file does not: the dot on
+    /// a tab, the question before closing. Undoing back to what was saved
+    /// is not a change.
+    pub fn is_modified(&self) -> bool {
+        match &self.on_disk {
+            Some((seen, _)) => self.history.scene() != seen,
+            None => self.history.depth() > 0,
+        }
     }
 
     /// Write the scene back: to `path`, or where it was opened from.
@@ -2370,8 +2393,13 @@ impl Session {
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
         let scene = self.history.scene();
+        let camera = if self.game_view {
+            self.game_camera().unwrap_or(self.camera)
+        } else {
+            self.camera
+        };
         let mut frame = Frame {
-            camera: self.camera,
+            camera,
             // From the scene's hour, like every other tool: an editor
             // lighting a scene differently from the render is an editor you
             // cannot trust about anything you are looking at.
@@ -2386,13 +2414,21 @@ impl Session {
                 let unseen = self.unseen();
                 runity::build_frame_where(
                     &self.world,
-                    self.camera,
+                    camera,
                     Lighting::default(),
                     FogSettings::default(),
                     |line| line.is_none_or(|id| !unseen.contains(&id)),
                 )
             }
         };
+        if self.game_view {
+            // What the player sees: no grid, no handles, no outlines.
+            self.renderer.render(&self.gpu, &self.target, &frame);
+            if self.readback {
+                self.pixels = self.target.read_rgba(&self.gpu);
+            }
+            return;
+        }
         if self.show_colliders {
             let arm = self.gizmo_arm_mesh();
             let unseen = self.unseen();
@@ -2619,7 +2655,43 @@ impl Session {
             ));
         }
         self.renderer.render(&self.gpu, &self.target, &frame);
-        self.pixels = self.target.read_rgba(&self.gpu);
+        if self.readback {
+            self.pixels = self.target.read_rgba(&self.gpu);
+        }
+    }
+
+    /// Show the game's view — through the scene's camera, or the Scene
+    /// view's own when it has none — with none of the editor's overlays.
+    /// Unity's Game view. A view setting, not an edit.
+    pub fn set_game_view(&mut self, game: bool) {
+        self.game_view = game;
+    }
+
+    pub fn is_game_view(&self) -> bool {
+        self.game_view
+    }
+
+    /// Stop (or start) reading each frame back into memory. A window that
+    /// shares this session's GPU shows [`Session::frame_target`] directly;
+    /// the readback is then a stall for nothing. `frame_pixels` is empty
+    /// while it is off.
+    pub fn set_readback(&mut self, readback: bool) {
+        self.readback = readback;
+        if !readback {
+            self.pixels = Vec::new();
+        }
+    }
+
+    /// The GPU the session renders with: a window that wants to show the
+    /// frame without a copy makes its surface on this one.
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
+    /// The texture the Scene view is drawn into. Recreated by
+    /// [`Session::resize`], so a window looks it up again after one.
+    pub fn frame_target(&self) -> &OffscreenTarget {
+        &self.target
     }
 
     /// What the game would look through: the camera on an entity of the

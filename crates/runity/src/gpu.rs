@@ -143,8 +143,11 @@ impl OffscreenTarget {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            // The same bytes seen as plain RGBA: see `ui_view`.
+            view_formats: &[format.remove_srgb_suffix()],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -167,6 +170,28 @@ impl OffscreenTarget {
             padded_bytes_per_row,
             buffer,
         }
+    }
+
+    /// The texture's colour format.
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    /// The texture seen as plain bytes rather than sRGB: what a UI draws
+    /// into. Blending then happens on the sRGB values, as a browser and every
+    /// design tool does — a 7% white over dark grey is the 7% the design
+    /// file means, not a much lighter linear-light 7%.
+    pub fn ui_view(&self) -> wgpu::TextureView {
+        self.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.format.remove_srgb_suffix()),
+            ..Default::default()
+        })
+    }
+
+    /// The texture itself, to show in a UI: the Scene view's frame as a
+    /// picture, on the same device, with no copy.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.view
     }
 
     /// Copy the texture back into RGBA8 pixels, row padding removed.

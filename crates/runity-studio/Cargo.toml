@@ -6,43 +6,23 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# The editor's window: GPUI panels over `runity-editor`'s session.
+# The editor's window: runity-ui panels over `runity-editor`'s session.
 #
 # Nothing here decides what an edit means — that is the session's, and the
 # same functions answer to a test and to an agent over MCP (DNA, postulate
-# 5). This crate owns the window, the layout and the keyboard, and it is the
-# only place that knows the engine draws into a picture at all.
+# 5). This crate owns the layout, the panels and the routing of input. The
+# window is a thin winit loop around `Studio`, which runs headless as well:
+# the tests and the `shot` example drive it with no screen.
 [dependencies]
-runity = { version = "0.1.0", path = "../runity" }
+arboard = { version = "3", default-features = false }
+runity = { version = "0.1.0", path = "../runity", features = ["desktop-shell"] }
 runity-editor = { version = "0.1.0", path = "../runity-editor" }
+runity-ui = { version = "0.1.0", path = "../runity-ui" }
+wgpu = "30"
+winit = "0.30.13"
 
-# GPUI is the editor's UI (DNA, «Принятые решения»), and the window it
-# draws is macOS-only for now — see the note in `src/main.rs`. Keeping its
-# tree off the other platforms keeps their builds to what they can run.
-[target.'cfg(target_os = "macos")'.dependencies]
-image = "0.25"
-gpui = { version = "=0.3.6", package = "gpui-pre" }
-# `runtime_shaders`: GPUI's Metal shaders are compiled by the Metal framework
-# at startup instead of by the `metal` tool at build time. Xcode 26 moved that
-# tool into a separate multi-gigabyte component, and a clone of this repo
-# should build with Xcode as it comes. The cost is a few milliseconds on the
-# first frame.
-gpui_platform = { version = "=0.3.6", package = "gpui-pre-platform", features = [
-    "font-kit",
-    "runtime_shaders",
-] }
-
-# The window drawn off-screen and read back as pixels, so that what the
-# editor looks like is something a test — or an agent — can see without a
-# screen. Only the example needs GPUI's test support; the editor itself does
-# not carry it.
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-gpui = { version = "=0.3.6", package = "gpui-pre", features = ["test-support"] }
-gpui_platform = { version = "=0.3.6", package = "gpui-pre-platform", features = [
-    "font-kit",
-    "runtime_shaders",
-    "test-support",
-] }
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 
 [[example]]
 name = "shot"

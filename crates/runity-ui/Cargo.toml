@@ -1,0 +1,25 @@
+[package]
+name = "runity-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The UI of the game and of the editor: one retained tree of nodes, laid out
+# by taffy, text by cosmic-text (through glyphon), drawn by the engine's own
+# wgpu on the engine's own device — so a view of the scene is a texture like
+# any other. `docs/ui.md` is the card. A game without UI does not depend on
+# this crate, and nothing in the engine does (DNA, postulate 3).
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.32"
+glyphon = "0.12.0"
+runity = { version = "0.1.0", path = "../runity", default-features = false }
+resvg = { version = "0.45", default-features = false }
+taffy = "0.14"
+wgpu = "30"
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+pollster = "1.0.1"

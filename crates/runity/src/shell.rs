@@ -417,7 +417,7 @@ fn translate_pad(event: gilrs::EventType) -> Option<InputEvent> {
 
 /// Turn one winit event into ours. A list, because a single winit event can
 /// carry both a key and the text it produced.
-fn translate(event: &WindowEvent) -> Vec<InputEvent> {
+pub fn translate(event: &WindowEvent) -> Vec<InputEvent> {
     match event {
         WindowEvent::KeyboardInput { event, .. } => {
             let mut out = Vec::new();
