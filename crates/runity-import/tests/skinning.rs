@@ -69,6 +69,7 @@ fn shoot(
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
         plumes: Vec::new(),
+        terrain: None,
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

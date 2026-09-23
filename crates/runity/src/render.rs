@@ -533,6 +533,9 @@ pub struct Frame {
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
     /// how much does, the wind decides.
     pub plumes: Vec<crate::volume::Plume>,
+    /// Shaped ground drawn finely round the camera, its ripples in the
+    /// geometry ([`crate::terrain::TerrainSurface`]).
+    pub terrain: Option<crate::terrain::TerrainSurface>,
     /// What sways foliage, and what bends grass ([`crate::foliage`]).
     pub wind: crate::foliage::Wind,
     pub benders: Vec<crate::foliage::Bender>,
@@ -576,6 +579,7 @@ impl Default for Frame {
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
             plumes: Vec::new(),
+            terrain: None,
             wind: crate::foliage::Wind::default(),
             benders: Vec::new(),
             time: None,
@@ -683,6 +687,11 @@ struct FrameUniform {
     /// 1 when the clouds' pass marched dust devils or crest plumes: the
     /// picture it made is laid over what is behind them.
     dust: [f32; 4],
+    /// The terrain drawn finely: the world into its own space, and back.
+    terrain_to_local: [[f32; 4]; 4],
+    terrain_to_world: [[f32; 4]; 4],
+    /// Its size, its cells, 1 when there is one, the finest spacing.
+    terrain: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -946,6 +955,12 @@ pub struct Renderer {
     picturing: bool,
     /// When the exposure was last metered, on the frame's clock.
     metered_at: Option<f32>,
+    /// Terrain's fine grid round the camera, uploaded when first wanted.
+    clipmap: Option<MeshHandle>,
+    /// The drawn terrain's heights, for its vertex shader; and what they
+    /// were made from.
+    terrain_heights: wgpu::TextureView,
+    terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
@@ -1233,6 +1248,8 @@ struct Look {
     shader: Option<crate::asset::AssetId>,
     /// Drawn over everything, walls included: see-through only.
     on_top: bool,
+    /// Terrain's fine grid, placed and raised by its own vertex shader.
+    terrain: bool,
 }
 
 impl Look {
@@ -1258,6 +1275,7 @@ impl Look {
                             water: false,
                             shader: None,
                             on_top,
+                            terrain: false,
                         });
                     }
                 }
@@ -1271,8 +1289,19 @@ impl Look {
                 water: true,
                 shader: None,
                 on_top: false,
+                terrain: false,
             });
         }
+        // Terrain's fine grid: solid, its front faces.
+        out.push(Look {
+            skinned: false,
+            face: RenderFace::Front,
+            blend: None,
+            water: false,
+            shader: None,
+            on_top: false,
+            terrain: true,
+        });
         out
     }
 
@@ -1289,6 +1318,7 @@ impl Look {
                 water: true,
                 shader: None,
                 on_top: false,
+                terrain: false,
             };
         }
         Look {
@@ -1298,6 +1328,7 @@ impl Look {
             water: false,
             shader: material.shader,
             on_top: material.on_top && material.is_transparent(),
+            terrain: false,
         }
     }
 }
@@ -1310,7 +1341,7 @@ struct Pipelines {
     shadow_clip: wgpu::RenderPipeline,
     /// Depth and normals of what is solid, for ambient occlusion: by
     /// skinned and render face.
-    prepass: std::collections::HashMap<(bool, RenderFace), wgpu::RenderPipeline>,
+    prepass: std::collections::HashMap<(bool, RenderFace, bool), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
     /// Rain and snow falling, over the frame.
@@ -1440,7 +1471,13 @@ fn scene_pipelines(
                 }),
                 vertex: wgpu::VertexState {
                     module: shader,
-                    entry_point: Some(if look.skinned { "vs_skinned" } else { "vs" }),
+                    entry_point: Some(if look.terrain {
+                        "vs_terrain"
+                    } else if look.skinned {
+                        "vs_skinned"
+                    } else {
+                        "vs"
+                    }),
                     compilation_options: Default::default(),
                     buffers: &buffers,
                 },
@@ -1506,7 +1543,7 @@ fn build_pipelines(
         ..Default::default()
     };
     let scene = scene_pipelines(gpu, shader, samples, layouts, Look::all());
-    let prepass_pipeline = |skinned: bool, face: RenderFace| {
+    let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1518,7 +1555,13 @@ fn build_pipelines(
                 }),
                 vertex: wgpu::VertexState {
                     module: shader,
-                    entry_point: Some(if skinned { "vs_skinned" } else { "vs" }),
+                    entry_point: Some(if terrain {
+                        "vs_terrain"
+                    } else if skinned {
+                        "vs_skinned"
+                    } else {
+                        "vs"
+                    }),
                     compilation_options: Default::default(),
                     buffers: &buffers,
                 },
@@ -1551,9 +1594,16 @@ fn build_pipelines(
     let mut prepass = std::collections::HashMap::new();
     for skinned in [false, true] {
         for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
-            prepass.insert((skinned, face), prepass_pipeline(skinned, face));
+            prepass.insert(
+                (skinned, face, false),
+                prepass_pipeline(skinned, face, false),
+            );
         }
     }
+    prepass.insert(
+        (false, RenderFace::Front, true),
+        prepass_pipeline(false, RenderFace::Front, true),
+    );
 
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
@@ -2085,6 +2135,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // Terrain heights, read by the fine grid's vertex shader.
+            wgpu::BindGroupLayoutEntry {
+                binding: 23,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The last frame, for screen-space reflections.
             wgpu::BindGroupLayoutEntry {
                 binding: 22,
@@ -2204,10 +2265,12 @@ impl Renderer {
         let volumes = crate::volume::Volumes::new(gpu);
         let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
         let clouds = crate::clouds::CloudRenderer::new(gpu);
+        let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                terrain_heights: &terrain_heights,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -2445,6 +2508,8 @@ impl Renderer {
             taa: crate::taa::Taa::new(gpu),
             picturing: false,
             metered_at: None,
+            clipmap: None,
+            terrain_made: None,
             ray,
             light_buffer,
             cell_buffer,
@@ -2487,6 +2552,7 @@ impl Renderer {
             started: std::time::Instant::now(),
             atmosphere,
             clouds,
+            terrain_heights,
             blank_depth: gpu
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -2531,6 +2597,7 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                terrain_heights: &self.terrain_heights,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -2866,7 +2933,9 @@ impl Renderer {
             if let Some(look) = look {
                 if current != Some(*look) {
                     let pipeline = if prepass {
-                        self.pipelines.prepass.get(&(look.skinned, look.face))
+                        self.pipelines
+                            .prepass
+                            .get(&(look.skinned, look.face, look.terrain))
                     } else {
                         self.scene_pipeline(*look)
                     };
@@ -2922,7 +2991,9 @@ impl Renderer {
             return;
         };
         let pipeline = if prepass {
-            self.pipelines.prepass.get(&(look.skinned, look.face))
+            self.pipelines
+                .prepass
+                .get(&(look.skinned, look.face, look.terrain))
         } else {
             self.scene_pipeline(look)
         };
@@ -3404,6 +3475,22 @@ impl Renderer {
         } else {
             glam::Vec2::ZERO
         };
+        // Shaped ground drawn finely round the screen's camera: its heights
+        // up for the vertex shader, remade when it changes.
+        let fine_terrain = frame
+            .terrain
+            .filter(|_| probe.is_none() && view.is_some() && !self.picturing);
+        if let Some(t) = fine_terrain {
+            if self.clipmap.is_none() {
+                self.clipmap = Some(self.upload_mesh_owned(gpu, &crate::terrain::clipmap_mesh()));
+            }
+            if self.terrain_made != Some(t.terrain) {
+                let cells = t.terrain.cells.clamp(2, 2048);
+                self.terrain_heights = terrain_height_view(gpu, cells + 1, &t.terrain.heights());
+                self.terrain_made = Some(t.terrain);
+                self.rebind(gpu);
+            }
+        }
         // What is drawn with: the camera, moved by the jitter.
         let drawn = Mat4::from_translation(Vec3::new(jitter.x, jitter.y, 0.0))
             * frame.camera.view_projection(aspect);
@@ -3820,6 +3907,21 @@ impl Renderer {
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
                 .to_cols_array_2d(),
             dust: [if local_dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            terrain_to_local: fine_terrain
+                .map_or(Mat4::IDENTITY, |t| t.placed.inverse())
+                .to_cols_array_2d(),
+            terrain_to_world: fine_terrain
+                .map_or(Mat4::IDENTITY, |t| t.placed)
+                .to_cols_array_2d(),
+            terrain: match fine_terrain {
+                Some(t) => [
+                    t.terrain.size.max(1.0),
+                    t.terrain.cells.clamp(2, 2048) as f32,
+                    1.0,
+                    crate::terrain::CLIPMAP_FINEST,
+                ],
+                None => [1.0, 2.0, 0.0, crate::terrain::CLIPMAP_FINEST],
+            },
             puffs: {
                 let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PUFFS];
                 for (i, p) in puffs.iter().enumerate() {
@@ -3925,6 +4027,19 @@ impl Renderer {
             }
             stats.drawn += 1;
             let look = Look::of(&draw.material, skinned);
+            // The terrain near the camera: its fine grid instead, placed and
+            // raised by its own vertex shader. Its mesh still casts shadows.
+            if let (Some(t), Some(grid)) = (fine_terrain, self.clipmap) {
+                if draw.mesh == t.mesh && !draw.material.is_transparent() {
+                    let look = Look {
+                        terrain: true,
+                        face: RenderFace::Front,
+                        ..look
+                    };
+                    push(&mut batches, (Some(look), grid, maps), raw);
+                    continue;
+                }
+            }
             let pose = draw.pose.unwrap_or(0);
             if draw.material.is_transparent() {
                 let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
@@ -4666,6 +4781,42 @@ struct FrameInputs<'a> {
     scene_depth: &'a wgpu::TextureView,
     clouds: &'a wgpu::TextureView,
     history: &'a wgpu::TextureView,
+    /// Terrain heights, for the vertex shader.
+    terrain_heights: &'a wgpu::TextureView,
+}
+
+/// A terrain's heights as a texture of `side`² floats, read texel by
+/// texel by the vertex shader (no filtering asked of the device).
+fn terrain_height_view(gpu: &Gpu, side: u32, heights: &[f32]) -> wgpu::TextureView {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("terrain heights"),
+        size: wgpu::Extent3d {
+            width: side.max(1),
+            height: side.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    gpu.queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(heights),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(side.max(1) * 4),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: side.max(1),
+            height: side.max(1),
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn frame_bind_group(
@@ -4716,6 +4867,7 @@ fn frame_bind_group(
         view(20, inputs.scene_depth),
         view(21, inputs.clouds),
         view(22, inputs.history),
+        view(23, inputs.terrain_heights),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
