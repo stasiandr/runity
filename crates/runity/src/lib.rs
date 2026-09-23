@@ -22,6 +22,7 @@ pub use ron;
 pub mod actions;
 pub mod animation;
 pub mod animator;
+pub mod animgraph;
 pub mod asset;
 #[cfg(feature = "audio")]
 pub mod audio;
