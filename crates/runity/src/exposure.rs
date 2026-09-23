@@ -53,12 +53,12 @@ impl Default for AutoExposure {
         Self {
             enabled: true,
             compensation: 0.0,
-            adaptation: 0.6,
+            adaptation: 0.8,
             min_ev: -3.0,
-            max_ev: 2.0,
-            speed_dark_to_light: 3.0,
+            max_ev: 4.0,
+            speed_dark_to_light: 0.4,
             speed_light_to_dark: 1.0,
-            low_percent: 40.0,
+            low_percent: 10.0,
             high_percent: 95.0,
         }
     }
@@ -68,12 +68,12 @@ impl AutoExposure {
     pub const OFF: AutoExposure = AutoExposure {
         enabled: false,
         compensation: 0.0,
-        adaptation: 0.6,
+        adaptation: 0.8,
         min_ev: -3.0,
-        max_ev: 2.0,
-        speed_dark_to_light: 3.0,
+        max_ev: 4.0,
+        speed_dark_to_light: 0.4,
         speed_light_to_dark: 1.0,
-        low_percent: 40.0,
+        low_percent: 10.0,
         high_percent: 95.0,
     };
 }

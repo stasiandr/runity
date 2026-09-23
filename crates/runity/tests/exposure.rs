@@ -73,7 +73,9 @@ fn out_of_the_dark_into_the_sun_the_eye_takes_a_moment() {
     // Out into the sun.
     renderer.render(&gpu, &target, &frame(3.0, t));
     let first = mean(&target.read_rgba(&gpu));
-    for _ in 0..90 {
+    // Ten seconds on: the eye takes to the light slowly, so coming out is
+    // blinding for a while.
+    for _ in 0..300 {
         t += 1.0 / 30.0;
         renderer.render(&gpu, &target, &frame(3.0, t));
     }

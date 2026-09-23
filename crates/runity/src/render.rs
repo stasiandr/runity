@@ -2840,7 +2840,9 @@ impl Renderer {
                 decals: &self.decal_buffer,
                 decal_colours: self.decal_atlases.colour_view(),
                 decal_normals: self.decal_atlases.normal_view(),
-                probes: if baking {
+                probes: if baking && self.reflections.bouncing {
+                    &self.reflections.previous_view
+                } else if baking {
                     &self.reflections.blank
                 } else {
                     &self.reflections.view
@@ -3667,36 +3669,48 @@ impl Renderer {
         }
         self.reflections.baked.clear();
         self.reflections.baking = true;
+        self.reflections.bouncing = false;
         self.rebind(gpu);
         let size = crate::reflections::PROBE_SIZE;
-        for (i, probe) in wanted.iter().enumerate() {
-            for face in 0..6 {
-                let seen = Frame {
-                    camera: crate::reflections::face_camera(probe, face),
-                    // The clouds' picture is the camera's, not the probe's.
-                    weather: crate::weather::Weather {
-                        dust_wall: 0.0,
-                        ..frame.weather
-                    },
-                    sky: Sky {
-                        clouds: crate::clouds::Clouds {
-                            coverage: 0.0,
-                            ..frame.sky.clouds
-                        },
-                        ..frame.sky
-                    },
-                    post: crate::post::PostProcess::OFF,
-                    ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
-                    ray_tracing: crate::ray::RayTracing::default(),
-                    overlay_draws: Vec::new(),
-                    reflection_probes: Vec::new(),
-                    ..frame.clone()
-                };
-                self.render_view(gpu, None, size, size, &seen, Some((i * 6 + face) as u32));
+        let layers = (wanted.len() * 6) as u32;
+        for round in 0..crate::reflections::BOUNCES {
+            if round > 0 {
+                // Lit by the last round: its pictures kept aside, and the
+                // probes they are of in the frame.
+                self.reflections.keep_round(gpu, layers);
+                self.reflections.baked = wanted.clone();
+                self.reflections.bouncing = true;
+                self.rebind(gpu);
             }
+            for (i, probe) in wanted.iter().enumerate() {
+                for face in 0..6 {
+                    let seen = Frame {
+                        camera: crate::reflections::face_camera(probe, face),
+                        // The clouds' picture is the camera's, not the probe's.
+                        weather: crate::weather::Weather {
+                            dust_wall: 0.0,
+                            ..frame.weather
+                        },
+                        sky: Sky {
+                            clouds: crate::clouds::Clouds {
+                                coverage: 0.0,
+                                ..frame.sky.clouds
+                            },
+                            ..frame.sky
+                        },
+                        post: crate::post::PostProcess::OFF,
+                        ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
+                        ray_tracing: crate::ray::RayTracing::default(),
+                        overlay_draws: Vec::new(),
+                        reflection_probes: Vec::new(),
+                        ..frame.clone()
+                    };
+                    self.render_view(gpu, None, size, size, &seen, Some((i * 6 + face) as u32));
+                }
+            }
+            self.reflections.make_mips(gpu, 0..layers);
         }
-        self.reflections
-            .make_mips(gpu, 0..(wanted.len() * 6) as u32);
+        self.reflections.bouncing = false;
         self.reflections.baked = wanted;
         self.reflections.baking = false;
         self.rebind(gpu);
