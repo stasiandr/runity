@@ -414,7 +414,7 @@ mod tests {
         let (mut widgets, mut input) = (Widgets::new(), Input::new());
         let options: Vec<String> = ["English", "Русский", "Deutsch"].map(String::from).to_vec();
         let mut chosen = 0;
-        let mut pick = |widgets: &mut Widgets, input: &Input, chosen: &mut usize| {
+        let pick = |widgets: &mut Widgets, input: &Input, chosen: &mut usize| {
             widgets.dropdown(&mut Ui::new(), input, PLAY, "Language", &options, chosen)
         };
         let click = |input: &mut Input, at: (f32, f32)| {
