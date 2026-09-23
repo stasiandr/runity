@@ -17,6 +17,7 @@ members = [
     "crates/runity-import",
     "crates/runity-mcp",
     "crates/runity-studio",
+    "crates/runity-ui",
 ]
 
 [workspace.package]

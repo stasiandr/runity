@@ -105,7 +105,7 @@ pub const FONT: &str = "Inter Variable";
 pub const MONO: &str = "Menlo";
 
 /// Inter (SIL Open Font License, `assets/fonts/Inter-LICENSE.txt`).
-static INTER: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+static INTER: &[u8] = include_bytes!("../../runity-ui/assets/fonts/InterVariable.ttf");
 
 /// Load the font and point GPUI Kit's components at Nocturne's colours, so
 /// that an input or a scrollbar from the kit sits in the same page as the
