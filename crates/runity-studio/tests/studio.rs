@@ -718,3 +718,65 @@ fn panels_hide_and_the_view_takes_the_window() {
     s.ui.paint();
     assert!((s.ui.rect(s.ui.find("scene view").unwrap()).width - wider).abs() < 1.0);
 }
+
+#[test]
+fn a_game_component_is_a_form_by_its_shape() {
+    use runity::shape::Shape;
+    let Some((mut s, dir)) = studio() else { return };
+    let mut shapes = std::collections::BTreeMap::new();
+    shapes.insert(
+        "door".to_string(),
+        Shape::Struct(vec![
+            ("open_angle".into(), Shape::Float),
+            ("locked".into(), Shape::Bool),
+            (
+                "side".into(),
+                Shape::Enum(vec!["Left".into(), "Right".into()]),
+            ),
+        ]),
+    );
+    std::fs::create_dir_all(dir.join("library")).unwrap();
+    std::fs::write(
+        dir.join("library/components.ron"),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_component(
+            crate_id,
+            "door",
+            Some("(open_angle: 90.0, locked: false, side: Left)"),
+        )
+        .unwrap();
+    click(&mut s, "line crate");
+    let value = |s: &Studio| {
+        s.session
+            .inspect(crate_id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "components.door")
+            .unwrap()
+            .value
+    };
+
+    click(&mut s, "door locked");
+    assert!(value(&s).contains("locked: true"), "{}", value(&s));
+
+    click(&mut s, "door open_angle");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "45*2+30");
+    key(&mut s, Key::Enter);
+    assert!(value(&s).contains("open_angle: 120"), "{}", value(&s));
+
+    click(&mut s, "door side");
+    click(&mut s, "menu Right");
+    assert!(value(&s).contains("side: Right"), "{}", value(&s));
+    assert!(
+        value(&s).contains("locked: true"),
+        "the other fields kept theirs"
+    );
+}

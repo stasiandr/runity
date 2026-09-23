@@ -71,6 +71,8 @@ pub enum Action {
     Pause,
     Step,
     SetField(String, String),
+    /// One field of a game component, by component, field and RON value.
+    SetSub(String, String, String),
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,

@@ -1582,6 +1582,9 @@ impl Studio {
                     }
                     s.step_once();
                 }
+                Action::SetSub(component, key, value) => {
+                    self.inspector.pick_sub(s, &component, &key, &value);
+                }
                 Action::SetField(field, value) => {
                     self.inspector.set_field(s, &field, &value);
                 }

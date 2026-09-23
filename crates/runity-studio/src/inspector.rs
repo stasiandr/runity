@@ -95,10 +95,59 @@ enum Part {
     Import(String),
     /// An import setting that is on or off: a switch.
     ImportToggle(String, bool),
+    /// One field of a game component, laid out by the shape the game wrote
+    /// down (`library/components.ron`).
+    Sub {
+        component: String,
+        key: String,
+        kind: SubKind,
+    },
     /// The scene's sun or fog, as RON.
     Environment(String),
     /// The sun's hour, 0 to 24, as a track.
     Hour,
+}
+
+/// What a component's field is, for the box it gets.
+#[derive(Debug, Clone, PartialEq)]
+enum SubKind {
+    Bool(bool),
+    Number,
+    Text,
+    Enum(Vec<String>),
+    Raw,
+}
+
+/// A struct's fields as RON writes them — `(open_angle: 90.0, locked:
+/// true)` — split at the top level, brackets and strings respected.
+fn struct_fields(text: &str) -> Option<Vec<(String, String)>> {
+    let inner = text.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let mut out = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0i32, false, 0usize);
+    let bytes: Vec<(usize, char)> = inner.char_indices().collect();
+    let mut parts = Vec::new();
+    for (i, c) in &bytes {
+        match c {
+            '"' => quoted = !quoted,
+            '(' | '[' | '{' if !quoted => depth += 1,
+            ')' | ']' | '}' if !quoted => depth -= 1,
+            ',' if !quoted && depth == 0 => {
+                parts.push(&inner[start..*i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    for part in parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (key, value) = part.split_once(':')?;
+        out.push((key.trim().to_string(), value.trim().to_string()));
+    }
+    Some(out)
 }
 
 /// sRGB bytes of a linear colour.
@@ -168,6 +217,10 @@ pub struct Inspector {
     /// An asset from the Project shown instead of the selection, with its
     /// source file.
     asset: Option<(Asset, Option<String>)>,
+    /// What the game's components look like, as it last wrote them.
+    shapes: std::collections::BTreeMap<String, runity::shape::Shape>,
+    /// Each component's fields as last shown, to write one back changed.
+    component_values: HashMap<String, Vec<(String, String)>>,
     /// The hour being dragged to.
     hour: f32,
     /// Built at least once: an empty selection at the start is still a
@@ -191,6 +244,8 @@ impl Inspector {
             playing: false,
             built: false,
             hour: 12.0,
+            shapes: Default::default(),
+            component_values: HashMap::new(),
             asset: None,
             hsv: [0.0; 3],
             swatch: None,
@@ -271,6 +326,8 @@ impl Inspector {
             self.environment(ui, session);
             return;
         }
+        self.shapes = session.component_shapes();
+        self.component_values.clear();
         let find = |name: &str| fields.iter().find(|f| f.name == name);
         let prefab = find("prefab")
             .map(|f| f.value.clone())
@@ -479,6 +536,9 @@ impl Inspector {
 
     /// One field: its label (with the override dot) and its boxes.
     fn line(&mut self, ui: &mut Ui, f: &Field) {
+        if self.component_form(ui, f) {
+            return;
+        }
         let line = ui.add(
             self.body,
             Style::row()
@@ -554,6 +614,182 @@ impl Inspector {
                 }
             }
         }
+    }
+
+    /// A game component laid out by its shape: a line per field, each with
+    /// the box its type wants. `false` when there is no shape to go by —
+    /// the component is then one line of RON, as before.
+    fn component_form(&mut self, ui: &mut Ui, f: &Field) -> bool {
+        use runity::shape::Shape;
+        let Some(component) = f.name.strip_prefix("components.") else {
+            return false;
+        };
+        let Some(Shape::Struct(shape)) = self.shapes.get(component).cloned() else {
+            return false;
+        };
+        let Some(values) = struct_fields(&f.value) else {
+            return false;
+        };
+        let head = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(2.0)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        icon(ui, head, "component", ACCENT);
+        ui.add_text(
+            head,
+            Style::default()
+                .text_size(12.0)
+                .text_color(if f.overridden { ACCENT_300 } else { TEXT })
+                .nowrap(),
+            &title(&f.name),
+        );
+        for (key, kind) in &shape {
+            let value = values
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| kind.example());
+            let line = ui.add(
+                self.body,
+                Style::row()
+                    .full_width()
+                    .padding_left(SPACE_4 + 18.0)
+                    .padding_x(SPACE_4)
+                    .padding_left(SPACE_4 + 18.0)
+                    .padding_y(2.0)
+                    .gap(SPACE_2)
+                    .center_items(),
+            );
+            ui.add_text(
+                line,
+                Style::default()
+                    .width(84.0 - 18.0)
+                    .fixed()
+                    .text_size(12.0)
+                    .text_color(LABEL)
+                    .nowrap(),
+                &title(key),
+            );
+            let sub = match kind {
+                Shape::Bool => SubKind::Bool(value == "true"),
+                Shape::Int | Shape::Float => SubKind::Number,
+                Shape::Text => SubKind::Text,
+                Shape::Enum(variants) => SubKind::Enum(variants.clone()),
+                _ => SubKind::Raw,
+            };
+            let node = match &sub {
+                SubKind::Bool(on) => {
+                    let switch = ui.add(
+                        line,
+                        Style::row()
+                            .size(34.0, 18.0)
+                            .radius(9.0)
+                            .padding(2.0)
+                            .border(1.0, if *on { ACCENT } else { DIVIDER })
+                            .background(if *on {
+                                ACCENT.alpha(25)
+                            } else {
+                                runity_ui::Color::TRANSPARENT
+                            })
+                            .clickable(),
+                    );
+                    if *on {
+                        ui.add(switch, Style::row().fill());
+                    }
+                    ui.add(
+                        switch,
+                        Style::row()
+                            .size(12.0, 12.0)
+                            .radius(6.0)
+                            .background(if *on { ACCENT } else { MUTED }),
+                    );
+                    switch
+                }
+                SubKind::Enum(_) => {
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .fill()
+                            .height(22.0)
+                            .padding_x(6.0)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, DIVIDER)
+                            .hover(HOVER),
+                    );
+                    ui.add_text(pick, text().fill(), &value);
+                    icon(ui, pick, "chevron-down", MUTED);
+                    pick
+                }
+                SubKind::Text => {
+                    let shown = value.trim_matches('"').to_string();
+                    ui.add_field(line, field_style().fill(), &shown)
+                }
+                SubKind::Number => ui.add_field(
+                    line,
+                    field_style().fill().mono().text_size(11.5),
+                    &trim_number(&value),
+                ),
+                SubKind::Raw => {
+                    ui.add_field(line, field_style().fill().mono().text_size(11.5), &value)
+                }
+            };
+            ui.set_name(node, format!("{component} {key}"));
+            self.parts.insert(
+                node,
+                Part::Sub {
+                    component: component.to_string(),
+                    key: key.clone(),
+                    kind: sub,
+                },
+            );
+        }
+        self.component_values.insert(component.to_string(), values);
+        true
+    }
+
+    /// Write one field of a component back: the whole value again, that
+    /// field changed, in the shape's order.
+    fn set_sub(&mut self, session: &mut Session, component: &str, key: &str, value: &str) {
+        let Some(runity::shape::Shape::Struct(shape)) = self.shapes.get(component).cloned() else {
+            return;
+        };
+        let values = self
+            .component_values
+            .get(component)
+            .cloned()
+            .unwrap_or_default();
+        let text = format!(
+            "({})",
+            shape
+                .iter()
+                .map(|(k, kind)| {
+                    let v = if k == key {
+                        value.to_string()
+                    } else {
+                        values
+                            .iter()
+                            .find(|(vk, _)| vk == k)
+                            .map(|(_, v)| v.clone())
+                            .unwrap_or_else(|| kind.example())
+                    };
+                    format!("{k}: {v}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if let Err(e) =
+            session.set_field_all(&self.showing, &format!("components.{component}"), &text)
+        {
+            session.say(Level::Error, e.to_string());
+        }
+        self.built = false;
     }
 
     /// The scene's own settings, shown when nothing is selected: the time
@@ -1042,6 +1278,58 @@ impl Inspector {
                     requests.inspect = Some(asset);
                 }
             }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Bool(on),
+                },
+                Event::Click { .. },
+            ) => {
+                self.set_sub(session, &component, &key, if on { "false" } else { "true" });
+                requests.refresh = true;
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Enum(variants),
+                },
+                Event::Click { .. },
+            ) => {
+                let r = ui.rect(node);
+                let items = variants
+                    .iter()
+                    .map(|v| {
+                        MenuItem::new(v, Action::SetSub(component.clone(), key.clone(), v.clone()))
+                    })
+                    .collect();
+                requests.menu = Some((items, r.x, r.y + r.height));
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind,
+                },
+                Event::Submit(value),
+            ) => {
+                let value = match kind {
+                    SubKind::Number => match eval(value.trim()) {
+                        Some(n) => format!("{n:?}"),
+                        None => {
+                            session.say(Level::Error, format!("{component}.{key}: a number"));
+                            self.built = false;
+                            requests.refresh = true;
+                            return;
+                        }
+                    },
+                    SubKind::Text => format!("{:?}", value),
+                    _ => value.trim().to_string(),
+                };
+                self.set_sub(session, &component, &key, &value);
+                requests.refresh = true;
+            }
             (Part::Environment(field), Event::Submit(value)) => {
                 if let Err(e) = session.set_environment(&field, value.trim()) {
                     session.say(Level::Error, e.to_string());
@@ -1171,6 +1459,11 @@ impl Inspector {
         }
     }
 
+    /// A variant picked from an enum field's menu.
+    pub fn pick_sub(&mut self, session: &mut Session, component: &str, key: &str, value: &str) {
+        self.set_sub(session, component, key, value);
+    }
+
     pub fn set_field(&mut self, session: &mut Session, field: &str, value: &str) {
         let text = if field == "material" {
             format!("{value:?}")
@@ -1224,6 +1517,20 @@ mod tests {
         assert_eq!(eval("-3+1"), Some(-2.0));
         assert_eq!(eval("2+3*4"), Some(14.0));
         assert_eq!(eval("abc"), None);
+    }
+
+    #[test]
+    fn a_components_fields_split_at_the_top() {
+        assert_eq!(
+            struct_fields("(a: 1.0, name: \"x, y\", list: [1, 2], inner: (b: true))"),
+            Some(vec![
+                ("a".into(), "1.0".into()),
+                ("name".into(), "\"x, y\"".into()),
+                ("list".into(), "[1, 2]".into()),
+                ("inner".into(), "(b: true)".into()),
+            ])
+        );
+        assert_eq!(struct_fields("()"), Some(vec![]));
     }
 
     #[test]
