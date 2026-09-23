@@ -211,6 +211,41 @@ impl LiveScene {
         }
     }
 
+    /// Start the world again under new code, keeping what a save keeps —
+    /// what a hot patch calls, Unity's domain reload.
+    ///
+    /// A patch can change a component's fields, and the world still holds
+    /// values laid out the old way: new code reading them reads garbage
+    /// (subsecond leaves this to the framework, and says so). So the world
+    /// is written down with the component types it was built with (the
+    /// current [`Components`] still point at the old code), dropped — not
+    /// cleared: hecs remembers each type's old layout in its archetypes —
+    /// spawned afresh from the scene with `components`, registered by the
+    /// new code, and the save put back: every entity's transform and the
+    /// saved components, by name, as text into the new types, a new field
+    /// taking its `#[serde(default)]`. What a save does not keep starts
+    /// from the scene, as a load does.
+    pub fn reinstance(
+        &mut self,
+        world: &mut World,
+        components: Components,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> crate::save::Restored {
+        let save = crate::save::capture(world, &self.components, &self.current);
+        *world = World::new();
+        self.components = components;
+        let spawned = self.spawn(world, gpu, renderer);
+        let components = self.components.clone();
+        let mut restored = crate::save::restore(world, &components, &save, |world, prefab, at| {
+            self.spawn_prefab(prefab, at, None, world, gpu, renderer)
+                .ok()
+                .map(|instance| instance.root)
+        });
+        restored.problems.extend(spawned.lines());
+        restored
+    }
+
     /// Spawn a prefab at run time — Unity's `Instantiate` — at `transform`,
     /// optionally under `parent`. Returns its root entity.
     ///

@@ -514,7 +514,8 @@ const GAME: &str = r#"//! {name}.
 //! prefab, or re-import an asset while it runs, and the change is in the
 //! next frames without the game losing its state. Run under
 //! `dx serve --hotpatch` and a rebuilt system, `step` or `frame` takes
-//! effect without closing the window.
+//! effect without closing the window; a component given a new field is
+//! carried across too (`patched` below), keeping what a save keeps.
 //!
 //! Components are files in `src/components/`, systems files in
 //! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
@@ -561,13 +562,38 @@ struct Game {
     physics: PhysicsWorld,
 }
 
-impl shell::Game for Game {
-    fn start(&mut self, ctx: &mut Context) {
+impl Game {
+    /// Bodies from the world as it is: at the start, and after a patch.
+    fn start_physics(&mut self, ctx: &mut Context) {
         self.physics = PhysicsWorld::new(ctx.time.settings().fixed_delta);
         self.physics.set_layers((*self.layers).clone(), &self.world);
+    }
+}
+
+/// Every component the game has, by name.
+fn game_components() -> Components {
+    let mut components = Components::new();
+    components::register(&mut components);
+    components
+}
+
+impl shell::Game for Game {
+    fn start(&mut self, ctx: &mut Context) {
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
             eprintln!("{line}");
         }
+        self.start_physics(ctx);
+    }
+
+    /// A hot patch landed: the component types may have new fields, so the
+    /// world starts again from the scene under the new code, keeping every
+    /// transform and every component registered as saved.
+    fn patched(&mut self, ctx: &mut Context) {
+        let restored = self.live.reinstance(&mut self.world, game_components(), ctx.gpu, ctx.renderer);
+        for problem in &restored.problems {
+            eprintln!("{problem}");
+        }
+        self.start_physics(ctx);
     }
 
     /// Fixed-step game logic: the systems, in order.
@@ -646,10 +672,8 @@ impl shell::Game for Game {
 fn main() -> anyhow::Result<()> {
     // `data/` beside the executable in a build, the project in development.
     let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "scenes/main.ron");
-    let mut components = Components::new();
-    components::register(&mut components);
     let (live, problems) = LiveScene::open(&scene)?;
-    let live = live.with_components(components);
+    let live = live.with_components(game_components());
     for problem in &problems {
         eprintln!("{problem}");
     }
@@ -722,7 +746,8 @@ pub fn run(world: &mut World, seconds: f32) {
 pub fn component_file(name: &str) -> String {
     format!(
         "//! `{name}`: what it means for an entity to have one. A scene line gives it\n\
-         //! as `components: {{ \"{name}\": (…) }}`.\n\
+         //! as `components: {{ \"{name}\": (…) }}`. Derive `Serialize` too and\n\
+         //! its value is kept — in a save game, and across a hot patch.\n\
          \n\
          use serde::Deserialize;\n\
          \n\
@@ -810,8 +835,11 @@ pub use {name}::{};", type_name(name));
 pub fn register(components: &mut runity::Components) {
     let _ = &components;
 ");
-    for (name, _) in &components {
-        let _ = writeln!(text, "    components.register::<{}>({name:?});", type_name(name));
+    for (name, path) in &components {
+        // A component that can be written down is kept: by a save game,
+        // and across a hot patch.
+        let how = if serializable(path) { "register_saved" } else { "register" };
+        let _ = writeln!(text, "    components.{how}::<{}>({name:?});", type_name(name));
     }
     text.push_str("}
 ");
@@ -823,6 +851,12 @@ pub fn register(components: &mut runity::Components) {
 pub mod {name};");
     }
     std::fs::write(Path::new(&out).join("systems.rs"), text).unwrap();
+}
+
+/// Whether a component's file derives `Serialize` (not only `Deserialize`).
+fn serializable(path: &str) -> bool {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.match_indices("Serialize").any(|(at, _)| !text[..at].ends_with("De"))
 }
 
 /// `(module name, absolute path)` for every .rs file in a folder, sorted.

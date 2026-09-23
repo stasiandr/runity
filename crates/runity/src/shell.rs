@@ -95,6 +95,18 @@ pub trait Game {
     /// the real one and motion stays smooth.
     fn frame(&mut self, ctx: &mut Context) -> Frame;
 
+    /// After a hot patch, before anything else runs: rebuild whatever holds
+    /// values of the game's own types, which the patch may have laid out
+    /// differently — [`crate::LiveScene::reinstance`] does it for a world
+    /// that started from a scene. Called through `subsecond::call`, so it is
+    /// the new code. Nothing by default, which is right for a game that
+    /// keeps no state of its own types.
+    ///
+    /// The `Game` value itself is not rebuilt: a patch that changes its own
+    /// fields needs a restart. Keep state in the world, where this can
+    /// carry it across.
+    fn patched(&mut self, _ctx: &mut Context) {}
+
     /// What to draw over the scene. Empty by default.
     fn overlay(&mut self) -> &crate::ui::Ui {
         // A shared empty list, so a game with no overlay allocates nothing
@@ -104,8 +116,16 @@ pub trait Game {
     }
 }
 
+/// Set when a hot patch has been applied, until the loop has told the game.
+static PATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Open a window and run until the game or the user says otherwise.
 pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<()> {
+    // Told on the loop's thread at the next turn, not in the handler: the
+    // handler runs wherever the patch arrived, mid-frame for all it knows.
+    subsecond::register_handler(Arc::new(|| {
+        PATCHED.store(true, std::sync::atomic::Ordering::Release)
+    }));
     let event_loop = EventLoop::new()?;
     // Poll rather than Wait: a game draws continuously, and waiting for an
     // event means the world only advances when the mouse moves.
@@ -172,6 +192,12 @@ impl<G: Game> Shell<G> {
         self.time.tick();
 
         let mut quit = false;
+        if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            let mut ctx = Self::context(state, &self.time, &self.input);
+            let game = &mut self.game;
+            subsecond::call(|| game.patched(&mut ctx));
+            quit |= ctx.quit;
+        }
         while self.time.next_step().is_some() {
             // Through `subsecond::call`, so a rebuilt `step` takes effect in
             // the running process. It costs one indirection through a jump

@@ -256,3 +256,90 @@ fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
     assert!(world.contains(well));
     assert_eq!(world.query::<&SceneId>().iter().count(), 1);
 }
+
+/// A door as the game was built with it...
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DoorBefore {
+    open: bool,
+}
+
+/// ...and after a patch gave it a field: another type, laid out
+/// differently, under the same name.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct DoorAfter {
+    open: bool,
+    #[serde(default)]
+    creaks: bool,
+}
+
+/// Scenery, not saved: starts from the scene again.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Tint(f32);
+
+#[test]
+fn after_a_hot_patch_the_world_starts_again_under_new_types_keeping_what_a_save_keeps() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, 8, 8);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let project = project("reinstance");
+    let path = project.scenes().join("main.ron");
+    write(
+        &path,
+        r#"(entities: [
+            (id: "a1", name: "door", model: "builtin:cube",
+             components: { "door": (open: false), "tint": (0.5) }),
+        ])"#,
+    );
+    let mut before = runity::Components::new();
+    before
+        .register_saved::<DoorBefore>("door")
+        .register::<Tint>("tint");
+    let (live, _) = LiveScene::open(&path).unwrap();
+    let mut live = live.with_components(before);
+    let mut world = hecs::World::new();
+    live.spawn(&mut world, &gpu, &mut renderer);
+
+    // The game plays: the door opens, it moves, its tint changes.
+    let door = entity(&world, "a1");
+    world.get::<&mut DoorBefore>(door).unwrap().open = true;
+    world
+        .get::<&mut runity::Transform>(door)
+        .unwrap()
+        .position
+        .x = 3.0;
+    world.get::<&mut Tint>(door).unwrap().0 = 0.9;
+
+    let mut after = runity::Components::new();
+    after
+        .register_saved::<DoorAfter>("door")
+        .register::<Tint>("tint");
+    let restored = live.reinstance(&mut world, after, &gpu, &mut renderer);
+    assert!(restored.problems.is_empty(), "{:?}", restored.problems);
+
+    let door = entity(&world, "a1");
+    assert_eq!(
+        *world.get::<&DoorAfter>(door).unwrap(),
+        DoorAfter {
+            open: true,
+            creaks: false
+        },
+        "the open door, in its new shape"
+    );
+    assert!(
+        world.get::<&DoorBefore>(door).is_err(),
+        "nothing of the old type"
+    );
+    assert_eq!(
+        world.get::<&runity::Transform>(door).unwrap().position.x,
+        3.0
+    );
+    assert_eq!(world.get::<&Tint>(door).unwrap().0, 0.5, "scenery restarts");
+    assert_eq!(
+        world.query::<&SceneId>().iter().count(),
+        1,
+        "one door, not two"
+    );
+}
