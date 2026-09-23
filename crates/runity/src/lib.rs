@@ -36,6 +36,7 @@ pub mod input;
 pub mod lan;
 pub mod layers;
 pub mod library;
+pub mod lights;
 pub mod live;
 pub mod material;
 pub mod merge;

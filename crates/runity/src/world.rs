@@ -900,6 +900,7 @@ pub fn build_frame_where(
                     let (_, turn, _) = placed.0.to_scale_rotation_translation();
                     (turn * glam::Vec3::Z, cone)
                 }),
+                shadows: l.shadows,
             }
         })
         .collect();

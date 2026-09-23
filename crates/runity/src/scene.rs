@@ -354,6 +354,9 @@ fn is_one(v: &f32) -> bool {
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
+fn is_true(v: &bool) -> bool {
+    *v
+}
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -409,7 +412,7 @@ fn yes_look() -> bool {
 
 /// A light at an entity, shining every way and fading to nothing at
 /// `range` metres — a campfire, a lamp, a torch in a greybox corridor:
-/// Unity's Point Light, without shadows. `light: (color: (1.0, 0.6, 0.3),
+/// Unity's Point Light, casting shadows. `light: (color: (1.0, 0.6, 0.3),
 /// intensity: 2.0, range: 6.0)`; the colour is as a colour picker says it
 /// (sRGB, 0 to 1).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -425,6 +428,10 @@ pub struct Light {
     /// Spot Light.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub cone_deg: Option<f32>,
+    /// Casts shadows — on unless `shadows: false`, as a lamp in URP; the
+    /// nearest lamps the camera sees get them first.
+    #[serde(default = "yes_look", skip_serializing_if = "is_true")]
+    pub shadows: bool,
 }
 
 /// A way an entity travels by itself — a moving platform, a lift, a boat

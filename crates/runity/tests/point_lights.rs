@@ -80,6 +80,7 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 3.0,
         spot: None,
+        shadows: false,
     };
     let lit = shoot(&gpu, &mut renderer, &target, vec![lamp]);
     let under = red(&lit, SIZE / 2, SIZE / 2);
@@ -94,6 +95,7 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 10.0,
         spot: Some((Vec3::NEG_Y, 30.0)),
+        shadows: false,
     };
     let lit = shoot(&gpu, &mut renderer, &target, vec![torch]);
     let under = red(&lit, SIZE / 2, SIZE / 2);

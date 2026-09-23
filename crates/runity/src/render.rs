@@ -384,6 +384,9 @@ pub struct ShadowSettings {
     /// Where the first cascades end, as shares of `max_distance`; the last
     /// ends at it. URP's defaults for four.
     pub cascade_splits: [f32; 3],
+    /// Side of each lamp's shadow map — URP's Additional Lights shadow
+    /// resolution. A spot has one, a point six.
+    pub light_resolution: u32,
 }
 
 impl Default for ShadowSettings {
@@ -396,6 +399,7 @@ impl Default for ShadowSettings {
             max_distance: 50.0,
             cascades: 4,
             cascade_splits: [0.067, 0.2, 0.467],
+            light_resolution: 512,
         }
     }
 }
@@ -409,6 +413,7 @@ impl ShadowSettings {
         max_distance: 0.0,
         cascades: 1,
         cascade_splits: [0.067, 0.2, 0.467],
+        light_resolution: 1,
     };
 
     /// Where each cascade ends, in metres from the eye.
@@ -532,12 +537,17 @@ struct FrameUniform {
     /// shadows are on. The last one is what lets the shader skip the lookup
     /// without a second pipeline.
     shadow_params: [f32; 4],
-    /// Up to [`MAX_LIGHTS`] lights, three vectors each: where and how far
-    /// it reaches; its colour times its intensity; for a spot, which way it
-    /// shines and the cosine of half its cone (−2 for every way).
-    lights: [[f32; 4]; MAX_LIGHTS * 3],
-    /// How many of those are on, in `x`.
-    light_count: [f32; 4],
+    /// The camera's view matrix's third row: `-dot(row, p)` is how deep a
+    /// point is, which picks its slice of the light clusters.
+    view_depth: [f32; 4],
+    /// The cluster grid: cells across, down and deep; `w` how many lights
+    /// there are.
+    clusters: [f32; 4],
+    /// The near plane, `ln(far / near)`, and the target's width and height
+    /// in pixels.
+    cluster_depth: [f32; 4],
+    /// Lamps' shadows: one texel of their maps, in UV.
+    light_shadow: [f32; 4],
     /// Clip space back to the world: the sky is drawn by asking, for each
     /// pixel, which way it looks.
     inverse_view_projection: [[f32; 4]; 4],
@@ -574,12 +584,10 @@ struct CasterUniform {
     view_projection: [[f32; 4]; 4],
 }
 
-/// The most point lights a frame lights with; the nearest to the camera
-/// win when there are more.
-pub const MAX_LIGHTS: usize = 8;
+pub use crate::lights::MAX_LIGHTS;
 
 /// A light at a point, fading to nothing at `range` — a campfire, a lamp,
-/// a torch. Unity's Point Light, without shadows.
+/// a torch. Unity's Point Light, or with `spot` its Spot Light.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointLight {
     pub position: Vec3,
@@ -589,6 +597,8 @@ pub struct PointLight {
     /// For a spot light: which way it shines, and its cone, degrees
     /// across. `None` shines every way.
     pub spot: Option<(Vec3, f32)>,
+    /// Casts shadows, if a shadow map is left for it ([`crate::lights`]).
+    pub shadows: bool,
 }
 
 /// One vertex's binding to the skeleton, in its own buffer.
@@ -730,6 +740,19 @@ pub struct Renderer {
     ssao: crate::ssao::SsaoRenderer,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
+    /// The frame's lights ([`crate::lights`]), each cell's run of them, and
+    /// the runs themselves.
+    light_buffer: wgpu::Buffer,
+    cell_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_capacity: u64,
+    /// Each lamp shadow map's view of the world.
+    light_view_buffer: wgpu::Buffer,
+    /// The lamps' shadow maps, as one array to sample, and a layer at a
+    /// time to draw into.
+    light_shadow_map: wgpu::TextureView,
+    light_shadow_layers: Vec<wgpu::TextureView>,
+    light_shadow_resolution: u32,
     pose_layout: wgpu::BindGroupLayout,
     pose_bind_group: wgpu::BindGroup,
     poses: wgpu::Buffer,
@@ -1425,6 +1448,34 @@ impl Renderer {
                 count: None,
             },
         ];
+        // Lights, clustered: the lights, each cell's run, the runs; the
+        // lamps' shadow maps and their views.
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        frame_entries.extend([
+            storage(6),
+            storage(7),
+            storage(8),
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            storage(10),
+        ]);
         // The scene as rays see it, on a device that traces.
         if gpu.ray_tracing {
             frame_entries.push(wgpu::BindGroupLayoutEntry {
@@ -1456,14 +1507,49 @@ impl Renderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        let storage_buffer = |label, size: u64| {
+            gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let light_buffer = storage_buffer(
+            "lights",
+            (crate::lights::MAX_LIGHTS * std::mem::size_of::<crate::lights::GpuLight>()) as u64,
+        );
+        let cell_buffer = storage_buffer(
+            "light cells",
+            (crate::lights::TILES_X * crate::lights::TILES_Y * crate::lights::SLICES) as u64 * 8,
+        );
+        let index_capacity = 1024;
+        let index_buffer = storage_buffer("light lists", index_capacity * 4);
+        let light_view_buffer = storage_buffer(
+            "lamp shadow views",
+            crate::lights::SHADOW_LAYERS as u64 * 64,
+        );
+        let light_shadow_resolution = ShadowSettings::default().light_resolution;
+        let (light_shadow_map, light_shadow_layers) = shadow_layers_view(
+            gpu,
+            light_shadow_resolution,
+            crate::lights::SHADOW_LAYERS as u32,
+        );
         let bind_group = frame_bind_group(
             gpu,
             &layout,
-            &frame_buffer,
-            &shadow_map,
-            &shadow_sampler,
-            &ssao.result,
-            ray.as_ref().map(|r| &r.tlas),
+            &FrameInputs {
+                frame: &frame_buffer,
+                shadow_map: &shadow_map,
+                shadow_sampler: &shadow_sampler,
+                occlusion: &ssao.result,
+                rays: ray.as_ref().map(|r| &r.tlas),
+                lights: &light_buffer,
+                cells: &cell_buffer,
+                indices: &index_buffer,
+                light_views: &light_view_buffer,
+                light_shadow_map: &light_shadow_map,
+            },
         );
 
         let texture_layout =
@@ -1514,7 +1600,7 @@ impl Renderer {
         let caster_stride = caster_size.div_ceil(caster_alignment) * caster_alignment;
         let casters = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("casters"),
-            size: caster_stride * MAX_CASCADES as u64,
+            size: caster_stride * (MAX_CASCADES + crate::lights::SHADOW_LAYERS) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1650,6 +1736,14 @@ impl Renderer {
             post: crate::post::PostRenderer::new(gpu, format),
             ssao,
             ray,
+            light_buffer,
+            cell_buffer,
+            index_buffer,
+            index_capacity,
+            light_view_buffer,
+            light_shadow_map,
+            light_shadow_layers,
+            light_shadow_resolution,
             shadow_map,
             shadow_layers,
             casters,
@@ -1682,6 +1776,26 @@ impl Renderer {
         // Handle 1 the flat normal, for the same reason.
         renderer.upload_texture_rgba(gpu, 1, 1, &[128, 128, 255, 255], false);
         renderer
+    }
+
+    /// Make the frame's bind group again, after something in it was remade.
+    fn rebind(&mut self, gpu: &Gpu) {
+        self.bind_group = frame_bind_group(
+            gpu,
+            &self.layout,
+            &FrameInputs {
+                frame: &self.frame_buffer,
+                shadow_map: &self.shadow_map,
+                shadow_sampler: &self.shadow_sampler,
+                occlusion: &self.ssao.result,
+                rays: self.ray.as_ref().map(|r| &r.tlas),
+                lights: &self.light_buffer,
+                cells: &self.cell_buffer,
+                indices: &self.index_buffer,
+                light_views: &self.light_view_buffer,
+                light_shadow_map: &self.light_shadow_map,
+            },
+        );
     }
 
     /// Upload a mesh straight out of an imported asset.
@@ -2264,28 +2378,73 @@ impl Renderer {
             self.depth_size = (width, height);
         }
         if self.ssao.resize(gpu, (width, height)) {
-            self.bind_group = frame_bind_group(
-                gpu,
-                &self.layout,
-                &self.frame_buffer,
-                &self.shadow_map,
-                &self.shadow_sampler,
-                &self.ssao.result,
-                self.ray.as_ref().map(|r| &r.tlas),
-            );
+            self.rebind(gpu);
         }
 
         if frame.shadows.enabled && self.shadow_resolution != frame.shadows.resolution {
             self.shadow_resolution = frame.shadows.resolution.max(1);
             (self.shadow_map, self.shadow_layers) = shadow_view(gpu, self.shadow_resolution);
-            self.bind_group = frame_bind_group(
+            self.rebind(gpu);
+        }
+
+        if frame.shadows.enabled
+            && self.light_shadow_resolution != frame.shadows.light_resolution.max(1)
+        {
+            self.light_shadow_resolution = frame.shadows.light_resolution.max(1);
+            (self.light_shadow_map, self.light_shadow_layers) = shadow_layers_view(
                 gpu,
-                &self.layout,
-                &self.frame_buffer,
-                &self.shadow_map,
-                &self.shadow_sampler,
-                &self.ssao.result,
-                self.ray.as_ref().map(|r| &r.tlas),
+                self.light_shadow_resolution,
+                crate::lights::SHADOW_LAYERS as u32,
+            );
+            self.rebind(gpu);
+        }
+
+        // The lights: those the view sees, in cells, and the nearest given
+        // shadow maps — unless rays shadow every lamp instead.
+        let traced_lamps = self.ray.is_some() && frame.ray_tracing.light_shadows;
+        let clustered = crate::lights::cluster(
+            &frame.lights,
+            &frame.camera,
+            aspect,
+            frame.shadows.enabled && !traced_lamps,
+            self.light_shadow_resolution,
+        );
+        if !clustered.lights.is_empty() {
+            gpu.queue.write_buffer(
+                &self.light_buffer,
+                0,
+                bytemuck::cast_slice(&clustered.lights),
+            );
+        }
+        gpu.queue
+            .write_buffer(&self.cell_buffer, 0, bytemuck::cast_slice(&clustered.cells));
+        if clustered.indices.len() as u64 > self.index_capacity {
+            self.index_capacity = (clustered.indices.len() as u64).next_power_of_two();
+            self.index_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("light lists"),
+                size: self.index_capacity * 4,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.rebind(gpu);
+        }
+        if !clustered.indices.is_empty() {
+            gpu.queue.write_buffer(
+                &self.index_buffer,
+                0,
+                bytemuck::cast_slice(&clustered.indices),
+            );
+        }
+        let light_views: Vec<[[f32; 4]; 4]> = clustered
+            .shadow_views
+            .iter()
+            .map(|m| m.to_cols_array_2d())
+            .collect();
+        if !light_views.is_empty() {
+            gpu.queue.write_buffer(
+                &self.light_view_buffer,
+                0,
+                bytemuck::cast_slice(&light_views),
             );
         }
 
@@ -2309,11 +2468,13 @@ impl Renderer {
             // to clear at a grazing angle.
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
-        let casters: Vec<u8> = (0..MAX_CASCADES)
-            .flat_map(|i| {
+        let casters: Vec<u8> = light_view_projection
+            .iter()
+            .chain(light_views.iter())
+            .flat_map(|matrix| {
                 let mut slot = vec![0u8; self.caster_stride as usize];
                 let one = CasterUniform {
-                    view_projection: light_view_projection[i],
+                    view_projection: *matrix,
                 };
                 slot[..std::mem::size_of::<CasterUniform>()]
                     .copy_from_slice(bytemuck::bytes_of(&one));
@@ -2347,29 +2508,22 @@ impl Renderer {
                 1.0 / self.shadow_resolution as f32,
                 cascades.len() as f32,
             ],
-            lights: {
-                let mut near: Vec<&PointLight> = frame.lights.iter().collect();
-                let eye = frame.camera.position;
-                near.sort_by(|a, b| {
-                    (a.position - eye)
-                        .length_squared()
-                        .total_cmp(&(b.position - eye).length_squared())
-                });
-                let mut out = [[0.0; 4]; MAX_LIGHTS * 3];
-                for (i, light) in near.iter().take(MAX_LIGHTS).enumerate() {
-                    out[i * 3] = extend(light.position, light.range.max(0.01));
-                    out[i * 3 + 1] = extend(light.color, 0.0);
-                    out[i * 3 + 2] = match light.spot {
-                        Some((direction, cone)) => extend(
-                            direction.normalize_or_zero(),
-                            (cone.clamp(1.0, 179.0).to_radians() * 0.5).cos(),
-                        ),
-                        None => [0.0, 0.0, 0.0, -2.0],
-                    };
-                }
-                out
+            view_depth: {
+                let view = crate::lights::view_of(&frame.camera);
+                view.row(2).to_array()
             },
-            light_count: [frame.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            clusters: [
+                crate::lights::TILES_X as f32,
+                crate::lights::TILES_Y as f32,
+                crate::lights::SLICES as f32,
+                clustered.lights.len() as f32,
+            ],
+            cluster_depth: {
+                let near = frame.camera.near.max(1e-3);
+                let far = frame.camera.far.max(frame.camera.near + 1e-2);
+                [near, (far / near).ln(), width as f32, height as f32]
+            },
+            light_shadow: [1.0 / self.light_shadow_resolution as f32, 0.0, 0.0, 0.0],
             inverse_view_projection: frame
                 .camera
                 .view_projection(aspect)
@@ -2506,6 +2660,37 @@ impl Renderer {
             }
         }
         self.stats = stats;
+        // Each lamp shadow map's casters: what its own view sees.
+        let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();
+        for view in &clustered.shadow_views {
+            let planes = frustum_planes(*view);
+            let (mut solid, mut clipped) = (Vec::new(), Vec::new());
+            // What is unlit is a light itself: a lamp's bulb would
+            // otherwise put everything around it in its shadow.
+            for draw in frame
+                .draws
+                .iter()
+                .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
+            {
+                let Some(mesh) = self.meshes.get(draw.mesh.0 as usize) else {
+                    continue;
+                };
+                if !aabb_in_frustum(&planes, mesh.bounds, draw.transform) {
+                    continue;
+                }
+                let list = if draw.material.alpha_clip > 0.0 {
+                    &mut clipped
+                } else {
+                    &mut solid
+                };
+                push(
+                    list,
+                    (None, draw.mesh, self.maps_of(draw)),
+                    instance_of(draw.transform, &draw.material),
+                );
+            }
+            lamp_batches.push((solid, clipped));
+        }
         // Farthest first.
         transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
         // One pipeline change per look rather than per mesh.
@@ -2535,6 +2720,11 @@ impl Renderer {
             .chain(clip_batches.iter())
             .chain(batches.iter())
             .chain(overlay_batches.iter())
+            .chain(
+                lamp_batches
+                    .iter()
+                    .flat_map(|(a, b)| a.iter().chain(b.iter())),
+            )
             .map(|((_, _, maps), _)| *maps)
             .chain(singles.iter().map(|single| single.2))
             .chain(transparent.iter().map(|t| t.3))
@@ -2559,6 +2749,12 @@ impl Renderer {
             .chain(singles.iter().map(|single| single.4))
             .chain(transparent.iter().map(|t| t.5))
             .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
+            .chain(
+                lamp_batches
+                    .iter()
+                    .flat_map(|(a, b)| a.iter().chain(b.iter()))
+                    .flat_map(|(_, l)| l.iter().copied()),
+            )
             .collect();
         if flat.len() as u64 > self.instance_capacity {
             self.instance_capacity = (flat.len() as u64).next_power_of_two();
@@ -2635,15 +2831,7 @@ impl Renderer {
                 .as_mut()
                 .is_some_and(|ray| ray.update(gpu, &mut encoder, &instances));
             if remade {
-                self.bind_group = frame_bind_group(
-                    gpu,
-                    &self.layout,
-                    &self.frame_buffer,
-                    &self.shadow_map,
-                    &self.shadow_sampler,
-                    &self.ssao.result,
-                    self.ray.as_ref().map(|r| &r.tlas),
-                );
+                self.rebind(gpu);
             }
         }
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
@@ -2671,6 +2859,43 @@ impl Renderer {
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
                 self.draw_batches(&mut pass, &clip_batches, solid_casters, true);
+            }
+        }
+
+        // The lamps' maps, each with the casters its own view sees, after
+        // everything else in the instance buffer.
+        let overlay_total: u32 = overlay_batches.iter().map(|(_, l)| l.len() as u32).sum();
+        let mut base = shadow_total
+            + batched_total
+            + singles.len() as u32
+            + transparent.len() as u32
+            + overlay_total;
+        for (i, (solid, clipped)) in lamp_batches.iter().enumerate() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("runity::lamp shadow"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.light_shadow_layers[i],
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let offset = [((MAX_CASCADES + i) as u64 * self.caster_stride) as u32];
+            pass.set_pipeline(&self.pipelines.shadow);
+            pass.set_bind_group(0, &self.shadow_bind_group, &offset);
+            self.draw_batches(&mut pass, solid, base, false);
+            base += solid.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
+            if !clipped.is_empty() {
+                pass.set_pipeline(&self.pipelines.shadow_clip);
+                pass.set_bind_group(0, &self.shadow_bind_group, &offset);
+                self.draw_batches(&mut pass, clipped, base, true);
+                base += clipped.iter().map(|(_, l)| l.len() as u32).sum::<u32>();
             }
         }
 
@@ -2811,7 +3036,10 @@ impl Renderer {
     }
 }
 
-fn push(batches: &mut Vec<(BatchKey, Vec<InstanceRaw>)>, key: BatchKey, raw: InstanceRaw) {
+/// Draws grouped by what they share, each group's instances in order.
+type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
+
+fn push(batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
     match batches.iter_mut().find(|(k, _)| *k == key) {
         Some((_, list)) => list.push(raw),
         None => batches.push((key, vec![raw])),
@@ -2905,34 +3133,52 @@ fn vertex_slice(mesh: &ArchivedMeshAsset) -> &[crate::asset::Vertex] {
     }
 }
 
+/// Everything the frame's bind group holds.
+struct FrameInputs<'a> {
+    frame: &'a wgpu::Buffer,
+    shadow_map: &'a wgpu::TextureView,
+    shadow_sampler: &'a wgpu::Sampler,
+    occlusion: &'a wgpu::TextureView,
+    rays: Option<&'a wgpu::Tlas>,
+    lights: &'a wgpu::Buffer,
+    cells: &'a wgpu::Buffer,
+    indices: &'a wgpu::Buffer,
+    light_views: &'a wgpu::Buffer,
+    light_shadow_map: &'a wgpu::TextureView,
+}
+
 fn frame_bind_group(
     gpu: &Gpu,
     layout: &wgpu::BindGroupLayout,
-    frame_buffer: &wgpu::Buffer,
-    shadow_map: &wgpu::TextureView,
-    shadow_sampler: &wgpu::Sampler,
-    occlusion: &wgpu::TextureView,
-    rays: Option<&wgpu::Tlas>,
+    inputs: &FrameInputs,
 ) -> wgpu::BindGroup {
+    fn view(binding: u32, view: &wgpu::TextureView) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        }
+    }
+    fn buffer(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
+        wgpu::BindGroupEntry {
+            binding,
+            resource: buffer.as_entire_binding(),
+        }
+    }
     let mut entries = vec![
-        wgpu::BindGroupEntry {
-            binding: 0,
-            resource: frame_buffer.as_entire_binding(),
-        },
-        wgpu::BindGroupEntry {
-            binding: 1,
-            resource: wgpu::BindingResource::TextureView(shadow_map),
-        },
+        buffer(0, inputs.frame),
+        view(1, inputs.shadow_map),
         wgpu::BindGroupEntry {
             binding: 2,
-            resource: wgpu::BindingResource::Sampler(shadow_sampler),
+            resource: wgpu::BindingResource::Sampler(inputs.shadow_sampler),
         },
-        wgpu::BindGroupEntry {
-            binding: 4,
-            resource: wgpu::BindingResource::TextureView(occlusion),
-        },
+        view(4, inputs.occlusion),
+        buffer(6, inputs.lights),
+        buffer(7, inputs.cells),
+        buffer(8, inputs.indices),
+        view(9, inputs.light_shadow_map),
+        buffer(10, inputs.light_views),
     ];
-    if let Some(rays) = rays {
+    if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
             binding: 5,
             resource: rays.as_binding(),
@@ -2970,12 +3216,21 @@ fn pose_bind_group(
 /// The cascades' maps: one texture of [`MAX_CASCADES`] layers, viewed whole
 /// to sample and a layer at a time to draw into.
 fn shadow_view(gpu: &Gpu, resolution: u32) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
+    shadow_layers_view(gpu, resolution, MAX_CASCADES as u32)
+}
+
+/// `layers` depth maps in one array: viewed whole, and each on its own.
+fn shadow_layers_view(
+    gpu: &Gpu,
+    resolution: u32,
+    layers: u32,
+) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("shadow map"),
         size: wgpu::Extent3d {
             width: resolution.max(1),
             height: resolution.max(1),
-            depth_or_array_layers: MAX_CASCADES as u32,
+            depth_or_array_layers: layers,
         },
         mip_level_count: 1,
         sample_count: 1,
@@ -2988,7 +3243,7 @@ fn shadow_view(gpu: &Gpu, resolution: u32) -> (wgpu::TextureView, Vec<wgpu::Text
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     });
-    let layers = (0..MAX_CASCADES as u32)
+    let layers = (0..layers)
         .map(|layer| {
             texture.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2),

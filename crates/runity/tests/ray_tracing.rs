@@ -50,6 +50,7 @@ fn behind_the_wall(gpu: &Gpu, rays: runity::ray::RayTracing) -> u32 {
             color: Vec3::splat(3.0),
             range: 8.0,
             spot: None,
+            shadows: false,
         }],
         draws: vec![
             draw(plane, Mat4::from_scale(Vec3::new(20.0, 1.0, 20.0))),

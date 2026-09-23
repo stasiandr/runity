@@ -20,11 +20,14 @@ struct Frame {
     // depth bias, normal offset in world units, one texel in UV, how many
     // cascades there are (0: no shadows)
     shadow_params: vec4<f32>,
-    // Lights, three vectors each: position and range; colour; spot
-    // direction and the cosine of half its cone (-2: every way).
-    lights: array<vec4<f32>, 24>,
-    // How many are on, in x.
-    light_count: vec4<f32>,
+    // The camera view's third row: -dot(row, p) is how deep p is.
+    view_depth: vec4<f32>,
+    // Light cells across, down, deep; w how many lights there are.
+    clusters: vec4<f32>,
+    // near plane, ln(far / near), target width and height in pixels
+    cluster_depth: vec4<f32>,
+    // one texel of a lamp's shadow map, in UV
+    light_shadow: vec4<f32>,
     inverse_view_projection: mat4x4<f32>,
     // Zenith colour; w is 1 for a procedural sky.
     sky_zenith: vec4<f32>,
@@ -55,6 +58,24 @@ struct Frame {
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
 // Ambient occlusion, a texel per pixel (ssao.wgsl).
 @group(0) @binding(4) var occlusion: texture_2d<f32>;
+
+// Point and spot lights, Forward+ (lights.rs): every light the view sees,
+// and for each cell of a grid over the view — across, down and deep — the
+// run of `light_indices` naming those that reach into it.
+struct Light {
+    // position, range
+    position_range: vec4<f32>,
+    // colour times intensity; w its first shadow map, or -1
+    color_shadow: vec4<f32>,
+    // for a spot, which way and the cosine of half its cone; -2 every way
+    spot: vec4<f32>,
+};
+@group(0) @binding(6) var<storage, read> lights: array<Light>;
+@group(0) @binding(7) var<storage, read> light_cells: array<vec2<u32>>;
+@group(0) @binding(8) var<storage, read> light_indices: array<u32>;
+// The lamps' shadow maps: a spot's one, a point's six cube faces.
+@group(0) @binding(9) var light_shadow_map: texture_depth_2d_array;
+@group(0) @binding(10) var<storage, read> light_views: array<mat4x4<f32>>;
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -319,6 +340,69 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0, lit, fade);
 }
 
+/// The light cell a fragment is in.
+fn light_cell(pixel: vec2<f32>, world_position: vec3<f32>) -> u32 {
+    let tiles = vec2<u32>(frame.clusters.xy);
+    let slices = u32(frame.clusters.z);
+    let across = min(vec2<u32>(pixel / frame.cluster_depth.zw * frame.clusters.xy), tiles - vec2<u32>(1u));
+    let depth = -dot(frame.view_depth, vec4<f32>(world_position, 1.0));
+    let t = log(max(depth, frame.cluster_depth.x) / frame.cluster_depth.x) / frame.cluster_depth.y;
+    let slice = min(u32(max(t, 0.0) * f32(slices)), slices - 1u);
+    return (slice * tiles.y + across.y) * tiles.x + across.x;
+}
+
+/// How much of a lamp reaches a point past what stands between them: its
+/// shadow map, a spot's one or the cube face of a point's six that looks
+/// the point's way. 1 for a lamp with none.
+fn lamp_shadow(light: Light, position: vec3<f32>, normal: vec3<f32>, distance_to: f32) -> f32 {
+    let first = light.color_shadow.w;
+    if first < 0.0 {
+        return 1.0;
+    }
+    var layer = u32(first + 0.5);
+    let point = light.spot.w < -1.5;
+    let d = position - light.position_range.xyz;
+    if point {
+        let a = abs(d);
+        if a.x >= a.y && a.x >= a.z {
+            layer += select(1u, 0u, d.x > 0.0);
+        } else if a.y >= a.z {
+            layer += select(3u, 2u, d.y > 0.0);
+        } else {
+            layer += select(5u, 4u, d.z > 0.0);
+        }
+    }
+    // How big one texel is where the point is: the map spreads over the
+    // cone, wider the farther from the lamp. Both offsets clear it.
+    let cos_half = select(light.spot.w, 0.7071, point);
+    let tan_half = sqrt(max(1.0 - cos_half * cos_half, 1e-4)) / max(cos_half, 1e-3);
+    let texel = 2.0 * distance_to * tan_half * frame.light_shadow.x;
+    let offset = position + normal * texel * 1.5;
+    let clip = light_views[layer] * vec4<f32>(offset, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        return 1.0;
+    }
+    // Compared a little nearer the lamp, in metres: its depth is a
+    // perspective one, so the bias is put back through the same curve.
+    let near = 0.05;
+    let far = light.position_range.w;
+    let z = max(clip.w - texel - 0.02, near);
+    let reference = far / (far - near) * (1.0 - near / z);
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let tap = uv + vec2<f32>(f32(x), f32(y)) * frame.light_shadow.x;
+            sum = sum + textureSampleCompareLevel(light_shadow_map, shadow_sampler, tap, i32(layer), reference);
+        }
+    }
+    return sum / 9.0;
+}
+
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
@@ -471,29 +555,36 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     var color = direct(b, normal, to_sun, to_eye, highlights)
         * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
 
-    // Point and spot lights: facing it, and fading to nothing at its range
-    // — squared, so the edge of the pool is soft rather than a ring.
-    let count = u32(frame.light_count.x);
-    for (var i = 0u; i < count; i = i + 1u) {
-        let at = frame.lights[i * 3u];
+    // Point and spot lights, those listed in this fragment's cell: facing
+    // it, and fading to nothing at its range — squared, so the edge of the
+    // pool is soft rather than a ring.
+    let cell = light_cells[light_cell(in.clip_position.xy, in.world_position)];
+    for (var n = 0u; n < cell.y; n = n + 1u) {
+        let light = lights[light_indices[cell.x + n]];
+        let at = light.position_range;
         let to_light = at.xyz - in.world_position;
         let distance_to = length(to_light);
         let toward = to_light / max(distance_to, 1e-4);
         let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
         let facing = max(dot(normal, toward), 0.0);
         // A spot: full inside the cone, fading over its last tenth.
-        let spot = frame.lights[i * 3u + 2u];
+        let spot = light.spot;
         let along = dot(-toward, spot.xyz);
         let edge = spot.w + (1.0 - spot.w) * 0.1;
         let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
         // A lamp's shadow, by a ray to it — only where it lights at all.
+        // Or by its shadow map, where it has one.
         var blocked = 1.0;
-        if frame.ray.y > 0.5 && reach * facing * cone > 0.0 {
-            let start = in.world_position + geometric * 0.02;
-            blocked = ray_visible(start, toward, max(distance_to - 0.05, 0.0));
+        if reach * facing * cone > 0.0 && (flags & 4u) != 0u {
+            if frame.ray.y > 0.5 {
+                let start = in.world_position + geometric * 0.02;
+                blocked = ray_visible(start, toward, max(distance_to - 0.05, 0.0));
+            } else {
+                blocked = lamp_shadow(light, in.world_position, geometric, distance_to);
+            }
         }
         color = color + direct(b, normal, toward, to_eye, highlights)
-            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone * direct_ao * blocked;
+            * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * blocked;
     }
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees

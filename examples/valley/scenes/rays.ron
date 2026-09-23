@@ -1,7 +1,8 @@
 // Hardware ray tracing, the experiment (`runity::ray`): a lamp among
 // pillars at dusk. With rays each pillar throws the lamp's shadow across the
-// ground and up the wall; without them — on a device that does not trace,
-// or with `ray_tracing` taken out — the lamp lights straight through.
+// ground and up the wall, and the sun's penumbrae widen with distance;
+// without them — on a device that does not trace, or with `ray_tracing`
+// taken out — the lamp's shadow maps and the sun's cascades do it instead.
 (
     view: (position: (0.0, 3.2, 8.0), target: (0.0, 0.8, 0.0), fov_deg: 55.0),
     sun: (hour: 18.2, intensity: 0.25),

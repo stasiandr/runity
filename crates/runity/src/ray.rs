@@ -8,8 +8,8 @@
 //! * **Sun shadows** by rays towards the sun, jittered across its disc — a
 //!   penumbra that widens with distance from the caster, as a real one does,
 //!   with no cascades, no bias to tune and no shadow distance.
-//! * **Shadows from point and spot lights**, which the rasterized path does
-//!   not have at all: a ray to each lamp.
+//! * **Shadows from point and spot lights** by a ray to each lamp, instead
+//!   of their shadow maps — every lamp, with no budget of maps to share.
 //! * **Ambient occlusion** by short rays over the hemisphere, which sees
 //!   what is off screen and behind things, where SSAO cannot.
 //!
@@ -33,7 +33,7 @@ use crate::gpu::Gpu;
 pub struct RayTracing {
     /// The sun's shadows by rays, instead of the cascades.
     pub sun_shadows: bool,
-    /// Point and spot lights cast shadows, by a ray each.
+    /// Point and spot lights' shadows by a ray each, instead of their maps.
     pub light_shadows: bool,
     /// Ambient occlusion by rays, instead of SSAO.
     pub ambient_occlusion: bool,
