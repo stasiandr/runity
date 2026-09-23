@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use runity::refs::AssetRef;
 use runity::scene::MaterialRef;
 use runity::{Library, Prefabs, Project, Scene};
-use runity_import::rename::{rename, usages, usages_of};
+use runity_import::assets::{rename, usages, usages_of};
 use runity_import::{sidecar_for, sync, ImportSettings};
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -302,4 +302,88 @@ fn moving_a_heightmap_points_its_terrain_at_the_new_place() {
     assert!(read(&root.join("assets/paint/field.rterrain")).contains("heightmap: \"valley.png\""));
     let (library, _) = Library::open(project.library()).unwrap();
     assert!(library.mesh_by_name("field").is_some());
+}
+
+#[test]
+fn the_project_lists_every_asset_with_how_much_it_is_used() {
+    let (project, _) = valley("list");
+    let entries = runity_import::assets::list(&project).unwrap();
+    let stone = entries
+        .iter()
+        .find(|e| e.file == "materials/stone.rmat")
+        .unwrap();
+    assert_eq!(stone.kind, "material");
+    assert_eq!(stone.name, "stone");
+    assert!(stone.built && stone.id.is_some());
+    assert_eq!(
+        stone.uses,
+        usages(&project, Path::new("materials/stone.rmat"))
+            .unwrap()
+            .len()
+    );
+    let campfire = entries
+        .iter()
+        .find(|e| e.file == "prefabs/campfire.prefab")
+        .unwrap();
+    assert_eq!((campfire.kind, campfire.uses), ("prefab", 3));
+    let axe = entries
+        .iter()
+        .find(|e| e.file == "assets/models/axe.obj")
+        .unwrap();
+    assert_eq!((axe.kind, axe.uses), ("model", 0));
+    assert!(entries.iter().all(|e| !e.file.ends_with(".rimport")));
+    let mut sorted = entries.clone();
+    sorted.sort_by(|a, b| a.file.cmp(&b.file));
+    assert_eq!(sorted, entries, "sorted by file");
+}
+
+#[test]
+fn deleting_what_is_still_used_is_refused_with_the_lines_and_the_rest_goes() {
+    let (project, root) = valley("delete");
+    let e = runity_import::assets::delete(&project, Path::new("materials/stone.rmat")).unwrap_err();
+    let said = format!("{e:#}");
+    assert!(
+        said.contains("materials/stone.rmat is still used"),
+        "{said}"
+    );
+    assert!(said.contains("scenes/camp.ron: `kettle`"), "{said}");
+    assert!(root.join("materials/stone.rmat").is_file());
+
+    let built = runity_import::asset_for(&root.join("assets/models/axe.obj"), &project.library());
+    assert!(built.is_file());
+    runity_import::assets::delete(&project, Path::new("assets/models/axe.obj")).unwrap();
+    assert!(!root.join("assets/models/axe.obj").exists());
+    assert!(!root.join("assets/models/axe.obj.rimport").exists());
+    assert!(!built.exists(), "and its built asset");
+    assert!(sync(&project).is_empty(), "nothing left for a sync to find");
+}
+
+#[test]
+fn a_duplicate_is_a_new_asset_with_the_same_settings() {
+    let (project, root) = valley("duplicate");
+    let original = ImportSettings::load(root.join("assets/models/axe.obj.rimport")).unwrap();
+    let done = runity_import::assets::duplicate(
+        &project,
+        Path::new("assets/models/axe.obj"),
+        Path::new("assets/models/axe_old.obj"),
+    )
+    .unwrap();
+    assert!(done.iter().all(|r| r.result.is_ok()), "{done:?}");
+    let copy = ImportSettings::load(root.join("assets/models/axe_old.obj.rimport")).unwrap();
+    assert_eq!(copy.source, "assets/models/axe_old.obj");
+    assert_eq!(copy.scale, original.scale);
+    assert_ne!(copy.asset_id(), original.asset_id(), "an asset of its own");
+    assert_eq!(copy.hash, original.hash, "the same bytes");
+    let (library, _) = Library::open(project.library()).unwrap();
+    assert!(library.mesh_by_name("axe_old").is_some());
+    assert!(library.mesh_by_name("axe").is_some());
+
+    // A copy under the same name elsewhere would be two `axe`s.
+    let e = runity_import::assets::duplicate(
+        &project,
+        Path::new("assets/models/axe.obj"),
+        Path::new("assets/tools/axe.obj"),
+    )
+    .unwrap_err();
+    assert!(format!("{e:#}").contains("already called `axe`"), "{e:#}");
 }

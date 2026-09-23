@@ -10,6 +10,9 @@
 //! runity git-setup [PROJECT]             turn the driver on in this clone
 //! runity rename FROM TO                   move an asset, and what names it
 //! runity uses FILE                        every line that names an asset
+//! runity assets [PROJECT]                 every asset, and how much it is used
+//! runity delete FILE                      remove an asset nothing uses
+//! runity duplicate FROM TO                copy an asset as a new one
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -51,6 +54,14 @@ runity rename FROM TO
 runity uses FILE
     Every scene and prefab line that names FILE: what a rename changes,
     and whether deleting it breaks anything.
+runity assets [PROJECT]
+    Every asset source — model, texture, sound, material, prefab — with how
+    many lines use it; an unused one is listed as used 0.
+runity delete FILE
+    Remove an asset source, its .rimport and its built asset. Refused, with
+    the lines, while anything names it.
+runity duplicate FROM TO
+    Copy an asset source as a new asset with the same import settings.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -80,6 +91,52 @@ fn run() -> Result<ExitCode> {
         "build" => build(&rest),
         "rename" => rename(&rest),
         "uses" => uses(&rest),
+        "assets" => {
+            let project = find(&rest)?;
+            let entries = runity_import::assets::list(&project)?;
+            for e in &entries {
+                println!(
+                    "{:<9} {:>3} used  {}{}",
+                    e.kind,
+                    e.uses,
+                    e.file,
+                    if e.built {
+                        ""
+                    } else {
+                        "  (not built: runity sync)"
+                    }
+                );
+            }
+            println!("{}: {} assets", project.name(), entries.len());
+            Ok(ExitCode::SUCCESS)
+        }
+        "delete" => {
+            let [file] = rest.as_slice() else {
+                bail!("runity delete FILE");
+            };
+            let file = std::path::absolute(file)?;
+            let project = Project::find(&file).map_err(|e| anyhow::anyhow!("{e}"))?;
+            runity_import::assets::delete(&project, &file)?;
+            println!("deleted {}", project.relative(&file).unwrap_or_default());
+            Ok(ExitCode::SUCCESS)
+        }
+        "duplicate" => {
+            let [from, to] = rest.as_slice() else {
+                bail!("runity duplicate FROM TO");
+            };
+            let (from, to) = (std::path::absolute(from)?, std::path::absolute(to)?);
+            let project = Project::find(&from).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let synced = runity_import::assets::duplicate(&project, &from, &to)?;
+            for failed in synced.iter().filter_map(|r| r.result.as_ref().err()) {
+                eprintln!("warning: {failed}");
+            }
+            println!(
+                "{} -> {}",
+                project.relative(&from).unwrap_or_default(),
+                project.relative(&to).unwrap_or_default()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         "git-setup" => {
             let project = find(&rest)?;
             for line in runity_cli::merge::git_setup(project.root())? {
@@ -265,7 +322,7 @@ fn rename(rest: &[String]) -> Result<ExitCode> {
     let from = std::path::absolute(from)?;
     let to = std::path::absolute(to)?;
     let project = Project::find(&from).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let done = runity_import::rename::rename(&project, &from, &to)?;
+    let done = runity_import::assets::rename(&project, &from, &to)?;
     println!("{} -> {}", done.from, done.to);
     if let Some((old, new)) = &done.reference {
         println!("scenes said {old}, now {new}");
@@ -293,7 +350,7 @@ fn uses(rest: &[String]) -> Result<ExitCode> {
     };
     let file = std::path::absolute(file)?;
     let project = Project::find(&file).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let found = runity_import::rename::usages(&project, &file)?;
+    let found = runity_import::assets::usages(&project, &file)?;
     for usage in &found {
         println!("{usage}");
     }

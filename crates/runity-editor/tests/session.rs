@@ -1784,3 +1784,40 @@ fn an_instance_becomes_a_variant_and_its_overrides_apply_to_the_variant_only() {
         "the name is taken"
     );
 }
+
+#[test]
+fn an_asset_the_open_scene_uses_cannot_be_deleted_even_unsaved() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file("delete-asset", SCENE);
+    let root = root_of(&path);
+    std::fs::write(root.join("materials/clay.rmat"), "(color: \"#b4643c\")\n").unwrap();
+    runity_import::sync(&runity::Project::open(&root).unwrap());
+    session.open_scene(&path).unwrap();
+    let listed = session.assets().unwrap();
+    assert!(listed
+        .iter()
+        .any(|e| e.file == "materials/clay.rmat" && e.uses == 0));
+
+    // Used only by an edit not saved yet.
+    let lid = id(&session, "lid");
+    session.set_material_name(lid, "clay").unwrap();
+    let e = session.delete_asset("materials/clay.rmat").unwrap_err();
+    assert!(
+        e.to_string().contains("used by the open scene — `lid`"),
+        "{e}"
+    );
+
+    session
+        .duplicate_asset("materials/clay.rmat", "materials/brick.rmat")
+        .unwrap();
+    session.set_material_name(lid, "brick").unwrap();
+    session.delete_asset("materials/clay.rmat").unwrap();
+    assert!(!root.join("materials/clay.rmat").exists());
+    assert_eq!(
+        session.material(lid),
+        Some(runity::Material::from_srgb(0xb4, 0x64, 0x3c)),
+        "drawn with the copy"
+    );
+}

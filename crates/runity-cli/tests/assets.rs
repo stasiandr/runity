@@ -113,6 +113,18 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
         "{diff}"
     );
 
+    let listed = runity(&root, &["assets"]);
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listed.contains("material    2 used  materials/terracotta.rmat"),
+        "{listed}"
+    );
+    let refused = runity(&root, &["delete", "materials/terracotta.rmat"]);
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("still used — 2 place(s)"), "{said}");
+    assert!(root.join("materials/terracotta.rmat").is_file());
+
     let check = runity(&root, &["check"]);
     assert!(
         check.status.success(),

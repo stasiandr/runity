@@ -104,6 +104,9 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "make_variant",
         "rename_asset",
         "usages",
+        "assets",
+        "delete_asset",
+        "duplicate_asset",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -293,4 +296,17 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         refused.contains("material `ember` is already named by 1 line(s)"),
         "{refused}"
     );
+
+    let listed = agent.text("assets", json!({}));
+    assert!(
+        listed.contains("materials/terracotta.rmat material `terracotta` used 1"),
+        "{listed}"
+    );
+    let refused = agent
+        .call(
+            "delete_asset",
+            json!({ "file": "materials/terracotta.rmat" }),
+        )
+        .unwrap_err();
+    assert!(refused.contains("`pot`"), "{refused}");
 }

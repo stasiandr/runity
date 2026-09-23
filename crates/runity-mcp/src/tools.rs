@@ -114,6 +114,9 @@ pub fn list() -> Vec<Value> {
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
         tool("import", "Import a source file (.gltf .glb .obj .png .jpg .tga .bmp .wav .rmat) into the project.", json!({ "source": { "type": "string" } }), &["source"]),
         tool("rename_asset", "Rename or move an asset source (model, texture, sound in assets/, .rmat in materials/, .prefab in prefabs/), its .rimport with it, and rewrite every scene and prefab line that named it. Paths relative to the project root. Refused, with the reason, when the new name already means something.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
+        tool("assets", "Every asset source in the project — models, textures, sounds, materials, prefabs — with its kind, id, whether it is built, and how many lines use it.", json!({}), &[]),
+        tool("delete_asset", "Delete an asset source with its .rimport and built asset. Refused, listing the lines, while any scene or prefab (or the open scene's unsaved edits) still names it.", json!({ "file": { "type": "string" } }), &["file"]),
+        tool("duplicate_asset", "Copy an asset source under a new name: a new asset with its own id and the original's import settings.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
         tool("usages", "Every scene and prefab line that names an asset file: what a rename would change, and whether it is safe to delete.", json!({ "file": { "type": "string", "description": "relative to the project root, e.g. materials/stone.rmat" } }), &["file"]),
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
@@ -499,6 +502,47 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 let _ = write!(out, "\nwarning: {failed}");
             }
             Ok(vec![text(out)])
+        }
+        "assets" => {
+            let entries = server.session()?.assets().map_err(|e| e.to_string())?;
+            let lines: Vec<String> = entries
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{} {} `{}` used {}{}",
+                        e.file,
+                        e.kind,
+                        e.name,
+                        e.uses,
+                        if e.built {
+                            ""
+                        } else {
+                            " (not built — reload)"
+                        }
+                    )
+                })
+                .collect();
+            Ok(vec![text(if lines.is_empty() {
+                "no assets yet".to_string()
+            } else {
+                lines.join("\n")
+            })])
+        }
+        "delete_asset" => {
+            let file = string(args, "file")?;
+            server
+                .session()?
+                .delete_asset(&file)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{file} deleted"))])
+        }
+        "duplicate_asset" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            server
+                .session()?
+                .duplicate_asset(&from, &to)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{from} copied to {to}"))])
         }
         "usages" => {
             let file = string(args, "file")?;

@@ -1,4 +1,7 @@
-//! Renaming or moving an asset source without breaking what names it.
+//! The project's assets as a whole: what there is, what uses what, and
+//! renaming, copying and deleting without breaking what names them — what
+//! Unity's Project window does, as functions an editor, the command line
+//! and an agent all call.
 //!
 //! In Unity a rename in the Project window keeps every reference, because
 //! scenes hold GUIDs. Scenes here hold names a person reads — `stone`,
@@ -166,56 +169,9 @@ pub fn usages(project: &Project, file: &Path) -> Result<Vec<Usage>> {
 pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
     let from = absolute(project, from);
     let to = absolute(project, to);
-    ensure!(
-        from.is_file(),
-        "{} is not there to rename",
-        shown(project, &from)
-    );
-    ensure!(
-        !to.exists(),
-        "{} is already there; renaming onto it would lose one of the two",
-        shown(project, &to)
-    );
-    let kind_from = kind(project, &from)?;
-    let kind_to =
-        kind(project, &to).with_context(|| format!("{} as the new name", shown(project, &to)))?;
-    ensure!(
-        kind_from == kind_to && extension(&from) == extension(&to),
-        "{} to {}: a different extension or folder kind makes it another asset, not a rename",
-        shown(project, &from),
-        shown(project, &to)
-    );
-
     let documents = Documents::read(project)?;
-    let (old, new) = (stem(&from), stem(&to));
-    let reference = match kind_from {
-        Kind::Model if old != new => Some(AssetRef::Model(old.clone())),
-        Kind::Material if old != new => Some(AssetRef::Material(old.clone())),
-        Kind::Prefab if old != new => Some(AssetRef::Prefab(old.clone())),
-        _ => None,
-    };
-    if let Some(what) = &reference {
-        let target = what.renamed(new.clone());
-        if let Some(other) = same_stem(project, kind_from, &new, &from) {
-            bail!(
-                "{} is already called `{new}`; two {}s with one name would be one too many",
-                shown(project, &other),
-                match kind_from {
-                    Kind::Model => "model",
-                    Kind::Material => "material",
-                    _ => "prefab",
-                }
-            );
-        }
-        let taken = documents.uses(project, &target);
-        if let Some(first) = taken.first() {
-            bail!(
-                "{} is already named by {} line(s) — first {first} — and they would start meaning this file",
-                target,
-                taken.len()
-            );
-        }
-    }
+    let (kind_from, reference) = target(project, &documents, &from, &to, Verb::Rename)?;
+    let new = stem(&to);
 
     // Terrains whose heightmap this is, or this terrain's own heightmap if
     // it changes folder: the path is relative to the terrain, so either
@@ -224,18 +180,10 @@ pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
     let from_dir = normalize(from.parent().unwrap_or(Path::new("")));
     let to_dir = normalize(to.parent().unwrap_or(Path::new("")));
     if kind_from == Kind::Other {
-        walk(&project.assets(), &mut |path| {
-            if extension(path) != "rterrain" {
-                return;
-            }
-            let Some(name) = terrain::heightmap(path) else {
-                return;
-            };
-            let dir = path.parent().unwrap_or(Path::new(""));
-            if normalize(&dir.join(&name)) == normalize(&from) {
-                heightmaps.push((path.to_path_buf(), relative_between(dir, &to)));
-            }
-        });
+        for terrain in painted_by(project, &from) {
+            let dir = terrain.parent().unwrap_or(Path::new("")).to_path_buf();
+            heightmaps.push((terrain, relative_between(&dir, &to)));
+        }
     } else if extension(&from) == "rterrain" && from_dir != to_dir {
         if let Some(name) = terrain::heightmap(&from) {
             let image = normalize(&from_dir.join(name));
@@ -297,6 +245,225 @@ pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
         rewritten,
         synced: sync(project),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    Rename,
+    Duplicate,
+}
+
+/// Whether `to` may become the name of what `from` is — by a rename, or as
+/// a copy — and the reference scenes use for `from` when the name changes.
+fn target(
+    project: &Project,
+    documents: &Documents,
+    from: &Path,
+    to: &Path,
+    verb: Verb,
+) -> Result<(Kind, Option<AssetRef>)> {
+    let doing = match verb {
+        Verb::Rename => "rename",
+        Verb::Duplicate => "copy",
+    };
+    ensure!(
+        from.is_file(),
+        "{} is not there to {doing}",
+        shown(project, from)
+    );
+    ensure!(
+        !to.exists(),
+        "{} is already there; writing onto it would lose one of the two",
+        shown(project, to)
+    );
+    let kind_from = kind(project, from)?;
+    let kind_to =
+        kind(project, to).with_context(|| format!("{} as the new name", shown(project, to)))?;
+    ensure!(
+        kind_from == kind_to && extension(from) == extension(to),
+        "{} to {}: a different extension or folder kind makes it another asset, not a {doing}",
+        shown(project, from),
+        shown(project, to)
+    );
+    let (old, new) = (stem(from), stem(to));
+    let reference = match kind_from {
+        _ if old == new && verb == Verb::Rename => None,
+        Kind::Model => Some(AssetRef::Model(old)),
+        Kind::Material => Some(AssetRef::Material(old)),
+        Kind::Prefab => Some(AssetRef::Prefab(old)),
+        Kind::Other => None,
+    };
+    if let Some(what) = &reference {
+        // A rename leaves the old file's name free; a copy does not.
+        let except = (verb == Verb::Rename).then_some(from);
+        if let Some(other) = same_stem(project, kind_from, &new, except) {
+            bail!(
+                "{} is already called `{new}`; two {}s with one name would be one too many",
+                shown(project, &other),
+                match kind_from {
+                    Kind::Model => "model",
+                    Kind::Material => "material",
+                    _ => "prefab",
+                }
+            );
+        }
+        let target = what.renamed(new.clone());
+        let taken = documents.uses(project, &target);
+        if let Some(first) = taken.first() {
+            bail!(
+                "{} is already named by {} line(s) — first {first} — and they would start meaning this file",
+                target,
+                taken.len()
+            );
+        }
+    }
+    Ok((kind_from, reference))
+}
+
+/// One asset source, as a Project window lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    /// Project-relative.
+    pub file: String,
+    /// `model`, `material`, `prefab`, `texture` or `sound`.
+    pub kind: &'static str,
+    /// What a scene writes to name it: the file stem.
+    pub name: String,
+    /// The asset's ID, from its sidecar; `None` for a prefab, and for a
+    /// source not imported yet.
+    pub id: Option<runity::AssetId>,
+    /// Whether the library has it built. Always true for a prefab, which is
+    /// read as text rather than built.
+    pub built: bool,
+    /// How many scene and prefab lines name it, or terrains paint with it.
+    pub uses: usize,
+}
+
+/// Every asset source in the project — models, textures and sounds in
+/// `assets/`, materials, prefabs — sorted by file, with how much each is
+/// used.
+pub fn list(project: &Project) -> Result<Vec<Entry>> {
+    let documents = Documents::read(project)?;
+    let mut files = Vec::new();
+    for root in [project.assets(), project.materials(), project.prefabs()] {
+        walk(&root, &mut |path| {
+            if kind(project, path).is_ok() {
+                files.push(path.to_path_buf());
+            }
+        });
+    }
+    files.sort();
+    files.dedup();
+    let mut out = Vec::new();
+    for path in files {
+        let kind = kind(project, &path)?;
+        let sidecar = ImportSettings::load(sidecar_for(&path)).ok();
+        let uses = match kind {
+            Kind::Model => documents.uses(project, &AssetRef::Model(stem(&path))).len(),
+            Kind::Material => documents
+                .uses(project, &AssetRef::Material(stem(&path)))
+                .len(),
+            Kind::Prefab => documents
+                .uses(project, &AssetRef::Prefab(stem(&path)))
+                .len(),
+            Kind::Other => painted_by(project, &path).len(),
+        };
+        out.push(Entry {
+            file: shown(project, &path),
+            kind: match kind {
+                Kind::Model => "model",
+                Kind::Material => "material",
+                Kind::Prefab => "prefab",
+                Kind::Other if extension(&path) == "wav" => "sound",
+                Kind::Other => "texture",
+            },
+            name: stem(&path),
+            id: sidecar.as_ref().map(ImportSettings::asset_id),
+            built: kind == Kind::Prefab || asset_for(&path, &project.library()).is_file(),
+            uses,
+        });
+    }
+    Ok(out)
+}
+
+/// Delete an asset source, its sidecar and its built asset — unless
+/// something still names it, in which case nothing is deleted and the
+/// lines that name it are the error. Unity deletes and leaves the scenes
+/// holding "Missing"; here the missing reference is found first.
+pub fn delete(project: &Project, file: &Path) -> Result<()> {
+    let file = absolute(project, file);
+    ensure!(
+        file.is_file(),
+        "{} is not there to delete",
+        shown(project, &file)
+    );
+    let kind = kind(project, &file)?;
+    let users: Vec<String> = match kind {
+        Kind::Other => painted_by(project, &file)
+            .iter()
+            .map(|t| format!("{} paints with it", shown(project, t)))
+            .collect(),
+        _ => usages(project, &file)?
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    };
+    if !users.is_empty() {
+        bail!(
+            "{} is still used — {} place(s):\n  {}\nchange or remove those first",
+            shown(project, &file),
+            users.len(),
+            users.join("\n  ")
+        );
+    }
+    std::fs::remove_file(&file)?;
+    let sidecar = sidecar_for(&file);
+    if sidecar.is_file() {
+        std::fs::remove_file(sidecar)?;
+    }
+    let _ = std::fs::remove_file(asset_for(&file, &project.library()));
+    Ok(())
+}
+
+/// Copy an asset source under a new name: a new asset with an ID of its
+/// own, built at once. Scenes are not touched; nothing names the copy yet.
+pub fn duplicate(project: &Project, from: &Path, to: &Path) -> Result<Vec<Reimported>> {
+    let from = absolute(project, from);
+    let to = absolute(project, to);
+    let documents = Documents::read(project)?;
+    target(project, &documents, &from, &to, Verb::Duplicate)?;
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&from, &to)?;
+    // The copy's settings are the original's: whoever chose a scale for
+    // this model chose it for the copy too. The ID is its own, and the
+    // hash is left for the sync to fill in.
+    if let Ok(mut settings) = ImportSettings::load(sidecar_for(&from)) {
+        settings.source = shown(project, &to);
+        settings.id = None;
+        settings.hash = String::new();
+        settings.save(sidecar_for(&to))?;
+    }
+    Ok(sync(project))
+}
+
+/// Terrains whose heightmap is this image.
+fn painted_by(project: &Project, image: &Path) -> Vec<PathBuf> {
+    let image = normalize(image);
+    let mut found = Vec::new();
+    walk(&project.assets(), &mut |path| {
+        if extension(path) != "rterrain" {
+            return;
+        }
+        if let Some(name) = terrain::heightmap(path) {
+            let dir = path.parent().unwrap_or(Path::new(""));
+            if normalize(&dir.join(name)) == image {
+                found.push(path.to_path_buf());
+            }
+        }
+    });
+    found
 }
 
 /// Every scene and prefab in a project, read.
@@ -369,7 +536,7 @@ impl Documents {
 }
 
 /// Another source of the same kind already called `name`.
-fn same_stem(project: &Project, kind: Kind, name: &str, except: &Path) -> Option<PathBuf> {
+fn same_stem(project: &Project, kind: Kind, name: &str, except: Option<&Path>) -> Option<PathBuf> {
     let root = match kind {
         Kind::Model => project.assets(),
         Kind::Material => project.materials(),
@@ -382,8 +549,8 @@ fn same_stem(project: &Project, kind: Kind, name: &str, except: &Path) -> Option
             Kind::Material => extension(path) == "rmat",
             _ => extension(path) == "prefab",
         };
-        if found.is_none() && matches && stem(path) == name && normalize(path) != normalize(except)
-        {
+        let excepted = except.is_some_and(|except| normalize(path) == normalize(except));
+        if found.is_none() && matches && stem(path) == name && !excepted {
             found = Some(path.to_path_buf());
         }
     });

@@ -1481,10 +1481,10 @@ impl Session {
         &mut self,
         from: impl AsRef<Path>,
         to: impl AsRef<Path>,
-    ) -> EditResult<runity_import::rename::Renamed> {
+    ) -> EditResult<runity_import::assets::Renamed> {
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
-        let renamed = runity_import::rename::rename(&project, from.as_ref(), to.as_ref())
+        let renamed = runity_import::assets::rename(&project, from.as_ref(), to.as_ref())
             .map_err(|e| EditError::Import(format!("{e:#}")))?;
         if let Some((old, new)) = &renamed.reference {
             self.history.rewrite_all(|scene| {
@@ -1510,10 +1510,57 @@ impl Session {
     pub fn asset_usages(
         &self,
         file: impl AsRef<Path>,
-    ) -> EditResult<Vec<runity_import::rename::Usage>> {
+    ) -> EditResult<Vec<runity_import::assets::Usage>> {
         let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
-        runity_import::rename::usages(project, file.as_ref())
+        runity_import::assets::usages(project, file.as_ref())
             .map_err(|e| EditError::Import(format!("{e:#}")))
+    }
+
+    /// Every asset source in the project, with its kind, ID, whether it is
+    /// built, and how many lines use it: the Project window's list.
+    pub fn assets(&self) -> EditResult<Vec<runity_import::assets::Entry>> {
+        let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
+        runity_import::assets::list(project).map_err(|e| EditError::Import(format!("{e:#}")))
+    }
+
+    /// Delete an asset source nothing uses — on disk, or in the open scene's
+    /// unsaved edits. Refused, with the lines, when something does.
+    pub fn delete_asset(&mut self, file: impl AsRef<Path>) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        let file = file.as_ref();
+        if let Some(what) = runity_import::assets::reference(&project, file)
+            .map_err(|e| EditError::Import(format!("{e:#}")))?
+        {
+            let unsaved = runity::refs::uses_in_scene(self.history.scene(), &what);
+            if let Some(first) = unsaved.first() {
+                return Err(EditError::Import(format!(
+                    "{what} is used by the open scene — `{}` ({}) {} — and {} line(s) in all",
+                    first.name,
+                    first.entity,
+                    first.field,
+                    unsaved.len()
+                )));
+            }
+        }
+        runity_import::assets::delete(&project, file)
+            .map_err(|e| EditError::Import(format!("{e:#}")))?;
+        self.prefabs = runity::Prefabs::of(&project).0;
+        self.reopen_library()
+    }
+
+    /// Copy an asset source under a new name, as a new asset.
+    pub fn duplicate_asset(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        runity_import::assets::duplicate(&project, from.as_ref(), to.as_ref())
+            .map_err(|e| EditError::Import(format!("{e:#}")))?;
+        self.prefabs = runity::Prefabs::of(&project).0;
+        self.reopen_library()
     }
 
     // --- the library ----------------------------------------------------

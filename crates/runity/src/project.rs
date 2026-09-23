@@ -612,7 +612,9 @@ Cargo.toml   the game crate; src/main.rs is the game
   material or prefab, its .rimport with it, and rewrites every scene and
   prefab line that named it. Scenes name assets by file stem, so renaming
   a file by hand breaks them; use this. `runity uses FILE` lists those
-  lines first.
+  lines first. `runity assets` lists every asset and how much it is used;
+  `runity delete FILE` removes one only when nothing names it;
+  `runity duplicate FROM TO` copies one as a new asset.
 * `runity sync` builds `library/` from the sources. After adding, changing
   or moving a source, run it and commit the `.rimport` it writes beside the
   source. Never edit a sidecar's `hash` or `id` by hand: the hash is how a
