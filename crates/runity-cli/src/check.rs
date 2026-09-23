@@ -118,6 +118,17 @@ pub fn check(project: &Project) -> Vec<Finding> {
             keys.extend(runity::screen::Screen::keys(&layout));
         }
     }
+    // Dialogues: what does not join up, and their texts' keys, checked
+    // against strings/ with the screens'.
+    for path in files(&project.root().join(runity::dialogue::DIR), "ron") {
+        let file = relative(project, &path);
+        if let Some(dialogue) = parse::<runity::dialogue::Dialogue>(&path, &file, &mut out) {
+            for problem in dialogue.problems() {
+                out.push(error(&file, problem));
+            }
+            keys.extend(dialogue.keys());
+        }
+    }
     let strings = project.root().join(runity::strings::DIR);
     let mut tables = Vec::new();
     for (language, path) in runity::strings::tables(&strings) {
@@ -234,8 +245,8 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
             Some("prefab") => Some(PREFABS),
             Some("rmat") => Some(MATERIALS),
             Some(
-                "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg"
-                | "rterrain",
+                "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg" | "mp3"
+                | "flac" | "rterrain",
             ) => Some(ASSETS),
             Some("ron") => Some(SCENES),
             _ => None,
@@ -369,7 +380,7 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
         if let (Some(stem), Some(extension)) = (stem, extension) {
             match extension.as_str() {
-                "wav" => {
+                "wav" | "mp3" | "ogg" | "flac" => {
                     sounds.insert(stem);
                 }
                 "png" | "jpg" | "jpeg" | "tga" | "bmp" => {

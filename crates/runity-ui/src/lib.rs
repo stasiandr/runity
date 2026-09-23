@@ -19,6 +19,7 @@
 //! `docs/ui.md` is the card this implements.
 
 mod field;
+pub mod graph_view;
 mod icons;
 pub mod render;
 mod style;

@@ -305,44 +305,26 @@ fn expand(
             id
         }
     };
+    // What this line itself says — its components' links, its joint — is
+    // written in the file that holds it, so it takes that file's scope:
+    // here, before its prefab (if it is an instance) is expanded, so what
+    // the prefab brings keeps the scope of its own instance and is not
+    // scoped again. A door's hinge in the prefab is this door's hinge in
+    // the scene, as Unity rewrites a prefab's references per instance, and
+    // a door in a shed in a yard is still that door's.
+    let local = match scope {
+        Some(instance) => scoped_links(desc, instance),
+        None => desc.clone(),
+    };
     // An instance becomes what its prefab holds, children and all; anything
     // else is itself, with its children still to come.
     let mut expanded =
-        resolve(desc, id, prefabs, depth, problems, parts).unwrap_or_else(|| EntityDesc {
+        resolve(&local, id, prefabs, depth, problems, parts).unwrap_or_else(|| EntityDesc {
             children: Vec::new(),
-            ..desc.clone()
+            ..local.clone()
         });
     expanded.id = id;
     expanded.prefab = Default::default();
-    // A joint in a prefab names another part of it, by its id in the file:
-    // in the instance, that part has the instance's scope too.
-    if let (Some(instance), Some(to)) = (scope, expanded.joint.to()) {
-        if !to.is_unassigned() {
-            expanded.joint = expanded.joint.with_to(instance.within(to));
-        }
-    }
-    // So does a component's link to another part: a door's hinge in the
-    // prefab is this door's hinge in the scene, as Unity rewrites a
-    // prefab's references per instance.
-    if let Some(instance) = scope {
-        for value in expanded.components.values_mut() {
-            let text = value.get_ron();
-            let links = crate::EntityRef::find_in(text);
-            if links.is_empty() {
-                continue;
-            }
-            let mut scoped = text.to_string();
-            for id in links {
-                scoped = scoped.replace(
-                    &format!("EntityRef(\"{id}\")"),
-                    &format!("EntityRef(\"{}\")", instance.within(id)),
-                );
-            }
-            if let Ok(raw) = ron::value::RawValue::from_boxed_ron(scoped.into_boxed_str()) {
-                *value = raw;
-            }
-        }
-    }
     // Its own children come after whatever the prefab brought, in the same
     // scope as itself: a kettle put beside a campfire in the scene is the
     // scene's, not the campfire's.
@@ -358,6 +340,57 @@ fn expand(
         expanded.children.extend(grown);
     }
     expanded
+}
+
+/// Point every link to `from` in `desc` and under it at `to` instead.
+fn relink(desc: &mut EntityDesc, from: EntityId, to: EntityId) {
+    if desc.joint.to() == Some(from) {
+        desc.joint = desc.joint.with_to(to);
+    }
+    let (was, now) = (
+        format!("EntityRef(\"{from}\")"),
+        format!("EntityRef(\"{to}\")"),
+    );
+    for value in desc.components.values_mut() {
+        if value.get_ron().contains(&was) {
+            let text = value.get_ron().replace(&was, &now);
+            if let Ok(raw) = ron::value::RawValue::from_boxed_ron(text.into_boxed_str()) {
+                *value = raw;
+            }
+        }
+    }
+    for child in &mut desc.children {
+        relink(child, from, to);
+    }
+}
+
+/// A line with the links it writes — its components' `EntityRef`s and its
+/// joint's other end — put in `instance`'s scope; its children as they are.
+fn scoped_links(desc: &EntityDesc, instance: EntityId) -> EntityDesc {
+    let mut out = desc.clone();
+    if let Some(to) = out.joint.to() {
+        if !to.is_unassigned() {
+            out.joint = out.joint.with_to(instance.within(to));
+        }
+    }
+    for value in out.components.values_mut() {
+        let text = value.get_ron();
+        let links = crate::EntityRef::find_in(text);
+        if links.is_empty() {
+            continue;
+        }
+        let mut scoped = text.to_string();
+        for id in links {
+            scoped = scoped.replace(
+                &format!("EntityRef(\"{id}\")"),
+                &format!("EntityRef(\"{}\")", instance.within(id)),
+            );
+        }
+        if let Ok(raw) = ron::value::RawValue::from_boxed_ron(scoped.into_boxed_str()) {
+            *value = raw;
+        }
+    }
+    out
 }
 
 /// What an instance stands for, with the instance's own overrides on top.
@@ -398,9 +431,11 @@ fn resolve(
     // of walls is one thing to place.
     let mut root =
         if template.prefab.is_empty() {
-            let root = expand(template, Some(id), prefabs, depth + 1, problems, parts);
-            // The root is the instance itself, not a part of it.
+            let mut root = expand(template, Some(id), prefabs, depth + 1, problems, parts);
+            // The root is the instance itself, not a part of it — and so is
+            // what a link to the prefab's root names.
             parts.remove(&id.within(template.id));
+            relink(&mut root, id.within(template.id), id);
             root
         } else {
             // A variant: a prefab whose root is an instance of another — Unity's
@@ -691,6 +726,57 @@ mod tests {
     }
 
     #[test]
+    fn a_link_to_a_part_holds_in_a_prefab_inside_a_prefab() {
+        // A door whose component names its hinge, the door in a shed, the
+        // shed in a scene and a shed's lamp naming the door: each link is
+        // to a part that is there, whatever the depth.
+        let mut prefabs = Prefabs::new();
+        prefabs.insert(
+            "door",
+            ron::from_str(
+                r#"(id: "00000000000000d0", name: "door", model: "", components: {
+                    "door": (hinge: EntityRef("00000000000000d1")),
+                }, children: [(id: "00000000000000d1", name: "hinge", model: "", components: {
+                    "hinge": (door: EntityRef("00000000000000d0")),
+                })])"#,
+            )
+            .unwrap(),
+        );
+        prefabs.insert(
+            "shed",
+            ron::from_str(
+                r#"(id: "00000000000000e0", name: "shed", model: "", children: [
+                    (id: "00000000000000e1", name: "door", model: "", prefab: "door"),
+                    (id: "00000000000000e2", name: "lamp", model: "", components: {
+                        "lamp": (watches: EntityRef("00000000000000e1")),
+                    }),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let scene = parse(
+            r#"(entities: [(id: "00000000000000f0", name: "shed", model: "", prefab: "shed")])"#,
+        );
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        let ids: HashSet<String> = done.scene.ids().iter().map(|i| i.to_string()).collect();
+        let mut links = Vec::new();
+        for (desc, _) in done.scene.flatten() {
+            for value in desc.components.values() {
+                links.extend(crate::EntityRef::find_in(value.get_ron()));
+            }
+        }
+        assert_eq!(
+            links.len(),
+            3,
+            "the hinge names its door, the prefab's root, too"
+        );
+        for link in links {
+            assert!(ids.contains(&link.to_string()), "{link} is a part: {ids:?}");
+        }
+    }
+
+    #[test]
     fn a_prefab_that_contains_itself_stops_and_says_so() {
         // A file describing an infinite scene. Stopping with a message beats
         // filling memory, and beats silently drawing one level of it.
@@ -951,11 +1037,14 @@ mod tests {
         let done = instantiate(&scene, &prefabs);
         let (west, east): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
         let part: EntityId = "c2".parse().unwrap();
-        let root: EntityId = "c1".parse().unwrap();
         let joint_of = |id: EntityId| done.scene.get(id).unwrap().joint.to().unwrap();
         // The lamp hangs from its own post — the instance's root, which
         // keeps the instance's id — not from the file's.
-        assert_eq!(joint_of(west.within(part)), west.within(root));
-        assert_eq!(joint_of(east.within(part)), east.within(root));
+        assert_eq!(joint_of(west.within(part)), west);
+        assert_eq!(joint_of(east.within(part)), east);
+        assert!(
+            done.scene.get(west).is_some(),
+            "and that is an entity there"
+        );
     }
 }
