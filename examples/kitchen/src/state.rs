@@ -52,6 +52,17 @@ pub enum Act {
 /// The message kind an [`Act`] travels as.
 pub const ACT: &str = "act";
 
+/// "Here!": a player points at a spot, and every peer shows it — the
+/// voice a kitchen without voice chat has. Straight to everyone, the host
+/// does nothing with it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Ping {
+    pub at: [f32; 3],
+}
+
+/// The message kind a [`Ping`] travels as.
+pub const PING: &str = "ping";
+
 /// What a cook is holding (the host's).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Hands(pub Option<Entity>);

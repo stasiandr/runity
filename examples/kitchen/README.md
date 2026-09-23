@@ -34,7 +34,8 @@ every Steam account may run for testing (`src/lobby.rs`, `APP_ID`).
 Without Steam, the kitchen is yours alone.
 
 Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
-(and scrape a burnt pot, and wash plates), Q to throw food. Escape pauses.
+(and scrape a burnt pot, and wash plates), Q to throw food, G to point
+("here!" for everyone). Escape pauses.
 
 ## Where each part of the engine is
 
@@ -46,7 +47,7 @@ Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
 | **Steam**: a lobby, invites, the session over Steam's networking | `src/lobby.rs` — `Steam::wire` is the transport the session runs on, the `Steam` itself stays with the game for the lobby |
 | **Networking**: host, join, ownership, replication | `front::seat`/`claim` (who plays which cook), `session::act` (what hands did, checked on the host) |
 | Networked components | `pub const NETWORKED: bool = true;` in `pot.rs`, `chop.rs`, `served.rs`, `round.rs`, `seat.rs`, `held_by.rs` (what a cook holds shows in their hands at once, `front::hold`) |
-| One-off messages (`Party::publish`) | `state::Act`, sent by `Front::drive` |
+| One-off messages (`Party::publish`) | `state::Act`, sent by `Front::drive`; `state::Ping`, a player's "here!" (G) shown to everyone over the spot |
 | Spawns everyone sees (`Party::spawn`) | `session::spawns` |
 | **Screens** (UI Builder files) | `ui/menu.ron`, `lobby.ron`, `hud.ron`, `results.ron`, `pause.ron`, `speech.ron` |
 | Buttons, fields, sliders, a choice, a list, hidden elements | the menu (host, join, volumes, language; the address row only without Steam), the lobby's players and the start only the host sees (`Screen::set_hidden`) |

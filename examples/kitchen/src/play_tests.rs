@@ -1409,3 +1409,13 @@ fn a_round_earns_up_to_three_stars_by_its_score() {
     assert_eq!(rules.stars_for(rules.stars[2] + 50), 3);
     assert_eq!(crate::front::stars(2), "★ ★ ☆");
 }
+
+#[test]
+fn a_players_here_reaches_everyone() {
+    let (mut host, mut guest) = together();
+    host.events.clear();
+    guest.events.clear();
+    guest.party.publish(PING, &Ping { at: [1.0, 1.3, -2.0] });
+    let pinged = |p: &Peer| p.events.iter().any(|e| e.decode::<Ping>(PING) == Some(Ping { at: [1.0, 1.3, -2.0] }));
+    until(&mut host, &mut guest, |h, g| pinged(h) && pinged(g));
+}

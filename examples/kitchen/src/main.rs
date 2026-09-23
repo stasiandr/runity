@@ -123,6 +123,15 @@ impl Game {
         self.front.phase = front::Phase::Menu;
     }
 
+    /// A one-shot sound by name, in the effects group.
+    fn play(&mut self, name: &str) {
+        if let (Some(audio), Some(library)) = (self.audio.as_mut(), self.live.library()) {
+            if let Some(sound) = library.sound_by_name(name) {
+                let _ = audio.play_in("sfx", sound, 0.8);
+            }
+        }
+    }
+
     /// A round just over that beat the best on this machine: kept.
     fn best_score(&mut self) {
         let over = front::round_of(&self.world).filter(|r| r.over);
@@ -415,7 +424,13 @@ impl shell::Game for Game {
                     self.party = Party::alone(&self.scene, &self.components);
                 }
                 // What someone's hands did: the host acts on it.
-                Event::Message { .. } => session::act(&mut self.world, &self.party, std::slice::from_ref(&event)),
+                Event::Message { .. } => {
+                    if let Some(ping) = event.decode::<state::Ping>(state::PING) {
+                        self.front.ping(ping);
+                        self.play("pop");
+                    }
+                    session::act(&mut self.world, &self.party, std::slice::from_ref(&event));
+                }
                 Event::ClaimLost { .. } => {}
                 Event::Silent { id, owner } => eprintln!("{id}: player {} stopped saying where it is", owner.0 + 1),
                 Event::Problem(why) => eprintln!("{why}"),

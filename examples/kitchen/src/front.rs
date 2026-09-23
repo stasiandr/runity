@@ -338,6 +338,12 @@ impl Front {
         }
     }
 
+    /// Someone's "here!", over where they point.
+    pub fn ping(&mut self, ping: crate::state::Ping) {
+        let colour = runity::glam::Vec4::new(0.45, 0.85, 1.0, 1.0);
+        self.floaters.push(runity::glam::Vec3::from_array(ping.at), "!", colour);
+    }
+
     /// A floater for every change in the score.
     fn watch_score(&mut self, round: Option<&Round>) {
         let Some(score) = round.map(|r| r.score) else {
@@ -447,6 +453,13 @@ impl Front {
             }
             if actions.pressed(input, "throw") {
                 party.publish(ACT, &Act::Throw { cook: index });
+            }
+            // "Here!" over the spot in front of the cook, for everyone.
+            if actions.pressed(input, "ping") {
+                if let Ok(t) = world.get::<&runity::Transform>(cook) {
+                    let at = t.position + crate::state::facing(&t) * 1.0 + runity::glam::Vec3::Y * 1.3;
+                    party.publish(crate::state::PING, &crate::state::Ping { at: at.to_array() });
+                }
             }
             let on = actions.held(input, "work");
             if self.working.get(&index).copied().unwrap_or(false) != on {
