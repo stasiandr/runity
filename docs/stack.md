@@ -270,15 +270,30 @@ Localization из Unity). Экран пишет `Text("@menu.play")` и пока
 
 **Окно редактора** — `runity-studio`: winit и свой `runity-ui` ([ui.md](ui.md)),
 на всех ПК. Раскладка Unity: строка меню (File, Edit, GameObject, View,
-Play) и тулбар, Hierarchy, Inspector, Scene view над вкладками Project и
-Console, строка состояния; границы панелей тянутся. Поверхность окна
-создаётся на GPU сессии, так что Scene view — узел UI с текстурой кадра
-сессии, без копии (`Session::set_readback(false)`). `Studio` — редактор без
-окна: окно, тесты (`tests/studio.rs` кликает узлы по именам) и `cargo run
--p runity-studio --example shot -- сцена.ron out.png [имя…]` гоняют одно и то
-же. Каждое действие меню, кнопки и контекстного меню — `Action`, и
-`Studio::run` — единственное место, где оно становится вызовами сессии. Вид
-— дизайн-система Nocturne из Claude Design (токены в `runity_studio::theme`).
+Tools, Play), тулбар (инструменты, оси, пивот, сетка, Play/Pause/Step,
+undo/redo, Save), Hierarchy (поиск, раскрытие, глаз и замок, перетаскивание
+между строками и внутрь, Shift — диапазон, Cmd — переключение, стрелки,
+F2, контекстное меню), вкладки Scene | Game над вьюпортом с видами Persp,
+Top, Front, Right, привязкой и коллайдерами, Inspector (трансформ тремя
+числами с арифметикой, группы полей, выбор модели, материала и префаба,
+цвет материала, пустые поля как «+», компонент по имени; без выделения —
+время суток, солнце и туман; ассет из Project — превью, импорт, где
+используется), вкладки Project и Console внизу, строка состояния, границы
+панелей тянутся, подсказки на кнопках. Play открывает Game view
+(`Session::set_game_view`), двойной клик по префабу — режим префаба с
+возвратом. Сцена и ассеты, поменянные на диске, перечитываются дважды в
+секунду. File: New, Open…, Save, Save As…, Import… (системные диалоги,
+`rfd`), Check Project, Build и Build and Run (`runity-cli`, в фоне).
+
+Поверхность окна создаётся на GPU сессии, так что Scene view — узел UI с
+текстурой кадра сессии, без копии (`Session::set_readback(false)`): 1.5 мс
+на кадр в отладочной сборке. `Studio` — редактор без окна: окно, тесты
+(`tests/studio.rs` кликает узлы по именам) и `cargo run -p runity-studio
+--example shot -- сцена.ron out.png [имя…]` (`RUNITY_SHOT_CLICK` — что
+кликнуть до снимка) гоняют одно и то же. Каждое действие меню, кнопки и
+контекстного меню — `Action`, и `Studio::run` — единственное место, где оно
+становится вызовами сессии. Вид — дизайн-система Nocturne из Claude Design
+(токены в `runity_studio::theme`).
 
 **Панели редактора как данные.** Hierarchy и Inspector Unity — без
 UI-тулкита (`runity_editor::panels`): `hierarchy()` — строки дерева с

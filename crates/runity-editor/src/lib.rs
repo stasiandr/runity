@@ -1192,6 +1192,50 @@ impl Session {
         Ok(())
     }
 
+    /// The scene's sun and fog, as the RON its file holds: `("sun",
+    /// "(hour: 9.0, intensity: 1.0)")` — Unity's Lighting window.
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
+        let scene = self.history.scene();
+        vec![
+            (
+                "sun",
+                runity::ron::to_string(&scene.sun).unwrap_or_default(),
+            ),
+            (
+                "fog",
+                runity::ron::to_string(&scene.fog).unwrap_or_default(),
+            ),
+        ]
+    }
+
+    /// Set the scene's `sun` or `fog` from RON, as one undo step. Text that
+    /// does not parse costs no step and says why.
+    pub fn set_environment(&mut self, field: &str, ron: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let mut scene = self.history.scene().clone();
+        match field {
+            "sun" => {
+                scene.sun =
+                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("sun: {e}")))?
+            }
+            "fog" => {
+                scene.fog =
+                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("fog: {e}")))?
+            }
+            other => {
+                return Err(EditError::Scene(format!(
+                    "`{other}` is not part of the scene's environment — there are sun and fog"
+                )))
+            }
+        }
+        if &scene == self.history.scene() {
+            return Ok(());
+        }
+        *self.history.edit() = scene;
+        self.respawn();
+        Ok(())
+    }
+
     /// Pick up the scene's file, or a prefab, changed by someone else — a
     /// text editor, `git pull`, an agent.
     ///

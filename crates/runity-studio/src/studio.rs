@@ -1394,7 +1394,7 @@ impl Studio {
                         } else {
                             vec![(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
                         },
-                        height: if standing { 0.2 } else { 0.2 },
+                        height: 0.2,
                         standing,
                         holes: Vec::new(),
                     };

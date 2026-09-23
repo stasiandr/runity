@@ -95,6 +95,10 @@ enum Part {
     Import(String),
     /// An import setting that is on or off: a switch.
     ImportToggle(String, bool),
+    /// The scene's sun or fog, as RON.
+    Environment(String),
+    /// The sun's hour, 0 to 24, as a track.
+    Hour,
 }
 
 /// sRGB bytes of a linear colour.
@@ -164,6 +168,8 @@ pub struct Inspector {
     /// An asset from the Project shown instead of the selection, with its
     /// source file.
     asset: Option<(Asset, Option<String>)>,
+    /// The hour being dragged to.
+    hour: f32,
     /// Built at least once: an empty selection at the start is still a
     /// panel to build.
     built: bool,
@@ -184,6 +190,7 @@ impl Inspector {
             revealed: BTreeSet::new(),
             playing: false,
             built: false,
+            hour: 12.0,
             asset: None,
             hsv: [0.0; 3],
             swatch: None,
@@ -261,6 +268,7 @@ impl Inspector {
                 Style::default().text_size(12.0).text_color(TEXT.alpha(40)),
                 "Click something in the Scene view or the Hierarchy.",
             );
+            self.environment(ui, session);
             return;
         }
         let find = |name: &str| fields.iter().find(|f| f.name == name);
@@ -545,6 +553,95 @@ impl Inspector {
                     self.parts.insert(pick, Part::Pick(f.name.clone()));
                 }
             }
+        }
+    }
+
+    /// The scene's own settings, shown when nothing is selected: the time
+    /// of day as a track, the sun and the fog as the file writes them —
+    /// Unity's Lighting window, where it is at hand.
+    fn environment(&mut self, ui: &mut Ui, session: &Session) {
+        self.heading(ui, "Scene");
+        let env = session.environment();
+        let hour = env
+            .iter()
+            .find(|(f, _)| *f == "sun")
+            .and_then(|(_, v)| {
+                let at = v.find("hour:")? + 5;
+                v[at..].split([',', ')']).next()?.trim().parse::<f32>().ok()
+            })
+            .unwrap_or(12.0);
+        let line = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(2.0)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add_text(
+            line,
+            Style::default()
+                .width(84.0)
+                .fixed()
+                .text_size(12.0)
+                .text_color(LABEL)
+                .nowrap(),
+            "Time of day",
+        );
+        let track = ui.add(
+            line,
+            Style::row()
+                .fill()
+                .height(6.0)
+                .radius(3.0)
+                .background(DIVIDER)
+                .draggable()
+                .clickable(),
+        );
+        ui.set_name(track, "sun hour");
+        ui.add(
+            track,
+            Style::row()
+                .full_height()
+                .radius(3.0)
+                .background(ACCENT.alpha(70))
+                .width_fraction(hour / 24.0),
+        );
+        ui.add_text(
+            line,
+            Style::default()
+                .width(40.0)
+                .fixed()
+                .text_size(11.5)
+                .text_color(MUTED)
+                .nowrap(),
+            &format!("{:02}:{:02}", hour as u32, ((hour.fract()) * 60.0) as u32),
+        );
+        self.parts.insert(track, Part::Hour);
+        for (field, value) in env {
+            let line = ui.add(
+                self.body,
+                Style::row()
+                    .full_width()
+                    .padding_x(SPACE_4)
+                    .padding_y(2.0)
+                    .gap(SPACE_2)
+                    .center_items(),
+            );
+            ui.add_text(
+                line,
+                Style::default()
+                    .width(84.0)
+                    .fixed()
+                    .text_size(12.0)
+                    .text_color(LABEL)
+                    .nowrap(),
+                &title(field),
+            );
+            let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &value);
+            ui.set_name(f, format!("scene {field}"));
+            self.parts.insert(f, Part::Environment(field.to_string()));
         }
     }
 
@@ -944,6 +1041,43 @@ impl Inspector {
                     }
                     requests.inspect = Some(asset);
                 }
+            }
+            (Part::Environment(field), Event::Submit(value)) => {
+                if let Err(e) = session.set_environment(&field, value.trim()) {
+                    session.say(Level::Error, e.to_string());
+                }
+                self.built = false;
+                requests.refresh = true;
+            }
+            (Part::Hour, Event::Press { x, .. } | Event::Drag { x, .. }) => {
+                let r = ui.rect(node);
+                let hour = ((x - r.x) / r.width.max(1.0)).clamp(0.0, 0.999) * 24.0;
+                if let Some(fill) = ui.children(node).first().copied() {
+                    ui.restyle(fill, |s| s.width_fraction(hour / 24.0));
+                }
+                self.hour = hour;
+            }
+            (Part::Hour, Event::Release { .. }) => {
+                let sun = session
+                    .environment()
+                    .into_iter()
+                    .find(|(f, _)| *f == "sun")
+                    .map(|(_, v)| v)
+                    .unwrap_or_default();
+                // The hour replaced in what the sun says, the rest kept.
+                let text = match sun.find("hour:") {
+                    Some(at) => {
+                        let rest = &sun[at + 5..];
+                        let end = rest.find([',', ')']).unwrap_or(rest.len());
+                        format!("{}hour:{:.2}{}", &sun[..at], self.hour, &rest[end..])
+                    }
+                    None => format!("(hour: {:.2})", self.hour),
+                };
+                if let Err(e) = session.set_environment("sun", &text) {
+                    session.say(Level::Error, e.to_string());
+                }
+                self.built = false;
+                requests.refresh = true;
             }
             (Part::AddComponent, Event::Submit(name)) => {
                 let name = name.trim().to_string();

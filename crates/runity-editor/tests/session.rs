@@ -4249,3 +4249,20 @@ fn the_game_view_draws_through_the_game_camera_without_the_editors_marks() {
     session.render();
     assert_eq!(session.frame_pixels(), &scene_view[..], "and come back");
 }
+
+#[test]
+fn the_sun_and_the_fog_are_one_undo_step_each() {
+    let Some((mut session, _path)) = open("environment") else {
+        return;
+    };
+    let before = session.environment();
+    session
+        .set_environment("sun", "(hour: 18.5, intensity: 0.6)")
+        .unwrap();
+    let sun = &session.environment()[0].1;
+    assert!(sun.contains("18.5"), "{sun}");
+    assert!(session.set_environment("fog", "(nonsense").is_err());
+    assert!(session.set_environment("rain", "()").is_err());
+    session.undo().unwrap();
+    assert_eq!(session.environment(), before);
+}

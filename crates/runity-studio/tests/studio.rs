@@ -492,3 +492,24 @@ fn blockout_from_the_tools_menu() {
         "scattered crates"
     );
 }
+
+#[test]
+fn with_nothing_selected_the_inspector_sets_the_time_of_day() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    s.ui.paint();
+    let track =
+        s.ui.rect(s.ui.find("sun hour").expect("the scene's settings"));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.8,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let sun = s.session.environment()[0].1.clone();
+    assert!(sun.contains("hour:19.") || sun.contains("hour:19"), "{sun}");
+    click(&mut s, "undo");
+    assert!(!s.session.environment()[0].1.contains("hour:19"));
+}
