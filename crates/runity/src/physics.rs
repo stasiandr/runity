@@ -31,7 +31,7 @@ use hecs::World;
 use rapier3d::prelude::*;
 
 use crate::scene::{Body, Collider as ColliderShape, Transform};
-use crate::world::{Jointed, Parent, Physics, SceneId, Shape, WorldTransform};
+use crate::world::{Jointed, Parent, Physics, Props, SceneId, Shape, WorldTransform};
 
 /// Who is touching an entity's body: for a [`Body::Trigger`], what is
 /// inside it; for a solid body, what it is in contact with.
@@ -59,6 +59,9 @@ pub struct RayHit {
     pub point: Vec3,
     pub distance: f32,
     pub collider: ColliderRef,
+    /// The entity whose body it hit — what a game wants to know: which
+    /// crate, which door. `None` only for a body no entity asked for.
+    pub entity: Option<hecs::Entity>,
 }
 
 /// A collider, as a ray reports it.
@@ -78,6 +81,7 @@ struct Built {
     local: Transform,
     /// Which [`CollisionMesh`] a `Model` collider was built from.
     mesh: usize,
+    props: crate::scene::BodyProps,
 }
 
 /// A model's geometry, for a [`ColliderShape::Model`]. Attached to the
@@ -260,7 +264,7 @@ impl PhysicsWorld {
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
-        for (entity, handle, built, physics, shape, local, placed, mesh) in world
+        for (entity, handle, built, physics, shape, local, placed, mesh, props) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
@@ -270,11 +274,17 @@ impl PhysicsWorld {
                 &Transform,
                 &WorldTransform,
                 Option<&CollisionMesh>,
+                Option<&Props>,
             )>()
             .iter()
         {
             let mesh = mesh.map_or(0, CollisionMesh::key);
-            if built.body != physics.0 || built.collider != shape.0 || built.mesh != mesh {
+            let props = props.map(|p| p.0).unwrap_or_default();
+            if built.body != physics.0
+                || built.collider != shape.0
+                || built.mesh != mesh
+                || built.props != props
+            {
                 stale.push(entity);
             } else {
                 live.insert(handle.0);
@@ -323,7 +333,7 @@ impl PhysicsWorld {
         }
 
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
-        for (entity, placed, physics, shape, local, existing, mesh) in world
+        for (entity, placed, physics, shape, local, existing, mesh, props) in world
             .query::<(
                 hecs::Entity,
                 &WorldTransform,
@@ -332,9 +342,11 @@ impl PhysicsWorld {
                 &Transform,
                 Option<&BodyHandle>,
                 Option<&CollisionMesh>,
+                Option<&Props>,
             )>()
             .iter()
         {
+            let props = props.map(|p| p.0).unwrap_or_default();
             if existing.is_some() || physics.0 == Body::None {
                 continue;
             }
@@ -348,6 +360,12 @@ impl PhysicsWorld {
             // Which entity a collider is, for contacts to be told in
             // entities rather than rapier handles.
             collider.user_data = entity.to_bits().get() as u128;
+            collider.set_friction(props.friction.max(0.0));
+            collider.set_restitution(props.bounce.clamp(0.0, 1.0));
+            // The bouncier of the two decides, so a ball bounces off any
+            // floor; grip stays the average of both, as everywhere.
+            collider.set_restitution_combine_rule(CoefficientCombineRule::Max);
+            collider.set_density(props.density.max(1e-3));
             if physics.0 == Body::Trigger {
                 collider.set_sensor(true);
                 // A zone notices whatever enters it, a kinematic player or
@@ -372,6 +390,7 @@ impl PhysicsWorld {
                     collider: shape.0,
                     local: *local,
                     mesh: mesh.map_or(0, CollisionMesh::key),
+                    props,
                 },
             ));
         }
@@ -648,6 +667,7 @@ impl PhysicsWorld {
             point: from + direction * distance,
             distance,
             collider: ColliderRef(collider),
+            entity: self.entity_of(collider),
         })
     }
 
@@ -689,6 +709,37 @@ impl PhysicsWorld {
             Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
             hit.time_of_impact,
         ))
+    }
+
+    /// Which entity a collider belongs to.
+    fn entity_of(&self, collider: ColliderHandle) -> Option<hecs::Entity> {
+        self.colliders
+            .get(collider)
+            .and_then(|c| hecs::Entity::from_bits(c.user_data as u64))
+    }
+
+    /// Every entity whose shape overlaps a ball — Unity's `OverlapSphere`:
+    /// what an explosion reaches, what is within grabbing distance.
+    /// Triggers are left out; they are zones, not things. Sorted, so the
+    /// same world gives the same answer.
+    pub fn overlap_sphere(&self, centre: Vec3, radius: f32) -> Vec<hecs::Entity> {
+        let ball = Ball::new(radius.max(0.0));
+        let at = Isometry::translation(centre.x, centre.y, centre.z);
+        let mut found = Vec::new();
+        self.queries.intersections_with_shape(
+            &self.bodies,
+            &self.colliders,
+            &at,
+            &ball,
+            QueryFilter::default().exclude_sensors(),
+            |collider| {
+                found.extend(self.entity_of(collider));
+                true
+            },
+        );
+        found.sort();
+        found.dedup();
+        found
     }
 
     /// Bring ray queries up to date with the bodies, without a step: after
@@ -889,6 +940,7 @@ mod tests {
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
+            physics: Default::default(),
             joint: Default::default(),
             overrides: Default::default(),
             components: Default::default(),
@@ -968,6 +1020,7 @@ mod tests {
         // the first step, which reads as the physics being wrong.
         let scene = Scene {
             entities: vec![crate::EntityDesc {
+                physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),
@@ -1590,5 +1643,95 @@ mod tests {
         run_for(&mut physics, &mut world, 1);
         assert!(world.get::<&JointBuilt>(tail).is_err());
         assert_eq!(physics.impulse_joints.len(), 0);
+    }
+
+    #[test]
+    fn a_ray_names_the_entity_it_hit_and_a_ball_finds_what_it_overlaps() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000e1", name: "near", model: "m", body: Static,
+                 collider: Box(half: (0.5, 0.5, 0.5)), transform: (position: (0.0, 0.5, 0.0))),
+                (id: "00000000000000e2", name: "far", model: "m", body: Static,
+                 collider: Sphere(radius: 0.5), transform: (position: (6.0, 0.5, 0.0))),
+                (id: "00000000000000e3", name: "zone", model: "m", body: Trigger,
+                 collider: Box(half: (3.0, 3.0, 3.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let near = by_id(&world, "00000000000000e1".parse().unwrap());
+        let far = by_id(&world, "00000000000000e2".parse().unwrap());
+
+        let hit = physics
+            .cast_ray(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y, 10.0)
+            .unwrap();
+        assert_eq!(hit.entity, Some(near));
+        assert_eq!(
+            physics.overlap_sphere(Vec3::new(1.0, 0.5, 0.0), 0.7),
+            [near]
+        );
+        let mut both = vec![near, far];
+        both.sort();
+        assert_eq!(
+            physics.overlap_sphere(Vec3::new(3.0, 0.5, 0.0), 3.0),
+            both,
+            "the zone around them is not one of them"
+        );
+        assert!(physics
+            .overlap_sphere(Vec3::new(3.0, 5.0, 0.0), 0.5)
+            .is_empty());
+    }
+
+    #[test]
+    fn a_bouncy_ball_bounces_a_sandbag_does_not_and_iron_weighs_more() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (name: "floor", model: "m", body: Static, collider: Box(half: (20.0, 0.1, 20.0))),
+                (name: "ball", model: "m", body: Dynamic, collider: Sphere(radius: 0.25),
+                 transform: (position: (-2.0, 3.0, 0.0)), physics: (bounce: 0.8, friction: 0.2)),
+                (name: "sandbag", model: "m", body: Dynamic, collider: Sphere(radius: 0.25),
+                 transform: (position: (2.0, 3.0, 0.0))),
+            ])"#,
+        );
+        let (ball, sandbag) = (
+            by_id(&world, scene.entities[1].id),
+            by_id(&world, scene.entities[2].id),
+        );
+        let height = |world: &World, e| world.get::<&WorldTransform>(e).unwrap().0.w_axis.y;
+        // Fall, hit the floor, and see how high each comes back up.
+        let (mut ball_top, mut bag_top) = (0.0f32, 0.0f32);
+        let mut landed = false;
+        for _ in 0..150 {
+            run_for(&mut physics, &mut world, 1);
+            let (b, s) = (height(&world, ball), height(&world, sandbag));
+            if b < 0.5 {
+                landed = true;
+            }
+            if landed {
+                ball_top = ball_top.max(b);
+                bag_top = bag_top.max(s);
+            }
+        }
+        assert!(ball_top > 1.2, "the ball came back up: {ball_top}");
+        assert!(bag_top < 0.5, "the sandbag stayed down: {bag_top}");
+
+        // Density is mass: the same ball, eight times as dense.
+        let mass = |physics: &PhysicsWorld, world: &World, e| {
+            let handle = world.get::<&BodyHandle>(e).unwrap().0;
+            physics.bodies.get(handle).unwrap().mass()
+        };
+        let light = mass(&physics, &world, sandbag);
+        world
+            .insert_one(
+                sandbag,
+                Props(crate::scene::BodyProps {
+                    density: 8.0,
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        run_for(&mut physics, &mut world, 1);
+        let heavy = mass(&physics, &world, sandbag);
+        assert!((heavy / light - 8.0).abs() < 0.01, "{light} -> {heavy}");
     }
 }

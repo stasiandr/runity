@@ -195,6 +195,57 @@ impl Joint {
     }
 }
 
+/// How a body feels to what touches it: Unity's physic material and
+/// rigidbody mass in one line, and only what differs from the default is
+/// written — `physics: (bounce: 0.8)` is a ball.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BodyProps {
+    /// Grip, from 0 (ice) up; 0.5 is dry wood on wood.
+    #[serde(default = "half", skip_serializing_if = "is_half")]
+    pub friction: f32,
+    /// How much of a hit comes back, 0 (a sandbag) to 1 (a superball).
+    /// When two things meet, the bouncier one decides — a ball bounces off
+    /// a floor that says nothing about bounce.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bounce: f32,
+    /// Mass per cubic metre of its collider, relative: 1 is the default,
+    /// 8 is a crate of iron that a wooden one does not push aside.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub density: f32,
+}
+
+impl Default for BodyProps {
+    fn default() -> Self {
+        Self {
+            friction: 0.5,
+            bounce: 0.0,
+            density: 1.0,
+        }
+    }
+}
+
+impl BodyProps {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn half() -> f32 {
+    0.5
+}
+fn unit() -> f32 {
+    1.0
+}
+fn is_half(v: &f32) -> bool {
+    *v == 0.5
+}
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 /// How an entity takes part in the physics world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Body {
@@ -268,6 +319,9 @@ pub struct EntityDesc {
     /// saying so in one place beats guessing a box from the mesh.
     #[serde(default)]
     pub collider: Collider,
+    /// Friction, bounce and density; see [`BodyProps`].
+    #[serde(default, skip_serializing_if = "BodyProps::is_default")]
+    pub physics: BodyProps,
     /// What holds this body to another; see [`Joint`].
     #[serde(default, skip_serializing_if = "Joint::is_none")]
     pub joint: Joint,
@@ -333,6 +387,8 @@ pub struct Override {
     pub body: Option<Body>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub collider: Option<Collider>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub physics: Option<BodyProps>,
     /// Components set on the part, one by one.
     #[serde(
         default,
@@ -363,6 +419,9 @@ impl Override {
         if let Some(collider) = self.collider {
             part.collider = collider;
         }
+        if let Some(physics) = self.physics {
+            part.physics = physics;
+        }
         for (name, value) in &self.components {
             part.components.insert(name.clone(), value.clone());
         }
@@ -379,6 +438,7 @@ impl Override {
             material: differs(prefab.material != edited.material).map(|_| edited.material.clone()),
             body: differs(prefab.body != edited.body).map(|_| edited.body),
             collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
+            physics: differs(prefab.physics != edited.physics).map(|_| edited.physics),
             components: edited
                 .components
                 .iter()
@@ -401,6 +461,7 @@ impl Override {
             material,
             body,
             collider,
+            physics,
             components,
         } = later;
         self.name = name.or(self.name.take());
@@ -409,6 +470,7 @@ impl Override {
         self.material = material.or(self.material.take());
         self.body = body.or(self.body);
         self.collider = collider.or(self.collider);
+        self.physics = physics.or(self.physics);
         self.components.extend(components);
     }
 }
@@ -847,6 +909,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),
@@ -865,6 +928,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    physics: Default::default(),
                     joint: Default::default(),
                     overrides: Default::default(),
                     components: Default::default(),
@@ -902,6 +966,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),

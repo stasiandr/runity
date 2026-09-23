@@ -66,6 +66,10 @@ pub struct Parent(pub hecs::Entity);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physics(pub Body);
 
+/// Friction, bounce and density, kept from the scene when not the default.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Props(pub crate::scene::BodyProps);
+
 /// What holds the body to another, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Jointed(pub crate::scene::Joint);
@@ -223,6 +227,9 @@ fn spawn_one(
     }
     if !desc.joint.is_none() {
         let _ = world.insert_one(entity, Jointed(desc.joint));
+    }
+    if !desc.physics.is_default() {
+        let _ = world.insert_one(entity, Props(desc.physics));
     }
     dress(desc, entity, world, resolve, palette, missing);
     entity
@@ -448,6 +455,14 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, Shape(desc.collider));
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.physics != desc.physics) {
+            if desc.physics.is_default() {
+                let _ = world.remove_one::<Props>(entity);
+            } else {
+                let _ = world.insert_one(entity, Props(desc.physics));
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.joint != desc.joint) {
             if desc.joint.is_none() {
                 let _ = world.remove_one::<Jointed>(entity);
@@ -618,6 +633,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            physics: Default::default(),
             joint: Default::default(),
             overrides: Default::default(),
             components: Default::default(),
@@ -639,6 +655,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    physics: Default::default(),
                     joint: Default::default(),
                     overrides: Default::default(),
                     components: Default::default(),
