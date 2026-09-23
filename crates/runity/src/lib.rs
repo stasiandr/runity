@@ -19,6 +19,7 @@ pub use glam;
 pub use hecs;
 pub use ron;
 
+pub mod actions;
 pub mod animation;
 pub mod animator;
 pub mod asset;
@@ -70,6 +71,7 @@ pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
+pub use actions::{Actions, Binding};
 pub use components::{ComponentProblem, Components};
 pub use live::{Instance, LiveScene, Reload, Spawned};
 pub use material::{Material, Shading};

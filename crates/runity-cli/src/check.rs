@@ -84,6 +84,13 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
+    let input = project.root().join(runity::project::INPUT);
+    if input.is_file() {
+        if let Err(e) = runity::Actions::load(&input) {
+            out.push(error(runity::project::INPUT, e));
+        }
+    }
+
     check_sidecars(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out

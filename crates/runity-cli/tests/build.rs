@@ -22,6 +22,7 @@ fn a_build_carries_the_data_the_game_reads_and_leaves_the_sources_home() {
     assert_eq!(shipped, out.join("fake-game"));
     for present in [
         "data/runity.ron",
+        "data/input.ron",
         "data/scenes/main.ron",
         "data/library/rock.obj.rasset",
     ] {

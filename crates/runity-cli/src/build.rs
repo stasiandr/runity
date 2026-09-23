@@ -8,6 +8,7 @@
 //!   <game>            the executable
 //!   data/
 //!     runity.ron      so the game finds its project
+//!     input.ron       the bindings
 //!     scenes/  prefabs/
 //!     library/        the built assets, and nothing they were built from
 //! ```
@@ -20,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use runity::project::{DATA, FILE, LIBRARY, PREFABS, SCENES};
+use runity::project::{DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES};
 use runity::Project;
 
 pub struct Built {
@@ -105,6 +106,9 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
     let data = out.join(DATA);
     std::fs::create_dir_all(&data)?;
     std::fs::copy(project.root().join(FILE), data.join(FILE))?;
+    if project.root().join(INPUT).is_file() {
+        std::fs::copy(project.root().join(INPUT), data.join(INPUT))?;
+    }
     for dir in [SCENES, PREFABS, LIBRARY] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;
     }

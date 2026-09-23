@@ -20,7 +20,9 @@ use glam::Vec2;
 /// Physical rather than logical on purpose: `W` is the key above `S`
 /// whatever the layout says, which is what movement wants. Text entry wants
 /// the opposite and gets [`InputEvent::Text`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum Key {
     A,
     B,
@@ -93,7 +95,7 @@ pub enum Key {
     Other(u32),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MouseButton {
     Left,
     Right,

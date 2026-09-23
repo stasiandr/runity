@@ -47,6 +47,8 @@ pub const ASSETS: &str = "assets";
 pub const LIBRARY: &str = "library";
 /// Where the game's code lives.
 pub const SRC: &str = "src";
+/// What the player does, by name, and which keys that is.
+pub const INPUT: &str = "input.ron";
 
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
@@ -222,6 +224,7 @@ impl Project {
         std::fs::write(root.join(".gitattributes"), GITATTRIBUTES)?;
         std::fs::write(root.join("CLAUDE.md"), CLAUDE_MD.replace("{name}", name))?;
         std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
+        std::fs::write(root.join(INPUT), INPUT_RON)?;
         std::fs::create_dir_all(root.join(SRC))?;
         std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine))?;
         std::fs::write(root.join(SRC).join("main.rs"), GAME.replace("{name}", name))?;
@@ -391,6 +394,22 @@ opt-level = 3
     )
 }
 
+/// The bindings a new project starts with.
+const INPUT_RON: &str = "\
+// What the player does, by name. The game asks for \"jump\", not Space;
+// rebind here, and a running game picks it up.
+(
+    actions: {
+        \"quit\": [Key(Escape)],
+        \"jump\": [Key(Space)],
+    },
+    axes: {
+        \"walk\": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)]),
+        \"strafe\": (negative: [Key(A), Key(Left)], positive: [Key(D), Key(Right)]),
+    },
+)
+";
+
 /// The game a new project starts with: a window on `scenes/main.ron` that
 /// keeps up with the files.
 const GAME: &str = r#"//! {name}.
@@ -405,7 +424,7 @@ use runity::hecs::World;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
-use runity::{Components, Key, LiveScene, Transform};
+use runity::{Actions, Components, LiveScene, Transform};
 use serde::Deserialize;
 
 /// A component: a plain struct. A scene line gives it by the name it is
@@ -427,6 +446,7 @@ fn spin(world: &mut World, seconds: f32) {
 
 struct Game {
     live: LiveScene,
+    actions: Actions,
     world: World,
     physics: PhysicsWorld,
 }
@@ -449,7 +469,10 @@ impl shell::Game for Game {
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
-        if ctx.input.pressed(Key::Escape) {
+        if let Some(Err(problem)) = self.actions.reload_if_changed() {
+            eprintln!("{problem}");
+        }
+        if self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
         }
         let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
@@ -480,8 +503,13 @@ fn main() -> anyhow::Result<()> {
         title: "{name}".into(),
         ..Default::default()
     };
+    let actions = Actions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
+    for problem in actions.missing(&["quit"]) {
+        eprintln!("{problem}");
+    }
     let game = Game {
         live,
+        actions,
         world: World::new(),
         physics: PhysicsWorld::default(),
     };
@@ -531,6 +559,7 @@ things in the same place:
 
 ```
 runity.ron   the project file
+input.ron    actions by name (\"jump\"), and the keys for each
 scenes/      scenes, RON — one entity per block, `id` first
 prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`
 materials/   .rmat sources: `(color: \"#rrggbb\")`, sRGB hex
@@ -617,6 +646,7 @@ mod tests {
             "CLAUDE.md",
             "Cargo.toml",
             "src/main.rs",
+            "input.ron",
         ] {
             assert!(root.join(file).is_file(), "{file}");
         }
