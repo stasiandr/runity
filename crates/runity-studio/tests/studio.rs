@@ -2327,3 +2327,41 @@ fn the_animator_shows_what_changed_since_the_commit_and_takes_one_back() {
     assert!(graph.transitions.is_empty(), "{graph:?}");
     assert!(graph.states.contains_key("swim"), "the state stays");
 }
+
+#[test]
+fn the_dialogues_window_draws_a_conversation_and_reads_a_line() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("dialogues/captain.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"(start: "hello", lines: {
+            "hello": (speaker: "Captain", text: "Ahoy.", next: "ask"),
+            "ask": (speaker: "Captain", text: "Help me?", choices: [
+                (text: "Yes", to: "thanks", set: ["agreed"]),
+                (text: "No", to: "bye", when: [Not("broke")]),
+            ]),
+            "thanks": (text: "Good."),
+            "bye": (text: "Pity."),
+        })"#,
+    )
+    .unwrap();
+    click(&mut s, "tab dialogues");
+    s.frame();
+    click(&mut s, "dialogue captain");
+    for line in ["hello", "ask", "thanks", "bye"] {
+        assert!(
+            s.ui.find(&format!("line {line}")).is_some(),
+            "{line}: {}",
+            s.ui.dump()
+        );
+    }
+    assert!(s.ui.find("dialogue edge 0").is_some(), "an arrow");
+    click(&mut s, "line ask");
+    let dump = s.ui.dump();
+    assert!(dump.contains("Help me?"), "{dump}");
+    assert!(dump.contains("“No” → bye if not broke"), "{dump}");
+    assert!(dump.contains("sets agreed"), "{dump}");
+}

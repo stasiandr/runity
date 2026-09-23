@@ -241,6 +241,7 @@ pub struct Studio {
     animation: Animation,
     screens: Screens,
     animator: Animator,
+    dialogues: crate::dialogues::Dialogues,
     /// The network inspector, the world diff, the saves, the systems.
     play_tools: Vec<(Panel, PlayTool)>,
     /// What the last draw cost, for the Profiler.
@@ -590,6 +591,8 @@ impl Studio {
         roots.insert(Panel::Screens, screens.root);
         let animator = Animator::new(&mut ui, lower);
         roots.insert(Panel::Animator, animator.root);
+        let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
+        roots.insert(Panel::Dialogues, dialogues.root);
         let play_tools: Vec<(Panel, PlayTool)> = [
             (Panel::Network, PlayKind::Network),
             (Panel::WorldDiff, PlayKind::Diff),
@@ -648,6 +651,7 @@ impl Studio {
             animation,
             screens,
             animator,
+            dialogues,
             play_tools,
             last_draw_ms: 0.0,
             aspect: None,
@@ -1060,6 +1064,9 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Animator) {
                 self.animator.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_showing(Panel::Dialogues) {
+                self.dialogues.update(&mut self.ui, &self.session);
             }
             for (panel, tool) in &mut self.play_tools {
                 if self.docks.is_showing(*panel) {
@@ -2318,6 +2325,9 @@ impl Studio {
             tool.event(&mut self.ui, &mut self.session, node, event);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.dialogues.owns(&self.ui, node) {
+            self.dialogues
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.screens.owns(&self.ui, node) {
             self.screens
