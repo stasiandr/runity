@@ -96,6 +96,8 @@ pub struct Trail {
     walked: f32,
     /// Which foot is next.
     left: bool,
+    /// Where the last step fell: how steep the way from it is.
+    stepped: Option<Vec3>,
 }
 
 impl Trail {
@@ -107,6 +109,7 @@ impl Trail {
             last: None,
             walked: 0.0,
             left: false,
+            stepped: None,
         }
     }
 
@@ -171,15 +174,32 @@ impl Trail {
         let side = if self.left { -1.0 } else { 1.0 };
         self.left = !self.left;
         let foot = at + right * (s.stance * side);
+        // How steep the way is, from the last step: on a slope of loose
+        // sand past about 15°, each step slides — the print is dragged out
+        // downhill and sand runs down from it.
+        let rise = self
+            .stepped
+            .map(|was| {
+                let level = Vec3::new(at.x - was.x, 0.0, at.z - was.z).length();
+                if level > 0.05 {
+                    (at.y - was.y) / level
+                } else {
+                    0.0
+                }
+            })
+            .unwrap_or(0.0);
+        self.stepped = Some(at);
+        let slide = ((rise.abs() - 0.25) / 0.35).clamp(0.0, 1.0);
+        let downhill = if rise < 0.0 { forward } else { -forward };
         // The box: its x across the foot (turned over for the left one, so
         // the shape is a mirror of the right), its z along it, toes to −z;
         // tall enough to reach the ground on a slope under the foot.
         let turn = Quat::from_rotation_arc(Vec3::NEG_Z, forward);
         let size = s.size.max(0.02);
         let placed = Mat4::from_scale_rotation_translation(
-            Vec3::new(size * 0.42 * side, 0.6, size),
+            Vec3::new(size * 0.42 * side, 0.6, size * (1.0 + 1.8 * slide)),
             turn,
-            foot,
+            foot + downhill * (size * 0.9 * slide),
         );
         self.prints.push_back(Print { placed, age: 0.0 });
         while self.prints.len() > MOST_PRINTS {
@@ -192,7 +212,18 @@ impl Trail {
                 drift: -forward * 0.5 + Vec3::Y * 0.35,
                 age: 0.0,
             });
-            if self.puffs.len() > MOST_PUFFS {
+            // Sliding: sand running down the slope from the step.
+            if slide > 0.0 {
+                for k in 0..2 {
+                    self.puffs.push(Puff {
+                        at: foot + Vec3::Y * 0.05 + downhill * (0.15 + 0.25 * k as f32),
+                        drift: (downhill * (0.8 + 0.4 * k as f32) - Vec3::Y * rise.abs() * 0.6)
+                            * slide,
+                        age: 0.0,
+                    });
+                }
+            }
+            while self.puffs.len() > MOST_PUFFS {
                 self.puffs.remove(0);
             }
         }
@@ -259,6 +290,29 @@ mod tests {
             assert!(pair[0] * pair[1] < 0.0, "left, right, left: {sides:?}");
         }
         assert!(trail.puffs() > 0, "and dust from the last steps");
+    }
+
+    #[test]
+    fn down_a_steep_slope_the_prints_drag_out_and_sand_runs() {
+        let flat = {
+            let mut trail = Trail::new(Footprints::default());
+            for i in 0..=60 {
+                trail.advance(Vec3::new(0.0, 0.0, -0.05 * i as f32), 1.0 / 60.0);
+            }
+            trail
+        };
+        let slope = {
+            let mut trail = Trail::new(Footprints::default());
+            // Down a 35° face.
+            for i in 0..=60 {
+                let z = -0.05 * i as f32;
+                trail.advance(Vec3::new(0.0, z * 0.7, z), 1.0 / 60.0);
+            }
+            trail
+        };
+        let length = |t: &Trail| t.prints.back().unwrap().placed.z_axis.length();
+        assert!(length(&slope) > length(&flat) * 1.5, "dragged out");
+        assert!(slope.puffs() > flat.puffs(), "and sand running down");
     }
 
     #[test]

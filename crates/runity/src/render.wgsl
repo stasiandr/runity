@@ -80,7 +80,7 @@ struct Frame {
     // the physical sky: 1 when on, the aerial grid's far end in metres
     air: vec4<f32>,
     // weather.rs: wetness, puddles, snow, rain; snowfall
-    weather: array<vec4<f32>, 2>,
+    weather: array<vec4<f32>, 3>,
     // up to four water surfaces: height and 1 when there; the rectangle
     // it covers (min x, min z, max x, max z)
     waters: array<vec4<f32>, 8>,
@@ -957,9 +957,35 @@ struct Weathered {
 
 /// A surface as the weather leaves it: darker and shinier wet, still water
 /// in the level patches, snow on what faces up.
-fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>) -> Weathered {
+fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>) -> Weathered {
     var out = Weathered(albedo, smoothness, normal, 1.0);
     let w = frame.weather[0];
+    // Sand the wind has laid: on what faces up, thick in corners and
+    // crevices (where the light from all round cannot get in either), and
+    // against what faces into the wind — ragged at its edges.
+    let drifted = frame.weather[2].x;
+    if drifted > 0.0 {
+        var tucked = 0.0;
+        if frame.ambient_occlusion.x > 0.5 {
+            tucked = 1.0 - textureLoad(occlusion, vec2<i32>(pixel), 0).a;
+        }
+        var wd = vec2<f32>(frame.foliage.wind.x, frame.foliage.wind.y);
+        if dot(wd, wd) < 1e-6 {
+            wd = vec2<f32>(1.0, 0.0);
+        }
+        wd = normalize(wd);
+        let into_wind = max(dot(geometric, -vec3<f32>(wd.x, 0.0, wd.y)), 0.0) * (1.0 - abs(geometric.y));
+        let lying = smoothstep(0.25, 0.85, geometric.y) * 0.65 + tucked * 3.5 + into_wind * 0.3;
+        // Tongues of sand drawn out along the wind.
+        let along = vec2<f32>(dot(position.xz, wd) * 0.45, dot(position.xz, vec2<f32>(-wd.y, wd.x)) * 1.8);
+        let ragged = patches(along + 71.0) * 0.65 + patches(along * 3.1 + 3.0) * 0.35;
+        let amount = clamp(lying, 0.0, 1.0) * drifted;
+        let sand = smoothstep(1.0 - amount, 1.0 - amount + 0.12, ragged * 0.85 + 0.15) * step(0.001, amount);
+        out.albedo = mix(out.albedo, vec3<f32>(0.58, 0.34, 0.15), sand);
+        out.smoothness = mix(out.smoothness, 0.08, sand);
+        out.normal = normalize(mix(out.normal, geometric, sand * 0.7));
+        out.metal = out.metal * (1.0 - sand);
+    }
     if w.x + w.y + w.z <= 0.0 {
         return out;
     }
@@ -1336,7 +1362,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
 
     // The weather on it: wet, under water, under snow.
-    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position);
+    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position, in.clip_position.xy);
     albedo = weather.albedo;
     smoothness = weather.smoothness;
     normal = weather.normal;
