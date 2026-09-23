@@ -58,26 +58,41 @@ impl Asset {
 enum Tab {
     Project,
     Console,
+    History,
+    Git,
 }
 
 pub struct Bottom {
     pub card: NodeId,
     tab: Tab,
-    tab_project: NodeId,
-    tab_console: NodeId,
+    /// Each tab: its button and its body.
+    tabs: Vec<(Tab, NodeId, NodeId)>,
     // Project
-    project: NodeId,
     search: NodeId,
     grid: NodeId,
     entries: HashMap<NodeId, Asset>,
     // Console
-    console: NodeId,
     counts: [NodeId; 3],
     filters: [NodeId; 3],
     clear: NodeId,
     lines: NodeId,
     at_least: Level,
     seen_lines: usize,
+    /// Console lines opened to show all of their text, by index.
+    expanded: std::collections::HashSet<usize>,
+    /// Each Console row's line, by index.
+    console_rows: HashMap<NodeId, usize>,
+    // History
+    history_list: NodeId,
+    /// Each History row: how many steps from the start it stands for.
+    history_rows: HashMap<NodeId, usize>,
+    // Git
+    git_list: NodeId,
+    git_refresh: NodeId,
+    revisions: HashMap<NodeId, String>,
+    take_theirs: HashMap<NodeId, usize>,
+    /// Git is asked when the tab opens or on Refresh, not every frame.
+    git_stale: bool,
 }
 
 fn tab_style(on: bool) -> Style {
@@ -115,14 +130,24 @@ impl Bottom {
                 .gap(SPACE_1)
                 .center_items(),
         );
-        let tab_project = ui.add(header, tab_style(true));
-        ui.set_name(tab_project, "tab project");
-        icon(ui, tab_project, "folder", ACCENT);
-        ui.add_text(tab_project, text().margin(0.0).padding_left(6.0), "Project");
-        let tab_console = ui.add(header, tab_style(false));
-        ui.set_name(tab_console, "tab console");
-        icon(ui, tab_console, "terminal", LABEL);
-        ui.add_text(tab_console, text().padding_left(6.0), "Console");
+        let mut buttons = Vec::new();
+        for (tab, glyph, label) in [
+            (Tab::Project, "folder", "Project"),
+            (Tab::Console, "terminal", "Console"),
+            (Tab::History, "undo-2", "History"),
+            (Tab::Git, "list-tree", "Git"),
+        ] {
+            let b = ui.add(header, tab_style(tab == Tab::Project));
+            ui.set_name(b, format!("tab {}", label.to_lowercase()));
+            icon(
+                ui,
+                b,
+                glyph,
+                if tab == Tab::Project { ACCENT } else { LABEL },
+            );
+            ui.add_text(b, text().padding_left(6.0), label);
+            buttons.push((tab, b));
+        }
         spacer(ui, header);
         // Console's tools live in the header, shown on its tab.
         let tools = ui.add(header, Style::row().gap(SPACE_1).center_items());
@@ -197,59 +222,126 @@ impl Bottom {
         ui.set_name(lines, "console lines");
         ui.restyle(tools, |s| s.hidden());
 
+        // History
+        let history = ui.add(card, Style::column().fill().full_width().hidden());
+        let history_list = ui.add(
+            history,
+            Style::column()
+                .fill()
+                .full_width()
+                .padding_y(SPACE_1)
+                .clip(),
+        );
+        ui.set_name(history_list, "history lines");
+
+        // Git
+        let git = ui.add(card, Style::column().fill().full_width().hidden());
+        let git_bar = ui.add(
+            git,
+            Style::row()
+                .full_width()
+                .height(30.0)
+                .fixed()
+                .padding_x(SPACE_3)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add_text(
+            git_bar,
+            Style::default()
+                .text_size(11.5)
+                .text_color(MUTED)
+                .nowrap()
+                .fill(),
+            "The scene's history in git. Double-click a revision to bring it back — one undo step.",
+        );
+        let git_refresh = crate::theme::button(ui, git_bar, "git refresh", "Refresh", false);
+        let git_list = ui.add(
+            git,
+            Style::column()
+                .fill()
+                .full_width()
+                .padding_y(SPACE_1)
+                .clip(),
+        );
+        ui.set_name(git_list, "git lines");
+
+        let bodies = [
+            (Tab::Project, project),
+            (Tab::Console, console),
+            (Tab::History, history),
+            (Tab::Git, git),
+        ];
+        let tabs = buttons
+            .into_iter()
+            .map(|(t, b)| (t, b, bodies.iter().find(|(bt, _)| *bt == t).unwrap().1))
+            .collect();
+
         Self {
             card,
             tab: Tab::Project,
-            tab_project,
-            tab_console,
-            project,
+            tabs,
             search,
             grid,
             entries: HashMap::new(),
-            console,
             counts,
             filters,
             clear,
             lines,
             at_least: Level::Info,
             seen_lines: 0,
+            expanded: Default::default(),
+            console_rows: HashMap::new(),
+            history_list,
+            history_rows: HashMap::new(),
+            git_list,
+            git_refresh,
+            revisions: HashMap::new(),
+            take_theirs: HashMap::new(),
+            git_stale: true,
         }
     }
 
     fn set_tab(&mut self, ui: &mut Ui, tab: Tab) {
         self.tab = tab;
-        let on = |t| t == tab;
-        ui.set_style(self.tab_project, tab_style(on(Tab::Project)));
-        ui.set_style(self.tab_console, tab_style(on(Tab::Console)));
-        for (button, t) in [
-            (self.tab_project, Tab::Project),
-            (self.tab_console, Tab::Console),
-        ] {
+        for (t, button, body) in self.tabs.clone() {
+            let on = t == tab;
+            ui.set_style(button, tab_style(on));
             let glyph = ui.children(button)[0];
-            ui.restyle(glyph, |s| s.text_color(if on(t) { ACCENT } else { LABEL }));
+            ui.restyle(glyph, |s| s.text_color(if on { ACCENT } else { LABEL }));
+            ui.restyle(body, |s| if on { s.shown() } else { s.hidden() });
         }
-        ui.restyle(self.project, |s| {
-            if on(Tab::Project) {
-                s.shown()
-            } else {
-                s.hidden()
-            }
-        });
-        ui.restyle(self.console, |s| {
-            if on(Tab::Console) {
-                s.shown()
-            } else {
-                s.hidden()
-            }
-        });
         let tools = ui.parent(self.clear).expect("the tools row");
         ui.restyle(tools, |s| {
-            if on(Tab::Console) {
+            if tab == Tab::Console {
                 s.shown()
             } else {
                 s.hidden()
             }
         });
+        if tab == Tab::Git {
+            self.git_stale = true;
+        }
+    }
+
+    /// The tab on show, by name: what a studio remembers between runs.
+    pub fn tab_name(&self) -> &'static str {
+        match self.tab {
+            Tab::Project => "project",
+            Tab::Console => "console",
+            Tab::History => "history",
+            Tab::Git => "git",
+        }
+    }
+
+    pub fn set_tab_name(&mut self, ui: &mut Ui, name: &str) {
+        let tab = match name {
+            "console" => Tab::Console,
+            "history" => Tab::History,
+            "git" => Tab::Git,
+            _ => Tab::Project,
+        };
+        self.set_tab(ui, tab);
     }
 
     /// Show the Console: an error just happened.
@@ -420,7 +512,26 @@ impl Bottom {
             },
             |_, _, _| {},
         );
-        for (row, line) in ui.children(self.lines).into_iter().zip(&lines) {
+        self.console_rows.clear();
+        for (i, (row, line)) in ui.children(self.lines).into_iter().zip(&lines).enumerate() {
+            self.console_rows.insert(row, i);
+            if ui.name(row) != Some(&format!("console line {i}")) {
+                ui.set_name(row, format!("console line {i}"));
+            }
+            let open = self.expanded.contains(&i) && line.text.contains('\n');
+            ui.restyle(row, |s| {
+                let s = s.clickable();
+                if open {
+                    s.auto_height()
+                        .min_height(22.0)
+                        .padding_y(3.0)
+                        .background(TEXT.alpha(4))
+                } else {
+                    s.height(22.0)
+                        .padding_y(0.0)
+                        .background(runity_ui::Color::TRANSPARENT)
+                }
+            });
             let kids = ui.children(row);
             let (glyph, ink) = match line.level {
                 Level::Info => ("info", MUTED),
@@ -429,8 +540,20 @@ impl Bottom {
             };
             ui.set_icon(kids[0], glyph);
             ui.restyle(kids[0], |s| s.text_color(ink));
-            let first = line.text.lines().next().unwrap_or_default();
-            ui.set_text(kids[1], first);
+            let more = line.text.lines().count() > 1;
+            let shown = if open {
+                line.text.clone()
+            } else if more {
+                format!("{}  …", line.text.lines().next().unwrap_or_default())
+            } else {
+                line.text.clone()
+            };
+            ui.set_text(kids[1], &shown);
+            ui.restyle(kids[1], |s| {
+                let mut s = s;
+                s.text.nowrap = !open;
+                s
+            });
             ui.restyle(kids[1], |s| {
                 s.text_color(if line.level == Level::Info {
                     LABEL
@@ -463,6 +586,160 @@ impl Bottom {
             }
         }
         self.seen_lines = lines.len();
+
+        if self.tab == Tab::History {
+            self.update_history(ui, session);
+        }
+    }
+
+    /// Every step undo can take back, oldest first, the last one marked —
+    /// Unity's Undo History window. A click goes back (or forward) to it.
+    fn update_history(&mut self, ui: &mut Ui, session: &Session) {
+        let mut steps = vec!["(as opened)".to_string()];
+        steps.extend(session.undo_steps());
+        let now = steps.len() - 1;
+        if let Some(redo) = session.redo_label() {
+            steps.push(format!("{redo}  (undone)"));
+        }
+        ui.clear(self.history_list);
+        self.history_rows.clear();
+        for (i, step) in steps.iter().enumerate() {
+            let current = i == now;
+            let row = ui.add(
+                self.history_list,
+                Style::row()
+                    .height(22.0)
+                    .fixed()
+                    .full_width()
+                    .padding_x(SPACE_4)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .hover(TEXT.alpha(5))
+                    .background(if current {
+                        ACCENT_900
+                    } else {
+                        runity_ui::Color::TRANSPARENT
+                    }),
+            );
+            ui.set_name(row, format!("history {i}"));
+            icon(
+                ui,
+                row,
+                if current {
+                    "chevron-right"
+                } else {
+                    "circle-dot"
+                },
+                if current { ACCENT } else { MUTED },
+            );
+            ui.add_text(
+                row,
+                Style::default()
+                    .text_size(12.0)
+                    .text_color(if i > now {
+                        MUTED
+                    } else if current {
+                        ACCENT_200
+                    } else {
+                        TEXT
+                    })
+                    .nowrap(),
+                step,
+            );
+            self.history_rows.insert(row, i);
+        }
+        if let Some(last) = ui.children(self.history_list).get(now).copied() {
+            ui.scroll_to(self.history_list, last);
+        }
+    }
+
+    /// The scene's revisions in git and, mid-merge, its conflicts.
+    pub fn update_git(&mut self, ui: &mut Ui, session: &mut Session) {
+        if self.tab != Tab::Git || !self.git_stale {
+            return;
+        }
+        self.git_stale = false;
+        ui.clear(self.git_list);
+        self.revisions.clear();
+        self.take_theirs.clear();
+        let small = |c| Style::default().text_size(11.5).text_color(c).nowrap();
+        match session.merge_conflicts() {
+            Ok(conflicts) if !conflicts.is_empty() => {
+                let h = ui.add(
+                    self.git_list,
+                    Style::row()
+                        .full_width()
+                        .padding_x(SPACE_4)
+                        .padding_y(SPACE_1),
+                );
+                ui.add_text(
+                    h,
+                    small(WARNING),
+                    &format!("{} conflicts in this merge", conflicts.len()),
+                );
+                for (i, c) in conflicts.iter().enumerate() {
+                    let row = ui.add(
+                        self.git_list,
+                        Style::row()
+                            .height(26.0)
+                            .fixed()
+                            .full_width()
+                            .padding_x(SPACE_4)
+                            .gap(SPACE_2)
+                            .center_items(),
+                    );
+                    icon(ui, row, "triangle-alert", WARNING);
+                    ui.add_text(row, small(TEXT).fill(), &c.to_string());
+                    let b = crate::theme::button(
+                        ui,
+                        row,
+                        &format!("take theirs {i}"),
+                        "Take theirs",
+                        false,
+                    );
+                    self.take_theirs.insert(b, i);
+                }
+            }
+            _ => {}
+        }
+        match session.scene_history() {
+            Ok(revisions) if !revisions.is_empty() => {
+                for r in revisions.iter().take(200) {
+                    let row = ui.add(
+                        self.git_list,
+                        Style::row()
+                            .height(22.0)
+                            .fixed()
+                            .full_width()
+                            .padding_x(SPACE_4)
+                            .gap(SPACE_3)
+                            .center_items()
+                            .hover(TEXT.alpha(5)),
+                    );
+                    ui.set_name(
+                        row,
+                        format!("revision {}", &r.commit[..r.commit.len().min(8)]),
+                    );
+                    ui.add_text(
+                        row,
+                        small(MUTED).mono().width(64.0).fixed(),
+                        &r.commit[..r.commit.len().min(7)],
+                    );
+                    ui.add_text(row, small(MUTED).width(84.0).fixed(), &r.date);
+                    ui.add_text(row, small(LABEL).width(120.0).fixed(), &r.author);
+                    ui.add_text(row, small(TEXT).fill(), &r.summary);
+                    self.revisions.insert(row, r.commit.clone());
+                }
+            }
+            Ok(_) => {
+                let h = ui.add(self.git_list, Style::row().padding_x(SPACE_4));
+                ui.add_text(h, small(MUTED), "No commits of this scene yet.");
+            }
+            Err(e) => {
+                let h = ui.add(self.git_list, Style::row().padding_x(SPACE_4));
+                ui.add_text(h, small(MUTED), &format!("No git history: {e}"));
+            }
+        }
     }
 
     pub fn event(
@@ -474,8 +751,67 @@ impl Bottom {
         requests: &mut Requests,
     ) {
         match event {
-            Event::Click { .. } if node == self.tab_project => self.set_tab(ui, Tab::Project),
-            Event::Click { .. } if node == self.tab_console => self.set_tab(ui, Tab::Console),
+            Event::Click { .. } if self.tabs.iter().any(|(_, b, _)| *b == node) => {
+                let tab = self.tabs.iter().find(|(_, b, _)| *b == node).unwrap().0;
+                self.set_tab(ui, tab);
+                requests.refresh = true;
+            }
+            Event::Click { .. } if node == self.git_refresh => {
+                self.git_stale = true;
+            }
+            Event::Click { .. } if self.take_theirs.contains_key(&node) => {
+                let i = self.take_theirs[&node];
+                if let Err(e) = session.take_theirs(i) {
+                    session.say(Level::Error, e.to_string());
+                }
+                self.git_stale = true;
+                requests.refresh = true;
+            }
+            Event::Click { count, .. } if *count >= 2 && self.revisions.contains_key(&node) => {
+                let commit = self.revisions[&node].clone();
+                match session.restore_revision(&commit) {
+                    Ok(()) => session.say(
+                        Level::Info,
+                        format!(
+                            "brought back the scene as of {}",
+                            &commit[..commit.len().min(7)]
+                        ),
+                    ),
+                    Err(e) => session.say(Level::Error, e.to_string()),
+                }
+                requests.refresh = true;
+            }
+            Event::Click { .. } if self.history_rows.contains_key(&node) => {
+                let target = self.history_rows[&node];
+                let now = session.undo_steps().len();
+                if target < now {
+                    for _ in target..now {
+                        let _ = session.undo();
+                    }
+                } else if target > now {
+                    for _ in now..target {
+                        let _ = session.redo();
+                    }
+                }
+                requests.refresh = true;
+            }
+            Event::Click { count, .. } if self.console_rows.contains_key(&node) => {
+                let i = self.console_rows[&node];
+                if *count >= 2 {
+                    let line = session
+                        .console()
+                        .iter()
+                        .filter(|l| l.level >= self.at_least)
+                        .nth(i)
+                        .cloned();
+                    if let Some(at) = line.and_then(|l| l.location()) {
+                        open_in_editor(session, &at);
+                    }
+                } else if !self.expanded.remove(&i) {
+                    self.expanded.insert(i);
+                }
+                requests.refresh = true;
+            }
             Event::Click { .. } if node == self.clear => {
                 requests.action = Some(Action::ClearConsole);
             }
@@ -517,6 +853,37 @@ impl Bottom {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Open the file a Console line points at: in VS Code at the line when it
+/// is there (`code -g`), else with whatever the system opens it with.
+fn open_in_editor(session: &mut Session, at: &runity_editor::console::Location) {
+    let root = session
+        .project()
+        .map(|p| p.root().to_path_buf())
+        .unwrap_or_default();
+    let file = root.join(&at.file);
+    if !file.is_file() {
+        session.say(Level::Warning, format!("{} is not in the project", at.file));
+        return;
+    }
+    let spot = format!("{}:{}:{}", file.display(), at.line, at.column);
+    let code = std::process::Command::new("code")
+        .arg("-g")
+        .arg(&spot)
+        .spawn();
+    if code.is_err() {
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else if cfg!(target_os = "windows") {
+            "explorer"
+        } else {
+            "xdg-open"
+        };
+        if let Err(e) = std::process::Command::new(opener).arg(&file).spawn() {
+            session.say(Level::Error, format!("cannot open {}: {e}", file.display()));
         }
     }
 }

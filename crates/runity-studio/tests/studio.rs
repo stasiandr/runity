@@ -513,3 +513,142 @@ fn with_nothing_selected_the_inspector_sets_the_time_of_day() {
     click(&mut s, "undo");
     assert!(!s.session.environment()[0].1.contains("hour:19"));
 }
+
+#[test]
+fn a_long_console_line_opens_on_a_click() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    s.session.clear_console();
+    s.session.say(
+        runity_editor::console::Level::Error,
+        "error[E0308]: mismatched types\n --> src/door.rs:12:9\n  expected f32",
+    );
+    s.frame();
+    click(&mut s, "tab console");
+    let dump = s.ui.dump();
+    assert!(dump.contains("mismatched types  …"), "{dump}");
+    assert!(!dump.contains("expected f32"));
+    click(&mut s, "console line 0");
+    assert!(s.ui.dump().contains("expected f32"), "opened");
+    // Apart, or it is a double click — which opens the file instead.
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    click(&mut s, "console line 0");
+    assert!(!s.ui.dump().contains("expected f32"), "and closed");
+}
+
+#[test]
+fn the_history_tab_goes_back_and_forward_to_a_step() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    click(&mut s, "line boulder");
+    key(&mut s, Key::Delete);
+    let count = s.session.entity_count();
+    click(&mut s, "tab history");
+    assert!(s.ui.find("history 2").is_some(), "{}", s.ui.dump());
+    click(&mut s, "history 0");
+    assert_eq!(s.session.entity_count(), count + 2, "back to as opened");
+    click(&mut s, "history 1");
+    assert_eq!(s.session.entity_count(), count + 1, "one step forward");
+}
+
+#[test]
+fn the_git_tab_lists_the_scenes_revisions_and_brings_one_back() {
+    let Some((mut s, dir)) = studio() else { return };
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q"]) {
+        eprintln!("no git here; skipped");
+        return;
+    }
+    git(&["-c", "user.email=t@t", "-c", "user.name=t", "add", "."]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "first light",
+    ]);
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    click(&mut s, "save");
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qam",
+        "no crate",
+    ]);
+    assert!(s.session.find("crate").is_none());
+
+    click(&mut s, "tab git");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(
+        dump.contains("\"no crate\"") && dump.contains("\"first light\""),
+        "{dump}"
+    );
+    // The older one, double-clicked: the crate comes back, as one undo step.
+    let rows: Vec<String> = dump
+        .lines()
+        .filter_map(|l| {
+            l.trim()
+                .strip_prefix("#revision ")
+                .map(|r| r.split(' ').next().unwrap().to_string())
+        })
+        .collect();
+    let older = format!("revision {}", rows.last().unwrap());
+    click(&mut s, &older);
+    click(&mut s, &older);
+    assert!(s.session.find("crate").is_some(), "brought back");
+    click(&mut s, "undo");
+    assert!(s.session.find("crate").is_none());
+}
+
+#[test]
+fn the_layout_is_kept_between_runs() {
+    let Some((mut s, dir)) = studio() else { return };
+    s.ui.paint();
+    let split = s.ui.rect(s.ui.find("split left").unwrap());
+    let (x, y) = split.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    for i in 1..=10 {
+        s.handle(&InputEvent::MouseMoved {
+            x: x + 8.0 * i as f32,
+            y,
+        });
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let width = s.ui.rect(s.ui.find("hierarchy").unwrap()).width;
+    click(&mut s, "tab console");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    drop(s);
+
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
+    again.frame();
+    again.ui.paint();
+    let now = again.ui.rect(again.ui.find("hierarchy").unwrap()).width;
+    assert!((now - width).abs() < 2.0, "{now} vs {width}");
+    assert!(
+        again.ui.dump().contains("#console lines"),
+        "the Console tab is open again"
+    );
+    let _ = dir;
+}

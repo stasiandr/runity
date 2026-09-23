@@ -183,6 +183,8 @@ pub struct Studio {
     conflict_said: bool,
     /// Pictures made on the CPU waiting for the renderer: previews.
     pending_images: Vec<(ImageId, u32, Vec<u8>)>,
+    /// The layout as last written to disk.
+    saved_layout: String,
     /// A build running in the background: what it says when it is done.
     job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The scene to go back to from prefab mode.
@@ -367,6 +369,7 @@ impl Studio {
             colliders: false,
             conflict_said: false,
             job: None,
+            saved_layout: String::new(),
             pending_images: Vec::new(),
             scene_before_prefab: None,
             prefab_bar,
@@ -376,6 +379,7 @@ impl Studio {
         };
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
         studio.ui.focus(Some(viewport));
+        studio.restore_layout();
         studio.refresh();
         studio
     }
@@ -541,6 +545,7 @@ impl Studio {
         let t3 = Instant::now();
 
         self.poll_disk();
+        self.bottom.update_git(&mut self.ui, &mut self.session);
         if let Some(job) = &self.job {
             if let Ok(result) = job.try_recv() {
                 self.job = None;
@@ -589,6 +594,78 @@ impl Studio {
         }
     }
 
+    /// Where the studio keeps its own layout: next to the session's view
+    /// settings, in the project's `.runity/` (not in git).
+    fn layout_file(&self) -> Option<std::path::PathBuf> {
+        self.session
+            .project()
+            .map(|p| p.root().join(".runity").join("studio.ron"))
+    }
+
+    /// The panels' sizes and the bottom tab, as RON.
+    fn layout_text(&self) -> String {
+        let w = |n: NodeId| self.ui.rect(n).width.round();
+        format!(
+            "(left: {:.0}, right: {:.0}, lower: {:.0}, tab: {:?})\n",
+            w(self.left),
+            w(self.right),
+            self.ui.rect(self.lower).height.round(),
+            self.bottom.tab_name()
+        )
+    }
+
+    /// Put the panels back where they were last time.
+    fn restore_layout(&mut self) {
+        let Some(text) = self
+            .layout_file()
+            .and_then(|f| std::fs::read_to_string(f).ok())
+        else {
+            return;
+        };
+        let number = |key: &str| -> Option<f32> {
+            let at = text.find(&format!("{key}:"))? + key.len() + 1;
+            text[at..].split([',', ')']).next()?.trim().parse().ok()
+        };
+        if let Some(v) = number("left") {
+            self.ui
+                .restyle(self.left, |s| s.width(v.clamp(140.0, 900.0)));
+        }
+        if let Some(v) = number("right") {
+            self.ui
+                .restyle(self.right, |s| s.width(v.clamp(140.0, 900.0)));
+        }
+        if let Some(v) = number("lower") {
+            self.ui
+                .restyle(self.lower, |s| s.height(v.clamp(60.0, 900.0)));
+        }
+        if let Some(at) = text.find("tab:") {
+            let tab = text[at + 4..].trim().trim_start_matches('"');
+            let tab = tab.split('"').next().unwrap_or("project");
+            self.bottom.set_tab_name(&mut self.ui, tab);
+        }
+        self.saved_layout = self.layout_text_after_paint();
+    }
+
+    fn layout_text_after_paint(&mut self) -> String {
+        self.ui.paint();
+        self.layout_text()
+    }
+
+    /// Write the layout down when it changed.
+    fn save_layout(&mut self) {
+        let text = self.layout_text_after_paint();
+        if text == self.saved_layout {
+            return;
+        }
+        if let Some(file) = self.layout_file() {
+            if let Some(dir) = file.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let _ = std::fs::write(file, &text);
+        }
+        self.saved_layout = text;
+    }
+
     /// Twice a second, pick up what changed on disk: the scene edited in a
     /// text editor or by git, an asset re-exported (DNA, postulate 1).
     fn poll_disk(&mut self) {
@@ -596,6 +673,7 @@ impl Studio {
             return;
         }
         self.polled = Instant::now();
+        self.save_layout();
         match self.session.reload_scene() {
             Ok(runity_editor::SceneReload::Reloaded) => {
                 self.session.say(

@@ -242,6 +242,12 @@ impl Style {
         self.full_width().full_height()
     }
 
+    /// As tall as its content: undoes a fixed height.
+    pub fn auto_height(mut self) -> Self {
+        self.layout.size.height = auto();
+        self
+    }
+
     pub fn min_width(mut self, w: f32) -> Self {
         self.layout.min_size.width = length(w);
         self
