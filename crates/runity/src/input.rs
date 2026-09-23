@@ -184,10 +184,40 @@ pub enum InputEvent {
         axis: PadAxis,
         value: f32,
     },
+    /// A finger on a touch screen, by the id the platform gives it for as
+    /// long as it is down.
+    Touch {
+        id: u64,
+        phase: TouchPhase,
+        x: f32,
+        y: f32,
+    },
     /// The window lost focus. Everything held is released, because the
     /// release event will be delivered to whatever has focus now, and a key
     /// that never comes up is held forever.
     FocusLost,
+}
+
+/// Where a touch is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+/// A finger down, as the game sees it this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Touch {
+    pub id: u64,
+    pub position: Vec2,
+    /// Where it came down.
+    pub start: Vec2,
+    /// Came down this frame.
+    pub began: bool,
+    /// Lifted this frame (still listed for this one frame).
+    pub ended: bool,
 }
 
 /// Everything held, pressed and released, plus where the mouse is.
@@ -208,6 +238,10 @@ pub struct Input {
     pad_pressed: HashSet<PadButton>,
     pad_released: HashSet<PadButton>,
     pad_axes: std::collections::HashMap<PadAxis, f32>,
+    touches: Vec<Touch>,
+    /// The touch the mouse follows: the first finger down, as Unity's
+    /// simulated mouse, so buttons and sliders work under a finger.
+    mouse_finger: Option<u64>,
 }
 
 impl Input {
@@ -227,6 +261,15 @@ impl Input {
         self.motion = Vec2::ZERO;
         self.scroll = Vec2::ZERO;
         self.text.clear();
+        self.touches.retain(|t| !t.ended);
+        for touch in &mut self.touches {
+            touch.began = false;
+        }
+    }
+
+    /// Every finger down, and those lifted this frame.
+    pub fn touches(&self) -> &[Touch] {
+        &self.touches
     }
 
     pub fn handle(&mut self, event: &InputEvent) {
@@ -277,6 +320,44 @@ impl Input {
             }
             InputEvent::PadMoved { axis, value } => {
                 self.pad_axes.insert(*axis, value.clamp(-1.0, 1.0));
+            }
+            InputEvent::Touch { id, phase, x, y } => {
+                let at = Vec2::new(*x, *y);
+                match phase {
+                    TouchPhase::Started => {
+                        self.touches.retain(|t| t.id != *id);
+                        self.touches.push(Touch {
+                            id: *id,
+                            position: at,
+                            start: at,
+                            began: true,
+                            ended: false,
+                        });
+                    }
+                    TouchPhase::Moved => {
+                        if let Some(t) = self.touches.iter_mut().find(|t| t.id == *id) {
+                            t.position = at;
+                        }
+                    }
+                    TouchPhase::Ended | TouchPhase::Cancelled => {
+                        if let Some(t) = self.touches.iter_mut().find(|t| t.id == *id) {
+                            t.position = at;
+                            t.ended = true;
+                        }
+                    }
+                }
+                // The first finger is also the mouse.
+                if *phase == TouchPhase::Started && self.mouse_finger.is_none() {
+                    self.mouse_finger = Some(*id);
+                    self.handle(&InputEvent::MouseMoved { x: *x, y: *y });
+                    self.handle(&InputEvent::MouseDown(MouseButton::Left));
+                } else if self.mouse_finger == Some(*id) {
+                    self.handle(&InputEvent::MouseMoved { x: *x, y: *y });
+                    if matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                        self.handle(&InputEvent::MouseUp(MouseButton::Left));
+                        self.mouse_finger = None;
+                    }
+                }
             }
             InputEvent::FocusLost => {
                 for button in std::mem::take(&mut self.pad_held) {

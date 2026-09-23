@@ -333,6 +333,41 @@ impl Widgets {
         changed
     }
 
+    /// A stick drawn on the screen for a thumb — the phone's gamepad: a
+    /// finger (or the mouse) that goes down inside `rect` drags the knob,
+    /// and what comes back is −1..1 on each axis, y up, zero when let go.
+    /// Feed it to movement like [`crate::Actions::axis`].
+    pub fn stick(&mut self, ui: &mut Ui, input: &Input, rect: Rect) -> glam::Vec2 {
+        let id = key(rect, "stick");
+        let centre = glam::Vec2::new(rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
+        let reach = rect.width.min(rect.height) * 0.5;
+        // A finger that came down in it, or the mouse held from it.
+        let finger = input
+            .touches()
+            .iter()
+            .find(|t| rect.contains(t.start) && !t.ended)
+            .map(|t| t.position);
+        let (_, held, _) = self.track(input, rect, id);
+        let at = finger.or(held.then(|| input.mouse_position()));
+        let offset = at.map_or(glam::Vec2::ZERO, |p| (p - centre).clamp_length_max(reach));
+        ui.quad(Quad::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            self.style.idle,
+        ));
+        let knob = reach * 0.6;
+        ui.quad(Quad::new(
+            centre.x + offset.x - knob * 0.5,
+            centre.y + offset.y - knob * 0.5,
+            knob,
+            knob,
+            self.style.accent,
+        ));
+        glam::Vec2::new(offset.x, -offset.y) / reach.max(1e-3)
+    }
+
     /// Whether a text field has the keyboard: while it does, the game
     /// should not read letters as its own keys.
     pub fn typing(&self) -> bool {
@@ -438,6 +473,36 @@ mod tests {
         frame(&mut input, row, &[InputEvent::MouseUp(M::Left)]);
         assert!(!pick(&mut widgets, &input, &mut chosen));
         assert_eq!(chosen, 1);
+    }
+
+    #[test]
+    fn a_finger_is_the_mouse_for_buttons_and_a_thumb_drives_the_stick() {
+        use crate::input::TouchPhase::*;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let touch = |input: &mut Input, id: u64, phase, x: f32, y: f32| {
+            input.handle(&InputEvent::Touch { id, phase, x, y });
+        };
+        // A tap on Play clicks it, as a mouse would.
+        input.begin_frame();
+        touch(&mut input, 1, Started, 20.0, 20.0);
+        assert!(!widgets.button(&mut Ui::new(), &input, PLAY, "Play"));
+        input.begin_frame();
+        touch(&mut input, 1, Ended, 20.0, 20.0);
+        assert!(widgets.button(&mut Ui::new(), &input, PLAY, "Play"));
+        input.begin_frame();
+        assert!(input.touches().is_empty(), "gone the frame after");
+
+        // A thumb pushed right and up from the middle of the stick.
+        let pad = Rect::new(0.0, 200.0, 100.0, 100.0);
+        input.begin_frame();
+        touch(&mut input, 7, Started, 50.0, 250.0);
+        touch(&mut input, 7, Moved, 150.0, 200.0);
+        let v = widgets.stick(&mut Ui::new(), &input, pad);
+        assert!(v.x > 0.85 && v.y > 0.4 && (v.length() - 1.0).abs() < 1e-4, "{v}");
+        input.begin_frame();
+        touch(&mut input, 7, Ended, 150.0, 200.0);
+        input.begin_frame();
+        assert_eq!(widgets.stick(&mut Ui::new(), &input, pad), glam::Vec2::ZERO);
     }
 
     #[test]

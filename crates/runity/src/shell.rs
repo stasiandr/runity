@@ -416,6 +416,17 @@ fn translate(event: &WindowEvent) -> Vec<InputEvent> {
             }
             out
         }
+        WindowEvent::Touch(touch) => vec![InputEvent::Touch {
+            id: touch.id,
+            phase: match touch.phase {
+                winit::event::TouchPhase::Started => crate::input::TouchPhase::Started,
+                winit::event::TouchPhase::Moved => crate::input::TouchPhase::Moved,
+                winit::event::TouchPhase::Ended => crate::input::TouchPhase::Ended,
+                winit::event::TouchPhase::Cancelled => crate::input::TouchPhase::Cancelled,
+            },
+            x: touch.location.x as f32,
+            y: touch.location.y as f32,
+        }],
         WindowEvent::CursorMoved { position, .. } => vec![InputEvent::MouseMoved {
             x: position.x as f32,
             y: position.y as f32,
