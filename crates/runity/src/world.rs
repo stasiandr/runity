@@ -678,6 +678,57 @@ pub fn scene_camera(view: &crate::scene::View) -> Camera {
     }
 }
 
+/// Move every following camera toward its target and turn it to look,
+/// damped: call it each frame with the frame's delta, before
+/// [`camera_of`]. A camera at the top of the tree is moved in the world;
+/// one under a parent is left to its parent.
+pub fn follow_cameras(world: &mut World, dt: f32) {
+    let targets: std::collections::HashMap<crate::id::EntityId, glam::Vec3> = world
+        .query::<(&SceneId, &WorldTransform)>()
+        .iter()
+        .map(|(id, placed)| (id.0, placed.0.w_axis.truncate()))
+        .collect();
+    for (lens, transform, placed, parent) in world.query_mut::<(
+        &CameraLens,
+        &mut crate::scene::Transform,
+        &mut WorldTransform,
+        Option<&Parent>,
+    )>() {
+        let Some(follow) = lens.0.follow else {
+            continue;
+        };
+        if parent.is_some() {
+            continue;
+        }
+        let Some(&target) = targets.get(&follow.target) else {
+            continue;
+        };
+        let wanted = target + follow.offset;
+        // Exponential: the same softness at any frame rate.
+        let keep = if follow.damping <= 0.0 {
+            0.0
+        } else {
+            (-dt / follow.damping * 3.0).exp()
+        };
+        transform.position = wanted + (transform.position - wanted) * keep;
+        if follow.look {
+            let ahead = (target - transform.position).normalize_or_zero();
+            if ahead != glam::Vec3::ZERO {
+                let up = if ahead.y.abs() > 0.999 {
+                    glam::Vec3::Z
+                } else {
+                    glam::Vec3::Y
+                };
+                let right = up.cross(ahead).normalize();
+                let turn =
+                    glam::Quat::from_mat3(&glam::Mat3::from_cols(right, ahead.cross(right), ahead));
+                transform.set_rotation(turn);
+            }
+        }
+        placed.0 = transform.matrix();
+    }
+}
+
 /// What the world's camera sees: the entity with a [`CameraLens`] of the
 /// highest priority (the lowest id among equals, so the answer does not
 /// change between runs), from where it is and along its +z. `None` when no
@@ -1314,11 +1365,57 @@ mod tests {
                 fov_deg: 40.0,
                 priority: 1,
                 ortho: Some(8.0),
+                follow: None,
             }),
             WorldTransform(glam::Mat4::IDENTITY),
         ));
         assert_eq!(camera_of(&world).unwrap().fov_y_degrees, 40.0);
         assert_eq!(camera_of(&world).unwrap().ortho, Some(8.0));
+
+        // A camera following a player keeps behind it, softly, and looks.
+        let mut world = World::new();
+        let player_id: crate::id::EntityId = "00000000000000a7".parse().unwrap();
+        let player = world.spawn((
+            SceneId(player_id),
+            WorldTransform(glam::Mat4::from_translation(glam::Vec3::new(
+                10.0, 0.0, 0.0,
+            ))),
+        ));
+        let lens = crate::scene::Lens {
+            fov_deg: 60.0,
+            priority: 0,
+            ortho: None,
+            follow: Some(crate::scene::Follow {
+                target: player_id,
+                offset: glam::Vec3::new(0.0, 3.0, -6.0),
+                damping: 0.3,
+                look: true,
+            }),
+        };
+        world.spawn((
+            CameraLens(lens),
+            crate::scene::Transform::default(),
+            WorldTransform(glam::Mat4::IDENTITY),
+        ));
+        follow_cameras(&mut world, 1.0 / 60.0);
+        let early = camera_of(&world).unwrap().position;
+        assert!(
+            early.x > 0.1 && early.x < 5.0,
+            "on its way, softly: {early}"
+        );
+        for _ in 0..120 {
+            follow_cameras(&mut world, 1.0 / 60.0);
+        }
+        let camera = camera_of(&world).unwrap();
+        assert!(
+            (camera.position - glam::Vec3::new(10.0, 3.0, -6.0)).length() < 0.01,
+            "{}",
+            camera.position
+        );
+        let looking = (camera.target - camera.position).normalize();
+        let at_player = (glam::Vec3::new(10.0, 0.0, 0.0) - camera.position).normalize();
+        assert!(looking.dot(at_player) > 0.999, "looks at it");
+        let _ = player;
         assert!(camera_of(&World::new()).is_none());
     }
 }

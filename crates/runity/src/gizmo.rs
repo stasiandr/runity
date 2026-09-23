@@ -928,6 +928,7 @@ mod tests {
             fov_deg: 90.0,
             priority: 0,
             ortho: None,
+            follow: None,
         };
         // Turned round: it looks along the world's −z.
         let placed = Mat4::from_rotation_translation(

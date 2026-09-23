@@ -374,6 +374,37 @@ pub struct Lens {
     /// top: `camera: (ortho: 12.0)` for a top-down or isometric game.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub ortho: Option<f32>,
+    /// Keep after another entity and look at it — Cinemachine's Follow and
+    /// Look At: `follow: (target: "<id>", offset: (0.0, 3.0, -6.0),
+    /// damping: 0.3)`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub follow: Option<Follow>,
+}
+
+/// A camera keeping after a target.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Follow {
+    /// The entity followed, by id.
+    pub target: crate::id::EntityId,
+    /// Where the camera keeps, from the target, in the world's axes.
+    #[serde(default = "follow_offset")]
+    pub offset: Vec3,
+    /// Seconds to close most of a gap: 0 is stuck to it, 0.3 lags softly.
+    #[serde(default = "follow_damping")]
+    pub damping: f32,
+    /// Turn to look at the target.
+    #[serde(default = "yes_look")]
+    pub look: bool,
+}
+
+fn follow_offset() -> Vec3 {
+    Vec3::new(0.0, 3.0, -6.0)
+}
+fn follow_damping() -> f32 {
+    0.3
+}
+fn yes_look() -> bool {
+    true
 }
 
 /// A light at an entity, shining every way and fading to nothing at

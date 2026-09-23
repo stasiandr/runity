@@ -759,6 +759,9 @@ impl shell::Game for Game {
         // Sparks and dust move on the frame's time: they are for the eye.
         runity::particles::run_particles(&mut self.world, ctx.time.delta());
         let scene = self.live.scene();
+        // Cameras that follow keep after their targets, then the one that
+        // looks is found.
+        runity::world::follow_cameras(&mut self.world, ctx.time.delta());
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
