@@ -46,6 +46,11 @@ pub struct State {
     pub blend: Vec<(f32, String)>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub blend_by: String,
+    /// Named moments of the cycle, 0..1 — `[(0.1, "footstep"), (0.6,
+    /// "footstep")]` — that [`Controller::fired`] reports as they pass:
+    /// Unity's animation events, for a sound or a hit on the right frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<(f32, String)>,
     #[serde(default = "yes")]
     pub looping: bool,
     /// Play speed, or `1.0`.
@@ -151,6 +156,13 @@ impl Graph {
             }
         }
         for (name, state) in &self.states {
+            for (at, event) in &state.events {
+                if !(0.0..=1.0).contains(at) {
+                    out.push(format!(
+                        "state `{name}`: event `{event}` at {at}, and the cycle runs 0 to 1"
+                    ));
+                }
+            }
             if !state.blend.is_empty() {
                 if state.blend_by.is_empty() {
                     out.push(format!(
@@ -189,6 +201,9 @@ pub struct Controller {
     state: Option<String>,
     params: HashMap<String, f32>,
     triggers: HashSet<String>,
+    /// Where in its cycle the state was at the last update.
+    phase: Option<f32>,
+    fired: Vec<String>,
 }
 
 impl Controller {
@@ -198,6 +213,8 @@ impl Controller {
             state: None,
             params: HashMap::new(),
             triggers: HashSet::new(),
+            phase: None,
+            fired: Vec::new(),
         }
     }
 
@@ -297,7 +314,58 @@ impl Controller {
             let factor = state.speed_from.as_deref().map_or(1.0, |p| self.param(p));
             animator.set_speed(state.speed * factor);
         }
+        self.fire_events(animator, entered.is_some());
         entered.map(|(name, _)| name)
+    }
+
+    /// The events of the state that passed since the last update, in order.
+    pub fn fired(&self) -> &[String] {
+        &self.fired
+    }
+
+    fn fire_events(&mut self, animator: &Animator, entered: bool) {
+        self.fired.clear();
+        let now = match (animator.blending(), animator.playing()) {
+            (Some(blend), _) => Some(blend.phase),
+            (None, Some(playing)) => animator
+                .clips
+                .get(playing.clip)
+                .filter(|c| c.duration > 0.0)
+                .map(|c| {
+                    let t = playing.time / c.duration;
+                    if playing.looping {
+                        t.rem_euclid(1.0)
+                    } else {
+                        t.min(1.0)
+                    }
+                }),
+            _ => None,
+        };
+        let before = if entered { None } else { self.phase };
+        self.phase = now;
+        let (Some(state), Some(now)) = (
+            self.state.as_ref().and_then(|s| self.graph.states.get(s)),
+            now,
+        ) else {
+            return;
+        };
+        // From where it was to where it is, round the end of the cycle if it
+        // went round; a state just entered starts from its beginning.
+        let from = before.unwrap_or(-f32::EPSILON);
+        let passed = |at: f32| {
+            if now >= from {
+                at > from && at <= now
+            } else {
+                at > from || at <= now
+            }
+        };
+        self.fired.extend(
+            state
+                .events
+                .iter()
+                .filter(|(at, _)| passed(*at))
+                .map(|(_, name)| name.clone()),
+        );
     }
 }
 
@@ -441,6 +509,26 @@ mod tests {
         assert_eq!(controller.update(&mut animator).as_deref(), Some("move"));
         assert!(animator.blending().is_some());
         assert_eq!(animator.advance(0.05).len(), 1, "a pose for the one joint");
+    }
+
+    #[test]
+    fn events_fire_once_as_the_cycle_passes_them() {
+        let graph: Graph = ron::from_str(
+            r#"(start: "walk", states: { "walk": (clip: "walk", events: [(0.25, "left"), (0.75, "right")]) })"#,
+        )
+        .unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.update(&mut animator);
+        assert!(controller.fired().is_empty(), "{:?}", controller.fired());
+        let mut heard = Vec::new();
+        for _ in 0..20 {
+            animator.advance(0.1);
+            controller.update(&mut animator);
+            heard.extend(controller.fired().iter().cloned());
+        }
+        // Two seconds of a one-second walk: each foot twice, in order.
+        assert_eq!(heard, ["left", "right", "left", "right"]);
     }
 
     #[test]
