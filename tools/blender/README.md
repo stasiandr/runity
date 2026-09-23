@@ -39,8 +39,12 @@ components.
 
 ## Install
 
-Blender 4.2 or newer. Zip this `runity` folder and install it from
-Edit › Preferences › Get Extensions › Install from Disk. On every save it
+Blender 4.2 or newer. In the runity editor: **Tools › Install Blender
+Plugin**. It puts this folder into Blender's user extensions
+(`user_default`), turns it on and saves Blender's preferences. A Blender
+that is already open picks it up after a restart. By hand: zip this
+`runity` folder and use Edit › Preferences › Get Extensions › Install from
+Disk. On every save it
 gives objects, meshes, materials and collections an ID (`runity.id`) that
 survives renames, so what a runity scene says about a part keeps landing on
 it. Without the add-on the file still imports, with IDs from object names.

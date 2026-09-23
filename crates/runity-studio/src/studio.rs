@@ -3114,6 +3114,19 @@ impl Studio {
                     let text = runity::ron::to_string(&spline).map_err(|e| e.to_string())?;
                     s.set_field(id, "spline", &text).map_err(e)?;
                 }
+                Action::InstallBlenderPlugin => {
+                    let blender = runity_import::blend::blender()
+                        .ok_or("Blender was not found: install it, or set RUNITY_BLENDER to it")?;
+                    let folder =
+                        runity_import::blend::install(&blender).map_err(|e| format!("{e:#}"))?;
+                    s.say(
+                        Level::Info,
+                        format!(
+                            "the runity plugin is in Blender and on ({}); a Blender already open picks it up when restarted",
+                            folder.display()
+                        ),
+                    );
+                }
                 Action::ToggleFoliage => {
                     self.foliage = !self.foliage;
                     self.foliage_stroke = None;

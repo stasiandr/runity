@@ -284,3 +284,43 @@ bpy.ops.wm.save_mainfile()
     assert_eq!(door.collider, Collider::Model);
     assert_eq!(door.material, MaterialRef::Named("stone".into()));
 }
+
+/// Install Blender Plugin: the add-on lands in the user's extensions,
+/// turned on, and the next Blender starts with it. Into a Blender user
+/// folder of the test's own, so nobody's real preferences are touched.
+#[test]
+fn the_plugin_installs_into_blender_turned_on() {
+    let Some(blender) = runity_import::blend::blender() else {
+        eprintln!("no Blender on this machine: skipped");
+        return;
+    };
+    let home = std::env::temp_dir().join("runity-blender-user");
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    // Blender reads where its user files live from the environment, and a
+    // child inherits it: set for the whole test process, which only this
+    // test's Blenders read.
+    std::env::set_var("BLENDER_USER_RESOURCES", &home);
+    let folder = runity_import::blend::install(&blender).unwrap();
+    assert!(folder.starts_with(&home), "{}", folder.display());
+    assert!(folder.join("export.py").is_file());
+
+    let check = Command::new(&blender)
+        .args(["--background", "--python-exit-code", "1", "--python-expr"])
+        .arg(
+            "import bpy, addon_utils\n\
+             assert addon_utils.check('bl_ext.user_default.runity')[1], 'not on'\n\
+             assert any(h.__name__ == '_saved' for h in bpy.app.handlers.save_post), 'no handler'\n\
+             assert hasattr(bpy.types, 'RUNITY_PT_panel'), 'no panel'\n",
+        )
+        .env("BLENDER_USER_RESOURCES", &home)
+        .output()
+        .unwrap();
+    std::env::remove_var("BLENDER_USER_RESOURCES");
+    assert!(
+        check.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+}

@@ -40,6 +40,76 @@ use crate::scene::{
 /// The plugin's exporter, run inside Blender.
 pub const EXPORTER: &str = include_str!("../../../tools/blender/runity/export.py");
 
+/// The add-on itself, as Blender installs it: what [`install`] writes.
+pub const ADDON: [(&str, &str); 3] = [
+    (
+        "__init__.py",
+        include_str!("../../../tools/blender/runity/__init__.py"),
+    ),
+    ("export.py", EXPORTER),
+    (
+        "blender_manifest.toml",
+        include_str!("../../../tools/blender/runity/blender_manifest.toml"),
+    ),
+];
+
+/// Install the runity add-on into this Blender and turn it on: an
+/// extension in the user's `user_default` repository, enabled in the
+/// user's preferences, which are saved with everything else in them as it
+/// was. What the editor's Install Blender Plugin does. Returns the folder
+/// it went into.
+pub fn install(blender: &Path) -> Result<PathBuf> {
+    const SCRIPT: &str = r#"
+import bpy, json, os, addon_utils
+files = json.loads(os.environ["RUNITY_ADDON_FILES"])
+folder = os.path.join(bpy.utils.user_resource("EXTENSIONS", path="user_default", create=True), "runity")
+os.makedirs(folder, exist_ok=True)
+for name, text in files.items():
+    with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+        f.write(text)
+try:
+    bpy.ops.extensions.repo_refresh_all()
+except Exception as e:
+    print("refresh:", e)
+addon_utils.enable("bl_ext.user_default.runity", default_set=True, persistent=True)
+bpy.ops.wm.save_userpref()
+print("RUNITY_INSTALLED " + folder)
+"#;
+    let files: serde_json::Map<String, serde_json::Value> = ADDON
+        .iter()
+        .map(|(name, text)| (name.to_string(), serde_json::Value::from(*text)))
+        .collect();
+    let out = Command::new(blender)
+        .args([
+            "--background",
+            "--python-exit-code",
+            "1",
+            "--python-expr",
+            SCRIPT,
+        ])
+        .env(
+            "RUNITY_ADDON_FILES",
+            serde_json::Value::Object(files).to_string(),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("starting {}", blender.display()))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    match text
+        .lines()
+        .find_map(|l| l.strip_prefix("RUNITY_INSTALLED "))
+    {
+        Some(folder) if out.status.success() => Ok(PathBuf::from(folder.trim())),
+        _ => bail!(
+            "Blender could not install the plugin:\n{}",
+            last_lines(
+                &format!("{text}\n{}", String::from_utf8_lossy(&out.stderr)),
+                12
+            )
+        ),
+    }
+}
+
 /// The stream's version; the plugin writes the same.
 pub const VERSION: u32 = 1;
 

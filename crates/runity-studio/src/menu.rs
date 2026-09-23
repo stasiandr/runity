@@ -140,6 +140,8 @@ pub enum Action {
     KeepSimulation,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
+    /// Put the runity add-on into Blender, turned on (docs/blender.md).
+    InstallBlenderPlugin,
     /// A fence: copies of the selection's model (or posts) along a spline.
     NewFence,
     /// One more point at the end of the selection's spline.
@@ -288,6 +290,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Foliage Brush", Action::ToggleFoliage),
                 item("Spline: New Fence", Action::NewFence),
                 item("Spline: Add Point", Action::AddSplinePoint),
+                item("Install Blender Plugin", Action::InstallBlenderPlugin),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",
