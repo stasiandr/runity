@@ -2258,3 +2258,125 @@ fn the_hierarchy_and_the_inspector_are_data_a_window_draws() {
     assert!(field(&session, ember, "material").overridden);
     assert!(!field(&session, ember, "name").overridden);
 }
+
+/// One frame of input to the Scene view: the mouse at `at`, then events.
+fn view_frame(
+    session: &mut Session,
+    input: &mut runity::input::Input,
+    at: (f32, f32),
+    events: &[runity::input::InputEvent],
+) -> Vec<&'static str> {
+    input.begin_frame();
+    input.handle(&runity::input::InputEvent::MouseMoved { x: at.0, y: at.1 });
+    for e in events {
+        input.handle(e);
+    }
+    session.scene_view(input).unwrap()
+}
+
+#[test]
+fn the_scene_view_does_what_a_mouse_and_keyboard_ask() {
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let Some((mut session, _)) = open("scene-view") else {
+        return;
+    };
+    let mut input = Input::new();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let (w, h) = session.size();
+    let centre = (w as f32 / 2.0, h as f32 / 2.0);
+
+    // A click on empty sky clears; a click on the crate selects it.
+    view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::MouseDown(M::Left)],
+    );
+    view_frame(&mut session, &mut input, (1.0, 1.0), &[E::MouseUp(M::Left)]);
+    assert_eq!(session.selected(), None);
+    let did = view_frame(&mut session, &mut input, centre, &[E::MouseDown(M::Left)]);
+    view_frame(&mut session, &mut input, centre, &[E::MouseUp(M::Left)]);
+    assert!(did.contains(&"select") || did.contains(&"grab"), "{did:?}");
+    assert!(session.selected().is_some());
+    session.select(Some(crate_id)).unwrap();
+
+    // Tools by letter.
+    view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::E)]);
+    assert_eq!(session.tool(), runity::gizmo::Tool::Rotate);
+    view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::KeyUp(Key::E), E::KeyDown(Key::W)],
+    );
+    assert_eq!(session.tool(), runity::gizmo::Tool::Move);
+    view_frame(&mut session, &mut input, centre, &[E::KeyUp(Key::W)]);
+
+    // A handle dragged is one undo step.
+    let (_, r) = grab_right_of_centre(&mut session).expect("a handle to the right");
+    session.gizmo_end();
+    let grab = (centre.0 + r as f32, centre.1);
+    let before = session.transform(crate_id).unwrap().position;
+    let did = view_frame(&mut session, &mut input, grab, &[E::MouseDown(M::Left)]);
+    assert!(did.contains(&"grab"), "{did:?}");
+    let did = view_frame(&mut session, &mut input, (grab.0 + 20.0, grab.1), &[]);
+    assert!(did.contains(&"drag"), "{did:?}");
+    view_frame(
+        &mut session,
+        &mut input,
+        (grab.0 + 20.0, grab.1),
+        &[E::MouseUp(M::Left)],
+    );
+    assert_ne!(session.transform(crate_id).unwrap().position, before);
+
+    // Ctrl Z takes the drag back in one; Ctrl D duplicates; Delete deletes.
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::KeyDown(Key::LeftControl), E::KeyDown(Key::Z)],
+    );
+    assert!(did.contains(&"undo"), "{did:?}");
+    assert_eq!(session.transform(crate_id).unwrap().position, before);
+    let count = session.entity_count();
+    view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::KeyUp(Key::Z), E::KeyDown(Key::D)],
+    );
+    assert!(session.entity_count() > count);
+    view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::KeyUp(Key::D), E::KeyUp(Key::LeftControl)],
+    );
+    let did = view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::Delete)]);
+    assert!(did.contains(&"delete"), "{did:?}");
+    assert_eq!(session.entity_count(), count);
+    view_frame(&mut session, &mut input, centre, &[E::KeyUp(Key::Delete)]);
+
+    // The wheel zooms, the middle button pans; neither is an edit.
+    let steps = session.undo_steps().len();
+    let far = (session.camera().position - session.camera().target).length();
+    view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::Scroll { x: 0.0, y: 3.0 }],
+    );
+    let near = (session.camera().position - session.camera().target).length();
+    assert!(near < far * 0.8, "{far} -> {near}");
+    let target = session.camera().target;
+    view_frame(&mut session, &mut input, centre, &[E::MouseDown(M::Middle)]);
+    view_frame(&mut session, &mut input, (centre.0 + 30.0, centre.1), &[]);
+    assert_ne!(session.camera().target, target, "panned");
+    view_frame(&mut session, &mut input, centre, &[E::MouseUp(M::Middle)]);
+    assert_eq!(session.undo_steps().len(), steps, "the view is not an edit");
+
+    view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::Escape)]);
+    assert!(session.selection().is_empty());
+}

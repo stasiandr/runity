@@ -20,6 +20,7 @@
 mod error;
 pub mod history;
 pub mod panels;
+mod scene_view;
 
 use std::path::{Path, PathBuf};
 
@@ -110,6 +111,8 @@ pub struct Session {
     /// Scene entities folded shut in the hierarchy, and prefab instances
     /// opened to show their parts — each the exception to its default.
     folded: std::collections::HashSet<EntityId>,
+    /// What Ctrl C last copied, for Ctrl V in the Scene view.
+    clipboard: String,
     opened: std::collections::HashSet<EntityId>,
 }
 
@@ -229,6 +232,7 @@ impl Session {
             merge: None,
             also_selected: Vec::new(),
             folded: Default::default(),
+            clipboard: String::new(),
             opened: Default::default(),
         })
     }
@@ -2506,6 +2510,11 @@ impl Session {
     }
 
     /// Let go. Safe without a grab.
+    /// Whether a handle is being dragged.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
     pub fn gizmo_end(&mut self) {
         self.drag = None;
         self.drag_from = None;

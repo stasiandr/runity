@@ -1,0 +1,154 @@
+//! The Scene view's hands: what a click, a drag, a wheel and a shortcut do.
+//!
+//! Unity's Scene view behaviour, as one function over a frame of
+//! [`Input`]: whatever window hosts the view forwards its events and calls
+//! [`Session::scene_view`] once a frame, and everything a person does with
+//! the mouse and keyboard happens here — tested headless, the same in every
+//! window (DNA, open question 1 is about how the window shows the frame,
+//! not about this).
+//!
+//! | input | does |
+//! |---|---|
+//! | click | select what is under it; shift adds; empty space clears |
+//! | drag a handle | move, turn or stretch the selection — one undo step |
+//! | alt + drag, right drag | orbit |
+//! | middle drag | pan |
+//! | wheel | zoom |
+//! | W / E / R | move / rotate / scale tool |
+//! | F | frame the selection |
+//! | Delete | delete the selection |
+//! | Ctrl D | duplicate |
+//! | Ctrl Z / Ctrl Y, Ctrl Shift Z | undo / redo |
+//! | Ctrl C / Ctrl V | copy / paste |
+//! | Ctrl S | save |
+//! | Escape | select nothing |
+//!
+//! Ctrl is Cmd on a Mac.
+
+use runity::gizmo::Tool;
+use runity::input::{Input, Key, MouseButton};
+
+use crate::{EditResult, Session};
+
+impl Session {
+    /// Do what this frame's input asks of the Scene view. Returns what was
+    /// done, by name — "select", "drag", "undo", "orbit" — so the window
+    /// knows to redraw and a test knows what happened.
+    pub fn scene_view(&mut self, input: &Input) -> EditResult<Vec<&'static str>> {
+        let mut did = Vec::new();
+        let ctrl = [
+            Key::LeftControl,
+            Key::RightControl,
+            Key::LeftSuper,
+            Key::RightSuper,
+        ]
+        .iter()
+        .any(|k| input.held(*k));
+        let shift = input.held(Key::LeftShift) || input.held(Key::RightShift);
+        let alt = input.held(Key::LeftAlt) || input.held(Key::RightAlt);
+        let at = input.mouse_position();
+        let (x, y) = (at.x.max(0.0) as u32, at.y.max(0.0) as u32);
+        let motion = input.mouse_motion();
+
+        // The mouse.
+        if input.mouse_pressed(MouseButton::Left) && !alt {
+            if self.gizmo_begin(x, y)?.is_some() {
+                did.push("grab");
+            } else {
+                match (self.pick(x, y), shift) {
+                    (Some(id), true) => self.add_to_selection(id)?,
+                    (Some(id), false) => self.select(Some(id))?,
+                    (None, true) => {}
+                    (None, false) => self.select(None)?,
+                }
+                did.push("select");
+            }
+        } else if input.mouse_held(MouseButton::Left) && self.is_dragging() {
+            if motion != runity::glam::Vec2::ZERO && self.gizmo_drag(x, y)? {
+                did.push("drag");
+            }
+        }
+        if input.mouse_released(MouseButton::Left) && self.is_dragging() {
+            self.gizmo_end();
+            did.push("drop");
+        }
+        let orbiting =
+            (alt && input.mouse_held(MouseButton::Left)) || input.mouse_held(MouseButton::Right);
+        if orbiting && motion != runity::glam::Vec2::ZERO {
+            self.orbit(-motion.x * 0.3, motion.y * 0.3);
+            did.push("orbit");
+        }
+        if input.mouse_held(MouseButton::Middle) && motion != runity::glam::Vec2::ZERO {
+            let camera = self.camera();
+            let scale = (camera.position - camera.target).length() * 0.0015;
+            self.pan(-motion.x * scale, motion.y * scale);
+            did.push("pan");
+        }
+        let wheel = input.scroll().y;
+        if wheel != 0.0 {
+            self.zoom(0.9f32.powf(wheel));
+            did.push("zoom");
+        }
+
+        // The keyboard.
+        let pressed = |key: Key| input.pressed(key);
+        if ctrl {
+            if pressed(Key::Z) && shift || pressed(Key::Y) {
+                if self.redo()? {
+                    did.push("redo");
+                }
+            } else if pressed(Key::Z) {
+                if self.undo()? {
+                    did.push("undo");
+                }
+            }
+            if pressed(Key::D) {
+                self.duplicate_selection()?;
+                did.push("duplicate");
+            }
+            if pressed(Key::C) {
+                self.clipboard = self.copy_selection();
+                did.push("copy");
+            }
+            if pressed(Key::V) && !self.clipboard.is_empty() {
+                let text = self.clipboard.clone();
+                let pasted = self.paste(&text, None)?;
+                if let Some(first) = pasted.first() {
+                    self.select(Some(*first))?;
+                    for id in &pasted[1..] {
+                        self.add_to_selection(*id)?;
+                    }
+                }
+                did.push("paste");
+            }
+            if pressed(Key::S) {
+                self.save_scene(None)?;
+                did.push("save");
+            }
+        } else {
+            for (key, tool, name) in [
+                (Key::W, Tool::Move, "move tool"),
+                (Key::E, Tool::Rotate, "rotate tool"),
+                (Key::R, Tool::Scale, "scale tool"),
+            ] {
+                if pressed(key) {
+                    self.set_tool(tool);
+                    did.push(name);
+                }
+            }
+            if pressed(Key::F) && self.focus_selected() {
+                did.push("frame");
+            }
+            if pressed(Key::Escape) {
+                self.select(None)?;
+                did.push("deselect");
+            }
+        }
+        if pressed(Key::Delete) || (pressed(Key::Backspace) && ctrl) {
+            if self.delete_selection()? > 0 {
+                did.push("delete");
+            }
+        }
+        Ok(did)
+    }
+}
