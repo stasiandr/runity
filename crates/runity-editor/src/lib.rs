@@ -261,9 +261,15 @@ impl Session {
     /// Open a scene file, and the prefabs beside it.
     ///
     /// Returns the prefabs that were skipped and why.
+    ///
+    /// A `.prefab` opens the same way — Unity's Prefab Mode: the document is
+    /// the prefab's one root with everything under it, every edit works on
+    /// it as on a scene, and saving writes the prefab file. A variant opens
+    /// as its one instance line, so editing a part of it writes an override
+    /// into the variant and leaves the base alone.
     pub fn open_scene(&mut self, path: impl AsRef<Path>) -> EditResult<Vec<String>> {
         let path = path.as_ref().to_path_buf();
-        let scene = Scene::load(&path).map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        let scene = load_document(&path)?;
         // The scene says where it is looked at from, and opening it puts the
         // view there: a file that renders one way headlessly and opens
         // pointing somewhere else in the editor is a file whose picture
@@ -300,10 +306,32 @@ impl Session {
         self.also_selected.clear();
         self.drag = None;
         self.respawn();
+        if is_prefab(self.scene_path.as_deref()) {
+            // A prefab has no view of its own: look at the whole of it.
+            if let Some(root) = self.history.scene().entities.first().map(|e| e.id) {
+                self.selected = Some(root);
+                self.focus_selected();
+            }
+        }
         Ok(problems
             .into_iter()
             .map(|(path, e)| format!("{}: {e}", path.display()))
             .collect())
+    }
+
+    /// Open a prefab of the project by name: Prefab Mode.
+    pub fn open_prefab(&mut self, name: &str) -> EditResult<Vec<String>> {
+        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
+        let path = directory.join(format!("{name}.{}", runity::prefab::EXTENSION));
+        if !path.is_file() {
+            return Err(EditError::UnknownPrefab(name.to_string()));
+        }
+        self.open_scene(path)
+    }
+
+    /// Whether the open document is a prefab rather than a scene.
+    pub fn is_prefab(&self) -> bool {
+        is_prefab(self.scene_path.as_deref())
     }
 
     /// Write the scene back: to `path`, or where it was opened from.
@@ -312,10 +340,17 @@ impl Session {
             .map(Path::to_path_buf)
             .or_else(|| self.scene_path.clone())
             .ok_or(EditError::NoPath)?;
-        self.history
-            .scene()
-            .save(&target)
-            .map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        save_document(self.history.scene(), &target)?;
+        if is_prefab(Some(&target)) {
+            // Everything placed from here on — and every instance in the
+            // next scene opened — is what was just saved.
+            if let Some(name) = target.file_stem() {
+                self.prefabs.insert(
+                    name.to_string_lossy().into_owned(),
+                    self.history.scene().entities[0].clone(),
+                );
+            }
+        }
         if self.scene_path.as_ref() == Some(&target) {
             let stamps = runity::live::stamps(&target, self.project.as_ref());
             self.on_disk = Some((self.history.scene().clone(), stamps));
@@ -797,8 +832,16 @@ impl Session {
     pub fn scene_at(&self, commit: &str) -> EditResult<Scene> {
         let path = self.scene_path.as_ref().ok_or(EditError::NoPath)?;
         let text = history::show(path, commit).map_err(EditError::Io)?;
-        let mut scene: Scene = runity::ron::from_str(&text)
-            .map_err(|e| EditError::Scene(format!("{} at {commit}: {e}", path.display())))?;
+        let parsed = if is_prefab(Some(path)) {
+            runity::ron::from_str::<EntityDesc>(&text).map(|root| Scene {
+                entities: vec![root],
+                ..Scene::default()
+            })
+        } else {
+            runity::ron::from_str::<Scene>(&text)
+        };
+        let mut scene =
+            parsed.map_err(|e| EditError::Scene(format!("{} at {commit}: {e}", path.display())))?;
         scene.assign_ids();
         Ok(scene)
     }
@@ -890,7 +933,7 @@ impl Session {
             return Ok(SceneReload::Unchanged);
         }
         let prefabs_changed = now[1..] != stamps[1..];
-        let scene = Scene::load(path).map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        let scene = load_document(path)?;
         let scene_changed = &scene != seen;
         let ours = self.history.scene() != seen;
         if scene_changed && ours {
@@ -1494,6 +1537,15 @@ impl Session {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let renamed = runity_import::assets::rename(&project, from.as_ref(), to.as_ref())
             .map_err(|e| EditError::Import(format!("{e:#}")))?;
+        // The open document itself — a prefab in Prefab Mode — moved.
+        if self.scene_path.as_ref().and_then(|p| project.relative(p)) == Some(renamed.from.clone())
+        {
+            let moved = project.resolve(&renamed.to);
+            if let Some((_, stamps)) = &mut self.on_disk {
+                *stamps = runity::live::stamps(&moved, Some(&project));
+            }
+            self.scene_path = Some(moved);
+        }
         if let Some((old, new)) = &renamed.reference {
             self.history.rewrite_all(|scene| {
                 runity::refs::rewrite_scene(scene, old, new.name());
@@ -2386,4 +2438,38 @@ fn ray_box(origin: Vec3, direction: Vec3, bounds: (Vec3, Vec3), transform: Mat4)
         }
     }
     (far >= 0.0).then(|| near.max(0.0))
+}
+
+fn is_prefab(path: Option<&Path>) -> bool {
+    path.and_then(Path::extension)
+        .is_some_and(|e| e == runity::prefab::EXTENSION)
+}
+
+/// A scene file, or a prefab as a scene of its one root.
+fn load_document(path: &Path) -> EditResult<Scene> {
+    if is_prefab(Some(path)) {
+        let (_, root) = runity::Prefabs::read(path).map_err(EditError::Scene)?;
+        return Ok(Scene {
+            entities: vec![root],
+            ..Scene::default()
+        });
+    }
+    Scene::load(path).map_err(|e| EditError::Scene(format!("{e:#}")))
+}
+
+/// Write a document back as what its file is.
+fn save_document(scene: &Scene, path: &Path) -> EditResult<()> {
+    if is_prefab(Some(path)) {
+        let [root] = scene.entities.as_slice() else {
+            return Err(EditError::Scene(format!(
+                "a prefab is one thing: {} has {} at the top — put them under one root",
+                path.display(),
+                scene.entities.len()
+            )));
+        };
+        return runity::Prefabs::save(root, path).map_err(EditError::Io);
+    }
+    scene
+        .save(path)
+        .map_err(|e| EditError::Scene(format!("{e:#}")))
 }

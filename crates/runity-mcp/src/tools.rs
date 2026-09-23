@@ -62,6 +62,7 @@ pub fn list() -> Vec<Value> {
     vec![
         tool("new_project", "Make a runity project (standard layout, starter scene, game crate) and open its scene.", json!({ "path": { "type": "string" }, "name": { "type": "string" } }), &["path"]),
         tool("open_scene", "Open a scene file; its project's prefabs, materials and library come with it.", json!({ "path": { "type": "string" } }), &["path"]),
+        tool("open_prefab", "Prefab Mode: open prefabs/<name>.prefab as the document. Every tool then edits the prefab (a variant's part edits become its overrides) and save_scene writes the prefab file; open_scene goes back.", json!({ "name": { "type": "string" } }), &["name"]),
         tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
         tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
@@ -136,6 +137,18 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .save_scene(path.as_deref())
                 .map_err(|e| e.to_string())?;
             Ok(vec![text("saved")])
+        }
+        "open_prefab" => {
+            let name = string(args, "name")?;
+            let skipped = server
+                .session()?
+                .open_prefab(&name)
+                .map_err(|e| e.to_string())?;
+            let mut out = format!("editing prefab {name}; save_scene writes prefabs/{name}.prefab");
+            for line in skipped {
+                let _ = write!(out, "\nskipped: {line}");
+            }
+            Ok(vec![text(out)])
         }
         "scene_tree" => Ok(vec![text(tree(server)?)]),
         "find" => {

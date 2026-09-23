@@ -1850,3 +1850,94 @@ fn a_search_finds_lines_and_prefab_parts_alike() {
     assert_eq!(session.search("c:door").unwrap(), ["a2".parse().unwrap()]);
     assert!(session.search("c:").is_err());
 }
+
+#[test]
+fn a_prefab_opens_edits_and_saves_like_a_scene_and_its_instances_follow() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "prefab-mode",
+        r#"(entities: [(id: "00000000000000a1", name: "fire one", prefab: "campfire")])"#,
+    );
+    let root = root_of(&path);
+    let prefab = root.join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        "// The camp's fire.\n(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("prefabs/mossy.prefab"),
+        "(id: \"00000000000000d1\", name: \"mossy\", prefab: \"campfire\")\n",
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+
+    session.open_prefab("campfire").unwrap();
+    assert!(session.is_prefab());
+    let base: EntityId = "c1".parse().unwrap();
+    let ember: EntityId = "c2".parse().unwrap();
+    assert_eq!(session.selected(), Some(base), "the root, framed");
+    session.set_material_name(ember, "moss").unwrap();
+    let stone = session
+        .add_entity(
+            Some(base),
+            runity::EntityDesc {
+                name: "stone".into(),
+                model: "builtin:cube".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session.save_scene(None).unwrap();
+    let text = std::fs::read_to_string(&prefab).unwrap();
+    assert!(text.starts_with("// The camp's fire."), "{text}");
+    assert!(
+        text.contains("\"moss\"") && text.contains("\"stone\""),
+        "{text}"
+    );
+
+    // A second root cannot be written into one prefab.
+    let loose = session
+        .add_entity(
+            None,
+            runity::EntityDesc {
+                name: "loose".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let e = session.save_scene(None).unwrap_err();
+    assert!(e.to_string().contains("a prefab is one thing"), "{e}");
+    session.delete(loose).unwrap();
+
+    // A variant in Prefab Mode: a part edited is an override in the variant.
+    session.open_prefab("mossy").unwrap();
+    let variant: EntityId = "d1".parse().unwrap();
+    assert_eq!(
+        session.material_name(variant.within(ember)).as_deref(),
+        Some("moss"),
+        "the base as just saved"
+    );
+    session
+        .set_material_name(variant.within(ember), "bark")
+        .unwrap();
+    session.save_scene(None).unwrap();
+    let text = std::fs::read_to_string(root.join("prefabs/mossy.prefab")).unwrap();
+    assert!(
+        text.contains("overrides") && text.contains("\"bark\""),
+        "{text}"
+    );
+    assert!(!std::fs::read_to_string(&prefab).unwrap().contains("bark"));
+
+    // Back in the scene, the instance is what the prefab now says.
+    session.open_scene(&path).unwrap();
+    assert!(!session.is_prefab());
+    let one: EntityId = "a1".parse().unwrap();
+    assert_eq!(
+        session.material_name(one.within(ember)).as_deref(),
+        Some("moss")
+    );
+    assert!(session.entity_name(one.within(stone)).is_some());
+}

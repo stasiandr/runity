@@ -108,6 +108,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "delete_asset",
         "duplicate_asset",
         "find",
+        "open_prefab",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
