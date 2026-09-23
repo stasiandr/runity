@@ -51,6 +51,8 @@ pub struct Components {
     by_name: BTreeMap<String, (Insert, Remove)>,
     /// The ones marked networked, and how to write each out.
     networked: BTreeMap<String, Write>,
+    /// The ones a save game keeps, and how to write each out.
+    saved: BTreeMap<String, Write>,
 }
 
 /// A component a scene names that could not be put on its entity.
@@ -119,6 +121,31 @@ impl Components {
         self.register::<T>(name);
         self.networked.insert(name.to_string(), write::<T>);
         self
+    }
+
+    /// Say that `name` means `T`, and that a save game keeps it: its value
+    /// on an entity is written by [`crate::save::capture`] and put back by
+    /// [`crate::save::restore`]. What is not marked starts from the scene
+    /// again on load — a component is scenery unless it says otherwise.
+    pub fn register_saved<T>(&mut self, name: &str) -> &mut Self
+    where
+        T: hecs::Component + DeserializeOwned + serde::Serialize,
+    {
+        self.register::<T>(name);
+        self.saved.insert(name.to_string(), write::<T>);
+        self
+    }
+
+    pub fn is_saved(&self, name: &str) -> bool {
+        self.saved.contains_key(name)
+    }
+
+    /// Every saved component on an entity, as `(name, RON)`.
+    pub(crate) fn write_saved(&self, world: &World, entity: hecs::Entity) -> Vec<(String, String)> {
+        self.saved
+            .iter()
+            .filter_map(|(name, write)| write(world, entity).map(|text| (name.clone(), text)))
+            .collect()
     }
 
     pub fn is_networked(&self, name: &str) -> bool {

@@ -229,7 +229,7 @@ impl Delta {
 
 /// Every entity a peer can name over the network: the scene's by
 /// [`SceneId`], the run-time ones by [`NetId`].
-fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
+pub(crate) fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
     let mut out: HashMap<EntityId, hecs::Entity> = world
         .query::<(hecs::Entity, &SceneId)>()
         .iter()
@@ -511,7 +511,7 @@ pub fn peer_left(world: &mut hecs::World, gone: PeerId, remaining: &[PeerId]) ->
 }
 
 /// An entity and everything parented to it.
-fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
+pub(crate) fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
     let mut doomed = vec![root];
     let mut i = 0;
     while i < doomed.len() {
