@@ -37,6 +37,7 @@ pub mod discord;
 pub mod edit;
 pub mod gizmo;
 pub mod gpu;
+pub mod graph_text;
 pub mod id;
 pub mod input;
 pub mod lan;

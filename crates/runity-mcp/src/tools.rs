@@ -181,6 +181,16 @@ pub fn list() -> Vec<Value> {
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
+        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, the parameters it reads, and what is wrong with its shape.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
+        tool("graph_connect", "Add a transition to an animator graph, written into the file where it goes (in the state it leaves). `from` is a state, or \"*\" for any state.", json!({
+            "name": { "type": "string" },
+            "from": { "type": "string" },
+            "to": { "type": "string" },
+            "when": { "type": "string", "description": "conditions as RON, e.g. [Above(\"speed\", 0.1), Trigger(\"jump\")]; Is, Not, Below, Finished too. Empty: always." },
+            "fade": { "type": "number", "description": "seconds; 0.2 when not given" },
+        }), &["name", "from", "to"]),
+        tool("graph_disconnect", "Remove the transitions from one state to another in an animator graph.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("graph_rename", "Rename a state in an animator graph, and everything that names it: the start, the transitions, and the graph's cases (animators/<name>.cases.ron).", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed, except the entities in `keep`, which stay where they fell (one undo step).", simulate, &["seconds"]),
     ]
 }
@@ -1322,6 +1332,9 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(lines.join("\n"))])
         }
         "simulate" => simulate(server, args),
+        "graph" | "graph_connect" | "graph_disconnect" | "graph_rename" => {
+            graph_tool(server, name, args)
+        }
         other => Err(format!("no tool `{other}`")),
     }
 }
@@ -1777,6 +1790,126 @@ kept where they fell: {}",
 }
 
 // --- arguments ----------------------------------------------------------
+
+/// The animator graph tools: read one, connect, disconnect, rename a state.
+fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+    use runity::animgraph::{Condition, Graph, Transition, ANY};
+    let session = server.session()?;
+    let project = session.project().ok_or("the open scene is in no project")?;
+    let name = string(args, "name")?;
+    let dir = project.root().join(runity::project::ANIMATORS);
+    let path = dir.join(format!("{name}.ron"));
+    let old = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut graph: Graph =
+        runity::ron::from_str(&old).map_err(|e| format!("{}: {e}", path.display()))?;
+    let state_named = |graph: &Graph, state: &str| -> Result<(), String> {
+        if state == ANY || graph.states.contains_key(state) {
+            Ok(())
+        } else {
+            let near = runity::spelling::closest(state, graph.states.keys().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            Err(format!("`{state}` is not a state of {name}{near}"))
+        }
+    };
+    let save = |graph: &Graph| -> Result<(), String> {
+        std::fs::write(&path, runity::graph_text::write(&old, graph)).map_err(|e| e.to_string())
+    };
+    match tool {
+        "graph" => {
+            let mut out = format!("start: {}\n", graph.start);
+            for (state_name, state) in &graph.states {
+                let plays = if !state.directional.is_empty() {
+                    format!("2D blend by {}, {}", state.blend_by, state.blend_by_y)
+                } else if !state.blend.is_empty() {
+                    format!("blend by {}", state.blend_by)
+                } else {
+                    state.clip.clone()
+                };
+                out.push_str(&format!("state {state_name}: {plays}\n"));
+            }
+            for t in &graph.transitions {
+                out.push_str(&format!(
+                    "{} → {} when {} (fade {})\n",
+                    t.from,
+                    t.to,
+                    runity::animgraph::describe(&t.when),
+                    t.fade
+                ));
+            }
+            let parameters: Vec<String> = graph.parameters().into_iter().collect();
+            out.push_str(&format!("parameters: {}\n", parameters.join(", ")));
+            for problem in graph.shape_problems() {
+                out.push_str(&format!("problem: {problem}\n"));
+            }
+            Ok(vec![text(out)])
+        }
+        "graph_connect" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            state_named(&graph, &from)?;
+            state_named(&graph, &to)?;
+            let when: Vec<Condition> = match optional_string(args, "when")? {
+                Some(w) if !w.trim().is_empty() => {
+                    runity::ron::from_str(&w).map_err(|e| format!("when: {e}"))?
+                }
+                _ => Vec::new(),
+            };
+            let fade = args.get("fade").and_then(Value::as_f64).unwrap_or(0.2) as f32;
+            graph.transitions.push(Transition {
+                from: from.clone(),
+                to: to.clone(),
+                when,
+                fade,
+            });
+            save(&graph)?;
+            Ok(vec![text(format!("{from} → {to} added to {name}"))])
+        }
+        "graph_disconnect" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            let before = graph.transitions.len();
+            graph
+                .transitions
+                .retain(|t| !(t.from == from && t.to == to));
+            if graph.transitions.len() == before {
+                return Err(format!("{name} has no transition {from} → {to}"));
+            }
+            save(&graph)?;
+            Ok(vec![text(format!("{from} → {to} removed from {name}"))])
+        }
+        _ => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            state_named(&graph, &from)?;
+            if graph.states.contains_key(&to) {
+                return Err(format!("{name} already has a state `{to}`"));
+            }
+            let state = graph.states.remove(&from).expect("checked");
+            graph.states.insert(to.clone(), state);
+            if graph.start == from {
+                graph.start = to.clone();
+            }
+            for t in &mut graph.transitions {
+                for end in [&mut t.from, &mut t.to] {
+                    if *end == from {
+                        *end = to.clone();
+                    }
+                }
+            }
+            save(&graph)?;
+            // The graph's cases name states too.
+            let cases = dir.join(format!("{name}.cases.ron"));
+            let mut also = String::new();
+            if let Ok(text_of) = std::fs::read_to_string(&cases) {
+                let renamed =
+                    text_of.replace(&format!("expect: {from:?}"), &format!("expect: {to:?}"));
+                if renamed != text_of {
+                    std::fs::write(&cases, renamed).map_err(|e| e.to_string())?;
+                    also = format!(", and in {name}.cases.ron");
+                }
+            }
+            Ok(vec![text(format!("`{from}` is `{to}` in {name}{also}"))])
+        }
+    }
+}
 
 fn string(args: &Value, key: &str) -> Result<String, String> {
     optional_string(args, key)?.ok_or_else(|| format!("{key} is required"))

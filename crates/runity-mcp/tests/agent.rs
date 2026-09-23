@@ -587,3 +587,68 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
         .unwrap_err();
     assert!(err.contains("already there"), "{err}");
 }
+
+#[test]
+fn an_agent_reads_connects_and_renames_in_an_animator_graph() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("runity-mcp-graph");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let dir = root.join("animators");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("hero.ron"),
+        "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n        \"walk\": (clip: \"walk\"),\n    },\n)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("hero.cases.ron"),
+        "(cases: [(name: \"walks\", steps: [(set: {\"speed\": 1.0}, expect: \"walk\")])])\n",
+    )
+    .unwrap();
+    let read = agent.text("graph", json!({ "name": "hero" }));
+    assert!(read.contains("`walk` is never reached"), "{read}");
+    agent.text(
+        "graph_connect",
+        json!({ "name": "hero", "from": "idle", "to": "walk", "when": "[Above(\"speed\", 0.1)]" }),
+    );
+    let read = agent.text("graph", json!({ "name": "hero" }));
+    assert!(read.contains("idle → walk when speed > 0.1"), "{read}");
+    assert!(!read.contains("never reached"), "{read}");
+    let err = agent
+        .call(
+            "graph_connect",
+            json!({ "name": "hero", "from": "idel", "to": "walk" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("did you mean `idle`"), "{err}");
+    agent.text(
+        "graph_rename",
+        json!({ "name": "hero", "from": "walk", "to": "stroll" }),
+    );
+    let file = std::fs::read_to_string(dir.join("hero.ron")).unwrap();
+    assert!(
+        file.contains("\"stroll\"") && !file.contains("\"walk\":"),
+        "{file}"
+    );
+    assert!(
+        file.contains("to: \"stroll\""),
+        "the transition follows the state: {file}"
+    );
+    let cases = std::fs::read_to_string(dir.join("hero.cases.ron")).unwrap();
+    assert!(cases.contains("expect: \"stroll\""), "{cases}");
+    agent.text(
+        "graph_disconnect",
+        json!({ "name": "hero", "from": "idle", "to": "stroll" }),
+    );
+    assert!(agent
+        .text("graph", json!({ "name": "hero" }))
+        .contains("never reached"));
+}
