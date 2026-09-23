@@ -129,8 +129,8 @@ pub fn list() -> Vec<Value> {
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
         tool("add_component", "Put one of the game's components on an entity with a value of its shape to start from — Add Component. Needs library/components.ron, which the game writes when it or `runity test` runs; without `name`, lists the components and what each holds.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &[]),
         tool("import_settings", "An asset source's import settings (its .rimport), or with `field` and `value` one of them changed — scale, recompute_normals, srgb, origin_to_base — and the asset built again, every scene showing it at once.", json!({ "source": { "type": "string", "description": "project-relative, like assets/rock.obj" }, "field": { "type": "string" }, "value": { "type": "string" } }), &["source"]),
-        tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.rpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
-        tool("set_poly", "Change a Poly Shape's outline and/or height: its .rpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" }, "standing": { "type": "boolean" } }), &["name"]),
+        tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.rpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
+        tool("set_poly", "Change a Poly Shape's outline and/or height: its .rpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" }, "standing": { "type": "boolean" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" } }), &["name"]),
         tool("push_poly_edge", "Push one wall of a Poly Shape out by `metres` (negative pulls it in): both ends of edge `edge` — from point `edge` to the next — move along its outward normal; the walls beside it follow. push_face for an outline.", json!({ "name": { "type": "string" }, "edge": { "type": "integer" }, "metres": { "type": "number" } }), &["name", "edge", "metres"]),
         tool("snap_selection", "Put the selection on the grid: positions to the nearest snap step (a metre when snapping is off), turns to the nearest angle step when there is one — Unity's Snap All Axes. One undo step; says how many moved.", json!({}), &[]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
@@ -795,19 +795,27 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "poly_shape" | "set_poly" => {
             let making = name == "poly_shape";
             let name = string(args, "name")?;
-            let points = match args.get("points") {
+            let ring = |list: &Value| -> Result<Vec<(f32, f32)>, String> {
+                list.as_array()
+                    .ok_or("points is [[x, z], ...]")?
+                    .iter()
+                    .map(|p| match p.as_array().map(Vec::as_slice) {
+                        Some([x, z]) => Ok((
+                            x.as_f64().ok_or("a point is two numbers")? as f32,
+                            z.as_f64().ok_or("a point is two numbers")? as f32,
+                        )),
+                        _ => Err("a point is [x, z]".to_string()),
+                    })
+                    .collect()
+            };
+            let points = args.get("points").map(ring).transpose()?;
+            let holes = match args.get("holes") {
                 None => None,
                 Some(list) => Some(
                     list.as_array()
-                        .ok_or("points is [[x, z], ...]")?
+                        .ok_or("holes is [[[x, z], ...], ...]")?
                         .iter()
-                        .map(|p| match p.as_array().map(Vec::as_slice) {
-                            Some([x, z]) => Ok((
-                                x.as_f64().ok_or("a point is two numbers")? as f32,
-                                z.as_f64().ok_or("a point is two numbers")? as f32,
-                            )),
-                            _ => Err("a point is [x, z]".to_string()),
-                        })
+                        .map(ring)
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
             };
@@ -822,6 +830,7 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                         .get("standing")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
+                    holes: holes.unwrap_or_default(),
                 };
                 let id = session
                     .poly_shape(&name, &source, at)
@@ -837,6 +846,9 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 }
                 if let Some(standing) = args.get("standing").and_then(Value::as_bool) {
                     source.standing = standing;
+                }
+                if let Some(holes) = holes {
+                    source.holes = holes;
                 }
                 session
                     .set_poly(&name, &source)

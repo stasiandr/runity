@@ -333,14 +333,38 @@ fn bridge(outline: &[(f32, f32)], holes: &[Vec<(f32, f32)>]) -> Vec<(f32, f32)> 
                     .map(|i| (r[i], r[(i + 1) % r.len()]))
                     .collect::<Vec<_>>()
             };
+            let middle = ((from.0 + to.0) * 0.5, (from.1 + to.1) * 0.5);
             edges(&merged)
                 .into_iter()
                 .chain(holes.iter().flat_map(|h| edges(h)))
                 .any(|(a, b)| crosses(from, to, a, b))
+                // Through a corner is through the edges it joins.
+                || merged
+                    .iter()
+                    .chain(holes.iter().flatten())
+                    .any(|&p| p != from && p != to && on_segment(p, from, to))
+                // Across a hole, its own included.
+                || holes.iter().any(|h| strictly_inside(middle, h))
         };
         let distance = |p: (f32, f32)| (p.0 - from.0).powi(2) + (p.1 - from.1).powi(2);
+        // Left turn, counter-clockwise from above, as the outline runs.
+        let left = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+            (a.1 - o.1) * (b.0 - o.0) - (a.0 - o.0) * (b.1 - o.1)
+        };
+        // Whether the seam leaves corner j into the shape: a corner that is
+        // there twice, from an earlier seam, is joined at the copy whose
+        // inside faces the hole.
+        let n = merged.len();
+        let opens_toward = |j: usize| {
+            let (before, at, after) = (merged[(j + n - 1) % n], merged[j], merged[(j + 1) % n]);
+            if left(before, at, after) >= 0.0 {
+                left(at, from, before) > 0.0 && left(from, at, after) > 0.0
+            } else {
+                !(left(at, from, after) >= 0.0 && left(from, at, before) >= 0.0)
+            }
+        };
         let Some(j) = (0..merged.len())
-            .filter(|&j| !blocked(merged[j]))
+            .filter(|&j| !blocked(merged[j]) && opens_toward(j))
             .min_by(|&a, &b| distance(merged[a]).total_cmp(&distance(merged[b])))
         else {
             continue;

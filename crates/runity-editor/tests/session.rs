@@ -4049,7 +4049,7 @@ fn poly(points: &[(f32, f32)], height: f32) -> runity_import::poly::PolySource {
     runity_import::poly::PolySource {
         points: points.to_vec(),
         height,
-        standing: false,
+        ..Default::default()
     }
 }
 
