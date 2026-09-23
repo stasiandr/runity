@@ -225,7 +225,7 @@ mod tests {
         let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
         assert!(server.handle(&notification).is_none());
         let reply = server
-            .handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "resources/list" }))
+            .handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "prompts/list" }))
             .unwrap();
         assert_eq!(reply["error"]["code"], -32601);
         assert_eq!(reply["id"], 7);
