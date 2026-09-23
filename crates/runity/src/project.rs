@@ -349,8 +349,13 @@ runity = {{ {source}, features = [\"desktop-shell\"] }}
 
 # The engine and every other dependency optimised even in a dev build, the
 # game itself not: a frame that runs at speed, a rebuild that takes seconds.
+# Line tables only: panics still name the line, and the link — most of a
+# rebuild — is a third of the time. `runity rebuild-time` measures it.
+[profile.dev]
+debug = \"line-tables-only\"
+
 [profile.dev.package.\"*\"]
-opt-level = 2
+opt-level = 3
 ",
         crate_name = crate_name(name),
     )

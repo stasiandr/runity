@@ -2,5 +2,7 @@
 //! call the same code the command line does.
 
 pub mod check;
+pub mod rebuild;
 
 pub use check::{check, Finding, Severity};
+pub use rebuild::{rebuild_time, RebuildTime};

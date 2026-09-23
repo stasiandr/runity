@@ -39,8 +39,14 @@ debug = 1
 # Dependencies go to full optimization so that wgpu and rapier are not the
 # reason a debug build crawls, while our own crates stay at opt-level 0 and
 # keep compiling fast.
+#
+# Line tables only, not full debug info: a panic still names the file and
+# line, and a debug binary is a third the size and links a third faster —
+# the link is most of an incremental rebuild (DNA, postulate 1). A new
+# project's game crate uses the same settings, so the two share builds.
 [profile.dev]
 opt-level = 0
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3

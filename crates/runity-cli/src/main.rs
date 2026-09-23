@@ -4,6 +4,7 @@
 //! runity new <folder> [--name NAME] [--engine-path PATH]
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
+//! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -28,6 +29,9 @@ runity sync [PROJECT]
 runity check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
+runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
+    Build the game, then time rebuilding it after a one-line edit to
+    src/main.rs, N times (3), and report the best. Exits 1 over budget.
 
 PROJECT is any path inside a project; the current folder by default.";
 
@@ -49,6 +53,7 @@ fn run() -> Result<ExitCode> {
         "new" => new(&rest),
         "sync" => sync(&find(&rest)?),
         "check" => check(&find(&rest)?),
+        "rebuild-time" => rebuild_time(&rest),
         "" | "-h" | "--help" | "help" => {
             println!("{HELP}");
             Ok(ExitCode::SUCCESS)
@@ -150,4 +155,42 @@ fn check(project: &Project) -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+fn rebuild_time(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut runs = 3usize;
+    let mut budget: Option<f64> = None;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--runs" => runs = args.next().context("--runs wants a number")?.parse()?,
+            "--budget" => budget = Some(args.next().context("--budget wants seconds")?.parse()?),
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let project = find(&at)?;
+    let timed = runity_cli::rebuild_time(&project, runs)?;
+    for (i, took) in timed.runs.iter().enumerate() {
+        println!("rebuild {}: {:.2} s", i + 1, took.as_secs_f64());
+    }
+    let best = timed.best().as_secs_f64();
+    match budget {
+        Some(budget) if best > budget => {
+            println!(
+                "{}: best {best:.2} s, over the budget of {budget:.2} s",
+                project.name()
+            );
+            Ok(ExitCode::FAILURE)
+        }
+        Some(budget) => {
+            println!("{}: best {best:.2} s, within {budget:.2} s", project.name());
+            Ok(ExitCode::SUCCESS)
+        }
+        None => {
+            println!("{}: best {best:.2} s", project.name());
+            Ok(ExitCode::SUCCESS)
+        }
+    }
 }
