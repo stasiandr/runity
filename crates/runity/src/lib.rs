@@ -38,6 +38,7 @@ pub mod physics;
 pub mod prefab;
 pub mod project;
 pub mod render;
+mod ron_text;
 pub mod scene;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;

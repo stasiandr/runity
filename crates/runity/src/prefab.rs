@@ -102,8 +102,7 @@ impl Prefabs {
         // on, an untagged material cannot be read back, and a prefab that
         // saves cleanly and will not reopen is the worst kind of bug.
         let pretty = ron::ser::PrettyConfig::new().depth_limit(4);
-        let text = ron::ser::to_string_pretty(desc, pretty).map_err(|e| e.to_string())?;
-        std::fs::write(path.as_ref(), text + "\n").map_err(|e| e.to_string())
+        crate::ron_text::write_preserving(path.as_ref(), desc, pretty).map_err(|e| e.to_string())
     }
 
     pub fn insert(&mut self, name: impl Into<String>, mut desc: EntityDesc) {
