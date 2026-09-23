@@ -38,12 +38,15 @@ drives cook 1. Escape pauses.
 | **Localisation** | `strings/en.ron`, `strings/ru.ron`; every `@key` checked by a test |
 | **Dialogue** | `dialogues/chef.ron`, the head chef before the doors open |
 | **Sound**: sources in the scene, groups, one-shots | the stoves' `sound` (boiling, turned up as the soup cooks), the kitchen's music, `noise.rs` for the rest |
-| **Particles** | the steam off a done soup and the smoke off a burnt one (`steam`, `smoke` under each stove) |
+| **Particles** with sprites | steam off a done soup, smoke off a burnt one, the burner's flame, juice off the knife, stars when a soup goes out, dust from a running cook — `*_fx.rmat` over Kenney's particle sprites in `assets/fx/` |
+| **Models**: glTF with their colours | Kenney's furniture, food and characters (`assets/kenney/`); a model's own colours come with it as its look, no material needed |
+| **Skinned characters** blended by speed | the cooks and customers: `animators/cook.ron`, `walker.ron`, `systems/pose.rs` |
+| **A font of the game's own**, a **widget style** | Kenney Future, `front::FONT`; round buttons with a lip, `front::style` |
 | **Things moved by a graph** (`animator`, `clips/`) | the bell over the window rings on every soup served: `animators/window.ron`, `clips/bell_ring.ron`, `front::ring` |
 | **Physics** (rapier): bodies made at run time, a first speed | thrown food: `hands::throw`, `launch` in `src/main.rs`, `systems/fly.rs`; the counters, the floor and the wall are static bodies in the scene |
 | **Routes** | the customers walking past outside |
 | **Decals** | the stains on the floor |
-| **Lights**, **post-processing** | a warm lamp over the stoves, the vignette (`post:` in the scene) |
+| **Lights**, **post-processing** | a warm lamp over the stoves; ACES, bloom, vignette, depth of field, grain, TAA and SSAO (`post:`, `ambient_occlusion:` in the scene) |
 | Switched-off things (`inactive`) | the soup, bars and steam marks; cooks nobody plays |
 | **Player prefs** | the volumes, the language and the best score, kept between runs |
 | **Input** actions and axes, keyboard and pad | `input.ron` |
@@ -59,3 +62,9 @@ their own cook (they own it, so it moves at once on their screen) and
 sends what their hands do as an act; the host does it, if it is theirs to
 do. Sounds, the bell and the steam are worked out on every peer from what
 changed, so they are never sent.
+
+## Assets
+
+The models, sprites and font are [Kenney](https://kenney.nl)'s, CC0 —
+`assets/kenney/LICENSE-kenney.txt`. The particle sprites' colour was made
+white, their shape left in the alpha, so a material's colour tints them.

@@ -103,7 +103,7 @@ fn place_items(world: &mut World) {
                     let t = world.get::<&Transform>(cook).ok()?;
                     t.position + facing(&t) * 0.55 + Vec3::Y * 0.45
                 }
-                Place::On(station) => world.get::<&Transform>(station).ok()?.position + Vec3::Y * 0.6,
+                Place::On(station) => world.get::<&Transform>(station).ok()?.position + Vec3::Y * 0.66,
             };
             Some((e, spot))
         })
@@ -118,6 +118,10 @@ fn place_items(world: &mut World) {
     }
 }
 
+/// How far a food was chopped at the last step: juice flies while it rises.
+#[derive(Debug, Clone, Copy)]
+pub struct Cut(pub f32);
+
 /// What each station and plate shows, by the marks on its parts.
 fn marks(world: &mut World) {
     // Food being chopped, and where: the station under it.
@@ -127,6 +131,20 @@ fn marks(world: &mut World) {
         .filter(|(_, c)| c.0 > 0.0 && c.0 < 1.0)
         .map(|(t, c)| (t.position, c.0))
         .collect();
+    // Food being cut this very moment: its chop went up since the last step.
+    let mut cutting: Vec<(Vec3, f32)> = Vec::new();
+    let chops: Vec<(Entity, Vec3, f32)> = world
+        .query::<(Entity, &Transform, &Chop)>()
+        .iter()
+        .map(|(e, t, c)| (e, t.position, c.0))
+        .collect();
+    for (item, at, chop) in chops {
+        let before = world.get::<&Cut>(item).map_or(chop, |c| c.0);
+        if chop > before && chop < 1.0 {
+            cutting.push((at, chop));
+        }
+        let _ = world.insert_one(item, Cut(chop));
+    }
     let mut shown: Vec<(Entity, Vec<(String, f32)>)> = Vec::new();
     for (station, _, at, pot) in world
         .query::<(Entity, &Station, &Transform, Option<&Pot>)>()
@@ -141,6 +159,10 @@ fn marks(world: &mut World) {
                     _ => "mixed".to_string(),
                 };
                 on.push((format!("soup {name}"), pot.foods.len() as f32 / POT_HOLDS as f32));
+            }
+            if pot.foods.len() == POT_HOLDS && !pot.burnt() {
+                // The burner lit under a full pot.
+                on.push(("flame".into(), 1.0));
             }
             if pot.foods.len() == POT_HOLDS && !pot.done() && !pot.burnt() {
                 on.push(("bar".into(), pot.cooked / COOK_SECONDS));
@@ -160,6 +182,12 @@ fn marks(world: &mut World) {
             .find(|(p, _)| (p.x - here.x).abs() < 0.3 && (p.z - here.z).abs() < 0.3)
         {
             on.push(("bar".into(), *chop));
+        }
+        if let Some((_, chop)) = cutting
+            .iter()
+            .find(|(p, _)| (p.x - here.x).abs() < 0.3 && (p.z - here.z).abs() < 0.3)
+        {
+            on.push(("chop fx".into(), *chop));
         }
         shown.push((station, on));
     }

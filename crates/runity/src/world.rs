@@ -1239,9 +1239,17 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
     let moon = glam::Vec3::new(0.62, 0.72, 1.0);
     let night_sky = glam::Vec3::new(0.012, 0.017, 0.035) * share.max(0.5);
     let (direction, color, intensity) = if night < 0.5 {
-        (sun.direction(), sun.color(), sun.intensity * (1.0 - 2.0 * night))
+        (
+            sun.direction(),
+            sun.color(),
+            sun.intensity * (1.0 - 2.0 * night),
+        )
     } else {
-        (sun.moon_direction(), moon, sun.intensity * 0.07 * (2.0 * night - 1.0))
+        (
+            sun.moon_direction(),
+            moon,
+            sun.intensity * 0.07 * (2.0 * night - 1.0),
+        )
     };
     let sky = sky.lerp(night_sky, night);
     let key = color * intensity * (-direction.y).max(0.0);
@@ -1288,6 +1296,15 @@ pub fn upload_material_maps(
                 .query::<&Pressing>()
                 .iter()
                 .flat_map(|p| p.1.maps().collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        )
+        // A particle's sprite: smoke is a puff, not a square.
+        .chain(
+            world
+                .query::<&crate::particles::Emitting>()
+                .iter()
+                .filter_map(|e| e.material)
+                .flat_map(|m| m.maps().collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
         )
         .filter(|id| !id.is_render_target() && renderer.texture_for(*id).is_none())
@@ -1496,9 +1513,8 @@ pub fn build_frame_where(
         .into_iter()
         .filter_map(|e| world.get::<&SceneId>(e).ok().map(|id| id.0))
         .collect();
-    let keep = |line: Option<crate::id::EntityId>| {
-        line.is_none_or(|id| !off.contains(&id)) && keep(line)
-    };
+    let keep =
+        |line: Option<crate::id::EntityId>| line.is_none_or(|id| !off.contains(&id)) && keep(line);
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
     for (placed, model, surface, textured, posed, line) in world
@@ -1751,11 +1767,22 @@ mod tests {
             ..crate::scene::Sun::default()
         });
         assert_eq!(night.night, 1.0);
-        assert!(night.sun_direction.y < -0.1, "the moon is up: {}", night.sun_direction);
-        assert!(night.sun_color.z > night.sun_color.x, "and cold: {}", night.sun_color);
+        assert!(
+            night.sun_direction.y < -0.1,
+            "the moon is up: {}",
+            night.sun_direction
+        );
+        assert!(
+            night.sun_color.z > night.sun_color.x,
+            "and cold: {}",
+            night.sun_color
+        );
         assert!(night.sun_intensity < day.sun_intensity * 0.15, "and dim");
         let (sun, _) = night.sky_sun.expect("the sky lit by the sun where it is");
-        assert!(sun.y > 0.0, "under the horizon, its light travels up: {sun}");
+        assert!(
+            sun.y > 0.0,
+            "under the horizon, its light travels up: {sun}"
+        );
     }
 
     #[test]
@@ -2506,9 +2533,14 @@ mod tests {
         crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
         apply_hierarchy(&mut world);
         let drawn = |world: &World| {
-            build_frame(world, Camera::default(), Lighting::default(), FogSettings::default())
-                .draws
-                .len()
+            build_frame(
+                world,
+                Camera::default(),
+                Lighting::default(),
+                FogSettings::default(),
+            )
+            .draws
+            .len()
         };
         assert_eq!(drawn(&world), 1, "the well alone");
         let shed = crate::net::addressable(&world)[&crate::id::EntityId::from_raw(1)];
@@ -2518,5 +2550,4 @@ mod tests {
         assert_eq!(drawn(&world), 3);
         assert!(is_active(&world, shelf));
     }
-
 }

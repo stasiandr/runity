@@ -27,6 +27,7 @@ pub(crate) fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> Me
         vertices,
         indices,
         skin: None,
+        look: None,
     }
 }
 

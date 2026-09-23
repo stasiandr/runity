@@ -301,6 +301,7 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         submeshes,
         // OBJ has no concept of a skeleton.
         skin: None,
+        look: None,
     })
 }
 
@@ -363,8 +364,10 @@ fn recompute_normals(vertices: &mut [Vertex], indices: &[u32]) {
 /// artist already assembled.
 pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<MeshAsset> {
     let path = path.as_ref();
-    let (document, buffers, _images) =
+    let (document, buffers, images) =
         gltf::import(path).with_context(|| format!("{}", path.display()))?;
+    // Which vertices each primitive made, and its material: for the look.
+    let mut painted: Vec<(std::ops::Range<usize>, Option<usize>)> = Vec::new();
 
     let mut vertices: Vec<Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -468,6 +471,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                     index_count: indices.len() as u32 - first_index,
                     material: None,
                 });
+                painted.push((base as usize..vertices.len(), primitive.material().index()));
             }
         }
 
@@ -488,6 +492,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     }
 
     let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
+    let look = gltf_look(&document, &images, &mut vertices, &painted, path);
 
     Ok(MeshAsset {
         id: settings.asset_id(),
@@ -500,6 +505,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         indices,
         submeshes,
         skin,
+        look,
     })
 }
 
@@ -622,6 +628,132 @@ fn read_clip(
         duration,
         channels,
     }
+}
+
+/// A glTF model's own colours, as one texture its UVs read: the image its
+/// materials share, when they have one; otherwise their base colours in a
+/// palette — four texels square each, so filtering never mixes two — with
+/// every vertex's UV moved to the middle of its material's square. `None`
+/// for a model with no materials. Emission, metal and roughness are not
+/// carried: the look is the colour.
+fn gltf_look(
+    document: &gltf::Document,
+    images: &[gltf::image::Data],
+    vertices: &mut [Vertex],
+    painted: &[(std::ops::Range<usize>, Option<usize>)],
+    path: &Path,
+) -> Option<TextureAsset> {
+    let used: Vec<usize> = {
+        let mut u: Vec<usize> = painted.iter().filter_map(|(_, m)| *m).collect();
+        u.sort();
+        u.dedup();
+        u
+    };
+    if used.is_empty() {
+        return None;
+    }
+    let material = |i: usize| document.materials().nth(i);
+    let id = AssetId::from_source(&format!("{}#look", path.display()), 0);
+    let name = format!(
+        "{} look",
+        path.file_stem()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default()
+    );
+    // One image shared by every textured material: that is the look.
+    let textured: Vec<usize> = used
+        .iter()
+        .filter_map(|&i| {
+            let texture = material(i)?.pbr_metallic_roughness().base_color_texture()?;
+            Some(texture.texture().source().index())
+        })
+        .collect();
+    if let Some(&image) = textured.first() {
+        if textured.iter().all(|&t| t == image) {
+            let data = images.get(image)?;
+            let pixels = rgba8(data)?;
+            let mips = build_mips(data.width, data.height, &pixels, true);
+            return Some(TextureAsset {
+                id,
+                name,
+                width: data.width,
+                height: data.height,
+                pixels,
+                mips,
+                srgb: true,
+            });
+        }
+    }
+    // Colours only: a palette, a square of four texels a material.
+    const CELL: u32 = 4;
+    let width = CELL * used.len() as u32;
+    let mut pixels = vec![0u8; (width * CELL * 4) as usize];
+    let encode = |linear: f32| -> u8 {
+        let v = linear.clamp(0.0, 1.0);
+        let c = if v <= 0.0031308 {
+            v * 12.92
+        } else {
+            1.055 * v.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round() as u8
+    };
+    for (k, &i) in used.iter().enumerate() {
+        let [r, g, b, a] = material(i)
+            .map(|m| m.pbr_metallic_roughness().base_color_factor())
+            .unwrap_or([1.0; 4]);
+        let texel = [
+            encode(r),
+            encode(g),
+            encode(b),
+            (a.clamp(0.0, 1.0) * 255.0) as u8,
+        ];
+        for y in 0..CELL {
+            for x in 0..CELL {
+                let at = ((y * width + k as u32 * CELL + x) * 4) as usize;
+                pixels[at..at + 4].copy_from_slice(&texel);
+            }
+        }
+    }
+    for (range, m) in painted {
+        let Some(k) = m.and_then(|m| used.iter().position(|&u| u == m)) else {
+            continue;
+        };
+        let uv = [
+            (k as f32 * CELL as f32 + CELL as f32 / 2.0) / width as f32,
+            0.5,
+        ];
+        for v in &mut vertices[range.clone()] {
+            v.uv = uv;
+        }
+    }
+    Some(TextureAsset {
+        id,
+        name,
+        width,
+        height: CELL,
+        pixels,
+        mips: Vec::new(),
+        srgb: true,
+    })
+}
+
+/// A glTF image as RGBA8, from the layouts its loader gives.
+fn rgba8(data: &gltf::image::Data) -> Option<Vec<u8>> {
+    use gltf::image::Format;
+    let p = &data.pixels;
+    Some(match data.format {
+        Format::R8G8B8A8 => p.clone(),
+        Format::R8G8B8 => p
+            .chunks_exact(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
+        Format::R8G8 => p
+            .chunks_exact(2)
+            .flat_map(|c| [c[0], c[0], c[0], c[1]])
+            .collect(),
+        Format::R8 => p.iter().flat_map(|&c| [c, c, c, 255]).collect(),
+        _ => return None,
+    })
 }
 
 /// Read an image and build a texture asset from it.
@@ -2074,6 +2206,54 @@ f 1 4 3
             (angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3,
             "a quarter turn, got {angle}"
         );
+    }
+
+    #[test]
+    fn a_gltf_models_colours_come_with_it_as_its_look() {
+        // The quad fixture twice over, one red and one blue material.
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/floating_quad.gltf");
+        let mut root =
+            gltf::json::Root::from_str(&std::fs::read_to_string(&fixture).unwrap()).unwrap();
+        let primitive = root.meshes[0].primitives[0].clone();
+        let painted = |i: u32| gltf::json::mesh::Primitive {
+            material: Some(gltf::json::Index::new(i)),
+            ..primitive.clone()
+        };
+        root.meshes[0].primitives = vec![painted(0), painted(1)];
+        let colour = |c: [f32; 4]| gltf::json::Material {
+            pbr_metallic_roughness: gltf::json::material::PbrMetallicRoughness {
+                base_color_factor: gltf::json::material::PbrBaseColorFactor(c),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        root.materials = vec![colour([1.0, 0.0, 0.0, 1.0]), colour([0.0, 0.0, 1.0, 1.0])];
+        let dir = temp("look");
+        for entry in std::fs::read_dir(fixture.parent().unwrap())
+            .unwrap()
+            .flatten()
+        {
+            let _ = std::fs::copy(entry.path(), dir.join(entry.file_name()));
+        }
+        let source = dir.join("painted.gltf");
+        std::fs::write(&source, gltf::json::serialize::to_string(&root).unwrap()).unwrap();
+        let mesh = mesh_from_gltf(&source, &ImportSettings::for_source("painted.gltf")).unwrap();
+        let look = mesh.look.expect("its colours");
+        assert_eq!(
+            (look.width, look.height),
+            (8, 4),
+            "a square of four a colour"
+        );
+        assert_eq!(&look.pixels[0..4], &[255, 0, 0, 255]);
+        assert_eq!(&look.pixels[16..20], &[0, 0, 255, 255]);
+        // Each primitive's vertices read the middle of its colour.
+        assert_eq!(mesh.vertices[0].uv, [0.25, 0.5]);
+        assert_eq!(mesh.vertices.last().unwrap().uv, [0.75, 0.5]);
+        // No materials, no look.
+        let plain =
+            mesh_from_gltf(&fixture, &ImportSettings::for_source("floating_quad.gltf")).unwrap();
+        assert!(plain.look.is_none());
     }
 
     #[test]

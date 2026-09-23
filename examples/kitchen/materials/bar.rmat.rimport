@@ -1,6 +1,6 @@
 ImportSettings(
     source: "materials/bar.rmat",
-    hash: "a75748a649fa96386895ac843847b0e4",
+    hash: "40eea7c87d22abc3786ee3e88a2b3657",
     id: Some("1f3d4c0b41745866c604fb86e4730c3b"),
     scale: 1.0,
     recompute_normals: false,

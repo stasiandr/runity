@@ -32,6 +32,12 @@ pub struct Style {
     pub accent: Vec4,
     pub text: Vec4,
     pub text_size: f32,
+    /// Pixels a button's and a panel's corners are rounded by.
+    pub radius: f32,
+    /// A button's darker lip under its face, pixels: pressed, it sinks.
+    pub bevel: f32,
+    /// A panel's shadow, pixels down and right; none at 0.
+    pub shadow: f32,
 }
 
 impl Default for Style {
@@ -43,6 +49,9 @@ impl Default for Style {
             accent: Vec4::new(0.78, 0.62, 0.32, 1.0),
             text: Vec4::new(0.93, 0.93, 0.90, 1.0),
             text_size: 18.0,
+            radius: 0.0,
+            bevel: 0.0,
+            shadow: 0.0,
         }
     }
 }
@@ -136,6 +145,14 @@ fn key(rect: Rect, label: &str) -> u64 {
 impl Widgets {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Widgets drawn in the game's own colours and shapes.
+    pub fn with_style(style: Style) -> Self {
+        Self {
+            style,
+            ..Self::default()
+        }
     }
 
     /// Take the pad's moves for this frame: call once before drawing the
@@ -283,16 +300,17 @@ impl Widgets {
     }
 
     fn label(&self, ui: &mut Ui, rect: Rect, text: &str) {
-        // An estimate of the width, which is enough to centre a label.
         let size = self.style.text_size;
-        let width = text.chars().count() as f32 * size * 0.52;
-        ui.text(TextRun::new(
-            rect.x + (rect.width - width).max(0.0) * 0.5,
-            rect.y + (rect.height - size) * 0.5,
-            size,
-            self.style.text,
-            text,
-        ));
+        ui.text(
+            TextRun::new(
+                rect.x,
+                rect.y + (rect.height - size) * 0.5,
+                size,
+                self.style.text,
+                text,
+            )
+            .within(rect.width, 0.5),
+        );
     }
 
     /// A button. `true` on the frame it is clicked — released over it,
@@ -305,8 +323,20 @@ impl Widgets {
             (false, true) => self.style.hover,
             _ => self.style.idle,
         };
-        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, color));
-        self.label(ui, rect, label);
+        let r = self.style.radius;
+        let bevel = self.style.bevel;
+        if bevel > 0.0 {
+            // The lip: the face's colour, darker, showing under it.
+            let lip = Vec4::new(color.x * 0.6, color.y * 0.6, color.z * 0.6, color.w);
+            ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, lip).rounded(r));
+            let sunk = if held { bevel * 0.6 } else { 0.0 };
+            let face = Rect::new(rect.x, rect.y + sunk, rect.width, rect.height - bevel);
+            ui.quad(Quad::new(face.x, face.y, face.width, face.height, color).rounded(r));
+            self.label(ui, face, label);
+        } else {
+            ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, color).rounded(r));
+            self.label(ui, rect, label);
+        }
         self.ring(ui, rect, id);
         clicked
     }
@@ -330,7 +360,9 @@ impl Widgets {
         } else {
             self.style.idle
         };
-        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, back));
+        ui.quad(
+            Quad::new(rect.x, rect.y, rect.width, rect.height, back).rounded(self.style.radius),
+        );
         let mark = rect.height * 0.5;
         let fill = if *value {
             self.style.accent
@@ -400,7 +432,9 @@ impl Widgets {
         } else {
             self.style.idle
         };
-        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, back));
+        ui.quad(
+            Quad::new(rect.x, rect.y, rect.width, rect.height, back).rounded(self.style.radius),
+        );
         let size = self.style.text_size;
         let (shown, color) = if value.is_empty() && !focused {
             (
@@ -492,7 +526,9 @@ impl Widgets {
         } else {
             self.style.idle
         };
-        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, back));
+        ui.quad(
+            Quad::new(rect.x, rect.y, rect.width, rect.height, back).rounded(self.style.radius),
+        );
         let shown = options.get(*chosen).map_or("", String::as_str);
         let text = if label.is_empty() {
             format!("{shown} ▾")
@@ -722,20 +758,18 @@ impl Widgets {
         } else {
             0.0
         };
-        ui.quad(Quad::new(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            self.style.idle,
-        ));
-        ui.quad(Quad::new(
-            rect.x,
-            rect.y,
-            rect.width * t,
-            rect.height,
-            self.style.accent,
-        ));
+        let r = self.style.radius;
+        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, self.style.idle).rounded(r));
+        ui.quad(
+            Quad::new(
+                rect.x,
+                rect.y,
+                rect.width * t,
+                rect.height,
+                self.style.accent,
+            )
+            .rounded(r),
+        );
         self.label(ui, rect, &format!("{label}: {:.2}", *value));
         self.ring(ui, rect, id);
         *value != before

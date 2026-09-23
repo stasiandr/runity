@@ -1,0 +1,1 @@
+(color: "#ff8a30", base_map: "flame_03", surface: Transparent, blend: Additive, unlit: true, emission: "#ff8a30", emission_intensity: 2.0)

@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 14;
+pub const FORMAT_VERSION: u32 = 15;
 
 /// What kind of asset a file holds.
 ///
@@ -387,6 +387,11 @@ pub struct MeshAsset {
     pub bounds: Bounds,
     /// Present only when the mesh is skinned.
     pub skin: Option<MeshSkin>,
+    /// The model's own colours, from the file's materials: its one texture,
+    /// or its materials' colours in a little palette its UVs point into.
+    /// What it is drawn with when the entity's material has no map of its
+    /// own — a Kenney kit's model looks as it did in its maker's tool.
+    pub look: Option<TextureAsset>,
 }
 
 /// Errors that mean "do not cast these bytes".
@@ -572,6 +577,7 @@ mod tests {
             vertices,
             indices: (0..12u32).collect(),
             skin: None,
+            look: None,
             submeshes: vec![Submesh {
                 first_index: 0,
                 index_count: 12,

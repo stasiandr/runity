@@ -25,6 +25,8 @@ pub struct Quad {
     pub height: f32,
     /// Straight RGBA, alpha blended over what is already there.
     pub color: Vec4,
+    /// Pixels its corners are rounded by; square at 0.
+    pub radius: f32,
 }
 
 impl Quad {
@@ -35,7 +37,14 @@ impl Quad {
             width,
             height,
             color,
+            radius: 0.0,
         }
+    }
+
+    /// The same, its corners rounded by `radius` pixels.
+    pub fn rounded(mut self, radius: f32) -> Self {
+        self.radius = radius;
+        self
     }
 
     pub fn contains(&self, px: f32, py: f32) -> bool {
@@ -54,6 +63,10 @@ pub struct TextRun {
     /// Glyphs outside this box — left, top, right, bottom — are not drawn:
     /// text in a scrolled list stops at the list's edge.
     pub clip: Option<[f32; 4]>,
+    /// A box `.0` wide from `x`, and where across it the words sit: 0 the
+    /// left, 0.5 the middle, 1 the right. The renderer measures the shaped
+    /// words, so it holds for any font; `None` starts them at `x`.
+    pub within: Option<(f32, f32)>,
 }
 
 impl TextRun {
@@ -65,7 +78,15 @@ impl TextRun {
             color,
             text: text.into(),
             clip: None,
+            within: None,
         }
+    }
+
+    /// The words placed across a box `width` wide from `x`: `across` 0 at
+    /// its left, 0.5 in its middle, 1 at its right.
+    pub fn within(mut self, width: f32, across: f32) -> Self {
+        self.within = Some((width, across));
+        self
     }
 }
 

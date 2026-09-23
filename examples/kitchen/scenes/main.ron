@@ -1,132 +1,231 @@
-// Kitchen Rush: the kitchen, a tile a metre. Counters round the walls and
-// an island in the middle, tomatoes and onions top left and bottom left,
+// Kitchen Rush: the kitchen, a tile a metre — Kenney's kitchen furniture,
+// food and characters (assets/kenney, CC0). Counters round the walls and an
+// island in the middle, tomatoes and onions top left and bottom left,
 // boards to chop on, two stoves, the plates on the right, the window at the
-// bottom and the bin beside it. Two cooks; the round on the `kitchen` line.
+// bottom and the bin beside it. Two to four cooks; the round on `kitchen`.
+// A miniature look: tilted in, the depth of field a lens's close up.
 (
     view: (position: (0.0, 9.5, 7.5), target: (0.0, 0.0, 0.6), fov_deg: 50.0),
     sun: (hour: 11.0, intensity: 1.1),
-    post: (vignette: (intensity: 0.3, smoothness: 0.45, color: (0.0, 0.0, 0.0), center: (0.5, 0.5))),
+    post: (tonemapping: Aces, exposure: 0.1, contrast: 12.0, saturation: 14.0, bloom: (intensity: 0.55, threshold: 0.95, scatter: 0.72, tint: (1.0, 0.95, 0.9), clamp: 65000.0), vignette: (intensity: 0.3, smoothness: 0.45, color: (0.05, 0.02, 0.0), center: (0.5, 0.5)), depth_of_field: (mode: Bokeh, focus_distance: 12.0, focal_length: 80.0, aperture: 5.6), film_grain: 0.08, taa: true),
+    ambient_occlusion: (enabled: true, intensity: 1.4, radius: 0.45, direct_lighting_strength: 0.3, falloff_distance: 30.0, samples: 12, bounce: 0.6, bounce_radius: 1.2),
     entities: [
         (id: "1c80317fa3b1799d", name: "floor", model: "builtin:plane", transform: (position: (0.000, 0.000, 0.000), scale: (13.000, 1.000, 9.000)), material: "floor", body: Static, collider: Box(half: (0.5, 0.05, 0.5))),
-        (id: "bdd640fb06671ad1", name: "back wall", model: "builtin:cube", transform: (position: (0.000, 1.250, -4.100), scale: (13.000, 2.500, 0.200)), material: "wall", body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
-        (id: "3eb13b9046685257", name: "order board", model: "builtin:plane", transform: (position: (0.000, 1.750, -3.990), rotation_deg: (90.000, 0.000, 0.000), scale: (4.800, 1.000, 1.600)), material: "screen", components: { "mark": (name: "board") }),
-        (id: "23b8c1e9392456de", name: "counter 1", model: "builtin:cube", transform: (position: (-5.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "1a3d1fa7bc8960a9", name: "counter 2", model: "builtin:cube", transform: (position: (-4.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "8b9d2434e465e150", name: "tomato crate 1", model: "builtin:cube", transform: (position: (-3.000, 0.500, -3.000)), material: "crate", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Tomato)) }, children: [
-(id: "bd9c66b3ad3c2d6d", name: "tomato sign", model: "builtin:sphere", transform: (position: (0.000, 0.600, 0.000), scale: (0.500, 0.500, 0.500)), material: "tomato"),
+        (id: "bdd640fb06671ad1", name: "tile 1 1", model: "builtin:plane", transform: (position: (-4.000, 0.004, -2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "3eb13b9046685257", name: "tile 3 1", model: "builtin:plane", transform: (position: (-2.000, 0.004, -2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "23b8c1e9392456de", name: "tile 5 1", model: "builtin:plane", transform: (position: (0.000, 0.004, -2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "1a3d1fa7bc8960a9", name: "tile 7 1", model: "builtin:plane", transform: (position: (2.000, 0.004, -2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "bd9c66b3ad3c2d6d", name: "tile 9 1", model: "builtin:plane", transform: (position: (4.000, 0.004, -2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "8b9d2434e465e150", name: "tile 2 2", model: "builtin:plane", transform: (position: (-3.000, 0.004, -1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "972a846916419f82", name: "tile 4 2", model: "builtin:plane", transform: (position: (-1.000, 0.004, -1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "0822e8f36c031199", name: "tile 6 2", model: "builtin:plane", transform: (position: (1.000, 0.004, -1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "17fc695a07a0ca6e", name: "tile 8 2", model: "builtin:plane", transform: (position: (3.000, 0.004, -1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "3b8faa1837f8a88b", name: "tile 1 3", model: "builtin:plane", transform: (position: (-4.000, 0.004, 0.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "9a1de644815ef6d1", name: "tile 3 3", model: "builtin:plane", transform: (position: (-2.000, 0.004, 0.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "8fadc1a606cb0fb3", name: "tile 5 3", model: "builtin:plane", transform: (position: (0.000, 0.004, 0.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "b74d0fb132e70629", name: "tile 7 3", model: "builtin:plane", transform: (position: (2.000, 0.004, 0.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "b38a088ca65ed389", name: "tile 9 3", model: "builtin:plane", transform: (position: (4.000, 0.004, 0.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "6b65a6a48b8148f6", name: "tile 2 4", model: "builtin:plane", transform: (position: (-3.000, 0.004, 1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "72ff5d2a386ecbe0", name: "tile 4 4", model: "builtin:plane", transform: (position: (-1.000, 0.004, 1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "4737819096da1dac", name: "tile 6 4", model: "builtin:plane", transform: (position: (1.000, 0.004, 1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "de8a774bcf36d58b", name: "tile 8 4", model: "builtin:plane", transform: (position: (3.000, 0.004, 1.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "c241330b01a9e71f", name: "tile 1 5", model: "builtin:plane", transform: (position: (-4.000, 0.004, 2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "28df6ec4ce4a2bbd", name: "tile 3 5", model: "builtin:plane", transform: (position: (-2.000, 0.004, 2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "6c307511b2b9437a", name: "tile 5 5", model: "builtin:plane", transform: (position: (0.000, 0.004, 2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "47229389571aa876", name: "tile 7 5", model: "builtin:plane", transform: (position: (2.000, 0.004, 2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "371ecd7b27cd8130", name: "tile 9 5", model: "builtin:plane", transform: (position: (4.000, 0.004, 2.000), scale: (1.000, 1.000, 1.000)), material: "tile_dark"),
+        (id: "c37459eef50bea63", name: "back wall", model: "builtin:cube", transform: (position: (0.000, 1.250, -4.100), scale: (13.000, 2.500, 0.200)), material: "wall", body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "1a2a73ed562b0f79", name: "order board", model: "builtin:plane", transform: (position: (0.000, 1.750, -3.990), rotation_deg: (90.000, 0.000, 0.000), scale: (4.800, 1.000, 1.600)), material: "screen", components: { "mark": (name: "board") }),
+        (id: "5be6128e18c26797", name: "counter 1", model: "", transform: (position: (-5.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "6142ea7d17be3111", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "0822e8f36c031199", name: "tomato crate 2", model: "builtin:cube", transform: (position: (-2.000, 0.500, -3.000)), material: "crate", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Tomato)) }, children: [
-(id: "972a846916419f82", name: "tomato sign", model: "builtin:sphere", transform: (position: (0.000, 0.600, 0.000), scale: (0.500, 0.500, 0.500)), material: "tomato"),
+        (id: "43b7a3a69a8dca03", name: "counter 2", model: "", transform: (position: (-4.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "580d7b71d8f56413", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "17fc695a07a0ca6e", name: "counter 3", model: "builtin:cube", transform: (position: (-1.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "3b8faa1837f8a88b", name: "counter 4", model: "builtin:cube", transform: (position: (0.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "28df6ec4ce4a2bbd", name: "stove 1", model: "builtin:cube", transform: (position: (1.000, 0.500, -3.000)), material: "stove", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), sound: (clip: "bubble", looped: true, volume: 0.0, far: 14.0, group: "sfx"), components: { "station": (kind: Stove) }, children: [
-(id: "9a1de644815ef6d1", name: "pot", model: "builtin:cylinder", transform: (position: (0.000, 0.650, 0.000), scale: (0.600, 0.300, 0.600)), material: "pot"),
-(id: "8fadc1a606cb0fb3", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
-(id: "b74d0fb132e70629", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
-(id: "b38a088ca65ed389", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
-(id: "6b65a6a48b8148f6", name: "soup burnt", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "burnt", inactive: true, components: { "mark": (name: "soup burnt") }),
-(id: "72ff5d2a386ecbe0", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
-(id: "4737819096da1dac", name: "warn", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "warn", inactive: true, components: { "mark": (name: "warn") }),
-(id: "de8a774bcf36d58b", name: "steam", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 14.0, life: 1.4, speed: 0.7, spread_deg: 18.0, size: 0.12, end_size: 0.45, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 0.6, end_alpha: 0.0, facing: true), components: { "mark": (name: "steam") }),
-(id: "c241330b01a9e71f", name: "smoke", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 20.0, life: 2.0, speed: 0.9, spread_deg: 25.0, size: 0.18, end_size: 0.7, gravity: 0.0, color: (0.15, 0.15, 0.15), alpha: 0.8, end_alpha: 0.0, facing: true), components: { "mark": (name: "smoke") }),
+        (id: "4b0dbb418d5288f1", name: "tomato crate 1", model: "", transform: (position: (-3.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Tomato)) }, children: [
+(id: "0b1f9163ce9ff57f", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "759cde66bacfb3d0", name: "box", model: "cardboardBoxOpen", transform: (position: (-0.190, 0.500, 0.190), scale: (1.800, 1.400, 1.800))),
+(id: "1ff49b7889463e85", name: "tomato 1", model: "tomato", transform: (position: (-0.120, 0.620, -0.100), rotation_deg: (0.000, 0.000, 0.000), scale: (2.200, 2.200, 2.200))),
+(id: "ec1b8ca1f91e1d4c", name: "tomato 2", model: "tomato", transform: (position: (0.120, 0.620, -0.050), rotation_deg: (0.000, 40.000, 0.000), scale: (2.200, 2.200, 2.200))),
+(id: "142c3fe860e7a113", name: "tomato 3", model: "tomato", transform: (position: (0.000, 0.620, 0.120), rotation_deg: (0.000, 80.000, 0.000), scale: (2.200, 2.200, 2.200))),
 ]),
-        (id: "0b1f9163ce9ff57f", name: "stove 2", model: "builtin:cube", transform: (position: (2.000, 0.500, -3.000)), material: "stove", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), sound: (clip: "bubble", looped: true, volume: 0.0, far: 14.0, group: "sfx"), components: { "station": (kind: Stove) }, children: [
-(id: "6c307511b2b9437a", name: "pot", model: "builtin:cylinder", transform: (position: (0.000, 0.650, 0.000), scale: (0.600, 0.300, 0.600)), material: "pot"),
-(id: "47229389571aa876", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
-(id: "371ecd7b27cd8130", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
-(id: "c37459eef50bea63", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
-(id: "1a2a73ed562b0f79", name: "soup burnt", model: "builtin:cylinder", transform: (position: (0.000, 0.820, 0.000), scale: (0.500, 0.100, 0.500)), material: "burnt", inactive: true, components: { "mark": (name: "soup burnt") }),
-(id: "6142ea7d17be3111", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
-(id: "5be6128e18c26797", name: "warn", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "warn", inactive: true, components: { "mark": (name: "warn") }),
-(id: "580d7b71d8f56413", name: "steam", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 14.0, life: 1.4, speed: 0.7, spread_deg: 18.0, size: 0.12, end_size: 0.45, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 0.6, end_alpha: 0.0, facing: true), components: { "mark": (name: "steam") }),
-(id: "43b7a3a69a8dca03", name: "smoke", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 20.0, life: 2.0, speed: 0.9, spread_deg: 25.0, size: 0.18, end_size: 0.7, gravity: 0.0, color: (0.15, 0.15, 0.15), alpha: 0.8, end_alpha: 0.0, facing: true), components: { "mark": (name: "smoke") }),
+        (id: "a9488d990bbb2599", name: "tomato crate 2", model: "", transform: (position: (-2.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Tomato)) }, children: [
+(id: "a0ee89aed453dd32", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "e2acf72f9e574f7a", name: "box", model: "cardboardBoxOpen", transform: (position: (-0.190, 0.500, 0.190), scale: (1.800, 1.400, 1.800))),
+(id: "5c941cf0dc98d2c1", name: "tomato 1", model: "tomato", transform: (position: (-0.120, 0.620, -0.100), rotation_deg: (0.000, 0.000, 0.000), scale: (2.200, 2.200, 2.200))),
+(id: "3139d32c93cd59bf", name: "tomato 2", model: "tomato", transform: (position: (0.120, 0.620, -0.050), rotation_deg: (0.000, 40.000, 0.000), scale: (2.200, 2.200, 2.200))),
+(id: "11ce5dd2b45ed1f0", name: "tomato 3", model: "tomato", transform: (position: (0.000, 0.620, 0.120), rotation_deg: (0.000, 80.000, 0.000), scale: (2.200, 2.200, 2.200))),
 ]),
-        (id: "759cde66bacfb3d0", name: "counter 5", model: "builtin:cube", transform: (position: (3.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "1ff49b7889463e85", name: "counter 6", model: "builtin:cube", transform: (position: (4.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "ec1b8ca1f91e1d4c", name: "counter 7", model: "builtin:cube", transform: (position: (5.000, 0.500, -3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "a0ee89aed453dd32", name: "board 1", model: "builtin:cube", transform: (position: (-5.000, 0.500, -2.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
-(id: "142c3fe860e7a113", name: "board", model: "builtin:cube", transform: (position: (0.000, 0.520, 0.000), scale: (0.700, 0.040, 0.500)), material: "board"),
-(id: "4b0dbb418d5288f1", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+        (id: "fc377a4c4a15544d", name: "counter 3", model: "", transform: (position: (-1.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "c5e7ce8a3a578a8e", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "e2acf72f9e574f7a", name: "counter 8", model: "builtin:cube", transform: (position: (5.000, 0.500, -2.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "11ce5dd2b45ed1f0", name: "board 2", model: "builtin:cube", transform: (position: (-5.000, 0.500, -1.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
-(id: "5c941cf0dc98d2c1", name: "board", model: "builtin:cube", transform: (position: (0.000, 0.520, 0.000), scale: (0.700, 0.040, 0.500)), material: "board"),
-(id: "3139d32c93cd59bf", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+        (id: "ddd1dfb23b982ef8", name: "counter 4", model: "", transform: (position: (0.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "daf61a26146d3f31", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "daf61a26146d3f31", name: "plates 1", model: "builtin:cube", transform: (position: (5.000, 0.500, -1.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Plates) }, children: [
-(id: "a9488d990bbb2599", name: "plate 1", model: "builtin:cylinder", transform: (position: (0.000, 0.520, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
-(id: "c5e7ce8a3a578a8e", name: "plate 2", model: "builtin:cylinder", transform: (position: (0.000, 0.560, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
-(id: "fc377a4c4a15544d", name: "plate 3", model: "builtin:cylinder", transform: (position: (0.000, 0.600, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
+        (id: "7656af7229d4beef", name: "stove 1", model: "", transform: (position: (1.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), sound: (clip: "bubble", looped: true, volume: 0.0, far: 14.0, group: "sfx"), components: { "station": (kind: Stove) }, children: [
+(id: "614ff3d719db3ad0", name: "look", model: "kitchenStove", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "7412b29347294739", name: "burner", model: "builtin:cylinder", transform: (position: (0.000, 0.500, 0.000), scale: (0.500, 0.020, 0.500)), material: "burner"),
+(id: "d58842dea2bc372f", name: "pot", model: "pot", transform: (position: (0.000, 0.510, 0.000), scale: (0.900, 0.900, 0.900))),
+(id: "29a3b2e95d65a441", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
+(id: "5af305535ec42e08", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
+(id: "ab9099a435a240ae", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
+(id: "b3aa7efe4458a885", name: "soup burnt", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "burnt", inactive: true, components: { "mark": (name: "soup burnt") }),
+(id: "aefcfad8efc89849", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.250, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "12476f57a5e5a5ab", name: "warn", model: "builtin:cube", transform: (position: (0.000, 1.250, 0.000), scale: (0.900, 0.060, 0.060)), material: "warn", inactive: true, components: { "mark": (name: "warn") }),
+(id: "a28defe39bf00273", name: "steam", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 24.0, life: 1.8, speed: 0.7, spread_deg: 18.0, size: 0.3, end_size: 1.1, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 1.0, end_alpha: 0.0, material: "steam_fx", facing: true), components: { "mark": (name: "steam") }),
+(id: "88bd64072bcfbe01", name: "smoke", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 22.0, life: 2.2, speed: 0.9, spread_deg: 22.0, size: 0.3, end_size: 1.3, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 1.0, end_alpha: 0.0, material: "smoke_fx", facing: true), components: { "mark": (name: "smoke") }),
+(id: "3eabedcbbaa80dd4", name: "flame", model: "", transform: (position: (0.000, 0.520, 0.000)), inactive: true, particles: (rate: 30.0, life: 0.4, speed: 0.4, spread_deg: 40.0, size: 0.12, end_size: 0.04, gravity: 0.0, color: (1.0, 0.55, 0.2), material: "flame_fx", facing: true), components: { "mark": (name: "flame") }),
 ]),
-        (id: "ddd1dfb23b982ef8", name: "counter 9", model: "builtin:cube", transform: (position: (-5.000, 0.500, 0.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "614ff3d719db3ad0", name: "counter 10", model: "builtin:cube", transform: (position: (-1.000, 0.500, 0.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "29a3b2e95d65a441", name: "board 3", model: "builtin:cube", transform: (position: (0.000, 0.500, 0.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
-(id: "7412b29347294739", name: "board", model: "builtin:cube", transform: (position: (0.000, 0.520, 0.000), scale: (0.700, 0.040, 0.500)), material: "board"),
-(id: "d58842dea2bc372f", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+        (id: "9132b63ef16287e4", name: "stove 2", model: "", transform: (position: (2.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), sound: (clip: "bubble", looped: true, volume: 0.0, far: 14.0, group: "sfx"), components: { "station": (kind: Stove) }, children: [
+(id: "451b4cf36123fdf7", name: "look", model: "kitchenStove", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "ece66fa2fd5166e6", name: "burner", model: "builtin:cylinder", transform: (position: (0.000, 0.500, 0.000), scale: (0.500, 0.020, 0.500)), material: "burner"),
+(id: "b02b61c4a3d70628", name: "pot", model: "pot", transform: (position: (0.000, 0.510, 0.000), scale: (0.900, 0.900, 0.900))),
+(id: "3838b3268e944239", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
+(id: "5304317faf42e12f", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
+(id: "c4b032ccd7c524a5", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
+(id: "0e51f30dc6a7ee39", name: "soup burnt", model: "builtin:cylinder", transform: (position: (0.000, 0.720, 0.000), scale: (0.500, 0.100, 0.500)), material: "burnt", inactive: true, components: { "mark": (name: "soup burnt") }),
+(id: "d261a7ab3aa2e4f9", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.250, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "ce177b4e0837b8a3", name: "warn", model: "builtin:cube", transform: (position: (0.000, 1.250, 0.000), scale: (0.900, 0.060, 0.060)), material: "warn", inactive: true, components: { "mark": (name: "warn") }),
+(id: "66b2bc5b50c187fc", name: "steam", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 24.0, life: 1.8, speed: 0.7, spread_deg: 18.0, size: 0.3, end_size: 1.1, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 1.0, end_alpha: 0.0, material: "steam_fx", facing: true), components: { "mark": (name: "steam") }),
+(id: "10f1bc81448aaa9e", name: "smoke", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 22.0, life: 2.2, speed: 0.9, spread_deg: 22.0, size: 0.3, end_size: 1.3, gravity: 0.0, color: (1.0, 1.0, 1.0), alpha: 1.0, end_alpha: 0.0, material: "smoke_fx", facing: true), components: { "mark": (name: "smoke") }),
+(id: "e9c349e03602f8ac", name: "flame", model: "", transform: (position: (0.000, 0.520, 0.000)), inactive: true, particles: (rate: 30.0, life: 0.4, speed: 0.4, spread_deg: 40.0, size: 0.12, end_size: 0.04, gravity: 0.0, color: (1.0, 0.55, 0.2), material: "flame_fx", facing: true), components: { "mark": (name: "flame") }),
 ]),
-        (id: "5af305535ec42e08", name: "counter 11", model: "builtin:cube", transform: (position: (1.000, 0.500, 0.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "12476f57a5e5a5ab", name: "plates 2", model: "builtin:cube", transform: (position: (5.000, 0.500, 0.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Plates) }, children: [
-(id: "ab9099a435a240ae", name: "plate 1", model: "builtin:cylinder", transform: (position: (0.000, 0.520, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
-(id: "b3aa7efe4458a885", name: "plate 2", model: "builtin:cylinder", transform: (position: (0.000, 0.560, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
-(id: "aefcfad8efc89849", name: "plate 3", model: "builtin:cylinder", transform: (position: (0.000, 0.600, 0.000), scale: (0.550, 0.030, 0.550)), material: "plate"),
+        (id: "366eb16f508ebad7", name: "counter 5", model: "", transform: (position: (3.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "b7c93acfe059a0ee", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "a28defe39bf00273", name: "counter 12", model: "builtin:cube", transform: (position: (-5.000, 0.500, 1.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "88bd64072bcfbe01", name: "counter 13", model: "builtin:cube", transform: (position: (5.000, 0.500, 1.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "7656af7229d4beef", name: "onion crate 1", model: "builtin:cube", transform: (position: (-5.000, 0.500, 2.000)), material: "crate", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Onion)) }, children: [
-(id: "3eabedcbbaa80dd4", name: "onion sign", model: "builtin:sphere", transform: (position: (0.000, 0.600, 0.000), scale: (0.500, 0.500, 0.500)), material: "onion"),
+        (id: "e27a984d654821d0", name: "counter 6", model: "", transform: (position: (4.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "7fcd9eb1a7cad415", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "451b4cf36123fdf7", name: "bin 1", model: "builtin:cylinder", transform: (position: (5.000, 0.500, 2.000), scale: (0.800, 1.000, 0.800)), material: "bin", body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5), components: { "station": (kind: Bin) }),
-        (id: "ece66fa2fd5166e6", name: "counter 14", model: "builtin:cube", transform: (position: (-5.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "b02b61c4a3d70628", name: "counter 15", model: "builtin:cube", transform: (position: (-4.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "3838b3268e944239", name: "counter 16", model: "builtin:cube", transform: (position: (-3.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "d261a7ab3aa2e4f9", name: "window 1", model: "builtin:cube", transform: (position: (-2.000, 0.500, 3.000)), material: "window", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), animator: "window", components: { "station": (kind: Window) }, children: [
-(id: "0e51f30dc6a7ee39", name: "bell", model: "", transform: (position: (0.500, 1.250, 0.300)), children: [
-(id: "5304317faf42e12f", name: "dome", model: "builtin:sphere", transform: (position: (0.000, 0.000, 0.000), scale: (0.300, 0.220, 0.300)), material: "brass"),
-(id: "c4b032ccd7c524a5", name: "button", model: "builtin:cylinder", transform: (position: (0.000, 0.120, 0.000), scale: (0.060, 0.060, 0.060)), material: "brass"),
+        (id: "24933b83757750a9", name: "counter 7", model: "", transform: (position: (5.000, 0.500, -3.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "a491f0b2ea1fca65", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
+        (id: "956269f0e5d7b875", name: "board 1", model: "", transform: (position: (-5.000, 0.500, -2.000), rotation_deg: (0.000, 90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
+(id: "23bed01d43cf2fde", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "beb799193f22faf8", name: "board", model: "cutting-board", transform: (position: (0.000, 0.500, 0.000), scale: (1.000, 1.000, 0.900))),
+(id: "89fa6a688fb5d27b", name: "knife", model: "cooking-knife", transform: (position: (0.300, 0.530, 0.250), rotation_deg: (0.000, 70.000, 0.000), scale: (0.800, 0.800, 0.800))),
+(id: "bf3c4c06434308bc", name: "bar", model: "builtin:cube", transform: (position: (0.000, 0.780, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "6dadd6c795a76d79", name: "chop fx", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 18.0, life: 0.35, speed: 1.6, spread_deg: 70.0, size: 0.05, end_size: 0.02, gravity: -6.0, color: (1.0, 0.35, 0.2), material: "juice_fx", facing: true), components: { "mark": (name: "chop fx") }),
 ]),
-        (id: "ce177b4e0837b8a3", name: "window 2", model: "builtin:cube", transform: (position: (-1.000, 0.500, 3.000)), material: "window", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Window) }),
-        (id: "66b2bc5b50c187fc", name: "counter 17", model: "builtin:cube", transform: (position: (0.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "10f1bc81448aaa9e", name: "counter 18", model: "builtin:cube", transform: (position: (1.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "b7c93acfe059a0ee", name: "board 4", model: "builtin:cube", transform: (position: (2.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
-(id: "e9c349e03602f8ac", name: "board", model: "builtin:cube", transform: (position: (0.000, 0.520, 0.000), scale: (0.700, 0.040, 0.500)), material: "board"),
-(id: "9132b63ef16287e4", name: "bar", model: "builtin:cube", transform: (position: (0.000, 1.150, 0.000), scale: (0.900, 0.080, 0.080)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+        (id: "ff50bde4382567b8", name: "counter 8", model: "", transform: (position: (5.000, 0.500, -2.000), rotation_deg: (0.000, -90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "5cabcc97663f1c97", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "366eb16f508ebad7", name: "counter 19", model: "builtin:cube", transform: (position: (3.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "7fcd9eb1a7cad415", name: "counter 20", model: "builtin:cube", transform: (position: (4.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "e27a984d654821d0", name: "counter 21", model: "builtin:cube", transform: (position: (5.000, 0.500, 3.000)), material: "counter", body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }),
-        (id: "beb799193f22faf8", name: "cook 1", model: "builtin:cylinder", transform: (position: (-2.000, 0.450, 0.000), scale: (0.600, 0.900, 0.600)), material: "cook_blue", components: { "player": (index: 0, speed: 4.2) }, children: [
-(id: "a491f0b2ea1fca65", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.720, 0.000), scale: (0.550, 0.550, 0.550)), material: "skin"),
-(id: "24933b83757750a9", name: "hat", model: "builtin:cylinder", transform: (position: (0.000, 1.050, 0.000), scale: (0.450, 0.300, 0.450)), material: "plate"),
-(id: "23bed01d43cf2fde", name: "nose", model: "builtin:cube", transform: (position: (0.000, 0.720, 0.300), scale: (0.120, 0.120, 0.120)), material: "skin"),
+        (id: "28f49481a0a04dc4", name: "board 2", model: "", transform: (position: (-5.000, 0.500, -1.000), rotation_deg: (0.000, 90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
+(id: "2369b584ff5e9ff0", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "7e570ddf827050a8", name: "board", model: "cutting-board", transform: (position: (0.000, 0.500, 0.000), scale: (1.000, 1.000, 0.900))),
+(id: "c17af08a1745d6d8", name: "knife", model: "cooking-knife", transform: (position: (0.300, 0.530, 0.250), rotation_deg: (0.000, 70.000, 0.000), scale: (0.800, 0.800, 0.800))),
+(id: "dc713d960c0fd195", name: "bar", model: "builtin:cube", transform: (position: (0.000, 0.780, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "27209bdf1c11f735", name: "chop fx", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 18.0, life: 0.35, speed: 1.6, spread_deg: 70.0, size: 0.05, end_size: 0.02, gravity: -6.0, color: (1.0, 0.35, 0.2), material: "juice_fx", facing: true), components: { "mark": (name: "chop fx") }),
 ]),
-        (id: "956269f0e5d7b875", name: "cook 2", model: "builtin:cylinder", transform: (position: (2.000, 0.450, 0.000), scale: (0.600, 0.900, 0.600)), material: "cook_orange", components: { "player": (index: 1, speed: 4.2) }, children: [
-(id: "89fa6a688fb5d27b", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.720, 0.000), scale: (0.550, 0.550, 0.550)), material: "skin"),
-(id: "bf3c4c06434308bc", name: "hat", model: "builtin:cylinder", transform: (position: (0.000, 1.050, 0.000), scale: (0.450, 0.300, 0.450)), material: "plate"),
-(id: "6dadd6c795a76d79", name: "nose", model: "builtin:cube", transform: (position: (0.000, 0.720, 0.300), scale: (0.120, 0.120, 0.120)), material: "skin"),
+        (id: "405cacec877409a9", name: "plates 1", model: "", transform: (position: (5.000, 0.500, -1.000), rotation_deg: (0.000, -90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Plates) }, children: [
+(id: "ae340454cac5b68c", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "98ae43346c12ace8", name: "plate 1", model: "plate", transform: (position: (0.000, 0.500, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "62801c4510435a10", name: "plate 2", model: "plate", transform: (position: (0.000, 0.555, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "988c24c961b1cd22", name: "plate 3", model: "plate", transform: (position: (0.000, 0.610, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "77d21e02ff01cf99", name: "plate 4", model: "plate", transform: (position: (0.000, 0.665, 0.000), scale: (0.620, 0.620, 0.620))),
 ]),
-        (id: "7e570ddf827050a8", name: "cook 3", model: "builtin:cylinder", transform: (position: (-2.000, 0.450, 1.800), scale: (0.600, 0.900, 0.600)), material: "cook_green", components: { "player": (index: 2, speed: 4.2) }, children: [
-(id: "5cabcc97663f1c97", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.720, 0.000), scale: (0.550, 0.550, 0.550)), material: "skin"),
-(id: "ff50bde4382567b8", name: "hat", model: "builtin:cylinder", transform: (position: (0.000, 1.050, 0.000), scale: (0.450, 0.300, 0.450)), material: "plate"),
-(id: "2369b584ff5e9ff0", name: "nose", model: "builtin:cube", transform: (position: (0.000, 0.720, 0.300), scale: (0.120, 0.120, 0.120)), material: "skin"),
+        (id: "f143262fdc5c0eed", name: "counter 9", model: "", transform: (position: (-5.000, 0.500, 0.000), rotation_deg: (0.000, 90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "8da0365bf89897b9", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "28f49481a0a04dc4", name: "cook 4", model: "builtin:cylinder", transform: (position: (2.000, 0.450, 1.800), scale: (0.600, 0.900, 0.600)), material: "cook_purple", components: { "player": (index: 3, speed: 4.2) }, children: [
-(id: "c17af08a1745d6d8", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.720, 0.000), scale: (0.550, 0.550, 0.550)), material: "skin"),
-(id: "dc713d960c0fd195", name: "hat", model: "builtin:cylinder", transform: (position: (0.000, 1.050, 0.000), scale: (0.450, 0.300, 0.450)), material: "plate"),
-(id: "27209bdf1c11f735", name: "nose", model: "builtin:cube", transform: (position: (0.000, 0.720, 0.300), scale: (0.120, 0.120, 0.120)), material: "skin"),
+        (id: "1d53434bb88139b9", name: "counter 10", model: "", transform: (position: (-1.000, 0.500, 0.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "ae270da702f06b90", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "98ae43346c12ace8", name: "customer 1", model: "builtin:cylinder", transform: (position: (-4.500, 0.450, 4.600), scale: (0.600, 0.900, 0.600)), material: "coat_red", route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 1.5), children: [
-(id: "ae340454cac5b68c", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.750, 0.000), scale: (0.550, 0.500, 0.550)), material: "skin"),
+        (id: "287d06ca6f4cc69a", name: "board 3", model: "", transform: (position: (0.000, 0.500, 0.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
+(id: "e2817efdae849217", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "c03987108976e334", name: "board", model: "cutting-board", transform: (position: (0.000, 0.500, 0.000), scale: (1.000, 1.000, 0.900))),
+(id: "c4c2e2e3444ea7c8", name: "knife", model: "cooking-knife", transform: (position: (0.300, 0.530, 0.250), rotation_deg: (0.000, 70.000, 0.000), scale: (0.800, 0.800, 0.800))),
+(id: "5715bd6fa4161293", name: "bar", model: "builtin:cube", transform: (position: (0.000, 0.780, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "4b22d3081c8eaee9", name: "chop fx", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 18.0, life: 0.35, speed: 1.6, spread_deg: 70.0, size: 0.05, end_size: 0.02, gravity: -6.0, color: (1.0, 0.35, 0.2), material: "juice_fx", facing: true), components: { "mark": (name: "chop fx") }),
 ]),
-        (id: "988c24c961b1cd22", name: "customer 2", model: "builtin:cylinder", transform: (position: (3.500, 0.450, 4.600), scale: (0.600, 0.900, 0.600)), material: "coat_teal", route: (points: [(0.0, 0.0, 0.0), (-6.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 0.8), children: [
-(id: "62801c4510435a10", name: "head", model: "builtin:sphere", transform: (position: (0.000, 0.750, 0.000), scale: (0.550, 0.500, 0.550)), material: "skin"),
+        (id: "b8db0672f42d47cc", name: "counter 11", model: "", transform: (position: (1.000, 0.500, 0.000), rotation_deg: (0.000, 0.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "00d4af5974273ca3", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
 ]),
-        (id: "77d21e02ff01cf99", name: "stain 1", model: "", transform: (position: (-0.800, 0.020, -1.200)), material: "stain", decal: (size: (0.90, 0.2, 0.72))),
-        (id: "405cacec877409a9", name: "stain 2", model: "", transform: (position: (2.600, 0.020, 1.400)), material: "stain", decal: (size: (0.60, 0.2, 0.48))),
-        (id: "8da0365bf89897b9", name: "stain 3", model: "", transform: (position: (-3.500, 0.020, 0.900)), material: "stain", decal: (size: (0.50, 0.2, 0.40))),
-        (id: "f143262fdc5c0eed", name: "kitchen", model: "", transform: (position: (0.000, 0.000, 0.000)), sound: (clip: "music", looped: true, spatial: false, volume: 0.35, group: "music"), components: { "kitchen": (round_seconds: 180.0, order_every: 16.0, order_seconds: 70.0) }),
-        (id: "ae270da702f06b90", name: "stove light", model: "", transform: (position: (1.500, 2.600, -2.300)), light: (color: (1.0, 0.72, 0.45), intensity: 2.5, range: 6.0)),
-        (id: "1d53434bb88139b9", name: "window light", model: "", transform: (position: (-1.500, 2.400, 2.400)), light: (color: (0.7, 0.9, 1.0), intensity: 1.5, range: 5.0)),
+        (id: "a013ac6ededa4e16", name: "plates 2", model: "", transform: (position: (5.000, 0.500, 0.000), rotation_deg: (0.000, -90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Plates) }, children: [
+(id: "b83cfe0be037e5ed", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "f8cda88b436d76e2", name: "plate 1", model: "plate", transform: (position: (0.000, 0.500, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "c30ff46e8026695f", name: "plate 2", model: "plate", transform: (position: (0.000, 0.555, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "81f76d1c2dbc2134", name: "plate 3", model: "plate", transform: (position: (0.000, 0.610, 0.000), scale: (0.620, 0.620, 0.620))),
+(id: "1b3dbd5ce9a1fa6f", name: "plate 4", model: "plate", transform: (position: (0.000, 0.665, 0.000), scale: (0.620, 0.620, 0.620))),
+]),
+        (id: "81f631d4a39231a7", name: "counter 12", model: "", transform: (position: (-5.000, 0.500, 1.000), rotation_deg: (0.000, 90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "d777a4774c66e0a8", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "5fb8d16c2720797d", name: "counter 13", model: "", transform: (position: (5.000, 0.500, 1.000), rotation_deg: (0.000, -90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "32ebd6899be578c7", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "7d15438552fbe43b", name: "onion crate 1", model: "", transform: (position: (-5.000, 0.500, 2.000), rotation_deg: (0.000, 90.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Crate(Onion)) }, children: [
+(id: "295b4715c333e861", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "f4188f3f8a14be62", name: "box", model: "cardboardBoxOpen", transform: (position: (-0.190, 0.500, 0.190), scale: (1.800, 1.400, 1.800))),
+(id: "ec24a3c5c754108f", name: "onion 1", model: "onion", transform: (position: (-0.120, 0.620, -0.100), rotation_deg: (0.000, 0.000, 0.000), scale: (1.500, 1.500, 1.500))),
+(id: "eb2263dd87c5421e", name: "onion 2", model: "onion", transform: (position: (0.120, 0.620, -0.050), rotation_deg: (0.000, 40.000, 0.000), scale: (1.500, 1.500, 1.500))),
+(id: "99546eb400257ad1", name: "onion 3", model: "onion", transform: (position: (0.000, 0.620, 0.120), rotation_deg: (0.000, 80.000, 0.000), scale: (1.500, 1.500, 1.500))),
+]),
+        (id: "5cec4eb5edd96831", name: "bin 1", model: "", transform: (position: (5.000, 0.500, 2.000), rotation_deg: (0.000, -90.000, 0.000)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.45), components: { "station": (kind: Bin) }, children: [
+(id: "1ca35cfb04fc6d82", name: "look", model: "trashcan", transform: (position: (0.000, -0.500, 0.000), scale: (2.000, 2.000, 2.000))),
+]),
+        (id: "ce88cb2dd4e80839", name: "counter 14", model: "", transform: (position: (-5.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "fc3e058be0f3eab0", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "3da9c2a90ed42f1a", name: "counter 15", model: "", transform: (position: (-4.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "3d4cbf374eb93eff", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "14296c07f26b4776", name: "counter 16", model: "", transform: (position: (-3.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "913e4de2e0c53cb8", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "f264accc79ac1b1e", name: "window 1", model: "", transform: (position: (-2.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), animator: "window", components: { "station": (kind: Window) }, children: [
+(id: "bb5e4bcf15ed6269", name: "look", model: "kitchenBar", transform: (position: (-0.500, -0.500, 0.490), scale: (2.320, 2.380, 4.700))),
+(id: "d0e6e6607c69dee1", name: "pass", model: "builtin:cube", transform: (position: (0.000, 0.510, 0.000), scale: (0.960, 0.030, 0.960)), material: "window"),
+(id: "2031d750c40db9b4", name: "bell", model: "", transform: (position: (0.500, 0.760, 0.300)), children: [
+(id: "fa5d310011b7e948", name: "dome", model: "builtin:sphere", transform: (position: (0.000, 0.000, 0.000), scale: (0.300, 0.220, 0.300)), material: "brass"),
+(id: "885f6e66c2b6d2c5", name: "button", model: "builtin:cylinder", transform: (position: (0.000, 0.120, 0.000), scale: (0.060, 0.060, 0.060)), material: "brass"),
+]),
+(id: "a8e56e0c20de435d", name: "serve fx", model: "", transform: (position: (0.000, 0.700, 0.000)), particles: (rate: 0.0, life: 0.9, speed: 2.6, spread_deg: 75.0, size: 0.2, end_size: 0.05, gravity: -3.0, color: (1.0, 0.85, 0.35), material: "star_fx", facing: true), components: { "mark": (name: "serve fx") }),
+]),
+        (id: "9b49bd26df57c59a", name: "window 2", model: "", transform: (position: (-1.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Window) }, children: [
+(id: "2a45c2ab8cbfedb0", name: "look", model: "kitchenBar", transform: (position: (-0.500, -0.500, 0.490), scale: (2.320, 2.380, 4.700))),
+(id: "8715a10343dac043", name: "pass", model: "builtin:cube", transform: (position: (0.000, 0.510, 0.000), scale: (0.960, 0.030, 0.960)), material: "window"),
+]),
+        (id: "edcd465e36386821", name: "counter 17", model: "", transform: (position: (0.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "f6e07cc06c52c49f", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "b09b2a5cbadcc32a", name: "counter 18", model: "", transform: (position: (1.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "c1590f538a0f4efb", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "7394988f847fd9b4", name: "board 4", model: "", transform: (position: (2.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Board) }, children: [
+(id: "b683d2e6337ea2df", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+(id: "66245bfa4fcca39a", name: "board", model: "cutting-board", transform: (position: (0.000, 0.500, 0.000), scale: (1.000, 1.000, 0.900))),
+(id: "abf3ad39fec21bbe", name: "knife", model: "cooking-knife", transform: (position: (0.300, 0.530, 0.250), rotation_deg: (0.000, 70.000, 0.000), scale: (0.800, 0.800, 0.800))),
+(id: "5f987c71a65e688e", name: "bar", model: "builtin:cube", transform: (position: (0.000, 0.780, 0.000), scale: (0.900, 0.060, 0.060)), material: "bar", inactive: true, components: { "mark": (name: "bar") }),
+(id: "e64d1bcb702753a1", name: "chop fx", model: "", transform: (position: (0.000, 0.900, 0.000)), inactive: true, particles: (rate: 18.0, life: 0.35, speed: 1.6, spread_deg: 70.0, size: 0.05, end_size: 0.02, gravity: -6.0, color: (1.0, 0.35, 0.2), material: "juice_fx", facing: true), components: { "mark": (name: "chop fx") }),
+]),
+        (id: "1064005c3985c3cf", name: "counter 19", model: "", transform: (position: (3.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "3f76be1d1efa2197", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "8dcdcd03969b6662", name: "counter 20", model: "", transform: (position: (4.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "05628059568cc69b", name: "look", model: "kitchenCabinetDrawer", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "01d7425638602ab6", name: "counter 21", model: "", transform: (position: (5.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), components: { "station": (kind: Counter) }, children: [
+(id: "96a402f23ae8cc93", name: "look", model: "kitchenCabinet", transform: (position: (-0.500, -0.500, 0.437), scale: (2.320, 2.220, 2.080))),
+]),
+        (id: "0f1259e0a18ff6b6", name: "cook 1", model: "character-male-a", transform: (position: (-2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 0, speed: 4.2) }, children: [
+(id: "b535106e122c9a56", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
+]),
+        (id: "080aadfbe7c99b26", name: "cook 2", model: "character-female-b", transform: (position: (2.000, 0.000, 0.000), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 1, speed: 4.2) }, children: [
+(id: "114125c63a9bedd4", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
+]),
+        (id: "839fbc501223b513", name: "cook 3", model: "character-male-c", transform: (position: (-2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 2, speed: 4.2) }, children: [
+(id: "5496f63cdc1110c1", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
+]),
+        (id: "7c441fe7ab4220a7", name: "cook 4", model: "character-female-d", transform: (position: (2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 3, speed: 4.2) }, children: [
+(id: "474a493b3ceddf2d", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
+]),
+        (id: "8a0b3c3336d8393a", name: "customer 1", model: "character-male-e", transform: (position: (-4.500, 0.000, 4.600), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 1.5), components: { "mark": (name: "customer") }),
+        (id: "b92da22b21df306f", name: "customer 2", model: "character-female-f", transform: (position: (3.500, 0.000, 4.600), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (-6.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 0.8), components: { "mark": (name: "customer") }),
+        (id: "e1e3db63ef7ddc76", name: "stain 1", model: "", transform: (position: (-0.800, 0.020, -1.200)), material: "stain", decal: (size: (0.90, 0.2, 0.72))),
+        (id: "93829b43922fe15a", name: "stain 2", model: "", transform: (position: (2.600, 0.020, 1.400)), material: "stain", decal: (size: (0.60, 0.2, 0.48))),
+        (id: "3e3511287900f7f9", name: "stain 3", model: "", transform: (position: (-3.500, 0.020, 0.900)), material: "stain", decal: (size: (0.50, 0.2, 0.40))),
+        (id: "7914c120c8dcd19f", name: "kitchen", model: "", transform: (position: (0.000, 0.000, 0.000)), sound: (clip: "music", looped: true, spatial: false, volume: 0.35, group: "music"), components: { "kitchen": (round_seconds: 180.0, order_every: 16.0, order_seconds: 70.0) }),
+        (id: "683514f2ceb81f9d", name: "stove light", model: "", transform: (position: (1.500, 2.200, -2.200)), light: (color: (1.0, 0.62, 0.32), intensity: 3.0, range: 5.0, flare: 0.3)),
+        (id: "1825bc5430beb45f", name: "window light", model: "", transform: (position: (-1.500, 2.400, 2.400)), light: (color: (0.7, 0.9, 1.0), intensity: 1.8, range: 5.0)),
+        (id: "a8b317fa18d0752b", name: "fill light", model: "", transform: (position: (0.000, 3.000, 0.500)), light: (color: (1.0, 0.95, 0.85), intensity: 1.2, range: 9.0)),
     ],
 )

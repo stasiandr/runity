@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use glam::Vec2;
+use glam::{Vec2, Vec4};
 use serde::{Deserialize, Serialize};
 
 use crate::input::Input;
@@ -139,12 +139,12 @@ impl Align {
         *self == Align::Left
     }
 
-    /// Where words `width` wide start in a box from `x`, `box_width` wide.
-    pub fn start(self, x: f32, box_width: f32, width: f32) -> f32 {
+    /// Where across their box the words sit: 0 the left, 1 the right.
+    pub fn across(self) -> f32 {
         match self {
-            Align::Left => x,
-            Align::Center => x + (box_width - width).max(0.0) * 0.5,
-            Align::Right => x + (box_width - width).max(0.0),
+            Align::Left => 0.0,
+            Align::Center => 0.5,
+            Align::Right => 1.0,
         }
     }
 }
@@ -387,24 +387,29 @@ impl Screen {
                 Kind::Text(text) => {
                     let words = label(text);
                     let size = e.text_size * scale;
-                    // An estimate of the width, as a button centres its label.
-                    let width = words.chars().count() as f32 * size * 0.52;
-                    ui.text(TextRun::new(
-                        e.align.start(rect.x, rect.width, width),
-                        rect.y,
-                        size,
-                        style.text,
-                        words,
-                    ));
+                    ui.text(
+                        TextRun::new(rect.x, rect.y, size, style.text, words)
+                            .within(rect.width, e.align.across()),
+                    );
                 }
                 Kind::Panel => {
-                    ui.quad(Quad::new(
-                        rect.x,
-                        rect.y,
-                        rect.width,
-                        rect.height,
-                        style.pressed,
-                    ));
+                    if style.shadow > 0.0 {
+                        let s = style.shadow;
+                        ui.quad(
+                            Quad::new(
+                                rect.x + s,
+                                rect.y + s,
+                                rect.width,
+                                rect.height,
+                                Vec4::new(0.0, 0.0, 0.0, 0.25),
+                            )
+                            .rounded(style.radius),
+                        );
+                    }
+                    ui.quad(
+                        Quad::new(rect.x, rect.y, rect.width, rect.height, style.pressed)
+                            .rounded(style.radius),
+                    );
                 }
                 Kind::Button(text) => {
                     if widgets.button(ui, input, rect, &label(text)) {
@@ -472,20 +477,14 @@ impl Screen {
                 }
                 Kind::Bar => {
                     let t = self.value(&e.id).clamp(0.0, 1.0);
-                    ui.quad(Quad::new(
-                        rect.x,
-                        rect.y,
-                        rect.width,
-                        rect.height,
-                        style.idle,
-                    ));
-                    ui.quad(Quad::new(
-                        rect.x,
-                        rect.y,
-                        rect.width * t,
-                        rect.height,
-                        style.accent,
-                    ));
+                    let r = style.radius.min(rect.height * 0.5);
+                    ui.quad(
+                        Quad::new(rect.x, rect.y, rect.width, rect.height, style.idle).rounded(r),
+                    );
+                    ui.quad(
+                        Quad::new(rect.x, rect.y, rect.width * t, rect.height, style.accent)
+                            .rounded(r),
+                    );
                 }
             }
         }
@@ -509,11 +508,22 @@ mod tests {
         .unwrap();
         let mut screen = Screen::from_layout(layout);
         let mut ui = Ui::new();
-        screen.draw(&mut Widgets::new(), &mut ui, &Input::default(), Vec2::new(1280.0, 720.0));
-        let xs: Vec<f32> = ui.texts.iter().map(|t| t.x).collect();
-        assert_eq!(xs[0], 0.0);
-        assert!(xs[1] > 150.0 && xs[1] < 200.0, "{xs:?}");
-        assert!(xs[2] > 350.0, "{xs:?}");
+        screen.draw(
+            &mut Widgets::new(),
+            &mut ui,
+            &Input::default(),
+            Vec2::new(1280.0, 720.0),
+        );
+        // The box and where across it: the renderer measures the words.
+        let placed: Vec<_> = ui.texts.iter().map(|t| (t.x, t.within)).collect();
+        assert_eq!(
+            placed,
+            [
+                (0.0, Some((400.0, 0.0))),
+                (0.0, Some((400.0, 0.5))),
+                (0.0, Some((400.0, 1.0)))
+            ]
+        );
         // Left is not written: old files and new read the same.
         let text = ron::to_string(&screen.layout().elements[0]).unwrap();
         assert!(!text.contains("align"), "{text}");

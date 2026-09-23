@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/skin.rmat",
-    hash: "c78c4ce5f0fca44d55990930cfebc2a5",
-    id: Some("6310a6d0a5abe53149a18ef0a13508a7"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

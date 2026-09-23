@@ -201,6 +201,7 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::per
     profile.time("cook", || systems::cook::run(world, seconds));
     profile.time("fly", || systems::fly::run(world, seconds));
     profile.time("show", || systems::show::run(world, seconds));
+    profile.time("pose", || systems::pose::run(world, seconds));
     profile.time("board", || systems::board::run(world, seconds));
     // Platforms and lifts on their routes, and lines with an `animator`
     // moving what is under them; then everything placed.
@@ -258,6 +259,9 @@ fn game_components() -> Components {
 
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
+        if let Err(problem) = ctx.overlay.use_font(front::FONT.to_vec()) {
+            eprintln!("the kitchen's font: {problem}");
+        }
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
             eprintln!("{line}");
         }
@@ -558,7 +562,7 @@ fn main() -> anyhow::Result<()> {
         strings,
         profile: runity::perf::Profiler::new(600),
         show_profile: false,
-        widgets: Widgets::new(),
+        widgets: Widgets::with_style(front::style()),
         shaders: runity::render::MaterialShaders::new(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
         ui: Ui::new(),
         world: World::new(),

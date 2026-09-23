@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/cook_purple.rmat",
-    hash: "ae5b8bc78dfabe651655ec9d1720a210",
-    id: Some("8738ef2c363136b3204c15a3a3103f55"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

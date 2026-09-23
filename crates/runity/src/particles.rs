@@ -267,9 +267,13 @@ impl Emitting {
 }
 
 /// Move every emitter's particles on: call it once a frame with the
-/// frame's delta — they are for the eye, not for the simulation.
+/// frame's delta — they are for the eye, not for the simulation. A
+/// switched-off emitter waits: switched on, it starts from nothing.
 pub fn run_particles(world: &mut hecs::World, dt: f32) {
-    for (placed, emitting) in world.query_mut::<(&WorldTransform, &mut Emitting)>() {
+    for (placed, emitting) in world
+        .query_mut::<(&WorldTransform, &mut Emitting)>()
+        .without::<&crate::world::Inactive>()
+    {
         emitting.advance(placed.0, dt);
     }
 }

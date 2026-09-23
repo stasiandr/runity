@@ -1008,6 +1008,9 @@ pub struct Renderer {
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
     by_asset: std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+    /// Each mesh's own look, from its file's materials: drawn with when
+    /// the material has no base map and the entity no texture of its own.
+    looks: std::collections::HashMap<MeshHandle, TextureHandle>,
     /// A bind group per set of four maps in use, made before the frame's
     /// passes and kept.
     map_groups: std::collections::HashMap<Maps, wgpu::BindGroup>,
@@ -2754,6 +2757,7 @@ impl Renderer {
             targets: std::collections::HashMap::new(),
             textures: Vec::new(),
             by_asset: std::collections::HashMap::new(),
+            looks: std::collections::HashMap::new(),
             map_groups: std::collections::HashMap::new(),
             texture_layout,
             texture_sampler,
@@ -2886,6 +2890,10 @@ impl Renderer {
                 .collect();
             self.attach_skin(gpu, handle, &bindings);
         }
+        if let Some(look) = mesh.look.as_ref() {
+            let texture = self.upload_texture(gpu, look);
+            self.looks.insert(handle, texture);
+        }
         handle
     }
 
@@ -2984,8 +2992,13 @@ impl Renderer {
     fn maps_of(&self, draw: &Draw) -> Maps {
         let m = &draw.material;
         let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.texture_for(id));
+        // No map of its own and no texture on the entity: the model's look.
+        let own = match self.looks.get(&draw.mesh) {
+            Some(look) if draw.texture == TextureHandle::WHITE => *look,
+            _ => draw.texture,
+        };
         [
-            find(m.base_map).unwrap_or(draw.texture),
+            find(m.base_map).unwrap_or(own),
             find(m.normal_map).unwrap_or(TextureHandle::FLAT_NORMAL),
             find(m.mask_map).unwrap_or(TextureHandle::WHITE),
             find(m.emission_map).unwrap_or(TextureHandle::WHITE),
@@ -4559,7 +4572,11 @@ impl Renderer {
                 .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
                 .filter_map(|d| {
                     let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
-                    let mask = if Some(d.mesh) == terrain { RAY_TERRAIN } else { RAY_THINGS };
+                    let mask = if Some(d.mesh) == terrain {
+                        RAY_TERRAIN
+                    } else {
+                        RAY_THINGS
+                    };
                     Some((blas, d.transform, mask))
                 })
                 .collect();

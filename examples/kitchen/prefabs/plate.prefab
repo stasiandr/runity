@@ -1,7 +1,7 @@
-// A plate, and the soups it can carry, shown by the game.
-(id: "b83cfe0be037e5ed", name: "plate", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Plate) }, children: [
-(id: "4b22d3081c8eaee9", name: "dish", model: "builtin:cylinder", transform: (position: (0.000, 0.000, 0.000), scale: (0.550, 0.040, 0.550)), material: "plate"),
-(id: "287d06ca6f4cc69a", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.060, 0.000), scale: (0.420, 0.100, 0.420)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
-(id: "00d4af5974273ca3", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.060, 0.000), scale: (0.420, 0.100, 0.420)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
-(id: "b8db0672f42d47cc", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.060, 0.000), scale: (0.420, 0.100, 0.420)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
+// A plate (Kenney's), and the soups it can carry, shown by the game.
+(id: "ccf3a17156dc8907", name: "plate", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Plate) }, children: [
+(id: "a748dbcfac619e63", name: "dish", model: "plate", transform: (position: (0.000, -0.020, 0.000), scale: (0.600, 0.600, 0.600))),
+(id: "a56c0941fbf24050", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
+(id: "0f844fef1931e9ee", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
+(id: "ba6c34ab6712303a", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
 ])

@@ -354,6 +354,31 @@ impl Front {
 }
 
 /// The round as this peer has it.
+/// Kenney Future, the kitchen's letters. Built into the game rather than
+/// read from `assets/`: `runity build` ships the library, not the sources.
+pub const FONT: &[u8] = include_bytes!("../assets/fonts/kenney_future.ttf");
+
+/// The kitchen's buttons and panels: warm, round, with a lip to press —
+/// the colours of Kenney's UI pack.
+pub fn style() -> runity::widgets::Style {
+    use runity::glam::Vec4;
+    let hex = |rgb: u32, a: f32| {
+        let c = |s: u32| ((rgb >> s) & 0xff) as f32 / 255.0;
+        Vec4::new(c(16), c(8), c(0), a)
+    };
+    runity::widgets::Style {
+        idle: hex(0xe86a17, 0.97),
+        hover: hex(0xf5873a, 1.0),
+        pressed: hex(0x3a2a24, 0.88),
+        accent: hex(0x5aa832, 1.0),
+        text: hex(0xfff6e8, 1.0),
+        text_size: 18.0,
+        radius: 10.0,
+        bevel: 5.0,
+        shadow: 6.0,
+    }
+}
+
 pub fn round_of(world: &World) -> Option<Round> {
     world.query::<&Round>().iter().next().cloned()
 }
@@ -494,6 +519,12 @@ pub fn ring(world: &mut World) {
     for (moving, animates) in world.query_mut::<(&mut runity::motion::Moving, &runity::motion::Animates)>() {
         if animates.graph == "window" {
             moving.controller.trigger("serve");
+        }
+    }
+    // And stars fly up from the window.
+    for (mark, emitting) in world.query_mut::<(&crate::components::Mark, &mut runity::particles::Emitting)>() {
+        if mark.name == "serve fx" {
+            emitting.emit(36);
         }
     }
 }

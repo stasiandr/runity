@@ -1,1 +1,1 @@
-(color: "#7fd46a")
+(color: "#7fd46a", emission: "#7fd46a", emission_intensity: 0.8)

@@ -1,6 +1,6 @@
 ImportSettings(
     source: "materials/wall.rmat",
-    hash: "9c88969cb4fcaaee9aee5effbf6855e4",
+    hash: "6b1af96f9cfca9d2d7248d3d469ccb6a",
     id: Some("cbface08ab49a75fb74cb1ff92379070"),
     scale: 1.0,
     recompute_normals: false,

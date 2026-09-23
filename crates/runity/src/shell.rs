@@ -77,6 +77,9 @@ pub struct Context<'a> {
     pub input: &'a Input,
     pub gpu: &'a Gpu,
     pub renderer: &'a mut Renderer,
+    /// What draws the overlay: where a game gives its own font
+    /// ([`crate::ui_render::UiRenderer::use_font`]).
+    pub overlay: &'a mut crate::ui_render::UiRenderer,
     /// The drawable size in physical pixels, which is not the window's size
     /// on a HiDPI display.
     pub size: (u32, u32),
@@ -189,6 +192,7 @@ impl<G: Game> Shell<G> {
             gpu: &state.gpu,
             size: (state.surface.width(), state.surface.height()),
             renderer: &mut state.renderer,
+            overlay: &mut state.overlay,
             quit: false,
         }
     }

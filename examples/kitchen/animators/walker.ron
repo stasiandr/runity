@@ -1,0 +1,7 @@
+// A customer outside: walking, and standing still when it stops (`speed`).
+(
+    start: "move",
+    states: {
+        "move": (blend_by: "speed", blend: [(0.0, "idle"), (0.9, "walk")]),
+    },
+)

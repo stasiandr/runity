@@ -23,6 +23,8 @@ struct QuadInstance {
     /// x, y, width, height in pixels from the top left.
     rect: [f32; 4],
     color: [f32; 4],
+    /// The corner radius, and padding.
+    shape: [f32; 4],
 }
 
 #[repr(C)]
@@ -44,9 +46,28 @@ pub struct UiRenderer {
     atlas: TextAtlas,
     viewport: Viewport,
     text: TextRenderer,
+    /// The font the game gave, by its family name; the system's sans-serif
+    /// until then.
+    family: Option<String>,
 }
 
 impl UiRenderer {
+    /// Draw every word with this font from now on: a `.ttf` or `.otf`'s
+    /// bytes — the game's own face over the system's.
+    pub fn use_font(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        let db = self.font_system.db_mut();
+        let before = db.faces().count();
+        db.load_font_data(bytes);
+        let face = db.faces().nth(before).ok_or("not a font: no face in it")?;
+        let name = face
+            .families
+            .first()
+            .map(|(name, _)| name.clone())
+            .ok_or("a font with no family name")?;
+        self.family = Some(name);
+        Ok(())
+    }
+
     /// Build an overlay renderer for an offscreen target.
     pub fn new(gpu: &Gpu, target: &crate::gpu::OffscreenTarget) -> Self {
         Self::with_format(gpu, target.format)
@@ -114,7 +135,7 @@ impl UiRenderer {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<QuadInstance>() as u64,
                         step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
                     })],
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -174,6 +195,7 @@ impl UiRenderer {
             atlas,
             viewport: Viewport::new(&gpu.device, &cache),
             text,
+            family: None,
         }
     }
 
@@ -235,6 +257,7 @@ impl UiRenderer {
             .map(|q| QuadInstance {
                 rect: [q.x, q.y, q.width, q.height],
                 color: q.color.to_array(),
+                shape: [q.radius, 0.0, 0.0, 0.0],
             })
             .collect();
         if quads.len() as u64 > self.capacity {
@@ -265,7 +288,10 @@ impl UiRenderer {
             buffer.set_size(Some(width as f32), Some(height as f32));
             buffer.set_text(
                 &run.text,
-                &Attrs::new().family(Family::SansSerif),
+                &Attrs::new().family(match &self.family {
+                    Some(name) => Family::Name(name),
+                    None => Family::SansSerif,
+                }),
                 // Advanced, not basic: basic shaping cannot handle scripts
                 // that need it, and the text in this project is Cyrillic
                 // before it is anything else.
@@ -279,7 +305,16 @@ impl UiRenderer {
             .iter()
             .map(|(buffer, run)| TextArea {
                 buffer,
-                left: run.x,
+                left: match run.within {
+                    Some((box_width, across)) => {
+                        let wide = buffer
+                            .layout_runs()
+                            .map(|line| line.line_w)
+                            .fold(0.0, f32::max);
+                        run.x + (box_width - wide).max(0.0) * across
+                    }
+                    None => run.x,
+                },
                 top: run.y,
                 scale: 1.0,
                 bounds: match run.clip {

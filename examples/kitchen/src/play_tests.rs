@@ -95,7 +95,9 @@ impl Peer {
         self.events.extend(events);
         session::frame(&mut self.world, &mut self.party, |w, prefab| make(w, prefab, Transform::default()));
         // What the window does after the party: the graphs, the sounds.
-        let problems = runity::motion::attach(&mut self.world, &self.motions, |_| None);
+        let library = self.live.library();
+        let skins = |model: &runity::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        let problems = runity::motion::attach(&mut self.world, &self.motions, skins);
         assert!(problems.is_empty(), "{problems:?}");
         if self.noise.listen(&self.world).contains(&"ding") {
             crate::front::ring(&mut self.world);
@@ -103,6 +105,7 @@ impl Peer {
         for _ in 0..2 {
             tick(&mut self.world, &mut self.physics, &mut self.profile, 1.0 / 60.0);
         }
+        runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
     }
 
     fn seconds(&mut self, seconds: f32) {
@@ -119,7 +122,7 @@ impl Peer {
     fn stand(&mut self, index: u32, tile: (f32, f32), from: Vec3) {
         let c = self.cook(index);
         let mut t = self.world.get::<&mut Transform>(c).unwrap();
-        t.position = Vec3::new(tile.0, 0.45, tile.1) + from;
+        t.position = Vec3::new(tile.0, 0.0, tile.1) + from;
         t.rotation_deg.y = (-from.x).atan2(-from.z).to_degrees();
     }
 
@@ -409,7 +412,7 @@ fn what_a_guests_hands_do_the_host_does_and_everyone_sees() {
     guest.stand(1, BOARD, Vec3::X);
     until(&mut host, &mut guest, |h, _| {
         let at = h.world.get::<&Transform>(h.cook(1)).unwrap().position;
-        (at - Vec3::new(-4.0, 0.45, -2.0)).length() < 0.05
+        (at - Vec3::new(-4.0, 0.0, -2.0)).length() < 0.05
     });
     guest.grab(1);
     guest.act(Act::Work { cook: 1, on: true });
@@ -508,7 +511,8 @@ impl Render {
         let gpu = runity::Gpu::headless_blocking(false).ok()?;
         let target = runity::OffscreenTarget::new(&gpu, width, height);
         let renderer = runity::Renderer::new(&gpu, &target);
-        let overlay = runity::ui_render::UiRenderer::new(&gpu, &target);
+        let mut overlay = runity::ui_render::UiRenderer::new(&gpu, &target);
+        overlay.use_font(crate::front::FONT.to_vec()).expect("the kitchen's font");
         Some(Self {
             gpu,
             target,
@@ -531,7 +535,7 @@ impl Peer {
         r.overlay.draw_pictures(&r.gpu, &mut r.renderer, &frame);
         r.renderer.render(&r.gpu, &r.target, &frame);
         let mut ui = runity::ui::Ui::new();
-        let mut widgets = runity::widgets::Widgets::new();
+        let mut widgets = runity::widgets::Widgets::with_style(crate::front::style());
         let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
         let size = runity::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
         front.draw(
@@ -568,6 +572,25 @@ fn spread(pixels: &[u8]) -> usize {
     seen.len()
 }
 
+/// Every emitter's sprite is on the GPU once the kitchen is up: steam is a
+/// puff, not a white square.
+#[test]
+fn the_particles_sprites_are_uploaded_with_the_kitchen() {
+    let Some(render) = Render::new(64, 64) else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let k = Peer::with(Party::alone("main", &game_components()), Some(render));
+    let r = k.render.as_ref().unwrap();
+    let mut sprites = 0;
+    for emitting in k.world.query::<&runity::particles::Emitting>().iter() {
+        let map = emitting.material.and_then(|m| m.base_map).expect("every effect here has a sprite");
+        assert!(r.renderer.texture_for(map).is_some(), "{:?} has no sprite", emitting.emitter.material);
+        sprites += 1;
+    }
+    assert!(sprites >= 6, "{sprites}");
+}
+
 #[test]
 fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     let Some(render) = Render::new(1280, 720) else {
@@ -601,6 +624,18 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     k.work(0, 0.5);
     k.stand(0, TOMATOES, Vec3::Z);
     k.grab(0);
+    // Both stoves going for the picture: one done and steaming over its
+    // flame, one burnt and smoking.
+    for (tile, food, cooked) in [(STOVE, Food::Tomato, COOK_SECONDS + 2.0), ((2.0, -3.0), Food::Onion, BURN_SECONDS + 1.0)] {
+        let stove = station_at(&k.world, tile);
+        let pot = Pot {
+            foods: vec![food; POT_HOLDS],
+            cooked,
+            ..Pot::default()
+        };
+        k.world.insert_one(stove, pot).unwrap();
+    }
+    k.seconds(1.2);
     let round = k.shot(&mut front, "round");
     assert!(spread(&round) > 20);
     // The board on the wall has the orders on it.
@@ -726,7 +761,7 @@ fn thrown_food_flies_and_lands_on_a_counter_in_a_pot_or_on_the_floor() {
     let c = k.cook(0);
     {
         let mut ct = k.world.get::<&mut Transform>(c).unwrap();
-        ct.position = Vec3::new(t.position.x, 0.45, t.position.z + 0.7);
+        ct.position = Vec3::new(t.position.x, 0.0, t.position.z + 0.7);
         ct.rotation_deg.y = 180.0;
     }
     k.grab(0);
