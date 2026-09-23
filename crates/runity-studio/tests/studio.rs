@@ -351,6 +351,67 @@ fn a_scene_changed_on_disk_comes_in_by_itself() {
 
 #[test]
 fn the_inspector_says_when_nothing_is_selected() {
-    let Some((mut s, _dir)) = studio() else { return };
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
     assert!(s.ui.dump().contains("\"Nothing selected\""));
+}
+
+#[test]
+fn a_colour_typed_or_slid_paints_the_selection() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "line crate");
+    let crate_id = s.session.find("crate").unwrap();
+    click(&mut s, "material hex");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "#ff0000");
+    key(&mut s, Key::Enter);
+    let m = s.session.material(crate_id).unwrap();
+    assert!(
+        (m.base_color[0] - 1.0).abs() < 1e-3 && m.base_color[1] < 1e-3,
+        "{m:?}"
+    );
+
+    // Value to the far left: black, in one step.
+    let steps = s.session.undo_steps().len();
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("material value").unwrap());
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + 1.0,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let m = s.session.material(crate_id).unwrap();
+    assert!(m.base_color.iter().all(|c| *c < 0.01), "{m:?}");
+    assert_eq!(s.session.undo_steps().len(), steps + 1);
+}
+
+#[test]
+fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
+    let Some((mut s, dir)) = studio() else { return };
+    let scene = s.session.scene_path().unwrap().to_path_buf();
+    // The first «asset campfire» is the prefab (prefabs come before models).
+    click(&mut s, "asset campfire");
+    click(&mut s, "asset campfire");
+    assert!(s.session.is_prefab(), "double click opened the prefab");
+    assert!(s.title().contains("(prefab)"));
+    assert!(s.ui.dump().contains("Prefab: campfire"));
+    // An edit in the prefab, then Back: saved, and the scene is open again.
+    click(&mut s, "line ember");
+    key(&mut s, Key::Delete);
+    click(&mut s, "prefab back");
+    assert!(!s.session.is_prefab());
+    assert_eq!(s.session.scene_path(), Some(scene.as_path()));
+    let prefab = std::fs::read_to_string(dir.join("prefabs/campfire.prefab")).unwrap();
+    assert!(
+        !prefab.contains("\"ember\""),
+        "the prefab was saved without its ember"
+    );
 }

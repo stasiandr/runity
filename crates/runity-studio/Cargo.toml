@@ -15,6 +15,7 @@ repository.workspace = true
 # the tests and the `shot` example drive it with no screen.
 [dependencies]
 arboard = { version = "3", default-features = false }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
 runity = { version = "0.1.0", path = "../runity", features = ["desktop-shell"] }
 runity-editor = { version = "0.1.0", path = "../runity-editor" }
 runity-ui = { version = "0.1.0", path = "../runity-ui" }

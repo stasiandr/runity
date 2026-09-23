@@ -26,6 +26,7 @@ struct Running {
     surface: Surface,
     renderer: UiRenderer,
     studio: Studio,
+    title: String,
 }
 
 struct App {
@@ -97,6 +98,7 @@ impl ApplicationHandler for App {
             surface,
             renderer,
             studio,
+            title: String::new(),
         });
     }
 
@@ -134,6 +136,11 @@ impl ApplicationHandler for App {
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
             WindowEvent::RedrawRequested => {
                 run.studio.frame();
+                let title = run.studio.title();
+                if title != run.title {
+                    run.window.set_title(&title);
+                    run.title = title;
+                }
                 let gpu = run.studio.session.gpu();
                 match run.surface.begin_frame() {
                     Ok(frame) => {

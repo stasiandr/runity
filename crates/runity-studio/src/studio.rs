@@ -174,6 +174,12 @@ pub struct Studio {
     discard_asked: Option<std::path::PathBuf>,
     colliders: bool,
     conflict_said: bool,
+    /// The scene to go back to from prefab mode.
+    scene_before_prefab: Option<std::path::PathBuf>,
+    /// The banner over the view in prefab mode, and its Back button.
+    prefab_bar: NodeId,
+    prefab_name: NodeId,
+    prefab_back: NodeId,
     clipboard: SystemClipboard,
 }
 
@@ -254,6 +260,25 @@ impl Studio {
         buttons.push((snap, Action::ToggleSnap));
         let colliders = icon_button(&mut ui, view_tabs, "colliders", "box", false);
         buttons.push((colliders, Action::ToggleColliders));
+        // Prefab mode's banner: what is open, and the way back.
+        let prefab_bar = ui.add(
+            view_slot,
+            Style::row()
+                .height(28.0)
+                .fixed()
+                .full_width()
+                .padding_x(SPACE_3)
+                .gap(SPACE_2)
+                .center_items()
+                .radius(RADIUS_MD)
+                .background(ACCENT_900)
+                .border(1.0, ACCENT.alpha(40))
+                .hidden(),
+        );
+        icon(&mut ui, prefab_bar, "package", ACCENT);
+        let prefab_name = ui.add_text(prefab_bar, text().text_color(ACCENT_200), "");
+        spacer(&mut ui, prefab_bar);
+        let prefab_back = button(&mut ui, prefab_bar, "prefab back", "‹ Back to scene", true);
         let view_frame = ui.add(
             view_slot,
             Style::column()
@@ -330,12 +355,38 @@ impl Studio {
             discard_asked: None,
             colliders: false,
             conflict_said: false,
+            scene_before_prefab: None,
+            prefab_bar,
+            prefab_name,
+            prefab_back,
             clipboard: SystemClipboard::new(),
         };
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
         studio.ui.focus(Some(viewport));
         studio.refresh();
         studio
+    }
+
+    /// What the window's title says: the document, and a dot when it has
+    /// unsaved edits.
+    pub fn title(&self) -> String {
+        let name = self
+            .session
+            .scene_path()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".into());
+        let dot = if self.session.is_modified() {
+            " ●"
+        } else {
+            ""
+        };
+        let prefab = if self.session.is_prefab() {
+            " (prefab)"
+        } else {
+            ""
+        };
+        format!("runity — {name}{prefab}{dot}")
     }
 
     /// The window changed size or moved to a screen with another scale.
@@ -679,6 +730,22 @@ impl Studio {
         set_button_primary(ui, t.save, modified);
         set_icon_button(ui, self.snap, "magnet", s.snap().meters > 0.0, true);
         set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
+        let prefab = s.is_prefab();
+        ui.restyle(self.prefab_bar, |st| {
+            if prefab {
+                st.shown()
+            } else {
+                st.hidden()
+            }
+        });
+        if prefab {
+            let name = s
+                .scene_path()
+                .and_then(|p| p.file_stem())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            ui.set_text(self.prefab_name, &format!("Prefab: {name}"));
+        }
         let game = s.is_game_view();
         set_view_tab(ui, self.tab_scene, !game);
         set_view_tab(ui, self.tab_game, game);
@@ -786,6 +853,10 @@ impl Studio {
         let Event::Click { .. } = event else {
             return false;
         };
+        if node == self.prefab_back {
+            requests.action = Some(Action::ExitPrefab);
+            return true;
+        }
         if let Some((_, action)) = self.buttons.iter().find(|(n, _)| *n == node) {
             requests.action = Some(action.clone());
             requests.keyboard_to_scene = true;
@@ -923,6 +994,81 @@ impl Studio {
                     s.say(Level::Info, format!("opened {}", path.display()));
                     for m in missing {
                         s.say(Level::Warning, m);
+                    }
+                }
+                Action::OpenSceneDialog => {
+                    let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
+                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.pick_file() {
+                        return self.run_inner(Action::OpenScene(path));
+                    }
+                }
+                Action::SaveAs => {
+                    let mut dialog = rfd::FileDialog::new().add_filter("scene", &["ron"]);
+                    if let Some(dir) = s.project().map(|p| p.root().join("scenes")) {
+                        dialog = dialog.set_directory(dir);
+                    }
+                    if let Some(path) = dialog.save_file() {
+                        s.save_scene(Some(&path)).map_err(e)?;
+                        let missing = s.open_scene(&path).map_err(e)?;
+                        for m in missing {
+                            s.say(Level::Warning, m);
+                        }
+                        s.say(Level::Info, format!("saved as {}", path.display()));
+                    }
+                }
+                Action::Import => {
+                    if let Some(paths) = rfd::FileDialog::new()
+                        .add_filter(
+                            "model, texture, sound",
+                            &[
+                                "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg",
+                                "rterrain", "rpoly",
+                            ],
+                        )
+                        .pick_files()
+                    {
+                        for path in paths {
+                            match s.import(&path) {
+                                Ok(notes) => {
+                                    s.say(Level::Info, format!("imported {}", path.display()));
+                                    for n in notes {
+                                        s.say(Level::Warning, n);
+                                    }
+                                }
+                                Err(err) => s.say(Level::Error, err.to_string()),
+                            }
+                        }
+                    }
+                }
+                Action::OpenPrefab(name) => {
+                    if !s.is_prefab() {
+                        self.scene_before_prefab = s.scene_path().map(Path::to_path_buf);
+                    }
+                    if s.is_modified() {
+                        s.save_scene(None).map_err(e)?;
+                    }
+                    let missing = s.open_prefab(&name).map_err(e)?;
+                    for m in missing {
+                        s.say(Level::Warning, m);
+                    }
+                    s.say(
+                        Level::Info,
+                        format!("editing prefab {name}; Back returns to the scene"),
+                    );
+                }
+                Action::ExitPrefab => {
+                    if s.is_prefab() && s.is_modified() {
+                        s.save_scene(None).map_err(e)?;
+                        s.say(Level::Info, "saved the prefab: every instance has it");
+                    }
+                    if let Some(scene) = self.scene_before_prefab.take() {
+                        let missing = s.open_scene(&scene).map_err(e)?;
+                        for m in missing {
+                            s.say(Level::Warning, m);
+                        }
                     }
                 }
                 Action::Save => {

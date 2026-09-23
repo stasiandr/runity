@@ -493,15 +493,8 @@ impl Bottom {
             Event::Click { count, .. } if *count >= 2 => match self.entries.get(&node).cloned() {
                 Some(Asset::Scene(path)) => requests.action = Some(Action::OpenScene(path)),
                 Some(Asset::Prefab(name)) => {
-                    match session.open_prefab(&name) {
-                        Ok(missing) => {
-                            for m in missing {
-                                session.say(Level::Warning, m);
-                            }
-                        }
-                        Err(e) => session.say(Level::Error, e.to_string()),
-                    }
-                    requests.refresh = true;
+                    let _ = session;
+                    requests.action = Some(Action::OpenPrefab(name));
                 }
                 Some(Asset::Model(name)) => requests.action = Some(Action::Place(name)),
                 Some(Asset::Material(name)) => {

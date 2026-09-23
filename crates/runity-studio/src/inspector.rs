@@ -83,6 +83,58 @@ enum Part {
     /// The «…» next to a field with a list to pick from.
     Pick(String),
     AddComponent,
+    /// The material's colour as `#rrggbb`.
+    Hex,
+    /// One of the colour's hue, saturation and value, 0 to 1.
+    Slider(usize),
+}
+
+/// sRGB bytes of a linear colour.
+fn to_srgb(c: [f32; 3]) -> [u8; 3] {
+    c.map(|v| (runity::material::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)
+}
+
+fn hsv_of(rgb: [u8; 3]) -> [f32; 3] {
+    let [r, g, b] = rgb.map(|v| v as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / d).rem_euclid(6.0) / 6.0
+    } else if max == g {
+        ((b - r) / d + 2.0) / 6.0
+    } else {
+        ((r - g) / d + 4.0) / 6.0
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    [h, s, max]
+}
+
+fn rgb_of(hsv: [f32; 3]) -> [u8; 3] {
+    let [h, s, v] = hsv;
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let (p, q, t) = (v * (1.0 - s), v * (1.0 - f * s), v * (1.0 - (1.0 - f) * s));
+    let (r, g, b) = match (i as i32).rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [r, g, b].map(|c| (c * 255.0).round() as u8)
+}
+
+fn parse_hex(text: &str) -> Option<[u8; 3]> {
+    let t = text.trim().trim_start_matches('#');
+    if t.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(t, 16).ok()?;
+    Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
 }
 
 pub struct Inspector {
@@ -95,6 +147,12 @@ pub struct Inspector {
     slots: Vec<(String, Option<usize>, NodeId, String)>,
     revealed: BTreeSet<String>,
     playing: bool,
+    /// The material editor's colour while it is being dragged, and its
+    /// nodes: the swatch, the hex box, the three tracks.
+    hsv: [f32; 3],
+    swatch: Option<NodeId>,
+    hex: Option<NodeId>,
+    tracks: [Option<NodeId>; 3],
     /// Built at least once: an empty selection at the start is still a
     /// panel to build.
     built: bool,
@@ -115,6 +173,10 @@ impl Inspector {
             revealed: BTreeSet::new(),
             playing: false,
             built: false,
+            hsv: [0.0; 3],
+            swatch: None,
+            hex: None,
+            tracks: [None; 3],
         }
     }
 
@@ -173,6 +235,9 @@ impl Inspector {
         ui.clear(self.body);
         self.parts.clear();
         self.slots.clear();
+        self.swatch = None;
+        self.hex = None;
+        self.tracks = [None; 3];
         if ids.is_empty() {
             let empty = ui.add(self.body, Style::column().padding(SPACE_4).gap(SPACE_2));
             ui.add_text(empty, text().text_color(MUTED), "Nothing selected");
@@ -272,6 +337,11 @@ impl Inspector {
             self.heading(ui, name);
             for f in group {
                 self.line(ui, f);
+                if f.name == "material" && f.value != MIXED {
+                    if let Some(m) = session.material(ids[0]) {
+                        self.color_editor(ui, m.base_color);
+                    }
+                }
             }
         }
         if !game.is_empty() {
@@ -463,6 +533,103 @@ impl Inspector {
         }
     }
 
+    /// The material's colour: a swatch, `#rrggbb`, and hue, saturation
+    /// and value tracks. Unity's colour field, flattened into the panel.
+    fn color_editor(&mut self, ui: &mut Ui, linear: [f32; 3]) {
+        let rgb = to_srgb(linear);
+        self.hsv = hsv_of(rgb);
+        let line = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(2.0)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add(line, Style::row().width(84.0).fixed());
+        let swatch = ui.add(
+            line,
+            Style::row()
+                .size(22.0, 22.0)
+                .fixed()
+                .radius(6.0)
+                .border(1.0, DIVIDER)
+                .background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255)),
+        );
+        ui.set_name(swatch, "material swatch");
+        let hex = ui.add_field(
+            line,
+            field_style().width(86.0).mono().text_size(11.5),
+            &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+        );
+        ui.set_name(hex, "material hex");
+        self.parts.insert(hex, Part::Hex);
+        let tracks = ui.add(line, Style::column().fill().gap(3.0));
+        for (i, name) in ["hue", "saturation", "value"].into_iter().enumerate() {
+            let track = ui.add(
+                tracks,
+                Style::row()
+                    .full_width()
+                    .height(6.0)
+                    .radius(3.0)
+                    .background(DIVIDER)
+                    .draggable()
+                    .clickable(),
+            );
+            ui.set_name(track, format!("material {name}"));
+            ui.add(
+                track,
+                Style::row()
+                    .full_height()
+                    .radius(3.0)
+                    .background(ACCENT.alpha(70)),
+            );
+            self.parts.insert(track, Part::Slider(i));
+            self.tracks[i] = Some(track);
+        }
+        self.swatch = Some(swatch);
+        self.hex = Some(hex);
+        self.show_color(ui);
+    }
+
+    /// The swatch, the hex and the tracks, for the colour being edited.
+    fn show_color(&mut self, ui: &mut Ui) {
+        let rgb = rgb_of(self.hsv);
+        if let Some(sw) = self.swatch {
+            ui.restyle(sw, |s| {
+                s.background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255))
+            });
+        }
+        if let Some(hex) = self.hex {
+            if ui.focused() != Some(hex) {
+                ui.set_text(hex, &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+            }
+        }
+        for (i, track) in self.tracks.iter().enumerate() {
+            let Some(track) = track else { continue };
+            let width = ui.rect(*track).width.max(1.0);
+            if let Some(fill) = ui.children(*track).first().copied() {
+                let v = self.hsv[i];
+                ui.restyle(fill, |s| s.width((v * width).max(6.0)));
+            }
+        }
+    }
+
+    /// Give the selection the colour being edited: one undo step.
+    fn apply_color(&mut self, session: &mut Session) {
+        let [r, g, b] = rgb_of(self.hsv);
+        let material = runity::Material::from_srgb(r, g, b);
+        for id in self.showing.clone() {
+            let mut m = session.material(id).unwrap_or(material);
+            m.base_color = material.base_color;
+            if let Err(e) = session.set_material(id, m) {
+                session.say(Level::Error, e.to_string());
+                break;
+            }
+        }
+    }
+
     pub fn event(
         &mut self,
         ui: &mut Ui,
@@ -498,6 +665,25 @@ impl Inspector {
                 let items = self.choices(session, &field);
                 let r = ui.rect(node);
                 requests.menu = Some((items, r.x - 180.0, r.y + r.height));
+            }
+            (Part::Slider(i), Event::Press { x, .. } | Event::Drag { x, .. }) => {
+                let r = ui.rect(node);
+                self.hsv[i] = ((x - r.x) / r.width.max(1.0)).clamp(0.0, 1.0);
+                self.show_color(ui);
+            }
+            (Part::Slider(_), Event::Release { .. }) => {
+                self.apply_color(session);
+                requests.refresh = true;
+            }
+            (Part::Hex, Event::Submit(text)) => {
+                match parse_hex(text) {
+                    Some(rgb) => {
+                        self.hsv = hsv_of(rgb);
+                        self.apply_color(session);
+                    }
+                    None => session.say(Level::Error, format!("{text:?} is not a colour: #rrggbb")),
+                }
+                requests.refresh = true;
             }
             (Part::AddComponent, Event::Submit(name)) => {
                 let name = name.trim().to_string();
@@ -644,6 +830,21 @@ mod tests {
         assert_eq!(eval("-3+1"), Some(-2.0));
         assert_eq!(eval("2+3*4"), Some(14.0));
         assert_eq!(eval("abc"), None);
+    }
+
+    #[test]
+    fn colours_go_round_hsv() {
+        for rgb in [
+            [0x91, 0x84, 0xd9],
+            [255, 0, 0],
+            [12, 200, 90],
+            [0, 0, 0],
+            [255, 255, 255],
+        ] {
+            assert_eq!(rgb_of(hsv_of(rgb)), rgb);
+        }
+        assert_eq!(parse_hex("#9184d9"), Some([0x91, 0x84, 0xd9]));
+        assert_eq!(parse_hex("nope"), None);
     }
 
     #[test]

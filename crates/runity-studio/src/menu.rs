@@ -16,6 +16,15 @@ use runity_editor::Side;
 pub enum Action {
     NewScene,
     OpenScene(PathBuf),
+    /// Ask for a scene file and open it.
+    OpenSceneDialog,
+    /// Ask where, and save the scene there.
+    SaveAs,
+    /// Ask for files and import them into the project.
+    Import,
+    OpenPrefab(String),
+    /// Save the prefab and go back to the scene it was opened from.
+    ExitPrefab,
     Save,
     ReloadAssets,
     StartGame,
@@ -119,8 +128,11 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             "File",
             vec![
                 item("New Scene", Action::NewScene),
+                item("Open Scene…", Action::OpenSceneDialog),
                 item("Save", Action::Save).key(key!("⌘S", "Ctrl+S")),
+                item("Save As…", Action::SaveAs),
                 MenuItem::separator(),
+                item("Import…", Action::Import),
                 item("Reload Assets", Action::ReloadAssets),
                 MenuItem::separator(),
                 item("Run Game", Action::StartGame),
