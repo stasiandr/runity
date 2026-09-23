@@ -133,6 +133,9 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
             speed_from: (state.body.i64("m_SpeedParameterActive") == Some(1))
                 .then(|| state.body.str("m_SpeedParameter").map(str::to_string))
                 .flatten(),
+            time_from: (state.body.i64("m_TimeParameterActive") == Some(1))
+                .then(|| state.body.str("m_TimeParameter").map(str::to_string))
+                .flatten(),
         };
         if let Some(m) = motion.filter(|m| !m.is_none()) {
             if let Some(tree) = m.guid.is_none().then(|| by_id.get(&m.file_id)).flatten() {
@@ -254,6 +257,8 @@ AnimatorState:
 AnimatorState:
   m_Name: Jump
   m_Speed: 1
+  m_TimeParameterActive: 1
+  m_TimeParameter: speed
   m_Transitions: []
   m_Motion: {fileID: 0}
 --- !u!1101 &400
@@ -300,6 +305,7 @@ AnimatorStateTransition:
         .unwrap();
         assert_eq!(graph.start, "Idle");
         assert_eq!(graph.states["Idle"].clip, "Idle");
+        assert_eq!(graph.states["Jump"].time_from.as_deref(), Some("speed"));
         assert!(graph.transitions.iter().any(|t| t.from == "*"
             && t.to == "Jump"
             && t.when == vec![Condition::Trigger("jump".into())]));

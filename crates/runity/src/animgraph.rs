@@ -76,6 +76,11 @@ pub struct State {
     /// faster the character goes.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub speed_from: Option<String>,
+    /// A parameter that says where in the clip it stands, 0 at its start
+    /// and 1 at its end, instead of it playing: a house going up as its
+    /// health fills. Unity's Motion Time.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub time_from: Option<String>,
 }
 
 fn yes() -> bool {
@@ -175,6 +180,8 @@ mod file {
         pub speed: f32,
         #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
         pub speed_from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        pub time_from: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub transitions: Vec<Exit>,
     }
@@ -215,6 +222,7 @@ mod file {
                         looping: s.looping,
                         speed: s.speed,
                         speed_from: s.speed_from,
+                        time_from: s.time_from,
                     },
                 );
             }
@@ -262,6 +270,7 @@ mod file {
                                 looping: s.looping,
                                 speed: s.speed,
                                 speed_from: s.speed_from.clone(),
+                                time_from: s.time_from.clone(),
                                 transitions: from(name),
                             },
                         )
@@ -485,8 +494,13 @@ impl Controller {
                     animator.blend(a, b, w, 0.0);
                 }
             }
-            let factor = state.speed_from.as_deref().map_or(1.0, |p| self.param(p));
-            animator.set_speed(state.speed * factor);
+            if let Some(p) = state.time_from.as_deref() {
+                animator.set_speed(0.0);
+                animator.set_fraction(self.param(p));
+            } else {
+                let factor = state.speed_from.as_deref().map_or(1.0, |p| self.param(p));
+                animator.set_speed(state.speed * factor);
+            }
         }
         self.fire_events(animator, entered.is_some());
         entered.map(|(name, _)| name)
@@ -712,6 +726,26 @@ mod tests {
         );
         animator.advance(0.6);
         assert_eq!(controller.update(&mut animator).as_deref(), Some("idle"));
+    }
+
+    #[test]
+    fn a_parameter_scrubs_a_clip_that_does_not_play_on_its_own() {
+        let graph: Graph = ron::from_str(
+            r#"(start: "build", states: {"build": (clip: "jump", time_from: "health")})"#,
+        )
+        .unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.set("health", 0.5);
+        controller.update(&mut animator);
+        animator.advance(1.0);
+        controller.update(&mut animator);
+        let at = animator.playing().unwrap();
+        assert_eq!(at.time, 0.25, "half of a half-second clip, time or no time");
+        assert_eq!(at.speed, 0.0);
+        controller.set("health", 1.0);
+        controller.update(&mut animator);
+        assert_eq!(animator.playing().unwrap().time, 0.5);
     }
 
     #[test]

@@ -107,6 +107,15 @@ impl Animator {
         }
     }
 
+    /// Stand the clip playing at `fraction` of its length, 0..1: a clip
+    /// a parameter scrubs instead of time.
+    pub fn set_fraction(&mut self, fraction: f32) {
+        if let Some(playing) = &mut self.current {
+            let length = self.clips.get(playing.clip).map_or(0.0, |c| c.duration);
+            playing.time = fraction.clamp(0.0, 1.0) * length;
+        }
+    }
+
     pub fn set_speed(&mut self, speed: f32) {
         if let Some(playing) = &mut self.current {
             playing.speed = speed;

@@ -544,6 +544,12 @@ impl Animator {
                     "speed_from",
                     state.speed_from.as_deref().unwrap_or(""),
                 );
+                self.field(
+                    ui,
+                    "time from",
+                    "time_from",
+                    state.time_from.as_deref().unwrap_or(""),
+                );
                 // A blend tree and events only where there are some, or
                 // once asked for: most states are one clip.
                 let blends =
@@ -872,6 +878,10 @@ impl Animator {
                         state.speed_from = (!value.is_empty()).then(|| value.to_string());
                         Ok(())
                     }
+                    "time_from" => {
+                        state.time_from = (!value.is_empty()).then(|| value.to_string());
+                        Ok(())
+                    }
                     "blend_by" => {
                         state.blend_by = value.to_string();
                         Ok(())
@@ -1050,6 +1060,7 @@ fn state(name: &str) -> State {
         looping: true,
         speed: 1.0,
         speed_from: None,
+        time_from: None,
     }
 }
 
@@ -1145,6 +1156,9 @@ fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
     }
     if let Some(p) = &s.speed_from {
         fields.push(format!("speed_from: {}", quote(p)));
+    }
+    if let Some(p) = &s.time_from {
+        fields.push(format!("time_from: {}", quote(p)));
     }
     if !exits.is_empty() {
         fields.push(format!("transitions: {}", exit_list(exits, "        ")));
