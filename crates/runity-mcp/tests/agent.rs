@@ -121,6 +121,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "hide",
         "isolate",
         "place",
+        "to_view",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

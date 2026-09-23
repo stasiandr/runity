@@ -28,6 +28,7 @@
 //! | Ctrl Z / Ctrl Y, Ctrl Shift Z | undo / redo |
 //! | Ctrl C / Ctrl V | copy / paste |
 //! | Ctrl S | save |
+//! | Ctrl Alt F / Ctrl Shift F | move the selection to the view / put it where the view is |
 //! | Escape | select nothing |
 //!
 //! Ctrl is Cmd on a Mac.
@@ -177,6 +178,11 @@ impl Session {
             if pressed(Key::S) {
                 self.save_scene(None)?;
                 did.push("save");
+            }
+            if pressed(Key::F) && alt && self.move_to_view()? {
+                did.push("move to view");
+            } else if pressed(Key::F) && shift && self.align_with_view()? {
+                did.push("align with view");
             }
         } else if !flying {
             for (key, tool, name) in [

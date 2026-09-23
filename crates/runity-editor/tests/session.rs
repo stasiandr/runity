@@ -2932,3 +2932,58 @@ fn a_hierarchy_drag_reorders_and_reparents_without_moving_anything_in_the_world(
     session.undo().unwrap();
     assert_eq!(names(&session), ["lid", "crate", "ground"]);
 }
+
+#[test]
+fn move_to_view_and_align_with_view_place_things_from_the_camera() {
+    use runity::glam::Vec3;
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"eye\", camera: (fov_deg: 50.0)),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("to-view", &scene) else {
+        return;
+    };
+    let (crate_id, lid, eye) = (
+        id(&session, "crate"),
+        id(&session, "lid"),
+        id(&session, "eye"),
+    );
+    let lid_above =
+        session.world_position(lid).unwrap() - session.world_position(crate_id).unwrap();
+
+    // The crate to where the view looks, its lid with it.
+    session.set_camera(Vec3::new(9.0, 6.0, 9.0), Vec3::new(5.0, 0.0, -3.0));
+    session.select(Some(crate_id)).unwrap();
+    assert!(session.move_to_view().unwrap());
+    assert!(
+        (session.world_position(crate_id).unwrap() - Vec3::new(5.0, 0.0, -3.0)).length() < 1e-4
+    );
+    assert!(
+        (session.world_position(lid).unwrap()
+            - session.world_position(crate_id).unwrap()
+            - lid_above)
+            .length()
+            < 1e-4
+    );
+
+    // The game's camera to where the view is, looking where it looks.
+    session.select(Some(eye)).unwrap();
+    assert!(session.align_with_view().unwrap());
+    let game = session.game_camera().expect("the eye is a camera");
+    let view = session.camera();
+    assert!(
+        (game.position - view.position).length() < 1e-3,
+        "{}",
+        game.position
+    );
+    let (a, b) = (
+        (game.target - game.position).normalize(),
+        (view.target - view.position).normalize(),
+    );
+    assert!(a.dot(b) > 0.9999, "{a} vs {b}");
+    session.undo().unwrap();
+    assert!(
+        session.world_position(eye).unwrap().length() < 1e-4,
+        "one step"
+    );
+}

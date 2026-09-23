@@ -113,6 +113,7 @@ pub fn list() -> Vec<Value> {
             "flatten": { "type": "boolean" },
         }), &["id", "at", "radius", "by"]),
         tool("place", "Put entities on whatever a pixel of the last render shows — a table's top, a wall, a slope — by the bottom of their box, keeping their places relative to each other. One undo step. Pixels from the top left, as `pick` takes them.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["ids", "x", "y"]),
+        tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -576,6 +577,24 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 "opened {}; scenes: {names}",
                 path.display()
             ))])
+        }
+        "to_view" => {
+            let id = id(args, "id")?;
+            let how = string(args, "how")?;
+            let session = server.session()?;
+            session.select(Some(id)).map_err(|e| e.to_string())?;
+            let done = match how.as_str() {
+                "move" => session.move_to_view(),
+                "align" => session.align_with_view(),
+                other => return Err(format!("how is move or align, not {other}")),
+            }
+            .map_err(|e| e.to_string())?;
+            let at = session.world_position(id).unwrap_or_default();
+            Ok(vec![text(if done {
+                format!("at ({:.2}, {:.2}, {:.2})", at.x, at.y, at.z)
+            } else {
+                "not moved".to_string()
+            })])
         }
         "hide" => {
             let ids = id_list(args)?;

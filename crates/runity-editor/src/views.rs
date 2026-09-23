@@ -197,6 +197,66 @@ impl Session {
         }
     }
 
+    /// Move to View: the selection to where the view looks, as one undo
+    /// step — Unity's Ctrl Alt F. The gizmo's entity lands on the view's
+    /// pivot; the rest keep their places relative to it.
+    pub fn move_to_view(&mut self) -> crate::EditResult<bool> {
+        let Some(id) = self.selected else {
+            return Ok(false);
+        };
+        let Some(from) = self.world_position(id) else {
+            return Ok(false);
+        };
+        self.translate_selection_world(self.camera.target - from)?;
+        Ok(true)
+    }
+
+    /// Move every selected root by `offset` in the world, one undo step.
+    fn translate_selection_world(&mut self, offset: Vec3) -> crate::EditResult<()> {
+        self.refuse_while_playing()?;
+        let moves: Vec<(runity::EntityId, Vec3)> = self
+            .selection_roots()
+            .into_iter()
+            .map(|r| (r, self.parent_matrix(r).inverse().transform_vector3(offset)))
+            .collect();
+        let scene = self.history.edit();
+        for (id, local) in moves {
+            if let Some(desc) = scene.get_mut(id) {
+                desc.transform.position += local;
+            }
+        }
+        self.respawn();
+        Ok(())
+    }
+
+    /// Align with View: the selected entity stands where the view does and
+    /// looks where it looks (+z forward), one undo step — Ctrl Shift F, how
+    /// a game camera is placed: fly to the shot, then this.
+    pub fn align_with_view(&mut self) -> crate::EditResult<bool> {
+        let Some(id) = self.selected else {
+            return Ok(false);
+        };
+        let forward = (self.camera.target - self.camera.position).normalize_or_zero();
+        if forward == Vec3::ZERO {
+            return Ok(false);
+        }
+        let up = self.camera.up;
+        let right = up.cross(forward).normalize_or_zero();
+        let up = forward.cross(right);
+        let turn =
+            runity::glam::Quat::from_mat3(&runity::glam::Mat3::from_cols(right, up, forward));
+        let world = runity::glam::Mat4::from_rotation_translation(turn, self.camera.position);
+        let parent = self.parent_matrix(id);
+        let (_, rotation, position) = (parent.inverse() * world).to_scale_rotation_translation();
+        let Some(mut transform) = self.transform(id) else {
+            return Ok(false);
+        };
+        transform.position = position;
+        transform.set_rotation(rotation);
+        self.set_transform(id, transform)?;
+        Ok(true)
+    }
+
     /// Look through another camera exactly — the game's, lens and all.
     pub fn look_through(&mut self, camera: runity::Camera) {
         self.camera = camera;
