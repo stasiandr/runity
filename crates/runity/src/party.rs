@@ -193,6 +193,52 @@ pub struct Party {
     silent: std::collections::HashSet<EntityId>,
     outbox: Vec<ToServer>,
     local: Vec<Event>,
+    /// This process's clock, and what it has learned of the server's.
+    clock: Clock,
+}
+
+/// The server's clock as seen from here: each answer to a question sent
+/// at `sent` and heard at `now` says the server read `server` about half
+/// way between, give or take half the round trip. Of the last few, the
+/// quickest round trip is trusted — a slow one was held up somewhere, one
+/// way or the other, and says less.
+#[derive(Debug)]
+struct Clock {
+    began: Instant,
+    since_ask: f32,
+    /// (round trip, offset to add to ours), newest last.
+    samples: std::collections::VecDeque<(f64, f64)>,
+}
+
+impl Clock {
+    fn new() -> Self {
+        Self {
+            began: Instant::now(),
+            // Asks as soon as it can.
+            since_ask: f32::MAX,
+            samples: Default::default(),
+        }
+    }
+
+    fn now(&self) -> f64 {
+        self.began.elapsed().as_secs_f64()
+    }
+
+    fn heard(&mut self, sent: f64, server: f64) {
+        let now = self.now();
+        let trip = (now - sent).max(0.0);
+        self.samples.push_back((trip, server + trip * 0.5 - now));
+        while self.samples.len() > 8 {
+            self.samples.pop_front();
+        }
+    }
+
+    fn best(&self) -> Option<(f64, f64)> {
+        self.samples
+            .iter()
+            .copied()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
 }
 
 /// The server's end of a client's link.
@@ -225,6 +271,7 @@ impl Party {
             silent: Default::default(),
             outbox: Vec::new(),
             local: Vec::new(),
+            clock: Clock::new(),
         }
     }
 
@@ -341,6 +388,20 @@ impl Party {
     }
 
     /// Which peer this is, as the server numbered it (the host is 0).
+    /// The session's clock, seconds since it began, the same on every
+    /// machine give or take a few milliseconds: when a timed thing
+    /// started, a countdown everyone sees end together. Our own clock
+    /// until the server has answered (and alone).
+    pub fn server_time(&self) -> f64 {
+        self.clock.now() + self.clock.best().map_or(0.0, |(_, offset)| offset)
+    }
+
+    /// How long a message takes there and back, seconds, at best of the
+    /// last few; `None` before the first answer, or alone.
+    pub fn round_trip(&self) -> Option<f64> {
+        self.clock.best().map(|(trip, _)| trip)
+    }
+
     pub fn me(&self) -> PeerId {
         self.sync.me
     }
@@ -534,6 +595,15 @@ impl Party {
             self.send(claims, Mode::Reliable);
         }
         self.sync.mark(world);
+        if matches!(self.stage, Stage::Loading | Stage::Playing) {
+            // What time the server says, once a second.
+            self.clock.since_ask += delta;
+            if self.clock.since_ask >= 1.0 {
+                self.clock.since_ask = 0.0;
+                let sent = self.clock.now();
+                self.send(vec![ToServer::Clock { sent }], Mode::Unreliable);
+            }
+        }
         if playing {
             self.since_send += delta;
             let period = 1.0 / NET_HZ;
@@ -635,6 +705,7 @@ impl Party {
                 events.push(Event::SceneRequired { scene });
             }
             ToClient::SessionEnding => self.lose(true, events),
+            ToClient::Clock { sent, server } => self.clock.heard(sent, server),
             ToClient::Rpc { from, kind, body } => events.push(Event::Message { from, kind, body }),
             other => {
                 for noticed in self.sync.apply(world, components, other, spawn) {
@@ -1083,6 +1154,23 @@ mod tests {
         }
         game.frames(10);
         assert!(game.parties.iter().all(|p| p.welcomed()));
+    }
+
+    #[test]
+    fn everyone_reads_the_same_session_clock_over_a_slow_link() {
+        let slow = Conditions {
+            latency: Duration::from_millis(30),
+            ..Conditions::GOOD
+        };
+        let mut game = Game::new(1, slow);
+        game.until(3000, |g| g.parties.iter().all(|p| p.round_trip().is_some()));
+        let trip = game.parties[1].round_trip().unwrap();
+        assert!(trip >= 0.025, "the delay shows in the round trip: {trip}");
+        let apart = (game.parties[0].server_time() - game.parties[1].server_time()).abs();
+        assert!(
+            apart < 0.03,
+            "the host's and the guest's clocks: {apart} s apart"
+        );
     }
 
     #[test]
