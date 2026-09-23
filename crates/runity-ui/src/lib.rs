@@ -295,6 +295,9 @@ pub struct Ui {
     alt: bool,
     command: bool,
     clipboard: Box<dyn Clipboard>,
+    /// Colours drawn as others, by their RGB: a theme changed while the
+    /// tree stays as built (see [`Ui::set_palette`]).
+    palette: HashMap<[u8; 3], [u8; 3]>,
 }
 
 /// How far a press moves before it is a drag rather than a click.
@@ -350,6 +353,7 @@ impl Ui {
             alt: false,
             command: false,
             clipboard: Box::new(field::LocalClipboard::default()),
+            palette: HashMap::new(),
         }
     }
 
@@ -787,6 +791,27 @@ impl Ui {
     }
 
     /// What to draw: laid out and painted again only if something changed.
+    /// Draw every colour whose RGB is a key as the value's RGB, keeping
+    /// its alpha: a theme's tokens swapped under a built tree, so that a
+    /// theme file edited while the editor runs shows at once (DNA,
+    /// postulate 1). An empty map draws the colours as they are.
+    pub fn set_palette(&mut self, palette: HashMap<[u8; 3], [u8; 3]>) {
+        if palette != self.palette {
+            self.palette = palette;
+            self.paint_dirty = true;
+        }
+    }
+
+    /// A colour as the palette draws it.
+    pub fn tint(&self, c: Color) -> Color {
+        let [r, g, b] = self
+            .palette
+            .get(&[c.r, c.g, c.b])
+            .copied()
+            .unwrap_or([c.r, c.g, c.b]);
+        Color { r, g, b, a: c.a }
+    }
+
     pub fn paint(&mut self) -> &[Layer] {
         self.layout();
         if self.paint_dirty {
@@ -887,7 +912,8 @@ impl Ui {
         let is_field = node.field.is_some();
         let focused = self.focused == Some(id);
         let has_text = node.text.is_some();
-        let text_color = node.style.text.color;
+        let text_color = self.tint(node.style.text.color);
+        let (fill, border) = (self.tint(fill), self.tint(border));
         let scroll = node.scroll;
         let layer = self.layers.last_mut().expect("there is always a layer");
         if fill.is_visible() || (border.is_visible() && look.border_width > 0.0) {

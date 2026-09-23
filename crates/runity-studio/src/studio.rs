@@ -248,6 +248,8 @@ pub struct Studio {
     view_slot: NodeId,
     /// The lower dock's height before the UI Builder went wide.
     lower_before_wide: Option<f32>,
+    /// When the theme file was last read.
+    theme_stamp: Option<std::time::SystemTime>,
     left: NodeId,
     right: NodeId,
     lower: NodeId,
@@ -540,6 +542,7 @@ impl Studio {
             splits: [split_left, split_lower, split_right],
             view_slot,
             lower_before_wide: None,
+            theme_stamp: None,
             left,
             right,
             lower,
@@ -1199,12 +1202,42 @@ impl Studio {
 
     /// Twice a second, pick up what changed on disk: the scene edited in a
     /// text editor or by git, an asset re-exported (DNA, postulate 1).
+    /// `.runity/theme.ron`, when it changed: Nocturne's colours drawn as
+    /// the file says, with the editor running. A file that does not read
+    /// says why in the Console and the last good colours stay.
+    fn poll_theme(&mut self) {
+        let Some(path) = self
+            .session
+            .project()
+            .map(|p| p.root().join(".runity").join("theme.ron"))
+        else {
+            return;
+        };
+        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if stamp == self.theme_stamp {
+            return;
+        }
+        self.theme_stamp = stamp;
+        if stamp.is_none() {
+            self.ui.set_palette(Default::default());
+            return;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        match crate::theme::palette(&text) {
+            Ok(palette) => self.ui.set_palette(palette),
+            Err(e) => self
+                .session
+                .say(Level::Error, format!("{}: {e}", path.display())),
+        }
+    }
+
     fn poll_disk(&mut self) {
         if self.polled.elapsed().as_secs_f32() < 0.5 {
             return;
         }
         self.polled = Instant::now();
         self.save_layout();
+        self.poll_theme();
         match self.session.reload_scene() {
             Ok(runity_editor::SceneReload::Reloaded) => {
                 self.session.say(
@@ -1323,7 +1356,8 @@ impl Studio {
         }
         let started = Instant::now();
         let gpu = self.session.gpu();
-        renderer.draw(gpu, view, width, height, &mut self.ui, Some(BG));
+        let ground = self.ui.tint(BG);
+        renderer.draw(gpu, view, width, height, &mut self.ui, Some(ground));
         self.last_draw_ms = started.elapsed().as_secs_f32() * 1e3;
     }
 
@@ -1954,12 +1988,16 @@ impl Studio {
                     }
                 }
                 Action::FieldReset(field) => {
-                    for id in s.selection() {
+                    for id in self.inspector.targets(s) {
                         s.reset_field(id, &field).map_err(e)?;
                     }
                 }
                 Action::FieldCopy(field) => {
-                    let id = s.selected().ok_or("nothing selected")?;
+                    let id = *self
+                        .inspector
+                        .targets(s)
+                        .first()
+                        .ok_or("nothing selected")?;
                     let value = s
                         .inspect(id)
                         .and_then(|f| f.into_iter().find(|f| f.name == field))
@@ -1969,11 +2007,11 @@ impl Studio {
                 }
                 Action::FieldPaste(field) => {
                     let value = self.clipboard.get().unwrap_or_default();
-                    let ids = s.selection();
+                    let ids = self.inspector.targets(s);
                     s.set_field_all(&ids, &field, value.trim()).map_err(e)?;
                 }
                 Action::FieldRemove(field) => {
-                    for id in s.selection() {
+                    for id in self.inspector.targets(s) {
                         match field.strip_prefix("components.") {
                             Some(name) => s.set_component(id, name, None).map_err(e)?,
                             None => s.reset_field(id, &field).map_err(e)?,

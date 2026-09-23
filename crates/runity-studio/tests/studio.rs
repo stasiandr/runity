@@ -1482,3 +1482,75 @@ fn ui_builder_moves_and_edits_a_screen() {
     s.ui.paint();
     assert!(s.ui.rect(s.ui.find("scene view").unwrap()).height > 300.0);
 }
+
+#[test]
+fn a_locked_inspector_keeps_its_entity() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let boulder = s.session.find("boulder").unwrap();
+    let crate_ = s.session.find("crate").unwrap();
+    click(&mut s, "line boulder");
+    click(&mut s, "inspector lock");
+    click(&mut s, "line crate");
+    assert_eq!(s.session.selection(), vec![crate_]);
+    let name = s.ui.find("inspector name").unwrap();
+    assert_eq!(s.ui.text(name), Some("boulder"), "still the boulder");
+
+    // Typing goes to the boulder, not the selection.
+    let crate_before = s.session.transform(crate_).unwrap();
+    fill(&mut s, "position x", "7");
+    assert_eq!(s.session.transform(boulder).unwrap().position.x, 7.0);
+    assert_eq!(s.session.transform(crate_).unwrap(), crate_before);
+
+    // Unlocked, it follows the selection again.
+    click(&mut s, "inspector lock");
+    let name = s.ui.find("inspector name").unwrap();
+    assert_eq!(s.ui.text(name), Some("crate"));
+}
+
+#[test]
+fn a_theme_file_recolours_the_running_editor() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join(".runity/theme.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    let surface = [0x23, 0x25, 0x32];
+    let has = |s: &mut Studio, rgb: [u8; 3]| {
+        s.ui.paint()
+            .iter()
+            .flat_map(|l| l.rects.iter())
+            .any(|r| [r.fill.r, r.fill.g, r.fill.b] == rgb)
+    };
+    assert!(has(&mut s, surface));
+    std::fs::write(&file, r##"{"SURFACE": "#402020"}"##).unwrap();
+    let wait = |s: &mut Studio, until: &dyn Fn(&mut Studio) -> bool| {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            s.frame();
+            if until(s) {
+                return true;
+            }
+        }
+        false
+    };
+    assert!(
+        wait(&mut s, &|s| has(s, [0x40, 0x20, 0x20])),
+        "panels in the new colour"
+    );
+    assert!(!has(&mut s, surface));
+
+    // A bad file says so and keeps the colours.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(&file, r##"{"SURFAC": "#402020"}"##).unwrap();
+    assert!(
+        wait(&mut s, &|s| s.session.console_counts().2 > 0),
+        "an error said"
+    );
+    assert!(has(&mut s, [0x40, 0x20, 0x20]));
+
+    // Gone: Nocturne again.
+    std::fs::remove_file(&file).unwrap();
+    assert!(wait(&mut s, &|s| has(s, surface)));
+}

@@ -490,3 +490,29 @@ fn asking_about_a_removed_node_is_an_answer_not_a_crash() {
     assert_eq!(ui.rect(gone).width, 0.0);
     assert!(!ui.is_field(gone));
 }
+
+#[test]
+fn a_palette_recolours_a_built_tree() {
+    let mut ui = editor_like();
+    let before = ui.revision();
+    ui.paint();
+    let red = [0xe0, 0x40, 0x40];
+    ui.set_palette([([0x23, 0x25, 0x32], red)].into_iter().collect());
+    let layers = ui.paint();
+    let fills: Vec<Color> = layers
+        .iter()
+        .flat_map(|l| l.rects.iter().map(|r| r.fill))
+        .collect();
+    assert!(
+        fills.iter().any(|c| [c.r, c.g, c.b] == red),
+        "SURFACE drawn red"
+    );
+    assert!(!fills.iter().any(|c| [c.r, c.g, c.b] == [0x23, 0x25, 0x32]));
+    assert!(fills.contains(&BG), "the rest as it was");
+    assert!(ui.revision() > before);
+    // The same palette again: nothing to redo.
+    let r = ui.revision();
+    ui.set_palette([([0x23, 0x25, 0x32], red)].into_iter().collect());
+    ui.paint();
+    assert_eq!(ui.revision(), r);
+}

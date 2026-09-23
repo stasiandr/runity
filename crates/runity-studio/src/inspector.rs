@@ -233,14 +233,31 @@ pub struct Inspector {
     /// Built at least once: an empty selection at the start is still a
     /// panel to build.
     built: bool,
+    /// Unity's padlock: the entities shown whatever is selected after.
+    locked: Option<Vec<EntityId>>,
+    lock_button: NodeId,
 }
 
 impl Inspector {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
         let card = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(card, "inspector");
+        // A strip over the fields for the padlock.
+        let strip = ui.add(
+            card,
+            Style::row()
+                .full_width()
+                .height(22.0)
+                .fixed()
+                .padding_x(SPACE_2)
+                .center_items(),
+        );
+        spacer(ui, strip);
+        let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
+            locked: None,
+            lock_button,
             root: card,
             body,
             showing: Vec::new(),
@@ -262,14 +279,49 @@ impl Inspector {
     }
 
     pub fn owns(&self, node: NodeId) -> bool {
-        self.parts.contains_key(&node)
+        node == self.lock_button || self.parts.contains_key(&node)
+    }
+
+    /// What the Inspector edits: the locked entities that still exist, or
+    /// the selection.
+    pub fn targets(&self, session: &Session) -> Vec<EntityId> {
+        match &self.locked {
+            Some(ids) => ids
+                .iter()
+                .copied()
+                .filter(|id| session.inspect(*id).is_some())
+                .collect(),
+            None => session.selection(),
+        }
+    }
+
+    /// Lock on what is shown, or let go.
+    pub fn toggle_lock(&mut self, ui: &mut Ui) {
+        self.locked = match self.locked {
+            Some(_) => None,
+            None if !self.showing.is_empty() => Some(self.showing.clone()),
+            None => None,
+        };
+        let on = self.locked.is_some();
+        set_icon_button(
+            ui,
+            self.lock_button,
+            if on { "lock" } else { "lock-open" },
+            on,
+            true,
+        );
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         if self.asset.is_some() {
             return;
         }
-        let ids = session.selection();
+        let mut ids = self.targets(session);
+        if self.locked.is_some() && ids.is_empty() {
+            // What it was locked on is gone: back to the selection.
+            self.toggle_lock(ui);
+            ids = session.selection();
+        }
         let fields = session.inspect_all(&ids).unwrap_or_default();
         let playing = session.is_playing();
         if ids != self.showing {
@@ -1267,6 +1319,13 @@ impl Inspector {
         event: &Event,
         requests: &mut Requests,
     ) {
+        if node == self.lock_button {
+            if let Event::Click { .. } = event {
+                self.toggle_lock(ui);
+                requests.refresh = true;
+            }
+            return;
+        }
         let Some(part) = self.parts.get(&node).cloned() else {
             return;
         };
