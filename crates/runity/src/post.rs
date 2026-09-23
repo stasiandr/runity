@@ -214,6 +214,10 @@ pub struct PostProcess {
     /// gradient — a sky, a lit wall — does not show its steps as bands.
     /// URP's camera Dithering.
     pub dithering: bool,
+    /// Depth of Field, off unless asked ([`crate::lens`]).
+    pub depth_of_field: crate::lens::DepthOfField,
+    /// Camera Motion Blur, off unless asked ([`crate::lens`]).
+    pub motion_blur: crate::lens::MotionBlur,
 }
 
 impl Default for PostProcess {
@@ -238,6 +242,8 @@ impl Default for PostProcess {
             film_grain: 0.0,
             fxaa: false,
             dithering: true,
+            depth_of_field: crate::lens::DepthOfField::OFF,
+            motion_blur: crate::lens::MotionBlur::OFF,
         }
     }
 }
@@ -294,6 +300,8 @@ impl PostProcess {
         film_grain: 0.0,
         fxaa: false,
         dithering: false,
+        depth_of_field: crate::lens::DepthOfField::OFF,
+        motion_blur: crate::lens::MotionBlur::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -376,6 +384,8 @@ impl PostProcess {
             } else {
                 self.dithering
             },
+            depth_of_field: self.depth_of_field.lerp(&other.depth_of_field, t),
+            motion_blur: self.motion_blur.lerp(&other.motion_blur, t),
         }
     }
 }

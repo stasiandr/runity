@@ -35,6 +35,7 @@ pub mod id;
 pub mod input;
 pub mod lan;
 pub mod layers;
+pub mod lens;
 pub mod library;
 pub mod lights;
 pub mod live;

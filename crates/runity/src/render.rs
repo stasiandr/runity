@@ -737,6 +737,10 @@ pub struct Renderer {
     /// The scene, in high dynamic range: multisampled, and resolved.
     scene: SceneTargets,
     post: crate::post::PostRenderer,
+    /// Depth of field and motion blur, before the post stack.
+    lens: crate::lens::LensRenderer,
+    /// Last frame's camera, for motion blur.
+    previous_view_projection: Option<Mat4>,
     ssao: crate::ssao::SsaoRenderer,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -1734,6 +1738,8 @@ impl Renderer {
             samples,
             scene: scene_targets(gpu, width, height, samples),
             post: crate::post::PostRenderer::new(gpu, format),
+            lens: crate::lens::LensRenderer::new(gpu),
+            previous_view_projection: None,
             ssao,
             ray,
             light_buffer,
@@ -2902,7 +2908,10 @@ impl Renderer {
         // Ambient occlusion: the solid things' depth and normals, and the
         // occlusion made from them, before the lit pass reads it.
         let traced_occlusion = traced && frame.ray_tracing.ambient_occlusion;
-        if frame.ambient_occlusion.enabled && !traced_occlusion {
+        let ssao_on = frame.ambient_occlusion.enabled && !traced_occlusion;
+        // The lens reads the same depth.
+        let lens_on = crate::lens::LensRenderer::wanted(&frame.post);
+        if ssao_on || lens_on {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -2933,13 +2942,15 @@ impl Renderer {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
             }
-            self.ssao.run(
-                gpu,
-                &mut encoder,
-                frame.camera.view_projection(aspect),
-                frame.camera.apparent_eye(),
-                &frame.ambient_occlusion,
-            );
+            if ssao_on {
+                self.ssao.run(
+                    gpu,
+                    &mut encoder,
+                    frame.camera.view_projection(aspect),
+                    frame.camera.apparent_eye(),
+                    &frame.ambient_occlusion,
+                );
+            }
         }
 
         {
@@ -2998,10 +3009,30 @@ impl Renderer {
             }
         }
 
-        self.post.run(
+        let view_projection = frame.camera.view_projection(aspect);
+        let previous = self
+            .previous_view_projection
+            .replace(view_projection)
+            .unwrap_or(view_projection);
+        let lensed = self.lens.run(
             gpu,
             &mut encoder,
             &self.scene.resolved,
+            &self.ssao.depth,
+            (width, height),
+            &frame.post,
+            &crate::lens::View {
+                view_projection,
+                previous,
+                near: frame.camera.near,
+                far: frame.camera.far,
+                orthographic: frame.camera.ortho.is_some(),
+            },
+        );
+        self.post.run(
+            gpu,
+            &mut encoder,
+            lensed.unwrap_or(&self.scene.resolved),
             view,
             (width, height),
             &frame.post,
