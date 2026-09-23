@@ -16,7 +16,7 @@
 //! runity delete FILE                      remove an asset nothing uses
 //! runity duplicate FROM TO                copy an asset as a new one
 //! runity add component|system|scene NAME [PROJECT]  a new file where it goes
-//! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
+//! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH] [--shaders DIR]
 //! runity bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
 //! ```
 //!
@@ -55,7 +55,9 @@ runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
     stable ids, URP Lit materials as .rmat, the textures they use, animator
     controllers as animators/. MonoBehaviours become components written as
     text. --models converts FBX through Blender (slow). Says what it left
-    behind, then syncs the library.
+    behind, then syncs the library. A material's own shader becomes
+    shaders/<name>.wgsl: a stub to write again, or the one written again in
+    --shaders DIR (examples/dacha/shaders for Dacha Simulator).
 runity bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
     The physics bench: thirteen scenarios from Dacha Simulator played
     alone, then by three players passing the bodies around over links from
@@ -132,6 +134,11 @@ fn run() -> Result<ExitCode> {
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--models" => options.models = true,
+                    "--shaders" => {
+                        options.shaders = Some(PathBuf::from(
+                            args.next().context("--shaders wants a folder")?,
+                        ))
+                    }
                     "--blender" => {
                         options.blender = Some(PathBuf::from(
                             args.next().context("--blender wants a path")?,

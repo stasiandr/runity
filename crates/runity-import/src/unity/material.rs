@@ -84,6 +84,85 @@ fn hex(c: [f32; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]))
 }
 
+/// The material's own shader — a Shader Graph or a `.shader` in the
+/// project, not one of URP's — as the name a `.rmat` gives it and where
+/// it was.
+pub fn own_shader(unity: &Unity, m: &Yaml) -> Option<(String, std::path::PathBuf)> {
+    let path = m
+        .reference("m_Shader")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))?;
+    Some((super::snake(&super::stem(path)), path.clone()))
+}
+
+/// What a stub says of itself: a file that still says it is written over.
+pub const STUB_MARK: &str = "to be written again from";
+
+/// A starting point for a shader to write again: where it was, what it
+/// exposed, what it was made of, and a `surface` that leaves the standard
+/// shader's work as it is — so the material shows in its colours until
+/// someone writes it.
+pub fn shader_stub(unity: &Unity, name: &str, path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut properties: Vec<String> = Vec::new();
+    let mut nodes: std::collections::BTreeSet<String> = Default::default();
+    // A Shader Graph is JSON objects one after another: each object's type
+    // and its first name.
+    for object in text.split("\n\n{") {
+        let kind = object
+            .split("\"m_Type\": \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("");
+        let first_name = object
+            .split("\"m_Name\": \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("");
+        if let Some(property) = kind
+            .strip_prefix("UnityEditor.ShaderGraph.Internal.")
+            .and_then(|k| k.strip_suffix("ShaderProperty"))
+        {
+            properties.push(format!("//   {first_name} ({property})"));
+        } else if let Some(node) = kind
+            .strip_prefix("UnityEditor.ShaderGraph.")
+            .and_then(|k| k.strip_suffix("Node"))
+        {
+            nodes.insert(node.to_string());
+        }
+    }
+    // A hand-written `.shader`: its Properties block says as much.
+    if properties.is_empty() {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('_') && line.contains('(') && line.contains('"') {
+                properties.push(format!("//   {line}"));
+            }
+        }
+    }
+    let nodes: Vec<String> = nodes.into_iter().collect();
+    format!(
+        "// {name}: {STUB_MARK} {}.\n\
+         //\n\
+         // What it exposed:\n{}\n\
+         //{}\n\
+         //\n\
+         // Until then the standard shader draws it, in its material's colours.\n\n\
+         fn surface(in: SurfaceIn, out: Surface) -> Surface {{\n    return out;\n}}\n",
+        path.strip_prefix(&unity.root).unwrap_or(path).display(),
+        if properties.is_empty() {
+            "//   (nothing)".to_string()
+        } else {
+            properties.join("\n")
+        },
+        if nodes.is_empty() {
+            String::new()
+        } else {
+            format!(" What it was made of: {}.", nodes.join(", "))
+        }
+    )
+}
+
 /// A `.mat` as the text of a `.rmat`: what URP Lit says, with the rest of
 /// a custom shader's colour carried as far as it goes.
 pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
@@ -179,14 +258,15 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
             fields.push(format!("normal_scale: {scale}"));
         }
     }
-    let shader = m
-        .reference("m_Shader")
-        .and_then(|r| r.guid)
-        .and_then(|g| unity.guids.get(&g))
-        .map(|p| {
+    let own = own_shader(unity, m);
+    if let Some((name, _)) = &own {
+        fields.push(format!("shader: {name:?}"));
+    }
+    let shader = own
+        .map(|(name, p)| {
             format!(
-                "// Its shader was {}: only its colours came over.\n",
-                super::stem(p)
+                "// Its shader was {}: shaders/{name}.wgsl is where it is written again.\n",
+                p.strip_prefix(&unity.root).unwrap_or(&p).display()
             )
         })
         .unwrap_or_default();
