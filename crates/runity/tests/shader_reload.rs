@@ -39,6 +39,7 @@ fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 
         clear_color: Vec3::ZERO,
         lights: Vec::new(),
         reflection_probes: Vec::new(),
+        decals: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

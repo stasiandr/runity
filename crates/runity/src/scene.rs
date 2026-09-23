@@ -450,6 +450,22 @@ pub struct Probe {
     pub blend_distance: f32,
 }
 
+/// A picture pressed onto what lies in a box — URP's Decal Projector.
+/// `decal: (size: (2.0, 1.0, 2.0))`: the box, metres, centred on the
+/// entity and turned with it, pressed down its −y (a decal on the ground
+/// needs no turning). The entity's `material` is the picture: its base
+/// colour and map (alpha is how much), normal map and smoothness. See
+/// [`crate::decals`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Decal {
+    #[serde(default = "decal_size")]
+    pub size: Vec3,
+}
+
+fn decal_size() -> Vec3 {
+    Vec3::ONE
+}
+
 fn probe_size() -> Vec3 {
     Vec3::new(10.0, 10.0, 10.0)
 }
@@ -634,6 +650,9 @@ pub struct EntityDesc {
     /// A reflection probe at this entity; see [`Probe`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
+    /// A decal pressed from this entity; see [`Decal`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub decal: Option<Decal>,
     /// Moving along points by itself; see [`Route`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -725,6 +744,8 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub decal: Option<Decal>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
@@ -774,6 +795,9 @@ impl Override {
         if self.reflection_probe.is_some() {
             part.reflection_probe = self.reflection_probe;
         }
+        if self.decal.is_some() {
+            part.decal = self.decal;
+        }
         if self.route.is_some() {
             part.route = self.route.clone();
         }
@@ -800,6 +824,7 @@ impl Override {
             particles: differs(prefab.particles != edited.particles).and(edited.particles),
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
+            decal: differs(prefab.decal != edited.decal).and(edited.decal),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
@@ -829,6 +854,7 @@ impl Override {
             light,
             particles,
             reflection_probe,
+            decal,
             route,
             components,
         } = later;
@@ -844,6 +870,7 @@ impl Override {
         self.light = light.or(self.light);
         self.particles = particles.or(self.particles);
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
+        self.decal = decal.or(self.decal);
         self.route = route.or(self.route.take());
         self.components.extend(components);
     }
@@ -1324,6 +1351,7 @@ mod tests {
                 light: None,
                 particles: None,
                 reflection_probe: None,
+                decal: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1350,6 +1378,7 @@ mod tests {
                     light: None,
                     particles: None,
                     reflection_probe: None,
+                    decal: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -1401,6 +1430,7 @@ mod tests {
                 light: None,
                 particles: None,
                 reflection_probe: None,
+                decal: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),

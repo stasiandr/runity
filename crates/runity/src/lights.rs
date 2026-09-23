@@ -54,8 +54,12 @@ pub(crate) struct GpuLight {
 /// them, and the shadow maps they get.
 pub(crate) struct Clustered {
     pub lights: Vec<GpuLight>,
-    /// Per cell: where its list starts in `indices`, and how long it is.
-    pub cells: Vec<[u32; 2]>,
+    /// Which of the frame's decals are applied, nearest first: the shader's
+    /// decal `i` is the frame's `decals[i]`.
+    pub decals: Vec<usize>,
+    /// Per cell: where its lights' list starts in `indices` and how long it
+    /// is, then the same for its decals.
+    pub cells: Vec<[u32; 4]>,
     pub indices: Vec<u32>,
     /// Per shadow map, the light's view of the world: world to its clip
     /// space. A point's six follow each other: +x, −x, +y, −y, +z, −z.
@@ -184,9 +188,11 @@ fn cell_at(ndc: glam::Vec2, depth: f32, near: f32, far: f32) -> u32 {
     (z * TILES_Y + y) * TILES_X + x
 }
 
-/// Sort, cull and cluster a frame's lights, and give out the shadow maps.
+/// Sort, cull and cluster a frame's lights and decals (each by its
+/// bounding sphere), and give out the shadow maps.
 pub(crate) fn cluster(
     lights: &[PointLight],
+    decals: &[(Vec3, f32)],
     camera: &Camera,
     aspect: f32,
     shadows_on: bool,
@@ -253,39 +259,66 @@ pub(crate) fn cluster(
         })
         .collect();
 
-    // Count, then place: each cell's list lies in one run of `indices`.
+    let mut pressed: Vec<(usize, Cells)> = decals
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (centre, radius))| {
+            cells_of(*centre, *radius, view, projection, near, far).map(|cells| (i, cells))
+        })
+        .collect();
+    pressed.sort_by(|a, b| {
+        (decals[a.0].0 - eye)
+            .length_squared()
+            .total_cmp(&(decals[b.0].0 - eye).length_squared())
+    });
+    pressed.truncate(crate::decals::MAX_DECALS);
+
+    // Count, then place: each cell's lists lie in runs of `indices`, its
+    // lights' then its decals'.
     let cell_count = (TILES_X * TILES_Y * SLICES) as usize;
     let index = |x: u32, y: u32, z: u32| ((z * TILES_Y + y) * TILES_X + x) as usize;
-    let mut counts = vec![0u32; cell_count];
-    for (_, (xs, ys, zs)) in &seen {
+    let each = |cells: &Cells, f: &mut dyn FnMut(usize)| {
+        let (xs, ys, zs) = cells;
         for z in zs[0]..=zs[1] {
             for y in ys[0]..=ys[1] {
                 for x in xs[0]..=xs[1] {
-                    counts[index(x, y, z)] += 1;
+                    f(index(x, y, z));
                 }
             }
         }
+    };
+    let mut light_counts = vec![0u32; cell_count];
+    let mut decal_counts = vec![0u32; cell_count];
+    for (_, c) in &seen {
+        each(c, &mut |i| light_counts[i] += 1);
+    }
+    for (_, c) in &pressed {
+        each(c, &mut |i| decal_counts[i] += 1);
     }
     let mut cells = Vec::with_capacity(cell_count);
     let mut start = 0u32;
-    for &count in &counts {
-        cells.push([start, 0]);
-        start += count;
+    for (lights, decals) in light_counts.iter().zip(&decal_counts) {
+        cells.push([start, 0, start + lights, 0]);
+        start += lights + decals;
     }
     let mut indices = vec![0u32; start as usize];
-    for (i, (_, (xs, ys, zs))) in seen.iter().enumerate() {
-        for z in zs[0]..=zs[1] {
-            for y in ys[0]..=ys[1] {
-                for x in xs[0]..=xs[1] {
-                    let cell = &mut cells[index(x, y, z)];
-                    indices[(cell[0] + cell[1]) as usize] = i as u32;
-                    cell[1] += 1;
-                }
-            }
-        }
+    for (n, (_, c)) in seen.iter().enumerate() {
+        each(c, &mut |i| {
+            let cell = &mut cells[i];
+            indices[(cell[0] + cell[1]) as usize] = n as u32;
+            cell[1] += 1;
+        });
+    }
+    for (n, (_, c)) in pressed.iter().enumerate() {
+        each(c, &mut |i| {
+            let cell = &mut cells[i];
+            indices[(cell[2] + cell[3]) as usize] = n as u32;
+            cell[3] += 1;
+        });
     }
     Clustered {
         lights: out,
+        decals: pressed.iter().map(|(i, _)| *i).collect(),
         cells,
         indices,
         shadow_views,
@@ -315,14 +348,40 @@ mod tests {
     }
 
     fn lists(c: &Clustered, cell: u32) -> Vec<u32> {
-        let [start, count] = c.cells[cell as usize];
+        let [start, count, _, _] = c.cells[cell as usize];
         c.indices[start as usize..(start + count) as usize].to_vec()
+    }
+
+    fn decals_in(c: &Clustered, cell: u32) -> Vec<u32> {
+        let [_, _, start, count] = c.cells[cell as usize];
+        c.indices[start as usize..(start + count) as usize].to_vec()
+    }
+
+    #[test]
+    fn a_decal_is_listed_in_its_cells_after_the_lights() {
+        let c = cluster(
+            &[lamp(Vec3::new(0.0, 0.0, -10.0), 1.0)],
+            &[
+                (Vec3::new(0.0, 0.0, 10.0), 1.0),
+                (Vec3::new(0.0, 0.0, -10.0), 1.0),
+            ],
+            &camera(),
+            1.0,
+            true,
+            512,
+        );
+        // The one behind the camera is not applied; the other is decal 0.
+        assert_eq!(c.decals, vec![1]);
+        let middle = cell_at(glam::Vec2::ZERO, 10.0, 0.1, 500.0);
+        assert_eq!(lists(&c, middle), vec![0]);
+        assert_eq!(decals_in(&c, middle), vec![0]);
     }
 
     #[test]
     fn a_lamp_ahead_is_listed_where_it_is_and_not_across_the_screen() {
         let c = cluster(
             &[lamp(Vec3::new(0.0, 0.0, -10.0), 1.0)],
+            &[],
             &camera(),
             16.0 / 9.0,
             true,
@@ -341,6 +400,7 @@ mod tests {
     fn a_lamp_behind_the_camera_is_not_shaded_at_all() {
         let c = cluster(
             &[lamp(Vec3::new(0.0, 0.0, 10.0), 2.0)],
+            &[],
             &camera(),
             1.0,
             true,
@@ -351,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_lamp_around_the_camera_reaches_every_cell_near_it() {
-        let c = cluster(&[lamp(Vec3::ZERO, 3.0)], &camera(), 1.0, true, 512);
+        let c = cluster(&[lamp(Vec3::ZERO, 3.0)], &[], &camera(), 1.0, true, 512);
         for (x, y) in [(-0.9, -0.9), (0.9, 0.9), (0.0, 0.0)] {
             let cell = cell_at(glam::Vec2::new(x, y), 1.0, 0.1, 500.0);
             assert_eq!(lists(&c, cell), vec![0], "at {x}, {y}");
@@ -363,12 +423,12 @@ mod tests {
         let far_away: Vec<PointLight> = (0..6)
             .map(|i| lamp(Vec3::new(0.0, 0.0, -5.0 - i as f32 * 3.0), 1.0))
             .collect();
-        let c = cluster(&far_away, &camera(), 1.0, true, 512);
+        let c = cluster(&far_away, &[], &camera(), 1.0, true, 512);
         // Four points fill 24 maps; the two farthest go without.
         let firsts: Vec<f32> = c.lights.iter().map(|l| l.color_shadow[3]).collect();
         assert_eq!(firsts, vec![0.0, 6.0, 12.0, 18.0, -1.0, -1.0]);
         assert_eq!(c.shadow_views.len(), SHADOW_LAYERS);
-        let off = cluster(&far_away, &camera(), 1.0, false, 512);
+        let off = cluster(&far_away, &[], &camera(), 1.0, false, 512);
         assert!(off.shadow_views.is_empty());
     }
 

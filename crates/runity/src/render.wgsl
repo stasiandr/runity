@@ -78,15 +78,32 @@ struct Light {
     spot: vec4<f32>,
 };
 @group(0) @binding(6) var<storage, read> lights: array<Light>;
-@group(0) @binding(7) var<storage, read> light_cells: array<vec2<u32>>;
+// Per cell: its lights' run in light_indices (start, count), then its
+// decals' (start, count).
+@group(0) @binding(7) var<storage, read> light_cells: array<vec4<u32>>;
 @group(0) @binding(8) var<storage, read> light_indices: array<u32>;
 // The lamps' shadow maps: a spot's one, a point's six cube faces.
 @group(0) @binding(9) var light_shadow_map: texture_depth_2d_array;
-@group(0) @binding(10) var<storage, read> light_views: array<mat4x4<f32>>;
+@group(0) @binding(10) var<uniform> light_views: array<mat4x4<f32>, 24>;
 // Reflection probes' pictures (reflections.rs): six layers a probe, a mip a
 // step rougher.
 @group(0) @binding(11) var probe_maps: texture_2d_array<f32>;
 @group(0) @binding(12) var probe_sampler: sampler;
+
+// Decals (decals.rs): pictures pressed down each box's -y onto what lies
+// in it, listed by the same cells as the lights.
+struct Decal {
+    world_to_box: mat4x4<f32>,
+    // linear colour, alpha
+    color: vec4<f32>,
+    // colour layer, normal layer (-1 none), normal scale, smoothness
+    maps: vec4<f32>,
+    axis_x: vec4<f32>,
+    axis_up: vec4<f32>,
+};
+@group(0) @binding(13) var<storage, read> decals: array<Decal>;
+@group(0) @binding(14) var decal_colours: texture_2d_array<f32>;
+@group(0) @binding(15) var decal_normals: texture_2d_array<f32>;
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -584,7 +601,11 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;
     // A face seen from behind — a two-sided leaf — is lit from its own side.
     let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
-    let normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
+    var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
+    // How the position changes across the pixel: what a decal's picture is
+    // filtered by, worked out here where every pixel still runs together.
+    let across = dpdx(in.world_position);
+    let down = dpdy(in.world_position);
     let alpha = in.surface.z * sampled.a;
     // Alpha clipping: what is less opaque than the threshold is not drawn
     // at all.
@@ -595,9 +616,46 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
     let grid = f32(in.shading > 1.5);
 
-    let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
+    var albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
+    var smoothness = in.surface.y * mask.a;
+    let cell = light_cells[light_cell(in.clip_position.xy, in.world_position)];
+
+    // Decals, before the light: what they paint is lit as the surface is.
+    for (var n = 0u; n < cell.w; n = n + 1u) {
+        let d = decals[light_indices[cell.z + n]];
+        let local = (d.world_to_box * vec4<f32>(in.world_position, 1.0)).xyz;
+        if any(abs(local) > vec3<f32>(0.5)) {
+            continue;
+        }
+        let up = d.axis_up.xyz;
+        // Only on what faces the way it is pressed, and fading towards the
+        // box's ends, so it neither smears down sides nor stops at a line.
+        var weight = d.color.a * smoothstep(0.1, 0.4, dot(geometric, up))
+            * (1.0 - smoothstep(0.35, 0.5, abs(local.y)));
+        let uv = vec2<f32>(local.x + 0.5, local.z + 0.5);
+        let duv_x = (d.world_to_box * vec4<f32>(across, 0.0)).xz;
+        let duv_y = (d.world_to_box * vec4<f32>(down, 0.0)).xz;
+        var paint = d.color.rgb;
+        if d.maps.x >= 0.0 {
+            let texel = textureSampleGrad(decal_colours, probe_sampler, uv, i32(d.maps.x), duv_x, duv_y);
+            paint = paint * texel.rgb;
+            weight = weight * texel.a;
+        }
+        albedo = mix(albedo, paint, weight);
+        smoothness = mix(smoothness, d.maps.w, weight);
+        if d.maps.y >= 0.0 {
+            var t = textureSampleGrad(decal_normals, probe_sampler, uv, i32(d.maps.y), duv_x, duv_y).xyz * 2.0 - 1.0;
+            t = vec3<f32>(t.xy * d.maps.z, t.z);
+            // Red along the box's x, green up the picture — its -z.
+            let x = d.axis_x.xyz;
+            let picture_up = normalize(cross(up, x));
+            let pressed = normalize(x * t.x + picture_up * t.y + up * max(t.z, 1e-3));
+            normal = normalize(mix(normal, pressed, weight));
+        }
+    }
+
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
-    let b = brdf(albedo, in.surface.x * mask.r, in.surface.y * mask.a);
+    let b = brdf(albedo, in.surface.x * mask.r, smoothness);
     let baked = mix(1.0, mask.g, in.detail.y);
     let highlights = (flags & 1u) != 0u;
 
@@ -625,7 +683,6 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Point and spot lights, those listed in this fragment's cell: facing
     // it, and fading to nothing at its range — squared, so the edge of the
     // pool is soft rather than a ring.
-    let cell = light_cells[light_cell(in.clip_position.xy, in.world_position)];
     for (var n = 0u; n < cell.y; n = n + 1u) {
         let light = lights[light_indices[cell.x + n]];
         let at = light.position_range;

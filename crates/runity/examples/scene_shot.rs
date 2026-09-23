@@ -133,6 +133,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // editing a line rather than by patching this file.
     let camera = runity::scene_camera(&scene.view);
 
+    for problem in
+        runity::world::upload_material_maps(&world, library.as_ref(), &gpu, &mut renderer)
+    {
+        eprintln!("{problem}");
+    }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
     renderer.render(&gpu, &target, &frame);

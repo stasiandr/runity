@@ -162,6 +162,8 @@ impl ProbeStore {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            // Decals read through it too, often at a grazing angle.
+            anisotropy_clamp: 16,
             ..Default::default()
         });
         let shader = gpu

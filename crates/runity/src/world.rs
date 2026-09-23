@@ -74,6 +74,11 @@ pub struct CameraLens(pub crate::scene::Lens);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightSource(pub crate::scene::Light);
 
+/// A decal pressed from an entity: its line's `decal`, and the material it
+/// presses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pressing(pub crate::scene::Decal, pub Material);
+
 /// A reflection probe at an entity, from its line's `reflection_probe`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbeBox(pub crate::scene::Probe);
@@ -284,6 +289,20 @@ pub(crate) fn dress(
     palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
+    match desc.decal {
+        Some(decal) => {
+            let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
+        }
+        None => {
+            let _ = world.remove_one::<Pressing>(entity);
+        }
+    }
+    // No model is nothing to draw — a probe, a decal, a light, an empty to
+    // hang children on — not a model that could not be found.
+    if desc.model.is_empty() {
+        let _ = world.remove::<(Model, Surface)>(entity);
+        return;
+    }
     match resolve(&desc.model) {
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
@@ -482,7 +501,9 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, desc.transform);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.model != desc.model || old.material != desc.material) {
+        if was.is_none_or(|(old, _)| {
+            old.model != desc.model || old.material != desc.material || old.decal != desc.decal
+        }) {
             dress(desc, entity, world, resolve, palette, &mut self.out.missing);
             changed = true;
         }
@@ -699,6 +720,13 @@ pub fn upload_material_maps(
         .query::<&Surface>()
         .iter()
         .flat_map(|surface| surface.0.maps().collect::<Vec<_>>())
+        .chain(
+            world
+                .query::<&Pressing>()
+                .iter()
+                .flat_map(|p| p.1.maps().collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        )
         .filter(|id| renderer.texture_for(*id).is_none())
         .collect();
     wanted.sort();
@@ -933,10 +961,20 @@ pub fn build_frame_where(
             blend_distance: probe.0.blend_distance,
         })
         .collect();
+    let decals = world
+        .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(pressing, placed, _)| crate::decals::Decal {
+            transform: placed.0 * glam::Mat4::from_scale(pressing.0.size),
+            material: pressing.1,
+        })
+        .collect();
     Frame {
         camera,
         lighting,
         reflection_probes,
+        decals,
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.
@@ -968,6 +1006,7 @@ mod tests {
             light: None,
             particles: None,
             reflection_probe: None,
+            decal: None,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -996,6 +1035,7 @@ mod tests {
                     light: None,
                     particles: None,
                     reflection_probe: None,
+                    decal: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),

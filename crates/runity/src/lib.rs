@@ -28,6 +28,7 @@ pub mod asset;
 pub mod audio;
 pub mod builtin;
 pub mod components;
+pub mod decals;
 pub mod edit;
 pub mod gizmo;
 pub mod gpu;

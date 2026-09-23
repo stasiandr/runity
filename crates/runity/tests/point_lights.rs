@@ -46,6 +46,7 @@ fn shoot(
         clear_color: Vec3::ZERO,
         lights,
         reflection_probes: Vec::new(),
+        decals: Vec::new(),
         draws: vec![Draw {
             mesh: floor,
             transform: Mat4::from_scale(Vec3::new(20.0, 1.0, 20.0)),

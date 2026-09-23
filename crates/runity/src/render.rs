@@ -495,6 +495,8 @@ pub struct Frame {
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
+    /// Pictures pressed onto what lies in their boxes ([`crate::decals`]).
+    pub decals: Vec<crate::decals::Decal>,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -517,6 +519,7 @@ impl Default for Frame {
             overlay_draws: Vec::new(),
             lights: Vec::new(),
             reflection_probes: Vec::new(),
+            decals: Vec::new(),
             poses: Vec::new(),
         }
     }
@@ -754,6 +757,9 @@ pub struct Renderer {
     previous_view_projection: Option<Mat4>,
     /// The reflection probes' pictures.
     reflections: crate::reflections::ProbeStore,
+    /// The frame's decals, and their pictures.
+    decal_buffer: wgpu::Buffer,
+    decal_atlases: crate::decals::DecalAtlases,
     ssao: crate::ssao::SsaoRenderer,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -1491,7 +1497,18 @@ impl Renderer {
                 },
                 count: None,
             },
-            storage(10),
+            // The lamps' shadow views: a uniform, not storage — a stage has
+            // as few as four storage buffers on some devices.
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
             // The reflection probes' pictures, six layers each, and how
             // they are filtered across mips.
             wgpu::BindGroupLayoutEntry {
@@ -1508,6 +1525,28 @@ impl Renderer {
                 binding: 12,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            // Decals, and their pictures: colours and normals.
+            storage(13),
+            wgpu::BindGroupLayoutEntry {
+                binding: 14,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 15,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
                 count: None,
             },
         ]);
@@ -1556,14 +1595,16 @@ impl Renderer {
         );
         let cell_buffer = storage_buffer(
             "light cells",
-            (crate::lights::TILES_X * crate::lights::TILES_Y * crate::lights::SLICES) as u64 * 8,
+            (crate::lights::TILES_X * crate::lights::TILES_Y * crate::lights::SLICES) as u64 * 16,
         );
         let index_capacity = 1024;
         let index_buffer = storage_buffer("light lists", index_capacity * 4);
-        let light_view_buffer = storage_buffer(
-            "lamp shadow views",
-            crate::lights::SHADOW_LAYERS as u64 * 64,
-        );
+        let light_view_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lamp shadow views"),
+            size: crate::lights::SHADOW_LAYERS as u64 * 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let light_shadow_resolution = ShadowSettings::default().light_resolution;
         let (light_shadow_map, light_shadow_layers) = shadow_layers_view(
             gpu,
@@ -1571,10 +1612,18 @@ impl Renderer {
             crate::lights::SHADOW_LAYERS as u32,
         );
         let reflections = crate::reflections::ProbeStore::new(gpu);
+        let decal_buffer = storage_buffer(
+            "decals",
+            (crate::decals::MAX_DECALS * std::mem::size_of::<crate::decals::GpuDecal>()) as u64,
+        );
+        let decal_atlases = crate::decals::DecalAtlases::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                decals: &decal_buffer,
+                decal_colours: decal_atlases.colour_view(),
+                decal_normals: decal_atlases.normal_view(),
                 probes: &reflections.view,
                 probe_sampler: &reflections.sampler,
                 frame: &frame_buffer,
@@ -1615,6 +1664,8 @@ impl Renderer {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            // A floor or a road seen along its length stays sharp.
+            anisotropy_clamp: 16,
             ..Default::default()
         });
 
@@ -1775,6 +1826,8 @@ impl Renderer {
             lens: crate::lens::LensRenderer::new(gpu),
             previous_view_projection: None,
             reflections,
+            decal_buffer,
+            decal_atlases,
             ssao,
             ray,
             light_buffer,
@@ -1828,6 +1881,9 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                decals: &self.decal_buffer,
+                decal_colours: self.decal_atlases.colour_view(),
+                decal_normals: self.decal_atlases.normal_view(),
                 probes: if baking {
                     &self.reflections.blank
                 } else {
@@ -2512,8 +2568,11 @@ impl Renderer {
         // The lights: those the view sees, in cells, and the nearest given
         // shadow maps — unless rays shadow every lamp instead.
         let traced_lamps = self.ray.is_some() && frame.ray_tracing.light_shadows;
+        let decal_bounds: Vec<(glam::Vec3, f32)> =
+            frame.decals.iter().map(crate::decals::bounds).collect();
         let clustered = crate::lights::cluster(
             &frame.lights,
+            &decal_bounds,
             &frame.camera,
             aspect,
             frame.shadows.enabled && !traced_lamps,
@@ -2544,6 +2603,32 @@ impl Renderer {
                 0,
                 bytemuck::cast_slice(&clustered.indices),
             );
+        }
+        // The decals the cells name, their pictures put in the atlases.
+        let mut remade = false;
+        let decals: Vec<crate::decals::GpuDecal> = clustered
+            .decals
+            .iter()
+            .map(|&i| {
+                let decal = &frame.decals[i];
+                let mut layer = |id: Option<crate::asset::AssetId>, normal: bool| {
+                    let handle = self.texture_for(id?)?;
+                    let source = &self.textures.get(handle.0 as usize)?.view;
+                    let (layer, made) = self.decal_atlases.layer_for(gpu, handle, source, normal);
+                    remade |= made;
+                    layer
+                };
+                let colour = layer(decal.material.base_map, false);
+                let normal = layer(decal.material.normal_map, true);
+                crate::decals::GpuDecal::new(decal, colour, normal)
+            })
+            .collect();
+        if remade {
+            self.rebind(gpu);
+        }
+        if !decals.is_empty() {
+            gpu.queue
+                .write_buffer(&self.decal_buffer, 0, bytemuck::cast_slice(&decals));
         }
         let light_views: Vec<[[f32; 4]; 4]> = clustered
             .shadow_views
@@ -3306,6 +3391,9 @@ struct FrameInputs<'a> {
     light_shadow_map: &'a wgpu::TextureView,
     probes: &'a wgpu::TextureView,
     probe_sampler: &'a wgpu::Sampler,
+    decals: &'a wgpu::Buffer,
+    decal_colours: &'a wgpu::TextureView,
+    decal_normals: &'a wgpu::TextureView,
 }
 
 fn frame_bind_group(
@@ -3343,6 +3431,9 @@ fn frame_bind_group(
             binding: 12,
             resource: wgpu::BindingResource::Sampler(inputs.probe_sampler),
         },
+        buffer(13, inputs.decals),
+        view(14, inputs.decal_colours),
+        view(15, inputs.decal_normals),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
