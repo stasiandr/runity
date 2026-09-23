@@ -116,7 +116,7 @@ pub fn post_volumes(frame: &mut Frame, world: &World) {
         .collect();
     found.sort_by_key(|(priority, _, _)| *priority);
     for (_, weight, post) in found {
-        frame.post = crate::post::blend(&frame.post, &post, weight);
+        frame.post = frame.post.lerp(&post, weight);
     }
 }
 
