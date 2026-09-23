@@ -1043,7 +1043,7 @@ struct Weathered {
 
 /// A surface as the weather leaves it: darker and shinier wet, still water
 /// in the level patches, snow on what faces up.
-fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>, is_sand: bool) -> Weathered {
+fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>, is_sand: bool, clay: bool) -> Weathered {
     var out = Weathered(albedo, smoothness, normal, 1.0);
     let w = frame.weather[0];
     // Sand the wind has laid: on what faces up, thick in corners and
@@ -1073,17 +1073,43 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
         out.normal = normalize(mix(out.normal, geometric, sand * 0.7));
         out.metal = out.metal * (1.0 - sand);
     }
-    if w.x + w.y + w.z <= 0.0 {
+    // Drying after the rain: not evenly but in patches — the open and the
+    // high first, what lies low last. How wet it still is here.
+    let drying = frame.weather[2].y;
+    var damp = 1.0;
+    if drying > 0.0 {
+        // Its place in the queue, 0 to 1: patchy, and a little earlier the
+        // higher it stands. It is dry once the drying has got past it.
+        let order = clamp(patches(position.xz * 1.4 + 5.0) * 0.65 + patches(position.xz * 4.0 + 9.0) * 0.35
+            - clamp(position.y * 0.05, -0.1, 0.1), 0.0, 1.0);
+        damp = 1.0 - smoothstep(order - 0.08, order + 0.08, drying * 1.16 - 0.08);
+    }
+    let wet_here = w.x * damp;
+    let puddles = w.y * (1.0 - drying);
+    // Clay: mud while it is wet, and as it dries lighter, and cracking.
+    if clay {
+        let dry = 1.0 - wet_here;
+        let crack = crackle(position.xz * 3.2);
+        let width = 0.02 + 0.13 * dry * dry;
+        let gap = (1.0 - smoothstep(width * 0.4, width, crack.x)) * smoothstep(0.35, 0.7, dry);
+        out.albedo = out.albedo * mix(0.55, 0.95, dry) * mix(1.0, 0.12, gap);
+        out.smoothness = mix(out.smoothness, 0.05, dry);
+        // Each plate curls a little as it shrinks: its edges lift.
+        let curl = (1.0 - smoothstep(0.0, 0.5, crack.x)) * dry * 0.6;
+        out.normal = normalize(out.normal + vec3<f32>(crack.y, 0.0, crack.z) * curl);
+    }
+    if wet_here + puddles + w.z <= 0.0 {
         return out;
     }
     let up = clamp(geometric.y, 0.0, 1.0);
-    // Wet: what soaks darkens, and everything shines — up-facing most.
-    let wet = w.x * (0.5 + 0.5 * up);
+    // Wet: what soaks darkens, and everything shines — up-facing most. Wet
+    // sand is dark but dull: its grains break the shine.
+    let wet = wet_here * (0.5 + 0.5 * up);
     out.albedo = out.albedo * mix(1.0, 0.55, wet);
-    out.smoothness = mix(out.smoothness, 0.85, wet * 0.8);
+    out.smoothness = mix(out.smoothness, select(0.85, 0.45, is_sand), wet * 0.8);
     // Puddles: on what is level, in patches that grow with the amount.
     let level = smoothstep(0.92, 0.98, geometric.y);
-    let puddle = level * smoothstep(1.0 - w.y, 1.0 - w.y + 0.08, patches(position.xz)) * step(0.001, w.y);
+    let puddle = level * smoothstep(1.0 - puddles, 1.0 - puddles + 0.08, patches(position.xz)) * step(0.001, puddles);
     if puddle > 0.0 {
         out.albedo = out.albedo * mix(1.0, 0.35, puddle);
         out.smoothness = mix(out.smoothness, 1.0, puddle);
@@ -1100,6 +1126,32 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
     out.normal = normalize(mix(out.normal, geometric, snow * 0.8));
     out.metal = out.metal * (1.0 - snow);
     return out;
+}
+
+/// Cracked ground at `p` (cells about a unit across): how far from the
+/// nearest crack, 0 on it; and which way is away from it, the plate's
+/// middle, level.
+fn crackle(p: vec2<f32>) -> vec3<f32> {
+    let cell = floor(p);
+    var first = 8.0;
+    var second = 8.0;
+    var middle = vec2<f32>(0.0);
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let c = cell + vec2<f32>(f32(x), f32(y));
+            let at = c + vec2<f32>(cloud_hash(vec3<f32>(c, 3.0)), cloud_hash(vec3<f32>(c, 7.0))) * 0.8 + 0.1;
+            let d = length(p - at);
+            if d < first {
+                second = first;
+                first = d;
+                middle = at;
+            } else if d < second {
+                second = d;
+            }
+        }
+    }
+    let toward = normalize(middle - p + vec2<f32>(1e-5));
+    return vec3<f32>(second - first, -toward.x, -toward.y);
 }
 
 /// What a terrain is drawn with: its instance's numbers, from the vertex
@@ -1615,7 +1667,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
 
     // The weather on it: wet, under water, under snow.
-    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position, in.clip_position.xy, is_sand);
+    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position, in.clip_position.xy, is_sand, (flags & 64u) != 0u);
     albedo = weather.albedo;
     smoothness = weather.smoothness;
     normal = weather.normal;

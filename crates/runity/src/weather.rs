@@ -57,6 +57,10 @@ pub struct Weather {
     /// world by the clock, not round the camera: the same strokes at the
     /// same times on every machine.
     pub lightning: f32,
+    /// How far the ground has dried since the rain, 0 (just stopped) to 1
+    /// (dry): `wetness` and `puddles` go, not evenly but in patches, the
+    /// open and high first, hollows last; clay cracks as it goes.
+    pub drying: f32,
 }
 
 /// A stroke of lightning at a moment: its path from the cloud to the
@@ -92,6 +96,7 @@ impl Default for Weather {
             dust_devils: 0.0,
             drifted: 0.0,
             lightning: 0.0,
+            drying: 0.0,
         }
     }
 }
@@ -105,7 +110,7 @@ impl Weather {
         [
             [c(self.wetness), c(self.puddles), c(self.snow), c(self.rain)],
             [c(self.snowfall), c(self.sandstorm), c(self.dust_wall), 0.0],
-            [c(self.drifted), 0.0, 0.0, 0.0],
+            [c(self.drifted), c(self.drying), 0.0, 0.0],
         ]
     }
 

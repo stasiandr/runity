@@ -254,3 +254,83 @@ fn a_dust_wall_stands_upwind_behind_what_is_in_front_of_it() {
         "and still blue in front of the wall"
     );
 }
+
+/// Clay looked down on: while it is wet an even dark mud, and once the
+/// ground has dried cracked into plates — many pixels far darker than the
+/// plates round them. Wet sand dries patchily: half way, some of it dry
+/// and some still dark.
+#[test]
+fn clay_cracks_as_it_dries_and_the_ground_dries_in_patches() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    const WIDE: u32 = 96;
+    let target = OffscreenTarget::new(&gpu, WIDE, WIDE);
+    let shot = |material: Material, weather: Weather| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let plane = renderer.upload_mesh_owned(&gpu, &builtin::plane(1.0, 1));
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            camera: Camera {
+                position: Vec3::new(0.0, 6.0, 0.01),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            lighting: Lighting::default(),
+            shadows: ShadowSettings::OFF,
+            weather,
+            draws: vec![Draw {
+                mesh: plane,
+                transform: Mat4::from_scale(Vec3::new(40.0, 1.0, 40.0)),
+                texture: TextureHandle::WHITE,
+                material,
+                pose: None,
+            }],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        let pixels = target.read_rgba(&gpu);
+        let mut luma: Vec<u32> = pixels.chunks(4).map(|p| p[0] as u32 + p[1] as u32 + p[2] as u32).collect();
+        luma.sort();
+        luma
+    };
+    let clay = Material {
+        clay: true,
+        ..Material::new(0.7, 0.5, 0.35)
+    };
+    let wet = Weather {
+        wetness: 1.0,
+        ..Weather::default()
+    };
+    let dry = Weather {
+        drying: 1.0,
+        ..wet
+    };
+    // How much darker the darkest tenth is than the middle.
+    let spread = |l: &[u32]| l[l.len() / 2] as f32 / l[l.len() / 10].max(1) as f32;
+    let mud = shot(clay, wet);
+    let cracked = shot(clay, dry);
+    assert!(spread(&mud) < 1.2, "wet mud is even: {}", spread(&mud));
+    assert!(spread(&cracked) > 1.8, "dry clay is cracked: {}", spread(&cracked));
+    assert!(mud[mud.len() / 2] < cracked[cracked.len() / 2], "mud is darker than dry clay");
+
+    // A plain ground half dried: patches of both.
+    let ground = Material::new(0.7, 0.55, 0.4);
+    let half = shot(ground, Weather { drying: 0.5, ..wet });
+    let (still_wet, gone_dry) = (shot(ground, wet), shot(ground, dry));
+    let middle = |l: &[u32]| l[l.len() / 2];
+    let darkest = half[half.len() / 20];
+    let brightest = half[half.len() * 19 / 20];
+    assert!(
+        (darkest as f32) < middle(&still_wet) as f32 * 1.15 && brightest as f32 > middle(&gone_dry) as f32 * 0.85,
+        "half dried: {darkest}..{brightest}, wet {} dry {}",
+        middle(&still_wet),
+        middle(&gone_dry)
+    );
+}
