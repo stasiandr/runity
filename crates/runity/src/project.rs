@@ -916,8 +916,10 @@ src/components/  one component per file; the file name is the scene's name for i
 src/systems/     one system per file: `pub fn run(world, seconds)`
 ```
 
-* `cargo run` plays `scenes/main.ron`. It keeps running while you edit:
-  saved scenes, prefabs and rebuilt assets show up in the window.
+* `runity run` (or `cargo run`) plays `scenes/main.ron`. It keeps running
+  while you edit: saved scenes, prefabs and rebuilt assets show up in the
+  window. `runity run --hot` patches the game's own Rust in too, under
+  `dx serve --hotpatch` (`cargo install dioxus-cli`).
 * `runity check` says what does not resolve — a model, a material or a
   prefab nobody has, a repeated id, a stale sidecar — with the file and the
   entity. Run it after editing scenes; it exits non-zero on errors.

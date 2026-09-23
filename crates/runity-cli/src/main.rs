@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! runity new <folder> [--name NAME] [--engine-path PATH]
+//! runity run   [PROJECT] [--hot] [--release]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
@@ -32,6 +33,10 @@ runity new <folder> [--name NAME] [--engine-path PATH]
     Make a project: the standard layout, a scene, and a game crate.
     The game depends on the engine from git, or from a local checkout
     of runity's crates/runity with --engine-path.
+runity run [PROJECT] [--hot] [--release]
+    Run the game. Scenes, prefabs, assets, shaders and tuning reload while
+    it runs; with --hot, so does its own Rust (under `dx serve --hotpatch`,
+    from `cargo install dioxus-cli`).
 runity sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -91,6 +96,27 @@ fn run() -> Result<ExitCode> {
     match command.as_str() {
         "new" => new(&rest),
         "sync" => sync(&find(&rest)?),
+        "run" => {
+            let mut at: Vec<String> = Vec::new();
+            let (mut hot, mut release) = (false, false);
+            for arg in &rest {
+                match arg.as_str() {
+                    "--hot" => hot = true,
+                    "--release" => release = true,
+                    other if other.starts_with('-') => bail!("unknown option {other}"),
+                    other => at.push(other.to_string()),
+                }
+            }
+            let project = find(&at)?;
+            let dx = runity_cli::run::on_path("dx");
+            let status =
+                runity_cli::run::command(&project, hot, release, dx.as_deref())?.status()?;
+            Ok(if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
         "check" => check(&find(&rest)?),
         "rebuild-time" => rebuild_time(&rest),
         "merge" => merge(&rest),
@@ -194,7 +220,8 @@ fn new(rest: &[String]) -> Result<ExitCode> {
     let project =
         Project::create_with(&folder, &name, &engine).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!(
-        "made {} in {}\n\n  cd {}\n  cargo run        # the game, reloading scenes as you save them\n  runity check     # what does not resolve",
+        "made {} in {}\n\n  cd {}\n  runity run       # the game, reloading scenes as you save them
+  runity run --hot # and the game's own code too (needs dioxus-cli)\n  runity check     # what does not resolve",
         project.name(),
         project.root().display(),
         folder.display()

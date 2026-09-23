@@ -42,7 +42,8 @@ docs/stack.md          на чём и почему
 
 ```
 cargo run -p runity-cli -- new ../moss --engine-path crates/runity
-cd ../moss && cargo run      # окно на scenes/main.ron; сохранения сцены видны сразу
+cd ../moss && runity run     # окно на scenes/main.ron; сохранения сцены видны сразу
+runity run --hot             # и код игры тоже, через dx serve --hotpatch
 ```
 
 

@@ -6,6 +6,7 @@ pub mod build;
 pub mod check;
 pub mod merge;
 pub mod rebuild;
+pub mod run;
 
 pub use check::{check, Finding, Severity};
 pub use rebuild::{rebuild_time, RebuildTime};
