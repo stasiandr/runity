@@ -20,12 +20,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut library_dir: Option<PathBuf> = None;
     let (mut width, mut height) = (960u32, 540u32);
     let mut timed = 0u32;
+    let mut at: Option<f32> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--out" => out = args.next().map(PathBuf::from).unwrap_or(out),
             "--library" => library_dir = args.next().map(PathBuf::from),
             "--time" => timed = args.next().and_then(|n| n.parse().ok()).unwrap_or(30),
+            "--at" => at = args.next().and_then(|n| n.parse().ok()),
             "--size" => {
                 if let Some(size) = args.next() {
                     let (w, h) = size.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
@@ -35,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N]\n\n\
+                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N] [--at SECONDS]\n\n\
                      Prefabs and the library come from the project the scene is in;\n\
                      --library overrides the library."
                 );
@@ -156,6 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
+    // A moment of the scene's clock: where the weather has got to.
+    if at.is_some() {
+        frame.time = at;
+    }
     // Twice: what reads the last frame — screen-space reflections — has
     // one by the second.
     renderer.render(&gpu, &target, &frame);

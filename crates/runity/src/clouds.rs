@@ -71,6 +71,13 @@ pub(crate) struct CloudUniform {
     /// The dust volume round the camera: its corner's x and z, a cell's
     /// width and its height.
     pub dust_box: [f32; 4],
+    /// How many dust devils and crest plumes follow.
+    pub local: [f32; 4],
+    /// Each devil: its foot and radius; height, strength, spin.
+    pub devils: [[f32; 4]; 2 * crate::volume::MOST_DEVILS],
+    /// Each plume: its middle on the crest and half its length; the
+    /// crest's way and how much is blowing.
+    pub plumes: [[f32; 4]; 2 * crate::volume::MOST_PLUMES],
 }
 
 /// Cells of the dust wall's volume: across, up, across.

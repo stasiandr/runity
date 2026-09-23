@@ -44,6 +44,13 @@ pub struct Weather {
     pub dust_wall_distance: f32,
     /// How high it towers, metres.
     pub dust_wall_height: f32,
+    /// Dust devils, 0 to 1: whirling columns of sand wandering over the
+    /// ground on the wind, a few at a time, each for half a minute. Set
+    /// where they are in the world, not round the camera.
+    pub dust_devils: f32,
+    /// Sand the wind has laid on things, 0 to 1: on what faces up, in
+    /// drifts against what stands in its way — as snow lies, but sand.
+    pub drifted: f32,
 }
 
 impl Default for Weather {
@@ -58,6 +65,8 @@ impl Default for Weather {
             dust_wall: 0.0,
             dust_wall_distance: 900.0,
             dust_wall_height: 350.0,
+            dust_devils: 0.0,
+            drifted: 0.0,
         }
     }
 }
@@ -109,6 +118,67 @@ impl Weather {
             sandstorm: self.sandstorm.max(swallowed * self.dust_wall),
             ..*self
         }
+    }
+
+    /// The dust devils about at `time`: each born somewhere in the few
+    /// hundred metres round the world's middle, carried off on the wind and
+    /// wandering, swelling up and dying away over half a minute. As many as
+    /// `dust_devils` says, up to [`crate::volume::MOST_DEVILS`]; the same
+    /// ones for the same time on every machine.
+    pub fn devils(&self, wind: &crate::foliage::Wind, time: f32) -> Vec<crate::volume::Devil> {
+        let amount = self.dust_devils.clamp(0.0, 1.0);
+        if amount <= 0.0 {
+            return Vec::new();
+        }
+        let hash = |a: i64, b: u32| {
+            let mut h = (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                ^ (b as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+            h ^= h >> 31;
+            h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            h ^= h >> 29;
+            (h & 0xff_ffff) as f32 / 0xff_ffff as f32
+        };
+        let level = glam::Vec2::new(wind.direction.x, wind.direction.z).normalize_or(glam::Vec2::X);
+        let speed = 1.0 + 1.2 * wind.strength.max(0.0);
+        let slot = 8.0;
+        let now = (time / slot).floor() as i64;
+        let mut out = Vec::new();
+        for epoch in now - 5..=now {
+            for j in 0..2u32 {
+                let seed = j * 7 + 1;
+                if hash(epoch, seed) > amount {
+                    continue;
+                }
+                let born = epoch as f32 * slot + hash(epoch, seed + 1) * slot;
+                let life = 25.0 + 15.0 * hash(epoch, seed + 2);
+                let age = time - born;
+                if !(0.0..life).contains(&age) {
+                    continue;
+                }
+                // Born upwind, so it crosses the middle as it goes.
+                let start = glam::Vec2::new(hash(epoch, seed + 3), hash(epoch, seed + 4)) * 240.0
+                    - glam::Vec2::splat(120.0)
+                    - level * speed * life * 0.5;
+                let side = glam::Vec2::new(-level.y, level.x);
+                let wander = (age * 0.35 + hash(epoch, seed + 5) * 6.0).sin() * 8.0;
+                let at = start + level * speed * age + side * wander;
+                let t = age / life;
+                let strength = (t * std::f32::consts::PI).sin().powf(0.7);
+                out.push(crate::volume::Devil {
+                    position: glam::Vec3::new(at.x, 0.0, at.y),
+                    radius: 2.0 + 3.0 * hash(epoch, seed + 6),
+                    height: 25.0 + 35.0 * hash(epoch, seed + 7),
+                    strength,
+                    spin: if hash(epoch, seed + 8) > 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    },
+                });
+            }
+        }
+        out.truncate(crate::volume::MOST_DEVILS);
+        out
     }
 
     /// The volumetric fog a sandstorm makes of the scene's: thick sandy
@@ -167,6 +237,43 @@ impl Weather {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dust_devils_are_the_same_everywhere_and_travel_downwind() {
+        let wind = crate::foliage::Wind {
+            direction: glam::Vec3::X,
+            strength: 2.0,
+        };
+        let none = Weather::default();
+        assert!(none.devils(&wind, 20.0).is_empty());
+        let some = Weather {
+            dust_devils: 1.0,
+            ..Weather::default()
+        };
+        let now = some.devils(&wind, 20.0);
+        assert!(!now.is_empty());
+        assert_eq!(now, some.devils(&wind, 20.0), "the same for the same time");
+        let later = some.devils(&wind, 21.0);
+        // One that is still about has moved on the wind.
+        let moved = now
+            .iter()
+            .zip(&later)
+            .any(|(a, b)| b.position.x > a.position.x);
+        assert!(moved, "{now:?} then {later:?}");
+        let few = Weather {
+            dust_devils: 0.3,
+            ..Weather::default()
+        };
+        let counted = |w: &Weather| {
+            (0..40)
+                .map(|t| w.devils(&wind, t as f32 * 3.0).len())
+                .sum::<usize>()
+        };
+        assert!(
+            counted(&few) < counted(&some),
+            "fewer when fewer are asked for"
+        );
+    }
 
     #[test]
     fn a_dust_wall_comes_on_and_swallows_the_camera() {

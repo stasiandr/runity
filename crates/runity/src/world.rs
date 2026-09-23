@@ -1500,6 +1500,29 @@ pub fn build_frame_where(
     // Walkers' prints, and the dust their steps kick up — the dust the
     // colour of the ground's top, lighter than the print turned over.
     let mut puffs = Vec::new();
+    // Dune crests, into the world: where the wind may lift sand off them.
+    let plumes: Vec<crate::volume::Plume> = world
+        .query::<(&crate::terrain::Relief, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .flat_map(|(relief, placed, _)| {
+            let m = placed.0;
+            let along = m
+                .transform_vector3(glam::Vec3::Z)
+                .normalize_or(glam::Vec3::Z);
+            let half = (relief.terrain.dunes.wavelength * 0.06).max(1.0) * m.z_axis.length();
+            relief
+                .crests
+                .iter()
+                .map(move |c| crate::volume::Plume {
+                    position: m.transform_point3(*c),
+                    along,
+                    half_length: half,
+                    strength: 1.0,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
     for (trail, line) in world
         .query::<(&crate::footprints::Trail, Option<&SceneId>)>()
         .iter()
@@ -1518,6 +1541,7 @@ pub fn build_frame_where(
         reflection_probes,
         decals,
         puffs,
+        plumes,
         volumetric_fog: Default::default(),
         wind: Default::default(),
         benders: world
