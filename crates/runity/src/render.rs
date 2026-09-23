@@ -2496,10 +2496,9 @@ impl Renderer {
                     multiview_mask: None,
                 });
                 self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
-                let mut instance = shadow_total + batched_total;
-                for (look, mesh, texture, pose, _) in &singles {
+                let first = shadow_total + batched_total;
+                for (instance, (look, mesh, texture, pose, _)) in (first..).zip(&singles) {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
-                    instance += 1;
                 }
             }
             self.ssao.run(
