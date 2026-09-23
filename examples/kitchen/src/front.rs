@@ -76,7 +76,7 @@ pub struct Front {
     was_open: bool,
     /// The score as last seen, and the points on their way up.
     last_score: Option<i32>,
-    floaters: Vec<Floater>,
+    floaters: runity::floaters::Floaters,
     /// Escape was pressed in the kitchen: the pause card is up.
     pub paused: bool,
     /// A card for each order, laid out for how many there are.
@@ -96,17 +96,6 @@ pub struct Front {
     talk: Option<(runity::dialogue::Conversation, f32)>,
 }
 
-/// Points won or lost, rising over where it happened and fading.
-#[derive(Debug, Clone)]
-struct Floater {
-    at: runity::glam::Vec3,
-    text: String,
-    good: bool,
-    age: f32,
-}
-
-/// Seconds a floater lasts.
-const FLOAT_SECONDS: f32 = 1.4;
 /// Where points are won — over the window — and lost — at the board.
 const WON_AT: runity::glam::Vec3 = runity::glam::Vec3::new(-1.5, 1.7, 3.0);
 const LOST_AT: runity::glam::Vec3 = runity::glam::Vec3::new(0.0, 2.3, -3.8);
@@ -136,7 +125,7 @@ impl Front {
             steam: false,
             was_open: false,
             last_score: None,
-            floaters: Vec::new(),
+            floaters: runity::floaters::Floaters::new(),
             paused: false,
             orders: Screen::from_layout(Layout::default()),
             cards: usize::MAX,
@@ -329,13 +318,10 @@ impl Front {
         };
         if let Some(was) = self.last_score {
             let change = score - was;
-            if change != 0 {
-                self.floaters.push(Floater {
-                    at: if change > 0 { WON_AT } else { LOST_AT },
-                    text: if change > 0 { format!("+{change}") } else { format!("−{}", -change) },
-                    good: change > 0,
-                    age: 0.0,
-                });
+            if change > 0 {
+                self.floaters.push(WON_AT, format!("+{change}"), runity::glam::Vec4::new(1.0, 0.84, 0.3, 1.0));
+            } else if change < 0 {
+                self.floaters.push(LOST_AT, format!("−{}", -change), runity::glam::Vec4::new(1.0, 0.35, 0.25, 1.0));
             }
         }
         self.last_score = Some(score);
@@ -344,31 +330,7 @@ impl Front {
     /// The floaters, placed on the screen from where they are in the
     /// kitchen as `camera` sees it: call after the camera is known.
     pub fn floaters(&mut self, camera: &runity::render::Camera, size: Vec2, ui: &mut Ui, seconds: f32) {
-        use runity::glam::{Vec4, Vec4Swizzles};
-        use runity::ui::TextRun;
-        let view = camera.view_projection(size.x / size.y.max(1.0));
-        for f in &mut self.floaters {
-            f.age += seconds;
-        }
-        self.floaters.retain(|f| f.age < FLOAT_SECONDS);
-        for f in &self.floaters {
-            let clip = view * f.at.extend(1.0);
-            if clip.w <= 0.0 {
-                continue;
-            }
-            let ndc = clip.xy() / clip.w;
-            let t = f.age / FLOAT_SECONDS;
-            let x = (ndc.x + 1.0) * 0.5 * size.x;
-            let y = (1.0 - ndc.y) * 0.5 * size.y - 80.0 * t;
-            let alpha = if t < 0.6 { 1.0 } else { 1.0 - (t - 0.6) / 0.4 };
-            let big = size.y / 720.0 * if t < 0.15 { 36.0 + 60.0 * (0.15 - t) } else { 36.0 };
-            let colour = if f.good { Vec4::new(1.0, 0.84, 0.3, alpha) } else { Vec4::new(1.0, 0.35, 0.25, alpha) };
-            let run = |dx: f32, dy: f32, c: Vec4| {
-                TextRun::new(x - 150.0 + dx, y - big * 0.5 + dy, big, c, f.text.clone()).within(300.0, 0.5)
-            };
-            ui.text(run(2.0, 3.0, Vec4::new(0.1, 0.05, 0.0, alpha * 0.7)));
-            ui.text(run(0.0, 0.0, colour));
-        }
+        self.floaters.draw(camera, size, ui, seconds);
     }
 
     fn fill_hud(&mut self, round: Option<&Round>, party: &Party) {

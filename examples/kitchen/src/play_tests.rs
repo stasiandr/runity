@@ -1016,7 +1016,7 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
 #[test]
 fn the_camera_tour_loads() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: runity::Tuned<runity::tour::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     assert!(tour.shots.len() >= 2 && tour.travel > 0.0);
 }
 
@@ -1028,7 +1028,7 @@ fn close_ups() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: runity::Tuned<runity::tour::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     let leg = tour.hold + tour.travel;
@@ -1050,13 +1050,13 @@ fn tour_frames() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: runity::Tuned<runity::tour::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let _ = std::fs::remove_dir_all(root.join("target/shots/tour"));
     std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     let rest = runity::scene_camera(&k.live.scene().view);
-    let mut flyby = crate::flyby::Flyby::default();
+    let mut flyby = runity::tour::Flyby::default();
     let fps = 20.0;
     let lap = (tour.hold + tour.travel) * tour.shots.len() as f32;
     let frames = ((lap + 3.0) * fps) as usize;
@@ -1081,7 +1081,7 @@ fn lenses() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: runity::Tuned<runity::tour::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     for (name, lens) in [("scene", None), ("f2", Some((85.0, 2.0))), ("f1", Some((100.0, 1.2)))] {
@@ -1313,11 +1313,11 @@ fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let mut k = Peer::alone();
+    let k = Peer::alone();
     let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
     let size = runity::glam::Vec2::new(1280.0, 720.0);
     let camera = runity::scene_camera(&k.live.scene().view);
-    let mut draw = |k: &Peer, front: &mut crate::front::Front| {
+    let draw = |k: &Peer, front: &mut crate::front::Front| {
         let mut ui = runity::ui::Ui::new();
         front.draw(&k.world, &k.party, &mut runity::widgets::Widgets::new(), &mut ui, &runity::input::Input::default(), size, &strings);
         front.floaters(&camera, size, &mut ui, 0.1);

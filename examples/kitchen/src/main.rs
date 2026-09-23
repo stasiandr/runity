@@ -55,8 +55,6 @@ mod session;
 /// Steam: the lobby, invites, and the session over Steam's networking.
 mod lobby;
 
-/// The camera's tour of the kitchen while players gather.
-mod flyby;
 
 /// The kitchen's sounds, from what changes in it.
 mod noise;
@@ -76,8 +74,8 @@ struct Game {
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
     /// The camera's tour while players gather, from `tuning/flyby.ron`.
-    tour: Tuned<flyby::Tour>,
-    flyby: flyby::Flyby,
+    tour: Tuned<runity::tour::Tour>,
+    flyby: runity::tour::Flyby,
     layers: Tuned<runity::layers::Layers>,
     /// The menu, the HUD, the results.
     front: front::Front,
@@ -592,7 +590,7 @@ fn main() -> anyhow::Result<()> {
         actions,
         tuning,
         tour,
-        flyby: flyby::Flyby::default(),
+        flyby: runity::tour::Flyby::default(),
         layers,
         front,
         scene: playing.clone(),

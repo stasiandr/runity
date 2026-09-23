@@ -1,22 +1,35 @@
-//! The camera's tour while players gather: from shot to shot of
-//! `tuning/flyby.ron` on a Catmull-Rom curve, pausing at each, round and
-//! round. Coming in it eases away from the room's view; when the doors open
-//! it eases back, so the round always starts from the view it is played
-//! in. The lens keeps what it looks at in focus.
+//! A camera's tour: from shot to shot on a Catmull-Rom curve, pausing at
+//! each, round and round — a lobby's fly-through while players gather, a
+//! title screen's, an attract mode. [`Flyby`] eases from the view a game
+//! plays in to the tour and back, so play always starts from its own view,
+//! and puts the tour's lens on: focused where it looks, the rest soft.
+//!
+//! A tour is data, RON, usually a [`crate::Tuned`] file — saved while the
+//! game runs, the camera goes the new way at once:
+//!
+//! ```ron
+//! (travel: 3.5, hold: 2.0, focal_length: 100.0, aperture: 1.4, shots: [
+//!     (at: (0.0, 3.0, 7.0), look: (0.0, 0.8, 0.0)),
+//!     (at: (-1.0, 2.5, 0.0), look: (-4.5, 0.8, -1.0)),
+//! ])
+//! ```
+//!
+//! Local to each peer: nothing of it is sent.
 
-use runity::glam::Vec3;
-use runity::render::Camera;
-use serde::Deserialize;
+use glam::Vec3;
+use serde::{Deserialize, Serialize};
+
+use crate::render::Camera;
 
 /// Where the camera stops, and what it looks at.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Shot {
     pub at: Vec3,
     pub look: Vec3,
 }
 
 /// The tour, from its file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tour {
     /// Seconds from one shot to the next.
     pub travel: f32,
@@ -65,7 +78,7 @@ impl Flyby {
 
     /// The tour's lens over the scene's, as much as the tour is the camera:
     /// in focus where it looks, the rest soft.
-    pub fn lens(&self, tour: &Tour, camera: &Camera, dof: &mut runity::lens::DepthOfField) {
+    pub fn lens(&self, tour: &Tour, camera: &Camera, dof: &mut crate::lens::DepthOfField) {
         if self.weight == 0.0 {
             return;
         }
@@ -77,7 +90,6 @@ impl Flyby {
     }
 
     /// Whether the tour has any part in the camera.
-    #[cfg(test)]
     pub fn flying(&self) -> bool {
         self.weight > 0.0
     }
