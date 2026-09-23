@@ -1,6 +1,7 @@
 //! Terrain drawn finely round the camera: the rings of its grid meet
 //! without a crack wherever the camera stands, and nothing of it is drawn
-//! past the terrain's edge.
+//! past the terrain's edge — by the vertex shader, or with
+//! `RUNITY_MESH_SHADERS=1` by mesh shaders.
 
 use runity::glam::{Mat4, Vec3};
 use runity::material::Shading;
@@ -18,6 +19,9 @@ fn the_fine_grid_has_no_cracks_and_stops_at_the_edge() {
     };
     let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
     let mut renderer = Renderer::new(&gpu, &target);
+    // Run with RUNITY_MESH_SHADERS set, the same checks hold of the grid
+    // made by mesh shaders — and it must have been made by them.
+    assert_eq!(renderer.terrain_by_mesh_shaders(), gpu.mesh_shaders);
     let terrain = Terrain {
         size: 200.0,
         cells: 128,

@@ -252,6 +252,10 @@ pub(crate) const CLIPMAP_LEVELS: u32 = 9;
 pub(crate) const CLIPMAP_CELLS: i32 = 128;
 /// The finest spacing, metres: a sand ripple is fourteen centimetres.
 pub(crate) const CLIPMAP_FINEST: f32 = 0.03;
+/// With mesh shaders, the patches of a ring: 18 by 18, each 8 by 8 cells
+/// (terrain_mesh.wgsl), reaching as far as the grid's rings do, the middle
+/// ones of every outer ring left to the ring inside.
+pub(crate) const PATCHES_PER_RING: u32 = 18 * 18;
 
 /// The grid, in its own terms: each vertex its cell `(x, ring, z)`; the
 /// vertex shader places and raises it. The innermost ring is whole, each
