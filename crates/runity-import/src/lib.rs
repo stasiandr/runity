@@ -26,7 +26,9 @@
 
 pub mod assets;
 pub mod poly;
+pub mod scene;
 pub mod terrain;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -79,6 +81,25 @@ pub struct ImportSettings {
     /// its foot can be dropped on the ground.
     #[serde(default = "yes")]
     pub origin_to_base: bool,
+    /// A glTF that is a scene — several objects — rather than one model:
+    /// imported as models, materials and a prefab (see [`scene`]). Set on
+    /// the first import from what the file holds, and kept.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scene: bool,
+    /// For a scene: the ID of every asset it builds, by what the file calls
+    /// it (`mesh:rock.0`, `material:moss`), so a re-import updates them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, AssetId>,
+    /// For a scene: its materials the project draws with one of its own
+    /// instead — `{ "moss": "moss_wet" }` — everywhere this file uses them
+    /// (docs/blender.md). A material with a custom look in the game and
+    /// Blender's in Blender.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub materials: BTreeMap<String, String>,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn one() -> f32 {
@@ -95,6 +116,9 @@ impl Default for ImportSettings {
             recompute_normals: false,
             srgb: true,
             origin_to_base: true,
+            scene: false,
+            parts: BTreeMap::new(),
+            materials: BTreeMap::new(),
         }
     }
 }
@@ -164,7 +188,17 @@ pub fn asset_for(id: AssetId, library: &Path) -> PathBuf {
 /// for a source with no sidecar yet.
 pub fn built_for(source: &Path, library: &Path) -> Option<PathBuf> {
     let settings = ImportSettings::load(sidecar_for(source)).ok()?;
-    Some(asset_for(settings.asset_id(), library))
+    Some(output_for(&settings, library))
+}
+
+/// The file an import with these settings builds: its `.rasset`, or for a
+/// scene its prefab.
+pub fn output_for(settings: &ImportSettings, library: &Path) -> PathBuf {
+    if settings.scene {
+        scene::prefab_for(settings.asset_id(), library)
+    } else {
+        asset_for(settings.asset_id(), library)
+    }
 }
 
 /// Whether a library file is named the way [`asset_for`] names one. A
@@ -1047,6 +1081,7 @@ pub fn import_to(
     mut settings: ImportSettings,
 ) -> Result<Imported> {
     std::fs::create_dir_all(library)?;
+    let first = settings.id.is_none() && settings.hash.is_empty();
     settings.hash = content_hash(source).with_context(|| format!("{}", source.display()))?;
     settings.id = Some(settings.asset_id());
 
@@ -1054,6 +1089,18 @@ pub fn import_to(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
+    if matches!(extension.as_str(), "gltf" | "glb") && first && !settings.scene {
+        settings.scene = scene::is_scene(source)?;
+    }
+    if settings.scene {
+        let id = scene::import_scene(source, library, &mut settings)?;
+        settings.save(sidecar)?;
+        return Ok(Imported {
+            id,
+            asset: scene::prefab_for(id, library),
+            sidecar: sidecar.to_path_buf(),
+        });
+    }
     let (bytes, id, kind) = match extension.as_str() {
         "gltf" | "glb" => {
             let mesh = mesh_from_gltf(source, &settings)?;
@@ -1282,7 +1329,7 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         }
         claimed.push(source.clone());
 
-        let asset = asset_for(settings.asset_id(), &library);
+        let asset = output_for(&settings, &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {

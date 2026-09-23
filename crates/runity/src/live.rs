@@ -625,7 +625,11 @@ pub type Stamps = Vec<(PathBuf, Option<SystemTime>)>;
 pub fn stamps(path: &Path, project: Option<&Project>) -> Stamps {
     let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
     let mut out = vec![(path.to_path_buf(), modified(path))];
-    if let Some(entries) = project.and_then(|p| std::fs::read_dir(p.prefabs()).ok()) {
+    // Hand-written prefabs, then the ones imports built into the library.
+    for dir in project.into_iter().flat_map(|p| [p.prefabs(), p.library()]) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
         let mut prefabs: Vec<PathBuf> = entries
             .flatten()
             .map(|entry| entry.path())

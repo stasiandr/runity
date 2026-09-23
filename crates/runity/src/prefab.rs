@@ -84,8 +84,51 @@ impl Prefabs {
     /// the same set, and a scene in `scenes/caves/` finds the same campfire
     /// as one in `scenes/`. No folder means no prefabs, which is not an
     /// error: most projects start with none.
+    ///
+    /// And the prefabs imports built into `library/`: a glTF or `.blend`
+    /// scene is a tree the importer writes there (docs/blender.md), found
+    /// by the same names as a hand-written one.
     pub fn of(project: &crate::Project) -> (Self, Vec<(PathBuf, String)>) {
-        Self::open(project.prefabs()).unwrap_or_else(|_| (Self::new(), Vec::new()))
+        let (mut prefabs, mut problems) =
+            Self::open(project.prefabs()).unwrap_or_else(|_| (Self::new(), Vec::new()));
+        problems.extend(prefabs.add_imported(project.library()));
+        (prefabs, problems)
+    }
+
+    /// Add the prefabs an import built into a library: `<asset id>.prefab`,
+    /// named by their root. A hand-written prefab of the same name wins —
+    /// it is the one somebody chose to write.
+    pub fn add_imported(&mut self, library: impl AsRef<Path>) -> Vec<(PathBuf, String)> {
+        let mut problems = Vec::new();
+        let Ok(entries) = std::fs::read_dir(library.as_ref()) else {
+            return problems;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(EXTENSION))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<crate::AssetId>().ok());
+            let Some(id) = id else { continue };
+            match Self::read(&path) {
+                Ok((_, desc)) => {
+                    let name = desc.name.clone();
+                    if self.by_name.contains_key(&name) {
+                        continue;
+                    }
+                    self.ids.insert(id, name.clone());
+                    self.id_of.insert(name.clone(), id);
+                    self.insert(name, desc);
+                }
+                Err(e) => problems.push((path, e)),
+            }
+        }
+        problems
     }
 
     /// Read one prefab file, returning its name and what is in it.

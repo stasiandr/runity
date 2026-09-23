@@ -2573,6 +2573,8 @@ impl Session {
                 }
             }
             if changed > 0 {
+                // A scene source (a glTF level) rebuilds a prefab too.
+                self.prefabs = runity::Prefabs::of(project).0;
                 // New and moved assets are files the open library has never
                 // seen, so it is read again rather than refreshed.
                 let _ = self.reopen_library();
