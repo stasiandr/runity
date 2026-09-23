@@ -18,6 +18,7 @@
 //! needs a prototype on a Mac before anything is built on it.
 
 mod error;
+pub mod history;
 
 use std::path::{Path, PathBuf};
 
@@ -30,6 +31,7 @@ use runity::{
 };
 
 pub use error::EditError;
+pub use history::Revision;
 
 /// What a failed session call hands back.
 pub type EditResult<T> = Result<T, EditError>;
@@ -97,6 +99,9 @@ pub struct Session {
     /// — and when the scene's files last changed. What tells an edit made
     /// on disk from one made here.
     on_disk: Option<(Scene, runity::live::Stamps)>,
+    /// Theirs, and the conflicts, while a merge of the open scene is being
+    /// settled.
+    merge: Option<(Scene, Vec<runity::merge::Conflict>)>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -163,6 +168,7 @@ impl Session {
             gizmo_arm: None,
             play: None,
             on_disk: None,
+            merge: None,
         })
     }
 
@@ -262,6 +268,90 @@ impl Session {
             let stamps = runity::live::stamps(&target, self.project.as_ref());
             self.on_disk = Some((self.history.scene().clone(), stamps));
         }
+        Ok(())
+    }
+
+    /// The commits that touched the open scene's file, newest first: who,
+    /// when, and why.
+    pub fn scene_history(&self) -> EditResult<Vec<Revision>> {
+        let path = self.scene_path.as_ref().ok_or(EditError::NoPath)?;
+        history::log(path).map_err(EditError::Io)
+    }
+
+    /// The open scene as it was at `commit`, without touching the document:
+    /// to look at, or to render, before deciding.
+    pub fn scene_at(&self, commit: &str) -> EditResult<Scene> {
+        let path = self.scene_path.as_ref().ok_or(EditError::NoPath)?;
+        let text = history::show(path, commit).map_err(EditError::Io)?;
+        let mut scene: Scene = runity::ron::from_str(&text)
+            .map_err(|e| EditError::Scene(format!("{} at {commit}: {e}", path.display())))?;
+        scene.assign_ids();
+        Ok(scene)
+    }
+
+    /// Put the scene back as it was at `commit`, as one undoable edit —
+    /// nothing is saved until the document is.
+    pub fn restore_revision(&mut self, commit: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let scene = self.scene_at(commit)?;
+        *self.history.edit() = scene;
+        if self
+            .selected
+            .is_some_and(|id| self.history.scene().get(id).is_none())
+        {
+            self.selected = None;
+        }
+        self.respawn();
+        Ok(())
+    }
+
+    /// The conflicts in the open scene, when git is in the middle of a merge
+    /// that conflicted on it; empty otherwise.
+    ///
+    /// Git keeps the common ancestor, ours and theirs in the index while a
+    /// merge is unsettled, so the editor merges them again itself and gets
+    /// the same conflicts `runity merge` reported — with the values, so each
+    /// can be shown and settled here instead of in a text editor.
+    pub fn merge_conflicts(&mut self) -> EditResult<Vec<runity::merge::Conflict>> {
+        let stages = (
+            self.scene_at(":1"),
+            self.scene_at(":2"),
+            self.scene_at(":3"),
+        );
+        let (Ok(base), Ok(ours), Ok(theirs)) = stages else {
+            self.merge = None;
+            return Ok(Vec::new());
+        };
+        let merged = runity::merge::merge_scenes(&base, &ours, &theirs);
+        self.merge = Some((theirs, merged.conflicts.clone()));
+        Ok(merged.conflicts)
+    }
+
+    /// Settle one conflict — by its place in [`Session::merge_conflicts`] —
+    /// theirs' way, as one undoable edit. Keeping ours needs nothing: the
+    /// merge already kept it.
+    pub fn take_theirs(&mut self, conflict: usize) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let Some((theirs, conflicts)) = self.merge.clone() else {
+            return Err(EditError::Scene(
+                "no merge conflicts loaded — call merge_conflicts first".into(),
+            ));
+        };
+        let Some(conflict) = conflicts.get(conflict) else {
+            return Err(EditError::Scene(format!(
+                "there are {} conflicts, not {}",
+                conflicts.len(),
+                conflict + 1
+            )));
+        };
+        let mut scene = self.history.scene().clone();
+        if !conflict.take_theirs(&mut scene, &theirs) {
+            return Err(EditError::Scene(format!(
+                "nothing of theirs to take for: {conflict}"
+            )));
+        }
+        *self.history.edit() = scene;
+        self.respawn();
         Ok(())
     }
 

@@ -1231,3 +1231,107 @@ fn a_scatter_is_one_group_one_step_and_the_same_for_the_same_seed() {
         .collect();
     assert_eq!(first, second, "the same seed, the same layout");
 }
+
+#[test]
+fn the_scenes_history_is_visible_and_a_past_version_can_be_restored() {
+    let Some((mut session, path)) = open("history") else {
+        return;
+    };
+    let root = root_of(&path);
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output();
+        match out {
+            Ok(out) => out.status.success(),
+            Err(_) => false,
+        }
+    };
+    if !git(&["init", "-q"]) {
+        eprintln!("skipping: no git");
+        return;
+    }
+    git(&["config", "user.email", "a@runity"]);
+    git(&["config", "user.name", "Ada"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "the crate at the origin"]);
+
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(crate_id, transform([6.0, 0.5, 0.0], [0.0; 3], [1.0; 3]))
+        .unwrap();
+    session.save_scene(None).unwrap();
+    git(&["commit", "-q", "-am", "move the crate"]);
+
+    let revisions = session.scene_history().unwrap();
+    assert_eq!(revisions.len(), 2, "{revisions:?}");
+    assert_eq!(revisions[0].summary, "move the crate", "newest first");
+    assert_eq!(revisions[1].author, "Ada");
+
+    let old = session.scene_at(&revisions[1].commit).unwrap();
+    assert_eq!(old.get(crate_id).unwrap().transform.position.x, 0.0);
+    assert_eq!(
+        session.transform(crate_id).unwrap().position.x,
+        6.0,
+        "looking is not restoring"
+    );
+
+    session.restore_revision(&revisions[1].commit).unwrap();
+    assert_eq!(session.transform(crate_id).unwrap().position.x, 0.0);
+    assert!(session.undo().unwrap(), "and restoring is one undo step");
+    assert_eq!(session.transform(crate_id).unwrap().position.x, 6.0);
+}
+
+#[test]
+fn a_merge_conflict_is_listed_with_its_values_and_settled_theirs_way() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "conflicts",
+        "(entities: [(id: \"00000000000000a1\", name: \"pine\", model: \"builtin:cone\", transform: (position: (0.0, 0.0, 0.0)))])\n",
+    );
+    let root = root_of(&path);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q", "-b", "main"]) {
+        eprintln!("skipping: no git");
+        return;
+    }
+    git(&["config", "user.email", "a@runity"]);
+    git(&["config", "user.name", "Ada"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "start"]);
+    git(&["checkout", "-q", "-b", "theirs"]);
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 9.0)")).unwrap();
+    git(&["commit", "-q", "-am", "theirs"]);
+    git(&["checkout", "-q", "main"]);
+    std::fs::write(&path, text.replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)")).unwrap();
+    git(&["commit", "-q", "-am", "ours"]);
+    assert!(!git(&["merge", "-q", "theirs"]), "a conflict");
+    // What the merge driver leaves: ours, loadable.
+    git(&["checkout", "--ours", "--", "scenes/scene.ron"]);
+
+    session.open_scene(&path).unwrap();
+    let conflicts = session.merge_conflicts().unwrap();
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert!(conflicts[0]
+        .to_string()
+        .contains("both changed its position"));
+    let pine = id(&session, "pine");
+    assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
+
+    session.take_theirs(0).unwrap();
+    let now = session.transform(pine).unwrap().position;
+    assert_eq!((now.x, now.z), (0.0, 9.0), "theirs, taken");
+    assert!(session.undo().unwrap(), "one step");
+    assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
+}

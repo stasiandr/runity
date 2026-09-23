@@ -17,6 +17,7 @@
 // issues them.
 pub use glam;
 pub use hecs;
+pub use ron;
 
 pub mod animation;
 pub mod animator;

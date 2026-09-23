@@ -82,6 +82,10 @@ pub fn list() -> Vec<Value> {
             "scale_max": { "type": "number" },
             "parent": { "type": "string", "description": ID },
         }), &["what", "count"]),
+        tool("history", "The commits that touched the open scene's file, newest first: commit, author, date, summary.", json!({}), &[]),
+        tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
+        tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
+        tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
         tool("undo", "Take back the last edit.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
@@ -189,6 +193,63 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .get(group)
                 .map_or(0, |g| g.children.len());
             Ok(vec![text(format!("{group}: {placed} placed"))])
+        }
+        "history" => {
+            let revisions = server
+                .session()?
+                .scene_history()
+                .map_err(|e| e.to_string())?;
+            if revisions.is_empty() {
+                return Ok(vec![text("not in any commit yet")]);
+            }
+            let lines: Vec<String> = revisions
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{} {} {} — {}",
+                        &r.commit[..r.commit.len().min(10)],
+                        r.date,
+                        r.author,
+                        r.summary
+                    )
+                })
+                .collect();
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "restore" => {
+            let commit = string(args, "commit")?;
+            server
+                .session()?
+                .restore_revision(&commit)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "the scene as it was at {commit}; not saved"
+            ))])
+        }
+        "conflicts" => {
+            let conflicts = server
+                .session()?
+                .merge_conflicts()
+                .map_err(|e| e.to_string())?;
+            if conflicts.is_empty() {
+                return Ok(vec![text("no merge conflicts in the open scene")]);
+            }
+            let lines: Vec<String> = conflicts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| format!("{i}: {c}"))
+                .collect();
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "take_theirs" => {
+            let index = integer(args, "conflict")? as usize;
+            server
+                .session()?
+                .take_theirs(index)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "conflict {index} settled theirs' way; not saved"
+            ))])
         }
         "undo" => {
             let done = server.session()?.undo().map_err(|e| e.to_string())?;

@@ -58,6 +58,88 @@ impl fmt::Display for Conflict {
     }
 }
 
+impl Conflict {
+    /// Settle this conflict the other way: put theirs into `scene` — a
+    /// merge result, which holds ours — for this one field. `false` when
+    /// there is nothing to take, such as a parent the merge had to drop.
+    pub fn take_theirs(&self, scene: &mut Scene, theirs: &Scene) -> bool {
+        let Some(id) = self.entity else {
+            match self.field.as_str() {
+                "view" => scene.view = theirs.view,
+                "sun" => scene.sun = theirs.sun,
+                "fog" => scene.fog = theirs.fog,
+                _ => return false,
+            }
+            return true;
+        };
+        match self.field.as_str() {
+            // Theirs deleted it: taking theirs deletes it. Theirs changed
+            // it: the merge already kept theirs' version.
+            EXISTS => {
+                if self.theirs == "deleted it" {
+                    crate::edit::remove(scene, id).is_some()
+                } else {
+                    true
+                }
+            }
+            PARENT_LOST => false,
+            "its parent" => {
+                let parent = parent_of(&theirs.entities, id, None).flatten();
+                crate::edit::reparent(scene, id, parent)
+            }
+            field => {
+                let (Some(t), Some(e)) = (theirs.get(id), scene.get_mut(id)) else {
+                    return false;
+                };
+                match field {
+                    "its name" => e.name = t.name.clone(),
+                    "its model" => e.model = t.model.clone(),
+                    "its prefab" => e.prefab = t.prefab.clone(),
+                    "its position" => e.transform.position = t.transform.position,
+                    "its rotation" => e.transform.rotation_deg = t.transform.rotation_deg,
+                    "its scale" => e.transform.scale = t.transform.scale,
+                    "its material" => e.material = t.material.clone(),
+                    "its body" => e.body = t.body,
+                    "its collider" => e.collider = t.collider,
+                    other => {
+                        let Some(name) = other
+                            .strip_prefix("its component `")
+                            .and_then(|rest| rest.strip_suffix('`'))
+                        else {
+                            return false;
+                        };
+                        match t.components.get(name) {
+                            Some(value) => {
+                                e.components.insert(name.to_string(), value.clone());
+                            }
+                            None => {
+                                e.components.remove(name);
+                            }
+                        }
+                    }
+                }
+                true
+            }
+        }
+    }
+}
+
+/// `Some(parent)` for the entity `id` in a tree: `Some(None)` at the top,
+/// `None` when it is not there.
+fn parent_of(
+    entities: &[EntityDesc],
+    id: EntityId,
+    parent: Option<EntityId>,
+) -> Option<Option<EntityId>> {
+    entities.iter().find_map(|e| {
+        if e.id == id {
+            Some(parent)
+        } else {
+            parent_of(&e.children, id, Some(e.id))
+        }
+    })
+}
+
 const EXISTS: &str = "whether it exists";
 const PARENT_LOST: &str = "where it hangs";
 
@@ -507,5 +589,35 @@ mod tests {
             merged.scene
         );
         assert!(!merged.conflicts.is_empty());
+    }
+
+    #[test]
+    fn a_conflict_can_be_settled_theirs_way_field_by_field() {
+        let base = scene(BASE);
+        let ours = scene(
+            &BASE
+                .replace("(0.0, 0.0, 0.0)", "(5.0, 0.0, 0.0)")
+                .replace("\"stone\"", "\"bark\""),
+        );
+        let theirs = scene(
+            &BASE
+                .replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 9.0)")
+                .replace("\"stone\"", "\"moss\""),
+        );
+        let mut merged = merge_scenes(&base, &ours, &theirs);
+        assert_eq!(merged.conflicts.len(), 2);
+        let position = merged
+            .conflicts
+            .iter()
+            .find(|c| c.field == "its position")
+            .unwrap()
+            .clone();
+        assert!(position.take_theirs(&mut merged.scene, &theirs));
+        assert_eq!(merged.scene.find("tree").unwrap().transform.position.z, 9.0);
+        assert_eq!(
+            merged.scene.find("rock").unwrap().material,
+            crate::scene::MaterialRef::Named("bark".into()),
+            "the other conflict is still ours"
+        );
     }
 }
