@@ -224,8 +224,13 @@ Steam) жил на runity. Порядок — по риску: сначала т
       нужен запущенный Steam
 - [ ] Голос Steam: в `steamworks` 0.13 нет обёртки ISteamUser voice — через
       `steamworks-sys` или свой захват микрофона (и голос рядом, раздел 3)
-- [ ] Отчёты о падениях (Sentry), аналитика (GameAnalytics), Discord rich
-      presence
+- [x] Отчёты о падениях: `runity::crash` — паника записывается в папку
+      игрока (`crashes/`), шаблон игры ставит это при старте; отправка в
+      Sentry (`reports::send_to_sentry`), аналитика GameAnalytics
+      (`reports::GameAnalytics`, события design с подписью HMAC) — фича
+      `reports`; Discord rich presence (`discord::Discord`) — фича
+      `discord`. Отправка — только с согласия игрока; вживую не проверена
+      (нужны ключи и запущенный Discord)
 - [ ] Сборка под Steam: депо Windows и macOS, универсальный бинарь macOS с
       подписью, выкладка только в ветку `playtest`
 

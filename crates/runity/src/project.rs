@@ -850,6 +850,9 @@ fn main() -> anyhow::Result<()> {
     // runity.ron's `game`: window, clock, first scene, language.
     let (project_name, settings) =
         runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
+    // A panic is written down in the player's folder: runity::crash::pending
+    // finds it on the next start.
+    runity::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
     // `runity run --scene cave` plays scenes/cave.ron.
     let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it

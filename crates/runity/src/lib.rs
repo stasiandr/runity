@@ -30,7 +30,10 @@ pub mod audio;
 pub mod bench;
 pub mod builtin;
 pub mod components;
+pub mod crash;
 pub mod decals;
+#[cfg(feature = "discord")]
+pub mod discord;
 pub mod edit;
 pub mod gizmo;
 pub mod gpu;
@@ -62,6 +65,8 @@ pub mod reflections;
 pub mod refs;
 pub mod relay;
 pub mod render;
+#[cfg(feature = "reports")]
+pub mod reports;
 pub mod ron_edit;
 mod ron_text;
 pub mod routes;
