@@ -343,3 +343,43 @@ fn after_a_hot_patch_the_world_starts_again_under_new_types_keeping_what_a_save_
         "one door, not two"
     );
 }
+
+#[test]
+fn a_game_changes_level_keeping_what_it_spawned_itself() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, 8, 8);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let project = project("switch");
+    write(
+        &project.scenes().join("cave.ron"),
+        r#"(entities: [(id: "c1", name: "stalagmite", model: "builtin:cone")])"#,
+    );
+    let (mut live, _) = LiveScene::open(project.scenes().join("main.ron")).unwrap();
+    let mut world = hecs::World::new();
+    live.spawn(&mut world, &gpu, &mut renderer);
+    let player = world.spawn((Lit(true),));
+
+    let e = live
+        .switch("cvae", &mut world, &gpu, &mut renderer)
+        .unwrap_err();
+    assert!(e.to_string().contains("did you mean `cave`?"), "{e}");
+    assert_eq!(world.query::<&SceneId>().iter().count(), 2, "still on main");
+
+    live.switch("cave", &mut world, &gpu, &mut renderer)
+        .unwrap();
+    let lines: Vec<String> = world
+        .query::<&SceneId>()
+        .iter()
+        .map(|s| s.0.to_string())
+        .collect();
+    assert_eq!(
+        lines,
+        ["00000000000000c1"],
+        "main's lines gone, the cave's in"
+    );
+    assert!(world.contains(player), "the game's own things cross over");
+    assert!(live.path().ends_with("scenes/cave.ron"));
+}

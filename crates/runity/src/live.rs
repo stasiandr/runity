@@ -322,6 +322,46 @@ impl LiveScene {
         crate::patch_scene(&self.current, &Scene::default(), world, |_| None, |_| None).despawned
     }
 
+    /// Change level — Unity's `SceneManager.LoadScene`: take this scene's
+    /// entities out of the world and put `scenes/NAME.ron` of the same
+    /// project in, with the same components, library and uploaded meshes;
+    /// from then on it is the scene this reloads. What the game spawned on
+    /// its own stays, as with [`LiveScene::unload`]: the game says what
+    /// crosses a level (a player carried over, bullets despawned).
+    ///
+    /// A name the project does not have is an error that says the nearest,
+    /// and the world keeps the level it had.
+    pub fn switch(
+        &mut self,
+        name: &str,
+        world: &mut World,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> anyhow::Result<(Spawned, Vec<String>)> {
+        let project = self
+            .project
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("a scene outside a project has no others to go to"))?;
+        let path = project.scenes().join(format!("{name}.ron"));
+        if !path.is_file() {
+            let names = project.scene_names();
+            let near = crate::spelling::closest(name, names.iter().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            anyhow::bail!("no scenes/{name}.ron{near}");
+        }
+        // Read before anything is taken out: a level that does not parse
+        // leaves the one being played.
+        let (current, prefabs, problems) = read(&path, Some(&project))?;
+        self.unload(world);
+        self.stamps = stamps(&path, Some(&project));
+        self.path = path;
+        self.current = current;
+        self.prefabs = prefabs;
+        let spawned = self.spawn(world, gpu, renderer);
+        Ok((spawned, problems))
+    }
+
     /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
     /// frame with the frame's delta.
     pub fn poll(
