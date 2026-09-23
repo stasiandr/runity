@@ -176,10 +176,44 @@ impl Terrain {
     }
 }
 
+impl Terrain {
+    /// Points along its crests, in its own space: the top of each dune
+    /// where the slip face falls away, every few metres along it, with how
+    /// tall it stands there. What the wind blows sand off.
+    pub fn crests(&self) -> Vec<Vec3> {
+        let d = &self.dunes;
+        let half = self.size * 0.5;
+        let along = (d.wavelength * 0.12).max(2.0);
+        let across = 1.0;
+        let mut out = Vec::new();
+        let mut z = -half + along * 0.5;
+        while z < half {
+            let mut x = -half;
+            let mut before = self.height(x, z);
+            let mut here = self.height(x + across, z);
+            while x + 2.0 * across < half {
+                let after = self.height(x + 2.0 * across, z);
+                // A top, with the ground falling away steeply downwind.
+                let drop = here - self.height(x + across + 3.0, z);
+                if here > before && here >= after && here > d.height * 0.3 && drop > 1.0 {
+                    out.push(Vec3::new(x + across, here, z));
+                }
+                before = here;
+                here = after;
+                x += across;
+            }
+            z += along;
+        }
+        out
+    }
+}
+
 /// A terrain on an entity: its settings, and the mesh drawn once made.
 #[derive(Debug, Clone)]
 pub struct Relief {
     pub terrain: Terrain,
+    /// Its crests, in its own space: found once.
+    pub crests: Vec<Vec3>,
     /// The uploaded mesh, and the settings it was made from.
     made: Option<(crate::render::MeshHandle, Terrain)>,
 }
@@ -187,6 +221,7 @@ pub struct Relief {
 impl Relief {
     pub fn new(terrain: Terrain) -> Self {
         Self {
+            crests: terrain.crests(),
             terrain,
             made: None,
         }
@@ -257,6 +292,23 @@ mod tests {
             angle > 20.0 && angle < 38.0,
             "about as steep as sand rests: {angle}°"
         );
+    }
+
+    #[test]
+    fn crests_are_found_on_top_of_the_slip_faces() {
+        let t = Terrain {
+            size: 200.0,
+            ..Terrain::default()
+        };
+        let crests = t.crests();
+        assert!(crests.len() > 20, "{}", crests.len());
+        for c in &crests {
+            assert!((t.height(c.x, c.z) - c.y).abs() < 1e-3);
+            assert!(
+                t.height(c.x + 3.0, c.z) < c.y - 1.0,
+                "falls away downwind of {c}"
+            );
+        }
     }
 
     #[test]

@@ -530,6 +530,9 @@ pub struct Frame {
     pub volumetric_fog: crate::volume::VolumetricFog,
     /// Balls of dust in the air ([`crate::volume::Puff`]).
     pub puffs: Vec<crate::volume::Puff>,
+    /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
+    /// how much does, the wind decides.
+    pub plumes: Vec<crate::volume::Plume>,
     /// What sways foliage, and what bends grass ([`crate::foliage`]).
     pub wind: crate::foliage::Wind,
     pub benders: Vec<crate::foliage::Bender>,
@@ -572,6 +575,7 @@ impl Default for Frame {
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
+            plumes: Vec::new(),
             wind: crate::foliage::Wind::default(),
             benders: Vec::new(),
             time: None,
@@ -676,6 +680,9 @@ struct FrameUniform {
     /// Dust in the air, two vectors each: centre and radius; linear colour
     /// and density. How many is `volume`'s w.
     puffs: [[f32; 4]; 2 * crate::volume::MOST_PUFFS],
+    /// 1 when the clouds' pass marched dust devils or crest plumes: the
+    /// picture it made is laid over what is behind them.
+    dust: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -3400,13 +3407,17 @@ impl Renderer {
         // What is drawn with: the camera, moved by the jitter.
         let drawn = Mat4::from_translation(Vec3::new(jitter.x, jitter.y, 0.0))
             * frame.camera.view_projection(aspect);
+        // Dust near the ground — a wall, a devil, sand off a crest — is
+        // marched at half size; clouds alone at a quarter.
+        let near_dust = frame.weather.dust_wall > 0.0
+            || frame.weather.dust_devils > 0.0
+            || (!frame.plumes.is_empty()
+                && (frame.wind.strength > 1.0 || frame.weather.sandstorm > 0.0));
         if probe.is_none()
-            && (frame.sky.clouds.coverage > 0.0 || frame.weather.dust_wall > 0.0)
-            && self.clouds.resize(
-                gpu,
-                (width, height),
-                if frame.weather.dust_wall > 0.0 { 2 } else { 4 },
-            )
+            && (frame.sky.clouds.coverage > 0.0 || near_dust)
+            && self
+                .clouds
+                .resize(gpu, (width, height), if near_dust { 2 } else { 4 })
         {
             self.rebind(gpu);
         }
@@ -3549,6 +3560,46 @@ impl Renderer {
         } else {
             Vec::new()
         };
+        // Dust devils where the weather has them; sand off the crests as
+        // much as the wind is strong (past a stiff breeze) or a storm blows.
+        let devils = if probe.is_none() {
+            weather.devils(&frame.wind, time)
+        } else {
+            Vec::new()
+        };
+        let blowing = (((frame.wind.strength - 1.0) / 1.5).clamp(0.0, 1.0))
+            .max(weather.sandstorm.clamp(0.0, 1.0));
+        let plumes: Vec<crate::volume::Plume> = if probe.is_none() && blowing > 0.0 {
+            let eye = frame.camera.position;
+            let mut near: Vec<crate::volume::Plume> = frame
+                .plumes
+                .iter()
+                .filter(|p| (p.position - eye).length_squared() < 150.0 * 150.0)
+                .copied()
+                .collect();
+            near.sort_by(|a, b| {
+                (a.position - eye)
+                    .length_squared()
+                    .total_cmp(&(b.position - eye).length_squared())
+            });
+            near.truncate(crate::volume::MOST_PLUMES);
+            // Thinning toward the edge of those taken, so where the list
+            // ends there is no line across the sky.
+            let edge = near
+                .last()
+                .map_or(1.0, |p| (p.position - eye).length())
+                .max(1.0);
+            for p in &mut near {
+                let d = (p.position - eye).length();
+                p.strength *= blowing * ((edge - d) / (edge * 0.35)).clamp(0.0, 1.0);
+            }
+            near
+        } else {
+            Vec::new()
+        };
+        // Devils and plumes are marched with the clouds, precisely: too
+        // thin and too far for the fog's grid.
+        let local_dust = !devils.is_empty() || !plumes.is_empty();
         if !puffs.is_empty() && !volumetric.enabled {
             volumetric = crate::volume::VolumetricFog {
                 enabled: true,
@@ -3556,6 +3607,7 @@ impl Renderer {
                 ..crate::volume::VolumetricFog::OFF
             };
         }
+
         let fog = weather.storm_distance(&frame.fog);
         // With a physical sky, the sun's colour and the light from all
         // round come from the air, not from the scene's picked colours.
@@ -3767,6 +3819,7 @@ impl Renderer {
                 .previous_view_projection
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
                 .to_cols_array_2d(),
+            dust: [if local_dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
             puffs: {
                 let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PUFFS];
                 for (i, p) in puffs.iter().enumerate() {
@@ -4177,7 +4230,8 @@ impl Renderer {
         let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
-        let prepass_drawn = ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on;
+        let prepass_drawn =
+            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust;
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4229,7 +4283,7 @@ impl Renderer {
         let dust_on = probe.is_none() && frame.weather.dust_wall > 0.0;
         let clouds_on =
             probe.is_none() && frame.sky.mode != SkyMode::Color && frame.sky.clouds.coverage > 0.0;
-        if clouds_on || dust_on {
+        if clouds_on || dust_on || local_dust {
             let (mut shape, drift) = frame.sky.clouds.vectors(&frame.wind);
             if !clouds_on {
                 shape[0] = 0.0;
@@ -4265,6 +4319,31 @@ impl Renderer {
                         frame.camera.position,
                         weather.dust_wall_height.max(10.0),
                     ),
+                    local: [devils.len() as f32, plumes.len() as f32, 0.0, 0.0],
+                    devils: {
+                        let mut out = [[0.0; 4]; 2 * crate::volume::MOST_DEVILS];
+                        for (i, d) in devils.iter().enumerate() {
+                            out[2 * i] =
+                                [d.position.x, d.position.y, d.position.z, d.radius.max(0.2)];
+                            out[2 * i + 1] =
+                                [d.height.max(1.0), d.strength.clamp(0.0, 1.0), d.spin, 0.0];
+                        }
+                        out
+                    },
+                    plumes: {
+                        let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PLUMES];
+                        for (i, p) in plumes.iter().enumerate() {
+                            out[2 * i] = [
+                                p.position.x,
+                                p.position.y,
+                                p.position.z,
+                                p.half_length.max(0.1),
+                            ];
+                            out[2 * i + 1] =
+                                [p.along.x, p.along.y, p.along.z, p.strength.clamp(0.0, 1.0)];
+                        }
+                        out
+                    },
                 },
                 &self.ssao.depth,
             );

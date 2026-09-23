@@ -94,6 +94,8 @@ struct Frame {
     // dust in the air (volume.rs): centre and radius; colour and density.
     // How many is volume.w.
     puffs: array<vec4<f32>, 32>,
+    // 1 when the clouds' pass marched dust devils or crest plumes
+    dust: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -1470,7 +1472,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // unless it stands nearer than where the wall can begin: the clouds'
     // picture is a quarter of the frame, and a thin post in front of the
     // wall must not take the wall's colour from the texel it shares.
-    if frame.weather[1].z > 0.0 && dust_can_reach(in.world_position) {
+    // And dust devils and sand off the crests, marched with it.
+    if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
         let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
         out = out * c.a + c.rgb;
     }
@@ -1863,7 +1866,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
     let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
     var sky = (color + sun) * frame.sky_ground.w;
-    if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 {
+    if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 || frame.dust.x > 0.5 {
         let c = textureSampleLevel(cloud_layer, fog_sampler, in.position.xy / frame.cluster_depth.zw, 0.0);
         sky = sky * c.a + c.rgb;
     }

@@ -69,6 +69,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         weather: Default::default(),
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
+        plumes: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

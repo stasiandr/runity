@@ -137,6 +137,7 @@ fn a_source_model_becomes_a_frame() {
         weather: Default::default(),
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
+        plumes: Vec::new(),
         draws: vec![
             Draw {
                 mesh: handle,

@@ -48,6 +48,38 @@ pub struct Puff {
 /// The most puffs a frame carries; past it, the nearest the camera win.
 pub const MOST_PUFFS: usize = 16;
 
+/// A dust devil: a whirling column of sand standing on the ground at
+/// `position`, `radius` wide at its foot and flaring above, `height` tall,
+/// leaning downwind ([`crate::weather::Weather::devils`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Devil {
+    pub position: glam::Vec3,
+    pub radius: f32,
+    pub height: f32,
+    /// 0 to 1: how much sand it has lifted now.
+    pub strength: f32,
+    /// Which way it turns: 1 or −1.
+    pub spin: f32,
+}
+
+/// The most dust devils a frame carries.
+pub const MOST_DEVILS: usize = 6;
+
+/// Sand blown off a dune's crest: a sheet streaming downwind from a
+/// stretch of crest `2 * half_length` long, centred at `position` (on the
+/// crest) and lying along `along` ([`crate::terrain`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Plume {
+    pub position: glam::Vec3,
+    pub along: glam::Vec3,
+    pub half_length: f32,
+    /// 0 to 1: how much is blowing.
+    pub strength: f32,
+}
+
+/// The most crest plumes a frame carries; past it, the nearest win.
+pub const MOST_PLUMES: usize = 64;
+
 /// The fog in the air, as a scene says it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
