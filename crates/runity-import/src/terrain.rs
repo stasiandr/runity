@@ -22,9 +22,11 @@
 //! `model: "hills", collider: Model, body: Static` — and it reloads like
 //! any model: change the seed, save, and the running game has new hills.
 //!
-//! Noise, not a painted heightmap, for now: a greybox wants ground with
-//! some shape to it, and a seed is a one-character diff where a heightmap
-//! is a binary one. A heightmap source is the next step.
+//! Or painted: `heightmap: "hills.png"` — a greyscale image beside the
+//! file, black at the bottom and white at `height` — for ground someone
+//! drew. With both, the noise adds a tenth of the height as detail on top
+//! of the painting. The terrain's content hash covers the image too, so
+//! repainting it rebuilds the terrain like editing the file does.
 
 use std::path::Path;
 
@@ -40,10 +42,70 @@ struct TerrainSource {
     #[serde(default = "default_resolution")]
     resolution: u32,
     height: f32,
-    #[serde(default)]
-    noise: Noise,
+    #[serde(default, deserialize_with = "plain")]
+    noise: Option<Noise>,
+    /// A greyscale image, relative to this file.
+    #[serde(default, deserialize_with = "plain")]
+    heightmap: Option<String>,
     #[serde(default)]
     edits: Vec<Edit>,
+}
+
+/// An optional field written as its value, not `Some(value)`.
+fn plain<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
+/// The files a terrain is built from besides itself: its heightmap. Whose
+/// bytes go into its content hash, so a repainted heightmap is a changed
+/// terrain.
+pub fn dependencies(path: &Path) -> Vec<std::path::PathBuf> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(source) = ron::from_str::<TerrainSource>(&text) else {
+        return Vec::new();
+    };
+    source
+        .heightmap
+        .map(|name| path.parent().unwrap_or(Path::new(".")).join(name))
+        .into_iter()
+        .collect()
+}
+
+/// A greyscale image, sampled smoothly anywhere in `[0, 1]²`.
+struct Heightmap {
+    width: u32,
+    height: u32,
+    values: Vec<f32>,
+}
+
+impl Heightmap {
+    fn load(path: &Path) -> Result<Self> {
+        let image = image::open(path)
+            .with_context(|| format!("heightmap {}", path.display()))?
+            .into_luma16();
+        let (width, height) = image.dimensions();
+        Ok(Self {
+            width,
+            height,
+            values: image.pixels().map(|p| p.0[0] as f32 / 65535.0).collect(),
+        })
+    }
+
+    fn sample(&self, u: f32, v: f32) -> f32 {
+        let x = u.clamp(0.0, 1.0) * (self.width - 1) as f32;
+        let y = v.clamp(0.0, 1.0) * (self.height - 1) as f32;
+        let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+        let (x1, y1) = ((x0 + 1).min(self.width - 1), (y0 + 1).min(self.height - 1));
+        let at = |x: u32, y: u32| self.values[(y * self.width + x) as usize];
+        let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+        let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * fx;
+        let bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx;
+        top + (bottom - top) * fy
+    }
 }
 
 /// One brush stroke, in metres, with a smooth falloff to its radius.
@@ -179,18 +241,45 @@ pub fn mesh_from_terrain(path: &Path, settings: &ImportSettings) -> Result<MeshA
             -depth * 0.5 + depth * j as f32 / (n - 1) as f32,
         )
     };
-    let mut heights: Vec<f32> = (0..n * n)
-        .map(|k| {
-            let (x, z) = at(k % n, k / n);
-            fbm(&source.noise, x, z)
-        })
-        .collect();
+    let painted = source
+        .heightmap
+        .as_ref()
+        .map(|name| Heightmap::load(&path.parent().unwrap_or(Path::new(".")).join(name)))
+        .transpose()?;
+    // Noise alone when nothing is painted; with a painting, only if asked.
+    let noise = match (&painted, source.noise) {
+        (None, noise) => Some(noise.unwrap_or_default()),
+        (Some(_), noise) => noise,
+    };
+    let mut heights: Vec<f32> = match &noise {
+        Some(noise) => (0..n * n)
+            .map(|k| {
+                let (x, z) = at(k % n, k / n);
+                fbm(noise, x, z)
+            })
+            .collect(),
+        None => vec![0.0; (n * n) as usize],
+    };
     let (low, high) = heights
         .iter()
         .fold((f32::MAX, f32::MIN), |(lo, hi), h| (lo.min(*h), hi.max(*h)));
     let range = (high - low).max(1e-6);
     for (k, h) in heights.iter_mut().enumerate() {
-        *h = (*h - low) / range * source.height;
+        let noise = if noise.is_some() {
+            (*h - low) / range
+        } else {
+            0.0
+        };
+        *h = match &painted {
+            // A painting is taken as painted: black is the ground, white
+            // is `height`. Noise, if any, is detail on top.
+            Some(map) => {
+                let (i, j) = (k as u32 % n, k as u32 / n);
+                let (u, v) = (i as f32 / (n - 1) as f32, j as f32 / (n - 1) as f32);
+                (map.sample(u, v) + noise * 0.1) * source.height
+            }
+            None => noise * source.height,
+        };
         let (x, z) = at(k as u32 % n, k as u32 / n);
         for edit in &source.edits {
             *h = edit.apply(x, z, *h);

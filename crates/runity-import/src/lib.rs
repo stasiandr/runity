@@ -148,13 +148,22 @@ pub fn asset_for(source: &Path, library: &Path) -> PathBuf {
 /// the same value for the same bytes — which a committed hash needs and
 /// the standard library's hasher does not promise. Not cryptographic, and
 /// it does not need to be: nobody is forging textures.
+///
+/// A source built from other files — a terrain from its heightmap — hashes
+/// them too, so changing one is changing the source.
 pub fn content_hash(path: &Path) -> std::io::Result<String> {
-    let bytes = std::fs::read(path)?;
     let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    for byte in bytes {
-        hash ^= byte as u128;
-        hash = hash.wrapping_mul(PRIME);
+    let is_terrain = path.extension().is_some_and(|e| e == "rterrain");
+    let mut files = vec![path.to_path_buf()];
+    if is_terrain {
+        files.extend(terrain::dependencies(path));
+    }
+    for file in files {
+        for byte in std::fs::read(&file)? {
+            hash ^= byte as u128;
+            hash = hash.wrapping_mul(PRIME);
+        }
     }
     Ok(format!("{hash:032x}"))
 }
@@ -1200,8 +1209,17 @@ pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
     }
 }
 
+/// When a source last changed: itself, or — for a terrain — the latest of
+/// it and its heightmap, so repainting the image counts.
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
+    let own = std::fs::metadata(path).ok()?.modified().ok()?;
+    if path.extension().is_some_and(|e| e == "rterrain") {
+        return terrain::dependencies(path)
+            .iter()
+            .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
+            .fold(Some(own), |latest, t| latest.map(|l| l.max(t)));
+    }
+    Some(own)
 }
 
 fn touch(path: &Path) {

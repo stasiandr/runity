@@ -356,3 +356,46 @@ fn a_terrain_is_described_imported_as_a_mesh_and_rebuilt_when_its_seed_changes()
     let err = done[0].result.as_ref().unwrap_err();
     assert!(err.contains("resolution"), "{err}");
 }
+
+#[test]
+fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
+    let (project, root) = project("heightmap");
+    let paint = |value: u8| {
+        // A ramp from black on the left to `value` on the right.
+        let image = image::GrayImage::from_fn(16, 16, |x, _| {
+            image::Luma([(x as u32 * value as u32 / 15) as u8])
+        });
+        image.save(root.join("assets/ramp.png")).unwrap();
+        touch_forward(&root.join("assets/ramp.png"));
+    };
+    paint(255);
+    let source = root.join("assets/field.rterrain");
+    write(
+        &source,
+        r#"(size: (30.0, 30.0), resolution: 16, height: 6.0, heightmap: "ramp.png")"#,
+    );
+    let done = sync(&project);
+    assert!(done.iter().all(|r| r.result.is_ok()), "{done:?}");
+    let (library, _) = Library::open(project.library()).unwrap();
+    let field = library.mesh_by_name("field").unwrap();
+    assert!(
+        (field.bounds.max[1].to_native() - 6.0).abs() < 0.01,
+        "white is the full height"
+    );
+    assert!(
+        field.bounds.min[1].to_native().abs() < 0.01,
+        "black is the ground"
+    );
+    let before = asset::read(&runity_import::asset_for(&source, &project.library())).unwrap();
+
+    // Repaint only the image: the terrain is rebuilt, lower.
+    paint(128);
+    let done = sync(&project);
+    assert!(
+        done.iter()
+            .any(|r| r.source == source && r.change == Change::Changed),
+        "the terrain counts as changed: {done:?}"
+    );
+    let after = asset::read(&runity_import::asset_for(&source, &project.library())).unwrap();
+    assert_ne!(before, after);
+}
