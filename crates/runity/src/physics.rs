@@ -203,19 +203,19 @@ pub fn attach_collision_meshes<'a>(
     lines: impl IntoIterator<Item = (hecs::Entity, &'a crate::EntityDesc)>,
     library: Option<&crate::Library>,
 ) {
-    let mut made: std::collections::HashMap<&str, Option<CollisionMesh>> = Default::default();
+    let mut made: std::collections::HashMap<String, Option<CollisionMesh>> = Default::default();
     for (entity, desc) in lines {
-        if desc.collider != ColliderShape::Model {
+        if desc.collider() != ColliderShape::Model {
             continue;
         }
         // Shaped ground stands on its own mesh.
-        if let Some(terrain) = desc.terrain {
+        if let Some(terrain) = desc.terrain() {
             let _ = world.insert_one(entity, CollisionMesh::of(&terrain.mesh()));
             continue;
         }
         let mesh = made
-            .entry(desc.model.as_str())
-            .or_insert_with(|| collision_mesh_for(&desc.model, library))
+            .entry(desc.model().as_str().to_string())
+            .or_insert_with(|| collision_mesh_for(&desc.model(), library))
             .clone();
         match mesh {
             Some(mesh) => {
@@ -799,7 +799,8 @@ impl PhysicsWorld {
     /// makes it roll. Gusts and hops come from the step count and the
     /// entity, so the same step blows the same way on every machine.
     fn blow(&mut self, world: &World) {
-        let level = Vec3::new(self.wind.direction.x, 0.0, self.wind.direction.z).normalize_or_zero();
+        let level =
+            Vec3::new(self.wind.direction.x, 0.0, self.wind.direction.z).normalize_or_zero();
         let speed = WIND_SPEED * self.wind.strength.max(0.0);
         if speed <= 0.0 || level == Vec3::ZERO {
             return;
@@ -839,18 +840,32 @@ impl PhysicsWorld {
                 .map(|c| c.compute_aabb().half_extents().y)
                 .fold(0.0f32, f32::max)
                 .max(0.05);
-            let down = Ray::new(point![centre.x, centre.y, centre.z], vector![0.0, -1.0, 0.0]);
-            let others = QueryFilter::default().exclude_rigid_body(handle.0).exclude_sensors();
+            let down = Ray::new(
+                point![centre.x, centre.y, centre.z],
+                vector![0.0, -1.0, 0.0],
+            );
+            let others = QueryFilter::default()
+                .exclude_rigid_body(handle.0)
+                .exclude_sensors();
             let grounded = self
                 .queries
-                .cast_ray(&self.bodies, &self.colliders, &down, half + 0.08, true, others)
+                .cast_ray(
+                    &self.bodies,
+                    &self.colliders,
+                    &down,
+                    half + 0.08,
+                    true,
+                    others,
+                )
                 .is_some();
             let mut hop = 0.0;
             if grounded && v.y.abs() < 1.0 {
                 // A hop now and then, likelier in a strong gust.
                 let chance = HOPS_PER_SECOND * blown * gust * self.wind.strength.min(3.0) * dt;
                 if hashed(entity.to_bits().get(), self.steps) < chance {
-                    hop = mass * (2.2 + 2.5 * hashed(entity.to_bits().get() ^ 0x9e37, self.steps)) * gust;
+                    hop = mass
+                        * (2.2 + 2.5 * hashed(entity.to_bits().get() ^ 0x9e37, self.steps))
+                        * gust;
                 }
             }
             // A twist about the axis it rolls on, so it turns in the air too.
@@ -1649,43 +1664,23 @@ mod tests {
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
-            camera: None,
-            spline: None,
-            along: None,
-            light: None,
-            particles: None,
-            reflection_probe: None,
-            decal: None,
-            footprints: None,
-            terrain: None,
-            bends_grass: 0.0,
-            route: None,
-            layer: Default::default(),
-            physics: Default::default(),
-            joint: Default::default(),
-            joint_break: None,
-            bone: String::new(),
-            post_volume: None,
-            render_texture: None,
-            sound: None,
-            animator: String::new(),
+            parts: Default::default(),
             in_part: None,
             inactive: false,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
             name: name.into(),
-            model: "m".into(),
             prefab: Default::default(),
             transform: Transform {
                 position: Vec3::new(0.0, y, 0.0),
                 ..Default::default()
             },
-            material: Default::default(),
-            body,
-            collider,
             children: Vec::new(),
         }
+        .with(crate::scene::ModelRef("m".into()))
+        .with(body)
+        .with(collider)
     }
 
     /// A ball above a floor, and the clock to drop it with.
@@ -1727,10 +1722,17 @@ mod tests {
     #[test]
     fn the_wind_bowls_a_tumbleweed_along_and_leaves_a_stone_where_it_lay() {
         let weed = |x: f32, blown: f32| {
-            let mut e = entity("weed", 0.6, Body::Dynamic, ColliderShape::Sphere { radius: 0.5 });
+            let mut e = entity(
+                "weed",
+                0.6,
+                Body::Dynamic,
+                ColliderShape::Sphere { radius: 0.5 },
+            );
             e.transform.position.x = x;
-            e.physics.blown = blown;
-            e.physics.density = 0.05;
+            let mut props = e.physics();
+            props.blown = blown;
+            props.density = 0.05;
+            e.set_part(&props);
             e
         };
         let scene = Scene {
@@ -1780,9 +1782,15 @@ mod tests {
         // Ten seconds of a stiff breeze: well down the wind, and off the
         // ground now and then.
         assert!(weed.z > 20.0, "the tumbleweed went only {weed}");
-        assert!(weed.x.abs() < weed.z * 0.2, "it went across the wind: {weed}");
+        assert!(
+            weed.x.abs() < weed.z * 0.2,
+            "it went across the wind: {weed}"
+        );
         assert!(highest > 1.1, "it never hopped: highest {highest}");
-        assert!(stone.distance(Vec3::new(-5.0, 0.6, 0.0)) < 0.3, "the stone moved to {stone}");
+        assert!(
+            stone.distance(Vec3::new(-5.0, 0.6, 0.0)) < 0.3,
+            "the stone moved to {stone}"
+        );
         // The same steps blow the same way.
         assert_eq!(run().0, at);
     }
@@ -1813,44 +1821,24 @@ mod tests {
         // the first step, which reads as the physics being wrong.
         let scene = Scene {
             entities: vec![crate::EntityDesc {
-                camera: None,
-                spline: None,
-                along: None,
-                light: None,
-                particles: None,
-                reflection_probe: None,
-                decal: None,
-                footprints: None,
-                terrain: None,
-                bends_grass: 0.0,
-                route: None,
-                layer: Default::default(),
-                physics: Default::default(),
-                joint: Default::default(),
-                joint_break: None,
-                bone: String::new(),
-                post_volume: None,
-                render_texture: None,
-                sound: None,
-                animator: String::new(),
+                parts: Default::default(),
                 in_part: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "boulder".into(),
-                model: "m".into(),
                 prefab: Default::default(),
                 transform: crate::Transform {
                     position: Vec3::new(0.0, 4.0, 0.0),
                     scale: Vec3::splat(3.0),
                     ..Default::default()
                 },
-                material: Default::default(),
-                body: Body::Dynamic,
-                collider: ColliderShape::Sphere { radius: 0.5 },
                 children: Vec::new(),
-            }],
+            }
+            .with(crate::scene::ModelRef("m".into()))
+            .with(Body::Dynamic)
+            .with(ColliderShape::Sphere { radius: 0.5 })],
             ..Default::default()
         };
         let mut world = World::new();
@@ -2199,7 +2187,7 @@ mod tests {
         // A static ramp that collides as the ramp it draws, and a dynamic
         // cube that collides as its convex hull.
         let mut ramp = entity("ramp", 0.0, Body::Static, ColliderShape::Model);
-        ramp.model = "builtin:ramp".into();
+        ramp.set_part(&crate::scene::ModelRef("builtin:ramp".into()));
         ramp.transform.scale = Vec3::new(4.0, 2.0, 4.0);
         let mut ball = entity(
             "ball",
@@ -2330,12 +2318,19 @@ mod tests {
         for _ in 0..30 {
             physics.run(&mut world);
         }
-        assert_eq!(world.get::<&Transform>(ball).unwrap().position.y, 3.0, "off: not simulated");
+        assert_eq!(
+            world.get::<&Transform>(ball).unwrap().position.y,
+            3.0,
+            "off: not simulated"
+        );
         crate::world::set_active(&mut world, ball, true);
         for _ in 0..30 {
             physics.run(&mut world);
         }
-        assert!(world.get::<&Transform>(ball).unwrap().position.y < 2.9, "on: it falls");
+        assert!(
+            world.get::<&Transform>(ball).unwrap().position.y < 2.9,
+            "on: it falls"
+        );
     }
 
     /// The one entity with this kind of body.
@@ -2360,7 +2355,7 @@ mod tests {
                 center: glam::Vec3::ZERO,
             },
         );
-        zone.model = Default::default();
+        zone.set_part(&crate::scene::ModelRef(Default::default()));
         let scene = Scene {
             entities: vec![
                 entity(
@@ -2436,7 +2431,7 @@ mod tests {
                 center: glam::Vec3::ZERO,
             },
         );
-        platform.model = Default::default();
+        platform.set_part(&crate::scene::ModelRef(Default::default()));
         let scene = Scene {
             entities: vec![
                 platform,

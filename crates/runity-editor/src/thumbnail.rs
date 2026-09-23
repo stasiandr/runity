@@ -22,7 +22,7 @@ impl Session {
         if self.prefabs.get(what).is_some() {
             line.prefab = what.into();
         } else if self.bounds_of(what).is_some() {
-            line.model = what.into();
+            line.set_part(&runity::scene::ModelRef(what.into()));
         } else {
             return Err(EditError::Scene(format!(
                 "no prefab or model named `{what}` to picture"
@@ -38,7 +38,7 @@ impl Session {
         let mut low = Vec3::splat(f32::MAX);
         let mut high = Vec3::splat(f32::MIN);
         for (desc, placed) in expanded.flatten() {
-            let Some((a, b)) = self.bounds_of(&desc.model) else {
+            let Some((a, b)) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             for corner in 0..8u32 {
@@ -97,7 +97,7 @@ impl Session {
         let mut frame = runity::build_frame(
             &world,
             camera,
-            runity::scene_lighting(&Scene::default().sun),
+            runity::scene_lighting(&Scene::default().sun()),
             FogSettings {
                 color: backdrop,
                 start: 1.0e6,

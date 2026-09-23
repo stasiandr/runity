@@ -179,7 +179,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     .filter(|l| *l != 0)
                     .and_then(|l| unity.layers.get(&l))
                 {
-                    desc.layer = layer.clone();
+                    desc.set_part(&runity::scene::LayerName(layer.clone()));
                 }
                 if d.body.i64("m_IsActive") == Some(0) {
                     desc.inactive = true;
@@ -210,7 +210,8 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 }
             }
             PREFAB_INSTANCE => {
-                let Some((desc, into)) = instance(d, &mut parts, &entity_of_transform, unity, report)
+                let Some((desc, into)) =
+                    instance(d, &mut parts, &entity_of_transform, unity, report)
                 else {
                     continue;
                 };
@@ -388,7 +389,7 @@ fn instance(
         ..Default::default()
     };
     if kind == "model" {
-        desc.model = AssetLink::named(name);
+        desc.set_part(&runity::scene::ModelRef(AssetLink::named(name)));
     } else {
         desc.prefab = AssetLink::named(name);
     }
@@ -459,8 +460,8 @@ fn instance(
                     .map(|(part, _)| *part)
                     .filter(|part| Some(*part) != root_key);
                 match on {
-                    Some(part) => desc.overrides.entry(part).or_default().material = Some(reference),
-                    None => desc.material = reference,
+                    Some(part) => desc.overrides.entry(part).or_default().set_part(&reference),
+                    None => desc.set_part(&reference),
                 }
             }
         } else if path.starts_with("m_Materials") {
@@ -488,13 +489,13 @@ fn instance(
             if path == "m_IsActive" {
                 change.inactive = Some(value == 0.0);
             } else {
-                change.layer = Some(
+                change.set_part(&runity::scene::LayerName(
                     unity
                         .layers
                         .get(&(value as i64))
                         .cloned()
                         .unwrap_or_default(),
-                );
+                ));
             }
             if kind == "model" {
                 own.apply(&mut desc);
@@ -533,8 +534,8 @@ fn instance(
     }
     // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
-        let found = yaml::reference(removed)
-            .and_then(|r| of.as_ref()?.components.get(&r.file_id).cloned());
+        let found =
+            yaml::reference(removed).and_then(|r| of.as_ref()?.components.get(&r.file_id).cloned());
         match found {
             Some((part, what)) => {
                 let change = desc.overrides.entry(part).or_default();
@@ -542,7 +543,9 @@ fn instance(
                     change.removed.push(what);
                 }
             }
-            None => report.skip("a component removed from a prefab instance, of a kind runity has no place for"),
+            None => report.skip(
+                "a component removed from a prefab instance, of a kind runity has no place for",
+            ),
         }
     }
     Some((desc, into))
@@ -599,8 +602,10 @@ fn placement(modification: &Yaml) -> Transform {
     let (mut p, mut q, mut s) = ([0.0f32; 3], [0.0, 0.0, 0.0, 1.0f32], [1.0f32; 3]);
     let mut root = None;
     for m in modification.list("m_Modifications") {
-        let (Some(path), target) = (m.str("propertyPath"), m.reference("target").map(|r| r.file_id))
-        else {
+        let (Some(path), target) = (
+            m.str("propertyPath"),
+            m.reference("target").map(|r| r.file_id),
+        ) else {
             continue;
         };
         let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
@@ -655,7 +660,10 @@ impl Parts {
                     out.keys.insert(d.file_id, entity_id(d.file_id));
                 }
                 TRANSFORM | RECT_TRANSFORM if !d.stripped => {
-                    let go = d.body.reference("m_GameObject").map(|r| entity_id(r.file_id));
+                    let go = d
+                        .body
+                        .reference("m_GameObject")
+                        .map(|r| entity_id(r.file_id));
                     let top = d.body.reference("m_Father").is_none_or(|r| r.file_id == 0);
                     if top {
                         out.root = go;
@@ -708,7 +716,8 @@ impl Parts {
                 _ if !d.stripped => {
                     let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
                     if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
-                        out.components.insert(d.file_id, (entity_id(go.file_id), what));
+                        out.components
+                            .insert(d.file_id, (entity_id(go.file_id), what));
                     }
                 }
                 _ => {}
@@ -733,7 +742,7 @@ fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Rep
         report.skip("an AudioSource with no clip (the game gives it one)");
         return;
     };
-    if desc.sound.is_some() {
+    if desc.sound().is_some() {
         report.skip("a second AudioSource on one object (one sound an entity)");
         return;
     }
@@ -757,7 +766,7 @@ fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Rep
                 .and_then(|d| d.body.str("m_Name").map(snake))
         })
         .unwrap_or_default();
-    desc.sound = Some(runity::scene::SoundSource {
+    desc.set_part(&runity::scene::SoundSource {
         clip: AssetLink::named(clip),
         volume: b.f32("m_Volume").unwrap_or(1.0),
         looped: b.i64("Loop") == Some(1),
@@ -782,13 +791,13 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                desc.model = AssetLink::named(model);
+                desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                    desc.model = AssetLink::named(model);
+                    desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
                 }
             }
             let materials = b.list("m_Materials");
@@ -796,7 +805,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 if let Some((kind, name)) = first.guid.as_deref().and_then(|g| refs.unity.named(g))
                 {
                     if kind == "material" {
-                        desc.material = MaterialRef::Named(AssetLink::named(name));
+                        desc.set_part(&MaterialRef::Named(AssetLink::named(name)));
                     }
                 }
             }
@@ -807,41 +816,41 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "BoxCollider" => {
             let size = b.vec3("m_Size").unwrap_or([1.0; 3]);
             let center = b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO);
-            desc.collider = Collider::Box {
+            desc.set_part(&Collider::Box {
                 half: Vec3::from_array(size) * 0.5,
                 center,
-            };
+            });
             solid(desc, b);
         }
         "SphereCollider" => {
-            desc.collider = Collider::Sphere {
+            desc.set_part(&Collider::Sphere {
                 radius: b.f32("m_Radius").unwrap_or(0.5),
-            };
+            });
             solid(desc, b);
         }
         "CapsuleCollider" => {
             let radius = b.f32("m_Radius").unwrap_or(0.5);
             let height = b.f32("m_Height").unwrap_or(2.0);
-            desc.collider = Collider::Capsule {
+            desc.set_part(&Collider::Capsule {
                 half_height: (height * 0.5 - radius).max(0.0),
                 radius,
-            };
+            });
             if b.i64("m_Direction").is_some_and(|d| d != 1) {
                 report.skip("a capsule lying along x or z (brought over standing)");
             }
             solid(desc, b);
         }
         "MeshCollider" => {
-            desc.collider = Collider::Model;
+            desc.set_part(&Collider::Model);
             solid(desc, b);
         }
         "Rigidbody" => {
-            desc.body = if b.i64("m_IsKinematic") == Some(1) {
+            desc.set_part(&if b.i64("m_IsKinematic") == Some(1) {
                 Body::Kinematic
             } else {
                 Body::Dynamic
-            };
-            desc.physics = BodyProps {
+            });
+            desc.set_part(&BodyProps {
                 drag: b.f32("m_Drag").or(b.f32("m_LinearDamping")).unwrap_or(0.0),
                 spin_drag: b
                     .f32("m_AngularDrag")
@@ -853,7 +862,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     1.0
                 },
                 ..BodyProps::default()
-            };
+            });
         }
         "Light" => {
             let color = b.color("m_Color").unwrap_or([1.0; 4]);
@@ -862,7 +871,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 report.skip("a directional light (the scene's sun is its own setting)");
                 return;
             }
-            desc.light = Some(Light {
+            desc.set_part(&Light {
                 color: (color[0], color[1], color[2]),
                 intensity: b.f32("m_Intensity").unwrap_or(1.0),
                 range: b.f32("m_Range").unwrap_or(10.0),
@@ -877,7 +886,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             if b.i64("orthographic") == Some(1) {
                 lens.ortho = b.f32("orthographic size");
             }
-            desc.camera = Some(lens);
+            desc.set_part(&lens);
         }
         "HingeJoint" | "FixedJoint" | "CharacterJoint" | "ConfigurableJoint" | "SpringJoint" => {
             let to = b
@@ -887,7 +896,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 .map(|go| entity_id(*go))
                 .unwrap_or(EntityId::UNASSIGNED);
             let anchor = b.vec3("m_Anchor").map(position).unwrap_or(Vec3::ZERO);
-            desc.joint = match c.kind.as_str() {
+            desc.set_part(&match c.kind.as_str() {
                 "FixedJoint" => Joint::Fixed { to },
                 "HingeJoint" => Joint::Hinge {
                     to,
@@ -910,9 +919,9 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));
                     Joint::Ball { to, anchor }
                 }
-            };
+            });
             // Unity writes an unbreakable joint's force as infinity.
-            desc.joint_break = b.f32("m_BreakForce").filter(|f| f.is_finite() && *f < 1e30);
+            desc.set_joint_break(b.f32("m_BreakForce").filter(|f| f.is_finite() && *f < 1e30));
         }
         "MonoBehaviour" => {
             let Some(script) = b.reference("m_Script") else {
@@ -925,7 +934,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             // Dacha's planar mirror: runity's own, a camera reflected in
             // the plane the mirror's material shows.
             if super::stem(path) == "PlanarReflectionMirror" {
-                desc.render_texture = Some(runity::scene::RenderTexture {
+                desc.set_part(&runity::scene::RenderTexture {
                     name: "mirror".into(),
                     hide: Vec::new(),
                     mirror: true,
@@ -947,7 +956,9 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 .and_then(|r| refs.unity.named(r.guid.as_deref()?))
                 .filter(|(kind, _)| *kind == "animator");
             match graph {
-                Some((_, name)) if b.i64("m_Enabled") != Some(0) => desc.animator = name.to_string(),
+                Some((_, name)) if b.i64("m_Enabled") != Some(0) => {
+                    desc.set_part(&runity::scene::AnimatorRef(name.to_string()))
+                }
                 Some(_) => report.skip("a switched-off Animator"),
                 None => report.skip("an Animator with no controller (or an override controller)"),
             }
@@ -955,7 +966,8 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "AudioSource" => audio_source(desc, b, refs.unity, report),
         "ParticleSystem" => shuriken(desc, b, report),
         "ParticleSystemRenderer" => {
-            let e = desc.particles.get_or_insert_with(Default::default);
+            let mut emitter = desc.particles().unwrap_or_default();
+            let e = &mut emitter;
             match b.i64("m_RenderMode").unwrap_or(0) {
                 // Billboards, and stretched ones: longer the faster.
                 0 | 2 | 3 => e.facing = true,
@@ -978,6 +990,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     e.material = Some(AssetLink::named(name));
                 }
             }
+            desc.set_part(&emitter);
         }
         other => report.skip(other.to_string()),
     }
@@ -1020,7 +1033,8 @@ fn gradient(v: &Yaml) -> Option<([f32; 4], [f32; 4])> {
 /// the simulation space, size and colour over lifetime. What has no
 /// counterpart (bursts, noise, collision, trails…) the report names.
 fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
-    let e = desc.particles.get_or_insert_with(Default::default);
+    let mut emitter = desc.particles().unwrap_or_default();
+    let e = &mut emitter;
     let main = &b["InitialModule"];
     let rgb = |c: [f32; 4]| (c[0], c[1], c[2]);
     e.life = min_max(&main["startLifetime"]).unwrap_or(5.0);
@@ -1102,15 +1116,16 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
             report.skip(format!("a ParticleSystem's {module}"));
         }
     }
+    desc.set_part(&emitter);
 }
 
 /// A collider's GameObject is solid when nothing else says, a trigger when
 /// Unity said so.
 fn solid(desc: &mut EntityDesc, b: &Yaml) {
     if b.i64("m_IsTrigger") == Some(1) {
-        desc.body = Body::Trigger;
-    } else if desc.body == Body::None {
-        desc.body = Body::Static;
+        desc.set_part(&Body::Trigger);
+    } else if desc.body() == Body::None {
+        desc.set_part(&Body::Static);
     }
 }
 
@@ -1521,14 +1536,28 @@ Transform:
         let roots = convert_file(&unity, scene, &mut report);
         let _ = std::fs::remove_dir_all(&dir);
         let lamp = &roots[0];
-        assert_eq!(lamp.transform.position.x, 5.0, "the root where the scene puts it");
+        assert_eq!(
+            lamp.transform.position.x, 5.0,
+            "the root where the scene puts it"
+        );
         let bulb = &lamp.overrides[&entity_id(200)];
         let t = bulb.transform.expect("the bulb moved");
-        assert_eq!(t.position, Vec3::new(1.0, 2.0, 0.0), "x said, y as the prefab has it");
+        assert_eq!(
+            t.position,
+            Vec3::new(1.0, 2.0, 0.0),
+            "x said, y as the prefab has it"
+        );
         assert_eq!(bulb.removed, ["light"]);
-        assert!(bulb.components.contains_key("door"), "added to the bulb, not the lamp");
+        assert!(
+            bulb.components.contains_key("door"),
+            "added to the bulb, not the lamp"
+        );
         assert!(lamp.components.is_empty());
-        let moth = lamp.children.iter().find(|c| c.name == "Moth").expect("under the lamp");
+        let moth = lamp
+            .children
+            .iter()
+            .find(|c| c.name == "Moth")
+            .expect("under the lamp");
         assert_eq!(moth.in_part, Some(entity_id(200)), "on the bulb");
     }
 
@@ -1563,7 +1592,7 @@ AudioSource:
 ";
         let mut report = Report::default();
         let roots = convert_file(&unity(), text, &mut report);
-        let sound = roots[0].sound.clone().expect("a sound");
+        let sound = roots[0].sound().clone().expect("a sound");
         assert_eq!(sound.clip.as_str(), "radio");
         assert_eq!((sound.volume, sound.pitch), (0.5, 0.8));
         assert!(sound.looped && sound.on_start && sound.spatial);
@@ -1574,7 +1603,7 @@ AudioSource:
     fn a_shuriken_system_becomes_an_emitter() {
         let mut report = Report::default();
         let roots = convert_file(&unity(), SMOKE, &mut report);
-        let e = roots[0].particles.clone().expect("an emitter");
+        let e = roots[0].particles().clone().expect("an emitter");
         assert_eq!(e.life, 5.0, "two constants: the middle");
         assert_eq!(e.rate, 20.0);
         assert_eq!(e.bursts, vec![(0.5, 30)]);
@@ -1607,10 +1636,10 @@ AudioSource:
             Vec3::new(1.0, 2.0, -3.0),
             "Z mirrored"
         );
-        assert_eq!(crate_.model.as_str(), "crate");
-        assert!(matches!(&crate_.material, MaterialRef::Named(l) if l.as_str() == "wood"));
-        assert_eq!(crate_.body, Body::Dynamic);
-        assert!(matches!(crate_.collider, Collider::Box { half, center }
+        assert_eq!(crate_.model().as_str(), "crate");
+        assert!(matches!(&crate_.material_ref(), MaterialRef::Named(l) if l.as_str() == "wood"));
+        assert_eq!(crate_.body(), Body::Dynamic);
+        assert!(matches!(crate_.collider(), Collider::Box { half, center }
             if half == Vec3::new(1.0, 0.5, 0.5) && center == Vec3::new(0.0, 0.5, 0.0)));
 
         let lid = &crate_.children[0];

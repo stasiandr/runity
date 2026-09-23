@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::id::EntityId;
-use crate::scene::{Body, Collider, EntityDesc, MaterialRef, Scene};
+use crate::scene::{EntityDesc, Scene};
 
 /// What a prefab file is called.
 pub const EXTENSION: &str = "prefab";
@@ -224,17 +224,7 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
         .map(|desc| expand(desc, None, prefabs, 0, &mut problems, &mut parts))
         .collect();
     let expanded = Scene {
-        view: scene.view,
-        sun: scene.sun,
-        fog: scene.fog,
-        sky: scene.sky,
-        post: scene.post,
-        ambient_occlusion: scene.ambient_occlusion,
-        ray_tracing: scene.ray_tracing,
-        volumetric_fog: scene.volumetric_fog,
-        wind: scene.wind,
-        weather: scene.weather,
-        screen_space_reflections: scene.screen_space_reflections,
+        parts: scene.parts.clone(),
         entities,
     };
 
@@ -370,20 +360,26 @@ fn expand(
     for child in &desc.children {
         let grown = expand(child, scope, prefabs, depth, problems, parts);
         // One the scene hung on a part of the prefab goes under that part.
-        let under = child.in_part.filter(|_| !desc.prefab.is_empty()).and_then(|key| {
-            let scoped = id.within(key);
-            // Looked for twice: the borrow checker cannot yet see that the
-            // first look's borrow ends when it finds nothing.
-            if find_mut(&mut expanded.children, scoped).is_some() {
-                find_mut(&mut expanded.children, scoped)
-            } else {
-                find_by_key(&mut expanded.children, parts, id, key)
-            }
-        });
+        let under = child
+            .in_part
+            .filter(|_| !desc.prefab.is_empty())
+            .and_then(|key| {
+                let scoped = id.within(key);
+                // Looked for twice: the borrow checker cannot yet see that the
+                // first look's borrow ends when it finds nothing.
+                if find_mut(&mut expanded.children, scoped).is_some() {
+                    find_mut(&mut expanded.children, scoped)
+                } else {
+                    find_by_key(&mut expanded.children, parts, id, key)
+                }
+            });
         match under {
             Some(part) => part.children.push(grown),
             None => {
-                if let Some(key) = child.in_part.filter(|k| *k != id && !desc.prefab.is_empty()) {
+                if let Some(key) = child
+                    .in_part
+                    .filter(|k| *k != id && !desc.prefab.is_empty())
+                {
                     let root_key = prefabs.find(&desc.prefab).map(|(_, t)| t.id);
                     if Some(key) != root_key {
                         problems.push(Problem {
@@ -401,7 +397,7 @@ fn expand(
     }
     // What a spline carries grows here, like a prefab's parts: the file
     // keeps the spline and the spacing, everything downstream sees copies.
-    if let (Some(spline), Some(along)) = (&expanded.spline, &expanded.along) {
+    if let (Some(spline), Some(along)) = (&expanded.spline(), &expanded.along()) {
         let grown = along.grow(id, spline);
         expanded.children.extend(grown);
     }
@@ -410,8 +406,9 @@ fn expand(
 
 /// Point every link to `from` in `desc` and under it at `to` instead.
 fn relink(desc: &mut EntityDesc, from: EntityId, to: EntityId) {
-    if desc.joint.to() == Some(from) {
-        desc.joint = desc.joint.with_to(to);
+    if desc.joint().to() == Some(from) {
+        let joint = desc.joint().with_to(to);
+        desc.set_part(&joint);
     }
     let (was, now) = (
         format!("EntityRef(\"{from}\")"),
@@ -434,9 +431,10 @@ fn relink(desc: &mut EntityDesc, from: EntityId, to: EntityId) {
 /// joint's other end — put in `instance`'s scope; its children as they are.
 fn scoped_links(desc: &EntityDesc, instance: EntityId) -> EntityDesc {
     let mut out = desc.clone();
-    if let Some(to) = out.joint.to() {
+    if let Some(to) = out.joint().to() {
         if !to.is_unassigned() {
-            out.joint = out.joint.with_to(instance.within(to));
+            let joint = out.joint().with_to(instance.within(to));
+            out.set_part(&joint);
         }
     }
     // Its components, and those its overrides give its prefab's parts:
@@ -536,18 +534,13 @@ fn resolve(
     root.id = id;
     root.name = desc.name.clone();
     root.transform = desc.transform;
-    if desc.material != MaterialRef::default() {
-        root.material = desc.material.clone();
-    }
-    if desc.body != Body::default() {
-        root.body = desc.body;
-    }
-    if desc.collider != Collider::default() {
-        root.collider = desc.collider;
-    }
-    // The instance's own joint names something in the scene, as written.
-    if !desc.joint.is_none() {
-        root.joint = desc.joint;
+    // Every module field the instance's line says — a material, a body, a
+    // joint naming something in the scene, a light — on top of the root's.
+    // Not its model: an instance's look is its prefab's.
+    for (name, text) in desc.parts.iter() {
+        if name != "model" {
+            let _ = root.parts.set_raw(name, text);
+        }
     }
     // Components one by one: an instance that says `"door": (locked:
     // true)` changes the door and keeps the prefab's other components.
@@ -588,6 +581,7 @@ fn resolve(
 mod tests {
     use super::*;
     use crate::scene::Transform;
+    use crate::scene::{Body, MaterialRef};
     use glam::Vec3;
 
     /// A scene as `Scene::load` would hand it over: parsed, with IDs.
@@ -741,9 +735,9 @@ mod tests {
         let done = instantiate(&scene, &prefabs);
         let root = &done.scene.entities[0];
 
-        assert_eq!(root.model, "builtin:plane", "the prefab says what it is");
+        assert_eq!(root.model(), "builtin:plane", "the prefab says what it is");
         assert_eq!(root.material(), crate::material::builtin::STONE);
-        assert_eq!(root.body, Body::Static);
+        assert_eq!(root.body(), Body::Static);
         assert_eq!(root.transform.scale, Vec3::splat(2.0));
         assert_eq!(root.children.len(), 2, "and it still brought its children");
 
@@ -863,7 +857,11 @@ mod tests {
     #[test]
     fn an_override_of_the_prefabs_root_changes_the_instance_itself() {
         let prefabs = with_campfire();
-        let root = prefabs.find(&crate::AssetLink::named("campfire")).unwrap().1.id;
+        let root = prefabs
+            .find(&crate::AssetLink::named("campfire"))
+            .unwrap()
+            .1
+            .id;
         let scene = parse(&format!(
             r#"(entities: [(id: "00000000000000a1", name: "fire", model: "", prefab: "campfire",
                 overrides: {{ "{root}": (inactive: true) }})])"#
@@ -895,9 +893,18 @@ mod tests {
             ))
             .unwrap(),
         );
-        let scene = parse(r#"(entities: [(id: "00000000000000a1", name: "home", model: "", prefab: "yard")])"#);
+        let scene = parse(
+            r#"(entities: [(id: "00000000000000a1", name: "home", model: "", prefab: "yard")])"#,
+        );
         let done = instantiate(&scene, &prefabs);
-        let bench = done.scene.flatten().into_iter().find(|(e, _)| e.name == "bench").unwrap().0.id;
+        let bench = done
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(e, _)| e.name == "bench")
+            .unwrap()
+            .0
+            .id;
         let warms = done
             .scene
             .flatten()
@@ -908,7 +915,10 @@ mod tests {
             .components["warms"]
             .get_ron()
             .to_string();
-        assert!(warms.contains(&bench.to_string()), "{warms} names this yard's bench {bench}");
+        assert!(
+            warms.contains(&bench.to_string()),
+            "{warms} names this yard's bench {bench}"
+        );
     }
 
     #[test]
@@ -950,8 +960,16 @@ mod tests {
         };
         assert_eq!(path_of("torch"), ["statue", "arm", "hand", "torch"]);
         assert_eq!(path_of("plaque"), ["statue", "plaque"]);
-        assert_eq!(path_of("lost"), ["statue", "lost"], "under the instance, and said");
-        assert!(done.problems.iter().any(|p| p.entity_name == "lost"), "{:?}", done.problems);
+        assert_eq!(
+            path_of("lost"),
+            ["statue", "lost"],
+            "under the instance, and said"
+        );
+        assert!(
+            done.problems.iter().any(|p| p.entity_name == "lost"),
+            "{:?}",
+            done.problems
+        );
     }
 
     #[test]
@@ -982,14 +1000,19 @@ mod tests {
             .unwrap()
             .0
             .clone();
-        assert!(bulb.light.is_none() && bulb.components.is_empty() && bulb.model.is_empty());
+        assert!(bulb.light().is_none() && bulb.components.is_empty() && bulb.model().is_empty());
         // And an edit that takes the light away says so.
-        let prefab = prefabs.find(&crate::AssetLink::named("lamp")).unwrap().1.children[0].clone();
-        let dark = EntityDesc {
-            light: None,
-            ..prefab.clone()
-        };
-        assert_eq!(crate::scene::Override::between(&prefab, &dark).removed, ["light"]);
+        let prefab = prefabs
+            .find(&crate::AssetLink::named("lamp"))
+            .unwrap()
+            .1
+            .children[0]
+            .clone();
+        let dark = prefab.clone().without("light");
+        assert_eq!(
+            crate::scene::Override::between(&prefab, &dark).removed,
+            ["light"]
+        );
     }
 
     #[test]
@@ -1045,7 +1068,11 @@ mod tests {
         ));
         let done = instantiate(&scene, &prefabs);
         assert!(done.problems.is_empty(), "{:?}", done.problems);
-        assert!(done.scene.flatten().iter().any(|(e, _)| e.inactive && e.name == "ember"));
+        assert!(done
+            .scene
+            .flatten()
+            .iter()
+            .any(|(e, _)| e.inactive && e.name == "ember"));
     }
 
     #[test]
@@ -1118,13 +1145,13 @@ mod tests {
         let mut scene = Scene {
             entities: vec![EntityDesc {
                 name: "rock".into(),
-                model: "builtin:sphere".into(),
                 transform: Transform {
                     position: Vec3::new(1.0, 0.0, 0.0),
                     ..Transform::default()
                 },
                 ..EntityDesc::default()
-            }],
+            }
+            .with(crate::scene::ModelRef("builtin:sphere".into()))],
             ..Scene::default()
         };
         scene.assign_ids();
@@ -1158,9 +1185,10 @@ mod tests {
         let one: EntityId = "a1".parse().unwrap();
         let ember = out.scene.get(one.within("c2".parse().unwrap())).unwrap();
         assert_eq!(ember.name, "cold ember");
-        assert_eq!(ember.material, MaterialRef::Named("moss".into()));
+        assert_eq!(ember.material_ref(), MaterialRef::Named("moss".into()));
         assert_eq!(
-            ember.model, "m",
+            ember.model(),
+            "m",
             "what it did not say comes from the prefab"
         );
         let two: EntityId = "a2".parse().unwrap();
@@ -1168,7 +1196,7 @@ mod tests {
             out.scene
                 .get(two.within("c2".parse().unwrap()))
                 .unwrap()
-                .material,
+                .material_ref(),
             MaterialRef::Named("ember".into()),
             "the other instance is the prefab's"
         );
@@ -1219,12 +1247,12 @@ mod tests {
             .collect();
         assert_eq!(names, ["west", "ember", "stone", "kettle"]);
         assert_eq!(
-            done.scene.find("stone").unwrap().material,
+            done.scene.find("stone").unwrap().material_ref(),
             MaterialRef::Named("moss".into()),
             "the variant's override"
         );
         assert_eq!(
-            done.scene.find("ember").unwrap().material,
+            done.scene.find("ember").unwrap().material_ref(),
             MaterialRef::Named("ember".into()),
             "the base, where the variant said nothing"
         );
@@ -1246,7 +1274,7 @@ mod tests {
         let done = instantiate(&scene, &prefabs);
         assert!(done.problems.is_empty(), "{:?}", done.problems);
         assert_eq!(
-            done.scene.find("stone").unwrap().material,
+            done.scene.find("stone").unwrap().material_ref(),
             MaterialRef::Named("bark".into()),
             "the instance beats the variant, as the variant beats the base"
         );
@@ -1271,7 +1299,7 @@ mod tests {
         assert!(done.problems.is_empty(), "{:?}", done.problems);
         assert_eq!(done.scene.flatten().len(), 4);
         assert_eq!(
-            done.scene.find("stone").unwrap().material,
+            done.scene.find("stone").unwrap().material_ref(),
             MaterialRef::Named("moss".into())
         );
 
@@ -1309,7 +1337,7 @@ mod tests {
         let done = instantiate(&scene, &prefabs);
         let (west, east): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
         let part: EntityId = "c2".parse().unwrap();
-        let joint_of = |id: EntityId| done.scene.get(id).unwrap().joint.to().unwrap();
+        let joint_of = |id: EntityId| done.scene.get(id).unwrap().joint().to().unwrap();
         // The lamp hangs from its own post — the instance's root, which
         // keeps the instance's id — not from the file's.
         assert_eq!(joint_of(west.within(part)), west);

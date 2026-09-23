@@ -594,7 +594,7 @@ fn opening_a_scene_looks_where_the_scene_says_and_keeping_a_view_is_a_decision()
     session.set_camera(moved, at);
     session.save_scene(None).unwrap();
     assert_eq!(
-        runity::Scene::load(&path).unwrap().view,
+        runity::Scene::load(&path).unwrap().view(),
         default,
         "looking around should not have changed the file"
     );
@@ -602,13 +602,13 @@ fn opening_a_scene_looks_where_the_scene_says_and_keeping_a_view_is_a_decision()
     // Keeping it is. And it survives the round trip.
     session.capture_camera().unwrap();
     session.save_scene(None).unwrap();
-    let kept = runity::Scene::load(&path).unwrap().view;
+    let kept = runity::Scene::load(&path).unwrap().view();
     assert_eq!((kept.position, kept.target), (moved, at));
 
     // One undoable step, like anything else typed into an inspector.
     assert!(session.undo().unwrap());
     session.save_scene(None).unwrap();
-    assert_eq!(runity::Scene::load(&path).unwrap().view, default);
+    assert_eq!(runity::Scene::load(&path).unwrap().view(), default);
 
     // And opening a scene with a view in it points the camera there.
     let framed = path.parent().unwrap().join("framed.ron");
@@ -2009,9 +2009,9 @@ fn a_prefab_opens_edits_and_saves_like_a_scene_and_its_instances_follow() {
             Some(base),
             runity::EntityDesc {
                 name: "stone".into(),
-                model: "builtin:cube".into(),
                 ..Default::default()
-            },
+            }
+            .with(runity::scene::ModelRef("builtin:cube".into())),
         )
         .unwrap();
     session.save_scene(None).unwrap();
@@ -2079,9 +2079,9 @@ fn problems_are_known_as_soon_as_an_edit_makes_them() {
             None,
             runity::EntityDesc {
                 name: "tower".into(),
-                model: "builtin:cub".into(),
                 ..Default::default()
-            },
+            }
+            .with(runity::scene::ModelRef("builtin:cub".into())),
         )
         .unwrap();
     session
@@ -2261,13 +2261,13 @@ fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
     session.unpack_prefab(fire).unwrap();
     let line = session.scene().get(fire).unwrap();
     assert!(line.prefab.is_empty() && line.overrides.is_empty());
-    assert_eq!(line.model, "builtin:cube");
+    assert_eq!(line.model(), "builtin:cube");
     let part = session
         .scene()
         .get(ember)
         .expect("the part is a line of the scene now");
     assert_eq!(
-        part.material,
+        part.material_ref(),
         runity::scene::MaterialRef::Named("moss".into()),
         "with the override applied"
     );
@@ -2281,7 +2281,7 @@ fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
     let text = std::fs::read_to_string(&prefab).unwrap();
     std::fs::write(&prefab, text.replace("builtin:cube", "builtin:cone")).unwrap();
     session.open_scene(&path).unwrap();
-    assert_eq!(session.scene().get(fire).unwrap().model, "builtin:cube");
+    assert_eq!(session.scene().get(fire).unwrap().model(), "builtin:cube");
     assert!(
         session.unpack_prefab(fire).is_err(),
         "nothing left to unpack"
@@ -2317,7 +2317,7 @@ fn greybox_cubes_become_the_real_prefab_where_they_stood() {
         line.transform.rotation_deg.y, 30.0,
         "where it stood, as it stood"
     );
-    assert!(line.model.is_empty());
+    assert!(line.model().is_empty());
     assert_eq!(
         session.scene().get("a3".parse().unwrap()).unwrap().prefab,
         "",
@@ -4010,7 +4010,7 @@ fn an_instance_changes_its_part_s_light_and_the_others_keep_the_prefab_s() {
         "{theirs:?}"
     );
     let saved = session.scene().get(one).unwrap().overrides.clone();
-    assert!(saved.values().any(|o| o.light.is_some()));
+    assert!(saved.values().any(|o| o.light().is_some()));
 
     assert!(session.apply_field(one.within(part), "light").unwrap());
     assert!(
@@ -4117,8 +4117,8 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     );
 
     let line = session.scene().get(hall).unwrap().clone();
-    assert_eq!(line.collider, runity::scene::Collider::Model);
-    assert_eq!(line.body, runity::Body::Static);
+    assert_eq!(line.collider(), runity::scene::Collider::Model);
+    assert_eq!(line.body(), runity::Body::Static);
 
     // A new outline: every placement changes; a bad one is refused.
     let mut source = session.poly("hall").unwrap();
@@ -4140,18 +4140,18 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
                 None,
                 runity::EntityDesc {
                     name: format!("box {x}"),
-                    model: "builtin:cube".into(),
-                    body: runity::Body::Dynamic,
-                    collider: runity::scene::Collider::Box {
-                        half: Vec3::splat(0.25),
-                        center: Vec3::ZERO,
-                    },
                     transform: runity::scene::Transform {
                         position: Vec3::new(x, 4.0, z),
                         ..Default::default()
                     },
                     ..Default::default()
-                },
+                }
+                .with(runity::scene::ModelRef("builtin:cube".into()))
+                .with(runity::Body::Dynamic)
+                .with(runity::scene::Collider::Box {
+                    half: Vec3::splat(0.25),
+                    center: Vec3::ZERO,
+                }),
             )
             .unwrap()
     };

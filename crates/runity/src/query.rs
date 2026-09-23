@@ -121,27 +121,28 @@ impl Query {
             Term::Name(part) => desc.name.to_lowercase().contains(part),
             Term::Component(name) => desc.components.keys().any(|k| k.to_lowercase() == *name),
             Term::Material(name) => {
-                matches!(&desc.material, MaterialRef::Named(n) if n == name)
+                matches!(&desc.material_ref(), MaterialRef::Named(n) if n == name)
             }
             Term::Prefab(name) => prefab == name,
-            Term::Model(name) => desc.model == *name,
-            Term::Body(body) => desc.body == *body,
+            Term::Model(name) => desc.model() == *name,
+            Term::Body(body) => desc.body() == *body,
             Term::Has(part) => match part {
-                Part::Light => desc.light.is_some(),
-                Part::Camera => desc.camera.is_some(),
-                Part::Particles => desc.particles.is_some(),
-                Part::Probe => desc.reflection_probe.is_some(),
-                Part::Decal => desc.decal.is_some(),
-                Part::Route => desc.route.is_some(),
-                Part::Joint => desc.joint != Joint::None,
-                Part::Collider => desc.collider != Collider::None,
+                Part::Light => desc.light().is_some(),
+                Part::Camera => desc.camera().is_some(),
+                Part::Particles => desc.particles().is_some(),
+                Part::Probe => desc.reflection_probe().is_some(),
+                Part::Decal => desc.decal().is_some(),
+                Part::Route => desc.route().is_some(),
+                Part::Joint => desc.joint() != Joint::None,
+                Part::Collider => desc.collider() != Collider::None,
             },
             Term::Layer(layer) => {
                 // Unnamed is the default layer, which every project has.
-                let on = if desc.layer.is_empty() {
+                let own = desc.layer();
+                let on = if own.is_empty() {
                     "default"
                 } else {
-                    desc.layer.as_str()
+                    own.as_str()
                 };
                 on == layer
             }

@@ -452,3 +452,50 @@ fn an_animators_cases_are_played_by_check() {
         "{line}"
     );
 }
+
+#[test]
+fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_error() {
+    // DNA, postulate 3: a disabled module's component is not lost. A field
+    // this build has no module for — or a typo — stays in the file as
+    // written, and check says so; a field it does read must fit.
+    let project = project("parts");
+    let root = project.root();
+    let text = r#"(sun: (hour: 9.0), glare: 2.0, entities: [
+            (id: "a1", name: "raft", model: "builtin:cube", buoyancy: (floats: true), lihgt: (range: 3.0)),
+            (id: "a2", name: "lamp", model: "builtin:cube", light: "bright"),
+        ])"#;
+    write(&root.join("scenes/main.ron"), text);
+    let findings = check(&project);
+    let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    let buoyancy = one_containing(&lines, "`buoyancy`");
+    assert!(
+        buoyancy.contains("`raft`") && buoyancy.contains("no module"),
+        "{buoyancy}"
+    );
+    assert!(
+        one_containing(&lines, "`lihgt`").contains("did you mean `light`"),
+        "{lines:#?}"
+    );
+    assert!(
+        one_containing(&lines, "`glare`").contains("the scene"),
+        "{lines:#?}"
+    );
+    let errors = errors(&findings);
+    assert!(
+        one_containing(&errors, "`lamp`").contains("`light` does not read"),
+        "{errors:#?}"
+    );
+    // And the scene keeps what it did not understand, byte for byte.
+    let scene = runity::Scene::load(root.join("scenes/main.ron")).unwrap();
+    assert_eq!(
+        scene.entities[0].parts.raw("buoyancy"),
+        Some("(floats: true)")
+    );
+    scene.save(root.join("scenes/main.ron")).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("scenes/main.ron"))
+            .unwrap()
+            .trim(),
+        text.trim()
+    );
+}

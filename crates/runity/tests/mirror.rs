@@ -44,14 +44,12 @@ fn a_mirror_shows_what_its_camera_sees() {
             ..unlit(1.0, 1.0, 1.0)
         }),
     ));
-    let scene = Scene {
-        sky: Some(runity::render::Sky {
+    let scene = Scene { ..Scene::default() }
+        .with(runity::render::Sky {
             mode: SkyMode::Color,
             ..Default::default()
-        }),
-        post: Some(runity::post::PostProcess::OFF),
-        ..Scene::default()
-    };
+        })
+        .with(runity::post::PostProcess::OFF);
     let viewer = Camera {
         position: Vec3::ZERO,
         target: Vec3::new(0.0, 0.0, -1.0),
@@ -150,14 +148,12 @@ fn a_planar_mirror_shows_what_is_behind_the_viewer() {
             mirror: true,
         }),
     ));
-    let scene = Scene {
-        sky: Some(runity::render::Sky {
+    let scene = Scene { ..Scene::default() }
+        .with(runity::render::Sky {
             mode: SkyMode::Color,
             ..Default::default()
-        }),
-        post: Some(runity::post::PostProcess::OFF),
-        ..Scene::default()
-    };
+        })
+        .with(runity::post::PostProcess::OFF);
     let viewer = Camera {
         position: Vec3::ZERO,
         target: Vec3::new(0.0, 0.0, -1.0),

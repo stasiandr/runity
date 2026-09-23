@@ -641,9 +641,9 @@ impl Peer {
         let r = self.render.as_mut().expect("a peer that draws");
         let mut scene = self.live.scene().clone();
         if let Some(view) = self.view {
-            scene.view = view;
+            scene.set_part(&view);
         }
-        let camera = runity::scene_camera(&scene.view);
+        let camera = runity::scene_camera(&scene.view());
         let mut frame = runity::world::scene_frame(&self.world, camera, &scene);
         if let Some((focal_length, aperture)) = self.lens {
             // As the tour does: in focus where it looks, the rest soft.
@@ -1056,7 +1056,7 @@ fn tour_frames() {
     std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
-    let rest = runity::scene_camera(&k.live.scene().view);
+    let rest = runity::scene_camera(&k.live.scene().view());
     let mut flyby = runity::tour::Flyby::default();
     let fps = 20.0;
     let lap = (tour.hold + tour.travel) * tour.shots.len() as f32;
@@ -1067,7 +1067,7 @@ fn tour_frames() {
         let camera = flyby.camera(&tour, touring, 1.0 / fps, rest);
         k.frame();
         k.view = Some(runity::scene::View { position: camera.position, target: camera.target, fov_deg: camera.fov_y_degrees });
-        let mut dof = k.live.scene().post.clone().unwrap_or_default().depth_of_field;
+        let mut dof = k.live.scene().post().clone().unwrap_or_default().depth_of_field;
         flyby.lens(&tour, &camera, &mut dof);
         k.lens = Some((dof.focal_length, dof.aperture));
         k.shot(&mut front, &format!("tour/{i:04}"));
@@ -1317,7 +1317,7 @@ fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are
     let k = Peer::alone();
     let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
     let size = runity::glam::Vec2::new(1280.0, 720.0);
-    let camera = runity::scene_camera(&k.live.scene().view);
+    let camera = runity::scene_camera(&k.live.scene().view());
     let draw = |k: &Peer, front: &mut crate::front::Front| {
         let mut ui = runity::ui::Ui::new();
         front.draw(&k.world, &k.party, &mut runity::widgets::Widgets::new(), &mut ui, &runity::input::Input::default(), size, &strings);

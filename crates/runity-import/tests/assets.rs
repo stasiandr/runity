@@ -130,7 +130,7 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
     assert!(camp
         .flatten()
         .iter()
-        .any(|(e, _)| e.material == MaterialRef::Named("granite".into())));
+        .any(|(e, _)| e.material_ref() == MaterialRef::Named("granite".into())));
     assert!(
         usages(&project, Path::new("materials/granite.rmat"))
             .unwrap()

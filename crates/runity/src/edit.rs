@@ -251,13 +251,13 @@ pub fn describe(before: &Scene, after: &Scene) -> String {
     match (added.len(), removed.len(), changed.len()) {
         (0, 0, 0) => {
             let mut parts = Vec::new();
-            if before.view != after.view {
+            if before.view() != after.view() {
                 parts.push("the view");
             }
-            if before.sun != after.sun {
+            if before.sun() != after.sun() {
                 parts.push("the sun");
             }
-            if before.fog != after.fog {
+            if before.fog() != after.fog() {
                 parts.push("the fog");
             }
             if parts.is_empty() {
@@ -285,10 +285,10 @@ pub fn describe(before: &Scene, after: &Scene) -> String {
             if moved {
                 what.push("reparent");
             }
-            if a.material != b.material {
+            if a.material_ref() != b.material_ref() {
                 what.push("recolour");
             }
-            if a.model != b.model {
+            if a.model() != b.model() {
                 what.push("change the model of");
             }
             if a.components != b.components {
@@ -297,7 +297,7 @@ pub fn describe(before: &Scene, after: &Scene) -> String {
             if a.overrides != b.overrides {
                 what.push("override a part of");
             }
-            if a.body != b.body || a.collider != b.collider {
+            if a.body() != b.body() || a.collider() != b.collider() {
                 what.push("change the physics of");
             }
             if a.name != b.name && what.is_empty() {
@@ -583,7 +583,11 @@ mod tests {
         history.end_gesture();
         assert_eq!(history.depth(), 2, "the first edit, and the gesture");
         history.undo();
-        assert_eq!(history.scene().entities.len(), 1, "back to before the gesture");
+        assert_eq!(
+            history.scene().entities.len(),
+            1,
+            "back to before the gesture"
+        );
         history.edit().entities.clear();
         assert_eq!(history.depth(), 2, "after it, edits are steps again");
     }
@@ -592,10 +596,10 @@ mod tests {
     fn entity(name: &str, children: Vec<EntityDesc>) -> EntityDesc {
         EntityDesc {
             name: name.into(),
-            model: "builtin:cube".into(),
             children,
             ..Default::default()
         }
+        .with(crate::scene::ModelRef("builtin:cube".into()))
     }
 
     /// root

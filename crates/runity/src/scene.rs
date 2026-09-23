@@ -795,7 +795,12 @@ pub enum Body {
 }
 
 /// One thing in the valley.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+///
+/// The core's fields are its identity, its place and its tree; everything
+/// else on the line — `model`, `material`, `body`, `light`, `sound`… — is a
+/// part a module owns, kept as the text it was written as and read by type
+/// (`desc.part::<Light>()`). See [`crate::parts`] and docs/modules.md.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct EntityDesc {
     /// Who this is, for as long as it exists: what an edit, a selection, an
     /// undo, a merge and a network message all point at. First in the block
@@ -804,15 +809,9 @@ pub struct EntityDesc {
     /// Optional in the file: an entity written without one — by hand, or by
     /// an agent — gets one when the scene loads, and keeps it from the first
     /// save on. See [`crate::id`].
-    #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
     pub id: EntityId,
     /// Shown in the editor's tree; not required to be unique.
     pub name: String,
-    /// A model in `assets/` by file stem — `pine_large` for
-    /// `assets/models/pine_large.obj` — or a builtin, `builtin:cone`. May be left
-    /// out of the file: a group, or a prefab instance, draws nothing itself.
-    #[serde(default, skip_serializing_if = "str::is_empty")]
-    pub model: crate::AssetLink,
     /// The prefab this entity is an instance of, by file stem, or empty.
     ///
     /// An instance is one line: what it is, where it stands, and what it is
@@ -820,118 +819,21 @@ pub struct EntityDesc {
     /// is ignored while this is set. Expanding it is
     /// [`prefab::instantiate`](crate::prefab::instantiate), and everything
     /// downstream sees the expansion rather than the reference.
-    ///
-    /// An empty string rather than an `Option`, for the reason
-    /// [`MaterialRef`] is not one either: RON spells an option out as
-    /// `Some(...)`, and a wrapper in every line of every scene earns
-    /// nothing.
-    #[serde(default, skip_serializing_if = "str::is_empty")]
     pub prefab: crate::AssetLink,
-    #[serde(default)]
     pub transform: Transform,
-    /// A material by name — a `.rmat` asset in the library, or one of the
-    /// engine's builtins (`grass`, `bark`, `ember`, …) — or a material
-    /// written out in full. Named first because that is what keeps a scene
-    /// readable and a palette consistent: a colour spelled out in twenty
-    /// places drifts in nineteen of them.
-    /// Left out of the file entirely when it is the default, so a scene
-    /// full of plain grey things stays readable.
-    #[serde(default, skip_serializing_if = "MaterialRef::is_default")]
-    pub material: MaterialRef,
-    #[serde(default)]
-    pub body: Body,
-    /// The shape physics sees. Without one, `body` does nothing: a thing can
-    /// be declared solid and still have no shape to be solid with, and
-    /// saying so in one place beats guessing a box from the mesh.
-    #[serde(default)]
-    pub collider: Collider,
-    /// A camera on this entity; see [`Lens`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub camera: Option<Lens>,
-    /// A curve through points, in this entity's space: a road, a fence
-    /// line, a pipe (docs/artist.md). What follows it is [`Along`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub spline: Option<Spline>,
-    /// Copies of a model set along this entity's spline, `spacing` apart:
-    /// Unreal's Construction Script for a fence. The file keeps the
-    /// spacing and the model; the copies are built when the scene is
-    /// expanded, and built again whenever either changes.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub along: Option<Along>,
-    /// A light at this entity; see [`Light`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub light: Option<Light>,
-    /// Particles given off from this entity; see [`Emitter`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub particles: Option<Emitter>,
-    /// A reflection probe at this entity; see [`Probe`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub reflection_probe: Option<Probe>,
-    /// This entity's camera draws into a picture, not onto the screen;
-    /// see [`RenderTexture`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub render_texture: Option<RenderTexture>,
     /// Under which part of its parent's prefab it goes, when its parent is
     /// a prefab instance: the part's key, as `overrides` names parts. A
     /// scene's torch in the hand of a placed statue. Absent is under the
     /// instance itself.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub in_part: Option<crate::id::EntityId>,
-    /// The graph in `animators/` that moves it and the things under it,
-    /// with the clips in `clips/` (see [`crate::motion`]): Unity's Animator
-    /// on a GameObject.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub animator: String,
-    /// A sound it makes; see [`SoundSource`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub sound: Option<SoundSource>,
-    /// A place that looks different; see [`PostVolume`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub post_volume: Option<PostVolume>,
-    /// A decal pressed from this entity; see [`Decal`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub decal: Option<Decal>,
-    /// Prints left in the ground as it walks, and dust from each step:
-    /// `footprints: (stride: 0.75)`. See [`crate::footprints`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub footprints: Option<crate::footprints::Footprints>,
-    /// Ground shaped from a few numbers — a field of dunes: `terrain:
-    /// (size: 400.0, dunes: (height: 8.0))`. See [`crate::terrain`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub terrain: Option<crate::terrain::Terrain>,
-    /// Grass and anything else that sways is pushed aside within this many
-    /// metres of it — a player walking through a meadow. 0 is none. See
-    /// [`crate::foliage`].
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub bends_grass: f32,
-    /// Moving along points by itself; see [`Route`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub route: Option<Route>,
-    /// The collision layer, by the name `layers.ron` gives it; empty is
-    /// `default`. See [`crate::layers`].
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub layer: String,
     /// Switched off, and everything under it: not drawn, not solid, not
     /// heard — there, for the game to switch on (`world::set_active`).
     /// Unity's inactive GameObject.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inactive: bool,
-    /// Friction, bounce and density; see [`BodyProps`].
-    #[serde(default, skip_serializing_if = "BodyProps::is_default")]
-    pub physics: BodyProps,
-    /// What holds this body to another; see [`Joint`].
-    #[serde(default, skip_serializing_if = "Joint::is_none")]
-    pub joint: Joint,
-    /// The joint breaks when pulled harder than this many newtons: Unity's
-    /// Break Force. What broke is marked, and a game hears of it
-    /// (`PhysicsWorld::broken`).
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub joint_break: Option<f32>,
-    /// Held by this joint of the parent's skeleton, not by the parent
-    /// itself: a spade in a hand, a hat on a head, going where the
-    /// animation takes the bone. `transform` is then relative to the bone.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub bone: String,
+    /// Every field a module owns, as written: what it looks like, how it
+    /// is solid, what light, sound or particles it gives off. See
+    /// [`crate::parts`].
+    pub parts: crate::parts::Parts,
     /// The game's own components, by the name the game registered each
     /// under (see [`crate::components`]), each value in RON:
     ///
@@ -946,11 +848,6 @@ pub struct EntityDesc {
     /// written as, so the engine never needs the game's types to load,
     /// save or diff a scene, and a value it did not touch is written back
     /// byte for byte.
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "trimmed_components"
-    )]
     pub components: BTreeMap<String, ComponentValue>,
     /// For a prefab instance: changes to the prefab's parts in this
     /// instance only, by the part's `id` in the prefab file —
@@ -962,7 +859,6 @@ pub struct EntityDesc {
     /// Each names only what differs; the rest still comes from the prefab,
     /// so a later change to the prefab reaches this instance everywhere it
     /// did not say otherwise.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<EntityId, Override>,
     /// Things attached to this one. A child's transform is relative to its
     /// parent, so moving the parent moves the lot — which is what makes a
@@ -973,60 +869,23 @@ pub struct EntityDesc {
     /// tree written as a tree cannot describe a cycle or a dangling parent,
     /// and both of those are states an editor would otherwise have to guard
     /// against every time it saves.
-    #[serde(default)]
     pub children: Vec<EntityDesc>,
 }
 
 /// What one instance changes about one part of its prefab. Every field is
 /// optional in the file and in meaning: absent is "as the prefab has it".
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Override {
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub model: Option<crate::AssetLink>,
     /// The part's whole transform, relative to its parent in the prefab.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub transform: Option<Transform>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub material: Option<MaterialRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub body: Option<Body>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub collider: Option<Collider>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub physics: Option<BodyProps>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub layer: Option<String>,
     /// Switched off (or on) in this instance.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub inactive: Option<bool>,
-    /// A camera, a light, particles or a route set on the part — changed, or
-    /// added where the prefab has none. Taking one away is `removed`.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub camera: Option<Lens>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub light: Option<Light>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub particles: Option<Emitter>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub reflection_probe: Option<Probe>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub decal: Option<Decal>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub footprints: Option<crate::footprints::Footprints>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub terrain: Option<crate::terrain::Terrain>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub bends_grass: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub route: Option<Route>,
+    /// A module's field set on the part — a model, a material, a body, a
+    /// light — changed, or added where the prefab has none. Taking one
+    /// away is `removed`.
+    pub parts: crate::parts::Parts,
     /// Components set on the part, one by one.
-    #[serde(
-        default,
-        skip_serializing_if = "BTreeMap::is_empty",
-        deserialize_with = "trimmed_components"
-    )]
     pub components: BTreeMap<String, ComponentValue>,
     /// What this instance takes off the part: fields by name (`"light"`,
     /// `"collider"`, `"model"`…) and the game's components by theirs —
@@ -1034,26 +893,8 @@ pub struct Override {
     /// prefab took things away; a prefab placed with one lamp dark and one
     /// wall without its collider is common enough in Unity (Dacha has 505)
     /// to say it here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
 }
-
-/// The fields of a line a part can have taken away, besides components.
-pub const REMOVABLE: [&str; 13] = [
-    "model",
-    "collider",
-    "body",
-    "camera",
-    "light",
-    "particles",
-    "reflection_probe",
-    "decal",
-    "route",
-    "sound",
-    "render_texture",
-    "post_volume",
-    "animator",
-];
 
 impl Override {
     /// Write what this override says onto a part.
@@ -1061,78 +902,21 @@ impl Override {
         if let Some(name) = &self.name {
             part.name = name.clone();
         }
-        if let Some(model) = &self.model {
-            part.model = model.clone();
-        }
         if let Some(transform) = self.transform {
             part.transform = transform;
-        }
-        if let Some(material) = &self.material {
-            part.material = material.clone();
-        }
-        if let Some(body) = self.body {
-            part.body = body;
-        }
-        if let Some(collider) = self.collider {
-            part.collider = collider;
-        }
-        if let Some(physics) = self.physics {
-            part.physics = physics;
         }
         if let Some(inactive) = self.inactive {
             part.inactive = inactive;
         }
-        if let Some(layer) = &self.layer {
-            part.layer = layer.clone();
-        }
-        if self.camera.is_some() {
-            part.camera = self.camera;
-        }
-        if self.light.is_some() {
-            part.light = self.light;
-        }
-        if self.particles.is_some() {
-            part.particles = self.particles.clone();
-        }
-        if self.reflection_probe.is_some() {
-            part.reflection_probe = self.reflection_probe;
-        }
-        if self.decal.is_some() {
-            part.decal = self.decal;
-        }
-        if self.footprints.is_some() {
-            part.footprints = self.footprints;
-        }
-        if self.terrain.is_some() {
-            part.terrain = self.terrain;
-        }
-        if let Some(radius) = self.bends_grass {
-            part.bends_grass = radius;
-        }
-        if self.route.is_some() {
-            part.route = self.route.clone();
-        }
+        part.parts.overlay(&self.parts);
         for (name, value) in &self.components {
             part.components.insert(name.clone(), value.clone());
         }
+        // A name taken away is a module's field when the line has one by
+        // that name, a component otherwise.
         for name in &self.removed {
-            match name.as_str() {
-                "model" => part.model = Default::default(),
-                "collider" => part.collider = Collider::None,
-                "body" => part.body = Body::None,
-                "camera" => part.camera = None,
-                "light" => part.light = None,
-                "particles" => part.particles = None,
-                "reflection_probe" => part.reflection_probe = None,
-                "decal" => part.decal = None,
-                "route" => part.route = None,
-                "sound" => part.sound = None,
-                "render_texture" => part.render_texture = None,
-                "post_volume" => part.post_volume = None,
-                "animator" => part.animator.clear(),
-                component => {
-                    part.components.remove(component);
-                }
+            if !part.parts.remove(name) {
+                part.components.remove(name);
             }
         }
     }
@@ -1141,64 +925,36 @@ impl Override {
     /// into `edited`: only the fields that differ.
     pub fn between(prefab: &EntityDesc, edited: &EntityDesc) -> Self {
         let differs = |a: bool| a.then_some(());
+        let mut parts = crate::parts::Parts::default();
+        for (name, text) in edited.parts.iter() {
+            if prefab.parts.raw(name) != Some(text) {
+                let _ = parts.set_raw(name, text);
+            }
+        }
         Override {
             name: differs(prefab.name != edited.name).map(|_| edited.name.clone()),
-            model: differs(prefab.model != edited.model).map(|_| edited.model.clone()),
             transform: differs(prefab.transform != edited.transform).map(|_| edited.transform),
-            material: differs(prefab.material != edited.material).map(|_| edited.material.clone()),
-            body: differs(prefab.body != edited.body).map(|_| edited.body),
-            collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
-            physics: differs(prefab.physics != edited.physics).map(|_| edited.physics),
-            layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
             inactive: differs(prefab.inactive != edited.inactive).map(|_| edited.inactive),
-            camera: differs(prefab.camera != edited.camera).and(edited.camera),
-            light: differs(prefab.light != edited.light).and(edited.light),
-            particles: differs(prefab.particles != edited.particles).and(edited.particles.clone()),
-            reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
-                .and(edited.reflection_probe),
-            decal: differs(prefab.decal != edited.decal).and(edited.decal),
-            footprints: differs(prefab.footprints != edited.footprints).and(edited.footprints),
-            terrain: differs(prefab.terrain != edited.terrain).and(edited.terrain),
-            bends_grass: differs(prefab.bends_grass != edited.bends_grass)
-                .map(|_| edited.bends_grass),
-            route: differs(prefab.route != edited.route).and(edited.route.clone()),
+            parts,
             components: edited
                 .components
                 .iter()
                 .filter(|(name, value)| prefab.components.get(*name) != Some(*value))
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect(),
-            removed: {
-                let gone = [
-                    ("camera", prefab.camera.is_some() && edited.camera.is_none()),
-                    ("light", prefab.light.is_some() && edited.light.is_none()),
-                    ("particles", prefab.particles.is_some() && edited.particles.is_none()),
-                    (
-                        "reflection_probe",
-                        prefab.reflection_probe.is_some() && edited.reflection_probe.is_none(),
-                    ),
-                    ("decal", prefab.decal.is_some() && edited.decal.is_none()),
-                    ("route", prefab.route.is_some() && edited.route.is_none()),
-                    ("sound", prefab.sound.is_some() && edited.sound.is_none()),
-                    (
-                        "render_texture",
-                        prefab.render_texture.is_some() && edited.render_texture.is_none(),
-                    ),
-                    ("post_volume", prefab.post_volume.is_some() && edited.post_volume.is_none()),
-                    ("animator", !prefab.animator.is_empty() && edited.animator.is_empty()),
-                ];
-                gone.iter()
-                    .filter(|(_, gone)| *gone)
-                    .map(|(name, _)| name.to_string())
-                    .chain(
-                        prefab
-                            .components
-                            .keys()
-                            .filter(|name| !edited.components.contains_key(*name))
-                            .cloned(),
-                    )
-                    .collect()
-            },
+            removed: prefab
+                .parts
+                .names()
+                .filter(|name| !edited.parts.contains(name))
+                .map(str::to_string)
+                .chain(
+                    prefab
+                        .components
+                        .keys()
+                        .filter(|name| !edited.components.contains_key(*name))
+                        .cloned(),
+                )
+                .collect(),
         }
     }
 
@@ -1210,49 +966,23 @@ impl Override {
     pub fn merge(&mut self, later: Override) {
         let Override {
             name,
-            model,
             transform,
-            material,
-            body,
-            collider,
-            physics,
-            layer,
             inactive,
-            camera,
-            light,
-            particles,
-            reflection_probe,
-            decal,
-            footprints,
-            terrain,
-            bends_grass,
-            route,
+            parts,
             components,
             removed,
         } = later;
         self.name = name.or(self.name.take());
-        self.model = model.or(self.model.take());
         self.transform = transform.or(self.transform);
-        self.material = material.or(self.material.take());
-        self.body = body.or(self.body);
-        self.collider = collider.or(self.collider);
-        self.physics = physics.or(self.physics);
-        self.layer = layer.or(self.layer.take());
         self.inactive = inactive.or(self.inactive);
-        self.camera = camera.or(self.camera);
-        self.light = light.or(self.light);
-        self.particles = particles.or(self.particles.take());
-        self.reflection_probe = reflection_probe.or(self.reflection_probe);
-        self.decal = decal.or(self.decal);
-        self.footprints = footprints.or(self.footprints);
-        self.terrain = terrain.or(self.terrain);
-        self.bends_grass = bends_grass.or(self.bends_grass);
-        self.route = route.or(self.route.take());
         // Set again after it was taken away: back.
-        self.removed.retain(|name| !components.contains_key(name));
+        self.removed
+            .retain(|name| !components.contains_key(name) && !parts.contains(name));
+        self.parts.overlay(&parts);
         self.components.extend(components);
         for name in removed {
             self.components.remove(&name);
+            self.parts.remove(&name);
             if !self.removed.contains(&name) {
                 self.removed.push(name);
             }
@@ -1286,18 +1016,6 @@ mod plain {
 
 /// One component's value, in RON, as written.
 pub type ComponentValue = Box<ron::value::RawValue>;
-
-/// Component values without the whitespace around them, so that where a
-/// value sat in the file does not become part of it.
-fn trimmed_components<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<BTreeMap<String, ComponentValue>, D::Error> {
-    let raw = BTreeMap::<String, ComponentValue>::deserialize(deserializer)?;
-    Ok(raw
-        .into_iter()
-        .map(|(name, value)| (name, value.trim_boxed()))
-        .collect())
-}
 
 impl EntityDesc {
     /// Set a component's value from RON text. The text is checked to be
@@ -1388,7 +1106,7 @@ impl EntityDesc {
         &self,
         lookup: impl Fn(&crate::AssetLink) -> Option<Material>,
     ) -> Material {
-        match &self.material {
+        match &self.material_ref() {
             MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
                 Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
                 None => lookup(name)
@@ -1653,49 +1371,14 @@ fn position_key(name: &str, nth: u64) -> u64 {
     hash
 }
 
-/// A whole scene, as it sits on disk.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// A whole scene, as it sits on disk: how it looks — `view`, `sun`, `fog`,
+/// `post`… — and what is in it.
+///
+/// Its look is the render module's, kept as parts the way a line's module
+/// fields are ([`crate::parts`]): `scene.part::<Sun>()`.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Scene {
-    #[serde(default)]
-    pub view: View,
-    #[serde(default)]
-    pub sun: Sun,
-    #[serde(default)]
-    pub fog: Fog,
-    /// The sky behind everything; the engine's procedural one, its horizon
-    /// the fog's colour, when the file does not say.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub sky: Option<crate::render::Sky>,
-    /// What is done to the finished frame — URP's Volume: bloom, grading,
-    /// tonemapping. The engine's defaults when the file does not say.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub post: Option<crate::post::PostProcess>,
-    /// Crevices darkened — URP's SSAO. The engine's defaults when the file
-    /// does not say.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub ambient_occlusion: Option<crate::ssao::AmbientOcclusion>,
-    /// Hardware rays, an experiment: `ray_tracing: (sun_shadows: true,
-    /// light_shadows: true, ambient_occlusion: true)`. Nothing where the
-    /// device does not trace.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub ray_tracing: Option<crate::ray::RayTracing>,
-    /// Light seen in the air: `volumetric_fog: (enabled: true, density:
-    /// 0.05)`. See [`crate::volume`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub volumetric_fog: Option<crate::volume::VolumetricFog>,
-    /// The wind foliage sways in: `wind: (direction: (1.0, 0.0, 0.3),
-    /// strength: 1.0)`; a breeze when the file does not say.
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub wind: Option<crate::foliage::Wind>,
-    /// Rain, snow, wet ground and puddles: `weather: (rain: 1.0, wetness:
-    /// 1.0, puddles: 0.6)`. See [`crate::weather`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub weather: Option<crate::weather::Weather>,
-    /// Reflections marched across the screen: `screen_space_reflections:
-    /// (enabled: true)`. See [`crate::reflections::ScreenSpaceReflections`].
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub screen_space_reflections: Option<crate::reflections::ScreenSpaceReflections>,
-    #[serde(default)]
+    pub parts: crate::parts::Parts,
     pub entities: Vec<EntityDesc>,
 }
 
@@ -1795,13 +1478,14 @@ impl Along {
                 };
                 let yaw = (-direction.z).atan2(direction.x);
                 transform.set_rotation(glam::Quat::from_rotation_y(yaw));
-                EntityDesc {
+                let mut copy = EntityDesc {
                     id: carrier.within(EntityId::from_raw(i as u64 + 1)),
                     name: format!("{name} {}", i + 1),
-                    model: self.model.clone(),
                     transform,
                     ..Default::default()
-                }
+                };
+                copy.set_model(self.model.clone());
+                copy
             })
             .collect()
     }
@@ -1950,16 +1634,16 @@ pub fn look_field(scene: &Scene, field: &str) -> Result<String, String> {
         value.as_ref().map_or_else(|| "None".to_string(), text)
     }
     Ok(match field {
-        "sun" => text(&scene.sun),
-        "fog" => text(&scene.fog),
-        "sky" => optional(&scene.sky),
-        "post" => optional(&scene.post),
-        "ambient_occlusion" => optional(&scene.ambient_occlusion),
-        "volumetric_fog" => optional(&scene.volumetric_fog),
-        "weather" => optional(&scene.weather),
-        "wind" => optional(&scene.wind),
-        "screen_space_reflections" => optional(&scene.screen_space_reflections),
-        "ray_tracing" => optional(&scene.ray_tracing),
+        "sun" => text(&scene.sun()),
+        "fog" => text(&scene.fog()),
+        "sky" => optional(&scene.sky()),
+        "post" => optional(&scene.post()),
+        "ambient_occlusion" => optional(&scene.ambient_occlusion()),
+        "volumetric_fog" => optional(&scene.volumetric_fog()),
+        "weather" => optional(&scene.weather()),
+        "wind" => optional(&scene.wind()),
+        "screen_space_reflections" => optional(&scene.screen_space_reflections()),
+        "ray_tracing" => optional(&scene.ray_tracing()),
         other => {
             return Err(format!(
                 "`{other}` is not part of the scene's look — there are {}",
@@ -1986,16 +1670,29 @@ pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<
         }
     }
     match field {
-        "sun" => scene.sun = parse(field, ron_text)?,
-        "fog" => scene.fog = parse(field, ron_text)?,
-        "sky" => scene.sky = optional(field, ron_text)?,
-        "post" => scene.post = optional(field, ron_text)?,
-        "ambient_occlusion" => scene.ambient_occlusion = optional(field, ron_text)?,
-        "volumetric_fog" => scene.volumetric_fog = optional(field, ron_text)?,
-        "weather" => scene.weather = optional(field, ron_text)?,
-        "wind" => scene.wind = optional(field, ron_text)?,
-        "screen_space_reflections" => scene.screen_space_reflections = optional(field, ron_text)?,
-        "ray_tracing" => scene.ray_tracing = optional(field, ron_text)?,
+        "sun" => scene.set_part::<Sun>(&parse(field, ron_text)?),
+        "fog" => scene.set_part::<Fog>(&parse(field, ron_text)?),
+        "sky" => scene.set_part_opt::<crate::render::Sky>(optional(field, ron_text)?.as_ref()),
+        "post" => {
+            scene.set_part_opt::<crate::post::PostProcess>(optional(field, ron_text)?.as_ref())
+        }
+        "ambient_occlusion" => {
+            scene.set_part_opt::<crate::ssao::AmbientOcclusion>(optional(field, ron_text)?.as_ref())
+        }
+        "volumetric_fog" => {
+            scene.set_part_opt::<crate::volume::VolumetricFog>(optional(field, ron_text)?.as_ref())
+        }
+        "weather" => {
+            scene.set_part_opt::<crate::weather::Weather>(optional(field, ron_text)?.as_ref())
+        }
+        "wind" => scene.set_part_opt::<crate::foliage::Wind>(optional(field, ron_text)?.as_ref()),
+        "screen_space_reflections" => scene
+            .set_part_opt::<crate::reflections::ScreenSpaceReflections>(
+                optional(field, ron_text)?.as_ref(),
+            ),
+        "ray_tracing" => {
+            scene.set_part_opt::<crate::ray::RayTracing>(optional(field, ron_text)?.as_ref())
+        }
         other => {
             return Err(format!(
                 "`{other}` is not part of the scene's look — there are {}",
@@ -2019,81 +1716,43 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
-                camera: None,
-                spline: None,
-                along: None,
-                light: None,
-                particles: None,
-                reflection_probe: None,
-                decal: None,
-                footprints: None,
-                terrain: None,
-                bends_grass: 0.0,
-                route: None,
-                layer: Default::default(),
-                physics: Default::default(),
-                joint: Default::default(),
-                joint_break: None,
-                bone: String::new(),
-                post_volume: None,
-                render_texture: None,
-                sound: None,
-                animator: String::new(),
+                parts: Default::default(),
                 in_part: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "crate".into(),
-                model: "builtin:cube".into(),
                 prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 2.0, 3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
                     scale: Vec3::splat(2.0),
                 },
-                material: MaterialRef::Inline(Material::new(0.3, 0.2, 0.1)),
-                body: Body::Dynamic,
-                collider: Collider::Box {
-                    half: Vec3::splat(0.5),
-                    center: glam::Vec3::ZERO,
-                },
                 children: vec![EntityDesc {
-                    camera: None,
-                    spline: None,
-                    along: None,
-                    light: None,
-                    particles: None,
-                    reflection_probe: None,
-                    decal: None,
-                    footprints: None,
-                    terrain: None,
-                    bends_grass: 0.0,
-                    route: None,
-                    layer: Default::default(),
-                    physics: Default::default(),
-                    joint: Default::default(),
-                    joint_break: None,
-                    bone: String::new(),
-                    post_volume: None,
-                    render_texture: None,
-                    sound: None,
-                    animator: String::new(),
+                    parts: Default::default(),
                     in_part: None,
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
                     name: "lid".into(),
-                    model: "builtin:cube".into(),
                     prefab: Default::default(),
-                    material: MaterialRef::Named("stone".into()),
-                    body: Body::None,
-                    collider: Collider::None,
                     transform: Transform::default(),
                     children: Vec::new(),
-                }],
-            }],
+                }
+                .with(crate::scene::ModelRef("builtin:cube".into()))
+                .with(MaterialRef::Named("stone".into()))
+                .with(Body::None)
+                .with(Collider::None)],
+            }
+            .with(crate::scene::ModelRef("builtin:cube".into()))
+            .with(MaterialRef::Inline(Material::new(0.3, 0.2, 0.1)))
+            .with(Body::Dynamic)
+            .with(Collider::Box {
+                half: Vec3::splat(0.5),
+                center: glam::Vec3::ZERO,
+            })],
             ..Default::default()
         };
         // IDs as a loaded scene would have them: code-built entities start
@@ -2110,64 +1769,39 @@ mod tests {
     #[test]
     fn a_scene_survives_a_round_trip_through_the_file() {
         let mut scene = Scene {
-            view: View::default(),
-            sun: Sun {
-                hour: 17.5,
-                intensity: 0.8,
-                ..Sun::default()
-            },
-            fog: Fog::default(),
-            sky: None,
-            ambient_occlusion: None,
-            ray_tracing: None,
-            volumetric_fog: None,
-            wind: None,
-            weather: None,
-            screen_space_reflections: None,
-            post: Some(crate::post::PostProcess {
-                saturation: -30.0,
-                ..Default::default()
-            }),
+            parts: Default::default(),
             entities: vec![EntityDesc {
-                camera: None,
-                spline: None,
-                along: None,
-                light: None,
-                particles: None,
-                reflection_probe: None,
-                decal: None,
-                footprints: None,
-                terrain: None,
-                bends_grass: 0.0,
-                route: None,
-                layer: Default::default(),
-                physics: Default::default(),
-                joint: Default::default(),
-                joint_break: None,
-                bone: String::new(),
-                post_volume: None,
-                render_texture: None,
-                sound: None,
-                animator: String::new(),
+                parts: Default::default(),
                 in_part: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "pine".into(),
-                model: "models/pine_large.obj".into(),
                 prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 0.0, -3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
                     scale: Vec3::splat(1.2),
                 },
-                material: MaterialRef::Named("needle".into()),
-                body: Body::Static,
-                collider: Collider::None,
                 children: Vec::new(),
-            }],
-        };
+            }
+            .with(crate::scene::ModelRef("models/pine_large.obj".into()))
+            .with(MaterialRef::Named("needle".into()))
+            .with(Body::Static)
+            .with(Collider::None)],
+        }
+        .with(View::default())
+        .with(Sun {
+            hour: 17.5,
+            intensity: 0.8,
+            ..Sun::default()
+        })
+        .with(Fog::default())
+        .with(crate::post::PostProcess {
+            saturation: -30.0,
+            ..Default::default()
+        });
         scene.assign_ids();
         let dir = std::env::temp_dir().join("runity-scene-test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -2387,24 +2021,21 @@ mod tests {
 
     #[test]
     fn a_scene_remembers_where_it_is_looked_at_from() {
-        let scene = Scene {
-            view: View {
-                position: Vec3::new(3.0, 9.0, -2.0),
-                target: Vec3::new(0.0, 1.0, 0.0),
-                fov_deg: 35.0,
-            },
-            ..Scene::default()
-        };
+        let scene = Scene { ..Scene::default() }.with(View {
+            position: Vec3::new(3.0, 9.0, -2.0),
+            target: Vec3::new(0.0, 1.0, 0.0),
+            fov_deg: 35.0,
+        });
         let dir = std::env::temp_dir().join("runity-scene-view");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("view.ron");
         scene.save(&path).unwrap();
-        assert_eq!(Scene::load(&path).unwrap().view, scene.view);
+        assert_eq!(Scene::load(&path).unwrap().view(), scene.view());
 
         // And a scene written before there was a camera in the format still
         // opens, framed the way everything used to be.
         let older: Scene = ron::from_str(r#"(entities: [])"#).unwrap();
-        assert_eq!(older.view, View::default());
+        assert_eq!(older.view(), View::default());
     }
 
     #[test]
@@ -2414,8 +2045,659 @@ mod tests {
         let text = r#"(entities: [(name: "rock", model: "models/boulder.obj")])"#;
         let scene: Scene = ron::from_str(text).unwrap();
         assert_eq!(scene.entities[0].transform, Transform::default());
-        assert_eq!(scene.entities[0].body, Body::None);
+        assert_eq!(scene.entities[0].body(), Body::None);
         assert_eq!(scene.entities[0].material(), Material::default());
-        assert_eq!(scene.sun.hour, 9.0);
+        assert_eq!(scene.sun().hour, 9.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A line of a scene, a prefab instance's override and a whole scene, read
+// and written by hand: the core's fields by type, every other field as a
+// part (crate::parts), in the order the file has them.
+
+use serde::de::{MapAccess, Visitor};
+use serde::ser::SerializeStruct;
+
+/// Read a struct-like RON value field by field: `core` takes the fields it
+/// knows and says so; every other field is kept as a part.
+fn read_fields<'de, A, F>(
+    mut map: A,
+    parts: &mut crate::parts::Parts,
+    mut core: F,
+) -> Result<(), A::Error>
+where
+    A: MapAccess<'de>,
+    F: FnMut(&str, &mut A) -> Result<bool, A::Error>,
+{
+    while let Some(key) = map.next_key::<String>()? {
+        if !core(&key, &mut map)? {
+            let value: crate::parts::PartValue = map.next_value()?;
+            parts.put(&key, value);
+        }
+    }
+    Ok(())
+}
+
+fn write_parts<S: SerializeStruct>(
+    st: &mut S,
+    parts: &crate::parts::Parts,
+) -> Result<(), S::Error> {
+    for (name, value) in parts.entries() {
+        st.serialize_field(crate::parts::static_name(name), value)?;
+    }
+    Ok(())
+}
+
+fn trim_components(raw: BTreeMap<String, ComponentValue>) -> BTreeMap<String, ComponentValue> {
+    raw.into_iter()
+        .map(|(name, value)| (name, value.trim_boxed()))
+        .collect()
+}
+
+impl Serialize for EntityDesc {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut st = s.serialize_struct("EntityDesc", 4 + self.parts.len())?;
+        if !self.id.is_unassigned() {
+            st.serialize_field("id", &self.id)?;
+        }
+        st.serialize_field("name", &self.name)?;
+        if !self.prefab.is_empty() {
+            st.serialize_field("prefab", &self.prefab)?;
+        }
+        st.serialize_field("transform", &self.transform)?;
+        write_parts(&mut st, &self.parts)?;
+        if let Some(part) = &self.in_part {
+            st.serialize_field("in_part", part)?;
+        }
+        if self.inactive {
+            st.serialize_field("inactive", &true)?;
+        }
+        if !self.components.is_empty() {
+            st.serialize_field("components", &self.components)?;
+        }
+        if !self.overrides.is_empty() {
+            st.serialize_field("overrides", &self.overrides)?;
+        }
+        st.serialize_field("children", &self.children)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for EntityDesc {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Line;
+        impl<'de> Visitor<'de> for Line {
+            type Value = EntityDesc;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an entity: `(name: …, transform: …, …)`")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<EntityDesc, A::Error> {
+                let mut e = EntityDesc::default();
+                let mut named = false;
+                let mut parts = crate::parts::Parts::default();
+                read_fields(map, &mut parts, |key, map| {
+                    match key {
+                        "id" => e.id = map.next_value()?,
+                        "name" => {
+                            e.name = map.next_value()?;
+                            named = true;
+                        }
+                        "prefab" => e.prefab = map.next_value()?,
+                        "transform" => e.transform = map.next_value()?,
+                        "in_part" => e.in_part = Some(map.next_value()?),
+                        "inactive" => e.inactive = map.next_value()?,
+                        "components" => e.components = trim_components(map.next_value()?),
+                        "overrides" => e.overrides = map.next_value()?,
+                        "children" => e.children = map.next_value()?,
+                        _ => return Ok(false),
+                    }
+                    Ok(true)
+                })?;
+                if !named {
+                    return Err(serde::de::Error::missing_field("name"));
+                }
+                e.parts = parts;
+                Ok(e)
+            }
+        }
+        d.deserialize_struct(
+            "EntityDesc",
+            &["id", "name", "prefab", "transform", "children"],
+            Line,
+        )
+    }
+}
+
+impl Serialize for Override {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut st = s.serialize_struct("Override", 2 + self.parts.len())?;
+        if let Some(name) = &self.name {
+            st.serialize_field("name", name)?;
+        }
+        if let Some(transform) = &self.transform {
+            st.serialize_field("transform", transform)?;
+        }
+        write_parts(&mut st, &self.parts)?;
+        if let Some(inactive) = &self.inactive {
+            st.serialize_field("inactive", inactive)?;
+        }
+        if !self.components.is_empty() {
+            st.serialize_field("components", &self.components)?;
+        }
+        if !self.removed.is_empty() {
+            st.serialize_field("removed", &self.removed)?;
+        }
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Override {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Change;
+        impl<'de> Visitor<'de> for Change {
+            type Value = Override;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("what an instance changes: `(material: …, …)`")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Override, A::Error> {
+                let mut o = Override::default();
+                let mut parts = crate::parts::Parts::default();
+                read_fields(map, &mut parts, |key, map| {
+                    match key {
+                        "name" => o.name = Some(map.next_value()?),
+                        "transform" => o.transform = Some(map.next_value()?),
+                        "inactive" => o.inactive = Some(map.next_value()?),
+                        "components" => o.components = trim_components(map.next_value()?),
+                        "removed" => o.removed = map.next_value()?,
+                        _ => return Ok(false),
+                    }
+                    Ok(true)
+                })?;
+                o.parts = parts;
+                Ok(o)
+            }
+        }
+        d.deserialize_struct("Override", &["name", "transform"], Change)
+    }
+}
+
+impl Serialize for Scene {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut st = s.serialize_struct("Scene", 1 + self.parts.len())?;
+        write_parts(&mut st, &self.parts)?;
+        st.serialize_field("entities", &self.entities)?;
+        st.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Scene {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Whole;
+        impl<'de> Visitor<'de> for Whole {
+            type Value = Scene;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a scene: `(view: …, sun: …, entities: [ … ])`")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Scene, A::Error> {
+                let mut scene = Scene::default();
+                let mut parts = crate::parts::Parts::default();
+                read_fields(map, &mut parts, |key, map| {
+                    if key == "entities" {
+                        scene.entities = map.next_value()?;
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })?;
+                scene.parts = parts;
+                Ok(scene)
+            }
+        }
+        d.deserialize_struct("Scene", &["entities"], Whole)
+    }
+}
+
+impl EntityDesc {
+    /// A module's field on this line, by its type: `None` when absent or
+    /// when the text does not fit (which [`EntityDesc::try_part`] says).
+    pub fn part<T: crate::parts::Part>(&self) -> Option<T> {
+        self.parts.get()
+    }
+
+    /// A module's field, or its default when the line leaves it out.
+    pub fn part_or_default<T: crate::parts::Part + Default>(&self) -> T {
+        self.parts.get().unwrap_or_default()
+    }
+
+    /// A module's field, with the error in words when its text does not
+    /// fit its type.
+    pub fn try_part<T: crate::parts::Part>(&self) -> Result<Option<T>, String> {
+        self.parts.try_get()
+    }
+
+    /// Set a module's field; its default takes it off the line.
+    pub fn set_part<T: crate::parts::Part>(&mut self, value: &T) {
+        self.parts.set(value)
+    }
+
+    /// Set a module's field, or take it off with `None`.
+    pub fn set_part_opt<T: crate::parts::Part>(&mut self, value: Option<&T>) {
+        self.parts.set_opt(value)
+    }
+
+    /// Take a module's field off the line.
+    pub fn clear_part<T: crate::parts::Part>(&mut self) {
+        self.parts.remove(T::NAME);
+    }
+
+    /// This line with a module's field set: `EntityDesc { name, ..
+    /// }.with(Body::Static).with(Collider::Box { .. })`.
+    pub fn with<T: crate::parts::Part>(mut self, value: T) -> Self {
+        self.set_part(&value);
+        self
+    }
+
+    /// This line with a module's field set, when there is one.
+    pub fn with_opt<T: crate::parts::Part>(mut self, value: Option<T>) -> Self {
+        self.set_part_opt(value.as_ref());
+        self
+    }
+
+    /// This line without a module's field, by name: `.without("light")`.
+    pub fn without(mut self, name: &str) -> Self {
+        self.parts.remove(name);
+        self
+    }
+
+    /// This line with its model: `.with_model("pine")`.
+    pub fn with_model(self, model: impl Into<crate::AssetLink>) -> Self {
+        self.with(ModelRef(model.into()))
+    }
+}
+
+impl Override {
+    pub fn part<T: crate::parts::Part>(&self) -> Option<T> {
+        self.parts.get()
+    }
+
+    pub fn set_part<T: crate::parts::Part>(&mut self, value: &T) {
+        // An override says what differs, default or not: it is not left
+        // out for being the default.
+        let _ = self.parts.set_raw(T::NAME, &crate::parts::to_text(value));
+    }
+
+    pub fn set_part_opt<T: crate::parts::Part>(&mut self, value: Option<&T>) {
+        match value {
+            Some(value) => self.set_part(value),
+            None => {
+                self.parts.remove(T::NAME);
+            }
+        }
+    }
+
+    /// This change with a module's field set.
+    pub fn with<T: crate::parts::Part>(mut self, value: T) -> Self {
+        self.set_part(&value);
+        self
+    }
+
+    pub fn with_opt<T: crate::parts::Part>(mut self, value: Option<T>) -> Self {
+        self.set_part_opt(value.as_ref());
+        self
+    }
+}
+
+impl Scene {
+    /// A field of the scene's look, by its type.
+    pub fn part<T: crate::parts::Part>(&self) -> Option<T> {
+        self.parts.get()
+    }
+
+    pub fn part_or_default<T: crate::parts::Part + Default>(&self) -> T {
+        self.parts.get().unwrap_or_default()
+    }
+
+    pub fn set_part<T: crate::parts::Part>(&mut self, value: &T) {
+        self.parts.set(value)
+    }
+
+    pub fn set_part_opt<T: crate::parts::Part>(&mut self, value: Option<&T>) {
+        self.parts.set_opt(value)
+    }
+
+    /// This scene with a field of its look set.
+    pub fn with<T: crate::parts::Part>(mut self, value: T) -> Self {
+        self.set_part(&value);
+        self
+    }
+
+    pub fn with_opt<T: crate::parts::Part>(mut self, value: Option<T>) -> Self {
+        self.set_part_opt(value.as_ref());
+        self
+    }
+}
+
+// The fields of a line the modules own, each a type that says its name.
+
+/// `model: "pine_large"` — a model in `assets/` by file stem, or a builtin
+/// (`builtin:cone`). A group, or a prefab instance, draws nothing itself.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelRef(pub crate::AssetLink);
+
+impl crate::parts::Part for ModelRef {
+    const NAME: &'static str = "model";
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `animator: "door"` — the graph in `animators/` that moves it and the
+/// things under it, with the clips in `clips/` (see [`crate::motion`]).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AnimatorRef(pub String);
+
+impl crate::parts::Part for AnimatorRef {
+    const NAME: &'static str = "animator";
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `layer: "props"` — the collision layer, by the name `layers.ron` gives
+/// it; absent is `default`. See [`crate::layers`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LayerName(pub String);
+
+impl crate::parts::Part for LayerName {
+    const NAME: &'static str = "layer";
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `bone: "hand.R"` — held by this joint of the parent's skeleton, not by
+/// the parent itself: a spade in a hand, a hat on a head. `transform` is
+/// then relative to the bone.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BoneName(pub String);
+
+impl crate::parts::Part for BoneName {
+    const NAME: &'static str = "bone";
+    fn is_default(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// `bends_grass: 0.6` — grass and anything else that sways is pushed aside
+/// within this many metres of it. See [`crate::foliage`].
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BendsGrass(pub f32);
+
+impl crate::parts::Part for BendsGrass {
+    const NAME: &'static str = "bends_grass";
+    fn is_default(&self) -> bool {
+        self.0 == 0.0
+    }
+}
+
+/// `joint_break: 400.0` — the joint breaks when pulled harder than this
+/// many newtons: Unity's Break Force (`PhysicsWorld::broken`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct JointBreak(pub f32);
+
+impl crate::parts::Part for JointBreak {
+    const NAME: &'static str = "joint_break";
+}
+
+macro_rules! parts {
+    ($($ty:ty => $name:literal $(, default if $default:expr)?;)*) => {
+        $(
+            impl crate::parts::Part for $ty {
+                const NAME: &'static str = $name;
+                $(fn is_default(&self) -> bool {
+                    let check: fn(&Self) -> bool = $default;
+                    check(self)
+                })?
+            }
+        )*
+
+        /// Every field of a line, an override or a scene's look the engine's
+        /// modules read in this build, with how to check its text: what
+        /// `check` names a field by that no module reads.
+        pub fn part_kinds() -> Vec<crate::parts::PartKind> {
+            let mut kinds = vec![
+                crate::parts::PartKind::of::<ModelRef>(),
+                crate::parts::PartKind::of::<AnimatorRef>(),
+                crate::parts::PartKind::of::<LayerName>(),
+                crate::parts::PartKind::of::<BoneName>(),
+                crate::parts::PartKind::of::<BendsGrass>(),
+                crate::parts::PartKind::of::<JointBreak>(),
+            ];
+            $(kinds.push(crate::parts::PartKind::of::<$ty>());)*
+            kinds
+        }
+    };
+}
+
+parts! {
+    MaterialRef => "material", default if |m| m.is_default();
+    Body => "body", default if |b| *b == Body::None;
+    Collider => "collider", default if |c| *c == Collider::None;
+    BodyProps => "physics", default if |p| p.is_default();
+    Joint => "joint", default if |j| j.is_none();
+    Lens => "camera";
+    Spline => "spline";
+    Along => "along";
+    Light => "light";
+    Emitter => "particles";
+    Probe => "reflection_probe";
+    RenderTexture => "render_texture";
+    SoundSource => "sound";
+    PostVolume => "post_volume";
+    Decal => "decal";
+    crate::footprints::Footprints => "footprints";
+    crate::terrain::Terrain => "terrain";
+    Route => "route";
+    View => "view";
+    Sun => "sun";
+    Fog => "fog";
+    crate::render::Sky => "sky";
+    crate::post::PostProcess => "post";
+    crate::ssao::AmbientOcclusion => "ambient_occlusion";
+    crate::ray::RayTracing => "ray_tracing";
+    crate::volume::VolumetricFog => "volumetric_fog";
+    crate::foliage::Wind => "wind";
+    crate::weather::Weather => "weather";
+    crate::reflections::ScreenSpaceReflections => "screen_space_reflections";
+}
+
+/// A line's module fields by name, for reading: what each was before it
+/// was a part. They move to the modules' own traits as the engine is cut
+/// into modules (docs/modules.md); the call sites stay as they are.
+impl EntityDesc {
+    pub fn model(&self) -> crate::AssetLink {
+        self.part::<ModelRef>().map(|m| m.0).unwrap_or_default()
+    }
+    pub fn material_ref(&self) -> MaterialRef {
+        self.part_or_default()
+    }
+    pub fn body(&self) -> Body {
+        self.part_or_default()
+    }
+    pub fn collider(&self) -> Collider {
+        self.part_or_default()
+    }
+    pub fn physics(&self) -> BodyProps {
+        self.part_or_default()
+    }
+    pub fn joint(&self) -> Joint {
+        self.part_or_default()
+    }
+    pub fn joint_break(&self) -> Option<f32> {
+        self.part::<JointBreak>().map(|j| j.0)
+    }
+    pub fn layer(&self) -> String {
+        self.part::<LayerName>().map(|l| l.0).unwrap_or_default()
+    }
+    pub fn bone(&self) -> String {
+        self.part::<BoneName>().map(|b| b.0).unwrap_or_default()
+    }
+    pub fn animator(&self) -> String {
+        self.part::<AnimatorRef>().map(|a| a.0).unwrap_or_default()
+    }
+    pub fn bends_grass(&self) -> f32 {
+        self.part::<BendsGrass>().map_or(0.0, |b| b.0)
+    }
+    pub fn camera(&self) -> Option<Lens> {
+        self.part()
+    }
+    pub fn spline(&self) -> Option<Spline> {
+        self.part()
+    }
+    pub fn along(&self) -> Option<Along> {
+        self.part()
+    }
+    pub fn light(&self) -> Option<Light> {
+        self.part()
+    }
+    pub fn particles(&self) -> Option<Emitter> {
+        self.part()
+    }
+    pub fn reflection_probe(&self) -> Option<Probe> {
+        self.part()
+    }
+    pub fn render_texture(&self) -> Option<RenderTexture> {
+        self.part()
+    }
+    pub fn sound(&self) -> Option<SoundSource> {
+        self.part()
+    }
+    pub fn post_volume(&self) -> Option<PostVolume> {
+        self.part()
+    }
+    pub fn decal(&self) -> Option<Decal> {
+        self.part()
+    }
+    pub fn footprints(&self) -> Option<crate::footprints::Footprints> {
+        self.part()
+    }
+    pub fn terrain(&self) -> Option<crate::terrain::Terrain> {
+        self.part()
+    }
+    pub fn route(&self) -> Option<Route> {
+        self.part()
+    }
+
+    pub fn set_model(&mut self, model: impl Into<crate::AssetLink>) {
+        self.set_part(&ModelRef(model.into()))
+    }
+    pub fn set_material(&mut self, material: MaterialRef) {
+        self.set_part(&material)
+    }
+    pub fn set_layer(&mut self, layer: impl Into<String>) {
+        self.set_part(&LayerName(layer.into()))
+    }
+    pub fn set_bone(&mut self, bone: impl Into<String>) {
+        self.set_part(&BoneName(bone.into()))
+    }
+    pub fn set_animator(&mut self, animator: impl Into<String>) {
+        self.set_part(&AnimatorRef(animator.into()))
+    }
+    pub fn set_bends_grass(&mut self, metres: f32) {
+        self.set_part(&BendsGrass(metres))
+    }
+    pub fn set_joint_break(&mut self, newtons: Option<f32>) {
+        self.set_part_opt(newtons.map(JointBreak).as_ref())
+    }
+}
+
+impl Override {
+    pub fn model(&self) -> Option<crate::AssetLink> {
+        self.part::<ModelRef>().map(|m| m.0)
+    }
+    pub fn material(&self) -> Option<MaterialRef> {
+        self.part()
+    }
+    pub fn body(&self) -> Option<Body> {
+        self.part()
+    }
+    pub fn collider(&self) -> Option<Collider> {
+        self.part()
+    }
+    pub fn physics(&self) -> Option<BodyProps> {
+        self.part()
+    }
+    pub fn layer(&self) -> Option<String> {
+        self.part::<LayerName>().map(|l| l.0)
+    }
+    pub fn camera(&self) -> Option<Lens> {
+        self.part()
+    }
+    pub fn light(&self) -> Option<Light> {
+        self.part()
+    }
+    pub fn particles(&self) -> Option<Emitter> {
+        self.part()
+    }
+    pub fn reflection_probe(&self) -> Option<Probe> {
+        self.part()
+    }
+    pub fn decal(&self) -> Option<Decal> {
+        self.part()
+    }
+    pub fn footprints(&self) -> Option<crate::footprints::Footprints> {
+        self.part()
+    }
+    pub fn terrain(&self) -> Option<crate::terrain::Terrain> {
+        self.part()
+    }
+    pub fn bends_grass(&self) -> Option<f32> {
+        self.part::<BendsGrass>().map(|b| b.0)
+    }
+    pub fn route(&self) -> Option<Route> {
+        self.part()
+    }
+}
+
+/// A scene's look by name, for reading; see [`EntityDesc::model`].
+impl Scene {
+    pub fn view(&self) -> View {
+        self.part_or_default()
+    }
+    pub fn sun(&self) -> Sun {
+        self.part_or_default()
+    }
+    pub fn fog(&self) -> Fog {
+        self.part_or_default()
+    }
+    pub fn sky(&self) -> Option<crate::render::Sky> {
+        self.part()
+    }
+    pub fn post(&self) -> Option<crate::post::PostProcess> {
+        self.part()
+    }
+    pub fn ambient_occlusion(&self) -> Option<crate::ssao::AmbientOcclusion> {
+        self.part()
+    }
+    pub fn ray_tracing(&self) -> Option<crate::ray::RayTracing> {
+        self.part()
+    }
+    pub fn volumetric_fog(&self) -> Option<crate::volume::VolumetricFog> {
+        self.part()
+    }
+    pub fn wind(&self) -> Option<crate::foliage::Wind> {
+        self.part()
+    }
+    pub fn weather(&self) -> Option<crate::weather::Weather> {
+        self.part()
+    }
+    pub fn screen_space_reflections(&self) -> Option<crate::reflections::ScreenSpaceReflections> {
+        self.part()
     }
 }

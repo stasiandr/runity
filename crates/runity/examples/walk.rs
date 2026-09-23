@@ -43,7 +43,7 @@ impl Walk {
         // rendering headlessly begin from the same place. A hardcoded
         // viewpoint here meant the two disagreed, and the one you were
         // looking at was whichever tool you happened to run.
-        let view = live.scene().view;
+        let view = live.scene().view();
         let eye = view.position;
         let look = (view.target - eye).normalize_or_zero();
         Self {
@@ -122,7 +122,7 @@ impl Game for Walk {
             self.pitch = (self.pitch - motion.y * 0.003).clamp(-1.4, 1.4);
         }
 
-        let fog = runity::scene_fog(&self.live.scene().fog);
+        let fog = runity::scene_fog(&self.live.scene().fog());
         let camera = Camera {
             position: self.eye,
             target: self.eye + self.forward(),
@@ -162,7 +162,7 @@ impl Game for Walk {
         runity::build_frame(
             &self.world,
             camera,
-            runity::scene_lighting(&self.live.scene().sun),
+            runity::scene_lighting(&self.live.scene().sun()),
             fog,
         )
     }

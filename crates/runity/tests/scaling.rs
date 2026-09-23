@@ -26,43 +26,47 @@ const MOST: f64 = 30.0;
 fn scene(n: usize) -> Scene {
     let side = (n as f32).sqrt().ceil() as usize;
     let mut scene = Scene::default();
-    scene.entities.push(EntityDesc {
-        id: EntityId::from_raw(1),
-        name: "floor".into(),
-        model: "builtin:plane".into(),
-        body: Body::Static,
-        collider: Collider::Box {
-            half: glam::Vec3::new(0.5, 0.01, 0.5),
-            center: glam::Vec3::ZERO,
-        },
-        transform: runity::Transform {
-            scale: glam::Vec3::new(side as f32 * 2.0 + 4.0, 1.0, side as f32 * 2.0 + 4.0),
-            ..Default::default()
-        },
-        ..EntityDesc::default()
-    });
-    for i in 0..n - 1 {
-        let falling = i % 10 == 0;
-        scene.entities.push(EntityDesc {
-            id: EntityId::from_raw(i as u64 + 2),
-            name: format!("crate {i}"),
-            model: "builtin:cube".into(),
-            material: MaterialRef::Named("bark".into()),
-            body: if falling { Body::Dynamic } else { Body::Static },
-            collider: Collider::Box {
-                half: glam::Vec3::splat(0.5),
-                center: glam::Vec3::ZERO,
-            },
+    scene.entities.push(
+        EntityDesc {
+            id: EntityId::from_raw(1),
+            name: "floor".into(),
             transform: runity::Transform {
-                position: glam::Vec3::new(
-                    (i % side) as f32 * 2.0 - side as f32,
-                    if falling { 3.0 } else { 0.5 },
-                    (i / side) as f32 * 2.0 - side as f32,
-                ),
+                scale: glam::Vec3::new(side as f32 * 2.0 + 4.0, 1.0, side as f32 * 2.0 + 4.0),
                 ..Default::default()
             },
             ..EntityDesc::default()
-        });
+        }
+        .with(runity::scene::ModelRef("builtin:plane".into()))
+        .with(Body::Static)
+        .with(Collider::Box {
+            half: glam::Vec3::new(0.5, 0.01, 0.5),
+            center: glam::Vec3::ZERO,
+        }),
+    );
+    for i in 0..n - 1 {
+        let falling = i % 10 == 0;
+        scene.entities.push(
+            EntityDesc {
+                id: EntityId::from_raw(i as u64 + 2),
+                name: format!("crate {i}"),
+                transform: runity::Transform {
+                    position: glam::Vec3::new(
+                        (i % side) as f32 * 2.0 - side as f32,
+                        if falling { 3.0 } else { 0.5 },
+                        (i / side) as f32 * 2.0 - side as f32,
+                    ),
+                    ..Default::default()
+                },
+                ..EntityDesc::default()
+            }
+            .with(runity::scene::ModelRef("builtin:cube".into()))
+            .with(MaterialRef::Named("bark".into()))
+            .with(if falling { Body::Dynamic } else { Body::Static })
+            .with(Collider::Box {
+                half: glam::Vec3::splat(0.5),
+                center: glam::Vec3::ZERO,
+            }),
+        );
     }
     scene
 }

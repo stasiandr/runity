@@ -461,7 +461,7 @@ impl shell::Game for Game {
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
-            .unwrap_or_else(|| runity::scene_camera(&scene.view));
+            .unwrap_or_else(|| runity::scene_camera(&scene.view()));
         // While players gather — joining, or in the kitchen before the doors
         // open — the camera tours it.
         if let Some(Err(problem)) = self.tour.poll(ctx.time.delta()) {

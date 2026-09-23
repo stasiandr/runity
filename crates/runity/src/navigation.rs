@@ -553,18 +553,18 @@ mod tests {
     fn solid(name: &str, position: Vec3, half: Vec3, collider: Option<Collider>) -> EntityDesc {
         EntityDesc {
             name: name.into(),
-            model: "m".into(),
             transform: Transform {
                 position,
                 ..Transform::default()
             },
-            body: Body::Static,
-            collider: collider.unwrap_or(Collider::Box {
-                half,
-                center: Vec3::ZERO,
-            }),
             ..EntityDesc::default()
         }
+        .with(crate::scene::ModelRef("m".into()))
+        .with(Body::Static)
+        .with(collider.unwrap_or(Collider::Box {
+            half,
+            center: Vec3::ZERO,
+        }))
     }
 
     fn baked(entities: Vec<EntityDesc>) -> NavGrid {

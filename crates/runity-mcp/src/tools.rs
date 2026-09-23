@@ -1450,10 +1450,10 @@ fn tree(server: &mut Server) -> Result<String, String> {
         let _ = write!(out, "{}{} {:?}", "  ".repeat(depth), desc.id, desc.name);
         if !desc.prefab.is_empty() {
             let _ = write!(out, " prefab={}", desc.prefab);
-        } else if !desc.model.is_empty() {
-            let _ = write!(out, " model={}", desc.model);
+        } else if !desc.model().is_empty() {
+            let _ = write!(out, " model={}", desc.model());
         }
-        match &desc.material {
+        match &desc.material_ref() {
             MaterialRef::Named(name) => {
                 let _ = write!(out, " material={name}");
             }
@@ -1471,8 +1471,8 @@ fn tree(server: &mut Server) -> Result<String, String> {
         if t.scale != Vec3::ONE {
             let _ = write!(out, " scale {}", triple(t.scale));
         }
-        if desc.body != Body::None {
-            let _ = write!(out, " body={:?}", desc.body);
+        if desc.body() != Body::None {
+            let _ = write!(out, " body={:?}", desc.body());
         }
         for (name, value) in &desc.components {
             let _ = write!(out, " {name}={}", value.get_ron());
@@ -1501,7 +1501,7 @@ fn tree(server: &mut Server) -> Result<String, String> {
             "  ".repeat(depth),
             desc.id,
             desc.name,
-            desc.model,
+            desc.model(),
             triple(desc.transform.position)
         );
         for child in &desc.children {
@@ -1576,13 +1576,13 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.name = name;
     }
     if let Some(model) = optional_string(args, "model")? {
-        desc.model = model.into();
+        desc.set_part(&runity::scene::ModelRef(model.into()));
     }
     if let Some(material) = optional_string(args, "material")? {
-        desc.material = MaterialRef::Named(material.into());
+        desc.set_part(&MaterialRef::Named(material.into()));
     }
     if let Some(color) = optional_string(args, "color")? {
-        desc.material = MaterialRef::Inline(hex(&color)?);
+        desc.set_part(&MaterialRef::Inline(hex(&color)?));
     }
     if let Some(v) = optional_vec3(args, "position")? {
         desc.transform.position = v;
@@ -1594,80 +1594,106 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.transform.scale = v;
     }
     if let Some(body) = optional_string(args, "body")? {
-        desc.body = ron::from_str::<Body>(&body).map_err(|_| {
+        desc.set_part(&ron::from_str::<Body>(&body).map_err(|_| {
             format!("body is None, Static, Dynamic, Kinematic or Trigger, not {body}")
-        })?;
+        })?);
     }
     if let Some(collider) = optional_string(args, "collider")? {
-        desc.collider =
-            ron::from_str::<Collider>(&collider).map_err(|e| format!("collider: {e}"))?;
+        desc.set_part(&ron::from_str::<Collider>(&collider).map_err(|e| format!("collider: {e}"))?);
     }
     if let Some(camera) = optional_string(args, "camera")? {
-        desc.camera = if camera.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::scene::Lens>(&camera)
-                    .map_err(|e| format!("camera: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if camera.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Lens>(&camera)
+                        .map_err(|e| format!("camera: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(route) = optional_string(args, "route")? {
-        desc.route = if route.trim() == "None" {
-            None
-        } else {
-            Some(ron::from_str::<runity::scene::Route>(&route).map_err(|e| format!("route: {e}"))?)
-        };
+        desc.set_part_opt(
+            (if route.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Route>(&route)
+                        .map_err(|e| format!("route: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(decal) = optional_string(args, "decal")? {
-        desc.decal = if decal.trim() == "None" {
-            None
-        } else {
-            Some(ron::from_str::<runity::scene::Decal>(&decal).map_err(|e| format!("decal: {e}"))?)
-        };
+        desc.set_part_opt(
+            (if decal.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Decal>(&decal)
+                        .map_err(|e| format!("decal: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(prints) = optional_string(args, "footprints")? {
-        desc.footprints = if prints.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::footprints::Footprints>(&prints)
-                    .map_err(|e| format!("footprints: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if prints.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::footprints::Footprints>(&prints)
+                        .map_err(|e| format!("footprints: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(ground) = optional_string(args, "terrain")? {
-        desc.terrain = if ground.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::terrain::Terrain>(&ground)
-                    .map_err(|e| format!("terrain: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if ground.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::terrain::Terrain>(&ground)
+                        .map_err(|e| format!("terrain: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(probe) = optional_string(args, "reflection_probe")? {
-        desc.reflection_probe = if probe.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::scene::Probe>(&probe)
-                    .map_err(|e| format!("reflection_probe: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if probe.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Probe>(&probe)
+                        .map_err(|e| format!("reflection_probe: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(sound) = optional_string(args, "sound")? {
-        desc.sound = if sound.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::scene::SoundSource>(&sound)
-                    .map_err(|e| format!("sound: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if sound.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::SoundSource>(&sound)
+                        .map_err(|e| format!("sound: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(animator) = optional_string(args, "animator")? {
-        desc.animator = animator.trim().to_string();
+        desc.set_part(&runity::scene::AnimatorRef(animator.trim().to_string()));
     }
     if let Some(inactive) = args.get("inactive") {
         desc.inactive = inactive
@@ -1675,32 +1701,44 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
             .ok_or_else(|| "inactive is true or false".to_string())?;
     }
     if let Some(particles) = optional_string(args, "particles")? {
-        desc.particles = if particles.trim() == "None" {
-            None
-        } else {
-            Some(
-                ron::from_str::<runity::scene::Emitter>(&particles)
-                    .map_err(|e| format!("particles: {e}"))?,
-            )
-        };
+        desc.set_part_opt(
+            (if particles.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Emitter>(&particles)
+                        .map_err(|e| format!("particles: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(light) = optional_string(args, "light")? {
-        desc.light = if light.trim() == "None" {
-            None
-        } else {
-            Some(ron::from_str::<runity::scene::Light>(&light).map_err(|e| format!("light: {e}"))?)
-        };
+        desc.set_part_opt(
+            (if light.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<runity::scene::Light>(&light)
+                        .map_err(|e| format!("light: {e}"))?,
+                )
+            })
+            .as_ref(),
+        );
     }
     if let Some(layer) = optional_string(args, "layer")? {
-        desc.layer = layer;
+        desc.set_part(&runity::scene::LayerName(layer));
     }
     if let Some(physics) = optional_string(args, "physics")? {
-        desc.physics = ron::from_str::<runity::scene::BodyProps>(&physics)
-            .map_err(|e| format!("physics: {e}"))?;
+        desc.set_part(
+            &ron::from_str::<runity::scene::BodyProps>(&physics)
+                .map_err(|e| format!("physics: {e}"))?,
+        );
     }
     if let Some(joint) = optional_string(args, "joint")? {
-        desc.joint =
-            ron::from_str::<runity::scene::Joint>(&joint).map_err(|e| format!("joint: {e}"))?;
+        desc.set_part(
+            &ron::from_str::<runity::scene::Joint>(&joint).map_err(|e| format!("joint: {e}"))?,
+        );
     }
     match args.get("components") {
         None | Some(Value::Null) => {}
@@ -1831,7 +1869,7 @@ fn simulate(server: &mut Server, args: &Value) -> Answer {
         .scene()
         .flatten()
         .into_iter()
-        .filter(|(desc, _)| desc.body != Body::None)
+        .filter(|(desc, _)| desc.body() != Body::None)
         .map(|(desc, _)| (desc.id, desc.name.clone()))
         .collect();
     session.play();

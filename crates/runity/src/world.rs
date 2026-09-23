@@ -225,8 +225,8 @@ fn animates(desc: &EntityDesc) -> crate::motion::Animates {
     let mut parts = vec![(String::new(), desc.id)];
     walk(desc, "", &mut parts);
     crate::motion::Animates {
-        graph: desc.animator.clone(),
-        model: desc.model.clone(),
+        graph: desc.animator().clone(),
+        model: desc.model().clone(),
         parts,
     }
 }
@@ -296,8 +296,8 @@ pub fn texture_views(
             let mut frame = build_frame_where(
                 world,
                 camera,
-                scene_lighting(&scene.sun),
-                scene_fog(&scene.fog),
+                scene_lighting(&scene.sun()),
+                scene_fog(&scene.fog()),
                 |line| line.is_none_or(|id| !hidden.contains(&id)),
             );
             scene_look(&mut frame, scene);
@@ -574,65 +574,65 @@ fn spawn_one(
     let entity = world.spawn((
         desc.transform,
         WorldTransform(world_matrix),
-        Physics(desc.body),
-        Shape(desc.collider),
+        Physics(desc.body()),
+        Shape(desc.collider()),
         SceneId(desc.id),
     ));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
     }
-    if !desc.joint.is_none() {
-        let _ = world.insert_one(entity, Jointed(desc.joint));
+    if !desc.joint().is_none() {
+        let _ = world.insert_one(entity, Jointed(desc.joint()));
     }
-    if let Some(force) = desc.joint_break {
+    if let Some(force) = desc.joint_break() {
         let _ = world.insert_one(entity, JointBreak(force));
     }
-    if !desc.bone.is_empty() {
-        let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
+    if !desc.bone().is_empty() {
+        let _ = world.insert_one(entity, OnBone(desc.bone().clone()));
     }
-    if !desc.physics.is_default() {
-        let _ = world.insert_one(entity, Props(desc.physics));
+    if !desc.physics().is_default() {
+        let _ = world.insert_one(entity, Props(desc.physics()));
     }
-    if !desc.layer.is_empty() {
-        let _ = world.insert_one(entity, Layer(desc.layer.clone()));
+    if !desc.layer().is_empty() {
+        let _ = world.insert_one(entity, Layer(desc.layer().clone()));
     }
-    if let Some(lens) = desc.camera {
+    if let Some(lens) = desc.camera() {
         let _ = world.insert_one(entity, CameraLens(lens));
     }
-    if let Some(light) = desc.light {
+    if let Some(light) = desc.light() {
         let _ = world.insert_one(entity, LightSource(light));
     }
-    if let Some(probe) = desc.reflection_probe {
+    if let Some(probe) = desc.reflection_probe() {
         let _ = world.insert_one(entity, ProbeBox(probe));
     }
-    if desc.bends_grass > 0.0 {
-        let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
+    if desc.bends_grass() > 0.0 {
+        let _ = world.insert_one(entity, BendsGrass(desc.bends_grass()));
     }
-    if let Some(prints) = desc.footprints {
+    if let Some(prints) = desc.footprints() {
         let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
     }
-    if let Some(volume) = desc.post_volume {
+    if let Some(volume) = desc.post_volume() {
         let _ = world.insert_one(entity, PostVolumeBox(volume));
     }
-    if let Some(picture) = &desc.render_texture {
+    if let Some(picture) = &desc.render_texture() {
         let _ = world.insert_one(entity, ToTexture(picture.clone()));
     }
-    if let Some(sound) = &desc.sound {
+    if let Some(sound) = &desc.sound() {
         let _ = world.insert_one(entity, Sounding(sound.clone()));
     }
-    if !desc.animator.is_empty() {
+    if !desc.animator().is_empty() {
         let _ = world.insert_one(entity, animates(desc));
     }
     if desc.inactive {
         let _ = world.insert_one(entity, Inactive);
     }
-    if let Some(route) = &desc.route {
+    if let Some(route) = &desc.route() {
         let _ = world.insert_one(
             entity,
             crate::routes::Travelling::new(route.clone(), desc.transform.position),
         );
     }
-    if let Some(emitter) = &desc.particles {
+    if let Some(emitter) = &desc.particles() {
         if let Some(emitting) = emitting(emitter, resolve, palette) {
             let _ = world.insert_one(entity, emitting);
         }
@@ -674,7 +674,7 @@ pub(crate) fn dress(
     palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
-    match desc.decal {
+    match desc.decal() {
         Some(decal) => {
             let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
         }
@@ -684,7 +684,7 @@ pub(crate) fn dress(
     }
     // Ground made from its numbers: its mesh comes when it is first drawn
     // (`terrain::upload_terrains`), and again only if they changed.
-    if let Some(terrain) = desc.terrain {
+    if let Some(terrain) = desc.terrain() {
         let same = world
             .get::<&crate::terrain::Relief>(entity)
             .is_ok_and(|r| r.terrain == terrain);
@@ -698,11 +698,11 @@ pub(crate) fn dress(
     let _ = world.remove_one::<crate::terrain::Relief>(entity);
     // No model is nothing to draw — a probe, a decal, a light, an empty to
     // hang children on — not a model that could not be found.
-    if desc.model.is_empty() {
+    if desc.model().is_empty() {
         let _ = world.remove::<(Model, Surface)>(entity);
         return;
     }
-    match resolve(&desc.model) {
+    match resolve(&desc.model()) {
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
             let _ = world.insert(entity, (Model(mesh), surface));
@@ -711,7 +711,7 @@ pub(crate) fn dress(
             let _ = world.remove::<(Model, Surface)>(entity);
             missing.push(Unresolved {
                 entity_name: desc.name.clone(),
-                model: desc.model.to_string(),
+                model: desc.model().to_string(),
             });
         }
     }
@@ -901,21 +901,23 @@ impl Patch<'_> {
             changed = true;
         }
         if was.is_none_or(|(old, _)| {
-            old.model != desc.model || old.material != desc.material || old.decal != desc.decal
+            old.model() != desc.model()
+                || old.material_ref() != desc.material_ref()
+                || old.decal() != desc.decal()
         }) {
             dress(desc, entity, world, resolve, palette, &mut self.out.missing);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.body != desc.body) {
-            let _ = world.insert_one(entity, Physics(desc.body));
+        if was.is_none_or(|(old, _)| old.body() != desc.body()) {
+            let _ = world.insert_one(entity, Physics(desc.body()));
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.collider != desc.collider) {
-            let _ = world.insert_one(entity, Shape(desc.collider));
+        if was.is_none_or(|(old, _)| old.collider() != desc.collider()) {
+            let _ = world.insert_one(entity, Shape(desc.collider()));
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.route != desc.route) {
-            match &desc.route {
+        if was.is_none_or(|(old, _)| old.route() != desc.route()) {
+            match &desc.route() {
                 Some(route) => {
                     let _ = world.insert_one(
                         entity,
@@ -928,12 +930,12 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.particles != desc.particles) {
+        if was.is_none_or(|(old, _)| old.particles() != desc.particles()) {
             let running = world
                 .get::<&mut crate::particles::Emitting>(entity)
                 .ok()
                 .map(|mut e| {
-                    if let Some(emitter) = &desc.particles {
+                    if let Some(emitter) = &desc.particles() {
                         // The knobs change; what is in the air stays.
                         if let Some(fresh) = emitting(emitter, resolve, palette) {
                             e.mesh = fresh.mesh;
@@ -942,7 +944,7 @@ impl Patch<'_> {
                         e.emitter = emitter.clone();
                     }
                 });
-            match (&desc.particles, running) {
+            match (&desc.particles(), running) {
                 (Some(emitter), None) => {
                     if let Some(emitting) = emitting(emitter, resolve, palette) {
                         let _ = world.insert_one(entity, emitting);
@@ -955,8 +957,8 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.light != desc.light) {
-            match desc.light {
+        if was.is_none_or(|(old, _)| old.light() != desc.light()) {
+            match desc.light() {
                 Some(light) => {
                     let _ = world.insert_one(entity, LightSource(light));
                 }
@@ -970,17 +972,17 @@ impl Patch<'_> {
             set_active(world, entity, !desc.inactive);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.animator != desc.animator) {
+        if was.is_none_or(|(old, _)| old.animator() != desc.animator()) {
             let _ = world.remove_one::<crate::motion::Moving>(entity);
-            if desc.animator.is_empty() {
+            if desc.animator().is_empty() {
                 let _ = world.remove_one::<crate::motion::Animates>(entity);
             } else {
                 let _ = world.insert_one(entity, animates(desc));
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.sound != desc.sound) {
-            match &desc.sound {
+        if was.is_none_or(|(old, _)| old.sound() != desc.sound()) {
+            match &desc.sound() {
                 Some(sound) => {
                     let _ = world.insert_one(entity, Sounding(sound.clone()));
                 }
@@ -990,10 +992,10 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.footprints != desc.footprints) {
+        if was.is_none_or(|(old, _)| old.footprints() != desc.footprints()) {
             // Retuned, it starts a fresh trail: the old prints were made
             // by the old settings.
-            match desc.footprints {
+            match desc.footprints() {
                 Some(prints) => {
                     let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
                 }
@@ -1003,16 +1005,16 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.bends_grass != desc.bends_grass) {
-            if desc.bends_grass > 0.0 {
-                let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
+        if was.is_none_or(|(old, _)| old.bends_grass() != desc.bends_grass()) {
+            if desc.bends_grass() > 0.0 {
+                let _ = world.insert_one(entity, BendsGrass(desc.bends_grass()));
             } else {
                 let _ = world.remove_one::<BendsGrass>(entity);
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
-            match &desc.render_texture {
+        if was.is_none_or(|(old, _)| old.render_texture() != desc.render_texture()) {
+            match &desc.render_texture() {
                 Some(picture) => {
                     let _ = world.insert_one(entity, ToTexture(picture.clone()));
                 }
@@ -1022,8 +1024,8 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.post_volume != desc.post_volume) {
-            match desc.post_volume {
+        if was.is_none_or(|(old, _)| old.post_volume() != desc.post_volume()) {
+            match desc.post_volume() {
                 Some(volume) => {
                     let _ = world.insert_one(entity, PostVolumeBox(volume));
                 }
@@ -1033,8 +1035,8 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.reflection_probe != desc.reflection_probe) {
-            match desc.reflection_probe {
+        if was.is_none_or(|(old, _)| old.reflection_probe() != desc.reflection_probe()) {
+            match desc.reflection_probe() {
                 Some(probe) => {
                     let _ = world.insert_one(entity, ProbeBox(probe));
                 }
@@ -1044,8 +1046,8 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.camera != desc.camera) {
-            match desc.camera {
+        if was.is_none_or(|(old, _)| old.camera() != desc.camera()) {
+            match desc.camera() {
                 Some(lens) => {
                     let _ = world.insert_one(entity, CameraLens(lens));
                 }
@@ -1055,42 +1057,42 @@ impl Patch<'_> {
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.layer != desc.layer) {
-            if desc.layer.is_empty() {
+        if was.is_none_or(|(old, _)| old.layer() != desc.layer()) {
+            if desc.layer().is_empty() {
                 let _ = world.remove_one::<Layer>(entity);
             } else {
-                let _ = world.insert_one(entity, Layer(desc.layer.clone()));
+                let _ = world.insert_one(entity, Layer(desc.layer().clone()));
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.physics != desc.physics) {
-            if desc.physics.is_default() {
+        if was.is_none_or(|(old, _)| old.physics() != desc.physics()) {
+            if desc.physics().is_default() {
                 let _ = world.remove_one::<Props>(entity);
             } else {
-                let _ = world.insert_one(entity, Props(desc.physics));
+                let _ = world.insert_one(entity, Props(desc.physics()));
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.joint != desc.joint) {
-            if desc.joint.is_none() {
+        if was.is_none_or(|(old, _)| old.joint() != desc.joint()) {
+            if desc.joint().is_none() {
                 let _ = world.remove_one::<Jointed>(entity);
             } else {
-                let _ = world.insert_one(entity, Jointed(desc.joint));
+                let _ = world.insert_one(entity, Jointed(desc.joint()));
             }
             // A joint set anew is whole again.
             let _ = world.remove_one::<JointBroken>(entity);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.bone != desc.bone) {
-            if desc.bone.is_empty() {
+        if was.is_none_or(|(old, _)| old.bone() != desc.bone()) {
+            if desc.bone().is_empty() {
                 let _ = world.remove_one::<OnBone>(entity);
             } else {
-                let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
+                let _ = world.insert_one(entity, OnBone(desc.bone().clone()));
             }
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.joint_break != desc.joint_break) {
-            match desc.joint_break {
+        if was.is_none_or(|(old, _)| old.joint_break() != desc.joint_break()) {
+            match desc.joint_break() {
                 Some(force) => {
                     let _ = world.insert_one(entity, JointBreak(force));
                 }
@@ -1332,8 +1334,8 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
     let mut frame = build_frame(
         world,
         camera,
-        scene_lighting(&scene.sun),
-        scene_fog(&scene.fog),
+        scene_lighting(&scene.sun()),
+        scene_fog(&scene.fog()),
     );
     scene_look(&mut frame, scene);
     post_volumes(&mut frame, world);
@@ -1343,28 +1345,28 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
 
 /// Put a scene's sky and post-processing on a frame built some other way.
 pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
-    if let Some(sky) = scene.sky {
+    if let Some(sky) = scene.sky() {
         frame.sky = sky;
     }
-    if let Some(post) = scene.post {
+    if let Some(post) = scene.post() {
         frame.post = post;
     }
-    if let Some(ambient_occlusion) = scene.ambient_occlusion {
+    if let Some(ambient_occlusion) = scene.ambient_occlusion() {
         frame.ambient_occlusion = ambient_occlusion;
     }
-    if let Some(ray_tracing) = scene.ray_tracing {
+    if let Some(ray_tracing) = scene.ray_tracing() {
         frame.ray_tracing = ray_tracing;
     }
-    if let Some(fog) = scene.volumetric_fog {
+    if let Some(fog) = scene.volumetric_fog() {
         frame.volumetric_fog = fog;
     }
-    if let Some(wind) = scene.wind {
+    if let Some(wind) = scene.wind() {
         frame.wind = wind;
     }
-    if let Some(weather) = scene.weather {
+    if let Some(weather) = scene.weather() {
         frame.weather = weather;
     }
-    if let Some(ssr) = scene.screen_space_reflections {
+    if let Some(ssr) = scene.screen_space_reflections() {
         frame.screen_space_reflections = ssr;
     }
 }
@@ -1821,40 +1823,20 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
-            camera: None,
-            spline: None,
-            along: None,
-            light: None,
-            particles: None,
-            reflection_probe: None,
-            decal: None,
-            footprints: None,
-            terrain: None,
-            bends_grass: 0.0,
-            route: None,
-            layer: Default::default(),
-            physics: Default::default(),
-            joint: Default::default(),
-            joint_break: None,
-            bone: String::new(),
-            post_volume: None,
-            render_texture: None,
-            sound: None,
-            animator: String::new(),
+            parts: Default::default(),
             in_part: None,
             inactive: false,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
             name: String::new(),
-            model: "m".into(),
             prefab: Default::default(),
             transform: Transform::default(),
-            material: Default::default(),
-            body: Body::None,
-            collider: crate::scene::Collider::None,
             children: Vec::new(),
         }
+        .with(crate::scene::ModelRef("m".into()))
+        .with(Body::None)
+        .with(crate::scene::Collider::None)
     }
 
     fn scene_with(models: &[&str]) -> Scene {
@@ -1862,43 +1844,25 @@ mod tests {
             entities: models
                 .iter()
                 .enumerate()
-                .map(|(i, model)| EntityDesc {
-                    camera: None,
-                    spline: None,
-                    along: None,
-                    light: None,
-                    particles: None,
-                    reflection_probe: None,
-                    decal: None,
-                    footprints: None,
-                    terrain: None,
-                    bends_grass: 0.0,
-                    route: None,
-                    layer: Default::default(),
-                    physics: Default::default(),
-                    joint: Default::default(),
-                    joint_break: None,
-                    bone: String::new(),
-                    post_volume: None,
-                    render_texture: None,
-                    sound: None,
-                    animator: String::new(),
-                    in_part: None,
-                    inactive: false,
-                    overrides: Default::default(),
-                    components: Default::default(),
-                    id: Default::default(),
-                    name: format!("thing {i}"),
-                    model: (*model).into(),
-                    prefab: Default::default(),
-                    transform: Transform {
-                        position: Vec3::new(i as f32, 0.0, 0.0),
-                        ..Default::default()
-                    },
-                    material: Default::default(),
-                    body: Body::Static,
-                    collider: crate::scene::Collider::None,
-                    children: Vec::new(),
+                .map(|(i, model)| {
+                    EntityDesc {
+                        parts: Default::default(),
+                        in_part: None,
+                        inactive: false,
+                        overrides: Default::default(),
+                        components: Default::default(),
+                        id: Default::default(),
+                        name: format!("thing {i}"),
+                        prefab: Default::default(),
+                        transform: Transform {
+                            position: Vec3::new(i as f32, 0.0, 0.0),
+                            ..Default::default()
+                        },
+                        children: Vec::new(),
+                    }
+                    .with(crate::scene::ModelRef((*model).into()))
+                    .with(Body::Static)
+                    .with(crate::scene::Collider::None)
                 })
                 .collect(),
             ..Default::default()
@@ -1932,22 +1896,22 @@ mod tests {
         let scene = Scene {
             entities: vec![EntityDesc {
                 name: "cart".into(),
-                model: "m".into(),
                 transform: Transform {
                     position: Vec3::new(10.0, 0.0, 0.0),
                     ..Default::default()
                 },
                 children: vec![EntityDesc {
                     name: "wheel".into(),
-                    model: "m".into(),
                     transform: Transform {
                         position: Vec3::new(1.0, 0.0, 0.0),
                         ..Default::default()
                     },
                     ..blank()
-                }],
+                }
+                .with(crate::scene::ModelRef("m".into()))],
                 ..blank()
-            }],
+            }
+            .with(crate::scene::ModelRef("m".into()))],
             ..Default::default()
         };
         let mut world = World::new();
@@ -1969,22 +1933,22 @@ mod tests {
         let scene = Scene {
             entities: vec![EntityDesc {
                 name: "turntable".into(),
-                model: "m".into(),
                 transform: Transform {
                     rotation_deg: Vec3::new(0.0, 90.0, 0.0),
                     ..Default::default()
                 },
                 children: vec![EntityDesc {
                     name: "arm".into(),
-                    model: "m".into(),
                     transform: Transform {
                         position: Vec3::new(2.0, 0.0, 0.0),
                         ..Default::default()
                     },
                     ..blank()
-                }],
+                }
+                .with(crate::scene::ModelRef("m".into()))],
                 ..blank()
-            }],
+            }
+            .with(crate::scene::ModelRef("m".into()))],
             ..Default::default()
         };
         let mut world = World::new();
@@ -2006,27 +1970,27 @@ mod tests {
         let scene = Scene {
             entities: vec![EntityDesc {
                 name: "root".into(),
-                model: "m".into(),
                 children: vec![EntityDesc {
                     name: "child".into(),
-                    model: "m".into(),
                     transform: Transform {
                         position: Vec3::new(0.0, 3.0, 0.0),
                         ..Default::default()
                     },
                     children: vec![EntityDesc {
                         name: "grandchild".into(),
-                        model: "m".into(),
                         transform: Transform {
                             position: Vec3::new(0.0, 3.0, 0.0),
                             ..Default::default()
                         },
                         ..blank()
-                    }],
+                    }
+                    .with(crate::scene::ModelRef("m".into()))],
                     ..blank()
-                }],
+                }
+                .with(crate::scene::ModelRef("m".into()))],
                 ..blank()
-            }],
+            }
+            .with(crate::scene::ModelRef("m".into()))],
             ..Default::default()
         };
         let mut world = World::new();
@@ -2058,27 +2022,27 @@ mod tests {
         let scene = Scene {
             entities: vec![EntityDesc {
                 name: "root".into(),
-                model: "m".into(),
                 children: vec![EntityDesc {
                     name: "broken".into(),
-                    model: "missing".into(),
                     transform: Transform {
                         position: Vec3::new(4.0, 0.0, 0.0),
                         ..Default::default()
                     },
                     children: vec![EntityDesc {
                         name: "fine".into(),
-                        model: "m".into(),
                         transform: Transform {
                             position: Vec3::new(1.0, 0.0, 0.0),
                             ..Default::default()
                         },
                         ..blank()
-                    }],
+                    }
+                    .with(crate::scene::ModelRef("m".into()))],
                     ..blank()
-                }],
+                }
+                .with(crate::scene::ModelRef("missing".into()))],
                 ..blank()
-            }],
+            }
+            .with(crate::scene::ModelRef("m".into()))],
             ..Default::default()
         };
         let mut world = World::new();

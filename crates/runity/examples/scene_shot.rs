@@ -138,17 +138,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("{}: no model named {}", m.entity_name, m.model);
     }
 
-    let lighting = runity::scene_lighting(&scene.sun);
+    let lighting = runity::scene_lighting(&scene.sun());
     let fog = FogSettings {
-        color: Vec3::from_array(scene.fog.color),
-        start: scene.fog.start,
-        end: scene.fog.end,
+        color: Vec3::from_array(scene.fog().color),
+        start: scene.fog().start,
+        end: scene.fog().end,
         ..Default::default()
     };
     // The scene says where it is looked at from, so two renders of the same
     // file are the same picture — and so an agent can frame a shot by
     // editing a line rather than by patching this file.
-    let camera = runity::scene_camera(&scene.view);
+    let camera = runity::scene_camera(&scene.view());
 
     runity::terrain::upload_terrains(&mut world, &gpu, &mut renderer);
     for problem in

@@ -6,9 +6,9 @@
 //! list until each has its Rust type.
 
 mod animator;
-mod motion;
 mod look;
 mod material;
+mod motion;
 mod scene;
 pub mod yaml;
 
@@ -431,13 +431,13 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             ..Default::default()
         };
         if let Some(sun) = scene::sun(&text) {
-            scene.sun = sun;
+            scene.set_part(&sun);
         }
         // How it looks: its fog, and its global Volume's grade.
         if let Some(fog) = look::fog(&text) {
-            scene.fog = fog;
+            scene.set_part(&fog);
         }
-        scene.post = look::post(&unity, &text, &mut report);
+        scene.set_part_opt((look::post(&unity, &text, &mut report)).as_ref());
         let name = &unity.names[guid];
         scene
             .save(project.scenes().join(format!("{name}.ron")))

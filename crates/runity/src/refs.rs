@@ -84,9 +84,9 @@ pub fn uses(roots: &[EntityDesc], what: &AssetRef) -> Vec<Use> {
             }
             for (part, change) in &desc.overrides {
                 let hit = match what {
-                    AssetRef::Model(name) => change.model.as_deref() == Some(name),
+                    AssetRef::Model(name) => change.model().as_deref() == Some(name),
                     AssetRef::Material(name) => change
-                        .material
+                        .material()
                         .as_ref()
                         .is_some_and(|m| names_material(m, name)),
                     AssetRef::Prefab(_) => false,
@@ -119,18 +119,22 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
                     // An instance draws its prefab, so its own `model` is
                     // ignored; it is still a name in the file, and leaving
                     // it stale would only confuse the next reader.
-                    if desc.model == *name {
+                    if desc.model() == *name {
                         // The same asset under its new name: the ID stays.
-                        desc.model.name = to.to_string();
+                        let mut model = desc.model();
+                        model.name = to.to_string();
+                        desc.set_model(model);
                         count += 1;
                     }
                 }
                 AssetRef::Material(name) => {
-                    if names_material(&desc.material, name) {
+                    if names_material(&desc.material_ref(), name) {
                         // The same material under its new name: the ID stays.
-                        if let MaterialRef::Named(link) = &mut desc.material {
+                        let mut material = desc.material_ref();
+                        if let MaterialRef::Named(link) = &mut material {
                             link.name = to.to_string();
                         }
+                        desc.set_material(material);
                         count += 1;
                     }
                 }
@@ -143,20 +147,22 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
             }
             for change in desc.overrides.values_mut() {
                 match from {
-                    AssetRef::Model(name) if change.model.as_deref() == Some(name) => {
-                        if let Some(model) = change.model.as_mut() {
+                    AssetRef::Model(name) if change.model().as_deref() == Some(name) => {
+                        if let Some(mut model) = change.model() {
                             model.name = to.to_string();
+                            change.set_part(&crate::scene::ModelRef(model));
                         }
                         count += 1;
                     }
                     AssetRef::Material(name)
                         if change
-                            .material
+                            .material()
                             .as_ref()
                             .is_some_and(|m| names_material(m, name)) =>
                     {
-                        if let Some(MaterialRef::Named(link)) = change.material.as_mut() {
+                        if let Some(MaterialRef::Named(mut link)) = change.material() {
                             link.name = to.to_string();
+                            change.set_part(&MaterialRef::Named(link));
                         }
                         count += 1;
                     }
@@ -175,8 +181,8 @@ pub fn rewrite_scene(scene: &mut Scene, from: &AssetRef, to: &str) -> usize {
 
 fn fields(desc: &EntityDesc, what: &AssetRef) -> Vec<&'static str> {
     let hit = match what {
-        AssetRef::Model(name) => desc.model == *name,
-        AssetRef::Material(name) => names_material(&desc.material, name),
+        AssetRef::Model(name) => desc.model() == *name,
+        AssetRef::Material(name) => names_material(&desc.material_ref(), name),
         AssetRef::Prefab(name) => desc.prefab == *name,
     };
     match (hit, what) {
@@ -257,20 +263,20 @@ mod tests {
         let changed = rewrite_scene(&mut scene, &AssetRef::Material("stone".into()), "granite");
         assert_eq!(changed, 2);
         assert_eq!(
-            scene.find("rock").unwrap().material,
+            scene.find("rock").unwrap().material_ref(),
             MaterialRef::Named("granite".into())
         );
         assert_eq!(
-            scene.find("old rock").unwrap().material,
+            scene.find("old rock").unwrap().material_ref(),
             MaterialRef::Named("builtin:stone".into())
         );
         let part: EntityId = "00000000000000c2".parse().unwrap();
         assert_eq!(
             scene.find("fire").unwrap().overrides[&part],
             Override {
-                material: Some(MaterialRef::Named("granite".into())),
                 ..Override::default()
             }
+            .with(MaterialRef::Named("granite".into()))
         );
         assert_eq!(
             rewrite_scene(&mut scene, &AssetRef::Material("granite".into()), "stone"),
@@ -522,22 +528,49 @@ pub fn settle(
     };
     let mut stack: Vec<&mut EntityDesc> = roots.iter_mut().collect();
     while let Some(desc) = stack.pop() {
-        model(&mut desc.model, &mut changed);
-        material(&mut desc.material, &mut changed);
-        if let Some(along) = desc.along.as_mut() {
-            model(&mut along.model, &mut changed);
+        // Each field read, settled and written back only when it changed,
+        // so a line nobody touched keeps its text.
+        let before = changed;
+        let mut link = desc.model();
+        model(&mut link, &mut changed);
+        if changed != before {
+            desc.set_model(link);
         }
-        if let Some(sound) = desc.sound.as_mut() {
+        let before = changed;
+        let mut reference = desc.material_ref();
+        material(&mut reference, &mut changed);
+        if changed != before {
+            desc.set_material(reference);
+        }
+        if let Some(mut along) = desc.along() {
+            let before = changed;
+            model(&mut along.model, &mut changed);
+            if changed != before {
+                desc.set_part(&along);
+            }
+        }
+        if let Some(mut sound) = desc.sound() {
             if let Some((id, name)) = library.and_then(|l| l.find(&sound.clip, AssetKind::Sound)) {
-                changed += usize::from(sound.clip.settle(name, id));
+                if sound.clip.settle(name, id) {
+                    changed += 1;
+                    desc.set_part(&sound);
+                }
             }
         }
         for part in desc.overrides.values_mut() {
-            if let Some(link) = part.model.as_mut() {
-                model(link, &mut changed);
+            if let Some(mut link) = part.model() {
+                let before = changed;
+                model(&mut link, &mut changed);
+                if changed != before {
+                    part.set_part(&crate::scene::ModelRef(link));
+                }
             }
-            if let Some(reference) = part.material.as_mut() {
-                material(reference, &mut changed);
+            if let Some(mut reference) = part.material() {
+                let before = changed;
+                material(&mut reference, &mut changed);
+                if changed != before {
+                    part.set_part(&reference);
+                }
             }
         }
         if !desc.prefab.is_empty() {

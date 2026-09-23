@@ -35,7 +35,6 @@ pub mod components;
 pub mod crash;
 pub mod decals;
 pub mod dialogue;
-pub mod motion;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod edit;
@@ -57,10 +56,12 @@ pub mod live;
 pub mod material;
 pub mod merge;
 pub mod moods;
+pub mod motion;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
 pub mod particles;
+pub mod parts;
 pub mod party;
 pub mod perf;
 #[cfg(feature = "physics")]

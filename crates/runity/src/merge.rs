@@ -64,12 +64,8 @@ impl Conflict {
     /// there is nothing to take, such as a parent the merge had to drop.
     pub fn take_theirs(&self, scene: &mut Scene, theirs: &Scene) -> bool {
         let Some(id) = self.entity else {
-            match self.field.as_str() {
-                "view" => scene.view = theirs.view,
-                "sun" => scene.sun = theirs.sun,
-                "fog" => scene.fog = theirs.fog,
-                _ => return false,
-            }
+            // A field of the scene's look, by its name.
+            take_part(&mut scene.parts, &theirs.parts, &self.field);
             return true;
         };
         match self.field.as_str() {
@@ -93,15 +89,14 @@ impl Conflict {
                 };
                 match field {
                     "its name" => e.name = t.name.clone(),
-                    "its model" => e.model = t.model.clone(),
                     "its prefab" => e.prefab = t.prefab.clone(),
                     "its position" => e.transform.position = t.transform.position,
                     "its rotation" => e.transform.rotation_deg = t.transform.rotation_deg,
                     "its scale" => e.transform.scale = t.transform.scale,
-                    "its material" => e.material = t.material.clone(),
-                    "its body" => e.body = t.body,
-                    "its collider" => e.collider = t.collider,
                     "its overrides" => e.overrides = t.overrides.clone(),
+                    other if other.starts_with("its ") && !other.starts_with("its component `") => {
+                        take_part(&mut e.parts, &t.parts, &other["its ".len()..]);
+                    }
                     other => {
                         let Some(name) = other
                             .strip_prefix("its component `")
@@ -178,6 +173,31 @@ struct Merger<'a> {
 }
 
 impl Merger<'_> {
+    /// [`Merger::pick`] for a field's text: shown as written, and as
+    /// "nothing" where a side has none.
+    fn pick_text(
+        &mut self,
+        field: &str,
+        base: Option<&str>,
+        ours: Option<&str>,
+        theirs: Option<&str>,
+    ) -> Option<String> {
+        if ours == theirs || theirs == base {
+            return ours.map(str::to_string);
+        }
+        if ours == base {
+            return theirs.map(str::to_string);
+        }
+        self.conflicts.push(Conflict {
+            entity: self.entity,
+            entity_name: self.name.to_string(),
+            field: field.to_string(),
+            ours: ours.unwrap_or("nothing").to_string(),
+            theirs: theirs.unwrap_or("nothing").to_string(),
+        });
+        ours.map(str::to_string)
+    }
+
     /// Whichever side changed it; ours, and a conflict, if both did.
     fn pick<T: PartialEq + Clone + serde::Serialize + fmt::Debug>(
         &mut self,
@@ -213,9 +233,13 @@ pub fn merge_scenes(base: &Scene, ours: &Scene, theirs: &Scene) -> Merged {
             entity: None,
             name: "",
         };
-        scene.view = top.pick("view", &base.view, &ours.view, &theirs.view);
-        scene.sun = top.pick("sun", &base.sun, &ours.sun, &theirs.sun);
-        scene.fog = top.pick("fog", &base.fog, &ours.fog, &theirs.fog);
+        scene.parts = merge_parts(
+            &mut top,
+            |name| name.to_string(),
+            &base.parts,
+            &ours.parts,
+            &theirs.parts,
+        );
         conflicts.extend(top.conflicts);
     }
 
@@ -390,7 +414,6 @@ fn merge_entity(base: &Flat, ours: &Flat, theirs: &Flat, conflicts: &mut Vec<Con
     };
     let mut desc = o.clone();
     desc.name = m.pick("its name", &b.name, &o.name, &t.name);
-    desc.model = m.pick("its model", &b.model, &o.model, &t.model);
     desc.prefab = m.pick("its prefab", &b.prefab, &o.prefab, &t.prefab);
     desc.transform.position = m.pick(
         "its position",
@@ -410,9 +433,15 @@ fn merge_entity(base: &Flat, ours: &Flat, theirs: &Flat, conflicts: &mut Vec<Con
         &o.transform.scale,
         &t.transform.scale,
     );
-    desc.material = m.pick("its material", &b.material, &o.material, &t.material);
-    desc.body = m.pick("its body", &b.body, &o.body, &t.body);
-    desc.collider = m.pick("its collider", &b.collider, &o.collider, &t.collider);
+    // Every module field one by one, by name, as the components are: one
+    // side lighting a lamp and the other moving its sound is no conflict.
+    desc.parts = merge_parts(
+        &mut m,
+        |name| format!("its {name}"),
+        &b.parts,
+        &o.parts,
+        &t.parts,
+    );
     desc.overrides = m.pick("its overrides", &b.overrides, &o.overrides, &t.overrides);
 
     // The game's components one by one: one side adding `loot` and the
@@ -483,7 +512,7 @@ mod tests {
         let tree = merged.scene.find("tree").unwrap();
         assert_eq!(tree.transform.position.x, 5.0);
         assert_eq!(
-            merged.scene.find("rock").unwrap().material,
+            merged.scene.find("rock").unwrap().material_ref(),
             crate::scene::MaterialRef::Named("moss".into())
         );
     }
@@ -617,9 +646,54 @@ mod tests {
         assert!(position.take_theirs(&mut merged.scene, &theirs));
         assert_eq!(merged.scene.find("tree").unwrap().transform.position.z, 9.0);
         assert_eq!(
-            merged.scene.find("rock").unwrap().material,
+            merged.scene.find("rock").unwrap().material_ref(),
             crate::scene::MaterialRef::Named("bark".into()),
             "the other conflict is still ours"
         );
     }
+}
+
+/// Put theirs' field `name` in place of ours — or take ours away where
+/// theirs has none.
+fn take_part(ours: &mut crate::parts::Parts, theirs: &crate::parts::Parts, name: &str) {
+    match theirs.raw(name) {
+        Some(text) => {
+            let _ = ours.set_raw(name, text);
+        }
+        None => {
+            ours.remove(name);
+        }
+    }
+}
+
+/// Three sides' module fields merged one by one, by name and text: a field
+/// only one side changed takes that side; both changing it the same way
+/// is no conflict; both changing it differently keeps ours and says so,
+/// as `label(name)`.
+fn merge_parts(
+    m: &mut Merger,
+    label: impl Fn(&str) -> String,
+    base: &crate::parts::Parts,
+    ours: &crate::parts::Parts,
+    theirs: &crate::parts::Parts,
+) -> crate::parts::Parts {
+    let mut names: Vec<&str> = ours.names().collect();
+    for name in theirs.names().chain(base.names()) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut out = crate::parts::Parts::default();
+    for name in names {
+        let picked = m.pick_text(
+            &label(name),
+            base.raw(name),
+            ours.raw(name),
+            theirs.raw(name),
+        );
+        if let Some(text) = picked {
+            let _ = out.set_raw(name, &text);
+        }
+    }
+    out
 }

@@ -79,9 +79,9 @@ fn a_new_entity_is_added_and_a_removed_one_goes_leaving_the_rest() {
         None,
         EntityDesc {
             name: "stump".into(),
-            model: "builtin:cone".into(),
             ..EntityDesc::default()
-        },
+        }
+        .with(runity::scene::ModelRef("builtin:cone".into())),
     );
     scene.save(&path).unwrap();
 

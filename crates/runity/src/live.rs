@@ -660,8 +660,8 @@ impl LiveScene {
             .filter_map(|(entity, id, model)| {
                 let desc = self.current.get(id.0)?;
                 let material =
-                    matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n.as_str()));
-                let arrived = model.is_none() && touched.contains(desc.model.as_str());
+                    matches!(&desc.material_ref(), MaterialRef::Named(n) if touched.contains(n.as_str()));
+                let arrived = model.is_none() && touched.contains(desc.model().as_str());
                 (material || arrived).then(|| (entity, desc.clone()))
             })
             .collect();

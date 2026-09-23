@@ -97,6 +97,13 @@ pub fn check(project: &Project) -> Vec<Finding> {
         let file = relative(project, &path);
         if let Some(scene) = parse::<Scene>(&path, &file, &mut out) {
             check_entities(&scene.entities, &file, &names, &mut out);
+            check_parts(
+                &scene.parts,
+                "the scene",
+                &file,
+                &runity::scene::part_kinds(),
+                &mut out,
+            );
         }
     }
 
@@ -476,10 +483,10 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                     ),
                 ));
             }
-        } else if !entity.model.is_empty() {
-            check_model(&entity.model, &who, file, names, out);
+        } else if !entity.model().is_empty() {
+            check_model(&entity.model(), &who, file, names, out);
         }
-        if let Some(along) = &entity.along {
+        if let Some(along) = &entity.along() {
             check_model(
                 &along.model,
                 &format!("{who} (along its spline)"),
@@ -488,17 +495,20 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 out,
             );
         }
-        if !entity.animator.is_empty() && !names.animators.contains(&entity.animator) {
+        if !entity.animator().is_empty() && !names.animators.contains(&entity.animator()) {
             out.push(error(
                 file,
                 format!(
                     "{who}: animator `{}` is not a graph in animators/{}",
-                    entity.animator,
-                    suggest(&entity.animator, names.animators.iter().map(String::as_str))
+                    entity.animator(),
+                    suggest(
+                        &entity.animator(),
+                        names.animators.iter().map(String::as_str)
+                    )
                 ),
             ));
         }
-        if let Some(sound) = &entity.sound {
+        if let Some(sound) = &entity.sound() {
             let clip = &sound.clip;
             let by_id = clip.id.is_some_and(|id| names.ids.contains(&id));
             if clip.is_empty() {
@@ -543,15 +553,16 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 }
             }
         }
-        if let MaterialRef::Named(link) = &entity.material {
+        if let MaterialRef::Named(link) = &entity.material_ref() {
             // Found by its ID, whatever name the line still says.
             if !link.id.is_some_and(|id| names.ids.contains(&id)) {
                 check_material(link, &who, file, names, out);
             }
         }
-        let layers = std::iter::once(&entity.layer)
-            .chain(entity.overrides.values().filter_map(|o| o.layer.as_ref()));
-        for layer in layers.filter(|l| !l.is_empty()) {
+        let layers: Vec<String> = std::iter::once(entity.layer())
+            .chain(entity.overrides.values().filter_map(|o| o.layer()))
+            .collect();
+        for layer in layers.iter().filter(|l| !l.is_empty()) {
             if names.layers.index(layer).is_none() {
                 out.push(error(
                     file,
@@ -562,7 +573,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 ));
             }
         }
-        if let Some(to) = entity.joint.to().filter(|to| !to.is_unassigned()) {
+        if let Some(to) = entity.joint().to().filter(|to| !to.is_unassigned()) {
             if !all.contains(&to) {
                 out.push(error(
                     file,
@@ -607,6 +618,52 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 "{unnamed} entities have no id — they get one on load, and it is written on the next save from the editor"
             ),
         });
+    }
+    // Every module field on every line, and in every override: one no
+    // module of this build reads is kept as written and named here; one
+    // whose text does not fit its field is an error.
+    let kinds = runity::scene::part_kinds();
+    let mut stack: Vec<&EntityDesc> = entities.iter().rev().collect();
+    while let Some(entity) = stack.pop() {
+        stack.extend(entity.children.iter().rev());
+        let who = format!("`{}`", entity.name);
+        check_parts(&entity.parts, &who, file, &kinds, out);
+        for (part, change) in &entity.overrides {
+            check_parts(
+                &change.parts,
+                &format!("{who}, override of {part}"),
+                file,
+                &kinds,
+                out,
+            );
+        }
+    }
+}
+
+/// A line's module fields against the fields this build's modules read.
+fn check_parts(
+    parts: &runity::parts::Parts,
+    who: &str,
+    file: &str,
+    kinds: &[runity::parts::PartKind],
+    out: &mut Vec<Finding>,
+) {
+    for (name, text) in parts.iter() {
+        match kinds.iter().find(|k| k.name == name) {
+            Some(kind) => {
+                if let Err(e) = (kind.check)(text) {
+                    out.push(error(file, format!("{who}: `{name}` does not read: {e}")));
+                }
+            }
+            None => out.push(Finding {
+                severity: Severity::Warning,
+                file: file.to_string(),
+                message: format!(
+                    "{who}: `{name}` is a field no module of this build reads — kept as written; a typo, or a module switched off?{}",
+                    suggest(name, kinds.iter().map(|k| k.name))
+                ),
+            }),
+        }
     }
 }
 

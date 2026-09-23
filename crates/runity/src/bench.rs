@@ -522,30 +522,32 @@ impl Scenario {
                 position: Vec3::new(0.0, -0.5, 0.0),
                 ..Default::default()
             },
-            body: BodyKind::Static,
-            collider: Collider::Box {
-                half: Vec3::new(80.0, 0.5, 80.0),
-                center: Vec3::ZERO,
-            },
             ..Default::default()
-        }];
+        }
+        .with(BodyKind::Static)
+        .with(Collider::Box {
+            half: Vec3::new(80.0, 0.5, 80.0),
+            center: Vec3::ZERO,
+        })];
         for (i, block) in self.blocks.iter().enumerate() {
             let mut transform = Transform {
                 position: block.position,
                 ..Default::default()
             };
             transform.set_rotation(block.rotation);
-            entities.push(EntityDesc {
-                id: EntityId::from_raw(1001 + i as u64),
-                name: format!("block{i}"),
-                transform,
-                body: BodyKind::Static,
-                collider: Collider::Box {
+            entities.push(
+                EntityDesc {
+                    id: EntityId::from_raw(1001 + i as u64),
+                    name: format!("block{i}"),
+                    transform,
+                    ..Default::default()
+                }
+                .with(BodyKind::Static)
+                .with(Collider::Box {
                     half: block.size * 0.5,
                     center: Vec3::ZERO,
-                },
-                ..Default::default()
-            });
+                }),
+            );
         }
         for (i, body) in self.bodies.iter().enumerate() {
             let mut transform = Transform {
@@ -558,23 +560,23 @@ impl Scenario {
                 id: EntityId::from_raw(body.id),
                 name: body.name.into(),
                 transform,
-                body: BodyKind::Dynamic,
-                collider: Collider::Box {
-                    half: body.size * 0.5,
-                    center: Vec3::ZERO,
-                },
-                physics: BodyProps {
-                    density: body.mass / volume.max(1e-6),
-                    ..Default::default()
-                },
                 ..Default::default()
-            };
+            }
+            .with(BodyKind::Dynamic)
+            .with(Collider::Box {
+                half: body.size * 0.5,
+                center: Vec3::ZERO,
+            })
+            .with(BodyProps {
+                density: body.mass / volume.max(1e-6),
+                ..Default::default()
+            });
             for joint in self.joints.iter().filter(|j| j.body == i) {
                 let to = joint
                     .to
                     .map(|t| EntityId::from_raw(self.bodies[t].id))
                     .unwrap_or_default();
-                desc.joint = match joint.kind {
+                let made = match joint.kind {
                     JointKind::Fixed => Joint::Fixed { to },
                     JointKind::Hinge { anchor, axis } => Joint::Hinge {
                         to,
@@ -590,7 +592,8 @@ impl Scenario {
                         damping,
                     },
                 };
-                desc.joint_break = joint.breaks;
+                desc.set_part(&made);
+                desc.set_joint_break(joint.breaks);
             }
             entities.push(desc);
         }

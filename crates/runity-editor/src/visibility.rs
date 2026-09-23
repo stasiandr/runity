@@ -128,7 +128,7 @@ impl Session {
             if unseen.contains(&desc.id) {
                 continue;
             }
-            let Some((min, max)) = self.bounds_of(&desc.model) else {
+            let Some((min, max)) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             let Some(owner) = self.instanced.owner_of(desc.id) else {

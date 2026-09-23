@@ -276,7 +276,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
     let named = scene
         .flatten()
         .iter()
-        .filter(|(e, _)| !matches!(&e.material, runity::scene::MaterialRef::Inline(_)))
+        .filter(|(e, _)| !matches!(&e.material_ref(), runity::scene::MaterialRef::Inline(_)))
         .count();
     assert!(named > 0, "the reference scene names its materials");
     for (entity, _) in scene.flatten() {
