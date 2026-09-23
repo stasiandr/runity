@@ -23,12 +23,20 @@ use gpui::{
 use runity_editor::Session;
 
 /// The engine's reference scene: every builtin, no import step.
-const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
+pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
 
 /// The editor window: the Scene view, and the panels that will grow around
 /// it.
-struct Studio {
+pub struct Studio {
     scene_view: Entity<SceneView>,
+}
+
+impl Studio {
+    /// The window's contents, over a session with a document open.
+    pub fn new(session: Session, cx: &mut Context<Self>) -> Self {
+        let scene_view = cx.new(|cx| SceneView::new(session, cx));
+        Self { scene_view }
+    }
 }
 
 impl Render for Studio {
@@ -70,10 +78,7 @@ pub fn run() {
                 }),
                 ..Default::default()
             },
-            |_window, cx| {
-                let scene_view = cx.new(|cx| SceneView::new(session, cx));
-                cx.new(|_| Studio { scene_view })
-            },
+            |_window, cx| cx.new(|cx| Studio::new(session, cx)),
         );
         if let Err(error) = window {
             eprintln!("no window: {error}");
@@ -88,7 +93,7 @@ pub fn run() {
 ///
 /// The size here is a first guess: the view resizes the session to whatever
 /// the window gives it on the first frame.
-fn open(scene: &Path) -> Result<Session, String> {
+pub fn open(scene: &Path) -> Result<Session, String> {
     let mut session = Session::offscreen(1280, 720).map_err(|e| {
         format!("no renderer: {e}\nRUNITY_RENDERER and a working adapter are what this needs.")
     })?;

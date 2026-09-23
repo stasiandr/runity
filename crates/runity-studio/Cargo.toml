@@ -32,6 +32,22 @@ gpui_platform = { version = "=0.3.6", package = "gpui-pre-platform", features = 
     "runtime_shaders",
 ] }
 
+# The window drawn off-screen and read back as pixels, so that what the
+# editor looks like is something a test — or an agent — can see without a
+# screen. Only the example needs GPUI's test support; the editor itself does
+# not carry it.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui = { version = "=0.3.6", package = "gpui-pre", features = ["test-support"] }
+gpui_platform = { version = "=0.3.6", package = "gpui-pre-platform", features = [
+    "font-kit",
+    "runtime_shaders",
+    "test-support",
+] }
+
+[[example]]
+name = "shot"
+path = "examples/shot.rs"
+
 [[bin]]
 name = "runity-studio"
 path = "src/main.rs"
