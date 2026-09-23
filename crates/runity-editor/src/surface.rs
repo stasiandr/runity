@@ -32,6 +32,50 @@ impl Session {
         Ok(true)
     }
 
+    /// Drop an asset from the Project window into the view — a prefab or
+    /// a model by name — standing on whatever the pixel shows (on the
+    /// ground plane through the view's target when it shows nothing), and
+    /// select it. One undo step; its id.
+    pub fn drop_asset(&mut self, what: &str, x: u32, y: u32) -> EditResult<EntityId> {
+        self.refuse_while_playing()?;
+        let mut line = runity::EntityDesc {
+            name: what.rsplit(':').next().unwrap_or(what).to_string(),
+            ..Default::default()
+        };
+        if self.prefabs.get(what).is_some() {
+            line.prefab = what.to_string();
+        } else if self.bounds_of(what).is_some() {
+            line.model = what.to_string();
+        } else {
+            return Err(crate::EditError::Scene(format!(
+                "no prefab or model named `{what}` to place"
+            )));
+        }
+        let before = self.history.depth();
+        let id = self.add_entity(None, line)?;
+        self.select(Some(id))?;
+        if !self.place_on_surface(x, y)? {
+            // Nothing under the cursor: the level of what the view looks at.
+            let (from, direction) = self.ray(x, y);
+            let level = self.camera.target.y;
+            if direction.y.abs() > 1e-4 {
+                let t = (level - from.y) / direction.y;
+                if t > 0.0 {
+                    let at = from + direction * t;
+                    if let Some((low, high)) = self.world_bounds(id) {
+                        let bottom =
+                            Vec3::new((low.x + high.x) * 0.5, low.y, (low.z + high.z) * 0.5);
+                        let mut transform = self.transform(id).unwrap_or_default();
+                        transform.position += at - bottom;
+                        self.set_transform(id, transform)?;
+                    }
+                }
+            }
+        }
+        self.history.squash(self.history.depth() - before);
+        Ok(id)
+    }
+
     /// The same inside a handle's drag, which is already one undo step.
     pub(crate) fn surface_drag(&mut self, x: u32, y: u32) -> EditResult<bool> {
         self.refuse_while_playing()?;

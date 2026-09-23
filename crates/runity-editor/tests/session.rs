@@ -3361,3 +3361,37 @@ fn a_thumbnail_pictures_an_asset_alone_and_changes_nothing() {
     assert_eq!(session.entity_count(), count);
     assert_eq!(session.camera().position, camera.position);
 }
+
+#[test]
+fn an_asset_dropped_into_the_view_stands_where_it_was_let_go() {
+    use runity::glam::{Vec2, Vec3};
+    let scene = SCENE.replace(
+        "        (name: \"ground\", model: \"builtin:plane\", transform: (scale: (20.0, 1.0, 20.0))),",
+        "        (name: \"ground\", model: \"builtin:plane\", transform: (scale: (20.0, 1.0, 20.0)), body: Static, collider: Box(half: (0.5, 0.05, 0.5))),",
+    );
+    let Some((mut session, _)) = open_with("drop-asset", &scene) else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 8.0, 10.0), Vec3::ZERO);
+    let (w, h) = session.size();
+    let camera = session.camera();
+    let spot = Vec3::new(3.0, 0.0, 2.0);
+    let at = camera
+        .screen_point(spot, Vec2::new(w as f32, h as f32))
+        .unwrap();
+    let steps = session.undo_steps().len();
+    let cone = session
+        .drop_asset("builtin:cone", at.x as u32, at.y as u32)
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.selected(), Some(cone));
+    assert_eq!(session.entity_name(cone).as_deref(), Some("cone"));
+    let (low, high) = session.world_bounds(cone).unwrap();
+    assert!(low.y.abs() < 0.06, "on the ground: {low}");
+    let middle = (low + high) * 0.5;
+    assert!(
+        (middle.x - 3.0).abs() < 0.2 && (middle.z - 2.0).abs() < 0.2,
+        "{middle}"
+    );
+    assert!(session.drop_asset("nothing_by_that_name", 10, 10).is_err());
+}

@@ -119,6 +119,7 @@ pub fn list() -> Vec<Value> {
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
+        tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -667,6 +668,15 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .write_image(&pixels, size, size, image::ExtendedColorType::Rgba8)
                 .map_err(|e| e.to_string())?;
             Ok(vec![image(&png), text(format!("{what}, {size}x{size}"))])
+        }
+        "drop" => {
+            let what = string(args, "what")?;
+            let (x, y) = (integer(args, "x")?, integer(args, "y")?);
+            let id = server
+                .session()?
+                .drop_asset(&what, x, y)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(id.to_string())])
         }
         "hide" => {
             let ids = id_list(args)?;
