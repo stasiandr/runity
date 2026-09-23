@@ -1,10 +1,10 @@
 //! Keyboard and mouse state, rebuilt from a stream of events.
 //!
 //! The keys are the engine's own enum rather than winit's, for the same
-//! reason the renderer hides wgpu: a shell is one of several — winit today, a
-//! Swift view on macOS, a `UIViewController` on iOS — and a game written
-//! against one platform's key codes is a game that has to be rewritten for
-//! the next.
+//! reason the renderer hides wgpu: a shell is one of several — winit today,
+//! the editor's window, a `UIViewController` on iOS later — and a game
+//! written against one platform's key codes is a game that has to be
+//! rewritten for the next.
 //!
 //! State is edge-aware. "Is W held" and "was W pressed this frame" are
 //! different questions and both get asked constantly; a game that only has

@@ -1,10 +1,10 @@
 //! A desktop window and the loop that drives it.
 //!
 //! This is a convenience, not the architecture. The engine works without it —
-//! a Swift editor on macOS, a `UIViewController` on iOS and an `Activity` on
-//! Android each own their surface and drive their own loop, and all of them
-//! reach the same [`Renderer`] through the same [`Surface`]. What this module
-//! adds is the shortest way to see something move.
+//! the editor, and later a `UIViewController` on iOS and an `Activity` on
+//! Android, each own their window and drive their own loop, and the engine
+//! draws for whichever one it is handed. What this module adds is the
+//! shortest way to see something move.
 //!
 //! The loop's shape is the one a fixed-step simulation needs:
 //!

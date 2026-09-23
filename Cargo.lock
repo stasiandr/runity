@@ -2470,7 +2470,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "runity-ffi"
+name = "runity-editor"
 version = "0.1.0"
 dependencies = [
  "hecs",

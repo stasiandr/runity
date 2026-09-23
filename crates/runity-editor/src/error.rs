@@ -1,0 +1,70 @@
+//! What can go wrong in a session, as values rather than a string on the
+//! side.
+//!
+//! The C boundary this replaces returned `false` and left a sentence in a
+//! thread-local for whoever thought to ask. In Rust the reason travels with
+//! the failure, and the sentence is still the point: an agent that tried
+//! something and got an error has to be able to tell from the text alone
+//! what it did wrong (DNA, postulate 5).
+
+use std::fmt;
+
+/// Why a session refused or failed to do something.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditError {
+    /// An edit while the scene is being simulated. Refused rather than
+    /// allowed and thrown away on stop, which is the version people lose an
+    /// hour to.
+    Playing,
+    /// No entity at this index in the document.
+    NoEntity(usize),
+    /// A name that has to be something was empty.
+    EmptyName(&'static str),
+    /// Saving with no path given and no file the scene came from.
+    NoPath,
+    /// An operation that needs a library before one was set.
+    NoLibrary,
+    /// An operation that needs a scene on disk — to find `prefabs/` or
+    /// `materials/` beside it — before one was opened.
+    NoSceneDirectory,
+    /// Placing an instance of a prefab nobody has.
+    UnknownPrefab(String),
+    /// No adapter to render with.
+    Gpu(String),
+    /// The file system said no.
+    Io(String),
+    /// A scene file that would not read or write.
+    Scene(String),
+    /// The importer could not turn a source into an asset.
+    Import(String),
+}
+
+impl fmt::Display for EditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EditError::Playing => {
+                f.write_str("stop playing first — an edit made in play mode is an edit you lose")
+            }
+            EditError::NoEntity(index) => write!(f, "no entity at index {index}"),
+            EditError::EmptyName(what) => write!(f, "{what} needs a name"),
+            EditError::NoPath => f.write_str("no path to save to, and the scene has no file yet"),
+            EditError::NoLibrary => f.write_str("no library — call set_library first"),
+            EditError::NoSceneDirectory => f.write_str(
+                "open a scene first — prefabs/ and materials/ live beside the scene file",
+            ),
+            EditError::UnknownPrefab(name) => write!(f, "no prefab named {name}"),
+            EditError::Gpu(e) => write!(f, "no GPU to render with: {e}"),
+            EditError::Io(e) => write!(f, "{e}"),
+            EditError::Scene(e) => write!(f, "scene: {e}"),
+            EditError::Import(e) => write!(f, "import: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for EditError {}
+
+impl From<std::io::Error> for EditError {
+    fn from(e: std::io::Error) -> Self {
+        EditError::Io(e.to_string())
+    }
+}

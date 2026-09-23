@@ -1,9 +1,9 @@
 //! Drawing into a window someone else owns.
 //!
 //! The engine never creates a window (see the crate docs). What it accepts is
-//! a surface: from winit on a desktop, from an `NSView` under a Swift editor,
-//! from a `UIViewController` or an `Activity` on a phone. All this module
-//! does is hold the swapchain and keep its size honest.
+//! a surface: from winit on a desktop, from a `UIViewController` or an
+//! `Activity` on a phone. All this module does is hold the swapchain and
+//! keep its size honest.
 
 use crate::gpu::Gpu;
 
@@ -40,7 +40,7 @@ impl std::error::Error for SurfaceError {}
 
 impl Surface {
     // Used by every constructor; on a build with no shell feature there is
-    // not yet one, and the Swift and mobile entry points land here too.
+    // not yet one, and the native entry points land here too.
     #[allow(dead_code)]
     pub(crate) fn configure(
         gpu: &Gpu,
@@ -174,9 +174,11 @@ impl AcquiredFrame {
 impl Surface {
     /// Take a `CAMetalLayer` a native host already owns.
     ///
-    /// This is the path a Swift editor uses: AppKit makes the view, the view
-    /// has a layer, and the engine draws into it. No window is created here,
-    /// which is the rule the whole crate is arranged around.
+    /// The path a native Apple host takes: it makes the view, the view has a
+    /// layer, and the engine draws into it. No window is created here, which
+    /// is the rule the whole crate is arranged around. Kept for iOS, where a
+    /// view controller will hand over exactly this; the editor's viewport
+    /// goes another way, which is DNA's open question 1.
     ///
     /// # Safety
     /// `layer` must be a live `CAMetalLayer` that outlives the returned

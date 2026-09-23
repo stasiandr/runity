@@ -2,9 +2,9 @@
 //!
 //! The engine never creates a window. It is handed a surface, a size and a
 //! stream of input events, and it draws. That one rule is what lets the same
-//! code sit under a native Swift editor on macOS, a `UIViewController` on
-//! iOS, an `Activity` on Android and a plain desktop shell on Windows —
-//! every one of those owns its own surface and will not give it up.
+//! code sit under the editor, a plain desktop shell, and later a
+//! `UIViewController` on iOS or an `Activity` on Android — every one of
+//! those owns its own surface and will not give it up.
 //!
 //! What is here so far is the part that depends on none of that: the scene
 //! file both the editor and the game read, and the asset format the importer
