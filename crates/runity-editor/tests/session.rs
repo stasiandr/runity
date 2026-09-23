@@ -3341,3 +3341,23 @@ fn the_view_shows_where_a_walker_can_go_and_keeps_up_with_edits() {
     session.render();
     assert_eq!(session.walkable_cells(), None);
 }
+
+#[test]
+fn a_thumbnail_pictures_an_asset_alone_and_changes_nothing() {
+    let Some((mut session, _)) = open("thumbnail") else {
+        return;
+    };
+    let (count, camera) = (session.entity_count(), session.camera());
+    let pixels = session.thumbnail("builtin:cone", 64).unwrap();
+    assert_eq!(pixels.len(), 64 * 64 * 4);
+    let at = |x: usize, y: usize| pixels[(y * 64 + x) * 4..(y * 64 + x) * 4 + 3].to_vec();
+    assert_ne!(
+        at(32, 36),
+        at(1, 1),
+        "the cone is in the middle, not the backdrop"
+    );
+    assert_eq!(at(1, 1), at(62, 1), "the corners are backdrop");
+    assert!(session.thumbnail("no_such_thing", 64).is_err());
+    assert_eq!(session.entity_count(), count);
+    assert_eq!(session.camera().position, camera.position);
+}

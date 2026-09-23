@@ -24,6 +24,7 @@ pub mod history;
 pub mod panels;
 mod scene_view;
 mod surface;
+mod thumbnail;
 mod views;
 mod visibility;
 

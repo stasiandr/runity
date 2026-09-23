@@ -125,6 +125,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "override_field",
         "console",
         "group",
+        "thumbnail",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
