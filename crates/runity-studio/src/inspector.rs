@@ -75,6 +75,9 @@ fn title(field: &str) -> String {
 /// What a node of the panel stands for.
 #[derive(Debug, Clone, PartialEq)]
 enum Part {
+    /// The yellow arrow: set the field back to what a new entity has, or
+    /// to the prefab's.
+    Reset(String),
     /// A box of a field; `axis` for one number of a vector.
     Slot {
         field: String,
@@ -238,6 +241,12 @@ pub struct Inspector {
     /// Unity's padlock: the entities shown whatever is selected after.
     locked: Option<Vec<EntityId>>,
     lock_button: NodeId,
+    /// Unreal's Search Details: only fields whose name has this in it.
+    filter: String,
+    /// Which fields had a reset arrow at the last build: an arrow that
+    /// comes or goes is a new layout.
+    resets: Vec<String>,
+    search: NodeId,
 }
 
 impl Inspector {
@@ -254,12 +263,17 @@ impl Inspector {
                 .padding_x(SPACE_2)
                 .center_items(),
         );
-        spacer(ui, strip);
+        let search = ui.add_field(strip, field_style().fill().height(20.0).text_size(11.5), "");
+        ui.set_placeholder(search, "Search fields");
+        ui.set_name(search, "inspector search");
         let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
             locked: None,
             lock_button,
+            filter: String::new(),
+            search,
+            resets: Vec::new(),
             root: card,
             body,
             showing: Vec::new(),
@@ -281,7 +295,7 @@ impl Inspector {
     }
 
     pub fn owns(&self, node: NodeId) -> bool {
-        node == self.lock_button || self.parts.contains_key(&node)
+        node == self.lock_button || node == self.search || self.parts.contains_key(&node)
     }
 
     /// What the Inspector edits: the locked entities that still exist, or
@@ -353,7 +367,18 @@ impl Inspector {
                 shape.push((f.name.clone(), None));
             }
         }
-        if !self.built || ids != self.showing || shape != self.shape || playing != self.playing {
+        let resets: Vec<String> = fields
+            .iter()
+            .filter(|f| f.resettable)
+            .map(|f| f.name.clone())
+            .collect();
+        if !self.built
+            || ids != self.showing
+            || shape != self.shape
+            || playing != self.playing
+            || resets != self.resets
+        {
+            self.resets = resets;
             self.built = true;
             self.showing = ids.clone();
             self.shape = shape;
@@ -486,6 +511,15 @@ impl Inspector {
             ("Physics", physics),
             ("Components", parts),
         ] {
+            let filter = self.filter.clone();
+            let group: Vec<&Field> = group
+                .into_iter()
+                .filter(|f| {
+                    filter.is_empty()
+                        || f.name.to_lowercase().contains(&filter)
+                        || title(&f.name).to_lowercase().contains(&filter)
+                })
+                .collect();
             if group.is_empty() {
                 continue;
             }
@@ -727,6 +761,23 @@ impl Inspector {
                     self.parts.insert(pick, Part::Pick(f.name.clone()));
                 }
             }
+        }
+        // Unreal's yellow arrow: this field says something a new entity (or
+        // the prefab) does not, and one click takes it back.
+        if f.resettable && !self.playing {
+            let reset = ui.add(
+                line,
+                Style::row()
+                    .size(18.0, 22.0)
+                    .fixed()
+                    .center()
+                    .radius(6.0)
+                    .hover(HOVER)
+                    .clickable(),
+            );
+            ui.set_name(reset, format!("reset {}", f.name));
+            icon(ui, reset, "undo-2", WARNING);
+            self.parts.insert(reset, Part::Reset(f.name.clone()));
         }
     }
 
@@ -1362,6 +1413,14 @@ impl Inspector {
         event: &Event,
         requests: &mut Requests,
     ) {
+        if node == self.search {
+            if let Event::Changed(text) | Event::Submit(text) = event {
+                self.filter = text.trim().to_lowercase();
+                self.built = false;
+                requests.refresh = true;
+            }
+            return;
+        }
         if node == self.lock_button {
             if let Event::Click { .. } = event {
                 self.toggle_lock(ui);
@@ -1378,6 +1437,15 @@ impl Inspector {
                 requests.refresh = true;
             }
             (Part::Slot { .. }, Event::Cancel) => {
+                requests.refresh = true;
+            }
+            (Part::Reset(field), Event::Click { .. }) => {
+                for id in self.showing.clone() {
+                    if let Err(e) = session.reset_field(id, &field) {
+                        session.say(Level::Error, e.to_string());
+                        break;
+                    }
+                }
                 requests.refresh = true;
             }
             (Part::Revert(field), Event::Click { .. }) => {

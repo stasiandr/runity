@@ -1920,3 +1920,30 @@ fn k_during_play_keeps_where_the_crate_fell() {
         "kept where it fell: {start} -> {after}"
     );
 }
+
+#[test]
+fn a_field_that_differs_has_a_reset_arrow_and_search_narrows_the_inspector() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let boulder = s.session.find("boulder").unwrap();
+    click(&mut s, "line boulder");
+    assert!(
+        s.ui.find("reset scale").is_some(),
+        "scale 1.1 is not a new entity's"
+    );
+    assert!(s.ui.find("reset rotation").is_none(), "rotation 0 is");
+    click(&mut s, "reset scale");
+    assert_eq!(
+        s.session.transform(boulder).unwrap().scale,
+        runity::glam::Vec3::ONE
+    );
+    assert!(s.ui.find("reset scale").is_none(), "and the arrow goes");
+
+    click(&mut s, "inspector search");
+    type_text(&mut s, "body");
+    s.frame();
+    s.frame();
+    assert!(s.ui.find("label body").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("label position").is_none(), "only what matches");
+}

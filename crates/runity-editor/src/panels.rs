@@ -34,6 +34,27 @@ pub struct Row {
     pub locked: bool,
 }
 
+/// What a field of a new entity says, as the Inspector writes it: what a
+/// reset goes back to. `None` for fields that are the entity's own (name,
+/// model, prefab) and for a game's components, whose defaults are the
+/// game's.
+pub fn default_text(field: &str) -> Option<String> {
+    let blank = EntityDesc::default();
+    Some(match field {
+        "position" => ron(&blank.transform.position),
+        "rotation" => ron(&blank.transform.rotation_deg),
+        "scale" => ron(&blank.transform.scale),
+        "material" => ron(&blank.material),
+        "body" => ron(&blank.body),
+        "collider" => ron(&blank.collider),
+        "physics" => ron(&blank.physics),
+        "joint" => ron(&blank.joint),
+        "layer" => String::new(),
+        "camera" | "light" | "particles" | "route" => "None".into(),
+        _ => return None,
+    })
+}
+
 /// One field of the Inspector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
@@ -45,6 +66,9 @@ pub struct Field {
     /// On a prefab's part: this instance says something else than the
     /// prefab does.
     pub overridden: bool,
+    /// Worth a reset arrow, as Unreal's Details panel draws one: overridden
+    /// on a prefab's part, or not what a new entity has.
+    pub resettable: bool,
     /// For a game component, what it holds — `(open_angle: number,
     /// locked: bool)` — when the game has written its components' shapes
     /// (`library/components.ron`); empty otherwise.
@@ -298,6 +322,8 @@ impl Session {
                 .into_iter()
                 .map(|(name, value)| Field {
                     overridden: changed(&name),
+                    resettable: changed(&name)
+                        || default_text(&name).is_some_and(|default| default != value),
                     shape: name
                         .strip_prefix("components.")
                         .and_then(|c| shapes.get(c))
@@ -480,21 +506,12 @@ impl Session {
     /// Put a field back as a new entity has it — the Inspector's Reset; on
     /// a prefab's part, back to what the prefab says. One undo step.
     pub fn reset_field(&mut self, id: EntityId, field: &str) -> EditResult<()> {
+        // What a new entity has is the default a reset goes back to.
         if self.scene().get(id).is_none() {
             return self.revert_field(id, field).map(|_| ());
         }
-        let blank = EntityDesc::default();
         let text = match field {
-            "position" => ron(&blank.transform.position),
-            "rotation" => ron(&blank.transform.rotation_deg),
-            "scale" => ron(&blank.transform.scale),
-            "material" => ron(&blank.material),
-            "body" => ron(&blank.body),
-            "collider" => ron(&blank.collider),
-            "physics" => ron(&blank.physics),
-            "joint" => ron(&blank.joint),
-            "layer" => String::new(),
-            "camera" | "light" | "particles" | "route" => "None".into(),
+            other if default_text(other).is_some() => default_text(other).unwrap_or_default(),
             other if other.starts_with("components.") => {
                 let name = &other["components.".len()..];
                 return match self.component_shapes().get(name) {
