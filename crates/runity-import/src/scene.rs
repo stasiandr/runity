@@ -1,5 +1,6 @@
-//! A source that is a scene, not a model: a glTF with many objects in it —
-//! a level, a kit — imported as the tree it is (docs/blender.md, stage 1).
+//! A source that is a scene, not a model: a glTF or a `.blend` with many
+//! objects in it — a level, a kit — imported as the tree it is
+//! (docs/blender.md).
 //!
 //! [`crate::mesh_from_gltf`] merges a whole file into one mesh, which is
 //! right for a tree made of a trunk and a crown and wrong for a forest: a
@@ -7,25 +8,30 @@
 //! of triangles, and nothing in it can be selected, moved or given a
 //! component. Here instead:
 //!
-//! * every glTF mesh becomes a model — one per primitive, since an entity
-//!   draws with one material — named `<file>/<mesh>`. A mesh a hundred
-//!   nodes share is **one** model, and the renderer draws its copies as
-//!   instances: the instancing the artist set up survives the trip;
-//! * every glTF material becomes a material asset, `<file>/<material>`,
-//!   URP Lit from the metallic-roughness model, with its images as
-//!   textures; a file-wide override in the `.rimport` (`materials:`)
-//!   swaps one for a material of the project's;
-//! * the nodes become a prefab named after the file, written into the
+//! * every mesh becomes a model — one per material, since an entity draws
+//!   with one — named `<file>/<mesh>`. A mesh a hundred objects share is
+//!   **one** model, and the renderer draws its copies as instances: the
+//!   instancing the artist set up survives the trip;
+//! * every material becomes a material asset, `<file>/<material>`, URP Lit
+//!   from the metallic-roughness model, with its images as textures; a
+//!   file-wide override in the `.rimport` (`materials:`) swaps one for a
+//!   material of the project's;
+//! * the objects become a prefab named after the file, written into the
 //!   library as `<asset id>.prefab`: derived, never committed, found by
 //!   [`runity::Prefabs::of`] like a hand-written one. A scene places it
-//!   with one line, `prefab: "forest"`.
+//!   with one line, `prefab: "forest"`. What a `.blend` marks as an asset
+//!   is a prefab of its own, by its name — a kit.
 //!
-//! Every asset's ID is kept in the source's `.rimport` under `parts`, by a
-//! key made of what the file calls it, so re-importing a changed file
-//! updates assets rather than orphaning them. A node's entity ID is derived
-//! from its path of names, so overrides of a part survive a re-import.
+//! Two readers, one builder: [`from_gltf`] and [`crate::blend`] each turn
+//! their file into a [`SceneData`] in the engine's space, and
+//! [`build`] writes the assets. Every asset's ID is kept in the source's
+//! `.rimport` under `parts`, by a key made of what the file calls it, so
+//! re-importing a changed file updates assets rather than orphaning them.
+//! An object's entity ID is the one Blender's plugin stamped on it, or else
+//! derived from its path of names, so overrides of a part survive a
+//! re-import.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -34,16 +40,104 @@ use runity::asset::{
     AssetId, AssetKind, Bounds, MaterialAsset, MeshAsset, Submesh, TextureAsset, Vertex,
 };
 use runity::material::{Material, RenderFace, SurfaceType};
-use runity::scene::MaterialRef;
+use runity::scene::{Body, Collider, MaterialRef};
 use runity::{AssetLink, EntityDesc, EntityId, Transform};
 
 use crate::{asset_for, build_mips, recompute_normals, ImportSettings};
 
+/// A scene as a reader found it, in the engine's space (Y up, metres
+/// before the import's `scale`), before any asset is written.
+#[derive(Debug, Default)]
+pub struct SceneData {
+    pub images: Vec<ImageData>,
+    pub materials: Vec<MaterialData>,
+    pub meshes: Vec<MeshData>,
+    /// The file's own tree: the level.
+    pub level: Vec<NodeData>,
+    /// What the file marks as assets: each a prefab of its own.
+    pub assets: Vec<AssetData>,
+}
+
+/// A picture: RGBA8, top row first.
+#[derive(Debug)]
+pub struct ImageData {
+    pub key: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// A material in the metallic-roughness model, with the images it reads.
+#[derive(Debug, Default)]
+pub struct MaterialData {
+    pub key: String,
+    pub name: String,
+    /// Its factors: colour, metal, emission, alpha, faces. `smoothness`
+    /// here is one minus the file's roughness.
+    pub material: Material,
+    pub base_map: Option<usize>,
+    pub emission_map: Option<usize>,
+    pub normal_map: Option<usize>,
+    /// Metal and roughness each from a channel of an image — glTF packs
+    /// both into one (blue and green), Blender often has two.
+    pub metallic_map: Option<(usize, usize)>,
+    pub roughness_map: Option<(usize, usize)>,
+    pub occlusion_map: Option<(usize, usize)>,
+}
+
+#[derive(Debug)]
+pub struct MeshData {
+    pub key: String,
+    pub name: String,
+    pub primitives: Vec<PrimitiveData>,
+}
+
+/// Triangles drawn with one material.
+#[derive(Debug)]
+pub struct PrimitiveData {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+    pub material: Option<usize>,
+    /// Whether the file gave normals; without them they are computed.
+    pub has_normals: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct NodeData {
+    pub name: String,
+    /// The ID Blender's plugin stamped on the object, if it did.
+    pub id: Option<EntityId>,
+    pub transform: Transform,
+    pub mesh: Option<usize>,
+    /// An instance of a prefab: another file's asset, or this one's.
+    pub prefab: Option<String>,
+    /// The game's components, by name, their values in RON.
+    pub components: BTreeMap<String, String>,
+    /// Collides as its own shape: a static body with a `Model` collider.
+    pub collider: bool,
+    pub children: Vec<NodeData>,
+}
+
+#[derive(Debug)]
+pub struct AssetData {
+    pub key: String,
+    pub name: String,
+    pub roots: Vec<NodeData>,
+}
+
 /// Whether a glTF is a scene rather than a model: more than one node with
 /// a mesh. Decided once, on the first import, and kept in the sidecar
 /// (`scene: true`), so a file that grows a second object does not quietly
-/// turn from the model scenes name into a prefab they do not.
+/// turn from the model scenes name into a prefab they do not. A `.blend`
+/// is always a scene.
 pub fn is_scene(path: &Path) -> Result<bool> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("blend"))
+    {
+        return Ok(true);
+    }
     let document = gltf::Gltf::open(path).with_context(|| format!("{}", path.display()))?;
     let mut count = 0;
     let mut stack: Vec<gltf::Node> = roots(&document.document);
@@ -79,6 +173,27 @@ pub fn prefab_for(id: AssetId, library: &Path) -> std::path::PathBuf {
     library.join(format!("{id}.{}", runity::prefab::EXTENSION))
 }
 
+/// Import a scene source — glTF or `.blend` — into `library`.
+pub fn import_scene(
+    source: &Path,
+    library: &Path,
+    settings: &mut ImportSettings,
+) -> Result<AssetId> {
+    let data = if source
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("blend"))
+    {
+        crate::blend::read(source)?
+    } else {
+        from_gltf(source)?
+    };
+    let stem = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "scene".into());
+    build(data, &stem, library, settings).with_context(|| format!("{}", source.display()))
+}
+
 /// The IDs of what one import builds, by key, minted the first time a key
 /// is seen and kept after.
 struct Parts<'a> {
@@ -110,21 +225,16 @@ fn unique(name: String, taken: &mut HashSet<String>) -> String {
     candidate
 }
 
-/// Import a glTF scene into `library`: its models, materials, textures and
-/// prefab. `settings.parts` is read for the IDs to keep and written with
-/// the ones used now; assets of parts that are gone are removed. Returns
-/// the prefab's ID, the source's own.
-pub fn import_scene(
-    source: &Path,
+/// Write a scene's assets into `library`: its models, materials, textures
+/// and prefabs. `settings.parts` is read for the IDs to keep and written
+/// with the ones used now; assets of parts that are gone are removed.
+/// Returns the level prefab's ID, the source's own.
+pub fn build(
+    data: SceneData,
+    stem: &str,
     library: &Path,
     settings: &mut ImportSettings,
 ) -> Result<AssetId> {
-    let (document, buffers, images) =
-        gltf::import(source).with_context(|| format!("{}", source.display()))?;
-    let stem = source
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "scene".into());
     let source_name = settings.source.clone();
     let mut parts = Parts {
         source: &source_name,
@@ -132,10 +242,11 @@ pub fn import_scene(
         now: BTreeMap::new(),
     };
     let mut written: Vec<(AssetId, Vec<u8>)> = Vec::new();
+    let mut prefabs: Vec<(AssetId, EntityDesc)> = Vec::new();
 
     // Textures, each built once per way it is read: an image that is both a
-    // colour map and something else would be two assets, sRGB and linear.
-    let mut textures: HashMap<(usize, bool), AssetId> = HashMap::new();
+    // colour map and something else is two assets, sRGB and linear.
+    let mut textures: BTreeMap<(usize, bool), AssetId> = BTreeMap::new();
     let mut texture = |index: usize,
                        srgb: bool,
                        parts: &mut Parts,
@@ -144,28 +255,21 @@ pub fn import_scene(
         if let Some(id) = textures.get(&(index, srgb)) {
             return Ok(Some(*id));
         }
-        let Some(image) = images.get(index) else {
+        let Some(image) = data.images.get(index) else {
             return Ok(None);
         };
-        let Some(pixels) = rgba(image) else {
-            return Ok(None);
-        };
-        let name = document
-            .images()
-            .nth(index)
-            .and_then(|i| i.name().map(str::to_string))
-            .unwrap_or_else(|| format!("image {index}"));
         let id = parts.id(format!(
-            "texture:{index}:{}",
+            "texture:{}:{}",
+            image.key,
             if srgb { "colour" } else { "data" }
         ));
         let asset = TextureAsset {
             id,
-            name: format!("{stem}/{name}"),
+            name: format!("{stem}/{}", image.name),
             width: image.width,
             height: image.height,
-            mips: build_mips(image.width, image.height, &pixels, srgb),
-            pixels,
+            mips: build_mips(image.width, image.height, &image.rgba, srgb),
+            pixels: image.rgba.clone(),
             srgb,
         };
         written.push((id, runity::asset::to_bytes(&asset, AssetKind::Texture)?));
@@ -173,11 +277,294 @@ pub fn import_scene(
         Ok(Some(id))
     };
 
-    // Materials, as the scene names them.
+    // Materials, as the file names them.
     let mut material_names: Vec<String> = Vec::new();
     let mut taken = HashSet::new();
+    for md in &data.materials {
+        let own = unique(md.name.clone(), &mut taken);
+        let mut m = md.material;
+        if let Some(i) = md.base_map {
+            m.base_map = texture(i, true, &mut parts, &mut written)?;
+        }
+        if let Some(i) = md.emission_map {
+            m.emission_map = texture(i, true, &mut parts, &mut written)?;
+        }
+        if let Some(i) = md.normal_map {
+            m.normal_map = texture(i, false, &mut parts, &mut written)?;
+        }
+        // The engine's mask is metal in red, occlusion in green and
+        // smoothness in alpha; packed here from wherever the file keeps
+        // them, with the factors baked in.
+        if md.metallic_map.is_some() || md.roughness_map.is_some() || md.occlusion_map.is_some() {
+            let id = parts.id(format!("mask:{}", md.key));
+            if let Some(asset) = mask(&data.images, md, id, format!("{stem}/{own} mask")) {
+                if md.metallic_map.is_some() {
+                    m.metallic = 1.0;
+                }
+                if md.roughness_map.is_some() {
+                    m.smoothness = 1.0;
+                }
+                m.mask_map = Some(asset.id);
+                written.push((
+                    asset.id,
+                    runity::asset::to_bytes(&asset, AssetKind::Texture)?,
+                ));
+            }
+        }
+        let id = parts.id(format!("material:{}", md.key));
+        let name = format!("{stem}/{own}");
+        let asset = MaterialAsset {
+            id,
+            name: name.clone(),
+            material: m,
+        };
+        written.push((id, runity::asset::to_bytes(&asset, AssetKind::Material)?));
+        material_names.push(settings.materials.get(&own).cloned().unwrap_or(name));
+    }
+
+    // Models: one per material of every mesh, shared by every object that
+    // draws it.
+    let mut models: Vec<Vec<(AssetLink, Option<usize>)>> = Vec::new();
+    let mut taken = HashSet::new();
+    for mesh in data.meshes {
+        let own = unique(mesh.name.clone(), &mut taken);
+        let count = mesh.primitives.len();
+        let mut these = Vec::new();
+        for (j, mut primitive) in mesh.primitives.into_iter().enumerate() {
+            let name = if count > 1 {
+                format!("{stem}/{own}.{j}")
+            } else {
+                format!("{stem}/{own}")
+            };
+            let id = parts.id(format!("mesh:{}.{j}", mesh.key));
+            for v in &mut primitive.vertices {
+                v.position = (Vec3::from_array(v.position) * settings.scale).to_array();
+            }
+            if settings.recompute_normals || !primitive.has_normals {
+                recompute_normals(&mut primitive.vertices, &primitive.indices);
+            }
+            let asset = MeshAsset {
+                id,
+                name: name.clone(),
+                bounds: Bounds::of(&primitive.vertices),
+                submeshes: vec![Submesh {
+                    first_index: 0,
+                    index_count: primitive.indices.len() as u32,
+                    material: None,
+                }],
+                vertices: primitive.vertices,
+                indices: primitive.indices,
+                skin: None,
+            };
+            written.push((id, runity::asset::to_bytes(&asset, AssetKind::Mesh)?));
+            these.push((AssetLink::to(name, id), primitive.material));
+        }
+        models.push(these);
+    }
+
+    // The trees: the level, then each asset the file marks.
+    let tree = Tree {
+        models: &models,
+        materials: &material_names,
+        scale: settings.scale,
+    };
+    let mut level = EntityDesc {
+        id: entity_id(""),
+        name: stem.to_string(),
+        ..Default::default()
+    };
+    tree.children(&mut level, data.level, "");
+    prefabs.push((settings.asset_id(), level));
+    for asset in data.assets {
+        let id = parts.id(format!("prefab:{}", asset.key));
+        let mut root = EntityDesc {
+            id: entity_id(&format!("asset:{}", asset.key)),
+            name: asset.name,
+            ..Default::default()
+        };
+        tree.children(&mut root, asset.roots, "");
+        prefabs.push((id, root));
+    }
+
+    // Written only once all of it has been read: a file that fails halfway
+    // leaves the library as it was.
+    std::fs::create_dir_all(library)?;
+    for (id, bytes) in &written {
+        std::fs::write(asset_for(*id, library), bytes)?;
+    }
+    for (id, root) in &prefabs {
+        let path = prefab_for(*id, library);
+        let _ = std::fs::remove_file(&path);
+        runity::Prefabs::save(root, &path).map_err(anyhow::Error::msg)?;
+    }
+    // What an earlier version of the file had and this one does not.
+    for (key, old) in &parts.before {
+        if !parts.now.contains_key(key) {
+            let _ = std::fs::remove_file(asset_for(*old, library));
+            let _ = std::fs::remove_file(prefab_for(*old, library));
+        }
+    }
+    settings.parts = parts.now;
+    Ok(settings.asset_id())
+}
+
+/// What turning nodes into entities needs to know.
+struct Tree<'a> {
+    models: &'a [Vec<(AssetLink, Option<usize>)>],
+    materials: &'a [String],
+    scale: f32,
+}
+
+impl Tree<'_> {
+    fn material(&self, index: Option<usize>) -> MaterialRef {
+        match index.and_then(|i| self.materials.get(i)) {
+            Some(name) => MaterialRef::Named(name.clone()),
+            None => MaterialRef::default(),
+        }
+    }
+
+    fn children(&self, parent: &mut EntityDesc, nodes: Vec<NodeData>, path: &str) {
+        let mut taken = HashSet::new();
+        for node in nodes {
+            let own = unique(node.name.clone(), &mut taken);
+            let path = if path.is_empty() {
+                own
+            } else {
+                format!("{path}/{own}")
+            };
+            parent.children.push(self.entity(node, &path));
+        }
+    }
+
+    fn entity(&self, node: NodeData, path: &str) -> EntityDesc {
+        let mut transform = node.transform;
+        transform.position *= self.scale;
+        let mut desc = EntityDesc {
+            id: node.id.unwrap_or_else(|| entity_id(path)),
+            name: node.name,
+            transform,
+            ..Default::default()
+        };
+        if let Some(prefab) = node.prefab {
+            desc.prefab = AssetLink::named(prefab);
+        }
+        if let Some(mesh) = node.mesh.and_then(|m| self.models.get(m)) {
+            for (j, (model, material)) in mesh.iter().enumerate() {
+                if j == 0 {
+                    desc.model = model.clone();
+                    desc.material = self.material(*material);
+                } else {
+                    // The mesh's other materials: drawn by children in
+                    // the same place, since an entity draws with one.
+                    desc.children.push(EntityDesc {
+                        id: desc.id.within(EntityId::from_raw(j as u64)),
+                        name: format!("{} {}", desc.name, j + 1),
+                        model: model.clone(),
+                        material: self.material(*material),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        if node.collider {
+            desc.body = Body::Static;
+            desc.collider = Collider::Model;
+        }
+        for (name, value) in node.components {
+            if let Ok(value) = ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {
+                desc.components.insert(name, value);
+            }
+        }
+        self.children(&mut desc, node.children, path);
+        desc
+    }
+}
+
+/// A node's entity ID, from its path of names: the same file imported on
+/// any machine, or again after an edit elsewhere in it, gives the same.
+fn entity_id(path: &str) -> EntityId {
+    let raw = AssetId::from_source(path, 0x7265_6500).0;
+    EntityId::from_raw(((raw >> 64) as u64 ^ raw as u64).max(1))
+}
+
+/// The engine's mask map: metal in red, occlusion in green, smoothness in
+/// alpha, each from its channel of its image with the factors multiplied
+/// in. The first image's size is the mask's; a map of another size is left
+/// out rather than resampled.
+fn mask(
+    images: &[ImageData],
+    md: &MaterialData,
+    id: AssetId,
+    name: String,
+) -> Option<TextureAsset> {
+    let first = [md.metallic_map, md.roughness_map, md.occlusion_map]
+        .into_iter()
+        .flatten()
+        .find_map(|(i, _)| images.get(i))?;
+    let (width, height) = (first.width, first.height);
+    let pick = |map: Option<(usize, usize)>| {
+        map.and_then(|(i, channel)| {
+            let image = images.get(i)?;
+            (image.width == width && image.height == height).then_some((image, channel.min(3)))
+        })
+    };
+    let (metal, rough, occlusion) = (
+        pick(md.metallic_map),
+        pick(md.roughness_map),
+        pick(md.occlusion_map),
+    );
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let at = |map: Option<(&ImageData, usize)>, i: usize| {
+        map.map(|(image, c)| image.rgba[i * 4 + c] as f32 / 255.0)
+    };
+    let roughness = 1.0 - md.material.smoothness;
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for i in 0..(width * height) as usize {
+        let m = at(metal, i).map_or(255, |v| byte(md.material.metallic * v));
+        let s = at(rough, i).map_or(255, |v| byte(1.0 - roughness * v));
+        let o = at(occlusion, i).map_or(255, byte);
+        pixels.extend([m, o, 0, s]);
+    }
+    Some(TextureAsset {
+        id,
+        name,
+        width,
+        height,
+        mips: build_mips(width, height, &pixels, false),
+        pixels,
+        srgb: false,
+    })
+}
+
+/// Read a glTF into a [`SceneData`]. glTF is already Y up in metres.
+pub fn from_gltf(source: &Path) -> Result<SceneData> {
+    let (document, buffers, images) =
+        gltf::import(source).with_context(|| format!("{}", source.display()))?;
+    let mut data = SceneData::default();
+
+    // Images an exporter writes: 8-bit. 16-bit and float ones a colour or
+    // mask map does not need, and are left out.
+    let mut image_index: Vec<Option<usize>> = Vec::new();
+    for (i, (image, info)) in images.iter().zip(document.images()).enumerate() {
+        image_index.push(rgba(image).map(|rgba| {
+            data.images.push(ImageData {
+                key: i.to_string(),
+                name: info
+                    .name()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("image {i}")),
+                width: image.width,
+                height: image.height,
+                rgba,
+            });
+            data.images.len() - 1
+        }));
+    }
+    let image = |t: gltf::Texture| image_index.get(t.source().index()).copied().flatten();
+
+    let mut taken = HashSet::new();
     for (i, gm) in document.materials().enumerate() {
-        let own = unique(
+        let name = unique(
             gm.name()
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("material {i}")),
@@ -198,239 +585,85 @@ pub fn import_scene(
         if gm.double_sided() {
             m.render_face = RenderFace::Both;
         }
-        if let Some(info) = pbr.base_color_texture() {
-            m.base_map = texture(
-                info.texture().source().index(),
-                true,
-                &mut parts,
-                &mut written,
-            )?;
-        }
-        if let Some(info) = gm.emissive_texture() {
-            m.emission_map = texture(
-                info.texture().source().index(),
-                true,
-                &mut parts,
-                &mut written,
-            )?;
-        }
+        let mut md = MaterialData {
+            key: name.clone(),
+            name,
+            ..Default::default()
+        };
+        md.base_map = pbr.base_color_texture().and_then(|t| image(t.texture()));
+        md.emission_map = gm.emissive_texture().and_then(|t| image(t.texture()));
         if let Some(normal) = gm.normal_texture() {
-            m.normal_map = texture(
-                normal.texture().source().index(),
-                false,
-                &mut parts,
-                &mut written,
-            )?;
+            md.normal_map = image(normal.texture());
             m.normal_scale = normal.scale();
         }
-        // glTF keeps metal in blue and roughness in green, occlusion in red
-        // of its own map; the engine's mask is metal in red, occlusion in
-        // green, smoothness in alpha. Packed here, factors baked in.
-        let metal_rough = pbr
+        // glTF keeps metal in blue and roughness in green of one map, and
+        // occlusion in red of its own.
+        if let Some(mr) = pbr
             .metallic_roughness_texture()
-            .map(|t| t.texture().source().index());
-        let occlusion = gm
-            .occlusion_texture()
-            .map(|t| (t.texture().source().index(), t.strength()));
-        if metal_rough.is_some() || occlusion.is_some() {
-            let key = format!("mask:{i}");
-            if let Some(asset) = mask(
-                &images,
-                metal_rough,
-                occlusion.map(|(o, _)| o),
-                m.metallic,
-                1.0 - m.smoothness,
-                parts.id(key.clone()),
-                format!("{stem}/{own} mask"),
-            ) {
-                if metal_rough.is_some() {
-                    m.metallic = 1.0;
-                    m.smoothness = 1.0;
-                }
-                m.mask_map = Some(asset.id);
-                if let Some((_, strength)) = occlusion {
-                    m.occlusion_strength = strength;
-                }
-                written.push((
-                    asset.id,
-                    runity::asset::to_bytes(&asset, AssetKind::Texture)?,
-                ));
-            }
+            .and_then(|t| image(t.texture()))
+        {
+            md.metallic_map = Some((mr, 2));
+            md.roughness_map = Some((mr, 1));
         }
-        let id = parts.id(format!("material:{own}"));
-        let name = format!("{stem}/{own}");
-        let asset = MaterialAsset {
-            id,
-            name: name.clone(),
-            material: m,
-        };
-        written.push((id, runity::asset::to_bytes(&asset, AssetKind::Material)?));
-        material_names.push(settings.materials.get(&own).cloned().unwrap_or(name));
+        if let Some(occlusion) = gm.occlusion_texture() {
+            md.occlusion_map = image(occlusion.texture()).map(|i| (i, 0));
+            m.occlusion_strength = occlusion.strength();
+        }
+        md.material = m;
+        data.materials.push(md);
     }
 
-    // Models: one per primitive of every mesh, shared by every node that
-    // draws it.
-    let mut models: Vec<Vec<(AssetLink, Option<usize>)>> = Vec::new();
     let mut taken = HashSet::new();
     for (i, mesh) in document.meshes().enumerate() {
-        let own = unique(
+        let name = unique(
             mesh.name()
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("mesh {i}")),
             &mut taken,
         );
-        let count = mesh.primitives().len();
-        let mut these = Vec::new();
-        for (j, primitive) in mesh.primitives().enumerate() {
+        let mut primitives = Vec::new();
+        for primitive in mesh.primitives() {
             if primitive.mode() != gltf::mesh::Mode::Triangles {
                 anyhow::bail!(
-                    "{}: mesh `{own}`: primitive mode {:?} is not triangles",
-                    source.display(),
+                    "mesh `{name}`: primitive mode {:?} is not triangles",
                     primitive.mode()
                 );
             }
-            let name = if count > 1 {
-                format!("{stem}/{own}.{j}")
-            } else {
-                format!("{stem}/{own}")
-            };
-            let id = parts.id(format!("mesh:{own}.{j}"));
-            let (vertices, indices) = triangles(&primitive, &buffers, settings)
-                .with_context(|| format!("{}: mesh `{own}`", source.display()))?;
-            let asset = MeshAsset {
-                id,
-                name: name.clone(),
-                bounds: Bounds::of(&vertices),
-                submeshes: vec![Submesh {
-                    first_index: 0,
-                    index_count: indices.len() as u32,
-                    material: None,
-                }],
-                vertices,
-                indices,
-                skin: None,
-            };
-            written.push((id, runity::asset::to_bytes(&asset, AssetKind::Mesh)?));
-            these.push((AssetLink::to(name, id), primitive.material().index()));
+            primitives
+                .push(triangles(&primitive, &buffers).with_context(|| format!("mesh `{name}`"))?);
         }
-        models.push(these);
+        data.meshes.push(MeshData {
+            key: name.clone(),
+            name,
+            primitives,
+        });
     }
 
-    // The tree.
-    let material_of = |index: Option<usize>| match index.and_then(|i| material_names.get(i)) {
-        Some(name) => MaterialRef::Named(name.clone()),
-        None => MaterialRef::default(),
-    };
-    fn entity(
-        node: gltf::Node,
-        path: &str,
-        scale: f32,
-        models: &[Vec<(AssetLink, Option<usize>)>],
-        material_of: &dyn Fn(Option<usize>) -> MaterialRef,
-    ) -> EntityDesc {
-        let (t, r, s) = node.transform().decomposed();
+    fn node(n: gltf::Node) -> NodeData {
+        let (t, r, s) = n.transform().decomposed();
         let mut transform = Transform {
-            position: Vec3::from_array(t) * scale,
+            position: Vec3::from_array(t),
             scale: Vec3::from_array(s),
             ..Default::default()
         };
         transform.set_rotation(Quat::from_array(r));
-        let mut desc = EntityDesc {
-            id: entity_id(path),
-            name: node
+        NodeData {
+            name: n
                 .name()
                 .map(str::to_string)
-                .unwrap_or_else(|| format!("node {}", node.index())),
+                .unwrap_or_else(|| format!("node {}", n.index())),
             transform,
+            mesh: n.mesh().map(|m| m.index()),
+            children: n.children().map(node).collect(),
             ..Default::default()
-        };
-        if let Some(mesh) = node.mesh().and_then(|m| models.get(m.index())) {
-            for (j, (model, material)) in mesh.iter().enumerate() {
-                if j == 0 {
-                    desc.model = model.clone();
-                    desc.material = material_of(*material);
-                } else {
-                    // The mesh's other materials: drawn by children in
-                    // the same place, since an entity draws with one.
-                    desc.children.push(EntityDesc {
-                        id: entity_id(&format!("{path}#{j}")),
-                        name: format!("{} {}", desc.name, j + 1),
-                        model: model.clone(),
-                        material: material_of(*material),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
-        let mut taken = HashSet::new();
-        for child in node.children() {
-            let own = unique(
-                child
-                    .name()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("node {}", child.index())),
-                &mut taken,
-            );
-            desc.children.push(entity(
-                child,
-                &format!("{path}/{own}"),
-                scale,
-                models,
-                material_of,
-            ));
-        }
-        desc
-    }
-    let mut root = EntityDesc {
-        id: entity_id(""),
-        name: stem.clone(),
-        ..Default::default()
-    };
-    let mut taken = HashSet::new();
-    for node in roots(&document) {
-        let own = unique(
-            node.name()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("node {}", node.index())),
-            &mut taken,
-        );
-        root.children
-            .push(entity(node, &own, settings.scale, &models, &material_of));
-    }
-
-    // Written only once all of it has been read: a file that fails halfway
-    // leaves the library as it was.
-    std::fs::create_dir_all(library)?;
-    for (id, bytes) in &written {
-        std::fs::write(asset_for(*id, library), bytes)?;
-    }
-    let id = settings.asset_id();
-    let prefab = prefab_for(id, library);
-    let _ = std::fs::remove_file(&prefab);
-    runity::Prefabs::save(&root, &prefab).map_err(anyhow::Error::msg)?;
-    // What an earlier version of the file had and this one does not.
-    for (key, old) in &parts.before {
-        if !parts.now.contains_key(key) {
-            let _ = std::fs::remove_file(asset_for(*old, library));
         }
     }
-    settings.parts = parts.now;
-    Ok(id)
+    data.level = roots(&document).into_iter().map(node).collect();
+    Ok(data)
 }
 
-/// A node's entity ID, from its path of names: the same file imported on
-/// any machine, or again after an edit elsewhere in it, gives the same.
-fn entity_id(path: &str) -> EntityId {
-    let raw = AssetId::from_source(path, 0x7265_6500).0;
-    EntityId::from_raw(((raw >> 64) as u64 ^ raw as u64).max(1))
-}
-
-/// One primitive's triangles in its mesh's own space, scaled.
-fn triangles(
-    primitive: &gltf::Primitive,
-    buffers: &[gltf::buffer::Data],
-    settings: &ImportSettings,
-) -> Result<(Vec<Vertex>, Vec<u32>)> {
+/// One primitive's triangles in its mesh's own space.
+fn triangles(primitive: &gltf::Primitive, buffers: &[gltf::buffer::Data]) -> Result<PrimitiveData> {
     let reader = primitive.reader(|buffer| Some(&buffers[buffer.index()]));
     let positions: Vec<[f32; 3]> = reader
         .read_positions()
@@ -438,11 +671,11 @@ fn triangles(
         .collect();
     let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
     let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(0).map(|uv| uv.into_f32().collect());
-    let mut vertices: Vec<Vertex> = positions
+    let vertices: Vec<Vertex> = positions
         .iter()
         .enumerate()
         .map(|(i, p)| Vertex {
-            position: (Vec3::from_array(*p) * settings.scale).to_array(),
+            position: *p,
             normal: normals
                 .as_ref()
                 .and_then(|n| n.get(i))
@@ -459,14 +692,15 @@ fn triangles(
         Some(read) => read.into_u32().collect(),
         None => (0..positions.len() as u32).collect(),
     };
-    if settings.recompute_normals || normals.is_none() {
-        recompute_normals(&mut vertices, &indices);
-    }
-    Ok((vertices, indices))
+    Ok(PrimitiveData {
+        vertices,
+        indices,
+        material: primitive.material().index(),
+        has_normals: normals.is_some(),
+    })
 }
 
-/// An image as RGBA8, from the formats exporters write. `None` for 16-bit
-/// and float images, which a colour or mask map does not need.
+/// An image as RGBA8, from the formats exporters write.
 fn rgba(image: &gltf::image::Data) -> Option<Vec<u8>> {
     use gltf::image::Format;
     let p = &image.pixels;
@@ -482,50 +716,5 @@ fn rgba(image: &gltf::image::Data) -> Option<Vec<u8>> {
             .collect(),
         Format::R8 => p.iter().flat_map(|&c| [c, c, c, 255]).collect(),
         _ => return None,
-    })
-}
-
-/// The engine's mask map from glTF's metallic-roughness and occlusion
-/// maps: metal (glTF blue) to red, occlusion (its red) to green, and
-/// smoothness — one minus roughness (glTF green) — to alpha, with the
-/// factors multiplied in. Occlusion of another size than the rest is left
-/// out rather than resampled.
-fn mask(
-    images: &[gltf::image::Data],
-    metal_rough: Option<usize>,
-    occlusion: Option<usize>,
-    metallic: f32,
-    roughness: f32,
-    id: AssetId,
-    name: String,
-) -> Option<TextureAsset> {
-    let mr = metal_rough.and_then(|i| Some((images.get(i)?, rgba(images.get(i)?)?)));
-    let oc = occlusion.and_then(|i| Some((images.get(i)?, rgba(images.get(i)?)?)));
-    let (width, height) = match (&mr, &oc) {
-        (Some((image, _)), _) | (None, Some((image, _))) => (image.width, image.height),
-        (None, None) => return None,
-    };
-    let oc = oc.filter(|(image, _)| image.width == width && image.height == height);
-    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
-    for i in 0..(width * height) as usize {
-        let (metal, smooth) = match &mr {
-            Some((_, p)) => (
-                byte(metallic * p[i * 4 + 2] as f32 / 255.0),
-                byte(1.0 - roughness * p[i * 4 + 1] as f32 / 255.0),
-            ),
-            None => (255, 255),
-        };
-        let occ = oc.as_ref().map_or(255, |(_, p)| p[i * 4]);
-        pixels.extend([metal, occ, 0, smooth]);
-    }
-    Some(TextureAsset {
-        id,
-        name,
-        width,
-        height,
-        mips: build_mips(width, height, &pixels, false),
-        pixels,
-        srgb: false,
     })
 }

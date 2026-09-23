@@ -25,6 +25,7 @@
 //! folder nobody commits is settings nobody keeps.
 
 pub mod assets;
+pub mod blend;
 pub mod poly;
 pub mod scene;
 pub mod terrain;
@@ -1089,7 +1090,9 @@ pub fn import_to(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if matches!(extension.as_str(), "gltf" | "glb") && first && !settings.scene {
+    if extension == "blend" {
+        settings.scene = true;
+    } else if matches!(extension.as_str(), "gltf" | "glb") && first && !settings.scene {
         settings.scene = scene::is_scene(source)?;
     }
     if settings.scene {
@@ -1539,6 +1542,7 @@ pub fn importable(path: &Path) -> bool {
         Some(
             "gltf"
                 | "glb"
+                | "blend"
                 | "obj"
                 | "rterrain"
                 | "rpoly"

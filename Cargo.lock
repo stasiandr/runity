@@ -2789,6 +2789,7 @@ dependencies = [
  "ron",
  "runity",
  "serde",
+ "serde_json",
  "tobj",
 ]
 

@@ -274,6 +274,13 @@ fn a_scenes_maps_become_textures_and_metal_roughness_packs_into_the_mask() {
     assert!(!mask.srgb, "a mask is data");
     assert_eq!(mask.pixels[0], 255, "metal from glTF's blue, in red");
     assert_eq!(mask.pixels[1], 255, "no occlusion map: none");
-    assert_eq!(mask.pixels[3], 191, "smoothness is one minus roughness, in alpha");
-    assert_eq!((bark.metallic, bark.smoothness), (1.0, 1.0), "the factors are in the map");
+    assert_eq!(
+        mask.pixels[3], 191,
+        "smoothness is one minus roughness, in alpha"
+    );
+    assert_eq!(
+        (bark.metallic, bark.smoothness),
+        (1.0, 1.0),
+        "the factors are in the map"
+    );
 }
