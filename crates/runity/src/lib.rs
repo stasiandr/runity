@@ -53,6 +53,7 @@ mod ron_text;
 pub mod save;
 pub mod scene;
 pub mod screen;
+pub mod shape;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
 pub mod spelling;

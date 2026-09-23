@@ -45,6 +45,10 @@ pub struct Field {
     /// On a prefab's part: this instance says something else than the
     /// prefab does.
     pub overridden: bool,
+    /// For a game component, what it holds — `(open_angle: number,
+    /// locked: bool)` — when the game has written its components' shapes
+    /// (`library/components.ron`); empty otherwise.
+    pub shape: String,
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
@@ -238,16 +242,56 @@ impl Session {
         for (name, value) in &desc.components {
             fields.push((format!("components.{name}"), value.get_ron().to_string()));
         }
+        let shapes = self.component_shapes();
         Some(
             fields
                 .into_iter()
                 .map(|(name, value)| Field {
                     overridden: changed(&name),
+                    shape: name
+                        .strip_prefix("components.")
+                        .and_then(|c| shapes.get(c))
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
                     name,
                     value,
                 })
                 .collect(),
         )
+    }
+
+    /// What the game's components look like, by name, as the game last
+    /// wrote them (`library/components.ron`, written when the game or its
+    /// tests run). Empty when it has not: the Inspector then edits
+    /// components as plain RON, as before.
+    ///
+    /// DNA, open question 2 (how modules ship) is not decided by this: the
+    /// editor still links nothing of the game; the game describes itself in
+    /// a file, the way the importer describes assets in `library/`.
+    pub fn component_shapes(&self) -> std::collections::BTreeMap<String, runity::shape::Shape> {
+        self.project()
+            .map(|p| p.root().join(runity::project::SHAPES))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| runity::ron::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Add a component the game has with a value of its shape to start
+    /// from — Unity's Add Component — as one undo step. The value is the
+    /// shortest that parses; the game's defaults are its own.
+    pub fn add_component(&mut self, id: EntityId, name: &str) -> EditResult<String> {
+        let shapes = self.component_shapes();
+        let shape = shapes.get(name).ok_or_else(|| {
+            EditError::Scene(format!(
+                "the game has no component `{name}`{}",
+                runity::spelling::closest(name, shapes.keys().map(String::as_str))
+                    .map(|n| format!(" — did you mean `{n}`?"))
+                    .unwrap_or_default()
+            ))
+        })?;
+        let value = shape.example();
+        self.set_component(id, name, Some(&value))?;
+        Ok(value)
     }
 
     /// The override this entity's instance keeps for it, when it is a part.

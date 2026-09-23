@@ -335,3 +335,34 @@ fn a_file_outside_the_layout_is_named_with_where_it_goes() {
         "warnings, not errors: {findings:#?}"
     );
 }
+
+#[test]
+fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Spin {
+        degrees_per_second: f32,
+    }
+    let project = project("shapes");
+    let mut components = runity::Components::new();
+    components.register::<Spin>("spin");
+    components
+        .write_shapes(project.root().join(runity::project::SHAPES))
+        .unwrap();
+    assert!(
+        errors(&check(&project)).is_empty(),
+        "the starter scene fits"
+    );
+    let main = project.scenes().join("main.ron");
+    let text = std::fs::read_to_string(&main).unwrap();
+    write(
+        &main,
+        &text.replace("degrees_per_second: 45.0", "degrees_per_secnd: 45.0"),
+    );
+    let lines = errors(&check(&project));
+    let line = one_containing(&lines, "degrees_per_secnd");
+    assert!(
+        line.contains("did you mean `degrees_per_second`?") && line.contains("`cube`"),
+        "{line}"
+    );
+}

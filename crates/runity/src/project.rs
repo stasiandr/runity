@@ -74,6 +74,11 @@ pub const INPUT: &str = "input.ron";
 /// [`crate::Tuned`].
 pub const TUNING: &str = "tuning";
 
+/// What the game's components look like, written by the game from its own
+/// types: what the editor's Inspector and `runity check` know them by
+/// without linking the game.
+pub const SHAPES: &str = "library/components.ron";
+
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
 
@@ -667,6 +672,17 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::per
     profile.time("physics", || physics.run(world));
 }
 
+/// In the project, write what the components look like, for the editor's
+/// Inspector and `runity check` (library/components.ron). Nothing in a build.
+fn write_shapes() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    if root.join("runity.ron").is_file() {
+        if let Err(e) = game_components().write_shapes(root.join(runity::project::SHAPES)) {
+            eprintln!("{e}");
+        }
+    }
+}
+
 /// Every component the game has, by name.
 fn game_components() -> Components {
     let mut components = Components::new();
@@ -769,6 +785,7 @@ fn main() -> anyhow::Result<()> {
     let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing));
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
+    write_shapes();
     for problem in &problems {
         eprintln!("{problem}");
     }
@@ -823,6 +840,7 @@ mod tests {
     /// still somewhere real at the end.
     #[test]
     fn the_start_scene_plays() {
+        write_shapes();
         let (_, settings) = runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
         let scene = runity::project::data_file(
             env!("CARGO_MANIFEST_DIR"),

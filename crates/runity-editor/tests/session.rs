@@ -3426,3 +3426,56 @@ fn the_view_is_where_this_person_left_it_and_the_scene_file_does_not_know() {
     let ignore = std::fs::read_to_string(project.root().join(".gitignore")).unwrap();
     assert!(ignore.contains("/.runity/"), "one person's, not the team's");
 }
+
+#[test]
+fn the_inspector_knows_a_game_component_by_what_the_game_wrote_down() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Door {
+        open_angle: f32,
+        #[serde(default)]
+        locked: bool,
+    }
+    let Some((mut session, path)) = open("shapes") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    // Without the file the Inspector edits RON as before.
+    session
+        .set_component(crate_id, "door", Some("(open_angel: 1.0)"))
+        .unwrap();
+    session.set_component(crate_id, "door", None).unwrap();
+
+    // The game writes what its components look like...
+    let mut components = runity::Components::new();
+    components.register::<Door>("door");
+    components
+        .write_shapes(root_of(&path).join(runity::project::SHAPES))
+        .unwrap();
+
+    // ...and the editor starts one from it, labels it, and refuses a typo.
+    assert_eq!(
+        session.add_component(crate_id, "door").unwrap(),
+        "(open_angle: 0.0, locked: false)"
+    );
+    let field = session
+        .inspect(crate_id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.door")
+        .unwrap();
+    assert_eq!(field.shape, "(open_angle: number, locked: bool)");
+    let e = session
+        .set_field(crate_id, "components.door", "(open_angel: 90.0)")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("did you mean `open_angle`?"), "{e}");
+    session
+        .set_field(crate_id, "components.door", "(open_angle: 90.0)")
+        .unwrap();
+    let e = session
+        .add_component(crate_id, "dor")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("did you mean `door`?"), "{e}");
+}

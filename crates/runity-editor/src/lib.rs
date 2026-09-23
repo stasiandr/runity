@@ -1469,6 +1469,17 @@ impl Session {
         let mut probe = EntityDesc::default();
         if let Some(ron) = ron {
             probe.set_component(name, ron).map_err(EditError::Scene)?;
+            // And against what the game says the component is, when it has
+            // said: a misspelt field is refused here, not found in play.
+            if let Some(shape) = self.component_shapes().get(name) {
+                let problems = shape.problems(ron);
+                if !problems.is_empty() {
+                    return Err(EditError::Scene(format!(
+                        "`{name}`: {}",
+                        problems.join("; ")
+                    )));
+                }
+            }
         }
         let value = probe.components.remove(name);
         self.modify(id, |desc| match value {

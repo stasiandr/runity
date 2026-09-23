@@ -58,6 +58,8 @@ struct Names {
     components: Option<Vec<String>>,
     /// The collision layers, from `layers.ron`.
     layers: runity::layers::Layers,
+    /// What the game's components look like, as the game last wrote them.
+    shapes: std::collections::BTreeMap<String, runity::shape::Shape>,
 }
 
 const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "rterrain"];
@@ -340,6 +342,10 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         materials,
         prefabs,
         components: project.component_names(),
+        shapes: std::fs::read_to_string(project.root().join(runity::project::SHAPES))
+            .ok()
+            .and_then(|text| ron::from_str(&text).ok())
+            .unwrap_or_default(),
         layers: match runity::layers::Layers::of(project) {
             Ok(layers) => layers,
             Err(e) => {
@@ -416,6 +422,17 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                     file,
                     format!("{who}: its joint hangs from {to}, which is not in this file — the body it holds on to has to be"),
                 ));
+            }
+        }
+        let values = entity
+            .components
+            .iter()
+            .chain(entity.overrides.values().flat_map(|o| o.components.iter()));
+        for (component, value) in values {
+            if let Some(shape) = names.shapes.get(component) {
+                for problem in shape.problems(value.get_ron()) {
+                    out.push(error(file, format!("{who}: `{component}`: {problem}")));
+                }
             }
         }
         if let Some(known) = &names.components {

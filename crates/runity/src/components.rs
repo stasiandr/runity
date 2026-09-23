@@ -53,6 +53,8 @@ pub struct Components {
     networked: BTreeMap<String, Write>,
     /// The ones a save game keeps, and how to write each out.
     saved: BTreeMap<String, Write>,
+    /// What each looks like, read off its `Deserialize`.
+    shapes: BTreeMap<String, fn() -> crate::shape::Shape>,
 }
 
 /// A component a scene names that could not be put on its entity.
@@ -106,7 +108,34 @@ impl Components {
     pub fn register<T: hecs::Component + DeserializeOwned>(&mut self, name: &str) -> &mut Self {
         self.by_name
             .insert(name.to_string(), (insert::<T>, remove::<T>));
+        self.shapes.insert(
+            name.to_string(),
+            crate::shape::of::<T> as fn() -> crate::shape::Shape,
+        );
         self
+    }
+
+    /// What each component looks like, by name: its fields and what they
+    /// hold — for an editor that does not link the game.
+    pub fn shapes(&self) -> BTreeMap<String, crate::shape::Shape> {
+        self.shapes
+            .iter()
+            .map(|(name, shape)| (name.clone(), shape()))
+            .collect()
+    }
+
+    /// Write [`Components::shapes`] where the editor and `runity check`
+    /// read them: `library/components.ron` in a project
+    /// ([`crate::project::SHAPES`]). Built from the game's code, like the
+    /// rest of `library/`, so it is not committed.
+    pub fn write_shapes(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        let text = ron::ser::to_string_pretty(&self.shapes(), ron::ser::PrettyConfig::new())
+            .map_err(|e| e.to_string())?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Say that `name` means `T`, and that it is networked: its value on

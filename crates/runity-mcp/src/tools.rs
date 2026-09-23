@@ -120,6 +120,7 @@ pub fn list() -> Vec<Value> {
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
+        tool("add_component", "Put one of the game's components on an entity with a value of its shape to start from — Add Component. Needs library/components.ron, which the game writes when it or `runity test` runs; without `name`, lists the components and what each holds.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &[]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -207,10 +208,15 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                     .iter()
                     .map(|f| {
                         format!(
-                            "{}{}: {}",
+                            "{}{}: {}{}",
                             f.name,
                             if f.overridden { " (overridden)" } else { "" },
-                            f.value
+                            f.value,
+                            if f.shape.is_empty() {
+                                String::new()
+                            } else {
+                                format!("    — {}", f.shape)
+                            }
                         )
                     })
                     .collect::<Vec<_>>()
@@ -677,6 +683,25 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .drop_asset(&what, x, y)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(id.to_string())])
+        }
+        "add_component" => {
+            let session = server.session()?;
+            let Some(name) = args.get("name").and_then(Value::as_str) else {
+                let shapes = session.component_shapes();
+                if shapes.is_empty() {
+                    return Ok(vec![text(
+                        "no library/components.ron yet: run the game or `runity test` once".to_string(),
+                    )]);
+                }
+                let mut out = String::new();
+                for (name, shape) in shapes {
+                    let _ = writeln!(out, "{name}: {shape}");
+                }
+                return Ok(vec![text(out)]);
+            };
+            let id = id(args, "id")?;
+            let value = session.add_component(id, name).map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{name}: {value}"))])
         }
         "hide" => {
             let ids = id_list(args)?;
