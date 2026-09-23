@@ -1,9 +1,16 @@
 # Kitchen Rush
 
 A little Overcooked on runity, played together over Steam: up to four
-cooks, one kitchen, orders for soup coming in faster than is comfortable. Chop tomatoes or onions on a
-board, three of one kind into a pot, the soup onto a plate, the plate out
-of the window before the order walks out.
+cooks, one kitchen, orders coming in faster than is comfortable.
+
+- **Soup**: three chopped tomatoes (or onions) in a pot, cooked, onto a
+  plate.
+- **Salad**: chopped tomato and chopped cabbage, put together on a plate.
+- **Burger**: a bun, a patty fried on a pan, chopped cabbage — on a plate.
+
+Plates go out of the window before the order walks out, and come back to
+the sink dirty a few seconds later: someone has to wash them (hold F), or
+the racks run dry. Pots and pans burn what is left on them.
 
 It is also the engine's worked example: nearly everything runity does is
 used here once, in the place a game would use it. Read it as a map.
@@ -17,16 +24,17 @@ cargo test -- --ignored steam             # a real Steam lobby (Steam running)
 runity check                              # every name the files use resolves
 ```
 
-With Steam running, **Host a kitchen** makes a lobby your friends can see;
+With Steam running, **Host a kitchen** makes a lobby your friends can see
+(**Join a friend** opens the Steam friends list to join theirs);
 **Invite friends** in the lobby opens Steam's invite dialog, and a friend
 who accepts — or joins your game from their friends list — is in. The
 kitchen opens shut: everyone can walk about, and the host's **Open the
 doors** starts the round for all. The app is Valve's Spacewar (480), which
 every Steam account may run for testing (`src/lobby.rs`, `APP_ID`).
-Without Steam the menu hosts and joins by address instead.
+Without Steam, the kitchen is yours alone.
 
 Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
-(and scrape a burnt pot), Q to throw food. Escape pauses.
+(and scrape a burnt pot, and wash plates), Q to throw food. Escape pauses.
 
 ## Where each part of the engine is
 
