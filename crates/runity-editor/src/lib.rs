@@ -53,6 +53,17 @@ pub struct Snap {
     pub scale: f32,
 }
 
+impl Snap {
+    /// What holding Ctrl during a drag snaps to when the grid is off:
+    /// Unity's increment snapping, a quarter metre, fifteen degrees, a
+    /// tenth of the size.
+    pub const INCREMENT: Snap = Snap {
+        meters: 0.25,
+        degrees: 15.0,
+        scale: 0.1,
+    };
+}
+
 /// Everything one open document needs.
 pub struct Session {
     gpu: Gpu,

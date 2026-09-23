@@ -3271,3 +3271,43 @@ fn a_heap_of_cubes_becomes_a_group_without_anything_moving() {
         session.camera().target
     );
 }
+
+#[test]
+fn ctrl_while_dragging_moves_in_quarter_metres() {
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let Some((mut session, _)) = open("increment") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let (w, h) = session.size();
+    let (_, r) = grab_right_of_centre(&mut session).expect("a handle");
+    session.gizmo_end();
+    let grab = ((w / 2 + r) as f32, (h / 2) as f32);
+    let mut input = Input::new();
+    view_frame(
+        &mut session,
+        &mut input,
+        grab,
+        &[E::KeyDown(Key::LeftControl), E::MouseDown(M::Left)],
+    );
+    view_frame(&mut session, &mut input, (grab.0 + 23.0, grab.1), &[]);
+    view_frame(
+        &mut session,
+        &mut input,
+        (grab.0 + 23.0, grab.1),
+        &[E::MouseUp(M::Left), E::KeyUp(Key::LeftControl)],
+    );
+    let x = session.transform(crate_id).unwrap().position.x;
+    assert!(x > 0.0, "it moved: {x}");
+    assert!(
+        (x / 0.25 - (x / 0.25).round()).abs() < 1e-4,
+        "in quarter metres: {x}"
+    );
+    assert_eq!(
+        session.snap(),
+        runity_editor::Snap::default(),
+        "the grid setting is untouched"
+    );
+}

@@ -12,6 +12,7 @@
 //! | click | select what is under it; shift adds; empty space clears |
 //! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
+//! | Ctrl + drag a handle | in steps: ¼ m, 15°, 0.1 where the grid is off |
 //! | Ctrl Shift + drag a move handle | onto whatever is under the cursor |
 //! | V + drag from a vertex | that vertex onto another thing's vertex |
 //! | alt + drag | orbit |
@@ -112,8 +113,23 @@ impl Session {
                 if self.surface_drag(x, y)? {
                     did.push("place");
                 }
-            } else if self.gizmo_drag(x, y)? {
-                did.push("drag");
+            } else {
+                // Ctrl: in steps, where the grid does not already say.
+                let grid = self.snap();
+                if ctrl {
+                    let or = |set: f32, step: f32| if set > 0.0 { set } else { step };
+                    let step = crate::Snap::INCREMENT;
+                    self.set_snap(crate::Snap {
+                        meters: or(grid.meters, step.meters),
+                        degrees: or(grid.degrees, step.degrees),
+                        scale: or(grid.scale, step.scale),
+                    });
+                }
+                let dragged = self.gizmo_drag(x, y);
+                self.set_snap(grid);
+                if dragged? {
+                    did.push("drag");
+                }
             }
         }
         if let Some((from, _)) = self.marquee {
