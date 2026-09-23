@@ -1013,7 +1013,10 @@ MCP; `runity::edit::push_face`): грань сдвигается на N метр
 такого радиуса (пройдёт ли тело в проём). Код игры двигает тела по
 сущности: `velocity`/`set_velocity`, `add_impulse` (прыжок, бросок, толчок
 взрыва — тяжёлое тело сдвигается меньше) и `add_force` на шаг (ветер,
-двигатель) — как velocity и AddForce у Rigidbody.
+двигатель) — как velocity и AddForce у Rigidbody. `freeze_turn: "xz"` в
+`physics` держит тело прямым, что бы в него ни врезалось, `freeze_move:
+"y"` — на своей высоте (Constraints у Rigidbody: Freeze Rotation и Freeze
+Position) — оси буквами.
 
 **Слои столкновений.** Один файл проекта, `layers.ron`, называет слои и
 пары, которые проходят друг сквозь друга: `(layers: ["default", "player",

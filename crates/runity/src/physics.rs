@@ -85,6 +85,24 @@ struct Built {
     layer: String,
 }
 
+/// What a line's `freeze_move` and `freeze_turn` hold still.
+fn locked(props: &crate::scene::BodyProps) -> LockedAxes {
+    let mut out = LockedAxes::empty();
+    for (on, axis) in [
+        (props.freeze_move.x, LockedAxes::TRANSLATION_LOCKED_X),
+        (props.freeze_move.y, LockedAxes::TRANSLATION_LOCKED_Y),
+        (props.freeze_move.z, LockedAxes::TRANSLATION_LOCKED_Z),
+        (props.freeze_turn.x, LockedAxes::ROTATION_LOCKED_X),
+        (props.freeze_turn.y, LockedAxes::ROTATION_LOCKED_Y),
+        (props.freeze_turn.z, LockedAxes::ROTATION_LOCKED_Z),
+    ] {
+        if on {
+            out |= axis;
+        }
+    }
+    out
+}
+
 /// A model's geometry, for a [`ColliderShape::Model`]. Attached to the
 /// entity by whoever knows the mesh — [`attach_collision_meshes`] — because
 /// the physics world never sees a library.
@@ -412,6 +430,7 @@ impl PhysicsWorld {
             .angular_damping(props.spin_drag.max(0.0))
             .gravity_scale(props.gravity)
             .ccd_enabled(props.fast)
+            .locked_axes(locked(&props))
             .build();
             let handle = self.bodies.insert(body);
             self.colliders
@@ -1933,6 +1952,46 @@ mod tests {
             physics.overlap_box(Vec3::new(3.0, 0.5, 0.0), Vec3::new(0.2, 0.2, 3.0), turned),
             both
         );
+    }
+
+    #[test]
+    fn a_frozen_axis_holds_whatever_hits_it() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (name: "floor", model: "m", body: Static, collider: Box(half: (20.0, 0.1, 20.0))),
+                (id: "00000000000000f1", name: "pole", model: "m", body: Dynamic, collider: Box(half: (0.1, 1.0, 0.1)),
+                 transform: (position: (0.0, 1.2, 0.0), rotation_deg: (0.0, 0.0, 10.0)),
+                 physics: (freeze_turn: "xz")),
+                (id: "00000000000000f2", name: "leaner", model: "m", body: Dynamic, collider: Box(half: (0.1, 1.0, 0.1)),
+                 transform: (position: (3.0, 1.2, 0.0), rotation_deg: (0.0, 0.0, 10.0))),
+                (id: "00000000000000f3", name: "hover", model: "m", body: Dynamic, collider: Sphere(radius: 0.2),
+                 transform: (position: (6.0, 2.0, 0.0)), physics: (freeze_move: "y")),
+            ])"#,
+        );
+        let tilt = |world: &World, id: &str| {
+            let entity = by_id(world, format!("00000000000000{id}").parse().unwrap());
+            *world.get::<&Transform>(entity).unwrap()
+        };
+        run_for(&mut physics, &mut world, 180);
+        let pole = tilt(&world, "f1");
+        let leaner = tilt(&world, "f2");
+        assert!(
+            (pole.rotation_deg.z - 10.0).abs() < 0.5,
+            "upright as it was: {:?}",
+            pole.rotation_deg
+        );
+        assert!(
+            (leaner.rotation_deg.z - 10.0).abs() > 5.0,
+            "the free one fell: {:?}",
+            leaner.rotation_deg
+        );
+        assert!(
+            (tilt(&world, "f3").position.y - 2.0).abs() < 1e-3,
+            "held at its height"
+        );
+        let props: crate::scene::BodyProps = ron::from_str(r#"(freeze_turn: "xz")"#).unwrap();
+        assert_eq!(ron::to_string(&props).unwrap(), r#"(freeze_turn:"xz")"#);
+        assert!(ron::from_str::<crate::scene::BodyProps>(r#"(freeze_turn: "xw")"#).is_err());
     }
 
     #[test]

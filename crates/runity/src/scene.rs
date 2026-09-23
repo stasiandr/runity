@@ -229,6 +229,60 @@ pub struct BodyProps {
     /// detection.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fast: bool,
+    /// Axes it may not move along, as letters: `"y"` keeps it at its height.
+    /// Unity's Freeze Position.
+    #[serde(default, skip_serializing_if = "Axes::is_none")]
+    pub freeze_move: Axes,
+    /// Axes it may not turn about: `"xz"` keeps a character upright
+    /// whatever knocks it. Unity's Freeze Rotation.
+    #[serde(default, skip_serializing_if = "Axes::is_none")]
+    pub freeze_turn: Axes,
+}
+
+/// Some of x, y and z, written as the letters: `"xz"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Axes {
+    pub x: bool,
+    pub y: bool,
+    pub z: bool,
+}
+
+impl Axes {
+    pub fn is_none(&self) -> bool {
+        !(self.x || self.y || self.z)
+    }
+}
+
+impl Serialize for Axes {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut text = String::new();
+        for (on, letter) in [(self.x, 'x'), (self.y, 'y'), (self.z, 'z')] {
+            if on {
+                text.push(letter);
+            }
+        }
+        s.serialize_str(&text)
+    }
+}
+
+impl<'de> Deserialize<'de> for Axes {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        let mut axes = Axes::default();
+        for c in text.chars() {
+            match c {
+                'x' => axes.x = true,
+                'y' => axes.y = true,
+                'z' => axes.z = true,
+                other => {
+                    return Err(serde::de::Error::custom(format!(
+                        "`{other}` in \"{text}\": axes are x, y and z"
+                    )))
+                }
+            }
+        }
+        Ok(axes)
+    }
 }
 
 impl Default for BodyProps {
@@ -241,6 +295,8 @@ impl Default for BodyProps {
             spin_drag: 0.0,
             gravity: 1.0,
             fast: false,
+            freeze_move: Axes::default(),
+            freeze_turn: Axes::default(),
         }
     }
 }
