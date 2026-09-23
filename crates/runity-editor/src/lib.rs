@@ -2767,6 +2767,12 @@ impl Session {
         }
     }
 
+    /// A sound asset by the name scenes use, from the library: what the
+    /// Project window plays to preview it.
+    pub fn sound(&self, name: &str) -> Option<&runity::asset::ArchivedSoundAsset> {
+        self.library.as_ref()?.sound_by_name(name)
+    }
+
     /// What a camera entity sees: its lens where it stands.
     pub fn camera_of(&self, id: EntityId) -> Option<Camera> {
         let (lens, placed) = self

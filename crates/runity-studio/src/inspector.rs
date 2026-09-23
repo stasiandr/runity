@@ -971,6 +971,7 @@ impl Inspector {
             Asset::Model(n, f) => (n.clone(), "model", f.clone()),
             Asset::Prefab(n) => (n.clone(), "prefab", Some(format!("prefabs/{n}.prefab"))),
             Asset::Material(n) => (n.clone(), "material", None),
+            Asset::Sound(n, f) => (n.clone(), "sound", Some(f.clone())),
             Asset::Scene(p) => (
                 p.file_stem()
                     .map(|s| s.to_string_lossy().into_owned())

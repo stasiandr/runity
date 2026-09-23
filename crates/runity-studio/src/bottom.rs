@@ -29,6 +29,8 @@ pub enum Asset {
     /// A model by name, and its source file when it has one in the project.
     Model(String, Option<String>),
     Material(String),
+    /// A sound by name, and its source file.
+    Sound(String, String),
 }
 
 impl Asset {
@@ -38,6 +40,7 @@ impl Asset {
             Asset::Prefab(_) => "package",
             Asset::Model(..) => "box",
             Asset::Material(_) => "sparkles",
+            Asset::Sound(..) => "music",
         }
     }
 
@@ -47,7 +50,7 @@ impl Asset {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) => {
+            Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
                 n.strip_prefix("builtin:").unwrap_or(n).to_string()
             }
         }
@@ -292,6 +295,14 @@ impl Bottom {
                     .into_iter()
                     .filter(|a| a.kind == "model")
                     .map(|a| Asset::Model(a.name, Some(a.file))),
+            );
+        }
+        if let Ok(assets) = session.assets() {
+            out.extend(
+                assets
+                    .into_iter()
+                    .filter(|a| a.kind == "sound")
+                    .map(|a| Asset::Sound(a.name, a.file)),
             );
         }
         out.extend(
@@ -746,6 +757,7 @@ impl Bottom {
                 Some(Asset::Material(name)) => {
                     requests.action = Some(Action::SetField("material".into(), name))
                 }
+                Some(Asset::Sound(name, _)) => requests.action = Some(Action::PlaySound(name)),
                 None => {}
             },
             Event::Click {
@@ -817,6 +829,7 @@ fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
             let p = root.join("materials").join(format!("{n}.rmat"));
             p.is_file().then(|| rel(p)).flatten()
         }
+        Asset::Sound(_, file) => Some(file.clone()),
     }
 }
 
@@ -841,6 +854,10 @@ fn asset_menu(asset: &Asset, session: &Session) -> Vec<crate::menu::MenuItem> {
             "Apply to the Selection",
             Action::SetField("material".into(), n.clone()),
         )),
+        Asset::Sound(n, _) => {
+            items.push(MenuItem::new("Play", Action::PlaySound(n.clone())));
+            items.push(MenuItem::new("Stop", Action::StopSound));
+        }
     }
     if let Some(file) = asset_file(asset, session) {
         items.push(MenuItem::separator());

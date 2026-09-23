@@ -188,6 +188,10 @@ pub struct Studio {
     animation: Animation,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
+    /// The sound device, opened the first time a sound is listened to, and
+    /// what is playing on it.
+    audio: Option<runity::audio::Audio>,
+    listening: Option<runity::audio::Playing>,
     /// The Game view's width to height, or free.
     aspect: Option<(u32, u32)>,
     aspect_button: NodeId,
@@ -490,6 +494,8 @@ impl Studio {
             animation,
             last_draw_ms: 0.0,
             aspect: None,
+            audio: None,
+            listening: None,
             aspect_button,
             cam_holder,
             cam_label,
@@ -1672,6 +1678,7 @@ impl Studio {
         let s = &mut self.session;
         let result = match asset {
             Asset::Model(name, _) | Asset::Prefab(name) => s.drop_asset(&name, x, y).map(|_| ()),
+            Asset::Sound(..) => Ok(()),
             Asset::Material(name) => match s.pick(x, y) {
                 Some(id) => s.set_material_name(id, &name),
                 None => Ok(()),
@@ -1782,6 +1789,27 @@ impl Studio {
                         self.navigation
                             .then(runity::navigation::NavSettings::default),
                     );
+                }
+                Action::PlaySound(name) => {
+                    let sound = s
+                        .sound(&name)
+                        .ok_or_else(|| format!("no sound called {name} in the library"))?;
+                    if self.audio.is_none() {
+                        self.audio = Some(
+                            runity::audio::Audio::new()
+                                .map_err(|e| format!("no audio device: {e}"))?,
+                        );
+                    }
+                    let audio = self.audio.as_mut().expect("made above");
+                    if let Some(mut old) = self.listening.take() {
+                        old.stop();
+                    }
+                    self.listening = Some(audio.play(sound, 1.0)?);
+                }
+                Action::StopSound => {
+                    if let Some(mut old) = self.listening.take() {
+                        old.stop();
+                    }
                 }
                 Action::FieldReset(field) => {
                     for id in s.selection() {

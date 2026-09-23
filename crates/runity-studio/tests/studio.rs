@@ -1245,3 +1245,38 @@ fn a_selected_camera_shows_what_it_sees_in_the_corner() {
         "hidden with nothing selected"
     );
 }
+
+/// A tenth of a second of silence, as a WAV file.
+fn silence() -> Vec<u8> {
+    let samples = 4410u32;
+    let data = samples * 2;
+    let mut out = Vec::new();
+    out.extend(b"RIFF");
+    out.extend((36 + data).to_le_bytes());
+    out.extend(b"WAVEfmt ");
+    out.extend(16u32.to_le_bytes());
+    out.extend(1u16.to_le_bytes()); // PCM
+    out.extend(1u16.to_le_bytes()); // mono
+    out.extend(44100u32.to_le_bytes());
+    out.extend((44100u32 * 2).to_le_bytes());
+    out.extend(2u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(b"data");
+    out.extend(data.to_le_bytes());
+    out.extend(std::iter::repeat_n(0u8, data as usize));
+    out
+}
+
+#[test]
+fn a_sound_is_listed_in_the_project_to_listen_to() {
+    let Some((mut s, dir)) = studio() else { return };
+    std::fs::write(dir.join("assets/beep.wav"), silence()).unwrap();
+    menu(&mut s, "Assets", "Refresh");
+    assert!(s.session.sound("beep").is_some(), "imported");
+    click(&mut s, "project search");
+    type_text(&mut s, "beep");
+    s.frame();
+    // Not played here: a test should not make the machine beep.
+    press(&mut s, "asset beep", MouseButton::Right);
+    assert!(s.ui.find("menu Play").is_some() && s.ui.find("menu Stop").is_some());
+}

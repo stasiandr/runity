@@ -104,6 +104,9 @@ pub enum Action {
     FieldRemove(String),
     /// The Game view's shape: free, or a width to height.
     Aspect(Option<(u32, u32)>),
+    /// Listen to a sound asset, or stop.
+    PlaySound(String),
+    StopSound,
     /// A game component by name onto the selection.
     AddComponent(String),
     /// Blockout: a floor or a wall drawn as a Poly Shape in front of the view.

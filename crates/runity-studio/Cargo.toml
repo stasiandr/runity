@@ -16,7 +16,7 @@ repository.workspace = true
 [dependencies]
 arboard = { version = "3", default-features = false }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
-runity = { version = "0.1.0", path = "../runity", features = ["desktop-shell"] }
+runity = { version = "0.1.0", path = "../runity", features = ["desktop-shell", "audio"] }
 runity-cli = { version = "0.1.0", path = "../runity-cli" }
 runity-editor = { version = "0.1.0", path = "../runity-editor" }
 runity-import = { version = "0.1.0", path = "../runity-import" }
