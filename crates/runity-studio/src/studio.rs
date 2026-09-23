@@ -71,6 +71,28 @@ pub struct Requests {
     pub inspect: Option<Asset>,
 }
 
+/// What a question asked in a dialog is for.
+#[derive(Debug, Clone, PartialEq)]
+enum Ask {
+    RenameAsset(String),
+    DuplicateAsset(String),
+    SaveMaterial,
+    NewComponent,
+    NewSystem,
+    Variant,
+    NewScene,
+    Snap,
+}
+
+/// A dialog asking for a name: Nocturne's `.dialog` over its backdrop.
+struct Prompt {
+    overlay: NodeId,
+    field: NodeId,
+    ok: NodeId,
+    cancel: NodeId,
+    ask: Ask,
+}
+
 /// An open menu: its overlay, and what each line does.
 struct Popup {
     overlay: NodeId,
@@ -188,6 +210,9 @@ pub struct Studio {
     right: NodeId,
     lower: NodeId,
     popup: Option<Popup>,
+    prompt: Option<Prompt>,
+    /// Where a walker can go is shown.
+    navigation: bool,
     seen: Option<Stamp>,
     /// Buttons that went down in the Scene view: their release goes there
     /// too, wherever the pointer is by then.
@@ -407,6 +432,8 @@ impl Studio {
             right,
             lower,
             popup: None,
+            prompt: None,
+            navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
             registered: None,
@@ -1184,6 +1211,30 @@ impl Studio {
     // --- events ----------------------------------------------------------
 
     fn dispatch(&mut self, node: NodeId, event: &Event, requests: &mut Requests) {
+        // A dialog takes everything aimed at it.
+        if let Some(p) = &self.prompt {
+            let (field, ok, cancel, overlay) = (p.field, p.ok, p.cancel, p.overlay);
+            match event {
+                Event::Submit(_) if node == field => {
+                    self.answer();
+                    return;
+                }
+                Event::Click { .. } if node == ok => {
+                    self.answer();
+                    return;
+                }
+                Event::Cancel if node == field => {
+                    self.close_prompt();
+                    return;
+                }
+                Event::Click { .. } if node == cancel || node == overlay => {
+                    self.close_prompt();
+                    return;
+                }
+                _ if node == field => return,
+                _ => {}
+            }
+        }
         // An open menu takes the click first.
         if let Some(popup) = &self.popup {
             if let Event::Click { .. } = event {
@@ -1423,17 +1474,6 @@ impl Studio {
         let e = |e: runity_editor::EditError| e.to_string();
         {
             match action {
-                Action::NewScene => {
-                    let name = format!(
-                        "scene-{}",
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map_or(0, |d| d.as_secs())
-                            % 100_000
-                    );
-                    let path = s.new_scene(&name).map_err(e)?;
-                    s.say(Level::Info, format!("new scene {}", path.display()));
-                }
                 Action::OpenScene(path) => {
                     if s.is_modified() && self.discard_asked.as_ref() != Some(&path) {
                         self.discard_asked = Some(path);
@@ -1444,6 +1484,94 @@ impl Studio {
                     s.say(Level::Info, format!("opened {}", path.display()));
                     for m in missing {
                         s.say(Level::Warning, m);
+                    }
+                }
+                Action::NewScene => {
+                    self.ask("New scene", "", Ask::NewScene);
+                }
+                Action::AssetRename(file) => {
+                    let stem = std::path::Path::new(&file)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.ask(&format!("Rename {file}"), &stem, Ask::RenameAsset(file));
+                }
+                Action::AssetDuplicate(file) => {
+                    let stem = std::path::Path::new(&file)
+                        .file_stem()
+                        .map(|s| format!("{}_copy", s.to_string_lossy()))
+                        .unwrap_or_default();
+                    self.ask(&format!("Copy {file} as"), &stem, Ask::DuplicateAsset(file));
+                }
+                Action::AssetDelete(file) => {
+                    s.delete_asset(&file).map_err(e)?;
+                    s.say(Level::Info, format!("deleted {file}"));
+                }
+                Action::AssetReveal(file) => {
+                    let path = s
+                        .project()
+                        .map(|p| p.root().join(&file))
+                        .ok_or("no project")?;
+                    reveal(&path)
+                        .map_err(|err| format!("cannot show {}: {err}", path.display()))?;
+                }
+                Action::NewComponent => {
+                    self.ask("New component (snake_case)", "", Ask::NewComponent)
+                }
+                Action::NewSystem => self.ask("New system (snake_case)", "", Ask::NewSystem),
+                Action::SaveMaterial => {
+                    if s.selected().is_none() {
+                        return Err("select something to take the colour of".into());
+                    }
+                    self.ask("Save material as", "", Ask::SaveMaterial);
+                }
+                Action::MakeVariant => {
+                    let id = s.selected().ok_or("select a prefab instance")?;
+                    let base = s
+                        .entity_prefab(id)
+                        .ok_or("the selection is not a prefab instance")?;
+                    self.ask(
+                        "Prefab variant name",
+                        &format!("{base}_variant"),
+                        Ask::Variant,
+                    );
+                }
+                Action::SnapSettings => {
+                    let snap = s.snap();
+                    let now = if snap.meters > 0.0 {
+                        snap
+                    } else {
+                        runity_editor::Snap::INCREMENT
+                    };
+                    self.ask(
+                        "Snap: metres, degrees, scale",
+                        &format!("{}, {}, {}", now.meters, now.degrees, now.scale),
+                        Ask::Snap,
+                    );
+                }
+                Action::ToggleNavigation => {
+                    self.navigation = !self.navigation;
+                    s.set_show_navigation(
+                        self.navigation
+                            .then(runity::navigation::NavSettings::default),
+                    );
+                }
+                Action::AddComponent(name) => {
+                    // Described by the game: its shape's example. Written
+                    // but not built yet: `()`, until the game says more.
+                    let described = s.component_shapes().contains_key(&name);
+                    for id in s.selection() {
+                        if described {
+                            s.add_component(id, &name).map_err(e)?;
+                        } else {
+                            s.set_component(id, &name, Some("()")).map_err(e)?;
+                        }
+                    }
+                    if !described {
+                        s.say(
+                            Level::Info,
+                            format!("`{name}` is on as (): its fields show here once the game is built and has described it"),
+                        );
                     }
                 }
                 Action::OpenSceneDialog => {
@@ -1846,6 +1974,171 @@ impl Studio {
     }
 
     // --- menus -----------------------------------------------------------
+
+    /// Ask for a line of text in a dialog; what it is for says what the
+    /// answer does.
+    fn ask(&mut self, title: &str, initial: &str, ask: Ask) {
+        self.close_prompt();
+        self.close_popup();
+        let root = self.ui.root();
+        let (w, h, _) = self.ui.viewport();
+        let overlay = self.ui.add(
+            root,
+            Style::column()
+                .absolute(0.0, 0.0)
+                .size(w, h)
+                .center()
+                .background(NEUTRAL_900.alpha(50))
+                .clickable(),
+        );
+        self.ui.set_layer(overlay, true);
+        self.ui.set_name(overlay, "dialog overlay");
+        let dialog = self.ui.add(
+            overlay,
+            Style::column()
+                .width(420.0)
+                .padding(SPACE_4)
+                .gap(SPACE_3)
+                .radius(RADIUS_LG)
+                .background(SURFACE)
+                .border(1.0, NEUTRAL_500)
+                .clickable(),
+        );
+        self.ui.set_name(dialog, "dialog");
+        self.ui.add_text(
+            dialog,
+            Style::default()
+                .text_size(16.0)
+                .weight(500)
+                .text_color(TEXT)
+                .nowrap(),
+            title,
+        );
+        let field = self.ui.add_field(
+            dialog,
+            field_style().full_width().height(28.0).text_size(13.0),
+            initial,
+        );
+        self.ui.set_name(field, "dialog field");
+        let row = self.ui.add(dialog, Style::row().full_width().gap(SPACE_2));
+        spacer(&mut self.ui, row);
+        let cancel = button(&mut self.ui, row, "dialog cancel", "Cancel", false);
+        let ok = button(&mut self.ui, row, "dialog ok", "OK", true);
+        self.ui.focus(Some(field));
+        self.ui.click(field);
+        // All of it selected, so typing replaces it.
+        use runity::input::InputEvent as E;
+        let cmd = if cfg!(target_os = "macos") {
+            Key::LeftSuper
+        } else {
+            Key::LeftControl
+        };
+        for e in [
+            E::KeyDown(cmd),
+            E::KeyDown(Key::A),
+            E::KeyUp(Key::A),
+            E::KeyUp(cmd),
+        ] {
+            self.ui.handle(&e);
+        }
+        self.ui.events();
+        self.prompt = Some(Prompt {
+            overlay,
+            field,
+            ok,
+            cancel,
+            ask,
+        });
+    }
+
+    fn close_prompt(&mut self) {
+        if let Some(p) = self.prompt.take() {
+            self.ui.remove(p.overlay);
+            self.ui.focus(Some(self.viewport));
+        }
+    }
+
+    /// The dialog's answer, done.
+    fn answer(&mut self) {
+        let Some(p) = &self.prompt else { return };
+        let text = self.ui.text(p.field).unwrap_or_default().trim().to_string();
+        let ask = p.ask.clone();
+        self.close_prompt();
+        if text.is_empty() {
+            return;
+        }
+        if let Err(message) = self.do_answer(ask, &text) {
+            self.session.say(Level::Error, message);
+        }
+        self.refresh();
+    }
+
+    fn do_answer(&mut self, ask: Ask, text: &str) -> Result<(), String> {
+        let e = |e: runity_editor::EditError| e.to_string();
+        let s = &mut self.session;
+        match ask {
+            Ask::RenameAsset(file) => {
+                let to = sibling(&file, text);
+                s.rename_asset(&file, &to).map_err(e)?;
+                s.say(Level::Info, format!("{file} is now {to}"));
+            }
+            Ask::DuplicateAsset(file) => {
+                let to = sibling(&file, text);
+                s.duplicate_asset(&file, &to).map_err(e)?;
+                s.say(Level::Info, format!("copied {file} to {to}"));
+            }
+            Ask::SaveMaterial => {
+                let id = s
+                    .selected()
+                    .ok_or("select something to take the colour of")?;
+                s.save_material(id, text).map_err(e)?;
+                s.say(Level::Info, format!("saved material {text}"));
+            }
+            Ask::NewComponent => {
+                let project = s.project().ok_or("no project is open")?;
+                let path =
+                    runity_cli::add::component(project, text).map_err(|e| format!("{e:#}"))?;
+                s.say(Level::Info, format!("wrote {}", path.display()));
+            }
+            Ask::NewSystem => {
+                let project = s.project().ok_or("no project is open")?;
+                let added = runity_cli::add::system(project, text).map_err(|e| format!("{e:#}"))?;
+                s.say(Level::Info, format!("wrote {}", added.file.display()));
+                if !added.called {
+                    s.say(
+                        Level::Warning,
+                        format!("src/main.rs has no `// systems, in order` line: call {} from step yourself", runity_cli::add::system_call(text)),
+                    );
+                }
+            }
+            Ask::Variant => {
+                let id = s.selected().ok_or("select a prefab instance")?;
+                s.make_variant(id, text).map_err(e)?;
+                s.say(Level::Info, format!("made variant {text}"));
+            }
+            Ask::NewScene => {
+                let path = s.new_scene(text).map_err(e)?;
+                s.say(Level::Info, format!("new scene {}", path.display()));
+            }
+            Ask::Snap => {
+                let n: Vec<f32> = text
+                    .split([',', ' '])
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.parse::<f32>())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "three numbers: metres, degrees, scale — 0.25, 15, 0.1")?;
+                let [meters, degrees, scale] = n[..] else {
+                    return Err("three numbers: metres, degrees, scale — 0.25, 15, 0.1".into());
+                };
+                s.set_snap(runity_editor::Snap {
+                    meters,
+                    degrees,
+                    scale,
+                });
+            }
+        }
+        Ok(())
+    }
 
     fn open_popup(&mut self, items: Vec<MenuItem>, x: f32, y: f32) {
         self.close_popup();
@@ -2309,4 +2602,39 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
         middle,
         seen: None,
     }
+}
+
+/// `file` renamed to `name`, in its folder, with its extension.
+fn sibling(file: &str, name: &str) -> String {
+    let path = std::path::Path::new(file);
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let name = name.strip_suffix(&ext).unwrap_or(name);
+    match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => format!("{}/{name}{ext}", dir.display()),
+        None => format!("{name}{ext}"),
+    }
+}
+
+/// Show a file in the system's file manager.
+fn reveal(path: &std::path::Path) -> std::io::Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        let mut c = std::process::Command::new("open");
+        c.arg("-R");
+        c
+    } else if cfg!(target_os = "windows") {
+        let mut c = std::process::Command::new("explorer");
+        c.arg("/select,");
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    let target = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or(path).to_path_buf()
+    };
+    command.arg(target).spawn().map(|_| ())
 }

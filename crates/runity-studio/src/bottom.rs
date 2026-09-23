@@ -728,6 +728,14 @@ impl Bottom {
                 requests.refresh = true;
             }
             Event::Changed(_) | Event::Cancel if node == self.search => requests.refresh = true,
+            Event::Click {
+                button: runity::input::MouseButton::Right,
+                ..
+            } if self.entries.contains_key(&node) => {
+                let asset = self.entries[&node].clone();
+                let (x, y) = _ui.pointer();
+                requests.menu = Some((asset_menu(&asset, session), x, y));
+            }
             Event::Click { count, .. } if *count >= 2 => match self.entries.get(&node).cloned() {
                 Some(Asset::Scene(path)) => requests.action = Some(Action::OpenScene(path)),
                 Some(Asset::Prefab(name)) => {
@@ -787,4 +795,68 @@ fn open_in_editor(session: &mut Session, at: &runity_editor::console::Location) 
             session.say(Level::Error, format!("cannot open {}: {e}", file.display()));
         }
     }
+}
+
+/// A Project entry's file, project-relative, when it has one of its own —
+/// builtins do not.
+fn asset_file(asset: &Asset, session: &Session) -> Option<String> {
+    let root = session.project()?.root().to_path_buf();
+    let rel = |p: std::path::PathBuf| {
+        p.strip_prefix(&root)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+    };
+    match asset {
+        Asset::Scene(p) => rel(p.clone()),
+        Asset::Model(_, file) => file.clone(),
+        Asset::Prefab(n) => {
+            let p = root.join("prefabs").join(format!("{n}.prefab"));
+            p.is_file().then(|| rel(p)).flatten()
+        }
+        Asset::Material(n) => {
+            let p = root.join("materials").join(format!("{n}.rmat"));
+            p.is_file().then(|| rel(p)).flatten()
+        }
+    }
+}
+
+/// A right click on a Project entry: Unity's asset context menu.
+fn asset_menu(asset: &Asset, session: &Session) -> Vec<crate::menu::MenuItem> {
+    use crate::menu::MenuItem;
+    let mut items = Vec::new();
+    match asset {
+        Asset::Scene(p) => items.push(MenuItem::new("Open", Action::OpenScene(p.clone()))),
+        Asset::Prefab(n) => {
+            items.push(MenuItem::new("Open Prefab", Action::OpenPrefab(n.clone())));
+            items.push(MenuItem::new(
+                "Place in the Scene",
+                Action::Place(n.clone()),
+            ));
+        }
+        Asset::Model(n, _) => items.push(MenuItem::new(
+            "Place in the Scene",
+            Action::Place(n.clone()),
+        )),
+        Asset::Material(n) => items.push(MenuItem::new(
+            "Apply to the Selection",
+            Action::SetField("material".into(), n.clone()),
+        )),
+    }
+    if let Some(file) = asset_file(asset, session) {
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("Rename…", Action::AssetRename(file.clone())));
+        items.push(MenuItem::new(
+            "Duplicate…",
+            Action::AssetDuplicate(file.clone()),
+        ));
+        items.push(MenuItem::new("Delete", Action::AssetDelete(file.clone())));
+        items.push(MenuItem::separator());
+        let reveal = if cfg!(target_os = "macos") {
+            "Reveal in Finder"
+        } else {
+            "Show in Explorer"
+        };
+        items.push(MenuItem::new(reveal, Action::AssetReveal(file)));
+    }
+    items
 }

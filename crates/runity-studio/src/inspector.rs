@@ -87,6 +87,8 @@ enum Part {
     /// The «…» next to a field with a list to pick from.
     Pick(String),
     AddComponent,
+    /// The list of the game's components.
+    PickComponent,
     /// The material's colour as `#rrggbb`.
     Hex,
     /// One of the colour's hue, saturation and value, 0 to 1.
@@ -495,7 +497,22 @@ impl Inspector {
             );
             self.parts.insert(chip, Part::Reveal(name.to_string()));
         }
-        let add = ui.add_field(foot, field_style().full_width(), "");
+        let add_row = ui.add(foot, Style::row().full_width().gap(SPACE_1).center_items());
+        let add = ui.add_field(add_row, field_style().fill(), "");
+        // The components the game has: a list to pick from, as Unity's Add
+        // Component button.
+        let pick = ui.add(
+            add_row,
+            Style::row()
+                .size(22.0, 22.0)
+                .fixed()
+                .center()
+                .radius(6.0)
+                .hover(HOVER),
+        );
+        ui.set_name(pick, "pick component");
+        icon(ui, pick, "plus", LABEL);
+        self.parts.insert(pick, Part::PickComponent);
         ui.set_name(add, "add component");
         ui.set_placeholder(add, "Add component by name, Enter");
         self.parts.insert(add, Part::AddComponent);
@@ -1384,6 +1401,38 @@ impl Inspector {
                 }
                 self.built = false;
                 requests.refresh = true;
+            }
+            (Part::PickComponent, Event::Click { .. }) => {
+                let mut names: Vec<String> = session.component_shapes().into_keys().collect();
+                // Components written but not yet described: their files.
+                if let Some(project) = session.project() {
+                    if let Ok(read) =
+                        std::fs::read_dir(project.root().join(runity::project::COMPONENTS))
+                    {
+                        for e in read.flatten() {
+                            let p = e.path();
+                            if p.extension().is_some_and(|x| x == "rs") {
+                                let n = p.file_stem().unwrap().to_string_lossy().into_owned();
+                                if n != "mod" && !names.contains(&n) {
+                                    names.push(n);
+                                }
+                            }
+                        }
+                    }
+                }
+                names.sort();
+                let mut items: Vec<MenuItem> = names
+                    .into_iter()
+                    .map(|n| MenuItem::new(&n, Action::AddComponent(n.clone())))
+                    .collect();
+                if items.is_empty() {
+                    items.push(MenuItem::new("Create Component…", Action::NewComponent));
+                } else {
+                    items.push(MenuItem::separator());
+                    items.push(MenuItem::new("Create Component…", Action::NewComponent));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x - 200.0, r.y + r.height));
             }
             (Part::AddComponent, Event::Submit(name)) => {
                 let name = name.trim().to_string();

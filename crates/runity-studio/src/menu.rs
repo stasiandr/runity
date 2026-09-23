@@ -78,6 +78,26 @@ pub enum Action {
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,
+    /// A Project entry, by its project-relative file: renamed or copied
+    /// under a name asked for, deleted, shown in the file manager.
+    AssetRename(String),
+    AssetDuplicate(String),
+    AssetDelete(String),
+    AssetReveal(String),
+    /// Ask for a name, then write `src/components/NAME.rs` or
+    /// `src/systems/NAME.rs` (`runity add`).
+    NewComponent,
+    NewSystem,
+    /// Ask for a name and save the selection's colour as a material.
+    SaveMaterial,
+    /// Ask for a name and save the selected instance as a prefab variant.
+    MakeVariant,
+    /// Ask for the snap steps.
+    SnapSettings,
+    /// Show where a walker can go, or stop.
+    ToggleNavigation,
+    /// A game component by name onto the selection.
+    AddComponent(String),
     /// Blockout: a floor or a wall drawn as a Poly Shape in front of the view.
     PolyFloor,
     PolyWall,
@@ -190,6 +210,18 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Snap to Grid", Action::SnapToGrid),
             ],
         ),
+        (
+            "Assets",
+            vec![
+                item("Create Component…", Action::NewComponent),
+                item("Create System…", Action::NewSystem),
+                item("Save Material from Selection…", Action::SaveMaterial),
+                MenuItem::separator(),
+                item("Import…", Action::Import),
+                item("Refresh", Action::ReloadAssets),
+                item("Check Project", Action::CheckProject),
+            ],
+        ),
         ("GameObject", create_items(true)),
         (
             "View",
@@ -211,6 +243,8 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Grid", Action::ToggleGrid),
                 item("Colliders", Action::ToggleColliders),
                 item("Snap", Action::ToggleSnap),
+                item("Snap Settings…", Action::SnapSettings),
+                item("Navigation", Action::ToggleNavigation),
             ],
         ),
         (
@@ -324,6 +358,7 @@ pub fn context_menu() -> Vec<MenuItem> {
         item("Isolate", Action::Isolate),
         MenuItem::separator(),
         item("Make Prefab", Action::MakePrefab),
+        item("Make Prefab Variant…", Action::MakeVariant),
         item("Apply Overrides", Action::ApplyOverrides),
         item("Revert Overrides", Action::RevertOverrides),
         item("Unpack Prefab", Action::Unpack),

@@ -935,3 +935,105 @@ fn a_long_value_is_edited_on_several_lines() {
         "{light}"
     );
 }
+
+/// Answer the open dialog with `text`.
+fn answer(s: &mut Studio, text: &str) {
+    assert!(
+        s.ui.find("dialog field").is_some(),
+        "a dialog is open:\n{}",
+        s.ui.dump()
+    );
+    type_text(s, text);
+    key(s, Key::Enter);
+    assert!(s.ui.find("dialog field").is_none(), "and closed");
+}
+
+#[test]
+fn assets_are_renamed_and_made_from_the_menus() {
+    let Some((mut s, dir)) = studio() else { return };
+    // Rename a material from its context menu: the file moves and the
+    // crate that used it follows.
+    click(&mut s, "project search");
+    type_text(&mut s, "earth");
+    s.frame();
+    press(&mut s, "asset earth", MouseButton::Right);
+    let menu_dump: Vec<String> =
+        s.ui.dump()
+            .lines()
+            .filter(|l| l.contains("#menu"))
+            .map(String::from)
+            .collect();
+    assert!(s.ui.find("menu Rename…").is_some(), "{menu_dump:?}");
+    click(&mut s, "menu Rename…");
+    answer(&mut s, "soil");
+    assert!(dir.join("materials/soil.rmat").is_file(), "renamed");
+    let crate_id = s.session.find("crate").unwrap();
+    assert_eq!(s.session.material_name(crate_id).as_deref(), Some("soil"));
+
+    // A component script, then on the crate from the list.
+    menu(&mut s, "Assets", "Create Component…");
+    answer(&mut s, "door");
+    assert!(dir.join("src/components/door.rs").is_file());
+    click(&mut s, "line crate");
+    click(&mut s, "pick component");
+    click(&mut s, "menu door");
+    assert!(
+        s.session
+            .inspect(crate_id)
+            .unwrap()
+            .iter()
+            .any(|f| f.name == "components.door"),
+        "the crate has a door: {:?}\n{}",
+        s.session
+            .console()
+            .iter()
+            .map(|l| &l.text)
+            .collect::<Vec<_>>(),
+        s.ui.dump()
+            .lines()
+            .filter(|l| l.contains("#menu"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    // The crate's colour as a material of its own.
+    menu(&mut s, "Assets", "Save Material from Selection…");
+    answer(&mut s, "rust");
+    assert!(dir.join("materials/rust.rmat").is_file());
+
+    // A variant of an instance of the campfire prefab.
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.rename(fire, "fire instance").unwrap();
+    s.refresh();
+    press(&mut s, "line fire instance", MouseButton::Right);
+    click(&mut s, "menu Make Prefab Variant…");
+    assert!(
+        s.ui.find("dialog field").is_some(),
+        "{:?}",
+        s.session
+            .console()
+            .iter()
+            .map(|l| &l.text)
+            .collect::<Vec<_>>()
+    );
+    answer(&mut s, "campfire_lit");
+    assert!(dir.join("prefabs/campfire_lit.prefab").is_file());
+}
+
+#[test]
+fn snap_steps_and_navigation_from_the_view_menu() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "View", "Snap Settings…");
+    // The field starts with the current steps, all selected.
+    answer(&mut s, "0.5, 30, 0.2");
+    assert_eq!(s.session.snap().meters, 0.5);
+    assert_eq!(s.session.snap().degrees, 30.0);
+    menu(&mut s, "View", "Navigation");
+    s.frame();
+    s.frame();
+    // Baked and drawn (this scene's ground has no collider, so the count
+    // itself may be nothing).
+    assert!(s.session.walkable_cells().is_some(), "navigation is shown");
+}
