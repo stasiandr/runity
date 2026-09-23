@@ -116,6 +116,8 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "measure",
         "align",
         "replace_with_prefab",
+        "inspect",
+        "set_field",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -329,6 +331,15 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     let seen = agent.call("render", json!({ "from_game": true })).unwrap();
     assert_eq!(seen[0]["type"], "image");
     agent.text("delete_entity", json!({ "id": eye }));
+    agent.text(
+        "set_field",
+        json!({ "id": wall, "field": "layer", "value": "player" }),
+    );
+    let fields = agent.text("inspect", json!({ "id": wall }));
+    assert!(
+        fields.contains("layer: player") && fields.contains("model: builtin:cube"),
+        "{fields}"
+    );
     let size = agent.text("measure", json!({ "id": wall }));
     assert!(size.contains("size (10.00, 3.00, 0.30)"), "{size}");
     let post = agent.text(

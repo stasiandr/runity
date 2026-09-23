@@ -2616,6 +2616,7 @@ dependencies = [
  "image",
  "runity",
  "runity-import",
+ "serde",
  "serde_json",
 ]
 

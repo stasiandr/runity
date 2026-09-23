@@ -2173,3 +2173,88 @@ fn greybox_cubes_become_the_real_prefab_where_they_stood() {
     );
     assert!(session.replace_with_prefab("nothing").is_err());
 }
+
+#[test]
+fn the_hierarchy_and_the_inspector_are_data_a_window_draws() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "panels",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "camp", model: "", children: [
+                (id: "00000000000000a2", name: "tent", model: "builtin:cube"),
+            ]),
+            (id: "00000000000000a3", name: "fire", prefab: "campfire"),
+        ])"#,
+    );
+    std::fs::write(
+        root_of(&path).join("prefabs/campfire.prefab"),
+        r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let names = |session: &Session| -> Vec<(String, usize)> {
+        session
+            .hierarchy()
+            .into_iter()
+            .map(|r| (r.name, r.depth))
+            .collect()
+    };
+    // The scene open, the instance closed.
+    assert_eq!(
+        names(&session),
+        [("camp".into(), 0), ("tent".into(), 1), ("fire".into(), 0)]
+    );
+    let (camp, fire): (EntityId, EntityId) = ("a1".parse().unwrap(), "a3".parse().unwrap());
+    session.set_open(camp, false);
+    session.set_open(fire, true);
+    let rows = session.hierarchy();
+    assert_eq!(
+        rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+        ["camp", "fire", "ember"]
+    );
+    assert!(rows[2].part && rows[1].prefab.as_deref() == Some("campfire"));
+    assert!(!session.can_undo(), "folding is not an edit");
+
+    // The Inspector: fields as text, set by name, one step each.
+    let tent: EntityId = "a2".parse().unwrap();
+    let field = |session: &Session, id, name: &str| {
+        session
+            .inspect(id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == name)
+            .unwrap()
+    };
+    assert_eq!(field(&session, tent, "model").value, "builtin:cube");
+    session
+        .set_field(tent, "position", "(2.0, 0.0, 1.0)")
+        .unwrap();
+    session.set_field(tent, "material", "stone").unwrap();
+    session
+        .set_field(tent, "components.door", "(locked: true)")
+        .unwrap();
+    assert_eq!(session.transform(tent).unwrap().position.x, 2.0);
+    assert_eq!(field(&session, tent, "material").value, "\"stone\"");
+    assert_eq!(
+        field(&session, tent, "components.door").value,
+        "(locked: true)"
+    );
+    assert_eq!(session.undo_steps().len(), 3);
+    let e = session
+        .set_field(tent, "position", "(2.0, oops)")
+        .unwrap_err();
+    assert!(e.to_string().contains("position"), "{e}");
+    assert_eq!(session.undo_steps().len(), 3, "a typo costs no step");
+    let e = session.set_field(tent, "colour", "red").unwrap_err();
+    assert!(e.to_string().contains("no field `colour`"), "{e}");
+
+    // A prefab's part: its fields say which this instance overrides.
+    let ember = fire.within("c2".parse().unwrap());
+    assert!(!field(&session, ember, "material").overridden);
+    session.set_field(ember, "material", "moss").unwrap();
+    assert!(field(&session, ember, "material").overridden);
+    assert!(!field(&session, ember, "name").overridden);
+}

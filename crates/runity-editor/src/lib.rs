@@ -19,6 +19,7 @@
 
 mod error;
 pub mod history;
+pub mod panels;
 
 use std::path::{Path, PathBuf};
 
@@ -106,6 +107,10 @@ pub struct Session {
     merge: Option<(Scene, Vec<runity::merge::Conflict>)>,
     /// Selected besides `selected`, which stays the one the gizmo is on.
     also_selected: Vec<EntityId>,
+    /// Scene entities folded shut in the hierarchy, and prefab instances
+    /// opened to show their parts — each the exception to its default.
+    folded: std::collections::HashSet<EntityId>,
+    opened: std::collections::HashSet<EntityId>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -223,6 +228,8 @@ impl Session {
             on_disk: None,
             merge: None,
             also_selected: Vec::new(),
+            folded: Default::default(),
+            opened: Default::default(),
         })
     }
 
@@ -2595,6 +2602,14 @@ impl Session {
         }
     }
 
+    /// For every part a prefab instance brought: the instance and the part's
+    /// id in the prefab file.
+    pub(crate) fn instanced_parts(
+        &self,
+    ) -> &std::collections::HashMap<EntityId, (EntityId, EntityId)> {
+        &self.instanced.parts
+    }
+
     /// The scene with its prefab instances expanded: what is drawn, and
     /// where the parts of instances are found by their IDs.
     pub fn expanded(&self) -> &Scene {
@@ -2603,7 +2618,7 @@ impl Session {
 
     /// An entity's line: the document's, or for a part a prefab instance
     /// brought, the part as this instance has it.
-    fn line(&self, id: EntityId) -> Option<&EntityDesc> {
+    pub(crate) fn line(&self, id: EntityId) -> Option<&EntityDesc> {
         self.history
             .scene()
             .get(id)
