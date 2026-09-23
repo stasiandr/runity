@@ -60,6 +60,8 @@ pub mod shape;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
 pub mod spelling;
+#[cfg(feature = "steam")]
+pub mod steam;
 pub mod strings;
 pub mod surface;
 pub mod time;

@@ -54,6 +54,10 @@ jobs:
       # the engine bare and the first to notice would be a game that tried.
       - name: Check (no optional subsystems)
         run: cargo check -p runity --no-default-features
+      # The Steam transport links Valve's SDK and needs the client to run,
+      # so it is only built here; nothing can exercise it on a runner.
+      - name: Clippy (steam)
+        run: cargo clippy -p runity --features steam -- -D warnings
       # `runity check` over the example: every model, material and prefab
       # its scenes name resolves, and every sidecar is current.
       - name: Check the example project

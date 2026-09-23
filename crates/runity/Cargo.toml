@@ -14,6 +14,7 @@ glyphon = "0.12.0"
 hecs = "0.11.0"
 kira = { version = "0.12.4", optional = true }
 pollster = "1.0.1"
+steamworks = { version = "0.13", optional = true }
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 rapier3d = { version = "0.26.1", optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
@@ -40,6 +41,10 @@ physics = ["dep:rapier3d"]
 # dependency, a device to open and a thing to keep compiling. `--features
 # audio` brings it back, and CI builds with it so it cannot rot.
 audio = ["dep:kira"]
+# Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
+# transport. Off by default: it links Valve's SDK and does nothing without
+# the Steam client running.
+steam = ["dep:steamworks"]
 # A plain desktop window, for running the game without the editor. The
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
