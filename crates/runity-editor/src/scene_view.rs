@@ -63,10 +63,12 @@ impl Session {
                 }
                 did.push("select");
             }
-        } else if input.mouse_held(MouseButton::Left) && self.is_dragging() {
-            if motion != runity::glam::Vec2::ZERO && self.gizmo_drag(x, y)? {
-                did.push("drag");
-            }
+        } else if input.mouse_held(MouseButton::Left)
+            && self.is_dragging()
+            && motion != runity::glam::Vec2::ZERO
+            && self.gizmo_drag(x, y)?
+        {
+            did.push("drag");
         }
         if input.mouse_released(MouseButton::Left) && self.is_dragging() {
             self.gizmo_end();
@@ -97,10 +99,8 @@ impl Session {
                 if self.redo()? {
                     did.push("redo");
                 }
-            } else if pressed(Key::Z) {
-                if self.undo()? {
-                    did.push("undo");
-                }
+            } else if pressed(Key::Z) && self.undo()? {
+                did.push("undo");
             }
             if pressed(Key::D) {
                 self.duplicate_selection()?;
@@ -144,10 +144,10 @@ impl Session {
                 did.push("deselect");
             }
         }
-        if pressed(Key::Delete) || (pressed(Key::Backspace) && ctrl) {
-            if self.delete_selection()? > 0 {
-                did.push("delete");
-            }
+        if (pressed(Key::Delete) || (pressed(Key::Backspace) && ctrl))
+            && self.delete_selection()? > 0
+        {
+            did.push("delete");
         }
         Ok(did)
     }
