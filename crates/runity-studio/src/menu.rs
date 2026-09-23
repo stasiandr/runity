@@ -130,6 +130,8 @@ pub enum Action {
     /// A flat terrain to sculpt, and the brush on it.
     NewTerrain,
     ToggleSculpt,
+    /// Face mode: point at a face of a box to outline it, drag to push it.
+    ToggleFaces,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -270,6 +272,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Poly Shape: Floor", Action::PolyFloor),
                 item("Poly Shape: Wall", Action::PolyWall),
                 item("Sculpt Terrain (brush)", Action::ToggleSculpt),
+                item("Face Mode (drag a face)", Action::ToggleFaces),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",

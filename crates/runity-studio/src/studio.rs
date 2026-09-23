@@ -19,8 +19,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 
+use runity::edit::Face;
 use runity::gizmo::Tool;
 use runity::input::{Input, InputEvent, Key, MouseButton};
+use runity::EntityId;
 use runity_editor::console::Level;
 use runity_editor::{Pivot, Session, Space};
 use runity_ui::render::UiRenderer;
@@ -74,6 +76,18 @@ pub struct Requests {
     pub dropped: Option<Asset>,
     /// A Project entry was clicked: show it in the Inspector.
     pub inspect: Option<Asset>,
+}
+
+/// A face being dragged in face mode.
+struct FaceDrag {
+    id: EntityId,
+    face: Face,
+    /// Where the press was, in the view's pixels.
+    from: (f32, f32),
+    /// Where one metre out along the face goes on screen, in pixels.
+    per_metre: (f32, f32),
+    /// Metres pushed so far, in the one undo step the drag makes.
+    pushed: f32,
 }
 
 /// What a question asked in a dialog is for.
@@ -233,6 +247,15 @@ pub struct Studio {
     maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
+    /// Face mode: ProBuilder's face selection over the faces of boxes.
+    faces: bool,
+    faces_button: NodeId,
+    /// The face under the pointer, and the one being dragged: which, where
+    /// the drag began, the screen's pixels per metre out along the face,
+    /// and how far it has been pushed so far.
+    face_hover: Option<(EntityId, Face)>,
+    face_drag: Option<FaceDrag>,
+    face_box: NodeId,
     /// A stroke in progress: when the last dab landed, and for a flatten
     /// the height it flattens to.
     stroke: Option<(Instant, f32)>,
@@ -384,6 +407,8 @@ impl Studio {
         buttons.push((colliders, Action::ToggleColliders));
         let sculpt = icon_button(&mut ui, view_tabs, "sculpt", "mountain", false);
         buttons.push((sculpt, Action::ToggleSculpt));
+        let faces = icon_button(&mut ui, view_tabs, "faces", "square", false);
+        buttons.push((faces, Action::ToggleFaces));
         // Prefab mode's banner: what is open, and the way back.
         let prefab_bar = ui.add(
             view_slot,
@@ -423,6 +448,27 @@ impl Studio {
             SCENE,
         );
         ui.set_name(viewport, "scene view");
+        // Face mode's outline: over the view, but not in the way of it.
+        let face_box = ui.add(
+            view_frame,
+            Style::row()
+                .absolute(0.0, 0.0)
+                .size(0.0, 0.0)
+                .radius(2.0)
+                .border(2.0, ACCENT)
+                .background(ACCENT.alpha(28))
+                .padding(3.0)
+                .hidden(),
+        );
+        ui.set_name(face_box, "face outline");
+        ui.add_text(
+            face_box,
+            Style::default()
+                .text_size(11.0)
+                .text_color(ACCENT_100)
+                .nowrap(),
+            "",
+        );
         let compass = build_compass(&mut ui, view_frame);
         // Unity's Camera Preview: what a selected camera sees, in the corner.
         let cam_holder = ui.add(view_frame, Style::row().absolute(0.0, 0.0).full().hidden());
@@ -516,6 +562,11 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            faces: false,
+            faces_button: faces,
+            face_hover: None,
+            face_drag: None,
+            face_box,
             panels: [true; 3],
             last_input: Instant::now(),
             docks,
@@ -684,6 +735,24 @@ impl Studio {
                 if self.stroke.is_some() {
                     self.dab(vx, vy, false);
                 }
+                if self.faces {
+                    self.face_move(vx, vy, over_view);
+                }
+            }
+            // Face mode takes the left button on a face; Alt still orbits.
+            InputEvent::MouseDown(MouseButton::Left)
+                if over_view
+                    && self.faces
+                    && !self.ui.modifiers().2
+                    && self.face_hover.is_some() =>
+            {
+                let (px, py) = self.ui.pointer();
+                let (vx, vy) = to_view(px, py);
+                self.face_press(vx, vy);
+            }
+            InputEvent::MouseUp(MouseButton::Left) if self.face_drag.is_some() => {
+                self.face_drag = None;
+                self.refresh();
             }
             // The brush takes the left button; Alt still orbits.
             InputEvent::MouseDown(MouseButton::Left)
@@ -1046,6 +1115,103 @@ impl Studio {
         };
         if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
             self.ui.set_text(t, label);
+        }
+    }
+
+    /// The pointer over the view in face mode: outline the face under it,
+    /// or push the face being dragged by how far the pointer has gone
+    /// along it on screen, in steps of 5 cm.
+    fn face_move(&mut self, vx: f32, vy: f32, over_view: bool) {
+        if let Some(drag) = self.face_drag.as_mut() {
+            let (ox, oy) = drag.per_metre;
+            let along = ((vx - drag.from.0) * ox + (vy - drag.from.1) * oy) / (ox * ox + oy * oy);
+            let total = (along / 0.05).round() * 0.05;
+            let step = total - drag.pushed;
+            if step.abs() > 1e-4 {
+                // Pulled in past the opposite face, it stays where it last
+                // could be.
+                if self.session.push_face(drag.id, drag.face, step).is_ok() {
+                    if drag.pushed != 0.0 {
+                        self.session.squash_last(2);
+                    }
+                    drag.pushed = total;
+                }
+            }
+        } else {
+            let hover = over_view
+                .then(|| {
+                    self.session
+                        .face_under(vx.max(0.0) as u32, vy.max(0.0) as u32)
+                })
+                .flatten();
+            if hover == self.face_hover {
+                return;
+            }
+            self.face_hover = hover;
+        }
+        self.show_face();
+    }
+
+    fn face_press(&mut self, vx: f32, vy: f32) {
+        let Some((id, face)) = self.face_hover else {
+            return;
+        };
+        let Some((_, per_metre)) = self.session.face_on_screen(id, face) else {
+            return;
+        };
+        if per_metre.0.abs() + per_metre.1.abs() < 1.0 {
+            // Seen edge on: dragging it would be a guess.
+            return;
+        }
+        let _ = self.session.select(Some(id));
+        self.face_drag = Some(FaceDrag {
+            id,
+            face,
+            from: (vx, vy),
+            per_metre,
+            pushed: 0.0,
+        });
+        self.refresh();
+    }
+
+    /// Outline the face under the pointer or being dragged: the box its
+    /// corners make on screen, named.
+    fn show_face(&mut self) {
+        let shown = self
+            .face_drag
+            .as_ref()
+            .map(|d| (d.id, d.face))
+            .or(self.face_hover)
+            .filter(|_| self.faces);
+        let place = shown.and_then(|(id, face)| {
+            let (corners, _) = self.session.face_on_screen(id, face)?;
+            Some((id, face, corners))
+        });
+        let Some((id, face, corners)) = place else {
+            self.ui.restyle(self.face_box, |s| s.hidden());
+            return;
+        };
+        let scale = self.ui.viewport().2;
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (x, y) in corners {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+        let (x, y) = (x0 / scale, y0 / scale);
+        let (w, h) = (((x1 - x0) / scale).max(4.0), ((y1 - y0) / scale).max(4.0));
+        self.ui
+            .restyle(self.face_box, |s| s.shown().absolute(x, y).size(w, h));
+        let name = self.session.entity_name(id).unwrap_or_default();
+        let pushed = self
+            .face_drag
+            .as_ref()
+            .filter(|d| d.pushed != 0.0)
+            .map(|d| format!("  {:+.2} m", d.pushed))
+            .unwrap_or_default();
+        if let Some(label) = self.ui.children(self.face_box).first().copied() {
+            self.ui.set_text(label, &format!("{name} {face:?}{pushed}"));
         }
     }
 
@@ -1471,6 +1637,7 @@ impl Studio {
         set_icon_button(ui, self.snap, "magnet", s.snap().meters > 0.0, true);
         set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
         set_icon_button(ui, self.sculpt_button, "mountain", self.sculpt, true);
+        set_icon_button(ui, self.faces_button, "square", self.faces, true);
         let prefab = s.is_prefab();
         ui.restyle(self.prefab_bar, |st| {
             if prefab {
@@ -2441,9 +2608,23 @@ impl Studio {
                         "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
                     );
                 }
+                Action::ToggleFaces => {
+                    self.faces = !self.faces;
+                    self.face_hover = None;
+                    self.face_drag = None;
+                    if self.faces {
+                        self.sculpt = false;
+                        s.say(
+                            Level::Info,
+                            "face mode: point at a face to outline it, drag it to push it out or in",
+                        );
+                    }
+                    self.show_face();
+                }
                 Action::ToggleSculpt => {
                     self.sculpt = !self.sculpt;
                     if self.sculpt {
+                        self.faces = false;
                         s.say(
                             Level::Info,
                             "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
@@ -3129,6 +3310,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "colliders" => "Show colliders",
         "scene view" => "Shift Space: the view over the whole window",
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
+        "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
         "view persp" => "Perspective view",
         "view top" => "Look down from above",
         "view front" => "Look from the front",

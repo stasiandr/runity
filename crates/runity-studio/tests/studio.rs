@@ -1699,3 +1699,57 @@ fn the_animator_lights_up_the_state_the_running_game_is_in() {
     assert_ne!(border(&mut s, "state idle"), runity_studio::theme::WARNING);
     s.session.stop_game();
 }
+
+#[test]
+fn face_mode_outlines_a_face_and_a_drag_pushes_it() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_ = s.session.find("crate").unwrap();
+    let (low, high) = s.session.world_bounds(crate_).unwrap();
+    let centre = (low + high) / 2.0;
+    s.session
+        .set_camera(centre + runity::glam::Vec3::new(2.5, 3.0, 4.0), centre);
+    click(&mut s, "faces");
+    s.frame();
+    let top = runity::edit::Face::PosY;
+    let (corners, _) = s.session.face_on_screen(crate_, top).unwrap();
+    let (cx, cy) = (
+        corners.iter().map(|c| c.0).sum::<f32>() / 4.0,
+        corners.iter().map(|c| c.1).sum::<f32>() / 4.0,
+    );
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (x, y) = (view.x + cx, view.y + cy);
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    s.ui.paint();
+    let outline = s.ui.find("face outline").unwrap();
+    let label = s.ui.children(outline)[0];
+    assert!(
+        s.ui.text(label).is_some_and(|t| t.contains("crate PosY")),
+        "{:?}",
+        s.ui.text(label)
+    );
+    let steps = s.session.undo_steps().len();
+
+    // Up the screen is out of the top.
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    for dy in [10.0, 30.0, 60.0] {
+        s.handle(&InputEvent::MouseMoved { x, y: y - dy });
+        s.frame();
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let (_, pushed) = s.session.world_bounds(crate_).unwrap();
+    assert!(pushed.y > high.y + 0.1, "{} -> {}", high.y, pushed.y);
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "one drag, one step"
+    );
+    s.session.undo().unwrap();
+    let (_, back) = s.session.world_bounds(crate_).unwrap();
+    assert!((back.y - high.y).abs() < 1e-4);
+}

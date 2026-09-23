@@ -2951,6 +2951,68 @@ impl Session {
         best.map(|(_, id)| id)
     }
 
+    /// The face of an entity's box under a pixel of the view: ProBuilder's
+    /// face selection, over the faces [`Session::push_face`] moves. The
+    /// entity is what [`Session::pick`] finds there; one without a model of
+    /// its own (a prefab's root) has no faces.
+    pub fn face_under(&self, x: u32, y: u32) -> Option<(EntityId, runity::edit::Face)> {
+        let id = self.pick(x, y)?;
+        let (bounds, world) = self.own_box(id)?;
+        let (origin, direction) = self.ray(x, y);
+        Some((id, entry_face(origin, direction, bounds, world)?))
+    }
+
+    /// A face's four corners in the view, in pixels, and where one metre
+    /// out along it lands: what a window outlines under the pointer, and
+    /// how far a drag of so many pixels pushes the face.
+    pub fn face_on_screen(&self, id: EntityId, face: runity::edit::Face) -> Option<FaceOnScreen> {
+        let ((min, max), world) = self.own_box(id)?;
+        let (axis, sign) = (face.axis(), if face.positive() { 1.0 } else { -1.0 });
+        let at = if face.positive() {
+            max[axis]
+        } else {
+            min[axis]
+        };
+        let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+        let corner = |a: f32, b: f32| {
+            let mut p = Vec3::ZERO;
+            p[axis] = at;
+            p[u] = a;
+            p[v] = b;
+            world.transform_point3(p)
+        };
+        let corners = [
+            corner(min[u], min[v]),
+            corner(max[u], min[v]),
+            corner(max[u], max[v]),
+            corner(min[u], max[v]),
+        ];
+        let (w, h) = self.size();
+        let size = runity::glam::Vec2::new(w as f32, h as f32);
+        let on_screen = |p: Vec3| self.camera.screen_point(p, size).map(|q| (q.x, q.y));
+        let mut out = [(0.0, 0.0); 4];
+        for (o, c) in out.iter_mut().zip(corners) {
+            *o = on_screen(c)?;
+        }
+        let centre = corners.iter().copied().sum::<Vec3>() / 4.0;
+        let mut normal = Vec3::ZERO;
+        normal[axis] = sign;
+        let normal = world.transform_vector3(normal).normalize_or_zero();
+        let from = on_screen(centre)?;
+        let to = on_screen(centre + normal)?;
+        Some((out, (to.0 - from.0, to.1 - from.1)))
+    }
+
+    /// An entity's own model's box and where it is in the world.
+    fn own_box(&self, id: EntityId) -> Option<((Vec3, Vec3), Mat4)> {
+        self.instanced
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(desc, _)| desc.id == id)
+            .and_then(|(desc, world)| Some((self.bounds_of(&desc.model)?, world)))
+    }
+
     /// Put the gizmo on an entity, or clear the selection with `None`.
     pub fn select(&mut self, id: Option<EntityId>) -> EditResult<()> {
         if let Some(id) = id {
@@ -3770,6 +3832,49 @@ fn ray_box(origin: Vec3, direction: Vec3, bounds: (Vec3, Vec3), transform: Mat4)
         }
     }
     (far >= 0.0).then(|| near.max(0.0))
+}
+
+/// A face's corners in the view's pixels, and the pixels one metre out
+/// along it moves on screen (see [`Session::face_on_screen`]).
+pub type FaceOnScreen = ([(f32, f32); 4], (f32, f32));
+
+/// Which face of a box in the world a ray goes in by: the slab it
+/// enters last is the face it crosses.
+fn entry_face(
+    origin: Vec3,
+    direction: Vec3,
+    bounds: (Vec3, Vec3),
+    transform: Mat4,
+) -> Option<runity::edit::Face> {
+    use runity::edit::Face;
+    let inverse = transform.inverse();
+    let o = inverse.transform_point3(origin);
+    let d = inverse.transform_vector3(direction);
+    let mut best: Option<(f32, usize, bool)> = None;
+    for axis in 0..3 {
+        if d[axis].abs() < 1e-6 {
+            continue;
+        }
+        // Coming in through the low side when heading up the axis.
+        let (plane, positive) = if d[axis] > 0.0 {
+            (bounds.0[axis], false)
+        } else {
+            (bounds.1[axis], true)
+        };
+        let t = (plane - o[axis]) / d[axis];
+        if best.is_none_or(|(b, _, _)| t > b) {
+            best = Some((t, axis, positive));
+        }
+    }
+    let (_, axis, positive) = best?;
+    Some(match (axis, positive) {
+        (0, true) => Face::PosX,
+        (0, false) => Face::NegX,
+        (1, true) => Face::PosY,
+        (1, false) => Face::NegY,
+        (_, true) => Face::PosZ,
+        (_, false) => Face::NegZ,
+    })
 }
 
 fn is_prefab(path: Option<&Path>) -> bool {

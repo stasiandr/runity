@@ -4357,3 +4357,46 @@ fn a_cameras_preview_is_drawn_through_it() {
         "a crate has no camera"
     );
 }
+
+#[test]
+fn the_face_under_the_pointer_is_the_one_facing_it() {
+    let Some((mut session, _)) = open_with(
+        "face-under",
+        r#"(entities: [(name: "block", model: "builtin:cube", transform: (position: (0.0, 0.5, 0.0), scale: (2.0, 1.0, 2.0)))])"#,
+    ) else {
+        return;
+    };
+    let block = id(&session, "block");
+    let (w, h) = session.size();
+    // From the front: the +Z face.
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    assert_eq!(
+        session.face_under(w / 2, h / 2),
+        Some((block, runity::edit::Face::PosZ))
+    );
+    // From above: the top.
+    session.set_camera(Vec3::new(0.0, 8.0, 0.01), Vec3::new(0.0, 0.5, 0.0));
+    assert_eq!(
+        session.face_under(w / 2, h / 2),
+        Some((block, runity::edit::Face::PosY))
+    );
+    // Its outline holds the pixel, and a metre out goes up the screen.
+    session.set_camera(Vec3::new(3.0, 4.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let (corners, out) = session
+        .face_on_screen(block, runity::edit::Face::PosY)
+        .unwrap();
+    let (x0, x1) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c.0), b.max(c.0)));
+    let (y0, y1) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c.1), b.max(c.1)));
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    assert_eq!(
+        session.face_under(cx as u32, cy as u32),
+        Some((block, runity::edit::Face::PosY))
+    );
+    assert!(out.1 < 0.0, "up is up the screen: {out:?}");
+    // Past it, sky: no face.
+    assert_eq!(session.face_under(w / 2, 0), None);
+}
