@@ -209,6 +209,7 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
         volumetric_fog: scene.volumetric_fog,
         wind: scene.wind,
         weather: scene.weather,
+        screen_space_reflections: scene.screen_space_reflections,
         entities,
     };
 

@@ -1247,6 +1247,10 @@ pub struct Scene {
     /// 1.0, puddles: 0.6)`. See [`crate::weather`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub weather: Option<crate::weather::Weather>,
+    /// Reflections marched across the screen: `screen_space_reflections:
+    /// (enabled: true)`. See [`crate::reflections::ScreenSpaceReflections`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub screen_space_reflections: Option<crate::reflections::ScreenSpaceReflections>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1452,6 +1456,7 @@ mod tests {
             volumetric_fog: None,
             wind: None,
             weather: None,
+            screen_space_reflections: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()

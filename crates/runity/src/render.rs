@@ -519,6 +519,9 @@ pub struct Frame {
     /// Rain, snow, wet ground and puddles ([`crate::weather`]); clear by
     /// default.
     pub weather: crate::weather::Weather,
+    /// Reflections marched across the screen
+    /// ([`crate::reflections::ScreenSpaceReflections`]); off by default.
+    pub screen_space_reflections: crate::reflections::ScreenSpaceReflections,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -547,6 +550,7 @@ impl Default for Frame {
             benders: Vec::new(),
             time: None,
             weather: crate::weather::Weather::default(),
+            screen_space_reflections: Default::default(),
             poses: Vec::new(),
         }
     }
@@ -638,6 +642,11 @@ struct FrameUniform {
     /// Clouds: coverage, base, thickness, density; drift x and z, size,
     /// how dark their shadows are.
     clouds: [[f32; 4]; 2],
+    /// Last frame's camera, for reading the last frame's colour.
+    previous_view_projection: [[f32; 4]; 4],
+    /// Screen-space reflections: 1 when on and there is a last frame, how
+    /// far, how thick, how many steps.
+    ssr: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -884,40 +893,57 @@ struct SceneTargets {
     multisampled: Option<wgpu::TextureView>,
     /// Resolved into: what post-processing reads.
     resolved: wgpu::TextureView,
+    resolved_texture: wgpu::Texture,
+    /// The last frame, resolved: what screen-space reflections read.
+    history: wgpu::Texture,
+    history_view: wgpu::TextureView,
+    /// Whether `history` holds a frame yet.
+    has_history: bool,
 }
 
 fn scene_targets(gpu: &Gpu, width: u32, height: u32, samples: u32) -> SceneTargets {
-    let make = |label, samples, usage| {
-        gpu.device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: width.max(1),
-                    height: height.max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: samples,
-                dimension: wgpu::TextureDimension::D2,
-                format: crate::post::HDR_FORMAT,
-                usage,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
+    let texture = |label, samples, usage| {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::HDR_FORMAT,
+            usage,
+            view_formats: &[],
+        })
     };
+    let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+    let resolved = texture(
+        "scene",
+        1,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    );
+    let history = texture(
+        "last frame",
+        1,
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    );
     SceneTargets {
         multisampled: (samples > 1).then(|| {
-            make(
+            view(&texture(
                 "scene (multisampled)",
                 samples,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )
+            ))
         }),
-        resolved: make(
-            "scene",
-            1,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        ),
+        resolved: view(&resolved),
+        resolved_texture: resolved,
+        history_view: view(&history),
+        history,
+        has_history: false,
     }
 }
 
@@ -1738,6 +1764,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The last frame, for screen-space reflections.
+            wgpu::BindGroupLayoutEntry {
+                binding: 22,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The clouds, a quarter of the frame.
             wgpu::BindGroupLayoutEntry {
                 binding: 21,
@@ -1850,6 +1887,9 @@ impl Renderer {
             gpu,
             &layout,
             &FrameInputs {
+                // Any texel will do until the scene's targets exist; the
+                // renderer rebinds once it is built.
+                history: clouds.view(),
                 clouds: clouds.view(),
                 scene_depth: &ssao.depth,
                 sky_view: &atmosphere.sky_view,
@@ -2163,6 +2203,7 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
                     &self.blank_depth
@@ -2856,6 +2897,7 @@ impl Renderer {
             self.depth = depth_view(gpu, width, height, self.samples);
             self.scene = scene_targets(gpu, width, height, self.samples);
             self.depth_size = (width, height);
+            self.rebind(gpu);
         }
         if probe.is_none() && self.ssao.resize(gpu, (width, height)) {
             self.rebind(gpu);
@@ -3178,6 +3220,23 @@ impl Renderer {
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
             weather: frame.weather.uniform(),
+            previous_view_projection: self
+                .previous_view_projection
+                .unwrap_or_else(|| frame.camera.view_projection(aspect))
+                .to_cols_array_2d(),
+            ssr: {
+                let s = &frame.screen_space_reflections;
+                [
+                    if s.enabled && probe.is_none() && self.scene.has_history {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    s.max_distance.max(0.1),
+                    s.thickness.max(0.01),
+                    s.steps.clamp(4, 128) as f32,
+                ]
+            },
             clouds: {
                 let (shape, mut drift) = frame.sky.clouds.vectors(&frame.wind);
                 drift[3] = frame.sky.clouds.shadows.clamp(0.0, 1.0);
@@ -3588,7 +3647,9 @@ impl Renderer {
             .draws
             .iter()
             .any(|d| d.material.shading == Shading::Water);
-        if ssao_on || lens_on || water_on {
+        // So do screen-space reflections.
+        let ssr_on = frame.screen_space_reflections.enabled && probe.is_none();
+        if ssao_on || lens_on || water_on || ssr_on {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -3688,6 +3749,15 @@ impl Renderer {
             }
         }
 
+        // This frame, kept for the next one's screen-space reflections.
+        if ssr_on {
+            encoder.copy_texture_to_texture(
+                self.scene.resolved_texture.as_image_copy(),
+                self.scene.history.as_image_copy(),
+                self.scene.resolved_texture.size(),
+            );
+            self.scene.has_history = true;
+        }
         let Some(view) = view else {
             // A probe's face: lit, and that is all.
             gpu.queue.submit(Some(encoder.finish()));
@@ -3893,6 +3963,7 @@ struct FrameInputs<'a> {
     aerial: &'a wgpu::TextureView,
     scene_depth: &'a wgpu::TextureView,
     clouds: &'a wgpu::TextureView,
+    history: &'a wgpu::TextureView,
 }
 
 fn frame_bind_group(
@@ -3942,6 +4013,7 @@ fn frame_bind_group(
         view(19, inputs.aerial),
         view(20, inputs.scene_depth),
         view(21, inputs.clouds),
+        view(22, inputs.history),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

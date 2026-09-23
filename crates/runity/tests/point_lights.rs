@@ -52,6 +52,7 @@ fn shoot(
         benders: Vec::new(),
         time: None,
         weather: Default::default(),
+        screen_space_reflections: Default::default(),
         draws: vec![Draw {
             mesh: floor,
             transform: Mat4::from_scale(Vec3::new(20.0, 1.0, 20.0)),

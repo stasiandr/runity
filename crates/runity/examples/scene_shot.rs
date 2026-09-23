@@ -140,6 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
+    // Twice: what reads the last frame — screen-space reflections — has
+    // one by the second.
+    renderer.render(&gpu, &target, &frame);
     renderer.render(&gpu, &target, &frame);
     let pixels = target.read_rgba(&gpu);
 

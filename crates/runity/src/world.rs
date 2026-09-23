@@ -798,6 +798,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(weather) = scene.weather {
         frame.weather = weather;
     }
+    if let Some(ssr) = scene.screen_space_reflections {
+        frame.screen_space_reflections = ssr;
+    }
 }
 
 /// The camera a scene's view describes.
@@ -1013,6 +1016,7 @@ pub fn build_frame_where(
             .collect(),
         time: None,
         weather: Default::default(),
+        screen_space_reflections: Default::default(),
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.

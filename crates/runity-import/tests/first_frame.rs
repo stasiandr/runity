@@ -131,6 +131,7 @@ fn a_source_model_becomes_a_frame() {
         benders: Vec::new(),
         time: None,
         weather: Default::default(),
+        screen_space_reflections: Default::default(),
         draws: vec![
             Draw {
                 mesh: handle,

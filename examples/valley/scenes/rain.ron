@@ -5,6 +5,7 @@
     view: (position: (0.0, 2.4, 7.5), target: (0.0, 0.9, 0.0), fov_deg: 55.0),
     sun: (hour: 15.0, intensity: 0.5),
     weather: (rain: 1.0, wetness: 1.0, puddles: 0.6),
+    screen_space_reflections: (enabled: true),
     entities: [
         (id: "723f5963310270c7", name: "probe", transform: (position: (0.0, 1.5, 0.0)), reflection_probe: (size: (12.0, 6.0, 16.0))),
         (id: "f409d575018b8aa3", name: "floor", model: "builtin:plane", transform: (scale: (12.0, 1.0, 16.0)), material: (base_color: (0.12, 0.12, 0.13), metallic: 0.2, smoothness: 0.9)),

@@ -86,6 +86,10 @@ struct Frame {
     // clouds.rs: coverage, base, thickness, density; drift x and z, size,
     // how dark their shadows are
     clouds: array<vec4<f32>, 2>,
+    // last frame's camera
+    previous_view_projection: mat4x4<f32>,
+    // screen-space reflections: 1 when on, how far, how thick, how many steps
+    ssr: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -153,6 +157,93 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 @group(0) @binding(20) var scene_depth: texture_depth_2d;
 // The clouds (clouds.wgsl): what they add over the sky, and let through.
 @group(0) @binding(21) var cloud_layer: texture_2d<f32>;
+// The last frame, resolved: what screen-space reflections read.
+@group(0) @binding(22) var last_frame: texture_2d<f32>;
+
+/// How deep, along the view, the prepass's depth at a pixel is.
+fn scene_view_depth(pixel: vec2<i32>) -> f32 {
+    let d = textureLoad(scene_depth, pixel, 0);
+    let near = frame.cluster_depth.x;
+    let far = near * exp(frame.cluster_depth.y);
+    return near * far / (far - d * (far - near));
+}
+
+/// How far behind what the prepass saw a point on a reflected ray is, in
+/// metres along the view, and how deep it is; −2 when it is off the
+/// screen or behind the eye.
+fn ssr_behind(q: vec3<f32>) -> vec2<f32> {
+    let clip = frame.view_projection * vec4<f32>(q, 1.0);
+    if clip.w <= 0.0 {
+        return vec2<f32>(-2.0, 0.0);
+    }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        return vec2<f32>(-2.0, 0.0);
+    }
+    let seen = scene_view_depth(vec2<i32>(uv * frame.cluster_depth.zw));
+    let ray = -dot(frame.view_depth, vec4<f32>(q, 1.0));
+    return vec2<f32>(ray - seen, ray);
+}
+
+/// A reflection marched across the screen: from `p` along `r`, step by
+/// step, until the ray passes just behind what the prepass saw there; the
+/// colour is the last frame's at that place, moved to where it was then.
+/// Its alpha is how much to trust it — none off the screen, less near its
+/// edges, for rougher surfaces and far along the ray.
+fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
+    if frame.ssr.x < 0.5 || roughness > 0.6 {
+        return vec4<f32>(0.0);
+    }
+    let steps = u32(frame.ssr.w);
+    let far = frame.ssr.y;
+    let thickness = frame.ssr.z;
+    // A little noise in where the steps fall, so bands do not show; small,
+    // since nothing averages it over frames.
+    let jitter = pixel_noise(p.xz * 131.0 + p.y) * 0.35;
+    var previous = 0.0;
+    var in_front = true;
+    for (var i = 1u; i <= steps; i = i + 1u) {
+        // Steps closer near the surface, where hits are sharpest.
+        let s = (f32(i) - jitter) / f32(steps);
+        // Not closer than a hand's width: the surface's own depth is not a
+        // hit, and depth is coarse far off.
+        let t = max(far * s * s, 0.08);
+        let found = ssr_behind(p + r * t);
+        if found.x < -1.5 {
+            break;
+        }
+        let slack = 0.02 + found.y * 0.004;
+        // A hit is a crossing: in front at the last step, just behind now.
+        // Starting out already behind something is being hidden, not a hit.
+        let crossed = in_front && found.x > slack && found.x < thickness + t * 0.03;
+        in_front = found.x <= slack;
+        if crossed {
+            // Halve back towards the last step that was in front.
+            var lo = previous;
+            var hi = t;
+            for (var k = 0; k < 5; k = k + 1) {
+                let mid = (lo + hi) * 0.5;
+                let b = ssr_behind(p + r * mid);
+                if b.x > 0.02 + b.y * 0.004 && b.x < thickness + mid * 0.03 {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            let q = p + r * hi;
+            let was = frame.previous_view_projection * vec4<f32>(q, 1.0);
+            let then = was.xy / was.w;
+            let at = vec2<f32>(then.x * 0.5 + 0.5, 0.5 - then.y * 0.5);
+            let edge = min(min(at.x, 1.0 - at.x), min(at.y, 1.0 - at.y));
+            let trust = smoothstep(0.0, 0.08, edge) * (1.0 - s * s) * (1.0 - smoothstep(0.2, 0.6, roughness));
+            let color = textureSampleLevel(last_frame, fog_sampler, at, 0.0).rgb;
+            return vec4<f32>(color, trust);
+        }
+        previous = t;
+    }
+    return vec4<f32>(0.0);
+}
 
 fn cloud_hash(p: vec3<f32>) -> f32 {
     var q = fract(p * 0.1031);
@@ -927,6 +1018,13 @@ fn probe_picture(probe: u32, direction: vec3<f32>, lod: f32) -> vec3<f32> {
 /// inside each box's edge, the first ones first — and the sky for what
 /// they leave.
 fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let around = probes_and_sky(position, direction, perceptual_roughness);
+    let near = screen_reflection(position, direction, perceptual_roughness);
+    return mix(around, near.rgb, near.a);
+}
+
+/// What the probes and the sky give a reflection, without the screen.
+fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let sky = environment(direction, perceptual_roughness);
     let count = u32(frame.probe_params.x);
     if count == 0u {
