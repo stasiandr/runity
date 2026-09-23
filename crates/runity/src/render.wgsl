@@ -96,6 +96,8 @@ struct Frame {
     puffs: array<vec4<f32>, 32>,
     // 1 when the clouds' pass marched dust devils or crest plumes
     dust: vec4<f32>,
+    // how much it is night: the stars
+    night: vec4<f32>,
     // the terrain drawn finely: the world into its own space, and back
     terrain_to_local: mat4x4<f32>,
     terrain_to_world: mat4x4<f32>,
@@ -2021,6 +2023,47 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
     return out;
 }
 
+/// The night sky that way: stars — a few in a thousand cells of a cube
+/// round the eye, each its own brightness and warmth, twinkling a little —
+/// and the Milky Way, a band round a great circle, lumpy, with dark lanes
+/// of dust down its middle. Faint toward the horizon, where the air is
+/// thick.
+fn night_sky(d: vec3<f32>) -> vec3<f32> {
+    let a = abs(d);
+    var uv: vec2<f32>;
+    var face: f32;
+    if a.x >= a.y && a.x >= a.z {
+        uv = d.yz / a.x;
+        face = select(0.0, 1.0, d.x < 0.0);
+    } else if a.y >= a.z {
+        uv = d.xz / a.y;
+        face = select(2.0, 3.0, d.y < 0.0);
+    } else {
+        uv = d.xy / a.z;
+        face = select(4.0, 5.0, d.z < 0.0);
+    }
+    let g = uv * 220.0;
+    let cell = floor(g);
+    let key = vec3<f32>(cell, face * 17.0);
+    let h = cloud_hash(key);
+    var light = vec3<f32>(0.0);
+    if h > 0.972 {
+        let at = vec2<f32>(cloud_hash(key + 3.1), cloud_hash(key + 7.7)) * 0.7 + 0.15;
+        let off = fract(g) - at;
+        let bright = pow(cloud_hash(key + 11.3), 7.0) * 7.0 + 0.25;
+        let twinkle = 0.75 + 0.25 * sin(frame.foliage.wind.w * (2.0 + h * 6.0) + h * 91.0);
+        let warmth = mix(vec3<f32>(0.72, 0.84, 1.0), vec3<f32>(1.0, 0.86, 0.68), cloud_hash(key + 5.0));
+        light = warmth * bright * twinkle * exp(-dot(off, off) * 160.0) * 0.4;
+    }
+    let across = normalize(vec3<f32>(0.35, 0.55, -0.76));
+    let b = dot(d, across);
+    let band = exp(-b * b / 0.045);
+    let lumps = cloud_noise(d * 9.0) * 0.6 + cloud_noise(d * 23.0) * 0.4;
+    let lanes = 1.0 - 0.75 * smoothstep(0.5, 0.75, cloud_noise(d * 14.0 + 5.0)) * exp(-b * b / 0.006);
+    light += vec3<f32>(0.8, 0.83, 1.0) * band * (0.2 + lumps) * lanes * 0.12;
+    return light * smoothstep(0.0, 0.25, d.y);
+}
+
 /// URP's procedural skybox, simply: the horizon's colour rising into the
 /// zenith's, the ground below, and the sun — a disc far brighter than white,
 /// with a glow around it — where the light comes from.
@@ -2041,6 +2084,12 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
         color = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(up, 0.45));
     } else {
         color = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-up, 0.3));
+    }
+    // The stars, as night falls; and the moon's light in the air, a deep
+    // blue, paler toward the horizon.
+    if frame.night.x > 0.0 {
+        let glow = frame.sky_color.rgb * (0.6 + 1.0 * (1.0 - clamp(up, 0.0, 1.0)));
+        color += (night_sky(direction) + glow) * frame.night.x;
     }
     let to_sun = -normalize(frame.sun_direction.xyz);
     let facing = dot(direction, to_sun);

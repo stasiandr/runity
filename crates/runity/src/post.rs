@@ -658,6 +658,8 @@ struct PostUniform {
     lamp_count: [f32; 4],
     lamps: [[f32; 4]; FLARES],
     lamp_colors: [[f32; 4]; FLARES],
+    /// How much the eye sees as it does at night: grey and blue.
+    night: [f32; 4],
 }
 
 /// One uniform slot per pass of a frame, at the device's alignment.
@@ -731,6 +733,9 @@ pub(crate) struct PostRenderer {
     /// Lamps' flares this frame, on the picture: `[u, v, intensity, _]`
     /// and colour.
     pub(crate) flares: Vec<([f32; 4], [f32; 4])>,
+    /// How much it is night: the eye's colour fades to grey and blue (the
+    /// Purkinje shift), as its cones give up to its rods.
+    pub(crate) night: f32,
 }
 
 impl PostRenderer {
@@ -870,6 +875,7 @@ impl PostRenderer {
             metering: crate::exposure::Metering::new(gpu),
             fov_y_degrees: 0.0,
             flares: Vec::new(),
+            night: 0.0,
         }
     }
 
@@ -1189,6 +1195,7 @@ impl PostRenderer {
             lamp_count: [self.flares.len() as f32, 0.0, 0.0, 0.0],
             lamps: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.0)),
             lamp_colors: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.1)),
+            night: [self.night.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
         }
     }
 }

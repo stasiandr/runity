@@ -238,6 +238,12 @@ pub struct Lighting {
     /// The ground's colour, linear: with a physical sky, what the light
     /// from below is worked out from.
     pub ground_albedo: Vec3,
+    /// At dusk and night, the sun where it really is (under the horizon)
+    /// and how bright it is, for the sky to be lit by — the light above,
+    /// `sun_direction`, is then the moon's.
+    pub sky_sun: Option<(Vec3, f32)>,
+    /// How much it is night, 0 to 1: the stars come out.
+    pub night: f32,
 }
 
 impl Default for Lighting {
@@ -249,6 +255,8 @@ impl Default for Lighting {
             sky_color: Vec3::new(0.24, 0.28, 0.34),
             ground_color: Vec3::new(0.10, 0.09, 0.07),
             ground_albedo: Vec3::new(0.107, 0.089, 0.069),
+            sky_sun: None,
+            night: 0.0,
         }
     }
 }
@@ -687,6 +695,8 @@ struct FrameUniform {
     /// 1 when the clouds' pass marched dust devils or crest plumes: the
     /// picture it made is laid over what is behind them.
     dust: [f32; 4],
+    /// How much it is night (the stars); the moon's disc's size.
+    night: [f32; 4],
     /// The terrain drawn finely: the world into its own space, and back.
     terrain_to_local: [[f32; 4]; 4],
     terrain_to_world: [[f32; 4]; 4],
@@ -3955,12 +3965,31 @@ impl Renderer {
         let physical = frame.sky.mode == SkyMode::Physical;
         let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
         let altitude = frame.camera.position.y.max(1.0);
+        // The sun the sky is lit by: at night, under the horizon — the
+        // light above is then the moon's.
+        let (sky_to_sun, sky_sun_intensity) = match frame.lighting.sky_sun {
+            Some((direction, intensity)) => (-direction.normalize_or(Vec3::NEG_Y), intensity),
+            None => (to_sun, frame.lighting.sun_intensity),
+        };
+        let night = frame.lighting.night.clamp(0.0, 1.0);
         let (sun_light, sky_light, ground_light) = if physical {
             let (sun, sky, _) =
                 frame
                     .sky
                     .atmosphere
-                    .lighting(altitude, to_sun, frame.lighting.sun_intensity);
+                    .lighting(altitude, sky_to_sun, sky_sun_intensity);
+            // At night the moon, as the scene's lighting has it, and the
+            // night sky's own faint light on top of what the air still
+            // glows with.
+            let (sun, sky) = if frame.lighting.sky_sun.is_some() {
+                let moon = frame.lighting.sun_color * frame.lighting.sun_intensity;
+                (
+                    sun.lerp(moon, (night * 2.0 - 1.0).clamp(0.0, 1.0)),
+                    sky + frame.lighting.sky_color * night,
+                )
+            } else {
+                (sun, sky)
+            };
             // The ground lit by them, sending its colour back up.
             let ground = frame.lighting.ground_albedo * (sun * to_sun.y.max(0.0) + sky * 0.5);
             (sun, sky, ground)
@@ -4161,6 +4190,7 @@ impl Renderer {
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
                 .to_cols_array_2d(),
             dust: [if local_dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            night: [night, 0.0, 0.0, 0.0],
             terrain_to_local: fine_terrain
                 .map_or(Mat4::IDENTITY, |t| t.placed.inverse())
                 .to_cols_array_2d(),
@@ -4607,7 +4637,7 @@ impl Renderer {
                 &mut encoder,
                 &crate::atmosphere::AtmosphereUniform {
                     inverse_view_projection: drawn.inverse().to_cols_array_2d(),
-                    to_sun: extend(to_sun, altitude),
+                    to_sun: extend(sky_to_sun, altitude),
                     eye: extend(frame.camera.position, frame.camera.far),
                     amounts: [
                         a.rayleigh,
@@ -4899,6 +4929,7 @@ impl Renderer {
             })
             .take(crate::post::FLARES)
             .collect();
+        self.post.night = frame.lighting.night;
         self.post.fov_y_degrees = match frame.camera.ortho {
             Some(_) => 0.0,
             None => frame.camera.fov_y_degrees,
@@ -4912,13 +4943,17 @@ impl Renderer {
             self.metered_at = Some(now);
             dt
         });
+        // At night the eye does not get used to the dark the whole way:
+        // a moonlit desert stays a night.
+        let mut post = frame.post;
+        post.auto_exposure.compensation -= 1.6 * frame.lighting.night.clamp(0.0, 1.0);
         self.post.run(
             gpu,
             &mut encoder,
             lensed.unwrap_or(picture),
             view,
             (width, height),
-            &frame.post,
+            &post,
             metered,
         );
 

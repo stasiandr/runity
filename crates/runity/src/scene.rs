@@ -1288,6 +1288,41 @@ impl Sun {
         Vec3::new(-angle.cos(), -angle.sin().max(0.15), -0.35).normalize()
     }
 
+    /// How high the sun really stands, −1 to 1: the sine of its height
+    /// over the horizon on the hour's arc, below it at night — where
+    /// [`Self::direction`] keeps it just over the horizon so there is a
+    /// light to see by. With `toward` set, that says it.
+    pub fn elevation(&self) -> f32 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return -toward.normalize().y;
+        }
+        let angle = (self.hour - 6.0) / 12.0 * std::f32::consts::PI;
+        angle.sin()
+    }
+
+    /// Which way the sun's light would travel if the sun were where it
+    /// really is — under the ground at night: what the sky is lit by.
+    pub fn true_direction(&self) -> Vec3 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return toward.normalize();
+        }
+        let angle = (self.hour - 6.0) / 12.0 * std::f32::consts::PI;
+        Vec3::new(-angle.cos(), -angle.sin(), -0.35).normalize()
+    }
+
+    /// Which way the moon's light travels: the moon across the sky from
+    /// the sun, as when it is full, never lower than the sun is let be.
+    pub fn moon_direction(&self) -> Vec3 {
+        let angle = (self.hour - 18.0) / 12.0 * std::f32::consts::PI;
+        Vec3::new(-angle.cos(), -angle.sin().max(0.2), 0.3).normalize()
+    }
+
+    /// How much it is night, 0 to 1: nothing while the sun is up, whole
+    /// once it is well below the horizon, the dusk between.
+    pub fn night(&self) -> f32 {
+        ((0.02 - self.elevation()) / 0.14).clamp(0.0, 1.0)
+    }
+
     /// How warm the light is: white overhead, orange near the horizon.
     ///
     /// Not physics — the sky is not scattering anything here — but the one

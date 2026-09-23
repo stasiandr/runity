@@ -113,10 +113,10 @@ pub const MOODS: &[Mood] = &[
     },
     Mood {
         name: "night",
-        about: "moonlight, a dark blue sky, lamps glowing in the air",
+        about: "moonlight, stars and the Milky Way, a dark blue sky, lamps glowing in the air",
         fields: &[
-            ("sun", "(hour: 21.0, intensity: 0.08)"),
-            ("sky", "(mode: Procedural, zenith: (0.01, 0.015, 0.04), horizon: (0.03, 0.04, 0.07), ground: (0.01, 0.01, 0.015), sun_size: 0.0)"),
+            ("sun", "(hour: 22.5, intensity: 1.2)"),
+            ("sky", "(mode: Physical)"),
             ("fog", "(color: (0.03, 0.04, 0.07), start: 20.0, end: 150.0)"),
             ("volumetric_fog", "(enabled: true, density: 0.03, ambient: 0.3, lamps: 6.0)"),
             ("weather", CLEAR),
