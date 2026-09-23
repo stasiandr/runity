@@ -6,18 +6,52 @@
 //! errors first — comes back line by line into [`Session::console`]. The
 //! window calls [`Session::scene_view`] every frame, which collects it; a
 //! tool without a window calls [`Session::poll_game`].
+//!
+//! The same poll keeps the game's scene up with the editor: the game
+//! watches `.runity/live/<scene>.ron` (named to it by `RUNITY_SCENE_FILE`),
+//! and every edit of the open scene is written there — the running game
+//! patches itself from it, keeping its state, without anyone saving. What
+//! is on disk under `scenes/` changes only when the person saves.
 
 use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crate::console::Level;
 use crate::{EditError, EditResult, Session};
 
+/// The variable naming the scene file the game watches.
+pub const LIVE_VAR: &str = "RUNITY_SCENE_FILE";
+
+/// Write the document where the game watches it, whole or not at all: a
+/// game reading halfway through a write would see a broken scene.
+pub(crate) fn write_live(scene: &runity::Scene, file: &Path) -> EditResult<()> {
+    let io = |e: std::io::Error| EditError::Io(format!("{}: {e}", file.display()));
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    let pretty = runity::ron::ser::PrettyConfig::new().depth_limit(4);
+    let text = runity::ron::ser::to_string_pretty(scene, pretty)
+        .map_err(|e| EditError::Scene(e.to_string()))?;
+    let part = file.with_extension("ron.part");
+    std::fs::write(&part, text + "\n").map_err(io)?;
+    std::fs::rename(&part, file).map_err(io)
+}
+
+/// Which document the game shows, where it reads it, and what it was last
+/// given.
+struct Mirror {
+    document: PathBuf,
+    file: PathBuf,
+    given: runity::Scene,
+}
+
 /// A game started from the editor.
 pub(crate) struct Running {
     child: Child,
     lines: Receiver<String>,
+    mirror: Option<Mirror>,
     /// The entry being put together: a message whose details — a stack
     /// trace, where a compile error is — may still be arriving.
     pending: Option<(String, std::time::Instant)>,
@@ -112,9 +146,21 @@ impl Session {
         if let Some(err) = child.stderr.take() {
             forward(err, to);
         }
+        // A game told where to watch is kept up with the open document.
+        let mirror = command
+            .get_envs()
+            .find(|(k, _)| *k == LIVE_VAR)
+            .and_then(|(_, v)| v)
+            .zip(self.scene_path.clone())
+            .map(|(file, document)| Mirror {
+                document,
+                file: PathBuf::from(file),
+                given: self.history.scene().clone(),
+            });
         self.game = Some(Running {
             child,
             lines,
+            mirror,
             pending: None,
         });
         Ok(())
@@ -123,6 +169,7 @@ impl Session {
     /// Bring what the game printed into the Console. `Some(code)` the call
     /// it is seen to have ended — its last lines are in by then.
     pub fn poll_game(&mut self) -> Option<i32> {
+        self.mirror_to_game();
         let running = self.game.as_mut()?;
         let exited = running.child.try_wait().ok().flatten();
         let mut said = Vec::new();
@@ -183,6 +230,31 @@ impl Session {
             self.say(Level::Error, format!("the game ended with {status}"));
         }
         Some(code)
+    }
+
+    /// Give the running game the open document if it changed since it was
+    /// last given — while the document open is the one the game plays.
+    fn mirror_to_game(&mut self) {
+        let Some(mirror) = self.game.as_mut().and_then(|g| g.mirror.as_mut()) else {
+            return;
+        };
+        let scene = self.history.scene();
+        if self.scene_path.as_ref() != Some(&mirror.document) || *scene == mirror.given {
+            return;
+        }
+        let problem = match write_live(scene, &mirror.file) {
+            Ok(()) => {
+                mirror.given = scene.clone();
+                None
+            }
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(problem) = problem {
+            self.say(
+                Level::Warning,
+                format!("the game could not be given the edit: {problem}"),
+            );
+        }
     }
 
     /// Whether a game started from here is still running.

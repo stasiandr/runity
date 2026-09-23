@@ -789,7 +789,12 @@ fn main() -> anyhow::Result<()> {
         runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
     // `runity run --scene cave` plays scenes/cave.ron.
     let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
-    let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing));
+    // Started from the editor, the game watches the editor's document as it
+    // stands (RUNITY_SCENE_FILE), so an edit shows here without a save.
+    let scene = match std::env::var_os("RUNITY_SCENE_FILE") {
+        Some(file) => std::path::PathBuf::from(file),
+        None => runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing)),
+    };
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
     write_shapes();

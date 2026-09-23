@@ -3629,6 +3629,40 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
         .and_then(|(_, v)| v)
         .unwrap();
     assert_eq!(scene, "scene");
+
+    // The game watches the editor's document, not the saved file: a game
+    // started with that command is given every edit, unsaved.
+    let live = command
+        .get_envs()
+        .find(|(k, _)| *k == "RUNITY_SCENE_FILE")
+        .and_then(|(_, v)| v)
+        .map(PathBuf::from)
+        .unwrap();
+    assert!(live.starts_with(root_of(&path).join(".runity")), "{live:?}");
+    let given = |live: &Path| -> runity::Scene {
+        runity::ron::from_str(&std::fs::read_to_string(live).unwrap()).unwrap()
+    };
+    assert!(given(&live).find("box").is_some());
+    // And the game can play it from there: the project is found above it.
+    let (_, problems) = runity::LiveScene::open(&live).unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30").env("RUNITY_SCENE_FILE", &live);
+    session.run_in_console(game).unwrap();
+    session
+        .set_field(id(&session, "box"), "name", "chest")
+        .unwrap();
+    session.poll_game();
+    assert!(given(&live).find("chest").is_some(), "given without a save");
+    assert!(
+        std::fs::read_to_string(&path).unwrap().contains("\"box\""),
+        "the scene file says what was saved"
+    );
+    // Undo is an edit too.
+    session.undo().unwrap();
+    session.poll_game();
+    assert!(given(&live).find("box").is_some());
+    session.stop_game();
 }
 
 #[test]

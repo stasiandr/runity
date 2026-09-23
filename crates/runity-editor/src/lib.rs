@@ -1654,7 +1654,8 @@ impl Session {
 
     /// Play with the game's own code: save the open scene and give the
     /// command that runs the game on it (`cargo run` in the project, the
-    /// scene named by `RUNITY_SCENE`) for the window to start. The game
+    /// scene named by `RUNITY_SCENE`, the file it watches by
+    /// `RUNITY_SCENE_FILE`) for the window to start. The game
     /// opens its own window — the viewport stays the editor's, DNA open
     /// question 1 untouched — and keeps up with the scene as it is edited
     /// and saved, as every running game does. The editor's own
@@ -1678,11 +1679,20 @@ impl Session {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // What the game watches is the editor's document as it stands, not
+        // the saved file: an edit shows in the running game without a save
+        // (see `game::Mirror`). One person's, so under `.runity/`.
+        let live = project
+            .root()
+            .join(".runity/live")
+            .join(format!("{name}.ron"));
+        game::write_live(self.history.scene(), &live)?;
         let mut command = std::process::Command::new("cargo");
         command
             .arg("run")
             .current_dir(project.root())
-            .env("RUNITY_SCENE", &name);
+            .env("RUNITY_SCENE", &name)
+            .env(game::LIVE_VAR, &live);
         self.say(
             console::Level::Info,
             format!("playing scenes/{name}.ron in the game"),
