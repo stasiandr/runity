@@ -29,10 +29,14 @@ pub enum Panel {
     Animation,
     Screens,
     Animator,
+    Network,
+    WorldDiff,
+    Saves,
+    Systems,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 15] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -44,6 +48,10 @@ impl Panel {
         Panel::Animation,
         Panel::Screens,
         Panel::Animator,
+        Panel::Network,
+        Panel::WorldDiff,
+        Panel::Saves,
+        Panel::Systems,
     ];
 
     pub fn name(self) -> &'static str {
@@ -59,10 +67,14 @@ impl Panel {
             Panel::Animation => "animation",
             Panel::Screens => "screens",
             Panel::Animator => "animator",
+            Panel::Network => "network",
+            Panel::WorldDiff => "world-diff",
+            Panel::Saves => "saves",
+            Panel::Systems => "systems",
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Panel::Hierarchy => "Hierarchy",
             Panel::Inspector => "Inspector",
@@ -75,6 +87,10 @@ impl Panel {
             Panel::Animation => "Animation",
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
+            Panel::Network => "Network",
+            Panel::WorldDiff => "World Diff",
+            Panel::Saves => "Saves",
+            Panel::Systems => "Systems",
         }
     }
 
@@ -91,6 +107,10 @@ impl Panel {
             Panel::Animation => "play",
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
+            Panel::Network => "globe",
+            Panel::WorldDiff => "layers-2",
+            Panel::Saves => "save",
+            Panel::Systems => "list-tree",
         }
     }
 
@@ -114,6 +134,8 @@ pub enum Docked {
     /// A tab was clicked or dragged: panels may have come on top or moved,
     /// and want bringing up to date.
     Handled,
+    /// A tab was right-clicked: its menu, at the pointer.
+    Menu(Panel),
 }
 
 pub struct Docks {
@@ -159,14 +181,19 @@ impl Docks {
                     .clickable(),
             );
             ui.set_name(card, format!("dock {i}"));
+            // More tabs than room: they wrap onto another row rather than
+            // run off the dock's edge.
             let strip = ui.add(
                 card,
                 Style::row()
-                    .height(32.0)
+                    .auto_height()
+                    .min_height(32.0)
                     .fixed()
                     .full_width()
                     .padding_x(SPACE_2)
+                    .padding_y(4.0)
                     .gap(SPACE_1)
+                    .wrap()
                     .center_items(),
             );
             let body = ui.add(card, Style::column().fill().full_width());
@@ -261,6 +288,42 @@ impl Docks {
         ui.restyle(hint, |s| if empty { s.shown() } else { s.hidden() });
     }
 
+    /// Take a panel out of its dock, tab and all: it is going to a window
+    /// of its own. Its content stays where it is until the caller moves it.
+    pub fn take(&mut self, ui: &mut Ui, panel: Panel) -> Option<NodeId> {
+        let from = self.dock_of(panel)?;
+        let at = self.docks[from]
+            .tabs
+            .iter()
+            .position(|(p, _)| *p == panel)?;
+        let (_, tab) = self.docks[from].tabs.remove(at);
+        ui.remove(tab);
+        if self.docks[from].active == Some(panel) {
+            self.docks[from].active = None;
+            if let Some((next, _)) = self.docks[from].tabs.first().copied() {
+                self.activate(ui, next);
+            }
+        }
+        self.show_empty(ui, from);
+        Some(self.roots[&panel])
+    }
+
+    /// Put a panel that was taken out back into dock `to`, on top there.
+    pub fn give_back(&mut self, ui: &mut Ui, panel: Panel, to: usize) {
+        if self.dock_of(panel).is_some() {
+            return;
+        }
+        self.put(ui, panel, to);
+        self.activate(ui, panel);
+        self.show_empty(ui, to);
+    }
+
+    /// Whether a panel shows: on top of its dock, or in a window of its
+    /// own (out of every dock).
+    pub fn is_showing(&self, panel: Panel) -> bool {
+        self.is_active(panel) || self.dock_of(panel).is_none()
+    }
+
     /// Move a panel to dock `to`, on top there.
     pub fn move_panel(&mut self, ui: &mut Ui, panel: Panel, to: usize) {
         let Some(from) = self.dock_of(panel) else {
@@ -297,6 +360,10 @@ impl Docks {
             .find(|(_, t)| *t == node)
             .map(|(p, _)| *p)?;
         match event {
+            Event::Click {
+                button: runity::input::MouseButton::Right,
+                ..
+            } => Some(Docked::Menu(panel)),
             Event::Click { .. } => {
                 self.activate(ui, panel);
                 Some(Docked::Handled)
@@ -384,6 +451,10 @@ impl Docks {
                 Panel::Animation,
                 Panel::Animator,
                 Panel::Screens,
+                Panel::Network,
+                Panel::WorldDiff,
+                Panel::Saves,
+                Panel::Systems,
                 Panel::Settings,
                 Panel::Profiler,
             ],

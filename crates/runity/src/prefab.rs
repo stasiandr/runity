@@ -39,6 +39,10 @@ pub const EXTENSION: &str = "prefab";
 #[derive(Debug, Clone, Default)]
 pub struct Prefabs {
     by_name: HashMap<String, EntityDesc>,
+    /// Each prefab's ID, from its sidecar, and back: what a link to one
+    /// holds (docs/refs.md).
+    ids: HashMap<crate::AssetId, String>,
+    id_of: HashMap<String, crate::AssetId>,
 }
 
 impl Prefabs {
@@ -61,6 +65,10 @@ impl Prefabs {
             }
             match Self::read(&path) {
                 Ok((name, desc)) => {
+                    if let Some(id) = crate::asset::sidecar_id(crate::asset::sidecar_of(&path)) {
+                        prefabs.ids.insert(id, name.clone());
+                        prefabs.id_of.insert(name.clone(), id);
+                    }
                     prefabs.insert(name, desc);
                 }
                 Err(e) => problems.push((path, e)),
@@ -114,6 +122,23 @@ impl Prefabs {
 
     pub fn get(&self, name: &str) -> Option<&EntityDesc> {
         self.by_name.get(name)
+    }
+
+    /// Follow a link to a prefab: by its ID, then by its name. The name
+    /// found is the prefab's name now.
+    pub fn find(&self, link: &crate::AssetLink) -> Option<(&str, &EntityDesc)> {
+        let name = link
+            .id
+            .and_then(|id| self.ids.get(&id))
+            .map(String::as_str)
+            .unwrap_or(link.as_str());
+        let (name, desc) = self.by_name.get_key_value(name)?;
+        Some((name.as_str(), desc))
+    }
+
+    /// A prefab's ID, when its sidecar has been written.
+    pub fn id_of(&self, name: &str) -> Option<crate::AssetId> {
+        self.id_of.get(name).copied()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -288,12 +313,34 @@ fn expand(
             ..desc.clone()
         });
     expanded.id = id;
-    expanded.prefab = String::new();
+    expanded.prefab = Default::default();
     // A joint in a prefab names another part of it, by its id in the file:
     // in the instance, that part has the instance's scope too.
     if let (Some(instance), Some(to)) = (scope, expanded.joint.to()) {
         if !to.is_unassigned() {
             expanded.joint = expanded.joint.with_to(instance.within(to));
+        }
+    }
+    // So does a component's link to another part: a door's hinge in the
+    // prefab is this door's hinge in the scene, as Unity rewrites a
+    // prefab's references per instance.
+    if let Some(instance) = scope {
+        for value in expanded.components.values_mut() {
+            let text = value.get_ron();
+            let links = crate::EntityRef::find_in(text);
+            if links.is_empty() {
+                continue;
+            }
+            let mut scoped = text.to_string();
+            for id in links {
+                scoped = scoped.replace(
+                    &format!("EntityRef(\"{id}\")"),
+                    &format!("EntityRef(\"{}\")", instance.within(id)),
+                );
+            }
+            if let Ok(raw) = ron::value::RawValue::from_boxed_ron(scoped.into_boxed_str()) {
+                *value = raw;
+            }
         }
     }
     // Its own children come after whatever the prefab brought, in the same
@@ -303,6 +350,12 @@ fn expand(
         expanded
             .children
             .push(expand(child, scope, prefabs, depth, problems, parts));
+    }
+    // What a spline carries grows here, like a prefab's parts: the file
+    // keeps the spline and the spacing, everything downstream sees copies.
+    if let (Some(spline), Some(along)) = (&expanded.spline, &expanded.along) {
+        let grown = along.grow(id, spline);
+        expanded.children.extend(grown);
     }
     expanded
 }
@@ -326,15 +379,15 @@ fn resolve(
     if depth >= MAX_DEPTH {
         problems.push(Problem {
             entity_name: desc.name.clone(),
-            prefab: desc.prefab.clone(),
+            prefab: desc.prefab.to_string(),
             reason: format!("nested more than {MAX_DEPTH} deep — a prefab containing itself?"),
         });
         return None;
     }
-    let Some(template) = prefabs.get(&desc.prefab) else {
+    let Some((_, template)) = prefabs.find(&desc.prefab) else {
         problems.push(Problem {
             entity_name: desc.name.clone(),
-            prefab: desc.prefab.clone(),
+            prefab: desc.prefab.to_string(),
             reason: "no prefab by that name".into(),
         });
         return None;
@@ -361,7 +414,7 @@ fn resolve(
                     children: Vec::new(),
                     ..template.clone()
                 });
-            root.prefab = String::new();
+            root.prefab = Default::default();
             for child in &template.children {
                 root.children
                     .push(expand(child, Some(id), prefabs, depth + 1, problems, parts));
@@ -402,7 +455,7 @@ fn resolve(
             Some(target) => change.apply(target),
             None => problems.push(Problem {
                 entity_name: desc.name.clone(),
-                prefab: desc.prefab.clone(),
+                prefab: desc.prefab.to_string(),
                 reason: format!(
                     "an override for part {part}, which the prefab does not have (any more?)"
                 ),

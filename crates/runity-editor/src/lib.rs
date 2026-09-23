@@ -273,6 +273,9 @@ struct Play {
     /// Held still: the frame clock is not fed, so unpausing does not
     /// catch up on the seconds spent looking.
     paused: bool,
+    /// What Stop keeps where the simulation put it: Unreal's Keep
+    /// Simulation Changes (docs/artist.md).
+    kept: Vec<EntityId>,
 }
 
 impl Session {
@@ -384,7 +387,7 @@ impl Session {
         // Where the view was in the scene being left.
         self.remember_view();
         let path = path.as_ref().to_path_buf();
-        let scene = load_document(&path)?;
+        let mut scene = load_document(&path)?;
         // The scene says where it is looked at from, and opening it puts the
         // view there: a file that renders one way headlessly and opens
         // pointing somewhere else in the editor is a file whose picture
@@ -412,6 +415,10 @@ impl Session {
         }
         self.project = project;
         self.prefabs = prefabs;
+        // Every link given its ID and its file's name now (docs/refs.md).
+        // Not an edit: the document is what the file means, and the next
+        // save writes it down.
+        runity::refs::settle(&mut scene.entities, self.library.as_ref(), &self.prefabs);
         let stamps = runity::live::stamps(&path, self.project.as_ref());
         self.on_disk = Some((scene.clone(), stamps));
         self.history.replace(scene);
@@ -821,7 +828,7 @@ impl Session {
         runity_import::walk(&project.assets(), &mut |path| {
             let named = path
                 .file_stem()
-                .is_some_and(|s| s.to_string_lossy() == desc.model);
+                .is_some_and(|s| *s.to_string_lossy() == *desc.model);
             if named && path.extension().is_some_and(|e| e == "rterrain") {
                 source = Some(path.to_path_buf());
             }
@@ -920,7 +927,7 @@ impl Session {
             }
         }
         runity::Prefabs::save(&prefab, &path).map_err(EditError::Io)?;
-        self.prefabs.insert(line.prefab.clone(), prefab);
+        self.prefabs.insert(line.prefab.to_string(), prefab);
         self.edit_entity(instance)?.overrides.clear();
         self.respawn();
         Ok(applied)
@@ -960,7 +967,7 @@ impl Session {
         let variant = EntityDesc {
             id: EntityId::fresh(),
             name: name.to_string(),
-            model: String::new(),
+            model: Default::default(),
             prefab: line.prefab.clone(),
             transform: runity::Transform::default(),
             ..line.clone()
@@ -974,7 +981,7 @@ impl Session {
         *entity = EntityDesc {
             id: line.id,
             name: line.name,
-            prefab: name.to_string(),
+            prefab: name.into(),
             transform: line.transform,
             ..EntityDesc::default()
         };
@@ -1007,7 +1014,7 @@ impl Session {
             .cloned()
             .ok_or(EditError::NoEntity(instance))?;
         fn settle(desc: &mut EntityDesc) {
-            desc.prefab.clear();
+            desc.prefab = Default::default();
             desc.overrides.clear();
             desc.children.iter_mut().for_each(settle);
         }
@@ -1400,6 +1407,40 @@ impl Session {
             });
         }
 
+        // A game component's links to assets: each finds its asset by ID or
+        // by name, or is named here with the nearest name there is.
+        for (desc, _) in self.instanced.scene.flatten() {
+            for (component, value) in &desc.components {
+                for (kind, link) in runity::refs::links_in(value.get_ron()) {
+                    if link.is_empty() {
+                        continue;
+                    }
+                    if self.link_exists(kind, &link) {
+                        continue;
+                    }
+                    let names = self.assets_of_kind(kind);
+                    let near = runity::spelling::closest(&link, names.iter().map(String::as_str))
+                        .map(|n| format!(" — did you mean `{n}`?"))
+                        .unwrap_or_default();
+                    out.push(Diagnostic {
+                        entity: Some(desc.id),
+                        message: format!(
+                            "`{}` ({}): `{component}` links to {kind} `{link}`, which is not there{near}",
+                            desc.name, desc.id
+                        ),
+                    });
+                }
+            }
+        }
+        for link in self.instanced.scene.broken_links() {
+            out.push(Diagnostic {
+                entity: Some(link.holder),
+                message: format!(
+                    "`{}` ({}): `{}` links to {}, which is not in the scene",
+                    link.holder_name, link.holder, link.component, link.target
+                ),
+            });
+        }
         let models = names_of(AssetKind::Mesh);
         let materials = names_of(AssetKind::Material);
         let components = self.project.as_ref().and_then(|p| p.component_names());
@@ -1510,7 +1551,7 @@ impl Session {
                     id: line.id,
                     name: line.name.clone(),
                     transform: line.transform,
-                    prefab: prefab.to_string(),
+                    prefab: prefab.into(),
                     ..EntityDesc::default()
                 };
                 replaced += 1;
@@ -1669,7 +1710,7 @@ impl Session {
     pub fn add(&mut self, parent: Option<EntityId>, model: &str) -> EditResult<EntityId> {
         let desc = EntityDesc {
             name: "entity".into(),
-            model: model.to_string(),
+            model: model.into(),
             ..Default::default()
         };
         self.insert(parent, desc)
@@ -1709,14 +1750,14 @@ impl Session {
             .map(|transform| EntityDesc {
                 name: what.trim_start_matches("builtin:").to_string(),
                 model: if prefab {
-                    String::new()
+                    Default::default()
                 } else {
-                    what.to_string()
+                    what.into()
                 },
                 prefab: if prefab {
-                    what.to_string()
+                    what.into()
                 } else {
-                    String::new()
+                    Default::default()
                 },
                 transform,
                 ..Default::default()
@@ -1732,6 +1773,159 @@ impl Session {
             ..Default::default()
         };
         self.insert(parent, group)
+    }
+
+    /// One dab of the foliage brush (docs/artist.md): copies of a model —
+    /// or instances of a prefab — painted onto whatever is under a disc of
+    /// `radius` around `centre`, about `density` per square metre, none
+    /// closer than the density allows. Each gets a random turn about its
+    /// up axis and a scale of 0.8 to 1.2; `align` leans it with the ground.
+    /// `erase` takes away this model's copies inside the disc instead.
+    ///
+    /// The copies are children of one group per model, `foliage: <name>`,
+    /// made on the first dab: lines of the scene like any other, so the
+    /// file says what stands where. One undoable step per dab. Returns how
+    /// many were added or taken away. `seed` makes a dab repeatable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_foliage(
+        &mut self,
+        what: &str,
+        centre: Vec3,
+        radius: f32,
+        density: f32,
+        align: bool,
+        erase: bool,
+        seed: u64,
+    ) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        if what.is_empty() {
+            return Err(EditError::EmptyName("a model or prefab to paint"));
+        }
+        let prefab = self.prefabs.get(what).is_some();
+        if !prefab && !self.has_model(what) {
+            return Err(EditError::Scene(format!(
+                "no model or prefab `{what}` to paint"
+            )));
+        }
+        let name = format!("foliage: {}", what.trim_start_matches("builtin:"));
+        let group = self
+            .history
+            .scene()
+            .entities
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.id);
+        let inside = |p: Vec3| {
+            let d = p - centre;
+            d.x * d.x + d.z * d.z <= radius * radius
+        };
+        if erase {
+            let Some(group) = group else { return Ok(0) };
+            let before = self
+                .history
+                .scene()
+                .get(group)
+                .map_or(0, |g| g.children.len());
+            let scene = self.history.edit();
+            if let Some(g) = scene.get_mut(group) {
+                g.children.retain(|c| !inside(c.transform.position));
+            }
+            let after = self
+                .history
+                .scene()
+                .get(group)
+                .map_or(0, |g| g.children.len());
+            self.after_structural_change();
+            return Ok(before - after);
+        }
+        let density = density.clamp(0.001, 100.0);
+        let spacing = 1.0 / density.sqrt();
+        let physics = self.solid_without(&group.into_iter().collect::<Vec<_>>());
+        let mut taken: Vec<Vec3> = group
+            .and_then(|g| self.history.scene().get(g))
+            .map(|g| g.children.iter().map(|c| c.transform.position).collect())
+            .unwrap_or_default();
+        // xorshift: a dab with the same seed places the same copies.
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let tries = ((std::f32::consts::PI * radius * radius * density).ceil() as usize).max(1);
+        let mut placed = Vec::new();
+        for _ in 0..tries {
+            let angle = next() * std::f32::consts::TAU;
+            let r = radius * next().sqrt();
+            let (x, z) = (centre.x + r * angle.cos(), centre.z + r * angle.sin());
+            let from = Vec3::new(x, centre.y + 50.0, z);
+            let Some((point, normal, _)) =
+                physics.cast_ray_with_normal(from, -Vec3::Y, 100.0, false)
+            else {
+                continue;
+            };
+            let near = |p: &Vec3| {
+                let d = *p - point;
+                d.x * d.x + d.z * d.z < spacing * spacing
+            };
+            if taken.iter().any(near) {
+                continue;
+            }
+            let mut transform = runity::Transform {
+                position: point,
+                scale: Vec3::splat(0.8 + 0.4 * next()),
+                ..Default::default()
+            };
+            let yaw = runity::glam::Quat::from_rotation_y(next() * std::f32::consts::TAU);
+            let lean = if align {
+                runity::glam::Quat::from_rotation_arc(Vec3::Y, normal.normalize_or_zero())
+            } else {
+                runity::glam::Quat::IDENTITY
+            };
+            transform.set_rotation(lean * yaw);
+            taken.push(point);
+            placed.push(EntityDesc {
+                id: EntityId::fresh(),
+                name: what.trim_start_matches("builtin:").to_string(),
+                model: if prefab {
+                    Default::default()
+                } else {
+                    what.into()
+                },
+                prefab: if prefab {
+                    what.into()
+                } else {
+                    Default::default()
+                },
+                transform,
+                ..Default::default()
+            });
+        }
+        if placed.is_empty() {
+            return Ok(0);
+        }
+        let count = placed.len();
+        match group {
+            Some(group) => {
+                let scene = self.history.edit();
+                if let Some(g) = scene.get_mut(group) {
+                    g.children.extend(placed);
+                }
+                self.after_structural_change();
+            }
+            None => {
+                self.insert(
+                    None,
+                    EntityDesc {
+                        name,
+                        children: placed,
+                        ..Default::default()
+                    },
+                )?;
+            }
+        }
+        Ok(count)
     }
 
     /// Delete an entity and everything under it.
@@ -1985,7 +2179,7 @@ impl Session {
     /// carries its own colour.
     pub fn material_name(&self, id: EntityId) -> Option<String> {
         match self.line(id).map(|desc| &desc.material) {
-            Some(MaterialRef::Named(name)) => Some(name.clone()),
+            Some(MaterialRef::Named(name)) => Some(name.to_string()),
             _ => None,
         }
     }
@@ -2002,9 +2196,7 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
-        self.modify(id, |desc| {
-            desc.material = MaterialRef::Named(name.to_string())
-        })
+        self.modify(id, |desc| desc.material = MaterialRef::Named(name.into()))
     }
 
     /// Every material the editor can offer, in the order to show them: the
@@ -2084,7 +2276,7 @@ impl Session {
         }
         self.reopen_library()?;
 
-        self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
+        self.edit_entity(id)?.material = MaterialRef::Named(name.into());
         self.respawn();
         Ok(())
     }
@@ -2132,7 +2324,7 @@ impl Session {
     /// The model an entity draws, when it draws one of its own.
     pub fn entity_model(&self, id: EntityId) -> Option<String> {
         self.line(id)
-            .map(|l| l.model.clone())
+            .map(|l| l.model.to_string())
             .filter(|m| !m.is_empty())
     }
 
@@ -2140,7 +2332,7 @@ impl Session {
         self.history
             .scene()
             .get(id)
-            .map(|desc| desc.prefab.clone())
+            .map(|desc| desc.prefab.to_string())
             .filter(|name| !name.is_empty())
     }
 
@@ -2155,8 +2347,8 @@ impl Session {
         }
         let desc = EntityDesc {
             name: prefab.to_string(),
-            model: String::new(),
-            prefab: prefab.to_string(),
+            model: Default::default(),
+            prefab: prefab.into(),
             ..Default::default()
         };
         self.insert(parent, desc)
@@ -2197,8 +2389,8 @@ impl Session {
         // file, and leaving a copy of them in the scene is how the two start
         // to drift.
         let entity = self.edit_entity(id)?;
-        entity.prefab = name.to_string();
-        entity.model = String::new();
+        entity.prefab = name.into();
+        entity.model = Default::default();
         entity.children.clear();
         self.respawn();
         Ok(())
@@ -2396,6 +2588,211 @@ impl Session {
         world
             .cast_ray_with_normal(from, direction, far, false)
             .map(|(point, _, _)| point)
+    }
+
+    /// A new material that is `parent` with nothing changed yet —
+    /// Unreal's Material Instance (docs/artist.md): `materials/<parent>_instance.rmat`
+    /// saying only `parent: ("<parent>", "<its id>")`. What is set on it
+    /// afterwards changes it alone; what is set on the parent changes both.
+    /// Built at once. Returns the new material's name.
+    pub fn new_material_instance(&mut self, parent: &str) -> EditResult<String> {
+        let materials = self
+            .project
+            .as_ref()
+            .ok_or(EditError::NotInProject)?
+            .materials();
+        let source = self.material_file(parent)?;
+        let dir = source.parent().unwrap_or(&materials).to_path_buf();
+        let mut name = format!("{parent}_instance");
+        let mut n = 2;
+        while dir.join(format!("{name}.rmat")).exists() {
+            name = format!("{parent}_instance_{n}");
+            n += 1;
+        }
+        let link = match runity::asset::sidecar_id(runity::asset::sidecar_of(&source)) {
+            Some(id) => format!("({parent:?}, \"{id}\")"),
+            None => format!("{parent:?}"),
+        };
+        std::fs::write(
+            dir.join(format!("{name}.rmat")),
+            format!(
+                "// {parent}, as it is until something here says otherwise.\n(parent: {link})\n"
+            ),
+        )
+        .map_err(|e| EditError::Io(e.to_string()))?;
+        self.reload_assets();
+        Ok(name)
+    }
+
+    /// Every asset of a kind a typed link can name (`model`, `material`,
+    /// `prefab`, `sound`, `texture`, `scene`), by name: what a picker
+    /// lists, sorted.
+    pub fn assets_of_kind(&self, kind: &str) -> Vec<String> {
+        use runity::asset::AssetKind;
+        let library = |k: AssetKind| -> Vec<String> {
+            self.library
+                .as_ref()
+                .map(|l| l.names_of(k).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        let mut out: Vec<String> = match kind {
+            "model" => {
+                let mut v = library(AssetKind::Mesh);
+                v.extend(builtin::NAMES.iter().map(|n| n.to_string()));
+                v
+            }
+            "material" => library(AssetKind::Material),
+            "sound" => library(AssetKind::Sound),
+            "texture" => library(AssetKind::Texture),
+            "prefab" => self
+                .prefabs
+                .names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            "scene" => self
+                .project
+                .as_ref()
+                .map(|p| p.scene_names())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Whether a typed link finds its asset: by its ID, or by its name.
+    pub fn link_exists(&self, kind: &str, link: &runity::AssetLink) -> bool {
+        use runity::asset::AssetKind;
+        let library = |k: AssetKind| {
+            self.library
+                .as_ref()
+                .is_some_and(|l| l.find(link, k).is_some())
+        };
+        match kind {
+            "model" => builtin::by_name(link).is_some() || library(AssetKind::Mesh),
+            "material" => library(AssetKind::Material),
+            "sound" => library(AssetKind::Sound),
+            "texture" => library(AssetKind::Texture),
+            "prefab" => self.prefabs.find(link).is_some(),
+            "scene" => {
+                let Some(project) = self.project.as_ref() else {
+                    return false;
+                };
+                let named = project.scene_names().iter().any(|n| n == link.as_str());
+                named
+                    || link.id.is_some_and(|id| {
+                        std::fs::read_dir(project.scenes())
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .any(|e| {
+                                let p = e.path();
+                                p.extension().is_some_and(|x| x == "ron")
+                                    && runity::asset::sidecar_id(runity::asset::sidecar_of(&p))
+                                        == Some(id)
+                            })
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// A link to an asset of a kind by its name, with its ID when it has
+    /// one: what a picker writes (docs/refs.md).
+    pub fn link_to(&self, kind: &str, name: &str) -> runity::AssetLink {
+        use runity::asset::AssetKind;
+        let mut link = runity::AssetLink::named(name);
+        let found = match kind {
+            "model" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Mesh)),
+            "material" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Material)),
+            "sound" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Sound)),
+            "texture" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Texture)),
+            _ => None,
+        }
+        .map(|(id, name)| (id, name.to_string()));
+        let found = found.or_else(|| match kind {
+            "prefab" => self.prefabs.id_of(name).map(|id| (id, name.to_string())),
+            "scene" => {
+                let file = self.project.as_ref()?.scenes().join(format!("{name}.ron"));
+                runity::asset::sidecar_id(runity::asset::sidecar_of(&file))
+                    .map(|id| (id, name.to_string()))
+            }
+            _ => None,
+        });
+        if let Some((id, name)) = found {
+            link.settle(&name, id);
+        }
+        link
+    }
+
+    /// A material's `.rmat` in the project, by name.
+    fn material_file(&self, name: &str) -> EditResult<PathBuf> {
+        let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
+        let mut found = None;
+        runity_import::walk(&project.materials(), &mut |p| {
+            if p.extension().is_some_and(|e| e == "rmat")
+                && p.file_stem().is_some_and(|s| s == name)
+            {
+                found = Some(p.to_path_buf());
+            }
+        });
+        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in materials/")))
+    }
+
+    /// A material's parent and parameters: what each is and whether the
+    /// material sets it or takes it from its parent.
+    pub fn material_layers(&self, name: &str) -> EditResult<runity_import::MaterialLayers> {
+        let file = self.material_file(name)?;
+        runity_import::material_layers(&file).map_err(|e| EditError::Scene(format!("{e:#}")))
+    }
+
+    /// Set one parameter of a material (`value` is RON: `0.8`,
+    /// `"#ff8800"`), or with `None` let it take its parent's again. Only
+    /// that line of the file changes. A value it cannot be built with is
+    /// refused and the file left as it was.
+    pub fn set_material_param(
+        &mut self,
+        name: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> EditResult<()> {
+        let file = self.material_file(name)?;
+        let known = self.material_layers(name)?;
+        if key != "parent" && !known.fields.iter().any(|(k, _, _)| k == key) {
+            let names: Vec<&str> = known.fields.iter().map(|(k, _, _)| k.as_str()).collect();
+            let near = runity::spelling::closest(key, names.iter().copied())
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            return Err(EditError::Scene(format!("a material has no `{key}`{near}")));
+        }
+        let old = std::fs::read_to_string(&file).map_err(|e| EditError::Io(e.to_string()))?;
+        let new = runity::ron_edit::set_field(&old, key, value).ok_or_else(|| {
+            EditError::Scene(format!(
+                "{}: could not find where `{key}` goes",
+                file.display()
+            ))
+        })?;
+        std::fs::write(&file, &new).map_err(|e| EditError::Io(e.to_string()))?;
+        if let Err(e) = runity_import::material_source(&file) {
+            let _ = std::fs::write(&file, &old);
+            return Err(EditError::Scene(format!("{key}: {e:#}")));
+        }
+        self.reload_assets();
+        Ok(())
     }
 
     pub fn reload_assets(&mut self) -> usize {
@@ -2800,6 +3197,8 @@ impl Session {
         };
         // The scene's own sky and post-processing, as the game draws it.
         runity::world::scene_look(&mut frame, scene);
+        runity::world::post_volumes(&mut frame, &self.world);
+        frame.texture_views = runity::world::texture_views(&self.world, scene);
         frame
     }
 
@@ -3037,6 +3436,72 @@ impl Session {
         let from = on_screen(centre)?;
         let to = on_screen(centre + normal)?;
         Some((out, (to.0 - from.0, to.1 - from.1)))
+    }
+
+    /// Where an entity is in the world, as a matrix: its transform and all
+    /// of its parents'.
+    pub fn world_matrix(&self, id: EntityId) -> Option<Mat4> {
+        self.instanced
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(desc, _)| desc.id == id)
+            .map(|(_, world)| world)
+    }
+
+    /// Where a point of the world is in the view, in pixels; `None` behind
+    /// the camera.
+    pub fn screen_of(&self, point: Vec3) -> Option<(f32, f32)> {
+        let (w, h) = self.size();
+        self.camera
+            .screen_point(point, runity::glam::Vec2::new(w as f32, h as f32))
+            .map(|p| (p.x, p.y))
+    }
+
+    /// What the view's pixel shows, not counting `without` and what is
+    /// under it: where a fence's point goes when dragged, rather than onto
+    /// the fence's own posts.
+    pub fn point_under_without(&self, x: u32, y: u32, without: EntityId) -> Option<Vec3> {
+        let (from, direction) = self.ray(x, y);
+        self.solid_without(&[without])
+            .cast_ray_with_normal(from, direction, self.camera.far, false)
+            .map(|(point, _, _)| point)
+    }
+
+    /// A fence: an entity at `at` with a spline two points long and copies
+    /// of `what` along it, `spacing` apart (docs/artist.md). One undo step.
+    pub fn add_fence(&mut self, what: &str, at: Vec3, spacing: f32) -> EditResult<EntityId> {
+        if !self.has_model(what) {
+            return Err(EditError::Scene(format!(
+                "no model `{what}` to set along a spline"
+            )));
+        }
+        let posts = what.starts_with("builtin:");
+        self.insert(
+            None,
+            EntityDesc {
+                name: "fence".into(),
+                transform: runity::Transform {
+                    position: at,
+                    ..Default::default()
+                },
+                spline: Some(runity::Spline {
+                    points: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+                    closed: false,
+                }),
+                along: Some(runity::Along {
+                    model: what.into(),
+                    spacing,
+                    // A builtin is a metre across: thin it to a post.
+                    scale: if posts {
+                        Vec3::new(0.15, 1.2, 0.15)
+                    } else {
+                        Vec3::ONE
+                    },
+                }),
+                ..Default::default()
+            },
+        )
     }
 
     /// An entity's own model's box and where it is in the world.
@@ -3508,6 +3973,7 @@ impl Session {
             clock: runity::Time::new(runity::TimeSettings::default()),
             before: self.history.scene().clone(),
             paused: false,
+            kept: Vec::new(),
         });
         self.drag = None;
         self.drag_from = None;
@@ -3579,16 +4045,60 @@ impl Session {
         true
     }
 
-    /// Stop simulating and put the scene back as it was. `false` when it
-    /// was not playing.
+    /// Mark the selection to be kept where the simulation puts it: when
+    /// play stops, those entities stay there instead of going back —
+    /// Unreal's K, Keep Simulation Changes. Returns how many are marked;
+    /// nothing is marked when not playing.
+    pub fn keep_simulation(&mut self) -> usize {
+        let selection = self.selection();
+        let Some(play) = self.play.as_mut() else {
+            return 0;
+        };
+        for id in selection {
+            if !play.kept.contains(&id) {
+                play.kept.push(id);
+            }
+        }
+        play.kept.len()
+    }
+
+    /// What is marked to be kept when play stops.
+    pub fn kept(&self) -> Vec<EntityId> {
+        self.play
+            .as_ref()
+            .map(|p| p.kept.clone())
+            .unwrap_or_default()
+    }
+
+    /// Stop simulating and put the scene back as it was — except what was
+    /// marked with [`Session::keep_simulation`], which is moved to where
+    /// the simulation left it, as one undoable step. `false` when it was
+    /// not playing.
     pub fn stop(&mut self) -> bool {
         let Some(play) = self.play.take() else {
             return false;
         };
+        // Where the kept ones are now, read before the world is rebuilt.
+        let kept: Vec<(EntityId, runity::Transform)> = self
+            .world
+            .query::<(&runity::world::SceneId, &runity::Transform)>()
+            .iter()
+            .filter(|(id, _)| play.kept.contains(&id.0))
+            .map(|(id, t)| (id.0, *t))
+            .collect();
         // Untracked: starting and stopping a preview is not something to
         // undo, and putting it on the stack would mean pressing play cost a
         // step of real editing history.
         *self.history.scene_mut_untracked() = play.before;
+        let mut steps = 0;
+        for (id, transform) in kept {
+            if self.set_transform(id, transform).is_ok() {
+                steps += 1;
+            }
+        }
+        if steps > 1 {
+            self.squash_last(steps);
+        }
         self.respawn();
         true
     }
@@ -3619,7 +4129,7 @@ impl Session {
     /// id in the prefab file.
     /// The document line an expanded line belongs to: itself, or the
     /// instance a part came with.
-    pub(crate) fn instanced_owner(&self, id: EntityId) -> EntityId {
+    pub fn instanced_owner(&self, id: EntityId) -> EntityId {
         self.instanced.owner_of(id).unwrap_or(id)
     }
 
@@ -3705,19 +4215,25 @@ impl Session {
         runity::spawn_scene_with(
             &self.instanced.scene,
             &mut self.world,
-            |name| {
-                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+            |link| {
+                // Kept by ID when the link has one: two models with one
+                // name are two meshes.
+                let key = link
+                    .id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| link.to_string());
+                if let Some(found) = uploaded.iter().find(|(n, _)| *n == key) {
                     return Some(found.1);
                 }
-                let handle = if let Some(mesh) = builtin::by_name(name) {
+                let handle = if let Some(mesh) = builtin::by_name(link) {
                     renderer.upload_mesh_owned(gpu, &mesh)
                 } else {
-                    renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
+                    renderer.upload_mesh(gpu, library?.mesh_link(link)?)
                 };
-                uploaded.push((name.to_string(), handle));
+                uploaded.push((key, handle));
                 Some(handle)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
     }
 
@@ -3737,7 +4253,7 @@ impl Session {
     /// The one place that knows the resolution order, so the inspector and
     /// the frame cannot disagree about what colour something is.
     fn resolve_material(&self, desc: &EntityDesc) -> Material {
-        desc.material_from(|name| self.library.as_ref()?.material_by_name(name))
+        desc.material_from(|link| self.library.as_ref()?.material_link(link))
     }
 
     /// How big a document entity is, as a radius around it.

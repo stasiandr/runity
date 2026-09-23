@@ -111,6 +111,8 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "open_prefab",
         "problems",
         "push_face",
+        "paint_foliage",
+        "fence",
         "array",
         "edits",
         "measure",
@@ -246,6 +248,17 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     assert!(agent
         .text("scene_tree", json!({}))
         .contains("(0.00, 4.00, 0.00)"));
+    // Kept: the tower stays where it fell, and undo takes it back up.
+    let tower = fell[..16].to_string();
+    let report = agent.text("simulate", json!({ "seconds": 2.0, "keep": [tower] }));
+    assert!(report.contains("kept where they fell: 1"), "{report}");
+    assert!(!agent
+        .text("scene_tree", json!({}))
+        .contains("(0.00, 4.00, 0.00)"));
+    agent.text("undo", json!({}));
+    assert!(agent
+        .text("scene_tree", json!({}))
+        .contains("(0.00, 4.00, 0.00)"));
 
     // The game's own components go on as RON text, and show in the tree.
     agent.text(
@@ -332,6 +345,18 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         )
         .unwrap_err();
     assert!(err.contains("+x, -x"), "{err}");
+    // The foliage brush, as the agent holds it: cones on top of the wall.
+    let said = agent.text(
+        "paint_foliage",
+        json!({ "what": "builtin:cone", "centre": [0.0, 3.0, 0.0], "radius": 3.0, "density": 4.0 }),
+    );
+    assert!(said.ends_with("planted"), "{said}");
+    assert!(!said.starts_with("0 "), "{said}");
+    let said = agent.text(
+        "fence",
+        json!({ "what": "builtin:cylinder", "points": [[0.0, 0.0, 5.0], [6.0, 0.0, 5.0]], "spacing": 2.0 }),
+    );
+    assert!(said.contains("fence of builtin:cylinder"), "{said}");
     let err = agent
         .call("render", json!({ "from_game": true }))
         .unwrap_err();

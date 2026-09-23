@@ -36,10 +36,38 @@ struct Running {
     last_commit: Option<(String, Instant)>,
 }
 
+/// A panel's own window: the same UI tree, drawn from the panel's frame.
+struct FloatWindow {
+    name: String,
+    window: Arc<Window>,
+    surface: Surface,
+    renderer: UiRenderer,
+    /// The studio's picture generation this renderer has been given.
+    seen: u64,
+}
+
+impl FloatWindow {
+    fn draw(&mut self, studio: &mut Studio) {
+        let gpu = studio.session.gpu();
+        match self.surface.begin_frame() {
+            Ok(frame) => {
+                let view = frame.ui_view();
+                let (w, h) = (frame.width, frame.height);
+                studio.draw_float(&self.name, &mut self.renderer, &mut self.seen, &view, w, h);
+                frame.present(studio.session.gpu());
+            }
+            Err(SurfaceError::Outdated | SurfaceError::Lost) => self.surface.reconfigure(gpu),
+            Err(_) => {}
+        }
+    }
+}
+
 struct App {
     /// The session until the window exists to put it in.
     pending: Option<(runity_editor::Session, String)>,
     running: Option<Running>,
+    /// Panels torn off into windows of their own.
+    floats: Vec<FloatWindow>,
     /// Closing over unsaved work asks once, in the Console.
     close_asked: bool,
     /// When the next frame is due. Vsync paces a visible window; this
@@ -122,10 +150,16 @@ impl ApplicationHandler for App {
         });
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some(run) = self.running.as_mut() else {
             return;
         };
+        if id != run.window.id() {
+            if let Some(float) = self.floats.iter_mut().find(|f| f.window.id() == id) {
+                float_event(run, float, &event);
+            }
+            return;
+        }
         match &event {
             WindowEvent::CloseRequested => {
                 if run.studio.session.is_modified() && !self.close_asked {
@@ -213,6 +247,10 @@ impl ApplicationHandler for App {
                     }
                     Err(_) => {}
                 }
+                sync_floats(event_loop, run, &mut self.floats);
+                for float in &mut self.floats {
+                    float.draw(&mut run.studio);
+                }
                 self.next = Instant::now() + FRAME;
                 return;
             }
@@ -242,6 +280,74 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Open a window for each panel the studio has floating, and close the
+/// ones it has docked back.
+fn sync_floats(event_loop: &ActiveEventLoop, run: &Running, floats: &mut Vec<FloatWindow>) {
+    let wanted = run.studio.floating();
+    floats.retain(|f| wanted.iter().any(|(name, _)| *name == f.name));
+    for (name, title) in wanted {
+        if floats.iter().any(|f| f.name == name) {
+            continue;
+        }
+        let attrs = Window::default_attributes()
+            .with_title(title)
+            .with_inner_size(LogicalSize::new(420.0, 560.0));
+        let Ok(window) = event_loop.create_window(attrs) else {
+            continue;
+        };
+        let window = Arc::new(window);
+        let Ok(surface) = Surface::from_window(run.studio.session.gpu(), window.clone()) else {
+            continue;
+        };
+        let renderer = run.studio.renderer(surface.format());
+        floats.push(FloatWindow {
+            name,
+            window,
+            surface,
+            renderer,
+            seen: u64::MAX,
+        });
+    }
+}
+
+/// An event from a floating panel's window.
+fn float_event(run: &mut Running, float: &mut FloatWindow, event: &WindowEvent) {
+    let scale = float.window.scale_factor() as f32;
+    match event {
+        // Closing the window docks the panel; the window goes at the next
+        // frame, when the studio no longer lists it.
+        WindowEvent::CloseRequested => {
+            run.studio.close_float(&float.name);
+            run.window.request_redraw();
+        }
+        WindowEvent::Resized(size) => {
+            float
+                .surface
+                .resize(run.studio.session.gpu(), size.width, size.height);
+            run.studio.resize_float(
+                &float.name,
+                size.width as f32 / scale,
+                size.height as f32 / scale,
+            );
+            run.window.request_redraw();
+        }
+        WindowEvent::RedrawRequested => float.draw(&mut run.studio),
+        _ => {
+            for input in runity::shell::translate(event) {
+                let input = match input {
+                    InputEvent::MouseMoved { x, y } => InputEvent::MouseMoved {
+                        x: x / scale,
+                        y: y / scale,
+                    },
+                    other => other,
+                };
+                run.studio.handle_float(&float.name, &input);
+            }
+            run.window.request_redraw();
+        }
+    }
+}
+
 /// Open the window over `session` and run until it closes.
 pub fn run(session: runity_editor::Session, title: String) {
     let event_loop = match EventLoop::new() {
@@ -254,6 +360,7 @@ pub fn run(session: runity_editor::Session, title: String) {
     let mut app = App {
         pending: Some((session, title)),
         running: None,
+        floats: Vec::new(),
         close_asked: false,
         next: Instant::now(),
     };

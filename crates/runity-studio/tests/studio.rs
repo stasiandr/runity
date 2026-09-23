@@ -1568,12 +1568,11 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
 (
     start: "idle",
     states: {
-        "idle": (clip: "idle"), // standing
+        "idle": (clip: "idle", transitions: [
+            (to: "walk", when: [Above("speed", 0.1)]),
+        ]), // standing
         "walk": (clip: "walk"),
     },
-    transitions: [
-        (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
-    ],
 )
 "#,
     )
@@ -1589,15 +1588,16 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     assert!(s.ui.find("state idle").is_some(), "{}", s.ui.dump());
     assert!(s.ui.find("transition 0").is_some(), "an arrow idle → walk");
 
-    // A box dragged moves, and the file does not change for it.
+    // The boxes place themselves: walk one column over from idle, and
+    // pulling at a box neither moves it nor writes anything anywhere.
     let before = std::fs::read_to_string(&file).unwrap();
     s.ui.paint();
+    let idle = s.ui.rect(s.ui.find("state idle").unwrap());
     let walk = s.ui.rect(s.ui.find("state walk").unwrap());
+    assert!(walk.x > idle.x + idle.width, "{idle:?} {walk:?}");
     let (x, y) = walk.center();
     s.handle(&InputEvent::MouseMoved { x, y });
     s.handle(&InputEvent::MouseDown(MouseButton::Left));
-    s.frame();
-    s.handle(&InputEvent::MouseMoved { x: x + 20.0, y });
     s.frame();
     s.handle(&InputEvent::MouseMoved {
         x: x + 60.0,
@@ -1607,15 +1607,15 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
     s.ui.paint();
-    let moved = s.ui.rect(s.ui.find("state walk").unwrap());
+    let after = s.ui.rect(s.ui.find("state walk").unwrap());
     assert!(
-        (moved.x - walk.x - 60.0).abs() < 2.0,
-        "{walk:?} -> {moved:?}"
+        (after.x - walk.x).abs() < 1.0 && (after.y - walk.y).abs() < 1.0,
+        "{walk:?} -> {after:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     assert!(
-        dir.join(".runity/animators.ron").exists(),
-        "where boxes stand is kept"
+        !dir.join(".runity/animators.ron").exists(),
+        "no places kept"
     );
 
     // Walk is chosen by the press: back to idle, on a condition.
@@ -1624,6 +1624,12 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     let g = read();
     assert_eq!(g.transitions.len(), 2);
     assert_eq!(g.transitions[1].from, "walk");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"walk\": (clip: \"walk\", transitions: [\n            (to: \"idle\", when: [Below(\"speed\", 0.1)]),\n        ]),"),
+        "written in the state it leaves"
+    );
     assert_eq!(
         g.transitions[1].when,
         vec![runity::animgraph::Condition::Below("speed".into(), 0.1)]
@@ -1656,7 +1662,7 @@ fn the_animator_lights_up_the_state_the_running_game_is_in() {
     std::fs::create_dir_all(dir.join("animators")).unwrap();
     std::fs::write(
         dir.join("animators/hero.ron"),
-        r#"(start: "idle", states: {"idle": (clip: "idle"), "walk": (clip: "walk")}, transitions: [])"#,
+        r#"(start: "idle", states: {"idle": (clip: "idle"), "walk": (clip: "walk")})"#,
     )
     .unwrap();
     // A game that says the boulder walks: its report, from a stand-in.
@@ -1752,4 +1758,514 @@ fn face_mode_outlines_a_face_and_a_drag_pushes_it() {
     s.session.undo().unwrap();
     let (_, back) = s.session.world_bounds(crate_).unwrap();
     assert!((back.y - high.y).abs() < 1e-4);
+}
+
+#[test]
+fn a_panel_floats_in_a_window_of_its_own_and_docks_back() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "Window", "Float the Inspector");
+    assert_eq!(
+        s.floating().into_iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        ["inspector"]
+    );
+    assert!(s.ui.find("tab inspector").is_none(), "its tab is gone");
+    s.resize_float("inspector", 400.0, 500.0);
+    click(&mut s, "line boulder");
+
+    // The floating window's own pixels: its pointer is shifted to the frame.
+    s.ui.paint();
+    let frame = s.ui.rect(s.ui.find("float inspector").unwrap());
+    assert_eq!((frame.width, frame.height), (400.0, 500.0));
+    let name = s.ui.rect(s.ui.find("inspector name").unwrap());
+    let (x, y) = (name.center().0 - frame.x, name.center().1 - frame.y);
+    assert!(
+        x > 0.0 && x < 400.0 && y > 0.0 && y < 500.0,
+        "inside it: {x},{y}"
+    );
+    s.handle_float("inspector", &InputEvent::MouseMoved { x, y });
+    s.handle_float("inspector", &InputEvent::MouseDown(MouseButton::Left));
+    s.handle_float("inspector", &InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "big rock");
+    s.handle(&InputEvent::KeyDown(Key::Enter));
+    s.frame();
+    assert!(
+        s.session.find("big rock").is_some(),
+        "renamed from the floating window"
+    );
+
+    // Drawn from its corner: the panel's surface, not the main window's.
+    let target = runity::OffscreenTarget::new(s.session.gpu(), 400, 500);
+    let mut renderer = s.renderer(target.format());
+    let mut seen = u64::MAX;
+    s.draw_float(
+        "inspector",
+        &mut renderer,
+        &mut seen,
+        &target.ui_view(),
+        400,
+        500,
+    );
+    let pixels = target.read_rgba(s.session.gpu());
+    if let Ok(out) = std::env::var("RUNITY_FLOAT_SHOT") {
+        image::save_buffer(out, &pixels, 400, 500, image::ExtendedColorType::Rgba8).unwrap();
+    }
+    let at = |x: usize, y: usize| &pixels[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
+    let surface = runity_studio::theme::SURFACE;
+    assert_eq!(
+        at(200, 20),
+        [surface.r, surface.g, surface.b],
+        "the panel's card"
+    );
+
+    // Closing its window docks it again.
+    s.close_float("inspector");
+    s.frame();
+    assert!(s.floating().is_empty());
+    assert!(s.ui.find("tab inspector").is_some());
+    assert!(s.ui.find("float inspector").is_none());
+}
+
+#[test]
+fn an_entity_field_is_picked_from_the_scene_and_a_gone_target_is_named() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The game says it has a door that names its switch.
+    let shapes: std::collections::BTreeMap<String, runity::shape::Shape> = [(
+        "door".to_string(),
+        runity::shape::Shape::Struct(vec![
+            ("switch".into(), runity::shape::Shape::Entity),
+            ("open".into(), runity::shape::Shape::Bool),
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::create_dir_all(dir.join(runity::project::SHAPES).parent().unwrap()).unwrap();
+    std::fs::write(
+        dir.join(runity::project::SHAPES),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    let crate_ = s.session.find("crate").unwrap();
+    s.session.add_component(boulder, "door").unwrap();
+    click(&mut s, "line boulder");
+    let picker = s.ui.find("door switch").unwrap();
+    let label = s.ui.children(picker)[1];
+    assert_eq!(s.ui.text(label), Some("None (entity)"));
+
+    // The picker lists the scene; crate is chosen.
+    click(&mut s, "door switch");
+    click(&mut s, "menu crate");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.door")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(&format!("EntityRef(\"{crate_}\")")),
+        "{value}"
+    );
+    let picker = s.ui.find("door switch").unwrap();
+    let label = s.ui.children(picker)[1];
+    assert_eq!(s.ui.text(label), Some("crate"));
+
+    // Its target deleted: the link is named as broken.
+    s.session.delete(crate_).unwrap();
+    assert!(
+        s.session
+            .problems()
+            .iter()
+            .any(|p| p.message.contains("`door` links to")),
+        "{:?}",
+        s.session.problems()
+    );
+}
+
+#[test]
+fn k_during_play_keeps_where_the_crate_fell() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_ = s.session.find("crate").unwrap();
+    s.session.set_field(crate_, "body", "Dynamic").unwrap();
+    s.session
+        .set_field(crate_, "collider", "Box(half: (0.5, 0.5, 0.5))")
+        .unwrap();
+    // Lifted, so it has somewhere to fall.
+    let mut t = s.session.transform(crate_).unwrap();
+    t.position.y += 3.0;
+    s.session.set_transform(crate_, t).unwrap();
+    let start = t.position;
+    s.frame();
+
+    click(&mut s, "play");
+    assert!(s.session.is_playing());
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        s.frame();
+    }
+    click(&mut s, "line crate");
+    key(&mut s, Key::K);
+    assert_eq!(s.session.kept(), vec![crate_]);
+    click(&mut s, "play");
+    assert!(!s.session.is_playing());
+    let after = s.session.transform(crate_).unwrap().position;
+    assert!(
+        after.y < start.y - 0.5,
+        "kept where it fell: {start} -> {after}"
+    );
+}
+
+#[test]
+fn a_field_that_differs_has_a_reset_arrow_and_search_narrows_the_inspector() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let boulder = s.session.find("boulder").unwrap();
+    click(&mut s, "line boulder");
+    assert!(
+        s.ui.find("reset scale").is_some(),
+        "scale 1.1 is not a new entity's"
+    );
+    assert!(s.ui.find("reset rotation").is_none(), "rotation 0 is");
+    click(&mut s, "reset scale");
+    assert_eq!(
+        s.session.transform(boulder).unwrap().scale,
+        runity::glam::Vec3::ONE
+    );
+    assert!(s.ui.find("reset scale").is_none(), "and the arrow goes");
+
+    click(&mut s, "inspector search");
+    type_text(&mut s, "body");
+    s.frame();
+    s.frame();
+    assert!(s.ui.find("label body").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("label position").is_none(), "only what matches");
+}
+
+#[test]
+fn the_foliage_brush_paints_the_selected_model_in_one_stroke() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let tree = s.session.find("tree near").unwrap();
+    let model = s.session.entity_model(tree).unwrap();
+    click(&mut s, "line tree near");
+    click(&mut s, "foliage");
+    let steps = s.session.undo_steps().len();
+
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (x, y) = (view.x + view.width / 2.0, view.y + view.height * 0.7);
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    for i in 1..=4 {
+        std::thread::sleep(std::time::Duration::from_millis(110));
+        s.handle(&InputEvent::MouseMoved {
+            x: x + 40.0 * i as f32,
+            y,
+        });
+        s.frame();
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+
+    let group = s
+        .session
+        .find(&format!(
+            "foliage: {}",
+            model.trim_start_matches("builtin:")
+        ))
+        .unwrap_or_else(|| {
+            panic!(
+                "no group; console: {:?}",
+                s.session
+                    .console()
+                    .iter()
+                    .map(|l| l.text.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let planted = s.session.scene().get(group).unwrap().children.len();
+    assert!(planted > 3, "{planted}");
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "one stroke, one step"
+    );
+
+    type_text(&mut s, "]");
+    s.frame();
+    assert!(s
+        .session
+        .console()
+        .iter()
+        .any(|l| l.text.contains("m across")));
+}
+
+#[test]
+fn a_fence_from_the_tools_menu_is_shaped_by_dragging_its_points() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "Tools", "Spline: New Fence");
+    let fence = s.session.selected().expect("the new fence is selected");
+    s.frame();
+    assert!(s.ui.find("spline point 0").is_some() && s.ui.find("spline point 1").is_some());
+    let posts = s.session.spawned_count();
+    let spline = |s: &Studio| -> runity::Spline {
+        let text = s
+            .session
+            .inspect(fence)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "spline")
+            .unwrap()
+            .value;
+        runity::ron::from_str(&text).unwrap()
+    };
+    let before = spline(&s).points[1];
+    let steps = s.session.undo_steps().len();
+
+    // The second point, dragged across the view: one step, and a longer
+    // fence has more posts.
+    s.ui.paint();
+    let handle = s.ui.rect(s.ui.find("spline point 1").unwrap());
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (x, y) = handle.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    for i in 1..=5 {
+        let t = i as f32 / 5.0;
+        s.handle(&InputEvent::MouseMoved {
+            x: x + (view.x + view.width * 0.9 - x) * t,
+            y: y + 10.0 * t,
+        });
+        s.frame();
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let after = spline(&s).points[1];
+    assert!((after - before).length() > 1.0, "{before} -> {after}");
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "one drag, one step"
+    );
+    assert!(s.session.spawned_count() > posts, "longer, more posts");
+
+    menu(&mut s, "Tools", "Spline: Add Point");
+    s.frame();
+    assert_eq!(spline(&s).points.len(), 3);
+    assert!(s.ui.find("spline point 2").is_some());
+}
+
+#[test]
+fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "project search");
+    type_text(&mut s, "stone");
+    s.frame();
+    s.frame();
+    press(&mut s, "asset stone", MouseButton::Right);
+    click(&mut s, "menu Create Material Instance");
+    s.frame();
+    let file = dir.join("materials/stone_instance.rmat");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains(r#"(parent: ("stone", ""#),
+        "linked by name and ID: {text}"
+    );
+    let library = runity::Library::open(dir.join("library")).unwrap().0;
+    assert_eq!(
+        library
+            .material_by_name("stone_instance")
+            .unwrap()
+            .base_color,
+        library.material_by_name("stone").unwrap().base_color,
+        "the parent, until something on it says otherwise"
+    );
+
+    // The Inspector shows it as an instance; a parameter set there is one
+    // line of its file, and the arrow takes it back to the parent's.
+    s.frame();
+    assert!(s.ui.dump().contains("Instance of stone"), "{}", s.ui.dump());
+    fill(&mut s, "material smoothness", "0.9");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("smoothness: 0.9"), "{text}");
+    assert!(text.starts_with("// stone"), "the comment stays: {text}");
+    let library = runity::Library::open(dir.join("library")).unwrap().0;
+    assert_eq!(
+        library
+            .material_by_name("stone_instance")
+            .unwrap()
+            .smoothness,
+        0.9
+    );
+    click(&mut s, "reset material smoothness");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("smoothness"), "{text}");
+    fill(&mut s, "material metallic", "lots");
+    assert!(
+        s.session
+            .console()
+            .iter()
+            .any(|l| l.text.contains("metallic")),
+        "a value it cannot be built with is refused"
+    );
+}
+
+#[test]
+fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let shapes: std::collections::BTreeMap<String, runity::shape::Shape> = [(
+        "spawner".to_string(),
+        runity::shape::Shape::Struct(vec![
+            ("what".into(), runity::shape::Shape::Asset("prefab".into())),
+            ("every".into(), runity::shape::Shape::Float),
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::create_dir_all(dir.join(runity::project::SHAPES).parent().unwrap()).unwrap();
+    std::fs::write(
+        dir.join(runity::project::SHAPES),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    s.session.add_component(boulder, "spawner").unwrap();
+    click(&mut s, "line boulder");
+    click(&mut s, "spawner what");
+    click(&mut s, "menu campfire");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.spawner")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(r#"PrefabLink(("campfire","#),
+        "by name and ID: {value}"
+    );
+    let picker = s.ui.find("spawner what").unwrap();
+    assert_eq!(s.ui.text(s.ui.children(picker)[1]), Some("campfire"));
+
+    // Written by hand, wrong: named, with the nearest.
+    s.session
+        .set_component(
+            boulder,
+            "spawner",
+            Some(r#"(what: PrefabLink("campfir"), every: 2.0)"#),
+        )
+        .unwrap();
+    let problems = s.session.problems();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.message.contains("links to prefab `campfir`")
+                && p.message.contains("`campfire`")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_play_tools_show_systems_saves_the_network_and_the_diff() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let dump_of = |s: &mut Studio| {
+        std::thread::sleep(std::time::Duration::from_millis(550));
+        s.frame();
+        s.ui.paint();
+        s.ui.dump()
+    };
+
+    // Systems: the game's, in the order its step calls them.
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src/main.rs"),
+        "fn tick() {\n    // systems, in order\n    profile.time(\"wind\", || systems::wind::run(world, seconds));\n    systems::mice::run(world, seconds);\n    physics();\n}\n",
+    )
+    .unwrap();
+    click(&mut s, "tab systems");
+    let dump = dump_of(&mut s);
+    let order = s.session.systems();
+    assert_eq!(order, ["wind", "mice"]);
+    assert!(dump.contains(&format!("1. {}", order[0])), "{dump}");
+
+    // Saves: one on disk is listed, opens, and goes.
+    let crate_ = s.session.find("crate").unwrap();
+    let save = runity::save::SaveGame {
+        entities: vec![runity::save::Saved {
+            id: crate_,
+            transform: Default::default(),
+            components: Vec::new(),
+            prefab: String::new(),
+            animator: String::new(),
+        }],
+        ..Default::default()
+    };
+    let slot = dir.join(".runity/players/1/slot1.ron");
+    std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+    save.write(&slot).unwrap();
+    click(&mut s, "tab saves");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("slot1.ron"), "{dump}");
+    click(&mut s, "save slot1.ron");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("    crate"), "opened: {dump}");
+    click(&mut s, "delete save slot1.ron");
+    assert!(!slot.exists());
+
+    // A game that reports: who owns the crate, and where it has gone.
+    let state = dir.join(".runity/state.ron");
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30").env("RUNITY_STATE_FILE", &state);
+    s.session.run_in_console(game).unwrap();
+    let mut report = save.clone();
+    report.entities[0].transform.position = runity::glam::Vec3::new(0.0, 40.0, 0.0);
+    report.diagnostics = Some(runity::save::Diagnostics {
+        me: 0,
+        net: vec![runity::save::NetLine {
+            id: crate_,
+            owner: 1,
+            replica: true,
+            tick: Some((42, 16.0)),
+        }],
+        systems: Vec::new(),
+    });
+    report.write(&state).unwrap();
+    click(&mut s, "tab network");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("player 2 copy tick 42"), "{dump}");
+    click(&mut s, "tab world-diff");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("AGAINST THE SCENE"), "{dump}");
+    assert!(
+        dump.contains("m apart"),
+        "the crate is up in the air: {dump}"
+    );
+    s.session.stop_game();
 }

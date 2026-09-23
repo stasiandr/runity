@@ -34,6 +34,29 @@ pub struct Row {
     pub locked: bool,
 }
 
+/// What a field of a new entity says, as the Inspector writes it: what a
+/// reset goes back to. `None` for fields that are the entity's own (name,
+/// model, prefab) and for a game's components, whose defaults are the
+/// game's.
+pub fn default_text(field: &str) -> Option<String> {
+    let blank = EntityDesc::default();
+    Some(match field {
+        "position" => ron(&blank.transform.position),
+        "rotation" => ron(&blank.transform.rotation_deg),
+        "scale" => ron(&blank.transform.scale),
+        "material" => ron(&blank.material),
+        "body" => ron(&blank.body),
+        "collider" => ron(&blank.collider),
+        "physics" => ron(&blank.physics),
+        "joint" => ron(&blank.joint),
+        "layer" | "bone" => String::new(),
+        "bends_grass" => ron(&blank.bends_grass),
+        "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
+        | "render_texture" | "route" | "spline" | "along" | "joint_break" => "None".into(),
+        _ => return None,
+    })
+}
+
 /// One field of the Inspector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
@@ -45,6 +68,9 @@ pub struct Field {
     /// On a prefab's part: this instance says something else than the
     /// prefab does.
     pub overridden: bool,
+    /// Worth a reset arrow, as Unreal's Details panel draws one: overridden
+    /// on a prefab's part, or not what a new entity has.
+    pub resettable: bool,
     /// For a game component, what it holds — `(open_angle: number,
     /// locked: bool)` — when the game has written its components' shapes
     /// (`library/components.ron`); empty otherwise.
@@ -170,7 +196,7 @@ impl Session {
                     has_children: !e.children.is_empty(),
                     open,
                     selected: selection.contains(&e.id),
-                    prefab: prefab.clone(),
+                    prefab: prefab.as_ref().map(ToString::to_string),
                     part,
                     hidden: unseen.contains(&e.id),
                     locked: !session.is_pickable(session.instanced_owner(e.id)),
@@ -252,8 +278,8 @@ impl Session {
         let t = self.live_transform(id).unwrap_or(desc.transform);
         let mut fields: Vec<(String, String)> = vec![
             ("name".into(), desc.name.clone()),
-            ("model".into(), desc.model.clone()),
-            ("prefab".into(), desc.prefab.clone()),
+            ("model".into(), desc.model.to_string()),
+            ("prefab".into(), desc.prefab.to_string()),
             ("position".into(), ron(&t.position)),
             ("rotation".into(), ron(&t.rotation_deg)),
             ("scale".into(), ron(&t.scale)),
@@ -263,7 +289,12 @@ impl Session {
             ("physics".into(), ron(&desc.physics)),
             ("layer".into(), desc.layer.clone()),
             ("bends_grass".into(), ron(&desc.bends_grass)),
+            ("bone".into(), desc.bone.clone()),
             ("joint".into(), ron(&desc.joint)),
+            (
+                "joint_break".into(),
+                desc.joint_break.map_or("None".to_string(), |f| ron(&f)),
+            ),
             (
                 "camera".into(),
                 desc.camera.map_or("None".to_string(), |c| ron(&c)),
@@ -274,12 +305,20 @@ impl Session {
             ),
             (
                 "particles".into(),
-                desc.particles.map_or("None".to_string(), |p| ron(&p)),
+                desc.particles.as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "reflection_probe".into(),
                 desc.reflection_probe
                     .map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "render_texture".into(),
+                desc.render_texture.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "post_volume".into(),
+                desc.post_volume.map_or("None".to_string(), |v| ron(&v)),
             ),
             (
                 "decal".into(),
@@ -288,6 +327,14 @@ impl Session {
             (
                 "route".into(),
                 desc.route.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "spline".into(),
+                desc.spline.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "along".into(),
+                desc.along.as_ref().map_or("None".to_string(), ron),
             ),
         ];
         for (name, value) in &desc.components {
@@ -317,6 +364,8 @@ impl Session {
                 .into_iter()
                 .map(|(name, value)| Field {
                     overridden: changed(&name),
+                    resettable: changed(&name)
+                        || default_text(&name).is_some_and(|default| default != value),
                     shape: name
                         .strip_prefix("components.")
                         .and_then(|c| shapes.get(c))
@@ -487,7 +536,7 @@ impl Session {
                     has_children: false,
                     open: false,
                     selected: selection.contains(&e.id),
-                    prefab: line.map(|l| l.prefab.clone()).filter(|p| !p.is_empty()),
+                    prefab: line.map(|l| l.prefab.to_string()).filter(|p| !p.is_empty()),
                     part: line.is_none(),
                     hidden: unseen.contains(&e.id),
                     locked: !self.is_pickable(self.instanced_owner(e.id)),
@@ -499,24 +548,12 @@ impl Session {
     /// Put a field back as a new entity has it — the Inspector's Reset; on
     /// a prefab's part, back to what the prefab says. One undo step.
     pub fn reset_field(&mut self, id: EntityId, field: &str) -> EditResult<()> {
+        // What a new entity has is the default a reset goes back to.
         if self.scene().get(id).is_none() {
             return self.revert_field(id, field).map(|_| ());
         }
-        let blank = EntityDesc::default();
         let text = match field {
-            "position" => ron(&blank.transform.position),
-            "rotation" => ron(&blank.transform.rotation_deg),
-            "scale" => ron(&blank.transform.scale),
-            "material" => ron(&blank.material),
-            "body" => ron(&blank.body),
-            "collider" => ron(&blank.collider),
-            "physics" => ron(&blank.physics),
-            "joint" => ron(&blank.joint),
-            "layer" => String::new(),
-            "bends_grass" => ron(&blank.bends_grass),
-            "camera" | "light" | "particles" | "reflection_probe" | "decal" | "route" => {
-                "None".into()
-            }
+            other if default_text(other).is_some() => default_text(other).unwrap_or_default(),
             other if other.starts_with("components.") => {
                 let name = &other["components.".len()..];
                 return match self.component_shapes().get(name) {
@@ -599,10 +636,11 @@ impl Session {
         let mut next = current.clone();
         match field {
             "name" => next.name = text.to_string(),
-            "model" => next.model = text.to_string(),
-            "prefab" => next.prefab = text.to_string(),
+            "model" => next.model = text.into(),
+            "prefab" => next.prefab = text.into(),
             "layer" => next.layer = text.to_string(),
             "bends_grass" => next.bends_grass = parse::<f32>(field, text)?.max(0.0),
+            "bone" => next.bone = text.trim().to_string(),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,
             "scale" => next.transform.scale = parse(field, text)?,
@@ -610,13 +648,20 @@ impl Session {
                 next.material = if text.starts_with('"') || text.starts_with('(') {
                     parse::<MaterialRef>(field, text)?
                 } else {
-                    MaterialRef::Named(text.to_string())
+                    MaterialRef::Named(text.into())
                 }
             }
             "body" => next.body = parse::<Body>(field, text)?,
             "collider" => next.collider = parse::<Collider>(field, text)?,
             "physics" => next.physics = parse::<BodyProps>(field, text)?,
             "joint" => next.joint = parse::<Joint>(field, text)?,
+            "joint_break" => {
+                next.joint_break = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<f32>(field, text)?)
+                }
+            }
             "camera" => {
                 next.camera = if text.trim() == "None" {
                     None
@@ -629,6 +674,20 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Light>(field, text)?)
+                }
+            }
+            "spline" => {
+                next.spline = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::Spline>(field, text)?)
+                }
+            }
+            "along" => {
+                next.along = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::Along>(field, text)?)
                 }
             }
             "route" => {
@@ -650,6 +709,20 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Decal>(field, text)?)
+                }
+            }
+            "render_texture" => {
+                next.render_texture = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::RenderTexture>(field, text)?)
+                }
+            }
+            "post_volume" => {
+                next.post_volume = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::PostVolume>(field, text)?)
                 }
             }
             "reflection_probe" => {

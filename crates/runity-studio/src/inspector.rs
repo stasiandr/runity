@@ -31,14 +31,16 @@ use crate::theme::*;
 
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "layer", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
-const PHYSICS: [&str; 4] = ["body", "collider", "physics", "joint"];
-const PARTS: [&str; 6] = [
+const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
+const PARTS: [&str; 8] = [
     "camera",
     "light",
     "particles",
     "reflection_probe",
     "decal",
     "route",
+    "spline",
+    "along",
 ];
 
 /// A field that says nothing: not shown, offered as a chip.
@@ -82,6 +84,13 @@ fn title(field: &str) -> String {
 /// What a node of the panel stands for.
 #[derive(Debug, Clone, PartialEq)]
 enum Part {
+    /// The yellow arrow: set the field back to what a new entity has, or
+    /// to the prefab's.
+    Reset(String),
+    /// A parameter of the material shown from the Project, and its arrow:
+    /// back to the parent's.
+    MaterialParam(String, String),
+    MaterialReset(String, String),
     /// A box of a field; `axis` for one number of a vector.
     Slot {
         field: String,
@@ -127,6 +136,11 @@ enum SubKind {
     Number,
     Text,
     Enum(Vec<String>),
+    /// A link to another entity: a picker, as Unity's object field.
+    Entity,
+    /// A link to an asset of a kind (`model`, `prefab`, `sound`…): a picker
+    /// of that kind's assets.
+    Asset(String),
     Raw,
 }
 
@@ -243,6 +257,12 @@ pub struct Inspector {
     /// Unity's padlock: the entities shown whatever is selected after.
     locked: Option<Vec<EntityId>>,
     lock_button: NodeId,
+    /// Unreal's Search Details: only fields whose name has this in it.
+    filter: String,
+    /// Which fields had a reset arrow at the last build: an arrow that
+    /// comes or goes is a new layout.
+    resets: Vec<String>,
+    search: NodeId,
 }
 
 impl Inspector {
@@ -259,12 +279,17 @@ impl Inspector {
                 .padding_x(SPACE_2)
                 .center_items(),
         );
-        spacer(ui, strip);
+        let search = ui.add_field(strip, field_style().fill().height(20.0).text_size(11.5), "");
+        ui.set_placeholder(search, "Search fields");
+        ui.set_name(search, "inspector search");
         let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
             locked: None,
             lock_button,
+            filter: String::new(),
+            search,
+            resets: Vec::new(),
             root: card,
             body,
             showing: Vec::new(),
@@ -285,8 +310,17 @@ impl Inspector {
         }
     }
 
+    /// The model or prefab the Inspector is showing from the Project, if
+    /// that is what it shows.
+    pub fn asset_name(&self) -> Option<String> {
+        match &self.asset {
+            Some((Asset::Model(name, _) | Asset::Prefab(name), _)) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     pub fn owns(&self, node: NodeId) -> bool {
-        node == self.lock_button || self.parts.contains_key(&node)
+        node == self.lock_button || node == self.search || self.parts.contains_key(&node)
     }
 
     /// What the Inspector edits: the locked entities that still exist, or
@@ -358,7 +392,18 @@ impl Inspector {
                 shape.push((f.name.clone(), None));
             }
         }
-        if !self.built || ids != self.showing || shape != self.shape || playing != self.playing {
+        let resets: Vec<String> = fields
+            .iter()
+            .filter(|f| f.resettable)
+            .map(|f| f.name.clone())
+            .collect();
+        if !self.built
+            || ids != self.showing
+            || shape != self.shape
+            || playing != self.playing
+            || resets != self.resets
+        {
+            self.resets = resets;
             self.built = true;
             self.showing = ids.clone();
             self.shape = shape;
@@ -491,12 +536,21 @@ impl Inspector {
             ("Physics", physics),
             ("Components", parts),
         ] {
+            let filter = self.filter.clone();
+            let group: Vec<&Field> = group
+                .into_iter()
+                .filter(|f| {
+                    filter.is_empty()
+                        || f.name.to_lowercase().contains(&filter)
+                        || title(&f.name).to_lowercase().contains(&filter)
+                })
+                .collect();
             if group.is_empty() {
                 continue;
             }
             self.heading(ui, name);
             for f in group {
-                self.line(ui, f);
+                self.line(ui, session, f);
                 if f.name == "material" && f.value != MIXED {
                     if let Some(m) = session.material(ids[0]) {
                         self.color_editor(ui, m.base_color);
@@ -630,8 +684,8 @@ impl Inspector {
     }
 
     /// One field: its label (with the override dot) and its boxes.
-    fn line(&mut self, ui: &mut Ui, f: &Field) {
-        if self.component_form(ui, f) {
+    fn line(&mut self, ui: &mut Ui, session: &Session, f: &Field) {
+        if self.component_form(ui, session, f) {
             return;
         }
         let line = ui.add(
@@ -733,12 +787,29 @@ impl Inspector {
                 }
             }
         }
+        // Unreal's yellow arrow: this field says something a new entity (or
+        // the prefab) does not, and one click takes it back.
+        if f.resettable && !self.playing {
+            let reset = ui.add(
+                line,
+                Style::row()
+                    .size(18.0, 22.0)
+                    .fixed()
+                    .center()
+                    .radius(6.0)
+                    .hover(HOVER)
+                    .clickable(),
+            );
+            ui.set_name(reset, format!("reset {}", f.name));
+            icon(ui, reset, "undo-2", WARNING);
+            self.parts.insert(reset, Part::Reset(f.name.clone()));
+        }
     }
 
     /// A game component laid out by its shape: a line per field, each with
     /// the box its type wants. `false` when there is no shape to go by —
     /// the component is then one line of RON, as before.
-    fn component_form(&mut self, ui: &mut Ui, f: &Field) -> bool {
+    fn component_form(&mut self, ui: &mut Ui, session: &Session, f: &Field) -> bool {
         use runity::shape::Shape;
         let Some(component) = f.name.strip_prefix("components.") else {
             return false;
@@ -802,6 +873,8 @@ impl Inspector {
                 Shape::Int | Shape::Float => SubKind::Number,
                 Shape::Text => SubKind::Text,
                 Shape::Enum(variants) => SubKind::Enum(variants.clone()),
+                Shape::Entity => SubKind::Entity,
+                Shape::Asset(kind) => SubKind::Asset(kind.clone()),
                 _ => SubKind::Raw,
             };
             let node = match &sub {
@@ -846,6 +919,90 @@ impl Inspector {
                             .hover(HOVER),
                     );
                     ui.add_text(pick, text().fill(), &value);
+                    icon(ui, pick, "chevron-down", MUTED);
+                    pick
+                }
+                SubKind::Entity => {
+                    // The linked entity by name, or None; a menu to pick.
+                    let target = runity::EntityRef::find_in(&value).first().copied();
+                    let (label, known) = match target {
+                        Some(id) => match session.entity_name(id) {
+                            Some(name) => (name, true),
+                            None => (format!("missing {id}"), false),
+                        },
+                        None => ("None (entity)".to_string(), true),
+                    };
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .fill()
+                            .height(22.0)
+                            .padding_x(6.0)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, if known { DIVIDER } else { ERROR })
+                            .hover(HOVER)
+                            .clickable(),
+                    );
+                    icon(
+                        ui,
+                        pick,
+                        "crosshair",
+                        if target.is_some() { ACCENT } else { MUTED },
+                    );
+                    ui.add_text(
+                        pick,
+                        text()
+                            .fill()
+                            .nowrap()
+                            .text_color(if known { TEXT } else { ERROR }),
+                        &label,
+                    );
+                    icon(ui, pick, "chevron-down", MUTED);
+                    pick
+                }
+                SubKind::Asset(kind) => {
+                    // The asset by name, or None; red when there is none by
+                    // that name or ID.
+                    let link = runity::refs::links_in(&value)
+                        .into_iter()
+                        .next()
+                        .map(|(_, l)| l);
+                    let (label, known) = match &link {
+                        Some(l) if !l.is_empty() => (l.to_string(), session.link_exists(kind, l)),
+                        _ => (format!("None ({kind})"), true),
+                    };
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .fill()
+                            .height(22.0)
+                            .padding_x(6.0)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, if known { DIVIDER } else { ERROR })
+                            .hover(HOVER)
+                            .clickable(),
+                    );
+                    let glyph = match kind.as_str() {
+                        "prefab" => "package",
+                        "sound" => "music",
+                        "scene" => "mountain",
+                        "texture" => "image",
+                        "material" => "sparkles",
+                        _ => "box",
+                    };
+                    icon(ui, pick, glyph, if link.is_some() { ACCENT } else { MUTED });
+                    ui.add_text(
+                        pick,
+                        text()
+                            .fill()
+                            .nowrap()
+                            .text_color(if known { TEXT } else { ERROR }),
+                        &label,
+                    );
                     icon(ui, pick, "chevron-down", MUTED);
                     pick
                 }
@@ -1107,6 +1264,58 @@ impl Inspector {
                 );
             }
         }
+        // Its parameters, as an instance of its parent: what it sets itself
+        // stands out and has an arrow back to the parent's.
+        if kind == "material" {
+            if let Ok(layers) = session.material_layers(&name) {
+                let title_text = match &layers.parent {
+                    Some(parent) => format!("Instance of {}", parent.as_str()),
+                    None => "Material".to_string(),
+                };
+                self.heading(ui, &title_text);
+                for (key, value, set) in layers.fields {
+                    let line = ui.add(
+                        self.body,
+                        Style::row()
+                            .full_width()
+                            .padding_x(SPACE_4)
+                            .padding_y(2.0)
+                            .gap(SPACE_2)
+                            .center_items(),
+                    );
+                    ui.add_text(
+                        line,
+                        Style::default()
+                            .width(120.0)
+                            .fixed()
+                            .text_size(12.0)
+                            .text_color(if set { ACCENT_300 } else { LABEL })
+                            .nowrap(),
+                        &title(&key),
+                    );
+                    let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &value);
+                    ui.set_name(f, format!("material {key}"));
+                    self.parts
+                        .insert(f, Part::MaterialParam(name.clone(), key.clone()));
+                    if set && layers.parent.is_some() {
+                        let reset = ui.add(
+                            line,
+                            Style::row()
+                                .size(18.0, 22.0)
+                                .fixed()
+                                .center()
+                                .radius(6.0)
+                                .hover(HOVER)
+                                .clickable(),
+                        );
+                        ui.set_name(reset, format!("reset material {key}"));
+                        icon(ui, reset, "undo-2", WARNING);
+                        self.parts
+                            .insert(reset, Part::MaterialReset(name.clone(), key.clone()));
+                    }
+                }
+            }
+        }
         // How it is imported: a model with a source in the project.
         if let (Some(source), "model") = (&file, kind) {
             if let Ok(settings) = session.import_settings(source) {
@@ -1326,6 +1535,14 @@ impl Inspector {
         event: &Event,
         requests: &mut Requests,
     ) {
+        if node == self.search {
+            if let Event::Changed(text) | Event::Submit(text) = event {
+                self.filter = text.trim().to_lowercase();
+                self.built = false;
+                requests.refresh = true;
+            }
+            return;
+        }
         if node == self.lock_button {
             if let Event::Click { .. } = event {
                 self.toggle_lock(ui);
@@ -1342,6 +1559,27 @@ impl Inspector {
                 requests.refresh = true;
             }
             (Part::Slot { .. }, Event::Cancel) => {
+                requests.refresh = true;
+            }
+            (Part::MaterialParam(material, key), Event::Submit(value)) => {
+                if let Err(e) = session.set_material_param(&material, &key, Some(value.trim())) {
+                    session.say(Level::Error, e.to_string());
+                }
+                requests.inspect = Some(Asset::Material(material));
+            }
+            (Part::MaterialReset(material, key), Event::Click { .. }) => {
+                if let Err(e) = session.set_material_param(&material, &key, None) {
+                    session.say(Level::Error, e.to_string());
+                }
+                requests.inspect = Some(Asset::Material(material));
+            }
+            (Part::Reset(field), Event::Click { .. }) => {
+                for id in self.showing.clone() {
+                    if let Err(e) = session.reset_field(id, &field) {
+                        session.say(Level::Error, e.to_string());
+                        break;
+                    }
+                }
                 requests.refresh = true;
             }
             (Part::Revert(field), Event::Click { .. }) => {
@@ -1418,6 +1656,71 @@ impl Inspector {
             ) => {
                 self.set_sub(session, &component, &key, if on { "false" } else { "true" });
                 requests.refresh = true;
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Entity,
+                },
+                Event::Click { .. },
+            ) => {
+                // Unity's object picker: None, then every entity of the
+                // scene but the ones being edited, by the hierarchy's order.
+                let link = |id: Option<runity::EntityId>| {
+                    let value = format!(
+                        "{}({:?})",
+                        runity::EntityRef::NAME,
+                        id.map(|id| id.to_string()).unwrap_or_default()
+                    );
+                    Action::SetSub(component.clone(), key.clone(), value)
+                };
+                let mut items = vec![MenuItem::new("None", link(None)), MenuItem::separator()];
+                for row in session.hierarchy() {
+                    if self.showing.contains(&row.id) {
+                        continue;
+                    }
+                    let indent = "  ".repeat(row.depth);
+                    items.push(MenuItem::new(
+                        &format!("{indent}{}", row.name),
+                        link(Some(row.id)),
+                    ));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x, r.y + r.height));
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Asset(kind),
+                },
+                Event::Click { .. },
+            ) => {
+                // Unity's object picker for an asset: None, then every asset
+                // of the kind, each linked by name and ID.
+                let type_name = runity::refs::LINK_KINDS
+                    .iter()
+                    .find(|(_, k)| *k == kind)
+                    .map_or("ModelLink", |(n, _)| n);
+                let link = |name: Option<&str>| {
+                    let inner = match name {
+                        Some(name) => runity::ron::to_string(&session.link_to(&kind, name))
+                            .unwrap_or_default(),
+                        None => "\"\"".to_string(),
+                    };
+                    Action::SetSub(
+                        component.clone(),
+                        key.clone(),
+                        format!("{type_name}({inner})"),
+                    )
+                };
+                let mut items = vec![MenuItem::new("None", link(None)), MenuItem::separator()];
+                for name in session.assets_of_kind(&kind) {
+                    items.push(MenuItem::new(&name, link(Some(&name))));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x, r.y + r.height));
             }
             (
                 Part::Sub {

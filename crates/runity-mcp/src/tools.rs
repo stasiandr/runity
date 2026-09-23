@@ -73,6 +73,7 @@ pub fn list() -> Vec<Value> {
     });
     let mut simulate = camera.clone();
     simulate["seconds"] = json!({ "type": "number", "description": "simulated time, fixed steps" });
+    simulate["keep"] = json!({ "type": "array", "items": { "type": "string" }, "description": "entity ids to leave where the simulation put them — Unreal's Keep Simulation Changes; one undo step" });
     vec![
         tool("new_project", "Make a runity project (standard layout, starter scene, game crate) and open its scene.", json!({ "path": { "type": "string" }, "name": { "type": "string" } }), &["path"]),
         tool("open_scene", "Open a scene file; its project's prefabs, materials and library come with it.", json!({ "path": { "type": "string" } }), &["path"]),
@@ -106,6 +107,20 @@ pub fn list() -> Vec<Value> {
             "scale_max": { "type": "number" },
             "parent": { "type": "string", "description": ID },
         }), &["what", "count"]),
+        tool("paint_foliage", "The foliage brush, one dab: copies of a model (or instances of a prefab) planted on whatever is under a disc — trees on a hillside, rocks along a path — about `density` per square metre, none closer than that allows, turned and sized a little at random. They go into one group per model, `foliage: <name>`. `erase` takes this model's copies inside the disc away instead. One undo step. Returns how many were planted or taken.", json!({
+            "what": { "type": "string", "description": "a model (builtin:cone, or a name from assets/) or a prefab name" },
+            "centre": vec3("the middle of the disc; the ground under it is found by a ray from above"),
+            "radius": { "type": "number" },
+            "density": { "type": "number", "description": "per square metre; 0.4 by default" },
+            "align": { "type": "boolean", "description": "lean each with the slope; off by default (trees grow up)" },
+            "erase": { "type": "boolean" },
+            "seed": { "type": "integer" },
+        }), &["what", "centre", "radius"]),
+        tool("fence", "Copies of a model along a line through points — a fence, a row of lamps, a colonnade — as one entity with a spline and a spacing. The copies are built from those two and rebuilt when either changes (set_field `spline` or `along`); the file keeps only the line. One undo step; returns the entity's id.", json!({
+            "what": { "type": "string", "description": "a model; builtin:cylinder makes posts" },
+            "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
+            "spacing": { "type": "number", "description": "metres between copies; 1 by default" },
+        }), &["what", "points"]),
         tool("history", "The commits that touched the open scene's file, newest first: commit, author, date, summary.", json!({}), &[]),
         tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
         tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
@@ -179,7 +194,7 @@ pub fn list() -> Vec<Value> {
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
-        tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed.", simulate, &["seconds"]),
+        tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed, except the entities in `keep`, which stay where they fell (one undo step).", simulate, &["seconds"]),
     ]
 }
 
@@ -476,6 +491,87 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .get(group)
                 .map_or(0, |g| g.children.len());
             Ok(vec![text(format!("{group}: {placed} placed"))])
+        }
+        "fence" => {
+            let what = string(args, "what")?;
+            let points: Vec<Vec3> = args
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("points is a list of [x, y, z]")?
+                .iter()
+                .map(|p| {
+                    let n: Vec<f32> = p
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_f64)
+                                .map(|v| v as f32)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    match n.as_slice() {
+                        [x, y, z] => Ok(Vec3::new(*x, *y, *z)),
+                        _ => Err(format!("a point is [x, y, z], not {p}")),
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            if points.len() < 2 {
+                return Err("a fence needs at least two points".into());
+            }
+            let spacing = args.get("spacing").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+            let session = server.session()?;
+            let fence = session
+                .add_fence(&what, points[0], spacing)
+                .map_err(|e| e.to_string())?;
+            let local: Vec<Vec3> = points.iter().map(|p| *p - points[0]).collect();
+            let spline = runity::Spline {
+                points: local,
+                closed: false,
+            };
+            session
+                .set_field(
+                    fence,
+                    "spline",
+                    &runity::ron::to_string(&spline).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            session.squash_last(2);
+            let copies = session.spawned_count();
+            Ok(vec![text(format!(
+                "{fence}: fence of {what}, {copies} in the world now"
+            ))])
+        }
+        "paint_foliage" => {
+            let what = string(args, "what")?;
+            let centre = optional_vec3(args, "centre")?.unwrap_or(Vec3::ZERO);
+            let number = |key: &str, default: f32| -> Result<f32, String> {
+                match args.get(key) {
+                    None | Some(Value::Null) => Ok(default),
+                    Some(v) => v
+                        .as_f64()
+                        .map(|n| n as f32)
+                        .ok_or_else(|| format!("{key} is a number, not {v}")),
+                }
+            };
+            let flag = |key: &str| args.get(key).and_then(Value::as_bool).unwrap_or(false);
+            let count = server
+                .session()?
+                .paint_foliage(
+                    &what,
+                    centre,
+                    number("radius", 4.0)?,
+                    number("density", 0.4)?,
+                    flag("align"),
+                    flag("erase"),
+                    optional_integer(args, "seed")?.map_or(1, u64::from),
+                )
+                .map_err(|e| e.to_string())?;
+            let verb = if flag("erase") {
+                "taken away"
+            } else {
+                "planted"
+            };
+            Ok(vec![text(format!("{count} {verb}"))])
         }
         "history" => {
             let revisions = server
@@ -1415,7 +1511,7 @@ fn add_entity(server: &mut Server, args: &Value) -> Answer {
                     ));
                 }
                 desc.name = prefab.clone();
-                desc.prefab = prefab;
+                desc.prefab = prefab.into();
             }
             apply(&mut desc, args)?;
             desc
@@ -1449,10 +1545,10 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.name = name;
     }
     if let Some(model) = optional_string(args, "model")? {
-        desc.model = model;
+        desc.model = model.into();
     }
     if let Some(material) = optional_string(args, "material")? {
-        desc.material = MaterialRef::Named(material);
+        desc.material = MaterialRef::Named(material.into());
     }
     if let Some(color) = optional_string(args, "color")? {
         desc.material = MaterialRef::Inline(hex(&color)?);
@@ -1689,8 +1785,33 @@ fn simulate(server: &mut Server, args: &Value) -> Answer {
     if bodies.is_empty() {
         report.push_str("\nno entity has a body, so nothing moves");
     }
+    let keep: Vec<EntityId> = match args.get("keep").and_then(Value::as_array) {
+        Some(ids) => ids
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .ok_or_else(|| format!("keep holds entity ids, not {v}"))?
+                    .parse::<EntityId>()
+            })
+            .collect::<Result<_, _>>()?,
+        None => Vec::new(),
+    };
     let mut out = render(server)?;
-    server.session()?.stop();
+    let session = server.session()?;
+    if !keep.is_empty() {
+        session.select(None).map_err(|e| e.to_string())?;
+        for id in &keep {
+            session.add_to_selection(*id).map_err(|e| e.to_string())?;
+        }
+        session.keep_simulation();
+        let _ = write!(
+            report,
+            "
+kept where they fell: {}",
+            keep.len()
+        );
+    }
+    session.stop();
     out.push(text(report));
     Ok(out)
 }

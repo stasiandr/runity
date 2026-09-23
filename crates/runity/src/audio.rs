@@ -11,7 +11,8 @@ use glam::Vec3;
 use kira::backend::cpal::CpalBackend;
 use kira::backend::Backend;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
-use kira::{AudioManager, AudioManagerSettings, Decibels};
+use kira::track::{TrackBuilder, TrackHandle};
+use kira::{AudioManager, AudioManagerSettings, Decibels, Tween};
 
 use crate::asset::ArchivedSoundAsset;
 
@@ -88,6 +89,11 @@ pub struct Audio<B: Backend = CpalBackend> {
     listener: Vec3,
     /// Everything is scaled by this, so a game has one volume to expose.
     master: f32,
+    /// Mixer groups by name — music, effects, voices, the interface —
+    /// each a track of the mixer with its own volume, the sliders of a
+    /// settings screen. Unity's Audio Mixer groups. Made the first time a
+    /// group is named.
+    groups: std::collections::HashMap<String, (TrackHandle, f32)>,
 }
 
 impl<B: Backend> Audio<B>
@@ -112,11 +118,75 @@ where
             manager,
             listener: Vec3::ZERO,
             master: 1.0,
+            groups: Default::default(),
         })
     }
 
+    /// Everything's volume, what is playing now included.
     pub fn set_master_volume(&mut self, gain: f32) {
         self.master = gain.clamp(0.0, 1.0);
+        self.manager
+            .main_track()
+            .set_volume(gain_to_decibels(self.master), Tween::default());
+    }
+
+    /// One group's volume, what is playing in it now included: the music
+    /// slider turns the music down, not the next song.
+    pub fn set_group_volume(&mut self, group: &str, gain: f32) -> Result<(), String> {
+        let gain = gain.clamp(0.0, 1.0);
+        let (track, volume) = self.group(group)?;
+        *volume = gain;
+        track.set_volume(gain_to_decibels(gain), Tween::default());
+        Ok(())
+    }
+
+    /// A group's volume; 1 for one never set.
+    pub fn group_volume(&self, group: &str) -> f32 {
+        self.groups.get(group).map_or(1.0, |(_, v)| *v)
+    }
+
+    /// The groups named so far.
+    pub fn groups(&self) -> impl Iterator<Item = &str> {
+        self.groups.keys().map(String::as_str)
+    }
+
+    fn group(&mut self, name: &str) -> Result<&mut (TrackHandle, f32), String> {
+        if !self.groups.contains_key(name) {
+            let track = self
+                .manager
+                .add_sub_track(TrackBuilder::new())
+                .map_err(|e| e.to_string())?;
+            self.groups.insert(name.to_string(), (track, 1.0));
+        }
+        Ok(self.groups.get_mut(name).expect("just made"))
+    }
+
+    /// [`Self::play`] in a mixer group.
+    pub fn play_in(
+        &mut self,
+        group: &str,
+        sound: &ArchivedSoundAsset,
+        gain: f32,
+    ) -> Result<Playing, String> {
+        let data = to_static(sound).volume(gain_to_decibels(gain));
+        let (track, _) = self.group(group)?;
+        let handle = track.play(data).map_err(|e| e.to_string())?;
+        Ok(Playing(handle))
+    }
+
+    /// [`Self::play_at`] in a mixer group.
+    pub fn play_at_in(
+        &mut self,
+        group: &str,
+        sound: &ArchivedSoundAsset,
+        position: Vec3,
+        falloff: &Falloff,
+    ) -> Result<Option<Playing>, String> {
+        let gain = falloff.gain((position - self.listener).length());
+        if gain <= 0.0 {
+            return Ok(None);
+        }
+        self.play_in(group, sound, gain).map(Some)
     }
 
     pub fn master_volume(&self) -> f32 {
@@ -139,7 +209,7 @@ where
         let data = to_static(sound);
         let handle = self
             .manager
-            .play(data.volume(gain_to_decibels(gain * self.master)))
+            .play(data.volume(gain_to_decibels(gain)))
             .map_err(|e| e.to_string())?;
         Ok(Playing(handle))
     }
@@ -233,6 +303,28 @@ mod tests {
         let mut playing = audio.play(sound, 1.0).expect("it starts");
         playing.set_volume(0.5);
         playing.stop();
+    }
+
+    #[test]
+    fn groups_have_their_own_volume_and_play_their_sounds() {
+        let mut audio = silent();
+        let bytes = archived();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        assert_eq!(audio.group_volume("music"), 1.0, "never set: full");
+        let mut song = audio.play_in("music", sound, 1.0).expect("it starts");
+        audio.set_group_volume("music", 0.25).unwrap();
+        audio.set_group_volume("sfx", 2.0).unwrap();
+        assert_eq!(audio.group_volume("music"), 0.25);
+        assert_eq!(audio.group_volume("sfx"), 1.0, "clamped");
+        let mut names: Vec<&str> = audio.groups().collect();
+        names.sort();
+        assert_eq!(names, ["music", "sfx"]);
+        audio.set_master_volume(0.5);
+        assert!(audio
+            .play_at_in("sfx", sound, Vec3::ZERO, &Falloff::default())
+            .unwrap()
+            .is_some());
+        song.stop();
     }
 
     #[test]

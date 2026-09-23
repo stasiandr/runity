@@ -132,6 +132,20 @@ pub enum Action {
     ToggleSculpt,
     /// Face mode: point at a face of a box to outline it, drag to push it.
     ToggleFaces,
+    /// A panel into a window of its own (a tab's right-click menu).
+    Float(crate::dock::Panel),
+    /// Every floating panel back into the docks.
+    DockAll,
+    /// During play: keep the selection where the simulation puts it.
+    KeepSimulation,
+    /// The foliage brush: paint the chosen model onto the ground.
+    ToggleFoliage,
+    /// A material that is another one with nothing changed yet.
+    MaterialInstance(String),
+    /// A fence: copies of the selection's model (or posts) along a spline.
+    NewFence,
+    /// One more point at the end of the selection's spline.
+    AddSplinePoint,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -273,6 +287,9 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Poly Shape: Wall", Action::PolyWall),
                 item("Sculpt Terrain (brush)", Action::ToggleSculpt),
                 item("Face Mode (drag a face)", Action::ToggleFaces),
+                item("Foliage Brush", Action::ToggleFoliage),
+                item("Spline: New Fence", Action::NewFence),
+                item("Spline: Add Point", Action::AddSplinePoint),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",
@@ -321,6 +338,16 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Bottom Dock", Action::TogglePanel(2)),
                 MenuItem::separator(),
                 item("Maximize the View", Action::Maximize).key("⇧Space"),
+                MenuItem::separator(),
+                item(
+                    "Float the Inspector",
+                    Action::Float(crate::dock::Panel::Inspector),
+                ),
+                item(
+                    "Float the Project",
+                    Action::Float(crate::dock::Panel::Project),
+                ),
+                item("Dock All Floating Panels", Action::DockAll),
             ],
         ),
         (
@@ -329,6 +356,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Play / Stop", Action::Play).key(key!("⌘P", "Ctrl+P")),
                 item("Pause", Action::Pause).key(key!("⇧⌘P", "Ctrl+Shift+P")),
                 item("Step", Action::Step).key(key!("⌥⌘P", "Ctrl+Alt+P")),
+                item("Keep Simulation Changes", Action::KeepSimulation).key("K"),
             ],
         ),
     ]

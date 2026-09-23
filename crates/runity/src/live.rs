@@ -56,6 +56,9 @@ pub struct LiveScene {
     /// this game (`RUNITY_STATE_FILE`); see [`LiveScene::report`].
     report_to: Option<PathBuf>,
     since_report: f32,
+    /// What the game said about its systems and who it is, for the next
+    /// report ([`LiveScene::note`]).
+    noted: crate::save::Diagnostics,
 }
 
 /// The variable an editor names the state file in, for a game it starts.
@@ -175,6 +178,7 @@ impl LiveScene {
                 components: Components::new(),
                 report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
                 since_report: 0.0,
+                noted: Default::default(),
             },
             problems,
         ))
@@ -214,7 +218,32 @@ impl LiveScene {
             return Ok(());
         }
         self.since_report = 0.0;
-        crate::save::capture(world, &self.components, &self.current).write(path)
+        let mut report = crate::save::capture(world, &self.components, &self.current);
+        let mut diagnostics = self.noted.clone();
+        diagnostics.net = crate::save::net_lines(world);
+        report.diagnostics = Some(diagnostics);
+        report.write(path)
+    }
+
+    /// Tell the next report which player this is and what the systems
+    /// cost — a [`crate::perf::Profiler`]'s spans, in the order they ran.
+    /// Cheap enough to call every frame: it only keeps them.
+    pub fn note(&mut self, me: u32, systems: &crate::perf::Profiler) {
+        if self.report_to.is_none() {
+            return;
+        }
+        self.noted.me = me;
+        self.noted.systems = systems
+            .report()
+            .into_iter()
+            .map(|(name, s)| {
+                (
+                    name,
+                    s.median.as_secs_f32() * 1000.0,
+                    s.worst.as_secs_f32() * 1000.0,
+                )
+            })
+            .collect();
     }
 
     /// Report to this file instead of the one `RUNITY_STATE_FILE` names;
@@ -237,7 +266,7 @@ impl LiveScene {
             &self.current,
             world,
             resolver(&mut self.meshes, library, gpu, renderer),
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
@@ -302,7 +331,7 @@ impl LiveScene {
                     || library.is_some_and(|l| l.mesh_by_name(name).is_some());
                 known.then_some(MeshHandle::TEST)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
@@ -340,7 +369,7 @@ impl LiveScene {
         let instance = crate::EntityDesc {
             id: crate::EntityId::fresh(),
             name: name.to_string(),
-            prefab: name.to_string(),
+            prefab: name.into(),
             transform,
             ..crate::EntityDesc::default()
         };
@@ -357,7 +386,7 @@ impl LiveScene {
             parent,
             world,
             resolver(&mut self.meshes, library, gpu, renderer),
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let mut problems: Vec<String> = missing
             .iter()
@@ -469,7 +498,7 @@ impl LiveScene {
                         &scene,
                         world,
                         resolver(&mut self.meshes, library, gpu, renderer),
-                        |name| library?.material_by_name(name),
+                        |link| library?.material_link(link),
                     ));
                     out.problems.extend(problems);
                     out.problems.extend(
@@ -535,13 +564,18 @@ impl LiveScene {
             if builtin::by_name(name).is_some() {
                 continue;
             }
-            let (Some(old), Some(mesh)) = (self.meshes.get(name).copied(), library.mesh(asset.id))
-            else {
+            let Some(mesh) = library.mesh(asset.id) else {
                 continue;
             };
-            let new = renderer.upload_mesh(gpu, mesh);
-            self.meshes.insert(name.to_string(), new);
-            swapped.insert(old, new);
+            // Uploaded under its ID by a link that had one, under its name
+            // by one that did not.
+            for key in [asset.id.to_string(), name.to_string()] {
+                if let Some(old) = self.meshes.get(&key).copied() {
+                    let new = renderer.upload_mesh(gpu, mesh);
+                    self.meshes.insert(key, new);
+                    swapped.insert(old, new);
+                }
+            }
         }
         // A texture already on the GPU is uploaded again under a new handle;
         // the materials that name it find the new one by its id.
@@ -569,8 +603,8 @@ impl LiveScene {
             .filter_map(|(entity, id, model)| {
                 let desc = self.current.get(id.0)?;
                 let material =
-                    matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n));
-                let arrived = model.is_none() && touched.contains(&desc.model);
+                    matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n.as_str()));
+                let arrived = model.is_none() && touched.contains(desc.model.as_str());
                 (material || arrived).then(|| (entity, desc.clone()))
             })
             .collect();
@@ -582,7 +616,7 @@ impl LiveScene {
                 entity,
                 world,
                 &mut resolve,
-                &|name| library?.material_by_name(name),
+                &|link| library?.material_link(link),
                 &mut ignored,
             );
         }
@@ -642,16 +676,22 @@ fn resolver<'a>(
     library: Option<&'a Library>,
     gpu: &'a Gpu,
     renderer: &'a mut Renderer,
-) -> impl FnMut(&str) -> Option<MeshHandle> + 'a {
-    move |name| {
-        if let Some(handle) = meshes.get(name) {
+) -> impl FnMut(&crate::AssetLink) -> Option<MeshHandle> + 'a {
+    move |link| {
+        // Kept by the ID when the link has one: two models with one name
+        // are two uploads.
+        let key = link
+            .id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| link.to_string());
+        if let Some(handle) = meshes.get(&key) {
             return Some(*handle);
         }
-        let handle = match builtin::by_name(name) {
+        let handle = match builtin::by_name(link) {
             Some(mesh) => renderer.upload_mesh_owned(gpu, &mesh),
-            None => renderer.upload_mesh(gpu, library?.mesh_by_name(name)?),
+            None => renderer.upload_mesh(gpu, library?.mesh_link(link)?),
         };
-        meshes.insert(name.to_string(), handle);
+        meshes.insert(key, handle);
         Some(handle)
     }
 }

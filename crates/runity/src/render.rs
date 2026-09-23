@@ -502,6 +502,16 @@ pub struct Frame {
     pub overlay_draws: Vec<Draw>,
     /// Point lights besides the sun.
     pub lights: Vec<PointLight>,
+    /// Lamps with a lens flare of their own: where each is, its colour
+    /// and how bright its flare. Drawn by the post pass.
+    pub flares: Vec<Flare>,
+    /// Meshes the game changes as it goes — water, a rope — drawn from
+    /// their data and uploaded again only when it changed.
+    pub live_meshes: Vec<LiveMeshDraw>,
+    /// Pictures other cameras take first, for materials to show — a
+    /// mirror's: each drawn with everything but post-processing's
+    /// history, the size of this frame.
+    pub texture_views: Vec<TextureView>,
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
@@ -543,6 +553,9 @@ impl Default for Frame {
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
+            flares: Vec::new(),
+            live_meshes: Vec::new(),
+            texture_views: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
@@ -673,6 +686,36 @@ pub struct PointLight {
     pub spot: Option<(Vec3, f32)>,
     /// Casts shadows, if a shadow map is left for it ([`crate::lights`]).
     pub shadows: bool,
+}
+
+/// A mesh the game rewrites as it goes, as a frame carries it. `key`
+/// tells one from another between frames; `version` changes when the data
+/// did, and only then is it uploaded again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveMeshDraw {
+    pub key: u64,
+    pub version: u64,
+    pub vertices: std::sync::Arc<Vec<crate::asset::Vertex>>,
+    pub indices: std::sync::Arc<Vec<u32>>,
+    pub transform: Mat4,
+    pub material: Material,
+}
+
+/// A camera's picture: under what id materials find it
+/// ([`crate::asset::AssetId::render_target`]), and what it sees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextureView {
+    pub id: crate::asset::AssetId,
+    pub frame: Box<Frame>,
+}
+
+/// A lamp's own lens flare, in the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flare {
+    pub position: Vec3,
+    /// Linear.
+    pub color: Vec3,
+    pub intensity: f32,
 }
 
 /// One vertex's binding to the skeleton, in its own buffer.
@@ -855,6 +898,11 @@ pub struct Renderer {
     pose_capacity: u64,
     stats: FrameStats,
     meshes: Vec<GpuMesh>,
+    /// Live meshes by their key: the mesh each is drawn with, and the
+    /// version last uploaded.
+    live: std::collections::HashMap<u64, (MeshHandle, u64)>,
+    /// Cameras' pictures by their id: the texture drawn into, its size.
+    targets: std::collections::HashMap<crate::asset::AssetId, (wgpu::Texture, (u32, u32))>,
     textures: Vec<GpuTexture>,
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
@@ -2142,6 +2190,8 @@ impl Renderer {
             pose_capacity,
             stats: FrameStats::default(),
             meshes: Vec::new(),
+            live: std::collections::HashMap::new(),
+            targets: std::collections::HashMap::new(),
             textures: Vec::new(),
             by_asset: std::collections::HashMap::new(),
             map_groups: std::collections::HashMap::new(),
@@ -2308,14 +2358,14 @@ impl Renderer {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | traced,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | traced,
             });
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
                 contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX | traced,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | traced,
             });
         let blas = (self.ray.is_some() && !indices.is_empty()).then(|| {
             crate::ray::blas(
@@ -2830,8 +2880,117 @@ impl Renderer {
         height: u32,
         frame: &Frame,
     ) {
-        self.bake_probes(gpu, frame);
-        self.render_view(gpu, Some(view), width, height, frame, None);
+        for picture in &frame.texture_views {
+            self.render_picture(gpu, picture, (width, height));
+        }
+        if frame.live_meshes.is_empty() {
+            self.bake_probes(gpu, frame);
+            self.render_view(gpu, Some(view), width, height, frame, None);
+            return;
+        }
+        let mut frame = frame.clone();
+        for live in std::mem::take(&mut frame.live_meshes) {
+            let mesh = match self.live.get(&live.key) {
+                Some(&(mesh, version)) if version == live.version => mesh,
+                Some(&(mesh, _)) => {
+                    self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
+                    mesh
+                }
+                None => self.upload(gpu, &live.vertices, &live.indices),
+            };
+            self.live.insert(live.key, (mesh, live.version));
+            frame.draws.push(Draw {
+                mesh,
+                transform: live.transform,
+                texture: TextureHandle::WHITE,
+                material: live.material,
+                pose: None,
+            });
+        }
+        self.bake_probes(gpu, &frame);
+        self.render_view(gpu, Some(view), width, height, &frame, None);
+    }
+
+    /// A camera's picture, drawn into its texture before the frame that
+    /// shows it. What would show the picture in itself is left out: a
+    /// texture cannot be drawn into and read in one pass.
+    fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
+        let stale = self
+            .targets
+            .get(&picture.id)
+            .is_none_or(|(_, at)| *at != size);
+        if stale {
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("camera picture"),
+                size: wgpu::Extent3d {
+                    width: size.0.max(1),
+                    height: size.1.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            match self.by_asset.get(&picture.id) {
+                Some(handle) => self.textures[handle.0 as usize] = GpuTexture { view },
+                None => {
+                    self.textures.push(GpuTexture { view });
+                    let handle = TextureHandle(self.textures.len() as u32 - 1);
+                    self.by_asset.insert(picture.id, handle);
+                }
+            }
+            // Bind groups made with the old picture point at nothing.
+            self.map_groups.clear();
+            self.targets.insert(picture.id, (texture, size));
+        }
+        let mut frame = (*picture.frame).clone();
+        let shows = |m: &Material| {
+            [m.base_map, m.normal_map, m.mask_map, m.emission_map].contains(&Some(picture.id))
+        };
+        frame.draws.retain(|d| !shows(&d.material));
+        frame.texture_views.clear();
+        let view = self.targets[&picture.id]
+            .0
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        // Motion blur's history is the screen camera's, not this one's.
+        let history = self.previous_view_projection;
+        self.render_view(gpu, Some(&view), size.0, size.1, &frame, None);
+        self.previous_view_projection = history;
+    }
+
+    /// Put new vertices and indices into a mesh already uploaded: the same
+    /// buffers when the counts are the same, new ones in the same place
+    /// when not. What a surface that moves every frame is drawn with.
+    pub fn update_mesh(
+        &mut self,
+        gpu: &Gpu,
+        mesh: MeshHandle,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+    ) {
+        let Some(old) = self.meshes.get(mesh.0 as usize) else {
+            return;
+        };
+        let same = old.blas.is_none()
+            && old.vertices.size() == std::mem::size_of_val(vertices) as u64
+            && old.indices.size() == std::mem::size_of_val(indices) as u64;
+        if same {
+            gpu.queue
+                .write_buffer(&old.vertices, 0, bytemuck::cast_slice(vertices));
+            gpu.queue
+                .write_buffer(&old.indices, 0, bytemuck::cast_slice(indices));
+            self.meshes[mesh.0 as usize].bounds = crate::asset::Bounds::of(vertices);
+            return;
+        }
+        let fresh = self.upload(gpu, vertices, indices);
+        let made = self.meshes.pop().expect("just uploaded");
+        debug_assert_eq!(fresh.0 as usize, self.meshes.len());
+        self.meshes[mesh.0 as usize] = made;
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:
@@ -3785,6 +3944,25 @@ impl Renderer {
                 time: foliage.wind[3],
             },
         );
+        self.post.flares = frame
+            .flares
+            .iter()
+            .filter_map(|f| {
+                let clip = view_projection * f.position.extend(1.0);
+                if clip.w <= 1e-4 {
+                    return None;
+                }
+                let ndc = clip.truncate() / clip.w;
+                let uv = glam::Vec2::new(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+                // A little way off the picture still throws its ghosts in.
+                if uv.min_element() < -0.2 || uv.max_element() > 1.2 || ndc.z > 1.0 {
+                    return None;
+                }
+                let hue = f.color / f.color.max_element().max(1e-4);
+                Some(([uv.x, uv.y, f.intensity, 0.0], hue.extend(0.0).to_array()))
+            })
+            .take(crate::post::FLARES)
+            .collect();
         self.post.fov_y_degrees = match frame.camera.ortho {
             Some(_) => 0.0,
             None => frame.camera.fov_y_degrees,

@@ -16,6 +16,7 @@
 //! runity delete FILE                      remove an asset nothing uses
 //! runity duplicate FROM TO                copy an asset as a new one
 //! runity add component|system|scene NAME [PROJECT]  a new file where it goes
+//! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -48,6 +49,12 @@ runity relay [--port N]
 runity test [PROJECT]
     The game's tests: a new project's plays its start scene for two seconds
     without a window — systems, physics — and fails if anything breaks.
+runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
+    Bring a Unity project's content over: scenes and prefabs as RON with
+    stable ids, URP Lit materials as .rmat, the textures they use, animator
+    controllers as animators/. MonoBehaviours become components written as
+    text. --models converts FBX through Blender (slow). Says what it left
+    behind, then syncs the library.
 runity sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -109,6 +116,28 @@ fn run() -> Result<ExitCode> {
     match command.as_str() {
         "new" => new(&rest),
         "sync" => sync(&find(&rest)?),
+        "import-unity" => {
+            let mut options = runity_import::unity::Options::default();
+            let mut paths: Vec<String> = Vec::new();
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--models" => options.models = true,
+                    "--blender" => {
+                        options.blender = Some(PathBuf::from(
+                            args.next().context("--blender wants a path")?,
+                        ))
+                    }
+                    other if other.starts_with('-') => bail!("unknown option {other}"),
+                    other => paths.push(other.to_string()),
+                }
+            }
+            let unity = PathBuf::from(paths.first().context("which Unity project?")?);
+            let project = find(&paths[1..])?;
+            let report = runity_import::unity::import_unity(&unity, &project, &options)?;
+            print!("{report}");
+            sync(&project)
+        }
         "run" => {
             let mut at: Vec<String> = Vec::new();
             let (mut hot, mut release) = (false, false);

@@ -159,7 +159,7 @@ fn editing_the_hex_changes_what_the_scene_draws() {
     let done = runity_import::sync(&project);
     assert_eq!(done.len(), 1, "the one changed material");
     assert!(done[0].result.is_ok(), "{:?}", done[0].result);
-    touch_forward(&runity_import::asset_for(&source, &project.library()));
+    touch_forward(&runity_import::built_for(&source, &project.library()).unwrap());
 
     let changed = library.reload_changed();
     assert_eq!(changed.len(), 1);
@@ -312,7 +312,7 @@ fn a_library_from_an_older_format_is_rebuilt_by_sync() {
     let source = project.materials().join("clay.rmat");
     std::fs::write(&source, r##"(color: "#8a5a3c")"##).unwrap();
     runity_import::import_into(&project, &source, None).unwrap();
-    let asset = runity_import::asset_for(&source, &project.library());
+    let asset = runity_import::built_for(&source, &project.library()).unwrap();
     assert!(runity::asset::is_current(&asset));
     assert!(runity_import::sync(&project).is_empty(), "nothing to do");
 
@@ -328,4 +328,82 @@ fn a_library_from_an_older_format_is_rebuilt_by_sync() {
     assert_eq!(done[0].change, runity_import::Change::Outdated);
     assert!(done[0].result.is_ok(), "{:?}", done[0].result);
     assert!(runity::asset::is_current(&asset));
+}
+
+#[test]
+fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() {
+    let root = std::env::temp_dir().join(format!("runity-instances-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = runity::Project::create(&root, "instances").unwrap();
+    let materials = project.materials();
+    std::fs::write(
+        materials.join("stone.rmat"),
+        r##"(color: "#808080", smoothness: 0.2, metallic: 0.1)"##,
+    )
+    .unwrap();
+    std::fs::write(
+        materials.join("wet_stone.rmat"),
+        r#"// Stone after rain.
+(parent: "stone", smoothness: 0.8)"#,
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let read = |name: &str| {
+        Library::open(project.library())
+            .unwrap()
+            .0
+            .material_by_name(name)
+            .unwrap()
+    };
+    let (stone, wet) = (read("stone"), read("wet_stone"));
+    assert_eq!(wet.base_color, stone.base_color, "the parent's colour");
+    assert_eq!(wet.metallic, stone.metallic, "and metal");
+    assert_eq!(wet.smoothness, 0.8, "its own smoothness");
+
+    // The parent changes colour: the instance follows, rebuilt by sync.
+    let stone_file = materials.join("stone.rmat");
+    std::fs::write(&stone_file, r##"(color: "#ff0000", smoothness: 0.2)"##).unwrap();
+    touch_forward(&stone_file);
+    let changed = runity_import::sync(&project);
+    assert!(
+        changed.iter().any(|r| r.source.ends_with("wet_stone.rmat")),
+        "{changed:?}"
+    );
+    let wet = read("wet_stone");
+    assert!(
+        wet.base_color[0] > 0.9 && wet.base_color[1] < 0.1,
+        "red now: {:?}",
+        wet.base_color
+    );
+    assert_eq!(wet.smoothness, 0.8);
+
+    // A parent that is not there says so.
+    std::fs::write(materials.join("odd.rmat"), r#"(parent: "nowhere")"#).unwrap();
+    let said = runity_import::sync(&project);
+    let odd = said
+        .iter()
+        .find(|r| r.source.ends_with("odd.rmat"))
+        .unwrap();
+    assert!(
+        odd.result
+            .as_ref()
+            .is_err_and(|e| e.contains("no material `nowhere`")),
+        "{odd:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_material_saying_which_faces_and_what_surface_builds() {
+    let dir = temp("enums");
+    let library = dir.join("library");
+    write_material(
+        &dir,
+        &library,
+        "glass",
+        r##"(color: "#ffffff", render_face: Both, surface: Transparent, alpha: 0.4)"##,
+    );
+    let loaded = Library::open(&library).unwrap().0;
+    let glass = loaded.material_by_name("glass").expect("it built");
+    assert_eq!(glass.render_face, runity::material::RenderFace::Both);
 }

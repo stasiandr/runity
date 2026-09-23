@@ -25,10 +25,16 @@ fn a_build_carries_the_data_the_game_reads_and_leaves_the_sources_home() {
         "data/input.ron",
         "data/tuning/world.ron",
         "data/scenes/main.ron",
-        "data/library/rock.obj.rasset",
     ] {
         assert!(out.join(present).is_file(), "{present} is shipped");
     }
+    let built =
+        runity_import::built_for(&project.assets().join("rock.obj"), &project.library()).unwrap();
+    let built = out.join("data/library").join(built.file_name().unwrap());
+    assert!(
+        built.is_file(),
+        "the rock's asset is shipped, named by its ID"
+    );
     for absent in [
         "data/assets",
         "data/materials",

@@ -20,9 +20,9 @@ impl Session {
             ..Default::default()
         };
         if self.prefabs.get(what).is_some() {
-            line.prefab = what.to_string();
+            line.prefab = what.into();
         } else if self.bounds_of(what).is_some() {
-            line.model = what.to_string();
+            line.model = what.into();
         } else {
             return Err(EditError::Scene(format!(
                 "no prefab or model named `{what}` to picture"
@@ -79,7 +79,7 @@ impl Session {
             &expanded,
             &mut world,
             |name| {
-                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                if let Some(found) = uploaded.iter().find(|(n, _)| **n == **name) {
                     return Some(found.1);
                 }
                 let handle = if let Some(mesh) = runity::builtin::by_name(name) {
@@ -90,7 +90,7 @@ impl Session {
                 uploaded.push((name.to_string(), handle));
                 Some(handle)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         runity::world::apply_hierarchy(&mut world);
         let backdrop = Vec3::new(0.32, 0.33, 0.36);

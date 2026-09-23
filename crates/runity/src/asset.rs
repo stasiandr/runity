@@ -73,6 +73,9 @@ impl AssetKind {
 #[rkyv(derive(Debug), compare(PartialEq))]
 pub struct AssetId(pub u128);
 
+/// The top bits of a camera's picture's id: "REND".
+const RENDER_TARGET: u128 = 0x5245_4e44;
+
 impl AssetId {
     /// Derive an id from the source path and a salt.
     ///
@@ -92,9 +95,43 @@ impl AssetId {
         AssetId(hash)
     }
 
+    /// The id a camera's picture goes by (`render_texture`), for a
+    /// material to show it: `base_map: "render:mirror"`. Marked in its top
+    /// bits, so it is never taken for a texture the library should have.
+    pub fn render_target(name: &str) -> Self {
+        let hash = Self::from_source(&format!("render:{name}"), 0).0;
+        AssetId((RENDER_TARGET << 96) | (hash & ((1u128 << 96) - 1)))
+    }
+
+    /// Whether this is a camera's picture rather than an imported texture.
+    pub fn is_render_target(&self) -> bool {
+        self.0 >> 96 == RENDER_TARGET
+    }
+
     pub fn as_hex(&self) -> String {
         format!("{:032x}", self.0)
     }
+}
+
+/// The ID a `.rimport` sidecar holds, read without the importer: what a
+/// prefab's or a scene's identity is (docs/refs.md). `None` when the file
+/// is missing, does not parse, or has no ID yet.
+pub fn sidecar_id(sidecar: impl AsRef<std::path::Path>) -> Option<AssetId> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "ImportSettings")]
+    struct Sidecar {
+        #[serde(default)]
+        id: Option<AssetId>,
+    }
+    let text = std::fs::read_to_string(sidecar).ok()?;
+    ron::from_str::<Sidecar>(&text).ok()?.id
+}
+
+/// Where a file's sidecar is: beside it, `<file>.rimport`.
+pub fn sidecar_of(file: &std::path::Path) -> std::path::PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".rimport");
+    std::path::PathBuf::from(name)
 }
 
 impl From<&ArchivedAssetId> for AssetId {

@@ -112,10 +112,11 @@ pub fn value_span(text: &str, start: usize) -> Option<Range<usize>> {
     None
 }
 
-/// The items of the list or map that opens at `open` (on its `[` or `{`).
+/// The items of the list, map or struct that opens at `open` (on its `[`,
+/// `{` or `(`).
 pub fn items(text: &str, open: usize) -> Option<Items> {
     let b = text.as_bytes();
-    if !matches!(b.get(open), Some(b'[' | b'{')) {
+    if !matches!(b.get(open), Some(b'[' | b'{' | b'(')) {
         return None;
     }
     let mut items = Vec::new();
@@ -131,7 +132,7 @@ pub fn items(text: &str, open: usize) -> Option<Items> {
             i += 1;
             continue;
         }
-        if depth == 0 && current.is_none() && !matches!(c, b',' | b']' | b'}') {
+        if depth == 0 && current.is_none() && !matches!(c, b',' | b']' | b'}' | b')') {
             current = Some((i, i));
         }
         match c {
@@ -181,6 +182,45 @@ pub enum Change {
     Replace(usize, String),
     Remove(usize),
     Append(String),
+}
+
+/// Where the file's outermost `( … )` opens: a `.rmat`, a screen, a
+/// graph — the value the fields of a file are in.
+pub fn outer_open(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(next) = skip_comment(text, i) {
+            i = next;
+            continue;
+        }
+        match b[i] {
+            b'(' => return Some(i),
+            c if c.is_ascii_whitespace() => i += 1,
+            // A named struct, `Name(`: its bracket.
+            c if c.is_ascii_alphanumeric() || c == b'_' => i += 1,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Set a top-level field of a file's outer struct to `value` (RON text),
+/// or take it away with `None`, leaving the rest of the text as it is.
+pub fn set_field(text: &str, key: &str, value: Option<&str>) -> Option<String> {
+    let open = outer_open(text)?;
+    let found = items(text, open)?;
+    let at = found.items.iter().position(|r| {
+        let item = &text[r.clone()];
+        item.split(':').next().is_some_and(|k| k.trim() == key)
+    });
+    let change = match (at, value) {
+        (Some(i), Some(v)) => Change::Replace(i, format!("{key}: {v}")),
+        (Some(i), None) => Change::Remove(i),
+        (None, Some(v)) => Change::Append(format!("{key}: {v}")),
+        (None, None) => return Some(text.to_string()),
+    };
+    apply(text, open, &[change])
 }
 
 /// `text` with `changes` made to the list or map opening at `open`.
@@ -316,6 +356,37 @@ mod tests {
         .unwrap();
         assert!(out.contains("        (from: \"a\", to: \"b\"),\n    ],"));
         assert!(out.starts_with("// Who plays what.\n"));
+    }
+
+    #[test]
+    fn a_top_level_field_is_set_added_and_taken_away_in_place() {
+        let text = "// Stone after rain.\n(parent: \"stone\", smoothness: 0.8)\n";
+        let set = set_field(text, "smoothness", Some("0.9")).unwrap();
+        assert_eq!(
+            set,
+            "// Stone after rain.\n(parent: \"stone\", smoothness: 0.9)\n"
+        );
+        let added = set_field(&set, "metallic", Some("0.5")).unwrap();
+        assert_eq!(
+            added,
+            "// Stone after rain.\n(parent: \"stone\", smoothness: 0.9, metallic: 0.5)\n"
+        );
+        let gone = set_field(&added, "smoothness", None).unwrap();
+        assert_eq!(
+            gone,
+            "// Stone after rain.\n(parent: \"stone\", metallic: 0.5)\n"
+        );
+    }
+
+    #[test]
+    fn a_field_is_added_after_a_trailing_comma_on_its_own_line() {
+        let text =
+            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n)\n";
+        let out = set_field(text, "any", Some("[]")).unwrap();
+        assert_eq!(
+            out,
+            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n    any: [],\n)\n"
+        );
     }
 
     #[test]

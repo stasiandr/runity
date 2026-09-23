@@ -26,7 +26,9 @@ use anyhow::{bail, ensure, Context, Result};
 use runity::refs::{self, AssetRef, Use};
 use runity::{Prefabs, Project, Scene};
 
-use crate::{asset_for, importable, sidecar_for, sync, terrain, walk, ImportSettings, Reimported};
+use crate::{
+    asset_for, built_for, importable, sidecar_for, sync, terrain, walk, ImportSettings, Reimported,
+};
 
 /// What a rename did.
 #[derive(Debug)]
@@ -208,9 +210,9 @@ pub fn rename(project: &Project, from: &Path, to: &Path) -> Result<Renamed> {
         settings.source = shown(project, &to);
         settings.save(sidecar_for(&to))?;
         std::fs::remove_file(&old_sidecar)?;
-        // Built under the old file name; left, it would be a second copy of
-        // the same ID in the library.
-        let _ = std::fs::remove_file(asset_for(&from, &project.library()));
+        // Built with the old name inside it: removed, so the next sync
+        // builds it again under the same ID with the new name.
+        let _ = std::fs::remove_file(asset_for(settings.asset_id(), &project.library()));
     }
 
     let mut rewritten = Vec::new();
@@ -379,7 +381,10 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
             },
             name: stem(&path),
             id: sidecar.as_ref().map(ImportSettings::asset_id),
-            built: kind == Kind::Prefab || asset_for(&path, &project.library()).is_file(),
+            built: kind == Kind::Prefab
+                || sidecar
+                    .as_ref()
+                    .is_some_and(|s| asset_for(s.asset_id(), &project.library()).is_file()),
             uses,
         });
     }
@@ -416,12 +421,15 @@ pub fn delete(project: &Project, file: &Path) -> Result<()> {
             users.join("\n  ")
         );
     }
+    let built = built_for(&file, &project.library());
     std::fs::remove_file(&file)?;
     let sidecar = sidecar_for(&file);
     if sidecar.is_file() {
         std::fs::remove_file(sidecar)?;
     }
-    let _ = std::fs::remove_file(asset_for(&file, &project.library()));
+    if let Some(built) = built {
+        let _ = std::fs::remove_file(built);
+    }
     Ok(())
 }
 

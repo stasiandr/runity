@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/camp.ron",
+    id: Some("bf81b83b8976ab5903e7e5e8791b1c3d"),
+)

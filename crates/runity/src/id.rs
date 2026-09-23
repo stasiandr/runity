@@ -128,9 +128,106 @@ impl<'de> Deserialize<'de> for EntityId {
     }
 }
 
+/// A link from a game's component to another entity of the scene: Unity's
+/// object field. A door names its switch, a spawner its spawn point.
+///
+/// It holds the entity's stable ID, so it survives the target being
+/// renamed, moved in the hierarchy or reordered. In a scene it reads
+/// `EntityRef("4f1c0e9a7b3d2e65")`; `EntityRef("")` links nothing. The
+/// editor shows a field of this type as a picker, and `check` names a link
+/// whose entity is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct EntityRef(pub Option<EntityId>);
+
+impl EntityRef {
+    /// The name its type goes by in a file, and what an editor recognises.
+    pub const NAME: &'static str = "EntityRef";
+
+    pub fn to(id: EntityId) -> Self {
+        EntityRef(Some(id))
+    }
+
+    /// The entity it links to in a running world: the one spawned from the
+    /// scene line with that ID.
+    pub fn get(&self, world: &hecs::World) -> Option<hecs::Entity> {
+        let id = self.0?;
+        world
+            .query::<(hecs::Entity, &crate::world::SceneId)>()
+            .iter()
+            .find(|(_, scene)| scene.0 == id)
+            .map(|(entity, _)| entity)
+    }
+
+    /// Every entity ID linked in a value's RON text: what `check` looks
+    /// for among the scene's entities.
+    pub fn find_in(text: &str) -> Vec<EntityId> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("EntityRef(\"") {
+            rest = &rest[at + "EntityRef(\"".len()..];
+            let Some(end) = rest.find('"') else { break };
+            if let Ok(id) = rest[..end].parse::<EntityId>() {
+                out.push(id);
+            }
+            rest = &rest[end..];
+        }
+        out
+    }
+}
+
+impl Serialize for EntityRef {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let text = self.0.map(|id| id.to_string()).unwrap_or_default();
+        serializer.serialize_newtype_struct(Self::NAME, &text)
+    }
+}
+
+impl<'de> Deserialize<'de> for EntityRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Link;
+        impl<'de> serde::de::Visitor<'de> for Link {
+            type Value = EntityRef;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "EntityRef(\"entity id\")")
+            }
+            fn visit_newtype_struct<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<EntityRef, D::Error> {
+                let text = String::deserialize(deserializer)?;
+                self.visit_str(&text)
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<EntityRef, E> {
+                if text.trim().is_empty() {
+                    return Ok(EntityRef(None));
+                }
+                text.parse()
+                    .map(|id| EntityRef(Some(id)))
+                    .map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_newtype_struct(Self::NAME, Link)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_reads_and_writes_as_its_name_and_an_id() {
+        let id: EntityId = "4f1c".parse().unwrap();
+        let link: EntityRef = ron::from_str(r#"EntityRef("4f1c")"#).unwrap();
+        assert_eq!(link, EntityRef::to(id));
+        let none: EntityRef = ron::from_str(r#"EntityRef("")"#).unwrap();
+        assert_eq!(none, EntityRef(None));
+        let back: EntityRef = ron::from_str(&ron::to_string(&link).unwrap()).unwrap();
+        assert_eq!(back, link);
+        assert_eq!(
+            EntityRef::find_in(r#"(target: EntityRef("4f1c"), other: EntityRef(""))"#),
+            vec![id]
+        );
+    }
 
     #[test]
     fn fresh_ids_do_not_repeat() {

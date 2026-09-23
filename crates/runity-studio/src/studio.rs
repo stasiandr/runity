@@ -15,12 +15,13 @@
 //! The Scene view is a node whose picture is the session's frame texture,
 //! on the same GPU device: no copy, on every platform (docs/ui.md).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use runity::edit::Face;
 use runity::gizmo::Tool;
+use runity::glam::Vec3;
 use runity::input::{Input, InputEvent, Key, MouseButton};
 use runity::EntityId;
 use runity_editor::console::Level;
@@ -37,6 +38,7 @@ use crate::dock::{Docked, Docks, Panel};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
+use crate::playtools::{PlayTool, Tool as PlayKind};
 use crate::screens::{self, Screens};
 use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
@@ -77,6 +79,25 @@ pub struct Requests {
     /// A Project entry was clicked: show it in the Inspector.
     pub inspect: Option<Asset>,
 }
+
+/// A panel torn off into a window of its own.
+///
+/// One UI tree serves every window: the panel moves into a frame far to
+/// the right of the main window, and the panel's window draws the tree
+/// from that frame's corner and feeds its pointer in shifted by as much.
+/// Focus, drags, menus and the panel's state are the one tree's, so
+/// nothing is copied between windows.
+struct Float {
+    panel: Panel,
+    frame: NodeId,
+    dock_button: NodeId,
+    origin: (f32, f32),
+}
+
+/// How far to the right of the main window floating frames begin, and how
+/// far apart they are.
+const FLOAT_X: f32 = 100_000.0;
+const FLOAT_STEP: f32 = 10_000.0;
 
 /// A face being dragged in face mode.
 struct FaceDrag {
@@ -220,6 +241,8 @@ pub struct Studio {
     animation: Animation,
     screens: Screens,
     animator: Animator,
+    /// The network inspector, the world diff, the saves, the systems.
+    play_tools: Vec<(Panel, PlayTool)>,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The sound device, opened the first time a sound is listened to, and
@@ -247,6 +270,24 @@ pub struct Studio {
     maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
+    /// The foliage brush (docs/artist.md): on, what it paints, how big it
+    /// is, and the stroke under way — when the last dab was and how many
+    /// undo steps the stroke has made, to be one.
+    foliage: bool,
+    foliage_button: NodeId,
+    foliage_what: Option<String>,
+    foliage_radius: f32,
+    foliage_stroke: Option<(Instant, usize)>,
+    /// A new seed per dab, so two dabs on one spot do not place the same.
+    foliage_seed: u64,
+    /// The selection's spline points, as handles over the view, and the
+    /// one being dragged: which entity and point, and how many undo steps
+    /// the drag has made, to be one.
+    /// An asset to show in the Inspector once the action that made it is
+    /// done: a material instance just created.
+    show_next: Option<Asset>,
+    spline_handles: Vec<NodeId>,
+    spline_drag: Option<(EntityId, usize, usize)>,
     /// Face mode: ProBuilder's face selection over the faces of boxes.
     faces: bool,
     faces_button: NodeId,
@@ -256,6 +297,12 @@ pub struct Studio {
     face_hover: Option<(EntityId, Face)>,
     face_drag: Option<FaceDrag>,
     face_box: NodeId,
+    /// Panels in windows of their own.
+    floats: Vec<Float>,
+    /// Every picture given by pixels, kept for a window opened later, and
+    /// a number that changes whenever any picture does.
+    pictures: HashMap<ImageId, (u32, Vec<u8>)>,
+    picture_generation: u64,
     /// A stroke in progress: when the last dab landed, and for a flatten
     /// the height it flattens to.
     stroke: Option<(Instant, f32)>,
@@ -409,6 +456,8 @@ impl Studio {
         buttons.push((sculpt, Action::ToggleSculpt));
         let faces = icon_button(&mut ui, view_tabs, "faces", "square", false);
         buttons.push((faces, Action::ToggleFaces));
+        let foliage = icon_button(&mut ui, view_tabs, "foliage", "sparkles", false);
+        buttons.push((foliage, Action::ToggleFoliage));
         // Prefab mode's banner: what is open, and the way back.
         let prefab_bar = ui.add(
             view_slot,
@@ -541,6 +590,18 @@ impl Studio {
         roots.insert(Panel::Screens, screens.root);
         let animator = Animator::new(&mut ui, lower);
         roots.insert(Panel::Animator, animator.root);
+        let play_tools: Vec<(Panel, PlayTool)> = [
+            (Panel::Network, PlayKind::Network),
+            (Panel::WorldDiff, PlayKind::Diff),
+            (Panel::Saves, PlayKind::Saves),
+            (Panel::Systems, PlayKind::Systems),
+        ]
+        .into_iter()
+        .map(|(panel, tool)| (panel, PlayTool::new(&mut ui, lower, tool)))
+        .collect();
+        for (panel, tool) in &play_tools {
+            roots.insert(*panel, tool.root);
+        }
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -562,11 +623,23 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            foliage: false,
+            foliage_button: foliage,
+            foliage_what: None,
+            foliage_radius: 4.0,
+            foliage_stroke: None,
+            foliage_seed: 0,
+            show_next: None,
+            spline_handles: Vec::new(),
+            spline_drag: None,
             faces: false,
             faces_button: faces,
             face_hover: None,
             face_drag: None,
             face_box,
+            floats: Vec::new(),
+            pictures: HashMap::new(),
+            picture_generation: 0,
             panels: [true; 3],
             last_input: Instant::now(),
             docks,
@@ -575,6 +648,7 @@ impl Studio {
             animation,
             screens,
             animator,
+            play_tools,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -738,6 +812,26 @@ impl Studio {
                 if self.faces {
                     self.face_move(vx, vy, over_view);
                 }
+                if self.foliage_stroke.is_some() {
+                    self.foliage_dab(vx, vy);
+                }
+            }
+            // The foliage brush takes the left button; Alt still orbits.
+            InputEvent::MouseDown(MouseButton::Left)
+                if over_view && self.foliage && !self.ui.modifiers().2 =>
+            {
+                let (px, py) = self.ui.pointer();
+                let (vx, vy) = to_view(px, py);
+                self.foliage_stroke = Some((Instant::now() - Duration::from_secs(1), 0));
+                self.foliage_dab(vx, vy);
+            }
+            InputEvent::MouseUp(MouseButton::Left) if self.foliage_stroke.is_some() => {
+                if let Some((_, steps)) = self.foliage_stroke.take() {
+                    if steps > 1 {
+                        self.session.squash_last(steps);
+                    }
+                }
+                self.refresh();
             }
             // Face mode takes the left button on a face; Alt still orbits.
             InputEvent::MouseDown(MouseButton::Left)
@@ -809,6 +903,10 @@ impl Studio {
                     self.run(Action::Maximize);
                     return;
                 }
+                if *key == Key::K && self.session.is_playing() {
+                    self.run(Action::KeepSimulation);
+                    return;
+                }
                 if *key == Key::F2 {
                     self.hierarchy.rename_selected(&mut self.ui, &self.session);
                     return;
@@ -818,6 +916,16 @@ impl Studio {
                     return;
                 }
                 self.scene_input.handle(event);
+            }
+            // The foliage brush's size: [ and ], as typed, since the
+            // engine's keys have no brackets.
+            InputEvent::Text(text) if self.foliage && !typing && (text == "[" || text == "]") => {
+                let grow = if text == "]" { 1.25 } else { 0.8 };
+                self.foliage_radius = (self.foliage_radius * grow).clamp(0.5, 50.0);
+                self.session.say(
+                    Level::Info,
+                    format!("foliage brush: {:.1} m across", self.foliage_radius * 2.0),
+                );
             }
             // Always: a key let go while typing must not stay held.
             InputEvent::KeyUp(_) | InputEvent::FocusLost => self.scene_input.handle(event),
@@ -871,11 +979,17 @@ impl Studio {
             self.session.resize(size.0, size.1);
         }
         let t1 = Instant::now();
+        // Play runs on the frame's time: the simulation takes as many fixed
+        // steps as the frame took (paused, none).
+        if self.session.is_playing() {
+            self.session.step(dt);
+        }
         let _ = self.session.scene_view(&self.scene_input, dt);
         self.scene_input.begin_frame();
         let t2 = Instant::now();
         self.session.render();
         self.camera_preview();
+        self.place_spline_handles();
         let t3 = Instant::now();
 
         self.poll_disk();
@@ -914,6 +1028,17 @@ impl Studio {
             self.seen = Some(stamp);
             self.update_panels(moving);
         }
+        // An asset an action made, shown once the panels have caught up
+        // (catching up clears what the Inspector showed).
+        if let Some(asset) = self.show_next.take() {
+            if let Some(pixels) = self
+                .inspector
+                .show_asset(&mut self.ui, &mut self.session, asset)
+            {
+                self.pending_images
+                    .push((crate::inspector::PREVIEW, 256, pixels));
+            }
+        }
         {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1e3;
             self.profiler.record(FrameCost {
@@ -923,21 +1048,26 @@ impl Studio {
                 ui: self.last_draw_ms,
             });
             let live = self.wants_frame();
-            if live && self.docks.is_active(Panel::Profiler) {
+            if live && self.docks.is_showing(Panel::Profiler) {
                 self.profiler.update(&mut self.ui);
             }
-            if self.docks.is_active(Panel::Animation) {
+            if self.docks.is_showing(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
             }
-            if self.docks.is_active(Panel::Screens) {
+            if self.docks.is_showing(Panel::Screens) {
                 self.screens.update(&mut self.ui, &self.session);
                 self.screens.draw(&self.session);
             }
-            if self.docks.is_active(Panel::Animator) {
+            if self.docks.is_showing(Panel::Animator) {
                 self.animator.update(&mut self.ui, &self.session);
             }
+            for (panel, tool) in &mut self.play_tools {
+                if self.docks.is_showing(*panel) {
+                    tool.update(&mut self.ui, &mut self.session);
+                }
+            }
             self.fit_wide();
-            if self.docks.is_active(Panel::Settings) {
+            if self.docks.is_showing(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
             }
         }
@@ -1092,7 +1222,7 @@ impl Studio {
             return;
         }
         self.compass.seen = Some(key);
-        use runity::glam::Vec3;
+
         let forward = (camera.target - camera.position).normalize_or_zero();
         let right = forward.cross(camera.up).normalize_or_zero();
         let up = right.cross(forward);
@@ -1115,6 +1245,321 @@ impl Studio {
         };
         if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
             self.ui.set_text(t, label);
+        }
+    }
+
+    // --- floating windows ---------------------------------------------
+
+    /// Tear a panel off into a window of its own.
+    pub(crate) fn float(&mut self, panel: Panel) {
+        if self.floats.iter().any(|f| f.panel == panel) {
+            return;
+        }
+        let Some(root) = self.docks.take(&mut self.ui, panel) else {
+            return;
+        };
+        let used: Vec<f32> = self.floats.iter().map(|f| f.origin.0).collect();
+        let x = (0..)
+            .map(|i| FLOAT_X + i as f32 * FLOAT_STEP)
+            .find(|x| !used.contains(x))
+            .expect("there is always a free place");
+        let ui = &mut self.ui;
+        let frame = ui.add(
+            ui.root(),
+            Style::column()
+                .absolute(x, 0.0)
+                .size(420.0, 560.0)
+                .background(BG)
+                .padding(3.0),
+        );
+        ui.set_name(frame, format!("float {}", panel.name()));
+        let card = ui.add(
+            frame,
+            Style::column()
+                .full()
+                .background(SURFACE)
+                .radius(RADIUS_MD)
+                .clip(),
+        );
+        let strip = ui.add(
+            card,
+            Style::row()
+                .height(32.0)
+                .fixed()
+                .full_width()
+                .padding_x(SPACE_3)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add_text(strip, text(), panel.label());
+        spacer(ui, strip);
+        let dock_button = button(
+            ui,
+            strip,
+            &format!("dock {}", panel.name()),
+            "Dock back",
+            false,
+        );
+        let body = ui.add(card, Style::column().fill().full_width());
+        ui.move_to(root, body);
+        ui.restyle(root, |s| s.shown());
+        self.floats.push(Float {
+            panel,
+            frame,
+            dock_button,
+            origin: (x, 0.0),
+        });
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// Put a floating panel back under the view, and close its window.
+    pub(crate) fn dock_back(&mut self, panel: Panel) {
+        let Some(at) = self.floats.iter().position(|f| f.panel == panel) else {
+            return;
+        };
+        let float = self.floats.remove(at);
+        self.docks.give_back(&mut self.ui, panel, 2);
+        self.ui.remove(float.frame);
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// The panels in windows of their own, with their titles: what the
+    /// window code keeps a window open for.
+    pub fn floating(&self) -> Vec<(String, String)> {
+        self.floats
+            .iter()
+            .map(|f| {
+                (
+                    f.panel.name().to_string(),
+                    format!("{} — runity", f.panel.label()),
+                )
+            })
+            .collect()
+    }
+
+    fn float_of(&self, name: &str) -> Option<&Float> {
+        self.floats.iter().find(|f| f.panel.name() == name)
+    }
+
+    /// A floating panel's window was resized, in logical pixels.
+    pub fn resize_float(&mut self, name: &str, width: f32, height: f32) {
+        let Some(frame) = self.float_of(name).map(|f| f.frame) else {
+            return;
+        };
+        self.ui.restyle(frame, |s| s.size(width, height));
+    }
+
+    /// An event from a floating panel's window, pointer in its logical
+    /// pixels.
+    pub fn handle_float(&mut self, name: &str, event: &InputEvent) {
+        let Some((ox, oy)) = self.float_of(name).map(|f| f.origin) else {
+            return;
+        };
+        match event {
+            InputEvent::MouseMoved { x, y } => self.handle(&InputEvent::MouseMoved {
+                x: x + ox,
+                y: y + oy,
+            }),
+            other => self.handle(other),
+        }
+    }
+
+    /// Its window closed: the panel goes back to a dock.
+    pub fn close_float(&mut self, name: &str) {
+        if let Some(panel) = self.float_of(name).map(|f| f.panel) {
+            self.dock_back(panel);
+        }
+    }
+
+    /// Draw a floating panel's window. `seen` is the picture generation
+    /// this renderer has: pictures are given to it again when it is old.
+    pub fn draw_float(
+        &mut self,
+        name: &str,
+        renderer: &mut UiRenderer,
+        seen: &mut u64,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        let Some((ox, oy)) = self.float_of(name).map(|f| f.origin) else {
+            return;
+        };
+        if *seen != self.picture_generation {
+            *seen = self.picture_generation;
+            let gpu = self.session.gpu();
+            renderer.set_image(gpu, SCENE, self.session.frame_target().view());
+            if let Some(target) = self.session.preview_target() {
+                renderer.set_image(gpu, CAMERA_PREVIEW, target.view());
+            }
+            if let Some(target) = self.screens.target() {
+                renderer.set_image(gpu, screens::CANVAS, target.view());
+            }
+            for (image, (size, pixels)) in &self.pictures {
+                renderer.set_image_rgba(gpu, *image, *size, *size, pixels);
+            }
+        }
+        renderer.set_origin(ox, oy);
+        let ground = self.ui.tint(BG);
+        let gpu = self.session.gpu();
+        renderer.draw(gpu, view, width, height, &mut self.ui, Some(ground));
+    }
+
+    /// One dab of the foliage brush where the view's pixel shows the
+    /// ground: at most ten a second, Shift erasing.
+    fn foliage_dab(&mut self, vx: f32, vy: f32) {
+        let Some((last, steps)) = self.foliage_stroke else {
+            return;
+        };
+        if last.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        let Some(what) = self.foliage_what.clone() else {
+            self.session.say(
+                Level::Warning,
+                "foliage brush: click a model or prefab in Project to paint it",
+            );
+            self.foliage_stroke = None;
+            return;
+        };
+        let Some(at) = self
+            .session
+            .point_under(vx.max(0.0) as u32, vy.max(0.0) as u32)
+        else {
+            return;
+        };
+        let erase = self.ui.modifiers().0;
+        self.foliage_seed = self.foliage_seed.wrapping_add(1);
+        match self.session.paint_foliage(
+            &what,
+            at,
+            self.foliage_radius,
+            0.4,
+            false,
+            erase,
+            self.foliage_seed,
+        ) {
+            Ok(0) => self.foliage_stroke = Some((Instant::now(), steps)),
+            Ok(_) => self.foliage_stroke = Some((Instant::now(), steps + 1)),
+            Err(e) => {
+                self.session.say(Level::Error, e.to_string());
+                self.foliage_stroke = None;
+            }
+        }
+    }
+
+    /// The selection's spline: its points as handles over the view, one
+    /// per point, where the camera sees them now.
+    fn place_spline_handles(&mut self) {
+        let points: Vec<Vec3> = self
+            .session
+            .selected()
+            .filter(|_| !self.session.is_playing() && !self.session.is_game_view())
+            .and_then(|id| {
+                let text = self
+                    .session
+                    .inspect(id)?
+                    .into_iter()
+                    .find(|f| f.name == "spline")?
+                    .value;
+                let spline: runity::Spline = runity::ron::from_str(&text).ok()?;
+                let world = self.session.world_matrix(id)?;
+                Some(
+                    spline
+                        .points
+                        .iter()
+                        .map(|p| world.transform_point3(*p))
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        let Some(frame) = self.ui.parent(self.face_box) else {
+            return;
+        };
+        while self.spline_handles.len() > points.len() {
+            let handle = self.spline_handles.pop().expect("more than none");
+            self.ui.remove(handle);
+        }
+        while self.spline_handles.len() < points.len() {
+            let i = self.spline_handles.len();
+            let handle = self.ui.add(
+                frame,
+                Style::row()
+                    .absolute(0.0, 0.0)
+                    .size(14.0, 14.0)
+                    .radius(3.0)
+                    .background(ACCENT)
+                    .border(2.0, TEXT)
+                    .draggable(),
+            );
+            self.ui.set_name(handle, format!("spline point {i}"));
+            self.spline_handles.push(handle);
+        }
+        let scale = self.ui.viewport().2;
+        for (handle, point) in self.spline_handles.clone().into_iter().zip(points) {
+            match self.session.screen_of(point) {
+                Some((x, y)) => {
+                    let (x, y) = (x / scale - 7.0, y / scale - 7.0);
+                    self.ui.restyle(handle, |s| s.shown().absolute(x, y));
+                }
+                None => self.ui.restyle(handle, |s| s.hidden()),
+            }
+        }
+    }
+
+    /// A spline point dragged: to the ground under the pointer, the fence's
+    /// own posts not counting. One drag is one undo step.
+    fn spline_handle_event(&mut self, i: usize, event: &Event) {
+        match event {
+            Event::Drag { x, y, .. } => {
+                let Some(id) = self.session.selected() else {
+                    return;
+                };
+                let view = self.ui.rect(self.viewport);
+                let scale = self.ui.viewport().2;
+                let (vx, vy) = ((x - view.x) * scale, (y - view.y) * scale);
+                let Some(at) =
+                    self.session
+                        .point_under_without(vx.max(0.0) as u32, vy.max(0.0) as u32, id)
+                else {
+                    return;
+                };
+                let (Some(world), Some(field)) = (
+                    self.session.world_matrix(id),
+                    self.session
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == "spline")),
+                ) else {
+                    return;
+                };
+                let Ok(mut spline) = runity::ron::from_str::<runity::Spline>(&field.value) else {
+                    return;
+                };
+                let Some(point) = spline.points.get_mut(i) else {
+                    return;
+                };
+                *point = world.inverse().transform_point3(at);
+                let Ok(text) = runity::ron::to_string(&spline) else {
+                    return;
+                };
+                if self.session.set_field(id, "spline", &text).is_ok() {
+                    let steps = match self.spline_drag {
+                        Some((who, point, steps)) if who == id && point == i => {
+                            self.session.squash_last(2);
+                            steps
+                        }
+                        _ => 1,
+                    };
+                    self.spline_drag = Some((id, i, steps));
+                }
+            }
+            Event::DragEnd { .. } => {
+                self.spline_drag = None;
+                self.refresh();
+            }
+            _ => {}
         }
     }
 
@@ -1345,7 +1790,7 @@ impl Studio {
 
     /// Tell the lower panels which of them are on top.
     fn sync_visible(&mut self) {
-        let on = |p| self.docks.is_active(p);
+        let on = |p| self.docks.is_showing(p);
         self.bottom.set_visible([
             on(Panel::Project),
             on(Panel::Console),
@@ -1511,22 +1956,27 @@ impl Studio {
                 self.session.frame_target().view(),
             );
             self.registered = Some(size);
+            self.picture_generation += 1;
         }
         if let Some(target) = self.session.preview_target() {
             let size = (target.width, target.height);
             if self.cam_registered != Some(size) {
                 renderer.set_image(self.session.gpu(), CAMERA_PREVIEW, target.view());
                 self.cam_registered = Some(size);
+                self.picture_generation += 1;
             }
         }
         if self.screens.new_target {
             if let Some(target) = self.screens.target() {
                 renderer.set_image(self.session.gpu(), screens::CANVAS, target.view());
                 self.screens.new_target = false;
+                self.picture_generation += 1;
             }
         }
         for (image, size, pixels) in self.pending_images.drain(..) {
             renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);
+            self.pictures.insert(image, (size, pixels));
+            self.picture_generation += 1;
         }
         let started = Instant::now();
         let gpu = self.session.gpu();
@@ -1638,6 +2088,7 @@ impl Studio {
         set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
         set_icon_button(ui, self.sculpt_button, "mountain", self.sculpt, true);
         set_icon_button(ui, self.faces_button, "square", self.faces, true);
+        set_icon_button(ui, self.foliage_button, "sparkles", self.foliage, true);
         let prefab = s.is_prefab();
         ui.restyle(self.prefab_bar, |st| {
             if prefab {
@@ -1719,6 +2170,10 @@ impl Studio {
     // --- events ----------------------------------------------------------
 
     fn dispatch(&mut self, node: NodeId, event: &Event, requests: &mut Requests) {
+        if let Some(i) = self.spline_handles.iter().position(|h| *h == node) {
+            self.spline_handle_event(i, event);
+            return;
+        }
         // Quick Search takes what is aimed at it.
         if let Some(q) = &self.search {
             let (field, overlay) = (q.field, q.overlay);
@@ -1800,9 +2255,36 @@ impl Studio {
                 }
             }
         }
-        if let Some(Docked::Handled) = self.docks.event(&mut self.ui, node, event) {
-            self.sync_visible();
-            if !matches!(event, Event::Drag { .. }) {
+        match self.docks.event(&mut self.ui, node, event) {
+            Some(Docked::Handled) => {
+                self.sync_visible();
+                if !matches!(event, Event::Drag { .. }) {
+                    requests.refresh = true;
+                }
+                return;
+            }
+            Some(Docked::Menu(panel)) => {
+                let (x, y) = self.ui.pointer();
+                requests.menu = Some((
+                    vec![MenuItem::new(
+                        "Float in its own window",
+                        Action::Float(panel),
+                    )],
+                    x,
+                    y,
+                ));
+                return;
+            }
+            None => {}
+        }
+        if let Some(panel) = self
+            .floats
+            .iter()
+            .find(|f| f.dock_button == node)
+            .map(|f| f.panel)
+        {
+            if let Event::Click { .. } = event {
+                self.dock_back(panel);
                 requests.refresh = true;
             }
             return;
@@ -1828,6 +2310,12 @@ impl Studio {
         } else if self.settings.owns(&self.ui, node) {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
+        } else if let Some((_, tool)) = self
+            .play_tools
+            .iter_mut()
+            .find(|(_, t)| t.owns(&self.ui, node))
+        {
+            tool.event(&mut self.ui, &mut self.session, node, event);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -1951,7 +2439,15 @@ impl Studio {
         if let Some(action) = requests.action {
             self.run(action);
         }
+
         if let Some(asset) = requests.inspect {
+            if self.foliage {
+                if let Asset::Model(name, _) | Asset::Prefab(name) = &asset {
+                    self.foliage_what = Some(name.clone());
+                    self.session
+                        .say(Level::Info, format!("foliage brush: painting {name}"));
+                }
+            }
             if let Some(pixels) = self
                 .inspector
                 .show_asset(&mut self.ui, &mut self.session, asset)
@@ -2607,6 +3103,89 @@ impl Studio {
                         Level::Info,
                         "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
                     );
+                }
+                Action::Float(panel) => self.float(panel),
+                Action::MaterialInstance(parent) => {
+                    let name = s.new_material_instance(&parent).map_err(e)?;
+                    s.say(
+                        Level::Info,
+                        format!("{name}: {parent} until something on it says otherwise"),
+                    );
+                    self.show_next = Some(Asset::Material(name));
+                }
+                Action::NewFence => {
+                    let what = s
+                        .selected()
+                        .and_then(|id| s.entity_model(id))
+                        .unwrap_or_else(|| "builtin:cylinder".to_string());
+                    let (w, h) = s.size();
+                    let at = s.point_under(w / 2, h / 2).unwrap_or(Vec3::ZERO);
+                    let fence = s.add_fence(&what, at, 1.0).map_err(e)?;
+                    s.select(Some(fence)).map_err(e)?;
+                    s.say(
+                        Level::Info,
+                        "a fence: drag its points in the view; Tools › Spline: Add Point makes it longer",
+                    );
+                }
+                Action::AddSplinePoint => {
+                    let id = s.selected().ok_or("select something with a spline")?;
+                    let text = s
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == "spline"))
+                        .map(|f| f.value)
+                        .filter(|v| v != "None")
+                        .ok_or("the selection has no spline")?;
+                    let mut spline: runity::Spline =
+                        runity::ron::from_str(&text).map_err(|e| e.to_string())?;
+                    let n = spline.points.len();
+                    let next = match n {
+                        0 => Vec3::ZERO,
+                        1 => spline.points[0] + Vec3::new(2.0, 0.0, 0.0),
+                        _ => spline.points[n - 1] + (spline.points[n - 1] - spline.points[n - 2]),
+                    };
+                    spline.points.push(next);
+                    let text = runity::ron::to_string(&spline).map_err(|e| e.to_string())?;
+                    s.set_field(id, "spline", &text).map_err(e)?;
+                }
+                Action::ToggleFoliage => {
+                    self.foliage = !self.foliage;
+                    self.foliage_stroke = None;
+                    if self.foliage {
+                        self.sculpt = false;
+                        self.faces = false;
+                        // What to paint: the model or prefab looked at in
+                        // the Inspector, or the selection's.
+                        if self.foliage_what.is_none() {
+                            self.foliage_what = self
+                                .inspector
+                                .asset_name()
+                                .or_else(|| s.selected().and_then(|id| s.entity_model(id)))
+                                .or_else(|| s.selected().and_then(|id| s.entity_prefab(id)));
+                        }
+                        let what = self.foliage_what.clone();
+                        s.say(
+                            Level::Info,
+                            match what {
+                                Some(w) => format!("foliage brush: painting {w}; Shift erases, [ and ] change the size; click another model in Project to paint it"),
+                                None => "foliage brush: click a model or prefab in Project to paint it".into(),
+                            },
+                        );
+                    }
+                }
+                Action::KeepSimulation => {
+                    if !s.is_playing() {
+                        return Err("Keep Simulation Changes works while playing".into());
+                    }
+                    let n = s.keep_simulation();
+                    s.say(
+                        Level::Info,
+                        format!("{n} kept where the simulation puts them when play stops"),
+                    );
+                }
+                Action::DockAll => {
+                    for panel in self.floats.iter().map(|f| f.panel).collect::<Vec<_>>() {
+                        self.dock_back(panel);
+                    }
                 }
                 Action::ToggleFaces => {
                     self.faces = !self.faces;
@@ -3311,6 +3890,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "scene view" => "Shift Space: the view over the whole window",
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
+        "foliage" => "Foliage brush: paint the model chosen in Project; Shift erases, [ ] size",
         "view persp" => "Perspective view",
         "view top" => "Look down from above",
         "view front" => "Look from the front",

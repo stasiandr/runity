@@ -113,16 +113,37 @@ fn a_scene_that_does_not_parse_says_where() {
 }
 
 #[test]
-fn two_sources_with_one_name_are_one_name_too_many() {
+fn two_sources_with_one_name_are_fine_until_a_line_names_them_without_an_id() {
     let project = project("clash");
     write(&project.assets().join("trees/pine.obj"), CUBE);
     write(&project.assets().join("rocks/pine.obj"), CUBE);
+    runity_import::sync(&project);
+    assert!(
+        !errors(&check(&project)).iter().any(|l| l.contains("pine")),
+        "two assets, two IDs: nothing wrong yet"
+    );
+
+    // A line that says only `pine` cannot tell which.
+    let scene = project.scenes().join("forest.ron");
+    write(&scene, r#"(entities: [(name: "tree", model: "pine")])"#);
     let lines = errors(&check(&project));
-    let clash = one_containing(&lines, "model name `pine`");
+    let clash = one_containing(&lines, "`pine` is the name of");
     assert!(
         clash.contains("assets/rocks/pine.obj, assets/trees/pine.obj"),
         "{clash}"
     );
+
+    // With the ID, it can.
+    let id = runity_import::ImportSettings::load(runity_import::sidecar_for(
+        &project.assets().join("trees/pine.obj"),
+    ))
+    .unwrap()
+    .asset_id();
+    write(
+        &scene,
+        &format!(r#"(entities: [(name: "tree", model: ("pine", "{id}"))])"#),
+    );
+    assert!(!errors(&check(&project)).iter().any(|l| l.contains("pine")));
 }
 
 #[test]
@@ -365,4 +386,28 @@ fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
         line.contains("did you mean `degrees_per_second`?") && line.contains("`cube`"),
         "{line}"
     );
+}
+
+#[test]
+fn a_component_linking_an_asset_that_is_not_there_is_named() {
+    let project = project("typed-links");
+    write(
+        &project.prefabs().join("campfire.prefab"),
+        r#"(name: "campfire")"#,
+    );
+    let scene = project.scenes().join("camp.ron");
+    write(
+        &scene,
+        r#"(entities: [(name: "spawner", components: { "spawner": (what: PrefabLink("campfir")) })])"#,
+    );
+    let lines = errors(&check(&project));
+    let found = one_containing(&lines, "links to prefab `campfir`");
+    assert!(found.contains("campfire"), "{found}");
+    write(
+        &scene,
+        r#"(entities: [(name: "spawner", components: { "spawner": (what: PrefabLink("campfire")) })])"#,
+    );
+    assert!(!errors(&check(&project))
+        .iter()
+        .any(|l| l.contains("links to")));
 }

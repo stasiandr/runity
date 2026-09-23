@@ -43,9 +43,8 @@ fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
 /// the asset itself.
 ///
 /// Not from the library file's name: that is the importer's business, and
-/// it is `stone.rmat.rasset` beside `stone.obj.rasset` precisely so that two
-/// sources with one stem do not overwrite each other. The name a scene uses
-/// is the one inside.
+/// it is the asset's ID (`<id>.rasset`), so that two sources with one stem
+/// do not overwrite each other. The name a scene uses is the one inside.
 fn name_of(bytes: &[u8], kind: AssetKind) -> Option<String> {
     let name = match kind {
         AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok()?.name.as_str(),
@@ -258,6 +257,51 @@ impl Library {
     /// anything important takes.
     pub fn mesh_by_name(&self, name: &str) -> Option<&ArchivedMeshAsset> {
         asset::view::<MeshAsset>(&self.named(name, AssetKind::Mesh)?.bytes).ok()
+    }
+
+    /// Follow a link to a mesh: by its ID when it has one the library
+    /// knows, by its name otherwise (docs/refs.md). By ID is what tells two
+    /// `rock` models in two folders apart.
+    pub fn mesh_link(&self, link: &crate::AssetLink) -> Option<&ArchivedMeshAsset> {
+        link.id
+            .and_then(|id| self.mesh(id))
+            .or_else(|| self.mesh_by_name(link))
+    }
+
+    /// Follow a link to a material: by ID first, then by name.
+    pub fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
+        link.id
+            .and_then(|id| self.material(id))
+            .or_else(|| self.material_by_name(link))
+    }
+
+    /// What a link names, as the library has it now: the ID and the name
+    /// inside the asset. By ID first, then by name — only when the name is
+    /// one asset's of that kind, since a guess between two would point a
+    /// line at the wrong thing.
+    pub fn find(&self, link: &crate::AssetLink, kind: AssetKind) -> Option<(AssetId, &str)> {
+        if let Some(id) = link.id {
+            if let Some(&index) = self.by_id.get(&id) {
+                let entry = &self.entries[index];
+                if entry.kind == kind {
+                    return Some((id, entry.name.as_str()));
+                }
+            }
+        }
+        let named: Vec<usize> = self
+            .by_name
+            .get(link.as_str())?
+            .iter()
+            .copied()
+            .filter(|&i| self.entries[i].kind == kind)
+            .collect();
+        match named.as_slice() {
+            [one] => {
+                let entry = &self.entries[*one];
+                Some((id_of(&entry.bytes, entry.kind)?, entry.name.as_str()))
+            }
+            _ => None,
+        }
     }
 
     /// The id of the first asset read with this file stem, of any kind.

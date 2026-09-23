@@ -61,6 +61,12 @@ pub struct SceneId(pub crate::id::EntityId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parent(pub hecs::Entity);
 
+/// Held by a joint of the parent's skeleton, by the joint's name: from a
+/// line's `bone`. [`apply_hierarchy`] places it where the parent's pose
+/// puts that joint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnBone(pub String);
+
 /// Kept from the scene so that physics can pick entities up later without the
 /// scene having to be re-read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +90,142 @@ pub struct BendsGrass(pub f32);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A camera drawing into a picture, from its line's `render_texture`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToTexture(pub crate::scene::RenderTexture);
+
+/// Every camera that draws into a picture, as a frame of its own: what
+/// [`scene_frame`] puts on a frame for materials to show.
+pub fn texture_views(
+    world: &World,
+    scene: &crate::scene::Scene,
+) -> Vec<crate::render::TextureView> {
+    let cameras: Vec<(Camera, crate::scene::RenderTexture)> = world
+        .query::<(&CameraLens, &WorldTransform, &ToTexture)>()
+        .iter()
+        .map(|(lens, placed, picture)| (lens_camera(lens.0, placed.0), picture.0.clone()))
+        .collect();
+    cameras
+        .into_iter()
+        .map(|(camera, picture)| {
+            let hidden: std::collections::HashSet<crate::id::EntityId> = world
+                .query::<(&Layer, &SceneId)>()
+                .iter()
+                .filter(|(layer, _)| picture.hide.contains(&layer.0))
+                .map(|(_, id)| id.0)
+                .collect();
+            let mut frame = build_frame_where(
+                world,
+                camera,
+                scene_lighting(&scene.sun),
+                scene_fog(&scene.fog),
+                |line| line.is_none_or(|id| !hidden.contains(&id)),
+            );
+            scene_look(&mut frame, scene);
+            frame.post.motion_blur = Default::default();
+            crate::render::TextureView {
+                id: crate::asset::AssetId::render_target(&picture.name),
+                frame: Box::new(frame),
+            }
+        })
+        .collect()
+}
+
+/// A mesh the game rewrites as it goes — the water's surface, a rope
+/// between two hands — drawn at the entity with its material. Changing it
+/// ([`LiveMesh::set`]) uploads it again on the next frame; leaving it
+/// alone costs nothing more than any other mesh.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveMesh {
+    vertices: std::sync::Arc<Vec<crate::asset::Vertex>>,
+    indices: std::sync::Arc<Vec<u32>>,
+    version: u64,
+}
+
+impl LiveMesh {
+    pub fn new(vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) -> Self {
+        Self {
+            vertices: std::sync::Arc::new(vertices),
+            indices: std::sync::Arc::new(indices),
+            version: 0,
+        }
+    }
+
+    /// New vertices and triangles.
+    pub fn set(&mut self, vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) {
+        self.vertices = std::sync::Arc::new(vertices);
+        self.indices = std::sync::Arc::new(indices);
+        self.version += 1;
+    }
+
+    /// Move the vertices where `to` says, keeping the triangles, and turn
+    /// each normal to the triangles round it: a surface pushed about by a
+    /// wave is lit as the wave.
+    pub fn move_vertices(&mut self, to: impl Fn(usize, glam::Vec3) -> glam::Vec3) {
+        let mut vertices = (*self.vertices).clone();
+        for (i, v) in vertices.iter_mut().enumerate() {
+            v.position = to(i, glam::Vec3::from_array(v.position)).to_array();
+        }
+        let mut normals = vec![glam::Vec3::ZERO; vertices.len()];
+        for t in self.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+            let at = |i: usize| glam::Vec3::from_array(vertices[i].position);
+            let n = (at(b) - at(a)).cross(at(c) - at(a));
+            for i in [a, b, c] {
+                normals[i] += n;
+            }
+        }
+        for (v, n) in vertices.iter_mut().zip(normals) {
+            v.normal = n.normalize_or(glam::Vec3::Y).to_array();
+        }
+        self.vertices = std::sync::Arc::new(vertices);
+        self.version += 1;
+    }
+
+    pub fn vertices(&self) -> &[crate::asset::Vertex] {
+        &self.vertices
+    }
+
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+}
+
+/// A local look at an entity, from its line's `post_volume`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostVolumeBox(pub crate::scene::PostVolume);
+
+/// Lay the world's post volumes over a frame's post-processing, by where
+/// its camera is: all of one inside its box, fading out over its
+/// `blend_distance` outside, lower priorities first.
+pub fn post_volumes(frame: &mut Frame, world: &World) {
+    let eye = frame.camera.position;
+    let mut found: Vec<(i32, f32, crate::post::PostProcess)> = world
+        .query::<(&PostVolumeBox, &WorldTransform)>()
+        .iter()
+        .filter_map(|(volume, placed)| {
+            let v = volume.0;
+            // Into the box's own axes, where it is a unit-scaled box.
+            let local = placed.0.inverse().transform_point3(eye);
+            let (scale, _, _) = placed.0.to_scale_rotation_translation();
+            let outside = ((local.abs() - v.size * 0.5).max(glam::Vec3::ZERO)) * scale;
+            let distance = outside.length();
+            let weight = if distance <= 0.0 {
+                1.0
+            } else if v.blend_distance <= 0.0 {
+                0.0
+            } else {
+                (1.0 - distance / v.blend_distance).max(0.0)
+            };
+            (weight > 0.0).then_some((v.priority, weight, v.post))
+        })
+        .collect();
+    found.sort_by_key(|(priority, _, _)| *priority);
+    for (_, weight, post) in found {
+        frame.post = frame.post.lerp(&post, weight);
+    }
+}
+
 /// A reflection probe at an entity, from its line's `reflection_probe`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbeBox(pub crate::scene::Probe);
@@ -99,6 +241,15 @@ pub struct Props(pub crate::scene::BodyProps);
 /// What holds the body to another, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Jointed(pub crate::scene::Joint);
+
+/// How hard its joint may be pulled before it breaks, in newtons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JointBreak(pub f32);
+
+/// Its joint broke: it is not built again until the entity's joint is set
+/// anew (remove this to mend it).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct JointBroken;
 
 /// The shape physics sees, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,7 +273,7 @@ pub struct Unresolved {
 pub fn spawn_scene(
     scene: &Scene,
     world: &mut World,
-    resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
 ) -> Vec<Unresolved> {
     // No palette: named materials fall through to the engine's builtins.
     // That is what the reference scene and every test want, neither of which
@@ -139,8 +290,8 @@ pub fn spawn_scene(
 pub fn spawn_scene_with(
     scene: &Scene,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut missing = Vec::new();
     for desc in &scene.entities {
@@ -167,8 +318,8 @@ fn spawn_subtree(
     parent: Option<hecs::Entity>,
     parent_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
@@ -195,16 +346,16 @@ pub fn spawn_owned<'a>(
     desc: &'a EntityDesc,
     parent: Option<hecs::Entity>,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>) {
     fn walk<'a>(
         desc: &'a EntityDesc,
         parent: Option<hecs::Entity>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
         out: &mut (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>),
     ) {
         let matrix = parent_matrix * desc.transform.matrix();
@@ -237,8 +388,8 @@ fn spawn_one(
     parent: Option<hecs::Entity>,
     world_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) -> hecs::Entity {
     let entity = world.spawn((
@@ -253,6 +404,12 @@ fn spawn_one(
     }
     if !desc.joint.is_none() {
         let _ = world.insert_one(entity, Jointed(desc.joint));
+    }
+    if let Some(force) = desc.joint_break {
+        let _ = world.insert_one(entity, JointBreak(force));
+    }
+    if !desc.bone.is_empty() {
+        let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
     }
     if !desc.physics.is_default() {
         let _ = world.insert_one(entity, Props(desc.physics));
@@ -272,15 +429,21 @@ fn spawn_one(
     if desc.bends_grass > 0.0 {
         let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
     }
+    if let Some(volume) = desc.post_volume {
+        let _ = world.insert_one(entity, PostVolumeBox(volume));
+    }
+    if let Some(picture) = &desc.render_texture {
+        let _ = world.insert_one(entity, ToTexture(picture.clone()));
+    }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
             entity,
             crate::routes::Travelling::new(route.clone(), desc.transform.position),
         );
     }
-    if let Some(emitter) = desc.particles {
-        if let Some(mesh) = resolve("builtin:cube") {
-            let _ = world.insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+    if let Some(emitter) = &desc.particles {
+        if let Some(emitting) = emitting(emitter, resolve, palette) {
+            let _ = world.insert_one(entity, emitting);
         }
     }
     dress(desc, entity, world, resolve, palette, missing);
@@ -289,12 +452,35 @@ fn spawn_one(
 
 /// Give an entity the mesh and surface its line names, or take them away
 /// when the mesh cannot be found.
+/// An emitter ready to run: what its particles are drawn as (its model, or
+/// a small cube) and with (its material, or the plain colour).
+fn emitting(
+    emitter: &crate::scene::Emitter,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+) -> Option<crate::particles::Emitting> {
+    let cube = crate::AssetLink::named(if emitter.facing {
+        "builtin:plane"
+    } else {
+        "builtin:cube"
+    });
+    let model = if emitter.model.is_empty() {
+        &cube
+    } else {
+        &emitter.model
+    };
+    let mesh = resolve(model).or_else(|| resolve(&cube))?;
+    let mut out = crate::particles::Emitting::new(emitter.clone(), mesh);
+    out.material = emitter.material.as_ref().and_then(palette);
+    Some(out)
+}
+
 pub(crate) fn dress(
     desc: &EntityDesc,
     entity: hecs::Entity,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
     match desc.decal {
@@ -320,7 +506,7 @@ pub(crate) fn dress(
             let _ = world.remove::<(Model, Surface)>(entity);
             missing.push(Unresolved {
                 entity_name: desc.name.clone(),
-                model: desc.model.clone(),
+                model: desc.model.to_string(),
             });
         }
     }
@@ -370,8 +556,8 @@ pub fn patch_scene(
     before: &Scene,
     after: &Scene,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Patched {
     let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
     index(&before.entities, None, &mut old);
@@ -453,8 +639,8 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     ) {
         self.kept.insert(desc.id);
         let world_matrix = parent_matrix * desc.transform.matrix();
@@ -501,8 +687,8 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         entity: hecs::Entity,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     ) -> bool {
         let mut changed = false;
         if was.is_none_or(|(old, _)| old.transform != desc.transform) {
@@ -542,16 +728,19 @@ impl Patch<'_> {
                 .get::<&mut crate::particles::Emitting>(entity)
                 .ok()
                 .map(|mut e| {
-                    if let Some(emitter) = desc.particles {
+                    if let Some(emitter) = &desc.particles {
                         // The knobs change; what is in the air stays.
-                        e.emitter = emitter;
+                        if let Some(fresh) = emitting(emitter, resolve, palette) {
+                            e.mesh = fresh.mesh;
+                            e.material = fresh.material;
+                        }
+                        e.emitter = emitter.clone();
                     }
                 });
-            match (desc.particles, running) {
+            match (&desc.particles, running) {
                 (Some(emitter), None) => {
-                    if let Some(mesh) = resolve("builtin:cube") {
-                        let _ = world
-                            .insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+                    if let Some(emitting) = emitting(emitter, resolve, palette) {
+                        let _ = world.insert_one(entity, emitting);
                     }
                 }
                 (None, _) => {
@@ -577,6 +766,28 @@ impl Patch<'_> {
                 let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
             } else {
                 let _ = world.remove_one::<BendsGrass>(entity);
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
+            match &desc.render_texture {
+                Some(picture) => {
+                    let _ = world.insert_one(entity, ToTexture(picture.clone()));
+                }
+                None => {
+                    let _ = world.remove_one::<ToTexture>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.post_volume != desc.post_volume) {
+            match desc.post_volume {
+                Some(volume) => {
+                    let _ = world.insert_one(entity, PostVolumeBox(volume));
+                }
+                None => {
+                    let _ = world.remove_one::<PostVolumeBox>(entity);
+                }
             }
             changed = true;
         }
@@ -624,6 +835,27 @@ impl Patch<'_> {
             } else {
                 let _ = world.insert_one(entity, Jointed(desc.joint));
             }
+            // A joint set anew is whole again.
+            let _ = world.remove_one::<JointBroken>(entity);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.bone != desc.bone) {
+            if desc.bone.is_empty() {
+                let _ = world.remove_one::<OnBone>(entity);
+            } else {
+                let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.joint_break != desc.joint_break) {
+            match desc.joint_break {
+                Some(force) => {
+                    let _ = world.insert_one(entity, JointBreak(force));
+                }
+                None => {
+                    let _ = world.remove_one::<JointBreak>(entity);
+                }
+            }
             changed = true;
         }
         if was.is_none_or(|(_, old_parent)| old_parent != parent.map(|(id, _)| id)) {
@@ -662,6 +894,36 @@ pub fn apply_hierarchy(world: &mut World) {
         .iter()
     {
         locals.insert(entity, (local.matrix(), parent.map(|p| p.0)));
+    }
+    // What is held by a bone is relative to that bone, as the parent's
+    // pose has it: the bone's place in the parent's model goes between.
+    let mut held: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
+    for (entity, bone, parent) in world.query::<(hecs::Entity, &OnBone, &Parent)>().iter() {
+        let mut q = world.query_one::<(&crate::Animator, &Posed)>(parent.0);
+        let Ok((animator, posed)) = q.get() else {
+            continue;
+        };
+        let Some((i, joint)) = animator
+            .skeleton
+            .joints
+            .iter()
+            .enumerate()
+            .find(|(_, j)| j.name == bone.0)
+        else {
+            continue;
+        };
+        let Some(skinning) = posed.0.get(i) else {
+            continue;
+        };
+        // Skinning is the joint's place times its inverse bind: undo the
+        // second to get the first.
+        let placed = *skinning * glam::Mat4::from_cols_array_2d(&joint.inverse_bind).inverse();
+        held.push((entity, placed));
+    }
+    for (entity, bone) in held {
+        if let Some((local, _)) = locals.get_mut(&entity) {
+            *local = bone * *local;
+        }
     }
 
     let mut resolved: Vec<(hecs::Entity, glam::Mat4)> = Vec::with_capacity(locals.len());
@@ -748,7 +1010,7 @@ pub fn upload_material_maps(
                 .flat_map(|p| p.1.maps().collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
         )
-        .filter(|id| renderer.texture_for(*id).is_none())
+        .filter(|id| !id.is_render_target() && renderer.texture_for(*id).is_none())
         .collect();
     wanted.sort();
     wanted.dedup();
@@ -777,6 +1039,8 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
         scene_fog(&scene.fog),
     );
     scene_look(&mut frame, scene);
+    post_volumes(&mut frame, world);
+    frame.texture_views = texture_views(world, scene);
     frame
 }
 
@@ -881,17 +1145,10 @@ pub fn camera_of(world: &World) -> Option<Camera> {
     let mut best: Option<(i32, std::cmp::Reverse<crate::id::EntityId>, Camera)> = None;
     for (lens, placed, id) in world
         .query::<(&CameraLens, &WorldTransform, Option<&SceneId>)>()
+        .without::<&ToTexture>()
         .iter()
     {
-        let (_, rotation, position) = placed.0.to_scale_rotation_translation();
-        let camera = Camera {
-            position,
-            target: position + rotation * glam::Vec3::Z,
-            up: rotation * glam::Vec3::Y,
-            fov_y_degrees: lens.0.fov_deg,
-            ortho: lens.0.ortho,
-            ..Camera::default()
-        };
+        let camera = lens_camera(lens.0, placed.0);
         let key = (
             lens.0.priority,
             std::cmp::Reverse(id.map(|i| i.0).unwrap_or_default()),
@@ -901,6 +1158,19 @@ pub fn camera_of(world: &World) -> Option<Camera> {
         }
     }
     best.map(|(_, _, camera)| camera)
+}
+
+/// What a camera on an entity sees: from where it is, along its +z.
+fn lens_camera(lens: crate::scene::Lens, placed: glam::Mat4) -> Camera {
+    let (_, rotation, position) = placed.to_scale_rotation_translation();
+    Camera {
+        position,
+        target: position + rotation * glam::Vec3::Z,
+        up: rotation * glam::Vec3::Y,
+        fov_y_degrees: lens.fov_deg,
+        ortho: lens.ortho,
+        ..Camera::default()
+    }
 }
 
 /// The view to write back into a scene for a camera.
@@ -960,7 +1230,7 @@ pub fn build_frame_where(
         .iter()
     {
         if keep(line.map(|l| l.0)) {
-            draws.extend(emitting.draws());
+            draws.extend(emitting.draws_facing(Some(camera.position)));
         }
     }
     let lights = world
@@ -980,6 +1250,41 @@ pub fn build_frame_where(
                     (turn * glam::Vec3::Z, cone)
                 }),
                 shadows: l.shadows,
+            }
+        })
+        .collect();
+    let live_meshes = world
+        .query::<(
+            hecs::Entity,
+            &LiveMesh,
+            &WorldTransform,
+            Option<&Surface>,
+            Option<&SceneId>,
+        )>()
+        .iter()
+        .filter(|(_, _, _, _, line)| keep(line.map(|l| l.0)))
+        .map(
+            |(entity, live, placed, surface, _)| crate::render::LiveMeshDraw {
+                key: entity.to_bits().get(),
+                version: live.version,
+                vertices: live.vertices.clone(),
+                indices: live.indices.clone(),
+                transform: placed.0,
+                material: surface.map_or_else(Material::default, |s| s.0),
+            },
+        )
+        .collect();
+    let flares = world
+        .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(light, _, line)| light.0.flare > 0.0 && keep(line.map(|l| l.0)))
+        .map(|(light, placed, _)| {
+            let l = light.0;
+            let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+            crate::render::Flare {
+                position: placed.0.w_axis.truncate(),
+                color: glam::Vec3::new(linear(l.color.0), linear(l.color.1), linear(l.color.2)),
+                intensity: l.flare,
             }
         })
         .collect();
@@ -1034,6 +1339,9 @@ pub fn build_frame_where(
         draws,
         overlay_draws: Vec::new(),
         lights,
+        flares,
+        live_meshes,
+        texture_views: Vec::new(),
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),
@@ -1050,6 +1358,8 @@ mod tests {
     fn blank() -> EntityDesc {
         EntityDesc {
             camera: None,
+            spline: None,
+            along: None,
             light: None,
             particles: None,
             reflection_probe: None,
@@ -1059,12 +1369,16 @@ mod tests {
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
+            joint_break: None,
+            bone: String::new(),
+            post_volume: None,
+            render_texture: None,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
             name: String::new(),
             model: "m".into(),
-            prefab: String::new(),
+            prefab: Default::default(),
             transform: Transform::default(),
             material: Default::default(),
             body: Body::None,
@@ -1080,6 +1394,8 @@ mod tests {
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
                     camera: None,
+                    spline: None,
+                    along: None,
                     light: None,
                     particles: None,
                     reflection_probe: None,
@@ -1089,12 +1405,16 @@ mod tests {
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
+                    joint_break: None,
+                    bone: String::new(),
+                    post_volume: None,
+                    render_texture: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
                     name: format!("thing {i}"),
                     model: (*model).into(),
-                    prefab: String::new(),
+                    prefab: Default::default(),
                     transform: Transform {
                         position: Vec3::new(i as f32, 0.0, 0.0),
                         ..Default::default()
@@ -1613,5 +1933,74 @@ mod tests {
         assert!(looking.dot(at_player) > 0.999, "looks at it");
         let _ = player;
         assert!(camera_of(&World::new()).is_none());
+    }
+
+    #[test]
+    fn a_thing_on_a_bone_goes_where_the_pose_puts_the_bone() {
+        use crate::animation::{Joint, PoseTransform, Skeleton};
+        let bind = glam::Mat4::from_translation(glam::Vec3::new(1.0, 0.0, 0.0));
+        let skeleton = std::sync::Arc::new(Skeleton {
+            joints: vec![Joint {
+                name: "hand".into(),
+                parent: None,
+                inverse_bind: bind.inverse().to_cols_array_2d(),
+                rest: PoseTransform::default(),
+            }],
+        });
+        let animator = crate::Animator::new(skeleton, std::sync::Arc::new(Vec::new()));
+        // The pose lifts the hand to (1, 2, 0) in the model.
+        let hand = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 0.0));
+        let mut world = World::new();
+        let at = |x: f32, y: f32, z: f32| Transform {
+            position: glam::Vec3::new(x, y, z),
+            ..Transform::default()
+        };
+        let body = world.spawn((
+            at(10.0, 0.0, 0.0),
+            animator,
+            Posed(vec![hand * bind.inverse()]),
+        ));
+        let spade = world.spawn((at(0.0, 0.0, 0.5), Parent(body), OnBone("hand".into())));
+        let beside = world.spawn((at(0.0, 0.0, 0.5), Parent(body)));
+        apply_hierarchy(&mut world);
+        let place = |e| world.get::<&WorldTransform>(e).unwrap().0.w_axis.truncate();
+        assert_eq!(place(spade), glam::Vec3::new(11.0, 2.0, 0.5));
+        assert_eq!(
+            place(beside),
+            glam::Vec3::new(10.0, 0.0, 0.5),
+            "not on a bone: the body"
+        );
+    }
+
+    #[test]
+    fn a_post_volume_is_all_there_inside_and_fades_out_over_its_blend() {
+        let dark = crate::post::PostProcess {
+            exposure: -2.0,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        world.spawn((
+            WorldTransform(glam::Mat4::IDENTITY),
+            PostVolumeBox(crate::scene::PostVolume {
+                size: glam::Vec3::splat(4.0),
+                blend_distance: 2.0,
+                priority: 0,
+                post: dark,
+            }),
+        ));
+        let exposure_at = |x: f32| {
+            let mut frame = Frame::default();
+            frame.camera.position = glam::Vec3::new(x, 0.0, 0.0);
+            let outside = frame.post.exposure;
+            post_volumes(&mut frame, &world);
+            (frame.post.exposure, outside)
+        };
+        assert_eq!(exposure_at(1.0).0, -2.0, "inside");
+        let (half, outside) = exposure_at(3.0);
+        assert!(
+            (half - (outside + (-2.0 - outside) * 0.5)).abs() < 1e-4,
+            "{half}"
+        );
+        assert_eq!(exposure_at(10.0).0, outside, "far away: the scene's");
     }
 }

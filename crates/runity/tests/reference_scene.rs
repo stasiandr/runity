@@ -52,6 +52,7 @@ fn shoot_with(gpu: &Gpu, scene: &Scene, sun_direction: Vec3, shadows: ShadowSett
     let mut world = hecs::World::new();
     let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
     let missing = runity::spawn_scene(scene, &mut world, |name| {
+        let name: &str = name;
         if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
             return Some(found.1);
         }
@@ -282,7 +283,7 @@ fn what_is_behind_the_camera_is_not_drawn_but_still_casts() {
     let mut world = hecs::World::new();
     let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
     runity::spawn_scene(&scene, &mut world, |name| {
-        if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+        if let Some(found) = uploaded.iter().find(|(n, _)| **n == **name) {
             return Some(found.1);
         }
         let mesh = builtin::by_name(name)?;

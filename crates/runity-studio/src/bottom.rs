@@ -1033,10 +1033,16 @@ fn asset_menu(asset: &Asset, session: &Session) -> Vec<crate::menu::MenuItem> {
             "Place in the Scene",
             Action::Place(n.clone()),
         )),
-        Asset::Material(n) => items.push(MenuItem::new(
-            "Apply to the Selection",
-            Action::SetField("material".into(), n.clone()),
-        )),
+        Asset::Material(n) => {
+            items.push(MenuItem::new(
+                "Apply to the Selection",
+                Action::SetField("material".into(), n.clone()),
+            ));
+            items.push(MenuItem::new(
+                "Create Material Instance",
+                Action::MaterialInstance(n.clone()),
+            ));
+        }
         Asset::Sound(n, _) => {
             items.push(MenuItem::new("Play", Action::PlaySound(n.clone())));
             items.push(MenuItem::new("Stop", Action::StopSound));

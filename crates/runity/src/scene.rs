@@ -159,6 +159,19 @@ pub enum Joint {
         #[serde(default)]
         anchor: Vec3,
     },
+    /// Pulls its anchor toward the other body's, like a rubber band:
+    /// Unity's SpringJoint. `stiffness` is how hard, `damping` how fast the
+    /// bounce dies. Free to turn and to move otherwise.
+    Spring {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+        #[serde(default)]
+        anchor: Vec3,
+        #[serde(default = "spring_stiffness")]
+        stiffness: f32,
+        #[serde(default = "spring_damping")]
+        damping: f32,
+    },
     /// Slides along one axis, within limits in metres if given.
     Slider {
         #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
@@ -198,6 +211,14 @@ fn up() -> Vec3 {
     Vec3::Y
 }
 
+fn spring_stiffness() -> f32 {
+    50.0
+}
+
+fn spring_damping() -> f32 {
+    5.0
+}
+
 impl Joint {
     pub fn is_none(&self) -> bool {
         *self == Joint::None
@@ -210,6 +231,7 @@ impl Joint {
             Joint::Fixed { to }
             | Joint::Hinge { to, .. }
             | Joint::Ball { to, .. }
+            | Joint::Spring { to, .. }
             | Joint::Slider { to, .. } => Some(to),
         }
     }
@@ -221,6 +243,7 @@ impl Joint {
             Joint::Fixed { to }
             | Joint::Hinge { to, .. }
             | Joint::Ball { to, .. }
+            | Joint::Spring { to, .. }
             | Joint::Slider { to, .. } => *to = other,
         }
         self
@@ -432,6 +455,11 @@ pub struct Light {
     /// nearest lamps the camera sees get them first.
     #[serde(default = "yes_look", skip_serializing_if = "is_true")]
     pub shadows: bool,
+    /// A lens flare on the lamp itself — a glow round it and ghosts
+    /// across the picture — this bright, gone when something hides the
+    /// lamp. Unity's Lens Flare (SRP) component. 0 is none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flare: f32,
 }
 
 /// A box whose surroundings polished things in it reflect — URP's baked
@@ -448,6 +476,47 @@ pub struct Probe {
     pub box_projection: bool,
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub blend_distance: f32,
+}
+
+/// A camera that draws into a picture a material shows — a mirror, a
+/// security monitor — rather than onto the screen: Unity's camera with a
+/// Render Texture. `render_texture: (name: "mirror", hide: ["Player
+/// head"])` on an entity with a `camera`; a material shows it with
+/// `base_map: "render:mirror"`. `hide` leaves those layers out of its
+/// picture (Unity's culling mask); whatever shows the picture itself is
+/// left out on its own. The picture is the size of the screen's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RenderTexture {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
+}
+
+/// A place that looks different — the cellar darker and greener, the
+/// sauna hazy — URP's local Volume. `post_volume: (size: (6.0, 3.0, 6.0),
+/// post: (exposure: -0.5, saturation: 0.6))`: inside the box (metres,
+/// centred on the entity, turned and scaled with it) the camera sees
+/// `post`; `blend_distance` (2 m) outside it, the scene's own; between,
+/// the two mixed. Settings `post` does not say are the defaults, not the
+/// scene's. Where volumes overlap, the higher `priority` is laid last.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PostVolume {
+    #[serde(default = "probe_size")]
+    pub size: Vec3,
+    #[serde(default = "two", skip_serializing_if = "is_two")]
+    pub blend_distance: f32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub priority: i32,
+    #[serde(default)]
+    pub post: crate::post::PostProcess,
+}
+
+fn two() -> f32 {
+    2.0
+}
+
+fn is_two(v: &f32) -> bool {
+    *v == 2.0
 }
 
 /// A picture pressed onto what lies in a box — URP's Decal Projector.
@@ -513,7 +582,7 @@ fn yes_route() -> bool {
 /// 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6,
 /// 0.2))`; they leave along the entity's up, within `spread_deg` of it,
 /// and shrink to nothing as they age.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Emitter {
     /// How many a second.
     #[serde(default = "emit_rate")]
@@ -536,6 +605,73 @@ pub struct Emitter {
     pub gravity: f32,
     #[serde(default = "white")]
     pub color: (f32, f32, f32),
+    /// The colour each fades to by the end of its life: Unity's Color over
+    /// Lifetime. Unset, it keeps `color`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_color: Option<(f32, f32, f32)>,
+    /// How opaque each is when new, and when it dies: smoke thinning to
+    /// nothing is `end_alpha: 0.0`. Below 1, they are drawn see-through.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub alpha: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_alpha: Option<f32>,
+    /// How big each is at the end: Unity's Size over Lifetime. Unset, it
+    /// shrinks to nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_size: Option<f32>,
+    /// Drawn longer the faster it goes, along its way: a spark's streak,
+    /// Unity's Stretched Billboard. Extra length per metre a second.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stretch: f32,
+    /// They move with the emitter — a torch's flame follows the torch —
+    /// instead of staying where they were given off. Unity's Simulation
+    /// Space: Local.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
+    /// Seconds one play lasts: a puff of dust is short and once.
+    #[serde(default = "emit_duration", skip_serializing_if = "is_five")]
+    pub duration: f32,
+    /// Plays once and stops — an effect a game starts with
+    /// `Emitting::play` — instead of going round forever.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub once: bool,
+    /// Waits for `Emitting::play` instead of starting with the scene.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waits: bool,
+    /// So many at once, so many seconds into each play: `[(0.0, 30)]` is
+    /// the puff a spade makes. Unity's Emission bursts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bursts: Vec<(f32, u32)>,
+    /// Which way they leave, in the entity's own axes: up when not said.
+    /// Unity's cones point along forward — an imported one says so here.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub direction: Option<Vec3>,
+    /// Each is a flat square turned to the camera — smoke, sparks, dust
+    /// with a picture — instead of a small solid. Unity's Billboard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub facing: bool,
+    /// What each is drawn as; a small cube when not said (a square when
+    /// `facing`).
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub model: crate::AssetLink,
+    /// A material — a picture, transparency, a glow — instead of the plain
+    /// `color`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub material: Option<crate::AssetLink>,
+}
+
+fn emit_duration() -> f32 {
+    5.0
+}
+
+fn is_five(v: &f32) -> bool {
+    *v == 5.0
+}
+
+impl Default for Emitter {
+    fn default() -> Self {
+        ron::from_str("()").expect("every field has a default")
+    }
 }
 
 fn emit_rate() -> f32 {
@@ -604,8 +740,8 @@ pub struct EntityDesc {
     /// A model in `assets/` by file stem — `pine_large` for
     /// `assets/models/pine_large.obj` — or a builtin, `builtin:cone`. May be left
     /// out of the file: a group, or a prefab instance, draws nothing itself.
-    #[serde(default)]
-    pub model: String,
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub model: crate::AssetLink,
     /// The prefab this entity is an instance of, by file stem, or empty.
     ///
     /// An instance is one line: what it is, where it stands, and what it is
@@ -618,8 +754,8 @@ pub struct EntityDesc {
     /// [`MaterialRef`] is not one either: RON spells an option out as
     /// `Some(...)`, and a wrapper in every line of every scene earns
     /// nothing.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub prefab: String,
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub prefab: crate::AssetLink,
     #[serde(default)]
     pub transform: Transform,
     /// A material by name — a `.rmat` asset in the library, or one of the
@@ -641,6 +777,16 @@ pub struct EntityDesc {
     /// A camera on this entity; see [`Lens`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub camera: Option<Lens>,
+    /// A curve through points, in this entity's space: a road, a fence
+    /// line, a pipe (docs/artist.md). What follows it is [`Along`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub spline: Option<Spline>,
+    /// Copies of a model set along this entity's spline, `spacing` apart:
+    /// Unreal's Construction Script for a fence. The file keeps the
+    /// spacing and the model; the copies are built when the scene is
+    /// expanded, and built again whenever either changes.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub along: Option<Along>,
     /// A light at this entity; see [`Light`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub light: Option<Light>,
@@ -650,6 +796,13 @@ pub struct EntityDesc {
     /// A reflection probe at this entity; see [`Probe`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
+    /// This entity's camera draws into a picture, not onto the screen;
+    /// see [`RenderTexture`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_texture: Option<RenderTexture>,
+    /// A place that looks different; see [`PostVolume`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub post_volume: Option<PostVolume>,
     /// A decal pressed from this entity; see [`Decal`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
@@ -671,6 +824,16 @@ pub struct EntityDesc {
     /// What holds this body to another; see [`Joint`].
     #[serde(default, skip_serializing_if = "Joint::is_none")]
     pub joint: Joint,
+    /// The joint breaks when pulled harder than this many newtons: Unity's
+    /// Break Force. What broke is marked, and a game hears of it
+    /// (`PhysicsWorld::broken`).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub joint_break: Option<f32>,
+    /// Held by this joint of the parent's skeleton, not by the parent
+    /// itself: a spade in a hand, a hat on a head, going where the
+    /// animation takes the bone. `transform` is then relative to the bone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bone: String,
     /// The game's own components, by the name the game registered each
     /// under (see [`crate::components`]), each value in RON:
     ///
@@ -723,7 +886,7 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub model: Option<String>,
+    pub model: Option<crate::AssetLink>,
     /// The part's whole transform, relative to its parent in the prefab.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub transform: Option<Transform>,
@@ -797,7 +960,7 @@ impl Override {
             part.light = self.light;
         }
         if self.particles.is_some() {
-            part.particles = self.particles;
+            part.particles = self.particles.clone();
         }
         if self.reflection_probe.is_some() {
             part.reflection_probe = self.reflection_probe;
@@ -831,7 +994,7 @@ impl Override {
             layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
             camera: differs(prefab.camera != edited.camera).and(edited.camera),
             light: differs(prefab.light != edited.light).and(edited.light),
-            particles: differs(prefab.particles != edited.particles).and(edited.particles),
+            particles: differs(prefab.particles != edited.particles).and(edited.particles.clone()),
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
@@ -881,7 +1044,7 @@ impl Override {
         self.layer = layer.or(self.layer.take());
         self.camera = camera.or(self.camera);
         self.light = light.or(self.light);
-        self.particles = particles.or(self.particles);
+        self.particles = particles.or(self.particles.take());
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
         self.bends_grass = bends_grass.or(self.bends_grass);
@@ -969,10 +1132,11 @@ impl EntityDesc {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaterialRef {
-    /// A material asset in the library by file stem, or one of the engine's
-    /// builtins. `builtin:stone` forces the builtin even when a project has
-    /// an asset of that name.
-    Named(String),
+    /// A material asset in the library — by link, its name and ID
+    /// (docs/refs.md) — or one of the engine's builtins by name.
+    /// `builtin:stone` forces the builtin even when a project has an asset
+    /// of that name.
+    Named(crate::AssetLink),
     /// Spelled out, for a colour that has not earned a name yet.
     Inline(Material),
 }
@@ -1010,7 +1174,10 @@ impl EntityDesc {
     /// An unknown name falls back rather than failing to load — a scene with
     /// a typo should still open, showing plain grey where the mistake is,
     /// which is more useful than an error and no scene at all.
-    pub fn material_from(&self, lookup: impl Fn(&str) -> Option<Material>) -> Material {
+    pub fn material_from(
+        &self,
+        lookup: impl Fn(&crate::AssetLink) -> Option<Material>,
+    ) -> Material {
         match &self.material {
             MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
                 Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
@@ -1255,7 +1422,139 @@ pub struct Scene {
     pub entities: Vec<EntityDesc>,
 }
 
+/// A component's link to an entity the scene does not have.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrokenLink {
+    /// Who holds the link, by id and name, and in which component.
+    pub holder: EntityId,
+    pub holder_name: String,
+    pub component: String,
+    /// The entity it names.
+    pub target: EntityId,
+}
+
+/// A curve through points, in its entity's space. Straight between the
+/// points for now; the points are what is edited.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Spline {
+    pub points: Vec<Vec3>,
+    /// Back from the last point to the first: a fence round a field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
+}
+
+impl Spline {
+    /// Where things go along it, `spacing` apart from the first point, and
+    /// which way the curve runs there: `(position, direction)`.
+    pub fn stations(&self, spacing: f32) -> Vec<(Vec3, Vec3)> {
+        let spacing = spacing.max(0.05);
+        let mut points = self.points.clone();
+        if self.closed && points.len() > 2 {
+            points.push(points[0]);
+        }
+        let mut out = Vec::new();
+        // How far into the next segment the next station is.
+        let mut carry = 0.0;
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let length = (b - a).length();
+            if length < 1e-4 {
+                continue;
+            }
+            let direction = (b - a) / length;
+            let mut at = carry;
+            while at <= length + 1e-4 {
+                out.push((a + direction * at, direction));
+                at += spacing;
+                if out.len() >= 10_000 {
+                    return out;
+                }
+            }
+            carry = at - length;
+        }
+        out
+    }
+}
+
+/// What a spline carries: copies of a model, `spacing` apart, each turned
+/// to face along the curve.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Along {
+    pub model: crate::AssetLink,
+    #[serde(default = "one_metre")]
+    pub spacing: f32,
+    /// The copies' scale.
+    #[serde(default = "unit_scale", skip_serializing_if = "is_unit_scale")]
+    pub scale: Vec3,
+}
+
+fn one_metre() -> f32 {
+    1.0
+}
+
+fn unit_scale() -> Vec3 {
+    Vec3::ONE
+}
+
+fn is_unit_scale(v: &Vec3) -> bool {
+    *v == Vec3::ONE
+}
+
+impl Along {
+    /// The copies for a spline, as children of the entity carrying both:
+    /// named after the model and numbered, with IDs derived from the
+    /// carrier's and their number, so the same fence gives the same IDs.
+    pub fn grow(&self, carrier: EntityId, spline: &Spline) -> Vec<EntityDesc> {
+        let name = self.model.trim_start_matches("builtin:").to_string();
+        spline
+            .stations(self.spacing)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (position, direction))| {
+                let mut transform = Transform {
+                    position,
+                    scale: self.scale,
+                    ..Default::default()
+                };
+                let yaw = (-direction.z).atan2(direction.x);
+                transform.set_rotation(glam::Quat::from_rotation_y(yaw));
+                EntityDesc {
+                    id: carrier.within(EntityId::from_raw(i as u64 + 1)),
+                    name: format!("{name} {}", i + 1),
+                    model: self.model.clone(),
+                    transform,
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+}
+
 impl Scene {
+    /// Every [`crate::EntityRef`] in a component whose entity is not in the
+    /// scene. Asked of an expanded scene, so that a link to a part of a
+    /// prefab instance counts as there.
+    pub fn broken_links(&self) -> Vec<BrokenLink> {
+        let all = self.flatten();
+        let ids: std::collections::HashSet<EntityId> = all.iter().map(|(e, _)| e.id).collect();
+        let mut out = Vec::new();
+        for (desc, _) in &all {
+            for (component, value) in &desc.components {
+                for target in crate::EntityRef::find_in(value.get_ron()) {
+                    if !ids.contains(&target) {
+                        out.push(BrokenLink {
+                            holder: desc.id,
+                            holder_name: desc.name.clone(),
+                            component: component.clone(),
+                            target,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Every entity in the scene, roots and descendants alike, each with the
     /// world transform its ancestors give it.
     ///
@@ -1444,6 +1743,8 @@ mod tests {
         let mut scene = Scene {
             entities: vec![EntityDesc {
                 camera: None,
+                spline: None,
+                along: None,
                 light: None,
                 particles: None,
                 reflection_probe: None,
@@ -1453,12 +1754,16 @@ mod tests {
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
+                joint_break: None,
+                bone: String::new(),
+                post_volume: None,
+                render_texture: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "crate".into(),
                 model: "builtin:cube".into(),
-                prefab: String::new(),
+                prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 2.0, 3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
@@ -1472,6 +1777,8 @@ mod tests {
                 },
                 children: vec![EntityDesc {
                     camera: None,
+                    spline: None,
+                    along: None,
                     light: None,
                     particles: None,
                     reflection_probe: None,
@@ -1481,12 +1788,16 @@ mod tests {
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
+                    joint_break: None,
+                    bone: String::new(),
+                    post_volume: None,
+                    render_texture: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
                     name: "lid".into(),
                     model: "builtin:cube".into(),
-                    prefab: String::new(),
+                    prefab: Default::default(),
                     material: MaterialRef::Named("stone".into()),
                     body: Body::None,
                     collider: Collider::None,
@@ -1529,6 +1840,8 @@ mod tests {
             }),
             entities: vec![EntityDesc {
                 camera: None,
+                spline: None,
+                along: None,
                 light: None,
                 particles: None,
                 reflection_probe: None,
@@ -1538,12 +1851,16 @@ mod tests {
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
+                joint_break: None,
+                bone: String::new(),
+                post_volume: None,
+                render_texture: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "pine".into(),
                 model: "models/pine_large.obj".into(),
-                prefab: String::new(),
+                prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 0.0, -3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),

@@ -1061,7 +1061,11 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
         "sRGB hex, not a dump of floats: {text}"
     );
     assert!(
-        library.join("clay.rmat.rasset").exists(),
+        runity::Library::open(&library)
+            .unwrap()
+            .0
+            .material_by_name("clay")
+            .is_some(),
         "and it was imported"
     );
 
@@ -1116,7 +1120,11 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     )
     .unwrap();
     session.import(&source).unwrap();
-    assert!(library.join("wedge.obj.rasset").exists());
+    assert!(runity::Library::open(&library)
+        .unwrap()
+        .0
+        .mesh_by_name("wedge")
+        .is_some());
 
     // And a scene can use it straight away, by the name the file had.
     let added = session.add(None, "wedge").unwrap();
@@ -3715,6 +3723,7 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
             animator: "walk".into(),
         }],
         gone: vec![],
+        diagnostics: None,
     }
     .write(&state)
     .unwrap();
@@ -4422,4 +4431,257 @@ fn the_face_under_the_pointer_is_the_one_facing_it() {
     assert!(out.1 < 0.0, "up is up the screen: {out:?}");
     // Past it, sky: no face.
     assert_eq!(session.face_under(w / 2, 0), None);
+}
+
+#[test]
+fn a_link_gets_its_id_on_save_and_follows_a_file_renamed_outside_the_editor() {
+    let path = scene_file("links", r#"(entities: [(name: "block", model: "wedge")])"#);
+    let root = root_of(&path);
+    let project = runity::Project::open(&root).unwrap();
+    std::fs::write(
+        project.assets().join("wedge.obj"),
+        "v -1 0 -1\nv 1 0 -1\nv 1 0 1\nf 1 3 2\n",
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session.open_scene(&path).unwrap();
+    assert!(!session.is_modified(), "opening is not an edit");
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"model: ("wedge", ""#), "{saved}");
+    let id = runity_import::ImportSettings::load(runity_import::sidecar_for(
+        &project.assets().join("wedge.obj"),
+    ))
+    .unwrap()
+    .asset_id();
+    assert!(saved.contains(&id.to_string()));
+
+    // Renamed in Finder: the sidecar is left behind, and sync finds the
+    // file by its contents. The line follows by ID and takes the new name.
+    std::fs::rename(
+        project.assets().join("wedge.obj"),
+        project.assets().join("rock.obj"),
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    session.open_scene(&path).unwrap();
+    assert!(
+        !session
+            .problems()
+            .iter()
+            .any(|p| p.message.contains("model")),
+        "{:?}",
+        session.problems()
+    );
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains(&format!(r#"model: ("rock", "{id}")"#)),
+        "{saved}"
+    );
+}
+
+#[test]
+fn what_the_simulation_did_is_kept_for_the_marked_and_undone_in_one_step() {
+    const TWO: &str = r#"(entities: [
+        (name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
+         body: Static, collider: Box(half: (10.0, 0.05, 10.0))),
+        (name: "crate", model: "builtin:cube", transform: (position: (0.0, 4.0, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+        (name: "other", model: "builtin:cube", transform: (position: (3.0, 4.0, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+    ])"#;
+    let Some((mut session, _)) = open_with("keep-simulation", TWO) else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let other = id(&session, "other");
+    let start = session.transform(crate_id).unwrap().position;
+    let other_start = session.transform(other).unwrap().position;
+    let steps = session.undo_steps().len();
+
+    session.play();
+    for _ in 0..90 {
+        session.step(1.0 / 60.0);
+    }
+    session.select(Some(crate_id)).unwrap();
+    assert_eq!(session.keep_simulation(), 1);
+    assert_eq!(session.kept(), vec![crate_id]);
+    assert!(session.stop());
+
+    let kept = session.transform(crate_id).unwrap().position;
+    assert!(
+        kept.y < start.y - 1.0,
+        "it stays where it fell: {start} -> {kept}"
+    );
+    assert_eq!(
+        session.transform(other).unwrap().position,
+        other_start,
+        "what was not marked goes back"
+    );
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    session.undo().unwrap();
+    assert_eq!(session.transform(crate_id).unwrap().position, start);
+    assert_eq!(
+        session.keep_simulation(),
+        0,
+        "nothing to keep when not playing"
+    );
+}
+
+#[test]
+fn the_foliage_brush_plants_on_the_ground_keeps_its_spacing_and_erases() {
+    let Some((mut session, _)) = open_with(
+        "foliage",
+        r#"(entities: [(name: "floor", model: "builtin:cube", transform: (position: (0.0, -0.5, 0.0), scale: (40.0, 1.0, 40.0)), body: Static, collider: Box(half: (20.0, 0.5, 20.0)))])"#,
+    ) else {
+        return;
+    };
+    let steps = session.undo_steps().len();
+    let added = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 4.0, 1.0, false, false, 7)
+        .unwrap();
+    assert!(added >= 10, "about π·4²·1 tries, most kept: {added}");
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    let group = id(&session, "foliage: cone");
+    let children: Vec<Vec3> = session
+        .scene()
+        .get(group)
+        .unwrap()
+        .children
+        .iter()
+        .map(|c| c.transform.position)
+        .collect();
+    assert_eq!(children.len(), added);
+    for p in &children {
+        assert!(p.y.abs() < 0.01, "on the floor's top: {p}");
+        assert!(p.x * p.x + p.z * p.z <= 16.01, "inside the brush: {p}");
+    }
+    for (i, a) in children.iter().enumerate() {
+        for b in &children[i + 1..] {
+            assert!((*a - *b).length() >= 0.99, "a metre apart at one per m²");
+        }
+    }
+
+    // The same spot again: it is mostly full.
+    let more = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 4.0, 1.0, false, false, 8)
+        .unwrap();
+    assert!(more < added, "{more} more after {added}");
+
+    // Shift: erase inside a smaller disc.
+    let gone = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 2.0, 1.0, false, true, 0)
+        .unwrap();
+    assert!(gone > 0);
+    assert!(session
+        .scene()
+        .get(group)
+        .unwrap()
+        .children
+        .iter()
+        .all(|c| c.transform.position.length() > 2.0));
+    assert!(session
+        .paint_foliage("no-such-model", Vec3::ZERO, 2.0, 1.0, false, false, 0)
+        .is_err());
+}
+
+#[test]
+fn a_fence_grows_posts_along_its_spline_and_the_file_keeps_only_the_line() {
+    let Some((mut session, path)) = open_with("fence", r#"(entities: [])"#) else {
+        return;
+    };
+    let fence = session
+        .add_fence("builtin:cylinder", Vec3::ZERO, 1.0)
+        .unwrap();
+    assert_eq!(session.entity_count(), 1, "the file has the fence");
+    assert_eq!(
+        session.spawned_count(),
+        1 + 5,
+        "the world has posts at 0, 1, 2, 3, 4 m"
+    );
+    // A post is the fence's: clicking one selects the fence.
+    let rows = session.hierarchy();
+    let post = rows.iter().find(|r| r.name == "cylinder 3").unwrap();
+    assert_eq!(session.instanced_owner(post.id), fence);
+
+    session
+        .set_field(
+            fence,
+            "spline",
+            "(points: [(0.0, 0.0, 0.0), (8.0, 0.0, 0.0)])",
+        )
+        .unwrap();
+    assert_eq!(session.spawned_count(), 1 + 9);
+    session
+        .set_field(
+            fence,
+            "along",
+            r#"(model: "builtin:cylinder", spacing: 2.0)"#,
+        )
+        .unwrap();
+    assert_eq!(session.spawned_count(), 1 + 5);
+
+    session.save_scene(None).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("spline:"), "{text}");
+    assert!(
+        !text.contains("cylinder 3"),
+        "the posts are not in the file"
+    );
+}
+
+#[test]
+fn a_material_link_gets_its_id_and_a_builtin_stays_a_name() {
+    let path = scene_file(
+        "material-links",
+        r#"(entities: [
+    (name: "pot", model: "builtin:cube", material: "clay"),
+    (name: "lawn", model: "builtin:plane", material: "grass"),
+    (name: "tile", model: "builtin:cube", material: (base_color: (0.5, 0.5, 0.5))),
+])"#,
+    );
+    let root = root_of(&path);
+    let project = runity::Project::open(&root).unwrap();
+    std::fs::write(
+        project.materials().join("clay.rmat"),
+        r##"(color: "#b0643c")"##,
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session.open_scene(&path).unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"material: ("clay", ""#), "{saved}");
+    assert!(
+        saved.contains(r#"material: "grass""#),
+        "a builtin is the engine's name: {saved}"
+    );
+    assert!(
+        saved.contains("base_color"),
+        "an inline material is still inline: {saved}"
+    );
+
+    // Renamed outside the editor: found by ID, and the line takes the name.
+    std::fs::rename(
+        project.materials().join("clay.rmat"),
+        project.materials().join("terracotta.rmat"),
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    session.open_scene(&path).unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"material: ("terracotta", ""#), "{saved}");
+    let pot = id(&session, "pot");
+    assert!(
+        session.material(pot).unwrap().base_color[0] > 0.3,
+        "still clay-coloured"
+    );
 }

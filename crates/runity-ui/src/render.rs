@@ -65,8 +65,12 @@ pub struct UiRenderer {
     empty: Buffer,
     /// Icons parsed so far, by number.
     svgs: HashMap<u16, resvg::usvg::Tree>,
-    /// What is on the GPU: the UI's revision and the target's size.
-    uploaded: Option<(u64, u32, u32)>,
+    /// What is on the GPU: the UI's revision, the target's size and the
+    /// origin it was drawn from.
+    uploaded: Option<(u64, u32, u32, (i32, i32))>,
+    /// The UI's point drawn at the target's top left, in logical pixels:
+    /// a second window shows another part of the same tree.
+    origin: (f32, f32),
 }
 
 fn physical(r: Rect, scale: f32) -> [f32; 4] {
@@ -217,6 +221,7 @@ impl UiRenderer {
             empty: Buffer::new_empty(Metrics::new(1.0, 1.0)),
             svgs: HashMap::new(),
             uploaded: None,
+            origin: (0.0, 0.0),
         }
     }
 
@@ -284,13 +289,46 @@ impl UiRenderer {
         self.set_image(gpu, image, &view);
     }
 
+    /// Draw the UI from this point of it, in logical pixels, rather than
+    /// from its top left: the part of one tree a second window shows.
+    pub fn set_origin(&mut self, x: f32, y: f32) {
+        self.origin = (x, y);
+    }
+
     /// Upload what changed since the last call. `width` and `height` are
     /// the target's, in physical pixels.
     pub fn prepare(&mut self, gpu: &Gpu, ui: &mut Ui, width: u32, height: u32) {
-        let layers: Vec<Layer> = ui.paint().to_vec();
-        let key = (ui.revision(), width, height);
+        let (ox, oy) = self.origin;
+        let key = (ui.revision(), width, height, (ox as i32, oy as i32));
         if self.uploaded == Some(key) {
+            ui.paint();
             return;
+        }
+        let mut layers: Vec<Layer> = ui.paint().to_vec();
+        if (ox, oy) != (0.0, 0.0) {
+            let shift = |r: &mut Rect| {
+                r.x -= ox;
+                r.y -= oy;
+            };
+            for layer in &mut layers {
+                for r in &mut layer.rects {
+                    shift(&mut r.rect);
+                    shift(&mut r.clip);
+                }
+                for p in &mut layer.images {
+                    shift(&mut p.rect);
+                    shift(&mut p.clip);
+                }
+                for t in &mut layer.texts {
+                    t.x -= ox;
+                    t.y -= oy;
+                    shift(&mut t.clip);
+                }
+                for i in &mut layer.icons {
+                    shift(&mut i.rect);
+                    shift(&mut i.clip);
+                }
+            }
         }
         let scale = ui.viewport().2;
         gpu.queue.write_buffer(

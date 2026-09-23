@@ -64,6 +64,7 @@ pub mod reflections;
 pub mod refs;
 pub mod relay;
 pub mod render;
+pub mod ron_edit;
 mod ron_text;
 pub mod routes;
 pub mod save;
@@ -98,9 +99,10 @@ pub use audio::{Audio, Falloff};
 pub use edit::History;
 pub use gizmo::{Drag, GizmoStyle, Handle};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
-pub use id::EntityId;
+pub use id::{EntityId, EntityRef};
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
+pub use refs::{AssetLink, MaterialLink, ModelLink, PrefabLink, SceneLink, SoundLink, TextureLink};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use actions::{Actions, Binding};
@@ -115,7 +117,7 @@ pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
-pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
+pub use scene::{Along, Body, EntityDesc, Fog, Scene, Spline, Sun, Transform, View};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use tuned::Tuned;

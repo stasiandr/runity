@@ -103,6 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &scene,
         &mut world,
         |name| {
+            let name: &str = name;
             if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
                 return Some(found.1);
             }

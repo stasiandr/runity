@@ -59,6 +59,9 @@ pub struct Blend {
     /// step put the left foot of one on the right foot of the other.
     pub phase: f32,
     pub speed: f32,
+    /// A third clip over the mix of the two, and how much of it: a 2D
+    /// blend's middle (standing still) under two directions.
+    pub third: Option<(usize, f32)>,
 }
 
 impl Animator {
@@ -72,6 +75,24 @@ impl Animator {
             fade_length: 0.0,
             blend: None,
         }
+    }
+
+    /// Clips made on another rig, to play on this one (see
+    /// [`Clip::retarget`]): Mixamo's, one clip to a file. A clip Mixamo
+    /// named as it names all of them (`mixamo.com`) takes `model`, the
+    /// name of the file it came from — as the Unity import names it.
+    pub fn take_clips(&mut self, model: &str, from: &crate::animation::Skeleton, clips: &[Clip]) {
+        let taken: Vec<Clip> = clips
+            .iter()
+            .map(|clip| {
+                let mut clip = clip.retarget(from, &self.skeleton);
+                if clip.name == "mixamo.com" || (clips.len() == 1 && clip.name.is_empty()) {
+                    clip.name = model.to_string();
+                }
+                clip
+            })
+            .collect();
+        std::sync::Arc::make_mut(&mut self.clips).extend(taken);
     }
 
     pub fn playing(&self) -> Option<Playing> {
@@ -107,6 +128,15 @@ impl Animator {
         }
     }
 
+    /// Stand the clip playing at `fraction` of its length, 0..1: a clip
+    /// a parameter scrubs instead of time.
+    pub fn set_fraction(&mut self, fraction: f32) {
+        if let Some(playing) = &mut self.current {
+            let length = self.clips.get(playing.clip).map_or(0.0, |c| c.duration);
+            playing.time = fraction.clamp(0.0, 1.0) * length;
+        }
+    }
+
     pub fn set_speed(&mut self, speed: f32) {
         if let Some(playing) = &mut self.current {
             playing.speed = speed;
@@ -121,9 +151,23 @@ impl Animator {
     /// keeps the cycle where it is; called from a plain clip, it fades in
     /// over `fade` seconds.
     pub fn blend(&mut self, a: usize, b: usize, weight: f32, fade: f32) {
+        self.blend_three(a, b, weight, None, fade);
+    }
+
+    /// [`Self::blend`] with a third clip laid over the two by its weight:
+    /// what a 2D blend tree plays.
+    pub fn blend_three(
+        &mut self,
+        a: usize,
+        b: usize,
+        weight: f32,
+        third: Option<(usize, f32)>,
+        fade: f32,
+    ) {
         let weight = weight.clamp(0.0, 1.0);
+        let third = third.map(|(c, w)| (c, w.clamp(0.0, 1.0)));
         if let Some(blend) = &mut self.blend {
-            (blend.a, blend.b, blend.weight) = (a, b, weight);
+            (blend.a, blend.b, blend.weight, blend.third) = (a, b, weight, third);
             return;
         }
         self.previous = self.current;
@@ -141,6 +185,7 @@ impl Animator {
             weight,
             phase: 0.0,
             speed: 1.0,
+            third,
         });
     }
 
@@ -181,7 +226,10 @@ impl Animator {
         if let Some(blend) = &mut self.blend {
             // One cycle takes as long as the mix of the two lengths.
             let length = |c: usize| self.clips.get(c).map_or(1.0, |c| c.duration.max(1e-3));
-            let cycle = length(blend.a) + (length(blend.b) - length(blend.a)) * blend.weight;
+            let mut cycle = length(blend.a) + (length(blend.b) - length(blend.a)) * blend.weight;
+            if let Some((c, w)) = blend.third {
+                cycle += (length(c) - cycle) * w;
+            }
             blend.phase = (blend.phase + dt * blend.speed / cycle).rem_euclid(1.0);
         }
         if let Some(previous) = &mut self.previous {
@@ -206,7 +254,7 @@ impl Animator {
                     let clip = self.clips.get(c)?;
                     Some(clip.sample(&self.skeleton, blend.phase * clip.duration, true))
                 };
-                match (at(blend.a), at(blend.b)) {
+                let two: Option<Vec<PoseTransform>> = match (at(blend.a), at(blend.b)) {
                     (Some(a), Some(b)) => Some(
                         a.iter()
                             .zip(b.iter())
@@ -214,6 +262,15 @@ impl Animator {
                             .collect(),
                     ),
                     (a, b) => a.or(b),
+                };
+                match (two, blend.third.and_then(|(c, w)| Some((at(c)?, w)))) {
+                    (Some(two), Some((c, w))) => Some(
+                        two.iter()
+                            .zip(c.iter())
+                            .map(|(x, y)| x.lerp(y, w))
+                            .collect(),
+                    ),
+                    (two, _) => two,
                 }
             }
             None => self.current.and_then(sample),
@@ -308,6 +365,17 @@ mod tests {
 
     fn height(pose: &[PoseTransform]) -> f32 {
         pose[0].translation[1]
+    }
+
+    #[test]
+    fn clips_from_another_file_play_under_that_files_name() {
+        let mut animator = animator();
+        let mut mixamo = clips()[1].clone();
+        mixamo.name = "mixamo.com".into();
+        animator.take_clips("A_Running", &skeleton(), &[mixamo]);
+        let at = animator.clips.iter().position(|c| c.name == "A_Running");
+        animator.play(at.expect("taken, under the file's name"), 0.0);
+        assert_eq!(height(&animator.advance(0.0)), 20.0);
     }
 
     #[test]

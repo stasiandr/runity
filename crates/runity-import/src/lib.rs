@@ -27,6 +27,7 @@
 pub mod assets;
 pub mod poly;
 pub mod terrain;
+pub mod unity;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -63,9 +64,11 @@ pub struct ImportSettings {
     /// Uniform scale applied on the way in. Kits disagree about units; the
     /// engine works in meters and the disagreement is settled here, once,
     /// rather than by a scale on every instance in every scene.
+    #[serde(default = "one")]
     pub scale: f32,
     /// Recompute normals from the faces instead of trusting the file's.
     /// Needed for sources that carry none, which is most hand-made OBJ.
+    #[serde(default)]
     pub recompute_normals: bool,
     /// Whether an image holds colour, and so needs decoding from sRGB on
     /// the way to the GPU. True for an albedo map; false for a normal map, a
@@ -75,6 +78,7 @@ pub struct ImportSettings {
     /// Move the mesh so its base sits at y = 0. A tree whose origin is in the
     /// middle of its trunk has to be placed by feel; one whose origin is at
     /// its foot can be dropped on the ground.
+    #[serde(default = "yes")]
     pub origin_to_base: bool,
 }
 
@@ -143,17 +147,30 @@ pub fn sidecar_for(source: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Where a source's built asset goes in a library: `<file>.rasset`.
+/// Where an asset is built in a library: `<id>.rasset`.
 ///
-/// The whole file name, extension included, so `stone.rmat` and `stone.obj`
-/// build to two assets rather than one overwriting the other. The library
-/// finds assets by the name inside them, not by this.
-pub fn asset_for(source: &Path, library: &Path) -> PathBuf {
-    let name = source
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "asset".into());
-    library.join(format!("{name}.rasset"))
+/// By the asset's ID, not its source's name (docs/refs.md): two sources
+/// with one name in two folders build to two assets, and a source that is
+/// renamed or moved keeps its built file. The library finds assets by the
+/// ID and the name inside them, not by this.
+pub fn asset_for(id: AssetId, library: &Path) -> PathBuf {
+    library.join(format!("{id}.rasset"))
+}
+
+/// Where a source's asset is built, by the ID its sidecar holds: `None`
+/// for a source with no sidecar yet.
+pub fn built_for(source: &Path, library: &Path) -> Option<PathBuf> {
+    let settings = ImportSettings::load(sidecar_for(source)).ok()?;
+    Some(asset_for(settings.asset_id(), library))
+}
+
+/// Whether a library file is named the way [`asset_for`] names one. A
+/// library built before assets were named by ID has files named after
+/// their sources; they are removed and built again.
+fn named_by_id(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// A hash of a file's contents, as the hex a sidecar stores.
@@ -168,11 +185,8 @@ pub fn asset_for(source: &Path, library: &Path) -> PathBuf {
 pub fn content_hash(path: &Path) -> std::io::Result<String> {
     let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    let is_terrain = path.extension().is_some_and(|e| e == "rterrain");
     let mut files = vec![path.to_path_buf()];
-    if is_terrain {
-        files.extend(terrain::dependencies(path));
-    }
+    files.extend(dependencies(path));
     for file in files {
         for byte in std::fs::read(&file)? {
             hash ^= byte as u128;
@@ -889,6 +903,11 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
     if name.is_empty() {
         return Ok(None);
     }
+    // A camera's picture: `render:mirror`, what a camera with
+    // `render_texture: (name: "mirror")` draws.
+    if let Some(target) = name.strip_prefix("render:") {
+        return Ok(Some(runity::asset::AssetId::render_target(target)));
+    }
     let project = runity::Project::find(material).map_err(|e| {
         anyhow::anyhow!(
             "{}: `{name}` is a texture, and a material that uses one has to be in a project: {e}",
@@ -978,14 +997,198 @@ fn black() -> Color {
 }
 
 /// Read a `.rmat` and build a material asset from it.
+/// A material's source with its parent's under it: Unreal's Material
+/// Instance (docs/artist.md). A `.rmat` that says `parent: "stone"` — or
+/// `parent: ("stone", "<id>")`, a link (docs/refs.md) — is the parent with
+/// only what it states changed, so a dozen stones are one material and a
+/// dozen colours, and changing the parent's smoothness changes them all.
+pub fn material_source(path: &Path) -> Result<MaterialSource> {
+    let text = material_text(path, 0)?;
+    ron::from_str(&text).with_context(|| format!("{}", path.display()))
+}
+
+/// A material seen as an instance: the parent it names, and each of its
+/// parameters with the value it takes and whether this file sets it
+/// (rather than inheriting it). What the editor's material panel shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialLayers {
+    pub parent: Option<runity::AssetLink>,
+    /// `(name, value as RON, set here)`, in the source's field order.
+    pub fields: Vec<(String, String, bool)>,
+}
+
+pub fn material_layers(path: &Path) -> Result<MaterialLayers> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let own: ron::Value = ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let parent = parent_link(&own);
+    let own_keys: Vec<String> = match &own {
+        ron::Value::Map(map) => map
+            .keys()
+            .filter_map(|k| match k {
+                ron::Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Every parameter, defaults filled in, as the source would say it.
+    let effective = material_source(path)?;
+    let text = ron::to_string(&effective)?;
+    let ron::Value::Map(all) = ron::from_str::<ron::Value>(&text)? else {
+        anyhow::bail!("{}: not a material", path.display());
+    };
+    let order: Vec<String> = {
+        // Field order as the struct declares it: serialise and read keys in turn.
+        let mut keys = Vec::new();
+        let inner = text.trim().trim_start_matches('(').trim_end_matches(')');
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut start = 0;
+        let bytes = inner.as_bytes();
+        for (i, &c) in bytes.iter().enumerate() {
+            match c {
+                b'"' => in_string = !in_string,
+                b'(' | b'[' | b'{' if !in_string => depth += 1,
+                b')' | b']' | b'}' if !in_string => depth -= 1,
+                b',' if !in_string && depth == 0 => {
+                    if let Some(k) = inner[start..i].split(':').next() {
+                        keys.push(k.trim().to_string());
+                    }
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(k) = inner[start..].split(':').next() {
+            if !k.trim().is_empty() {
+                keys.push(k.trim().to_string());
+            }
+        }
+        keys
+    };
+    let fields = order
+        .into_iter()
+        .filter_map(|key| {
+            let value = all.get(&ron::Value::String(key.clone()))?;
+            let text = ron::to_string(value).ok()?;
+            let set = own_keys.contains(&key);
+            Some((key, text, set))
+        })
+        .collect();
+    Ok(MaterialLayers { parent, fields })
+}
+
+/// The files a material is made of: itself, then its parent, its parent's
+/// parent… What its hash covers, so an edited parent rebuilds its
+/// instances.
+pub fn material_parents(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut at = path.to_path_buf();
+    while out.len() < MATERIAL_DEPTH {
+        let Some(parent) = std::fs::read_to_string(&at)
+            .ok()
+            .and_then(|text| ron::from_str::<ron::Value>(&text).ok())
+            .and_then(|value| parent_link(&value))
+            .and_then(|link| find_material(&at, &link))
+        else {
+            break;
+        };
+        if parent == path || out.contains(&parent) {
+            break;
+        }
+        out.push(parent.clone());
+        at = parent;
+    }
+    out
+}
+
+/// How deep a chain of parents may go: deep enough for any real palette,
+/// shallow enough that a loop is an error and not a hang.
+const MATERIAL_DEPTH: usize = 8;
+
+/// A material's text with its parents' under it: the parent's text, each
+/// field this file states set over it in place. As text rather than as
+/// RON's generic value, which cannot hold a bare enum variant
+/// (`render_face: Both`).
+fn material_text(path: &Path, depth: usize) -> Result<String> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let value: ron::Value = ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let Some(link) = parent_link(&value) else {
+        return Ok(text);
+    };
+    anyhow::ensure!(
+        depth < MATERIAL_DEPTH,
+        "{}: parents go more than {MATERIAL_DEPTH} deep — does a material name itself?",
+        path.display()
+    );
+    let parent = find_material(path, &link).with_context(|| {
+        format!(
+            "{}: no material `{}` to be the parent",
+            path.display(),
+            link.name
+        )
+    })?;
+    let mut under = material_text(&parent, depth + 1)?;
+    let open = runity::ron_edit::outer_open(&text)
+        .with_context(|| format!("{}: not a material", path.display()))?;
+    let own = runity::ron_edit::items(&text, open)
+        .with_context(|| format!("{}: not a material", path.display()))?;
+    for span in own.items {
+        let Some((key, value)) = text[span].split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key == "parent" {
+            continue;
+        }
+        under =
+            runity::ron_edit::set_field(&under, key, Some(value.trim())).with_context(|| {
+                format!("{}: could not lay `{key}` over its parent", path.display())
+            })?;
+    }
+    Ok(under)
+}
+
+/// What a material's `parent:` says, as a link.
+fn parent_link(value: &ron::Value) -> Option<runity::AssetLink> {
+    let ron::Value::Map(map) = value else {
+        return None;
+    };
+    let parent = map.get(&ron::Value::String("parent".into()))?;
+    parent.clone().into_rust::<runity::AssetLink>().ok()
+}
+
+/// A `.rmat` of the project by link: the one whose sidecar has the ID,
+/// or the one with the name.
+fn find_material(near: &Path, link: &runity::AssetLink) -> Option<PathBuf> {
+    let root = runity::Project::find(near)
+        .map(|p| p.materials())
+        .unwrap_or_else(|_| near.parent().map(Path::to_path_buf).unwrap_or_default());
+    let mut found = Vec::new();
+    walk(&root, &mut |p| {
+        if p.extension().is_some_and(|e| e == "rmat") {
+            found.push(p.to_path_buf());
+        }
+    });
+    if let Some(id) = link.id {
+        if let Some(p) = found
+            .iter()
+            .find(|p| runity::asset::sidecar_id(sidecar_for(p)) == Some(id))
+        {
+            return Some(p.clone());
+        }
+    }
+    found
+        .into_iter()
+        .find(|p| p.file_stem().is_some_and(|s| s == link.as_str()))
+}
+
 pub fn material_from_ron(
     path: impl AsRef<Path>,
     settings: &ImportSettings,
 ) -> Result<MaterialAsset> {
     let path = path.as_ref();
-    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
-    let source: MaterialSource =
-        ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let source = material_source(path)?;
     Ok(MaterialAsset {
         id: settings.asset_id(),
         name: path
@@ -1130,7 +1333,7 @@ pub fn import_to(
         other => anyhow::bail!("no importer for .{other} yet"),
     };
 
-    let asset_path = asset_for(source, library);
+    let asset_path = asset_for(id, library);
     std::fs::write(&asset_path, bytes)?;
     settings.save(sidecar)?;
     let _ = kind;
@@ -1242,6 +1445,14 @@ pub struct Reimported {
 /// polling this every frame must not read every texture every frame.
 pub fn sync(project: &runity::Project) -> Vec<Reimported> {
     let library = project.library();
+    // Built before assets were named by ID: gone, and built again below.
+    if let Ok(entries) = std::fs::read_dir(&library) {
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.extension().and_then(|e| e.to_str()) == Some("rasset") && !named_by_id(&path) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
     let mut sidecars = Vec::new();
     let mut sources = Vec::new();
     for root in [project.assets(), project.materials()] {
@@ -1293,7 +1504,7 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         }
         claimed.push(source.clone());
 
-        let asset = asset_for(&source, &library);
+        let asset = asset_for(settings.asset_id(), &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
         } else if !runity::asset::is_current(&asset) {
@@ -1363,13 +1574,9 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             .map(|imported| imported.id)
             .map_err(|e| format!("{e:#}"));
         if result.is_ok() {
+            // The asset is built under its ID, so the one built before the
+            // move has just been written over: only the old sidecar goes.
             let _ = std::fs::remove_file(&old_sidecar);
-            // The asset built under the old name would otherwise sit in the
-            // library as a second copy of the same ID.
-            let old_asset = asset_for(Path::new(&from), &library);
-            if !same(&old_asset, &asset_for(&source, &library)) {
-                let _ = std::fs::remove_file(old_asset);
-            }
         }
         out.push(Reimported {
             source,
@@ -1393,7 +1600,111 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             result,
         });
     }
+    // Prefabs, scenes, graphs and screens get their IDs too. Not reported:
+    // nothing in the library changed for them.
+    identify(project);
     out
+}
+
+/// Where the project's own text assets are — prefabs, scenes, animator
+/// graphs, screens — with the extension each folder's files have.
+fn text_assets(project: &runity::Project) -> [(PathBuf, &'static str); 4] {
+    [
+        (project.prefabs(), runity::prefab::EXTENSION),
+        (project.scenes(), "ron"),
+        (project.root().join(runity::project::ANIMATORS), "ron"),
+        (project.root().join(runity::project::UI), "ron"),
+    ]
+}
+
+/// Give every prefab, scene, animator graph and screen a sidecar with its
+/// ID, as models and materials have (docs/refs.md): what a link to it
+/// holds. These are not imported — the files are read as they are — so the
+/// sidecar holds only where the file is and its ID, and no hash: a scene
+/// changes with every save, and a hash would put its sidecar in every diff.
+///
+/// A sidecar whose file is gone follows a file of the same name that turned
+/// up without one — moved to another folder outside the editor. What this
+/// cannot follow, a file renamed outside the editor, a link finds by the
+/// name it keeps beside the ID.
+pub fn identify(project: &runity::Project) -> Vec<Reimported> {
+    let mut sidecars = Vec::new();
+    let mut files = Vec::new();
+    for (root, extension) in text_assets(project) {
+        walk(
+            &root,
+            &mut |path| match path.extension().and_then(|e| e.to_str()) {
+                Some("rimport") => sidecars.push(path.to_path_buf()),
+                Some(e) if e == extension => files.push(path.to_path_buf()),
+                _ => {}
+            },
+        );
+    }
+    sidecars.sort();
+    files.sort();
+    let name = |path: &Path| {
+        project
+            .relative(path)
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    };
+    let mut out = Vec::new();
+    let mut orphans = Vec::new();
+    for sidecar in sidecars {
+        let Ok(settings) = ImportSettings::load(&sidecar) else {
+            continue;
+        };
+        let source = project.resolve(&settings.source);
+        if source.is_file() {
+            files.retain(|f| *f != source);
+        } else {
+            orphans.push((sidecar, settings));
+        }
+    }
+    for (sidecar, mut settings) in orphans {
+        let file_name = Path::new(&settings.source)
+            .file_name()
+            .map(|n| n.to_owned());
+        let Some(at) = files
+            .iter()
+            .position(|f| f.file_name().map(|n| n.to_owned()) == file_name)
+        else {
+            continue;
+        };
+        let source = files.remove(at);
+        let from = std::mem::replace(&mut settings.source, name(&source));
+        let result = write_identity(&source, &settings).map(|()| settings.asset_id());
+        if result.is_ok() {
+            let _ = std::fs::remove_file(&sidecar);
+        }
+        out.push(Reimported {
+            source,
+            change: Change::Moved { from },
+            result: result.map_err(|e| format!("{e:#}")),
+        });
+    }
+    for source in files {
+        let mut settings = ImportSettings::for_source(name(&source));
+        settings.id = Some(settings.asset_id());
+        let result = write_identity(&source, &settings).map(|()| settings.asset_id());
+        out.push(Reimported {
+            source,
+            change: Change::New,
+            result: result.map_err(|e| format!("{e:#}")),
+        });
+    }
+    out
+}
+
+/// A text asset's sidecar: where it is and its ID, nothing an importer
+/// would read.
+fn write_identity(source: &Path, settings: &ImportSettings) -> Result<()> {
+    let text = format!(
+        "ImportSettings(\n    source: {:?},\n    id: Some({:?}),\n)\n",
+        settings.source,
+        settings.asset_id().to_string()
+    );
+    std::fs::write(sidecar_for(source), text)?;
+    Ok(())
 }
 
 /// Whether the importer knows what to do with a file.
@@ -1445,15 +1756,22 @@ pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
 /// it and its heightmap, so repainting the image counts.
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     let own = std::fs::metadata(path).ok()?.modified().ok()?;
-    if path.extension().is_some_and(|e| e == "rterrain") {
-        return Some(
-            terrain::dependencies(path)
-                .iter()
-                .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
-                .fold(own, |latest, t| latest.max(t)),
-        );
+    Some(
+        dependencies(path)
+            .iter()
+            .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
+            .fold(own, |latest, t| latest.max(t)),
+    )
+}
+
+/// The other files a source is built from: a terrain's heightmap, a
+/// material's parents.
+fn dependencies(path: &Path) -> Vec<PathBuf> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("rterrain") => terrain::dependencies(path),
+        Some("rmat") => material_parents(path),
+        _ => Vec::new(),
     }
-    Some(own)
 }
 
 fn touch(path: &Path) {
