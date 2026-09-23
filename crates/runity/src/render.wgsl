@@ -17,8 +17,9 @@ struct Frame {
     light_view_projection: mat4x4<f32>,
     // depth bias, normal offset in world units, one texel in UV, on/off
     shadow_params: vec4<f32>,
-    // Point lights, two vectors each: position and range, colour.
-    lights: array<vec4<f32>, 16>,
+    // Lights, three vectors each: position and range; colour; spot
+    // direction and the cosine of half its cone (-2: every way).
+    lights: array<vec4<f32>, 24>,
     // How many are on, in x.
     light_count: vec4<f32>,
 };
@@ -193,12 +194,18 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     // squared, so the edge of the pool is soft rather than a ring.
     let count = u32(frame.light_count.x);
     for (var i = 0u; i < count; i = i + 1u) {
-        let at = frame.lights[i * 2u];
+        let at = frame.lights[i * 3u];
         let to_light = at.xyz - in.world_position;
         let distance_to = length(to_light);
+        let toward = to_light / max(distance_to, 1e-4);
         let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
-        let facing = max(dot(normal, to_light / max(distance_to, 1e-4)), 0.0);
-        light = light + frame.lights[i * 2u + 1u].rgb * facing * reach * reach;
+        let facing = max(dot(normal, toward), 0.0);
+        // A spot: full inside the cone, fading over its last tenth.
+        let spot = frame.lights[i * 3u + 2u];
+        let along = dot(-toward, spot.xyz);
+        let edge = spot.w + (1.0 - spot.w) * 0.1;
+        let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
+        light = light + frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone;
     }
     var color = albedo * light;
 

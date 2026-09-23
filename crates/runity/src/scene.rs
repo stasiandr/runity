@@ -385,6 +385,11 @@ pub struct Light {
     pub intensity: f32,
     #[serde(default = "light_range")]
     pub range: f32,
+    /// A spot light instead: shines along the entity's +z in a cone this
+    /// many degrees across — a torch, a searchlight, headlights. Unity's
+    /// Spot Light.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub cone_deg: Option<f32>,
 }
 
 /// Bits given off from an entity and falling away — sparks over a fire,

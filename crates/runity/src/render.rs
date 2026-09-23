@@ -415,9 +415,10 @@ struct FrameUniform {
     /// shadows are on. The last one is what lets the shader skip the lookup
     /// without a second pipeline.
     shadow_params: [f32; 4],
-    /// Up to [`MAX_LIGHTS`] point lights, two vectors each: where and how
-    /// far it reaches, then its colour times its intensity.
-    lights: [[f32; 4]; MAX_LIGHTS * 2],
+    /// Up to [`MAX_LIGHTS`] lights, three vectors each: where and how far
+    /// it reaches; its colour times its intensity; for a spot, which way it
+    /// shines and the cosine of half its cone (−2 for every way).
+    lights: [[f32; 4]; MAX_LIGHTS * 3],
     /// How many of those are on, in `x`.
     light_count: [f32; 4],
 }
@@ -434,6 +435,9 @@ pub struct PointLight {
     /// Linear, already times its intensity.
     pub color: Vec3,
     pub range: f32,
+    /// For a spot light: which way it shines, and its cone, degrees
+    /// across. `None` shines every way.
+    pub spot: Option<(Vec3, f32)>,
 }
 
 /// One vertex's binding to the skeleton, in its own buffer.
@@ -1569,10 +1573,17 @@ impl Renderer {
                         .length_squared()
                         .total_cmp(&(b.position - eye).length_squared())
                 });
-                let mut out = [[0.0; 4]; MAX_LIGHTS * 2];
+                let mut out = [[0.0; 4]; MAX_LIGHTS * 3];
                 for (i, light) in near.iter().take(MAX_LIGHTS).enumerate() {
-                    out[i * 2] = extend(light.position, light.range.max(0.01));
-                    out[i * 2 + 1] = extend(light.color, 0.0);
+                    out[i * 3] = extend(light.position, light.range.max(0.01));
+                    out[i * 3 + 1] = extend(light.color, 0.0);
+                    out[i * 3 + 2] = match light.spot {
+                        Some((direction, cone)) => extend(
+                            direction.normalize_or_zero(),
+                            (cone.clamp(1.0, 179.0).to_radians() * 0.5).cos(),
+                        ),
+                        None => [0.0, 0.0, 0.0, -2.0],
+                    };
                 }
                 out
             },

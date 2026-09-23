@@ -71,10 +71,26 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
         position: Vec3::new(0.0, 1.0, 0.0),
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 3.0,
+        spot: None,
     };
     let lit = shoot(&gpu, &mut renderer, &target, vec![lamp]);
     let under = red(&lit, SIZE / 2, SIZE / 2);
     let edge = red(&lit, 2, 2);
     assert!(under > 100, "a pool under the lamp: {under}");
     assert!(edge < 5, "dark past its range: {edge}");
+
+    // A spot pointing down in a narrow cone: lit under it, dark beside it
+    // although well within its range.
+    let torch = PointLight {
+        position: Vec3::new(0.0, 2.0, 0.0),
+        color: Vec3::new(3.0, 1.0, 0.3),
+        range: 10.0,
+        spot: Some((Vec3::NEG_Y, 30.0)),
+    };
+    let lit = shoot(&gpu, &mut renderer, &target, vec![torch]);
+    let under = red(&lit, SIZE / 2, SIZE / 2);
+    // Two metres to the side, at the image's scale (the view is ~10 m wide).
+    let beside = red(&lit, SIZE / 2 + SIZE / 5, SIZE / 2);
+    assert!(under > 100, "lit under the torch: {under}");
+    assert!(beside < 5, "dark outside its cone: {beside}");
 }

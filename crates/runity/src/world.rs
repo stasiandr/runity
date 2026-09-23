@@ -760,6 +760,10 @@ pub fn build_frame_where(
                 color: glam::Vec3::new(linear(l.color.0), linear(l.color.1), linear(l.color.2))
                     * l.intensity.max(0.0),
                 range: l.range,
+                spot: l.cone_deg.map(|cone| {
+                    let (_, turn, _) = placed.0.to_scale_rotation_translation();
+                    (turn * glam::Vec3::Z, cone)
+                }),
             }
         })
         .collect();
