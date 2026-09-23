@@ -1644,6 +1644,7 @@ impl Session {
     ) -> EditResult<runity_import::assets::Renamed> {
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        self.refuse_if_locked_by_others(&project, from.as_ref())?;
         let renamed = runity_import::assets::rename(&project, from.as_ref(), to.as_ref())
             .map_err(|e| EditError::Import(format!("{e:#}")))?;
         // The open document itself — a prefab in Prefab Mode — moved.
@@ -1674,6 +1675,26 @@ impl Session {
         Ok(renamed)
     }
 
+    /// Refuse to move or delete a file someone else holds the Git LFS lock
+    /// on: they are editing it, and their push would bring it back or fail.
+    /// Where there is no LFS server to ask — no remote, no git-lfs — nothing
+    /// can be known, and nothing is refused.
+    fn refuse_if_locked_by_others(&self, project: &runity::Project, file: &Path) -> EditResult<()> {
+        let Ok(theirs) = history::others_locks(project.root()) else {
+            return Ok(());
+        };
+        let file = std::path::absolute(project.root().join(file)).unwrap_or_default();
+        for (path, lock) in theirs {
+            if std::path::absolute(&path).ok().as_ref() == Some(&file) {
+                return Err(EditError::Io(format!(
+                    "{} is locked by {} since {} — ask them, or wait for the unlock",
+                    lock.path, lock.owner, lock.locked_at
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Every line in the project that names this file: what a rename would
     /// change, and the answer to "can I delete this?".
     pub fn asset_usages(
@@ -1698,6 +1719,7 @@ impl Session {
         self.refuse_while_playing()?;
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         let file = file.as_ref();
+        self.refuse_if_locked_by_others(&project, file)?;
         if let Some(what) = runity_import::assets::reference(&project, file)
             .map_err(|e| EditError::Import(format!("{e:#}")))?
         {

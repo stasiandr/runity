@@ -20,8 +20,16 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
     std::fs::create_dir_all(&bin).unwrap();
     let log = root.join("git.log");
     let script = format!(
-        "#!/bin/sh\necho \"$@\" >> '{}'\nif [ \"$1 $2\" = \"lfs locks\" ]; then\n  echo '[{{\"id\":\"3\",\"path\":\"assets/rock.png\",\"owner\":{{\"name\":\"Ada\"}},\"locked_at\":\"2026-09-23T10:00:00Z\"}}]'\nfi\n",
-        log.display()
+        "#!/bin/sh\necho \"$@\" >> '{log}'\n\
+         if [ \"$1 $2 $3\" = \"lfs locks --verify\" ]; then\n\
+         \x20 echo '{{\"ours\":[],\"theirs\":[{{\"id\":\"4\",\"path\":\"materials/clay.rmat\",\"owner\":{{\"name\":\"Ana\"}},\"locked_at\":\"2026-09-23T11:00:00Z\"}}]}}'\n\
+         elif [ \"$1 $2\" = \"lfs locks\" ]; then\n\
+         \x20 echo '[{{\"id\":\"3\",\"path\":\"assets/rock.png\",\"owner\":{{\"name\":\"Ada\"}},\"locked_at\":\"2026-09-23T10:00:00Z\"}}]'\n\
+         elif [ \"$1\" = \"rev-parse\" ]; then\n\
+         \x20 echo '{root}'\n\
+         fi\n",
+        log = log.display(),
+        root = root.display()
     );
     let git = bin.join("git");
     std::fs::write(&git, script).unwrap();
@@ -51,4 +59,24 @@ fn the_editor_lists_locks_and_takes_and_gives_them_back() {
     let asked = std::fs::read_to_string(&log).unwrap();
     assert!(asked.contains("lfs lock tree.png"), "{asked}");
     assert!(asked.contains("lfs unlock tree.png"), "{asked}");
+
+    // A material someone else holds is not renamed or deleted from under them.
+    std::fs::write(root.join("materials/clay.rmat"), "(color: \"#b4643c\")\n").unwrap();
+    std::fs::write(root.join("materials/moss.rmat"), "(color: \"#4a5a3c\")\n").unwrap();
+    session.reload_assets();
+    let e = session
+        .rename_asset("materials/clay.rmat", "materials/terracotta.rmat")
+        .unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("materials/clay.rmat is locked by Ana"),
+        "{e}"
+    );
+    let e = session.delete_asset("materials/clay.rmat").unwrap_err();
+    assert!(e.to_string().contains("locked by Ana"), "{e}");
+    assert!(root.join("materials/clay.rmat").is_file());
+    // One nobody holds moves as before.
+    session
+        .rename_asset("materials/moss.rmat", "materials/lichen.rmat")
+        .unwrap();
 }
