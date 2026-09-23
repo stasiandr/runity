@@ -683,6 +683,17 @@ pub struct Override {
     pub physics: Option<BodyProps>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub layer: Option<String>,
+    /// A camera, a light, particles or a route set on the part — changed, or
+    /// added where the prefab has none. (Taking one away that the prefab
+    /// has is an edit of the prefab.)
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub camera: Option<Lens>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub light: Option<Light>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub particles: Option<Emitter>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
         default,
@@ -719,6 +730,18 @@ impl Override {
         if let Some(layer) = &self.layer {
             part.layer = layer.clone();
         }
+        if self.camera.is_some() {
+            part.camera = self.camera;
+        }
+        if self.light.is_some() {
+            part.light = self.light;
+        }
+        if self.particles.is_some() {
+            part.particles = self.particles;
+        }
+        if self.route.is_some() {
+            part.route = self.route.clone();
+        }
         for (name, value) in &self.components {
             part.components.insert(name.clone(), value.clone());
         }
@@ -737,6 +760,10 @@ impl Override {
             collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
             physics: differs(prefab.physics != edited.physics).map(|_| edited.physics),
             layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
+            camera: differs(prefab.camera != edited.camera).and(edited.camera),
+            light: differs(prefab.light != edited.light).and(edited.light),
+            particles: differs(prefab.particles != edited.particles).and(edited.particles),
+            route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
                 .iter()
@@ -761,6 +788,10 @@ impl Override {
             collider,
             physics,
             layer,
+            camera,
+            light,
+            particles,
+            route,
             components,
         } = later;
         self.name = name.or(self.name.take());
@@ -771,6 +802,10 @@ impl Override {
         self.collider = collider.or(self.collider);
         self.physics = physics.or(self.physics);
         self.layer = layer.or(self.layer.take());
+        self.camera = camera.or(self.camera);
+        self.light = light.or(self.light);
+        self.particles = particles.or(self.particles);
+        self.route = route.or(self.route.take());
         self.components.extend(components);
     }
 }

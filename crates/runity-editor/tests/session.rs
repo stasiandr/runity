@@ -3703,3 +3703,56 @@ fn a_lift_on_a_route_carries_what_stands_on_it() {
         "back where it was"
     );
 }
+
+#[test]
+fn an_instance_changes_its_part_s_light_and_the_others_keep_the_prefab_s() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "light-override",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    std::fs::write(
+        root_of(&path).join("prefabs/campfire.prefab"),
+        "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", light: (intensity: 1.0, range: 3.0))])\n",
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let (one, two): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
+    let part: EntityId = "c2".parse().unwrap();
+    let light = |s: &Session, id: EntityId| {
+        s.inspect(id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "light")
+            .unwrap()
+    };
+
+    session
+        .set_field(one.within(part), "light", "(intensity: 4.0, range: 3.0)")
+        .unwrap();
+    let mine = light(&session, one.within(part));
+    assert!(
+        mine.overridden && mine.value.contains("intensity:4.0"),
+        "{mine:?}"
+    );
+    let theirs = light(&session, two.within(part));
+    assert!(
+        !theirs.overridden && theirs.value.contains("intensity:1.0"),
+        "{theirs:?}"
+    );
+    let saved = session.scene().get(one).unwrap().overrides.clone();
+    assert!(saved.values().any(|o| o.light.is_some()));
+
+    assert!(session.apply_field(one.within(part), "light").unwrap());
+    assert!(
+        light(&session, two.within(part))
+            .value
+            .contains("intensity:4.0"),
+        "every fire now"
+    );
+}

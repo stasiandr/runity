@@ -91,6 +91,10 @@ fn take_field(
         "collider" => one.collider = from.collider.take(),
         "physics" => one.physics = from.physics.take(),
         "layer" => one.layer = from.layer.take(),
+        "camera" => one.camera = from.camera.take(),
+        "light" => one.light = from.light.take(),
+        "particles" => one.particles = from.particles.take(),
+        "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
                 if let Some(value) = from.components.remove(name) {
@@ -218,6 +222,10 @@ impl Session {
                 "collider" => o.collider.is_some(),
                 "physics" => o.physics.is_some(),
                 "layer" => o.layer.is_some(),
+                "camera" => o.camera.is_some(),
+                "light" => o.light.is_some(),
+                "particles" => o.particles.is_some(),
+                "route" => o.route.is_some(),
                 other => other
                     .strip_prefix("components.")
                     .is_some_and(|c| o.components.contains_key(c)),
