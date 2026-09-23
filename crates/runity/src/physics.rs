@@ -814,6 +814,69 @@ impl PhysicsWorld {
         found
     }
 
+    /// Everything a ray passes through, nearest first — Unity's
+    /// `RaycastAll`: every enemy a piercing shot goes through, every floor
+    /// under a point. Triggers are looked through.
+    pub fn cast_ray_all(&self, from: Vec3, direction: Vec3, max_distance: f32) -> Vec<RayHit> {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return Vec::new();
+        }
+        let ray = Ray::new(
+            point![from.x, from.y, from.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let mut hits = Vec::new();
+        self.queries.intersections_with_ray(
+            &self.bodies,
+            &self.colliders,
+            &ray,
+            max_distance,
+            true,
+            QueryFilter::default().exclude_sensors(),
+            |collider, hit| {
+                hits.push(RayHit {
+                    point: from + direction * hit.time_of_impact,
+                    distance: hit.time_of_impact,
+                    collider: ColliderRef(collider),
+                    entity: self.entity_of(collider),
+                });
+                true
+            },
+        );
+        hits.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        hits
+    }
+
+    /// Every entity whose shape overlaps a box — Unity's `OverlapBox`: what
+    /// is in a doorway, on a pressure plate's area, inside a room. `half`
+    /// is half its size on each axis, turned by `rotation`. Triggers are
+    /// left out; sorted.
+    pub fn overlap_box(&self, centre: Vec3, half: Vec3, rotation: glam::Quat) -> Vec<hecs::Entity> {
+        let cuboid = Cuboid::new(vector![half.x.max(0.0), half.y.max(0.0), half.z.max(0.0)]);
+        let at = Isometry::from_parts(
+            Translation::new(centre.x, centre.y, centre.z),
+            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                rotation.w, rotation.x, rotation.y, rotation.z,
+            )),
+        );
+        let mut found = Vec::new();
+        self.queries.intersections_with_shape(
+            &self.bodies,
+            &self.colliders,
+            &at,
+            &cuboid,
+            QueryFilter::default().exclude_sensors(),
+            |collider| {
+                found.extend(self.entity_of(collider));
+                true
+            },
+        );
+        found.sort();
+        found.dedup();
+        found
+    }
+
     /// The rapier body behind an entity, once it has been built.
     fn body_of(&self, world: &World, entity: hecs::Entity) -> Option<RigidBodyHandle> {
         world.get::<&BodyHandle>(entity).ok().map(|h| h.0)
@@ -1850,6 +1913,26 @@ mod tests {
         assert!(physics
             .overlap_sphere(Vec3::new(3.0, 5.0, 0.0), 0.5)
             .is_empty());
+
+        // A ray along the row goes through both, nearest first.
+        let all = physics.cast_ray_all(Vec3::new(-5.0, 0.5, 0.0), Vec3::X, 20.0);
+        let order: Vec<_> = all.iter().map(|h| h.entity).collect();
+        assert_eq!(order, [Some(near), Some(far)]);
+        assert!((all[0].distance - 4.5).abs() < 1e-3, "{}", all[0].distance);
+        // A box: a thin one between them overlaps nothing, turned along the
+        // row it reaches both.
+        assert!(physics
+            .overlap_box(
+                Vec3::new(3.0, 0.5, 0.0),
+                Vec3::new(0.2, 0.2, 3.0),
+                Quat::IDENTITY
+            )
+            .is_empty());
+        let turned = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        assert_eq!(
+            physics.overlap_box(Vec3::new(3.0, 0.5, 0.0), Vec3::new(0.2, 0.2, 3.0), turned),
+            both
+        );
     }
 
     #[test]
