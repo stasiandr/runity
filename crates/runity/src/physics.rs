@@ -2022,6 +2022,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_body_handed_over_in_flight_keeps_its_speed() {
+        // Its owner throws it along x at 6 m/s, high above the floor; the
+        // poses come in each step. Then it is handed to this peer.
+        let (mut physics, mut world, ball) = dropped(10.0);
+        let _ = world.insert_one(ball, crate::net::Replica);
+        physics.run(&mut world);
+        for step in 1..=20 {
+            world.get::<&mut Transform>(ball).unwrap().position.x = 0.1 * step as f32;
+            crate::world::apply_hierarchy(&mut world);
+            physics.run(&mut world);
+        }
+        let _ = world.remove_one::<crate::net::Replica>(ball);
+        physics.run(&mut world);
+        let speed = physics.velocity(&world, ball).unwrap();
+        assert!(
+            (speed.x - 6.0).abs() < 0.5,
+            "as fast as its owner threw it: {speed}"
+        );
+    }
+
     /// The one entity with this kind of body.
     fn the(world: &World, kind: Body) -> hecs::Entity {
         world
