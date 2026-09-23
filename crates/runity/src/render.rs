@@ -464,6 +464,8 @@ pub struct Frame {
     pub clear_color: Vec3,
     /// What is done to the finished frame: bloom, grading, tonemapping.
     pub post: crate::post::PostProcess,
+    /// Crevices and corners darkened: URP's SSAO.
+    pub ambient_occlusion: crate::ssao::AmbientOcclusion,
     pub draws: Vec<Draw>,
     /// Drawn after everything else with the depth test off, so they are
     /// never hidden by the scene.
@@ -491,6 +493,7 @@ impl Default for Frame {
             sky: Sky::default(),
             clear_color: Vec3::new(0.62, 0.68, 0.74),
             post: crate::post::PostProcess::default(),
+            ambient_occlusion: crate::ssao::AmbientOcclusion::default(),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
@@ -543,6 +546,9 @@ struct FrameUniform {
     /// are a different share of each cascade's depth range, and one number
     /// for all of them leaves one cascade shadowing itself.
     cascade_depth_bias: [f32; 4],
+    /// 1 when there is ambient occlusion to read; the share of the direct
+    /// light it darkens too.
+    ambient_occlusion: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -687,6 +693,7 @@ pub struct Renderer {
     /// The scene, in high dynamic range: multisampled, and resolved.
     scene: SceneTargets,
     post: crate::post::PostRenderer,
+    ssao: crate::ssao::SsaoRenderer,
     pose_layout: wgpu::BindGroupLayout,
     pose_bind_group: wgpu::BindGroup,
     poses: wgpu::Buffer,
@@ -860,6 +867,9 @@ struct Pipelines {
     shadow: wgpu::RenderPipeline,
     /// The shadow pass for what is cut out by its alpha.
     shadow_clip: wgpu::RenderPipeline,
+    /// Depth and normals of what is solid, for ambient occlusion: by
+    /// skinned and render face.
+    prepass: std::collections::HashMap<(bool, RenderFace), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
 }
@@ -1026,6 +1036,54 @@ fn build_pipelines(
         .into_iter()
         .map(|look| (look, scene_pipeline(look)))
         .collect();
+    let prepass_pipeline = |skinned: bool, face: RenderFace| {
+        let buffers = vertex_buffers(skinned);
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("runity::prepass"),
+                layout: Some(if skinned {
+                    layouts.skinned
+                } else {
+                    layouts.main
+                }),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(if skinned { "vs_skinned" } else { "vs" }),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs_normals"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(crate::ssao::NORMAL_FORMAT.into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: match face {
+                        RenderFace::Front => Some(wgpu::Face::Back),
+                        RenderFace::Back => Some(wgpu::Face::Front),
+                        RenderFace::Both => None,
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: crate::ssao::PREPASS_DEPTH,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    let mut prepass = std::collections::HashMap::new();
+    for skinned in [false, true] {
+        for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
+            prepass.insert((skinned, face), prepass_pipeline(skinned, face));
+        }
+    }
 
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
@@ -1172,6 +1230,7 @@ fn build_pipelines(
         scene,
         shadow,
         shadow_clip,
+        prepass,
         overlay,
         sky,
     }
@@ -1291,8 +1350,20 @@ impl Renderer {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                         count: None,
                     },
+                    // Ambient occlusion, read a texel per pixel.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             });
+        let ssao = crate::ssao::SsaoRenderer::new(gpu);
         let shadow_resolution = ShadowSettings::default().resolution;
         let (shadow_map, shadow_layers) = shadow_view(gpu, shadow_resolution);
         let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1305,8 +1376,14 @@ impl Renderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
-        let bind_group =
-            frame_bind_group(gpu, &layout, &frame_buffer, &shadow_map, &shadow_sampler);
+        let bind_group = frame_bind_group(
+            gpu,
+            &layout,
+            &frame_buffer,
+            &shadow_map,
+            &shadow_sampler,
+            &ssao.result,
+        );
 
         let texture_layout =
             gpu.device
@@ -1496,6 +1573,7 @@ impl Renderer {
             samples,
             scene: scene_targets(gpu, width, height, samples),
             post: crate::post::PostRenderer::new(gpu, format),
+            ssao,
             shadow_map,
             shadow_layers,
             casters,
@@ -1732,6 +1810,19 @@ impl Renderer {
         base: u32,
         textured: bool,
     ) {
+        self.draw_batches_with(pass, batches, base, textured, false);
+    }
+
+    /// [`Renderer::draw_batches`], in the depth-and-normals prepass when
+    /// `prepass`.
+    fn draw_batches_with<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        batches: &[(BatchKey, Vec<InstanceRaw>)],
+        base: u32,
+        textured: bool,
+        prepass: bool,
+    ) {
         let mut first = base;
         let mut current: Option<Look> = None;
         for ((look, handle, texture), list) in batches {
@@ -1742,7 +1833,12 @@ impl Renderer {
             };
             if let Some(look) = look {
                 if current != Some(*look) {
-                    if let Some(pipeline) = self.pipelines.scene.get(look) {
+                    let pipeline = if prepass {
+                        self.pipelines.prepass.get(&(look.skinned, look.face))
+                    } else {
+                        self.pipelines.scene.get(look)
+                    };
+                    if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
                         pass.set_bind_group(0, &self.bind_group, &[]);
                     }
@@ -1778,6 +1874,7 @@ impl Renderer {
 
     /// One draw on its own: a skinned one (its own pose) or a transparent
     /// one (its own place in the back-to-front order).
+    #[allow(clippy::too_many_arguments)]
     fn draw_single<'pass>(
         &'pass self,
         pass: &mut wgpu::RenderPass<'pass>,
@@ -1786,11 +1883,17 @@ impl Renderer {
         texture: TextureHandle,
         pose: u32,
         instance: u32,
+        prepass: bool,
     ) {
         let Some(mesh) = self.meshes.get(mesh.0 as usize) else {
             return;
         };
-        let Some(pipeline) = self.pipelines.scene.get(&look) else {
+        let pipeline = if prepass {
+            self.pipelines.prepass.get(&(look.skinned, look.face))
+        } else {
+            self.pipelines.scene.get(&look)
+        };
+        let Some(pipeline) = pipeline else {
             return;
         };
         pass.set_pipeline(pipeline);
@@ -2022,6 +2125,16 @@ impl Renderer {
             self.scene = scene_targets(gpu, width, height, self.samples);
             self.depth_size = (width, height);
         }
+        if self.ssao.resize(gpu, (width, height)) {
+            self.bind_group = frame_bind_group(
+                gpu,
+                &self.layout,
+                &self.frame_buffer,
+                &self.shadow_map,
+                &self.shadow_sampler,
+                &self.ssao.result,
+            );
+        }
 
         if frame.shadows.enabled && self.shadow_resolution != frame.shadows.resolution {
             self.shadow_resolution = frame.shadows.resolution.max(1);
@@ -2032,6 +2145,7 @@ impl Renderer {
                 &self.frame_buffer,
                 &self.shadow_map,
                 &self.shadow_sampler,
+                &self.ssao.result,
             );
         }
 
@@ -2144,6 +2258,19 @@ impl Renderer {
             cascade_spheres,
             cascade_bias,
             cascade_depth_bias,
+            ambient_occlusion: [
+                if frame.ambient_occlusion.enabled {
+                    1.0
+                } else {
+                    0.0
+                },
+                frame
+                    .ambient_occlusion
+                    .direct_lighting_strength
+                    .clamp(0.0, 1.0),
+                0.0,
+                0.0,
+            ],
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -2341,6 +2468,49 @@ impl Renderer {
             }
         }
 
+        // Ambient occlusion: the solid things' depth and normals, and the
+        // occlusion made from them, before the lit pass reads it.
+        if frame.ambient_occlusion.enabled {
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("runity::prepass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.ssao.normals,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.ssao.depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
+                let mut instance = shadow_total + batched_total;
+                for (look, mesh, texture, pose, _) in &singles {
+                    self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
+                    instance += 1;
+                }
+            }
+            self.ssao.run(
+                gpu,
+                &mut encoder,
+                frame.camera.view_projection(aspect),
+                frame.camera.apparent_eye(),
+                &frame.ambient_occlusion,
+            );
+        }
+
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("runity::render"),
@@ -2381,7 +2551,7 @@ impl Renderer {
             self.draw_batches(&mut pass, &batches, shadow_total, true);
             let mut instance = shadow_total + batched_total;
             for (look, mesh, texture, pose, _) in &singles {
-                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance);
+                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
             }
             // The sky last among what is solid: only where nothing was
@@ -2392,7 +2562,7 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
             for (_, look, mesh, texture, pose, _) in &transparent {
-                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance);
+                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
             }
         }
@@ -2535,6 +2705,7 @@ fn frame_bind_group(
     frame_buffer: &wgpu::Buffer,
     shadow_map: &wgpu::TextureView,
     shadow_sampler: &wgpu::Sampler,
+    occlusion: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
@@ -2551,6 +2722,10 @@ fn frame_bind_group(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: wgpu::BindingResource::Sampler(shadow_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(occlusion),
             },
         ],
     })

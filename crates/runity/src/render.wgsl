@@ -38,6 +38,9 @@ struct Frame {
     cascade_bias: vec4<f32>,
     // Each cascade's depth bias, in its own map's depth.
     cascade_depth_bias: vec4<f32>,
+    // 1 when there is ambient occlusion to read; the share of the direct
+    // light it darkens too
+    ambient_occlusion: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -45,6 +48,8 @@ struct Frame {
 // A comparison sampler: the hardware does the depth test and the bilinear
 // filter in one fetch, so every tap is already a 2x2 average.
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
+// Ambient occlusion, a texel per pixel (ssao.wgsl).
+@group(0) @binding(4) var occlusion: texture_2d<f32>;
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -336,8 +341,15 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     if (flags & 4u) != 0u {
         shadow = sunlight(in.world_position, normal);
     }
+    // Ambient occlusion darkens the light from all around, and a share of
+    // the direct light too (URP's Direct Lighting Strength).
+    var ao = 1.0;
+    if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
+        ao = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0).r;
+    }
+    let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)
-        * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow;
+        * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
 
     // Point and spot lights: facing it, and fading to nothing at its range
     // — squared, so the edge of the pool is soft rather than a ring.
@@ -355,20 +367,20 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let edge = spot.w + (1.0 - spot.w) * 0.1;
         let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
         color = color + direct(b, normal, toward, to_eye, highlights)
-            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone;
+            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone * direct_ao;
     }
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
     // bounce off the ground. A single constant here is what makes every
     // shaded surface in a scene the same dead colour.
     let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5);
-    color = color + b.diffuse * ambient;
+    color = color + b.diffuse * ambient * ao;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
         let fresnel = pow(1.0 - n_v, 4.0);
         let reduction = 1.0 / (b.roughness2 + 1.0);
         let reflected = environment(reflect(-to_eye, normal), b.perceptual_roughness);
-        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel);
+        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao;
     }
     color = color + in.emission.rgb;
 
@@ -384,6 +396,17 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         out = out * alpha;
     }
     return vec4<f32>(out, alpha);
+}
+
+/// The depth-and-normals prepass for ambient occlusion: the world normal of
+/// what is solid, cut out where the surface is.
+@fragment
+fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let alpha = in.surface.z * textureSample(surface_texture, surface_sampler, in.uv).a;
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
 }
 
 /// The greybox surface: a line every metre and alternate metres a shade

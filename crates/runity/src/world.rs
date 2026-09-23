@@ -688,6 +688,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(post) = scene.post {
         frame.post = post;
     }
+    if let Some(ambient_occlusion) = scene.ambient_occlusion {
+        frame.ambient_occlusion = ambient_occlusion;
+    }
 }
 
 /// The camera a scene's view describes.
@@ -881,6 +884,7 @@ pub fn build_frame_where(
         lights,
         poses,
         post: Default::default(),
+        ambient_occlusion: Default::default(),
     }
 }
 

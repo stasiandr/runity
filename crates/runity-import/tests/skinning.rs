@@ -36,6 +36,7 @@ fn shoot(
             ..Default::default()
         },
         post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 1.0, 5.0),
             target: Vec3::new(0.0, 1.0, 0.0),

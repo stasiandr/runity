@@ -1146,6 +1146,10 @@ pub struct Scene {
     /// tonemapping. The engine's defaults when the file does not say.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub post: Option<crate::post::PostProcess>,
+    /// Crevices darkened — URP's SSAO. The engine's defaults when the file
+    /// does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub ambient_occlusion: Option<crate::ssao::AmbientOcclusion>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1340,6 +1344,7 @@ mod tests {
             },
             fog: Fog::default(),
             sky: None,
+            ambient_occlusion: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()

@@ -35,6 +35,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
             ..Default::default()
         },
         post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 3.0, 0.0),
             target: Vec3::ZERO,
