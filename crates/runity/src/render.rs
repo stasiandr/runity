@@ -895,8 +895,6 @@ pub struct Renderer {
     /// Materials' own `surface` functions, by id: built again whenever the
     /// standard shader is reloaded.
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
-    /// Since when the renderer has run: the time a material's shader sees.
-    began: std::time::Instant,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -2398,7 +2396,6 @@ impl Renderer {
             pipelines,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
-            began: std::time::Instant::now(),
             layout,
             bind_group,
             shadow_bind_group,
