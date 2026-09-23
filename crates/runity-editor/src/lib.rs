@@ -2051,6 +2051,7 @@ impl Session {
             match material.shading {
                 runity::Shading::Unlit => ", unlit: true",
                 runity::Shading::Grid => ", grid: true",
+                runity::Shading::Water => ", water: true",
                 runity::Shading::Lit => "",
             }
         );

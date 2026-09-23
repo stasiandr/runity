@@ -629,6 +629,9 @@ struct FrameUniform {
     air: [f32; 4],
     /// Wetness, puddles, snow, rain; snowfall.
     weather: [[f32; 4]; 2],
+    /// Up to four water surfaces, two vectors each: height and 1 when
+    /// there; the rectangle it covers (min x, min z, max x, max z).
+    waters: [[f32; 4]; 8],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -694,6 +697,7 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         Shading::Lit => 0.0,
         Shading::Unlit => 1.0,
         Shading::Grid => 2.0,
+        Shading::Water => 3.0,
     };
     let mut flags = 0;
     if material.specular_highlights {
@@ -711,16 +715,26 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
     InstanceRaw {
         model: transform.to_cols_array_2d(),
         color_and_shading: extend(material.color(), shading),
-        surface: [
-            material.metallic.clamp(0.0, 1.0),
-            material.smoothness.clamp(0.0, 1.0),
-            if material.is_transparent() || material.alpha_clip > 0.0 {
-                material.alpha.clamp(0.0, 1.0)
-            } else {
-                1.0
-            },
-            material.alpha_clip.clamp(0.0, 1.0),
-        ],
+        // Water reads its own: how far down one sees, and its foam.
+        surface: if material.shading == Shading::Water {
+            [
+                material.clarity.max(0.05),
+                material.foam.clamp(0.0, 1.0),
+                1.0,
+                0.0,
+            ]
+        } else {
+            [
+                material.metallic.clamp(0.0, 1.0),
+                material.smoothness.clamp(0.0, 1.0),
+                if material.is_transparent() || material.alpha_clip > 0.0 {
+                    material.alpha.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                },
+                material.alpha_clip.clamp(0.0, 1.0),
+            ]
+        },
         emission: [
             material.emission[0].max(0.0),
             material.emission[1].max(0.0),
@@ -849,6 +863,8 @@ pub struct Renderer {
     started: std::time::Instant,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
+    /// One texel of depth, bound in place of the prepass's while it draws.
+    blank_depth: wgpu::TextureView,
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
@@ -982,6 +998,8 @@ struct Look {
     face: RenderFace,
     /// `None` is opaque.
     blend: Option<Blend>,
+    /// Water, drawn by its own fragment shader.
+    water: bool,
 }
 
 impl Look {
@@ -1000,18 +1018,40 @@ impl Look {
                         skinned,
                         face,
                         blend,
+                        water: false,
                     });
                 }
             }
+        }
+        for face in [RenderFace::Front, RenderFace::Both] {
+            out.push(Look {
+                skinned: false,
+                face,
+                blend: Some(Blend::Premultiply),
+                water: true,
+            });
         }
         out
     }
 
     fn of(material: &Material, skinned: bool) -> Look {
+        if material.shading == Shading::Water {
+            return Look {
+                skinned: false,
+                face: if material.render_face == RenderFace::Both {
+                    RenderFace::Both
+                } else {
+                    RenderFace::Front
+                },
+                blend: Some(Blend::Premultiply),
+                water: true,
+            };
+        }
         Look {
             skinned,
             face: material.render_face,
             blend: material.is_transparent().then_some(material.blend),
+            water: false,
         }
     }
 }
@@ -1161,7 +1201,7 @@ fn build_pipelines(
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if look.water { "fs_water" } else { "fs" }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -1690,6 +1730,18 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The solid scene's depth, from the prepass: what water sees
+            // under itself.
+            wgpu::BindGroupLayoutEntry {
+                binding: 20,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             wgpu::BindGroupLayoutEntry {
                 binding: 19,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -1778,6 +1830,7 @@ impl Renderer {
             gpu,
             &layout,
             &FrameInputs {
+                scene_depth: &ssao.depth,
                 sky_view: &atmosphere.sky_view,
                 aerial: &atmosphere.aerial,
                 fog: &volumes.integrated,
@@ -2044,6 +2097,23 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             atmosphere,
+            blank_depth: gpu
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("no depth"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: crate::ssao::PREPASS_DEPTH,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default()),
         };
         renderer.rebind(gpu);
 
@@ -2063,14 +2133,19 @@ impl Renderer {
         self.fog_bind_group = self.frame_group(gpu, true);
     }
 
-    /// The frame's bind group; with `making_fog`, the fog's grid left out,
-    /// for the passes that fill it.
+    /// The frame's bind group; with `making_fog`, the fog's grid and the
+    /// prepass's depth left out, for the passes that fill them.
     fn frame_group(&self, gpu: &Gpu, making_fog: bool) -> wgpu::BindGroup {
         let baking = self.reflections.baking;
         frame_bind_group(
             gpu,
             &self.layout,
             &FrameInputs {
+                scene_depth: if making_fog {
+                    &self.blank_depth
+                } else {
+                    &self.ssao.depth
+                },
                 sky_view: &self.atmosphere.sky_view,
                 aerial: &self.atmosphere.aerial,
                 fog: if making_fog {
@@ -2405,7 +2480,7 @@ impl Renderer {
                     };
                     if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
-                        pass.set_bind_group(0, &self.bind_group, &[]);
+                        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
                     }
                     current = Some(*look);
                 }
@@ -2418,6 +2493,16 @@ impl Renderer {
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
             first += count;
+        }
+    }
+
+    /// The frame's bind group — or, for the prepass, the one without the
+    /// prepass's own depth in it, which the prepass is drawing.
+    fn frame_group_for(&self, prepass: bool) -> &wgpu::BindGroup {
+        if prepass {
+            &self.fog_bind_group
+        } else {
+            &self.bind_group
         }
     }
 
@@ -2453,7 +2538,7 @@ impl Renderer {
             return;
         };
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, texture);
         pass.set_vertex_buffer(0, mesh.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -3056,6 +3141,23 @@ impl Renderer {
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
             weather: frame.weather.uniform(),
+            waters: {
+                let mut out = [[0.0f32; 4]; 8];
+                let planes = frame
+                    .draws
+                    .iter()
+                    .filter(|d| d.material.shading == Shading::Water)
+                    .filter_map(|d| {
+                        let bounds = self.meshes.get(d.mesh.0 as usize)?.bounds;
+                        Some(world_box(bounds, d.transform))
+                    })
+                    .take(4);
+                for (i, (min, max)) in planes.enumerate() {
+                    out[i * 2] = [max.y, 1.0, 0.0, 0.0];
+                    out[i * 2 + 1] = [min.x, min.z, max.x, max.z];
+                }
+                out
+            },
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3412,7 +3514,12 @@ impl Renderer {
         let ssao_on = frame.ambient_occlusion.enabled && !traced_occlusion;
         // The lens reads the same depth.
         let lens_on = crate::lens::LensRenderer::wanted(&frame.post);
-        if ssao_on || lens_on {
+        // Water reads it too: how deep it is below its surface.
+        let water_on = frame
+            .draws
+            .iter()
+            .any(|d| d.material.shading == Shading::Water);
+        if ssao_on || lens_on || water_on {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -3619,6 +3726,24 @@ fn frustum_planes(view_projection: Mat4) -> [glam::Vec4; 6] {
 /// Conservative: it tests the box's worst corner against each plane, so it
 /// keeps some things that are just outside. Keeping a thing that cannot be
 /// seen costs a draw; dropping one that can costs a hole.
+/// A mesh's box, placed: the world box round its eight corners.
+fn world_box(bounds: crate::asset::Bounds, transform: Mat4) -> (Vec3, Vec3) {
+    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        let p = transform.transform_point3(corner);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
 fn aabb_in_frustum(
     planes: &[glam::Vec4; 6],
     bounds: crate::asset::Bounds,
@@ -3697,6 +3822,7 @@ struct FrameInputs<'a> {
     fog_sampler: &'a wgpu::Sampler,
     sky_view: &'a wgpu::TextureView,
     aerial: &'a wgpu::TextureView,
+    scene_depth: &'a wgpu::TextureView,
 }
 
 fn frame_bind_group(
@@ -3744,6 +3870,7 @@ fn frame_bind_group(
         },
         view(18, inputs.sky_view),
         view(19, inputs.aerial),
+        view(20, inputs.scene_depth),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

@@ -813,6 +813,16 @@ pub struct MaterialSource {
     /// The metre grid on it: a greybox surface. Lit, so not with `unlit`.
     #[serde(default)]
     pub grid: bool,
+    /// Water: waves, reflections, the colour of its depth, foam at the
+    /// shore. `color` is the deep water's, `wind` the waves.
+    #[serde(default)]
+    pub water: bool,
+    /// For water: metres one sees down through it.
+    #[serde(default = "clear_water")]
+    pub clarity: f32,
+    /// For water: foam where it meets the shore, 0 to 1.
+    #[serde(default = "one")]
+    pub foam: f32,
     /// URP Lit's properties, with its names; what is not said is a matte
     /// opaque surface (see [`Material`]).
     #[serde(default)]
@@ -956,6 +966,9 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
     Ok(Some(settings.asset_id()))
 }
 
+fn clear_water() -> f32 {
+    3.0
+}
 fn one() -> f32 {
     1.0
 }
@@ -981,14 +994,15 @@ pub fn material_from_ron(
             .unwrap_or_else(|| "material".into()),
         material: Material {
             base_color: source.color.linear()?,
-            shading: match (source.unlit, source.grid) {
-                (true, true) => anyhow::bail!(
-                    "{}: unlit and grid at once — a grid is drawn on a lit surface; pick one",
+            shading: match (source.unlit, source.grid, source.water) {
+                (false, false, false) => Shading::Lit,
+                (true, false, false) => Shading::Unlit,
+                (false, true, false) => Shading::Grid,
+                (false, false, true) => Shading::Water,
+                _ => anyhow::bail!(
+                    "{}: more than one of unlit, grid and water — pick one",
                     path.display()
                 ),
-                (true, false) => Shading::Unlit,
-                (false, true) => Shading::Grid,
-                (false, false) => Shading::Lit,
             },
             metallic: source.metallic,
             smoothness: source.smoothness,
@@ -1014,6 +1028,16 @@ pub fn material_from_ron(
             offset: source.offset,
             wind: source.wind.max(0.0),
             translucency: source.translucency.clamp(0.0, 1.0),
+            clarity: if source.water {
+                source.clarity.max(0.05)
+            } else {
+                0.0
+            },
+            foam: if source.water {
+                source.foam.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
         },
     })
 }

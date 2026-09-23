@@ -80,6 +80,9 @@ struct Frame {
     air: vec4<f32>,
     // weather.rs: wetness, puddles, snow, rain; snowfall
     weather: array<vec4<f32>, 2>,
+    // up to four water surfaces: height and 1 when there; the rectangle
+    // it covers (min x, min z, max x, max z)
+    waters: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -143,6 +146,8 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 // cell of a grid over the view, what the air adds and lets through.
 @group(0) @binding(18) var sky_view: texture_2d<f32>;
 @group(0) @binding(19) var aerial: texture_3d<f32>;
+// The solid scene's depth, from the prepass: what water sees under itself.
+@group(0) @binding(20) var scene_depth: texture_depth_2d;
 
 /// The physical sky the way `direction` looks: its table's azimuth
 /// across, latitude up, squeezed towards the horizon as it was filled.
@@ -1019,6 +1024,12 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             shadow = sunlight(in.world_position, normal);
         }
     }
+    // Under water: the sun comes down as caustics, dimmer the deeper.
+    let submerged = under_water(in.world_position);
+    if submerged > 0.0 {
+        let pattern = caustics(in.world_position.xz, frame.foliage.wind.w);
+        shadow *= (0.35 + 1.8 * pattern) * exp(-submerged * 0.35);
+    }
     // Ambient occlusion darkens the light from all around, and a share of
     // the direct light too (URP's Direct Lighting Strength).
     var ao = 1.0;
@@ -1207,6 +1218,106 @@ fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
     let light = frame.sky_color.rgb * 1.5 + frame.sun_color.rgb * 0.15;
     let rgb = light * cover + (light * 0.6 + vec3<f32>(0.25)) * snow_cover;
     return vec4<f32>(rgb, clamp(cover * 0.3 + snow_cover * 0.8, 0.0, 1.0));
+}
+
+/// How deep a point lies under the water above it, if any, in metres.
+fn under_water(p: vec3<f32>) -> f32 {
+    var depth = 0.0;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let top = frame.waters[i * 2u];
+        let area = frame.waters[i * 2u + 1u];
+        if top.y > 0.5 && p.y < top.x && p.x > area.x && p.z > area.y && p.x < area.z && p.z < area.w {
+            depth = max(depth, top.x - p.y);
+        }
+    }
+    return depth;
+}
+
+/// Caustics: the sun's light gathered into dancing lines by the waves
+/// above — a warped web, brighter where its strands cross.
+fn caustics(p: vec2<f32>, t: f32) -> f32 {
+    var q = p * 1.8;
+    for (var i = 0; i < 3; i = i + 1) {
+        let fi = f32(i);
+        q = q + vec2<f32>(sin(q.y * 1.3 + t * 0.9 + fi * 1.7), sin(q.x * 1.1 - t * 0.8 + fi * 2.3)) * 0.45;
+    }
+    let lines = abs(sin(q.x) * sin(q.y));
+    return pow(1.0 - lines, 6.0);
+}
+
+/// The water's surface: a few long waves running with the wind and
+/// shorter ones across them, as a slope; `height` scales them all.
+fn water_normal(p: vec2<f32>, t: f32, height: f32) -> vec3<f32> {
+    let wind = select(vec2<f32>(1.0, 0.0), normalize(frame.foliage.wind.xy), length(frame.foliage.wind.xy) > 0.0);
+    var slope = vec2<f32>(0.0);
+    for (var i = 0; i < 5; i = i + 1) {
+        let fi = f32(i);
+        let turn = (fi - 2.0) * 0.7 + sin(fi * 2.4) * 0.3;
+        let d = vec2<f32>(wind.x * cos(turn) - wind.y * sin(turn), wind.x * sin(turn) + wind.y * cos(turn));
+        let k = 1.1 * pow(1.83, fi);
+        let a = 0.03 / pow(1.8, fi);
+        let phase = dot(d, p) * k - t * sqrt(9.8 * k);
+        slope += d * (a * k * cos(phase));
+    }
+    // Fine ripples on top.
+    let fine = vec2<f32>(value_noise(p * 6.0 + t * 0.7), value_noise(p * 6.0 - t * 0.6 + 7.3)) - 0.5;
+    slope = (slope + fine * 0.025) * height;
+    return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
+}
+
+// Water: waves reflecting the sky and what is round, the colour of the
+// depth beneath, foam at the shore. What is under it shows through: this
+// is blended, premultiplied, over the solid scene already drawn, and how
+// much of that shows is how deep the water is there — read from the
+// prepass's depth.
+@fragment
+fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
+    let t = frame.foliage.wind.w;
+    let p = in.world_position;
+    let waves = max(in.detail.z, 0.0) * max(frame.foliage.wind.z, 0.2);
+    let n = water_normal(p.xz, t, waves);
+    let to_eye = normalize(frame.camera_position.xyz - p);
+    let to_sun = -normalize(frame.sun_direction.xyz);
+
+    // How deep it is here: from the surface down to what the solid scene
+    // has under this pixel, along the view.
+    let d = textureLoad(scene_depth, vec2<i32>(in.clip_position.xy), 0);
+    let near = frame.cluster_depth.x;
+    let far = near * exp(frame.cluster_depth.y);
+    let behind = near * far / (far - d * (far - near));
+    let here = -dot(frame.view_depth, vec4<f32>(p, 1.0));
+    let below = max(behind - here, 0.0) * max(to_eye.y, 0.2);
+    let clarity = max(in.surface.x, 0.05);
+    let murk = 1.0 - exp(-below / clarity);
+
+    let fresnel = 0.02 + 0.98 * pow(1.0 - max(dot(n, to_eye), 0.0), 5.0);
+    let shadow = sunlight(p, vec3<f32>(0.0, 1.0, 0.0));
+    let body = in.base_color * (frame.sky_color.rgb + frame.sun_color.rgb * max(to_sun.y, 0.0) * 0.35 * shadow);
+    let mirrored = reflected(p, reflect(-to_eye, n), 0.03);
+    let glint = pow(max(dot(n, normalize(to_sun + to_eye)), 0.0), 600.0) * 30.0 * frame.sun_color.rgb * shadow;
+
+    var rgb = body * murk * (1.0 - fresnel) + mirrored * fresnel + glint;
+    var alpha = clamp(murk * (1.0 - fresnel) + fresnel, 0.0, 1.0);
+
+    // Foam where it is shallow, broken up.
+    let lace = value_noise(p.xz * 2.2 + vec2<f32>(t * 0.25, -t * 0.2)) * 0.6
+        + value_noise(p.xz * 6.5 - vec2<f32>(t * 0.3, t * 0.1)) * 0.4;
+    let edge = 1.0 - smoothstep(0.0, 0.22, below);
+    let foam = in.surface.y * edge * smoothstep(0.55 - edge * 0.35, 0.8 - edge * 0.2, lace);
+    let foam_light = (frame.sky_color.rgb + frame.sun_color.rgb * max(to_sun.y, 0.0) * shadow) * 0.85;
+    rgb = mix(rgb, foam_light, foam);
+    alpha = max(alpha, foam);
+
+    // Through the air and the fog in front of it, as a premultiplied colour:
+    // what they add counts only as much as the water covers.
+    let distance = length(p - frame.camera_position.xyz);
+    let air0 = through_air(vec3<f32>(0.0), in.clip_position.xy, distance);
+    let air1 = through_air(vec3<f32>(1.0), in.clip_position.xy, distance) - air0;
+    rgb = rgb * air1 + air0 * alpha;
+    let fog0 = through_fog(vec3<f32>(0.0), in.clip_position.xy, here);
+    let fog1 = through_fog(vec3<f32>(1.0), in.clip_position.xy, here) - fog0;
+    rgb = rgb * fog1 + fog0 * alpha;
+    return vec4<f32>(rgb, alpha);
 }
 
 /// One triangle over the screen, on the far plane.

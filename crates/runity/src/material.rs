@@ -45,6 +45,12 @@ pub enum Shading {
     /// scale, so a corridor reads as three metres wide without measuring
     /// it. Unity's prototyping materials, without a texture or UVs.
     Grid,
+    /// Water: a surface of waves reflecting the sky and what is round it,
+    /// the colour of its depth below, foam where it meets the shore. Its
+    /// `base_color` is the deep water's, `wind` how high the waves run,
+    /// `clarity` how far down one sees, `foam` how much there is. Put on a
+    /// level plane, transparent. See `water.rs`'s notes in the shader.
+    Water,
 }
 
 /// Whether a surface hides what is behind it: URP's Surface Type.
@@ -213,6 +219,12 @@ pub struct Material {
     /// blade of grass, a paper lantern.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub translucency: f32,
+    /// For [`Shading::Water`]: metres one sees down through it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub clarity: f32,
+    /// For [`Shading::Water`]: how much foam where it meets the shore, 0 to 1.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub foam: f32,
 }
 
 fn no_tiling() -> [f32; 2] {
@@ -279,6 +291,8 @@ impl Material {
             offset: [0.0, 0.0],
             wind: 0.0,
             translucency: 0.0,
+            clarity: 0.0,
+            foam: 0.0,
         }
     }
 
@@ -296,7 +310,7 @@ impl Material {
 
     /// Whether it is blended over what is behind it.
     pub fn is_transparent(&self) -> bool {
-        self.surface == SurfaceType::Transparent
+        self.surface == SurfaceType::Transparent || self.shading == Shading::Water
     }
 
     /// Build a material from the sRGB bytes a colour picker gives you.
@@ -338,6 +352,7 @@ impl From<&ArchivedMaterial> for Material {
                 ArchivedShading::Unlit => Shading::Unlit,
                 ArchivedShading::Lit => Shading::Lit,
                 ArchivedShading::Grid => Shading::Grid,
+                ArchivedShading::Water => Shading::Water,
             },
             metallic: archived.metallic.to_native(),
             smoothness: archived.smoothness.to_native(),
@@ -384,6 +399,8 @@ impl From<&ArchivedMaterial> for Material {
             ],
             wind: archived.wind.to_native(),
             translucency: archived.translucency.to_native(),
+            clarity: archived.clarity.to_native(),
+            foam: archived.foam.to_native(),
         }
     }
 }
