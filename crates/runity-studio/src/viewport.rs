@@ -18,9 +18,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    canvas, div, prelude::*, Bounds, Context, Corners, FocusHandle, Focusable, KeyDownEvent,
-    KeyUpEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, RenderImage, ScrollDelta,
-    ScrollWheelEvent, Window,
+    canvas, div, prelude::*, Bounds, Context, Corners, Entity, FocusHandle, Focusable,
+    KeyDownEvent, KeyUpEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, RenderImage,
+    ScrollDelta, ScrollWheelEvent, Window,
 };
 use image::{Frame, RgbaImage};
 use runity::glam::Vec2;
@@ -28,10 +28,15 @@ use runity::input::{Input, InputEvent};
 use runity_editor::Session;
 
 use crate::keys;
+use crate::theme::RADIUS_MD;
 
-/// The document, and the view onto it.
+/// The view onto the document the window has open.
 pub struct SceneView {
-    session: Session,
+    /// Shared with the panels: what this view does to it, they show.
+    session: Entity<Session>,
+    /// What the panels last saw, so that they are told only when there is
+    /// something new to show rather than once a frame.
+    seen: Option<Stamp>,
     /// This frame's input, filled by the window's events and drained by
     /// [`Session::scene_view`] once a frame.
     input: Input,
@@ -51,9 +56,10 @@ pub struct SceneView {
 }
 
 impl SceneView {
-    pub fn new(session: Session, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         Self {
             session,
+            seen: None,
             input: Input::new(),
             focus: cx.focus_handle(),
             bounds: Bounds::default(),
@@ -73,34 +79,95 @@ impl SceneView {
 
     /// Run one frame: size the session to the view, let it do what the
     /// input asks, and read the picture back.
-    fn frame(&mut self, bounds: Bounds<Pixels>, window: &mut Window, _cx: &mut Context<Self>) {
+    fn frame(&mut self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
         self.bounds = bounds;
         self.scale = window.scale_factor();
         let width = ((f32::from(bounds.size.width) * self.scale).round() as u32).max(1);
         let height = ((f32::from(bounds.size.height) * self.scale).round() as u32).max(1);
-        if self.session.size() != (width, height) {
-            self.session.resize(width, height);
-        }
 
         let dt = self.drawn.elapsed().as_secs_f32().min(0.1);
         self.drawn = Instant::now();
-        // What it refuses it says in the Console; there is nothing for the
-        // window to do about it here.
-        let _ = self.session.scene_view(&self.input, dt);
+        let input = &self.input;
+        let seen = self.seen.take();
+        let (image, stamp) = self.session.update(cx, |session, cx| {
+            if session.size() != (width, height) {
+                session.resize(width, height);
+            }
+            // What it refuses it says in the Console; there is nothing for
+            // the window to do about it here.
+            let _ = session.scene_view(input, dt);
+            session.render();
+            let image = bgra_image(session.frame_pixels(), width, height).map(Arc::new);
+            // The panels hear about it when what they show has changed —
+            // or all the time while something moves under them: a drag, a
+            // game being played.
+            let stamp = Stamp::of(session);
+            if seen.as_ref() != Some(&stamp) || session.is_dragging() || session.is_playing() {
+                cx.notify();
+            }
+            (image, stamp)
+        });
+        self.seen = Some(stamp);
         self.input.begin_frame();
 
-        self.session.render();
         // The frame that was on screen until now: its tile is free the
         // moment this one replaces it.
         if let Some(previous) = self.image.take() {
             let _ = window.drop_image(previous);
         }
-        self.image = bgra_image(self.session.frame_pixels(), width, height).map(Arc::new);
+        self.image = image;
 
         // The Scene view is a running picture — settlers walk, emitters
         // spray, a flythrough keeps flying — so the next frame is asked for
         // whether or not anything was clicked.
         window.request_animation_frame();
+    }
+
+    /// The keyboard's way in: a panel that is not the Scene view but wants
+    /// its shortcuts (the Hierarchy: Delete, F, Ctrl Z) hands it here.
+    pub fn focus(&self, window: &mut Window, cx: &mut gpui::App) {
+        window.focus(&self.focus, cx);
+    }
+}
+
+/// What the panels show, in brief: when it is the same as last frame's,
+/// they are not asked to draw again.
+#[derive(PartialEq)]
+struct Stamp {
+    selection: Vec<runity::EntityId>,
+    steps: usize,
+    redo: Option<String>,
+    entities: usize,
+    console: (usize, usize, usize),
+    lines: usize,
+    tool: runity::gizmo::Tool,
+    playing: bool,
+    paused: bool,
+    hidden: usize,
+    isolated: usize,
+    grid: bool,
+    space: bool,
+    pivot: bool,
+}
+
+impl Stamp {
+    fn of(session: &Session) -> Self {
+        Self {
+            selection: session.selection(),
+            steps: session.undo_steps().len(),
+            redo: session.redo_label(),
+            entities: session.entity_count(),
+            console: session.console_counts(),
+            lines: session.console().iter().map(|l| l.count as usize).sum(),
+            tool: session.tool(),
+            playing: session.is_playing(),
+            paused: session.is_paused(),
+            hidden: session.hidden().len(),
+            isolated: session.isolated().len(),
+            grid: session.show_grid(),
+            space: session.space() == runity_editor::Space::Global,
+            pivot: session.pivot() == runity_editor::Pivot::Center,
+        }
     }
 }
 
@@ -150,7 +217,7 @@ impl Render for SceneView {
                             let _ = window.paint_image(
                                 bounds,
                                 bounds,
-                                Corners::default(),
+                                Corners::all(RADIUS_MD),
                                 image,
                                 0,
                                 false,
@@ -228,23 +295,35 @@ impl Render for SceneView {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, _window, cx| {
-                keys::sync_modifiers(&mut this.input, &event.keystroke.modifiers);
-                if let Some(key) = keys::key_of(&event.keystroke) {
-                    this.input.handle(&InputEvent::KeyDown(key));
-                }
-                cx.notify();
+                this.key_down(event, cx);
+                // Handled here: the panels around do not hear it again.
+                cx.stop_propagation();
             }))
             .on_key_up(cx.listener(|this, event: &KeyUpEvent, _window, cx| {
-                keys::sync_modifiers(&mut this.input, &event.keystroke.modifiers);
-                if let Some(key) = keys::key_of(&event.keystroke) {
-                    this.input.handle(&InputEvent::KeyUp(key));
-                }
-                cx.notify();
+                this.key_up(event, cx);
+                cx.stop_propagation();
             }))
     }
 }
 
 impl SceneView {
+    /// A key pressed here, or in a panel that hands its keys on.
+    pub fn key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
+        keys::sync_modifiers(&mut self.input, &event.keystroke.modifiers);
+        if let Some(key) = keys::key_of(&event.keystroke) {
+            self.input.handle(&InputEvent::KeyDown(key));
+        }
+        cx.notify();
+    }
+
+    pub fn key_up(&mut self, event: &KeyUpEvent, cx: &mut Context<Self>) {
+        keys::sync_modifiers(&mut self.input, &event.keystroke.modifiers);
+        if let Some(key) = keys::key_of(&event.keystroke) {
+            self.input.handle(&InputEvent::KeyUp(key));
+        }
+        cx.notify();
+    }
+
     fn press(
         &mut self,
         button: gpui::MouseButton,

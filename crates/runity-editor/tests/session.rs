@@ -146,6 +146,30 @@ fn a_transform_round_trips_and_reaches_the_file() {
 }
 
 #[test]
+fn an_edit_marks_the_document_modified_and_saving_or_undoing_clears_it() {
+    let Some((mut session, path)) = open("modified") else {
+        return;
+    };
+    assert_eq!(session.scene_path(), Some(path.as_path()));
+    assert!(
+        !session.is_modified(),
+        "as opened, it is what the file says"
+    );
+    let crate_id = id(&session, "crate");
+    let moved = transform([4.0, 0.0, 0.0], [0.0; 3], [1.0; 3]);
+    session.set_transform(crate_id, moved).unwrap();
+    assert!(session.is_modified());
+    session.undo().unwrap();
+    assert!(
+        !session.is_modified(),
+        "undone back to the file is not a change"
+    );
+    session.redo().unwrap();
+    session.save_scene(None).unwrap();
+    assert!(!session.is_modified(), "saved");
+}
+
+#[test]
 fn an_edit_to_an_entity_that_is_not_there_says_which() {
     // The reason travels with the failure now, and it has to be one an
     // agent can act on from the text alone.

@@ -443,6 +443,21 @@ impl Session {
         is_prefab(self.scene_path.as_deref())
     }
 
+    /// Where the open document was read from, and is saved to.
+    pub fn scene_path(&self) -> Option<&Path> {
+        self.scene_path.as_deref()
+    }
+
+    /// Whether the document says something its file does not: the dot on
+    /// a tab, the question before closing. Undoing back to what was saved
+    /// is not a change.
+    pub fn is_modified(&self) -> bool {
+        match &self.on_disk {
+            Some((seen, _)) => self.history.scene() != seen,
+            None => self.history.depth() > 0,
+        }
+    }
+
     /// Write the scene back: to `path`, or where it was opened from.
     pub fn save_scene(&mut self, path: Option<&Path>) -> EditResult<()> {
         let target = path

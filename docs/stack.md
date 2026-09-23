@@ -268,6 +268,22 @@ Localization из Unity). Экран пишет `Text("@menu.play")` и пока
 каждый `@ключ` экранов. Язык переключается на ходу, файл перечитывается,
 `runity build` везёт `strings/`.
 
+**Окно редактора** — `runity-studio`, GPUI (только macOS, открытый
+вопрос 1). Раскладка Unity: Hierarchy слева, Inspector справа, Scene view
+над Console в середине, тулбар (Move/Rotate/Scale, оси мир/свои, пивот,
+сетка, Play/Pause/Step, undo/redo, Save) и строка состояния; края панелей
+тянутся (ресайз GPUI Kit). Все панели читают одну сессию
+(`Entity<Session>`) и зовут те же функции, что MCP; Scene view будит панели,
+только когда изменилось то, что они показывают. Вид — дизайн-система
+Nocturne из Claude Design: токены `styles.css` переписаны в
+`runity_studio::theme` имя в имя, компоненты (`.card`, `.btn`, `.seg`,
+`.tag`) — в `ui.rs`; шрифт Inter лежит в крейте (OFL), иконки — Lucide из
+GPUI Kit (Nocturne называет Phosphor), цвета предупреждения и ошибки
+добавлены сверх моно-палитры Nocturne. `cargo run -p runity-studio
+--example shot -- сцена.ron out.png [имя…]` фотографирует окно без
+экрана; `tests/window.rs` кликает его офскрин (выбор в Hierarchy → ввод в
+Inspector → undo → сворачивание).
+
 **Панели редактора как данные.** Hierarchy и Inspector Unity — без
 UI-тулкита (`runity_editor::panels`): `hierarchy()` — строки дерева с
 глубиной, раскрытием, выделением, отметкой «экземпляр» и «часть префаба»

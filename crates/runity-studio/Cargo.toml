@@ -22,6 +22,10 @@ runity-editor = { version = "0.1.0", path = "../runity-editor" }
 [target.'cfg(target_os = "macos")'.dependencies]
 image = "0.25"
 gpui = { version = "=0.3.6", package = "gpui-pre" }
+# GPUI Kit: the component library the DNA decision names — docking, trees,
+# virtual lists, tables, menus and text input with IME. A panel is plain
+# Rust, so a module can add one without a DSL (postulate 3).
+gpui-kit = "0.6.6"
 # `runtime_shaders`: GPUI's Metal shaders are compiled by the Metal framework
 # at startup instead of by the `metal` tool at build time. Xcode 26 moved that
 # tool into a separate multi-gigabyte component, and a clone of this repo
@@ -47,6 +51,12 @@ gpui_platform = { version = "=0.3.6", package = "gpui-pre-platform", features = 
 [[example]]
 name = "shot"
 path = "examples/shot.rs"
+
+[[test]]
+name = "window"
+path = "tests/window.rs"
+# AppKit's windows are the main thread's; libtest runs tests on others.
+harness = false
 
 [[bin]]
 name = "runity-studio"

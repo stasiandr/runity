@@ -1,7 +1,7 @@
 //! `shot` — the editor's window, photographed without a screen.
 //!
 //! ```text
-//! cargo run -p runity-studio --example shot -- [scene.ron] [out.png]
+//! cargo run -p runity-studio --example shot -- [scene.ron] [out.png] [selected name…]
 //! ```
 //!
 //! The window is opened off-screen and rendered by the real Metal renderer,
@@ -18,7 +18,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui::{px, size, AppContext as _, VisualTestAppContext};
+use gpui::{px, size, VisualTestAppContext};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -31,12 +31,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("runity-studio.png"));
 
-    let session = runity_studio::open(&scene)?;
+    let mut session = runity_studio::open(&scene)?;
+    // Anything named after the picture's path is selected, so that the
+    // Inspector and the Hierarchy have something to show.
+    for name in args {
+        match session.find(&name) {
+            Some(id) => session.add_to_selection(id)?,
+            None => eprintln!("nothing called {name:?}"),
+        }
+    }
 
     let platform = gpui_platform::current_platform(false);
-    let mut cx = VisualTestAppContext::new(platform);
-    let window = cx.open_offscreen_window(size(px(1440.0), px(900.0)), |_window, cx| {
-        cx.new(|cx| runity_studio::Studio::new(session, cx))
+    let mut cx = VisualTestAppContext::with_asset_source(
+        platform,
+        std::sync::Arc::new(gpui_kit::assets::AllAssets),
+    );
+    cx.update(runity_studio::install);
+    let window = cx.open_offscreen_window(size(px(1440.0), px(900.0)), |window, cx| {
+        runity_studio::window_root(session, window, cx)
     })?;
 
     // The Scene view asks for the next frame every frame, so a few frames

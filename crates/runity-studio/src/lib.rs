@@ -21,11 +21,21 @@
 //! and postulate 1 is the reason not to.
 
 #[cfg(target_os = "macos")]
+mod console;
+#[cfg(target_os = "macos")]
+mod hierarchy;
+#[cfg(target_os = "macos")]
+mod inspector;
+#[cfg(target_os = "macos")]
 mod keys;
 #[cfg(target_os = "macos")]
 mod studio;
 #[cfg(target_os = "macos")]
+pub mod theme;
+#[cfg(target_os = "macos")]
+mod ui;
+#[cfg(target_os = "macos")]
 mod viewport;
 
 #[cfg(target_os = "macos")]
-pub use studio::{open, run, Studio, REFERENCE_SCENE};
+pub use studio::{install, open, run, window_root, Studio, REFERENCE_SCENE};
