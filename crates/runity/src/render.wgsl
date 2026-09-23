@@ -107,8 +107,11 @@ struct Frame {
     terrain_bounds: vec4<f32>,
     // what it is drawn with, for the mesh shader: an instance's numbers
     terrain_look: array<vec4<f32>, 7>,
-    // glass by rays: 1 when on; its index of refraction
+    // glass by rays: 1 when on; its index of refraction; how many points
+    // the lightning has, and its flash
     glass: vec4<f32>,
+    // a stroke of lightning's channel: points, brightness in w
+    bolt: array<vec4<f32>, 32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -2202,6 +2205,40 @@ fn night_sky(d: vec3<f32>) -> vec3<f32> {
     return light * smoothstep(0.0, 0.25, d.y);
 }
 
+/// A stroke of lightning seen along `direction` from `eye`: a white-hot
+/// core a pixel or two wide, however far, and a glow round it.
+fn lightning_channel(eye: vec3<f32>, direction: vec3<f32>) -> vec3<f32> {
+    let count = u32(frame.glass.z);
+    // How wide a pixel is, as an angle.
+    let pixel = 2.0 / max(frame.cluster_depth.w, 1.0);
+    var core = 0.0;
+    var halo = 0.0;
+    for (var i = 1u; i < count; i = i + 1u) {
+        let b = frame.bolt[i];
+        if b.w <= 0.0 {
+            continue;
+        }
+        let a = frame.bolt[i - 1u].xyz;
+        // The nearest points of the view's ray and the segment.
+        let u = b.xyz - a;
+        let w0 = eye - a;
+        let dd = dot(direction, direction);
+        let du = dot(direction, u);
+        let uu = dot(u, u);
+        let dw = dot(direction, w0);
+        let uw = dot(u, w0);
+        let den = max(dd * uu - du * du, 1e-6);
+        let s = clamp((dd * uw - du * dw) / den, 0.0, 1.0);
+        let t = max((du * s - dw) / dd, 1.0);
+        let gap = length(eye + direction * t - (a + u * s));
+        let angle = gap / t;
+        let width = max(0.8 / t, pixel * 0.8);
+        core = max(core, exp(-(angle / width) * (angle / width)) * b.w);
+        halo = max(halo, exp(-angle / (width * 14.0)) * b.w);
+    }
+    return vec3<f32>(0.85, 0.9, 1.0) * (core * 40.0 + halo * 1.5);
+}
+
 /// URP's procedural skybox, simply: the horizon's colour rising into the
 /// zenith's, the ground below, and the sun — a disc far brighter than white,
 /// with a glow around it — where the light comes from.
@@ -2228,6 +2265,12 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     if frame.night.x > 0.0 {
         let glow = frame.sky_color.rgb * (0.6 + 1.0 * (1.0 - clamp(up, 0.0, 1.0)));
         color += (night_sky(direction) + glow) * frame.night.x;
+    }
+    // Lightning: the sky flares, and the channel stands in it.
+    let flash = frame.glass.w;
+    if flash > 0.0 {
+        color += vec3<f32>(0.45, 0.5, 0.65) * flash * (0.6 + 0.4 * clamp(up, 0.0, 1.0));
+        color += lightning_channel(frame.camera_position.xyz, direction) * min(flash, 1.0);
     }
     let to_sun = -normalize(frame.sun_direction.xyz);
     let facing = dot(direction, to_sun);
