@@ -1562,3 +1562,53 @@ fn the_view_orbits_pans_and_zooms_without_touching_the_document() {
     assert!((camera.target.y - 2.0).abs() < 1e-3, "{:?}", camera.target);
     assert!(!session.can_undo(), "the view is not an edit");
 }
+
+#[test]
+fn applying_overrides_writes_them_into_the_prefab_for_every_instance() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "apply",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    let prefab = root_of(&path).join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        "// The camp's fire.\n(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let (one, two): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
+    let part: EntityId = "c2".parse().unwrap();
+    session.set_material_name(one.within(part), "moss").unwrap();
+    assert_eq!(
+        session.material_name(two.within(part)).as_deref(),
+        Some("ember")
+    );
+
+    assert_eq!(session.apply_overrides(one).unwrap(), 1);
+    assert_eq!(
+        session.material_name(two.within(part)).as_deref(),
+        Some("moss"),
+        "every instance has it now"
+    );
+    assert!(session.scene().get(one).unwrap().overrides.is_empty());
+    let text = std::fs::read_to_string(&prefab).unwrap();
+    assert!(
+        text.starts_with("// The camp's fire."),
+        "its text kept: {text}"
+    );
+    assert!(text.contains("material: \"moss\""), "{text}");
+
+    // Revert: an override made and dropped in one step.
+    session.set_material_name(two.within(part), "bark").unwrap();
+    session.revert_overrides(two).unwrap();
+    assert_eq!(
+        session.material_name(two.within(part)).as_deref(),
+        Some("moss")
+    );
+}

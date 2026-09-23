@@ -472,6 +472,61 @@ impl Session {
         self.camera.position = self.camera.target + offset.clamp_length_min(0.1);
     }
 
+    /// Write an instance's overrides into its prefab — Unity's "Apply" — so
+    /// every instance gets them, and clear them from this one. Returns how
+    /// many parts changed.
+    ///
+    /// The prefab file is saved at once, keeping its text where nothing
+    /// changed; clearing the instance's overrides is an ordinary undoable
+    /// step of the scene. Undoing it puts the overrides back on the
+    /// instance, where they now say what the prefab says.
+    pub fn apply_overrides(&mut self, instance: EntityId) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        let line = self
+            .history
+            .scene()
+            .get(instance)
+            .ok_or(EditError::NoEntity(instance))?
+            .clone();
+        if line.prefab.is_empty() {
+            return Err(EditError::Scene(format!(
+                "{instance} is not a prefab instance"
+            )));
+        }
+        if line.overrides.is_empty() {
+            return Ok(0);
+        }
+        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
+        let path = directory.join(format!("{}.prefab", line.prefab));
+        let (_, mut prefab) = runity::Prefabs::read(&path).map_err(EditError::Io)?;
+        fn find(desc: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
+            if desc.id == id {
+                return Some(desc);
+            }
+            desc.children.iter_mut().find_map(|c| find(c, id))
+        }
+        let mut applied = 0;
+        for (part, change) in &line.overrides {
+            if let Some(target) = prefab.children.iter_mut().find_map(|c| find(c, *part)) {
+                change.apply(target);
+                applied += 1;
+            }
+        }
+        runity::Prefabs::save(&prefab, &path).map_err(EditError::Io)?;
+        self.prefabs.insert(line.prefab.clone(), prefab);
+        self.edit_entity(instance)?.overrides.clear();
+        self.respawn();
+        Ok(applied)
+    }
+
+    /// Drop an instance's overrides — Unity's "Revert" — as one undoable
+    /// step: it is the prefab again.
+    pub fn revert_overrides(&mut self, instance: EntityId) -> EditResult<()> {
+        self.edit_entity(instance)?.overrides.clear();
+        self.respawn();
+        Ok(())
+    }
+
     /// A walkable path between two points of the scene as it stands — can
     /// the player get from the spawn to the exit, and which way — or `None`
     /// when there is none.
