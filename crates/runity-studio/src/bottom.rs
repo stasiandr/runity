@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use runity_editor::console::{Level, Line};
 use runity_editor::Session;
-use runity_ui::{Event, NodeId, Style, Ui};
+use runity_ui::{Event, ImageId, NodeId, Style, Ui};
 
 use crate::menu::Action;
 use crate::studio::Requests;
@@ -64,6 +64,12 @@ pub struct Bottom {
     visible: [bool; 4],
     // Project
     search: NodeId,
+    /// Big tiles with pictures, or lines.
+    big: bool,
+    big_toggle: NodeId,
+    /// Each model's or prefab's picture: its image, and whether it is drawn.
+    thumbs: HashMap<String, (ImageId, bool)>,
+    next_image: u32,
     /// The type filter's chips, and the kind chosen.
     kind_chips: Vec<(NodeId, &'static str)>,
     kind: &'static str,
@@ -163,6 +169,8 @@ impl Bottom {
         let search = ui.add_field(bar, field_style().width(240.0).height(24.0), "");
         ui.set_name(search, "project search");
         ui.set_placeholder(search, "Search assets");
+        spacer(ui, bar);
+        let big_toggle = crate::theme::icon_button(ui, bar, "project pictures", "image", false);
         // What kind to show: Unity's type filter.
         let kinds = ui.add(
             bar,
@@ -258,6 +266,10 @@ impl Bottom {
             search,
             kind_chips,
             kind: "All",
+            big: false,
+            big_toggle,
+            thumbs: HashMap::new(),
+            next_image: 1000,
             grid,
             entries: HashMap::new(),
             counts,
@@ -275,6 +287,36 @@ impl Bottom {
             revisions: HashMap::new(),
             take_theirs: HashMap::new(),
             git_stale: true,
+        }
+    }
+
+    /// Pictures the big tiles still want: models' and prefabs' names, and the
+    /// image each goes to. At most `n`.
+    pub fn wanted_pictures(&self, n: usize) -> Vec<(String, ImageId)> {
+        if !self.big {
+            return Vec::new();
+        }
+        self.thumbs
+            .iter()
+            .filter(|(_, (_, ready))| !ready)
+            .take(n)
+            .map(|(name, (id, _))| (name.clone(), *id))
+            .collect()
+    }
+
+    /// A picture was drawn: the tile shows it instead of its icon.
+    pub fn picture_ready(&mut self, ui: &mut Ui, name: &str) {
+        if let Some(entry) = self.thumbs.get_mut(name) {
+            entry.1 = true;
+        }
+        if let Some(img) = ui.find(&format!("thumb {name}")) {
+            if let Some(frame) = ui.parent(img) {
+                for child in ui.children(frame) {
+                    if child != img {
+                        ui.restyle(child, |s| s.hidden());
+                    }
+                }
+            }
         }
     }
 
@@ -377,8 +419,12 @@ impl Bottom {
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         // Project
         let assets = self.assets(ui, session);
-        let keys: Vec<String> = assets.iter().map(|a| format!("{a:?}")).collect();
+        // The mode is part of the key: switching it makes the tiles again.
+        let big = self.big;
+        let keys: Vec<String> = assets.iter().map(|a| format!("{big}{a:?}")).collect();
         let open = session.scene_path().map(|p| p.to_path_buf());
+        let thumbs = &mut self.thumbs;
+        let next_image = &mut self.next_image;
         ui.sync_children(
             self.grid,
             &keys,
@@ -387,28 +433,93 @@ impl Bottom {
                     .iter()
                     .position(|k| k == key)
                     .expect("a key of this list")];
-                let tile = ui.add(
-                    grid,
-                    Style::row()
-                        .height(26.0)
-                        .width(170.0)
-                        .fixed()
-                        .padding_x(SPACE_2)
-                        .gap(SPACE_2)
-                        .center_items()
-                        .radius(6.0)
-                        .border(1.0, runity_ui::Color::TRANSPARENT)
-                        .hover(HOVER)
-                        .draggable(),
-                );
-                ui.set_name(tile, format!("asset {}", asset.label()));
                 let tint = if matches!(asset, Asset::Prefab(_)) {
                     ACCENT
                 } else {
                     MUTED
                 };
-                icon(ui, tile, asset.icon(), tint);
-                ui.add_text(tile, text().fill(), &asset.label());
+                if !big {
+                    let tile = ui.add(
+                        grid,
+                        Style::row()
+                            .height(26.0)
+                            .width(170.0)
+                            .fixed()
+                            .padding_x(SPACE_2)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, runity_ui::Color::TRANSPARENT)
+                            .hover(HOVER)
+                            .draggable(),
+                    );
+                    ui.set_name(tile, format!("asset {}", asset.label()));
+                    icon(ui, tile, asset.icon(), tint);
+                    ui.add_text(tile, text().fill(), &asset.label());
+                    return tile;
+                }
+                // A card: the picture, the name under it.
+                let tile = ui.add(
+                    grid,
+                    Style::column()
+                        .width(92.0)
+                        .height(104.0)
+                        .fixed()
+                        .padding(4.0)
+                        .gap(3.0)
+                        .center_items()
+                        .radius(RADIUS_MD)
+                        .border(1.0, runity_ui::Color::TRANSPARENT)
+                        .hover(HOVER)
+                        .draggable(),
+                );
+                ui.set_name(tile, format!("asset {}", asset.label()));
+                let frame = ui.add(
+                    tile,
+                    Style::row()
+                        .size(76.0, 76.0)
+                        .fixed()
+                        .center()
+                        .radius(RADIUS_SM)
+                        .background(BG),
+                );
+                // Models and prefabs get their picture (drawn a few a frame,
+                // see Bottom::wanted_pictures); until then, and for the rest,
+                // their icon.
+                let mut drawn = false;
+                if let Asset::Model(name, _) | Asset::Prefab(name) = asset {
+                    let (id, ready) = *thumbs.entry(name.clone()).or_insert_with(|| {
+                        *next_image += 1;
+                        (ImageId(*next_image), false)
+                    });
+                    let img = ui.add_image(
+                        frame,
+                        Style::default().size(76.0, 76.0).radius(RADIUS_SM),
+                        id,
+                    );
+                    ui.set_name(img, format!("thumb {name}"));
+                    drawn = ready;
+                }
+                let glyph = ui.add_icon(
+                    frame,
+                    Style::default()
+                        .size(28.0, 28.0)
+                        .text_color(tint)
+                        .absolute(24.0, 24.0),
+                    asset.icon(),
+                );
+                if drawn {
+                    ui.restyle(glyph, |s| s.hidden());
+                }
+                ui.add_text(
+                    tile,
+                    Style::default()
+                        .text_size(11.0)
+                        .text_color(TEXT)
+                        .nowrap()
+                        .max_width(84.0),
+                    &asset.label(),
+                );
                 tile
             },
             |_, _, _| {},
@@ -802,6 +913,11 @@ impl Bottom {
                 requests.refresh = true;
             }
             Event::Changed(_) | Event::Cancel if node == self.search => requests.refresh = true,
+            Event::Click { .. } if node == self.big_toggle => {
+                self.big = !self.big;
+                crate::theme::set_icon_button(_ui, self.big_toggle, "image", self.big, true);
+                requests.refresh = true;
+            }
             Event::Click { .. } if self.kind_chips.iter().any(|(c, _)| *c == node) => {
                 self.kind = self.kind_chips.iter().find(|(c, _)| *c == node).unwrap().1;
                 requests.refresh = true;

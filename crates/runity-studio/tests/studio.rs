@@ -1355,3 +1355,20 @@ fn the_project_filters_by_kind() {
     click(&mut s, "kind All");
     assert!(s.ui.dump().contains("#asset cube"));
 }
+
+#[test]
+fn the_project_shows_pictures_of_models_and_prefabs() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "kind Prefabs");
+    click(&mut s, "project pictures");
+    for _ in 0..4 {
+        s.frame();
+    }
+    assert!(
+        s.ui.dump().contains("#thumb campfire"),
+        "a card with a picture"
+    );
+    assert!(s.bottom_pictures_pending() == 0, "drawn");
+}

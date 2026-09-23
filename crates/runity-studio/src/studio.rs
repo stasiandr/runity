@@ -576,6 +576,12 @@ impl Studio {
             || self.job.is_some()
             || !self.scene_buttons.is_empty()
             || !self.session.previewing().is_empty()
+            || !self.bottom.wanted_pictures(1).is_empty()
+    }
+
+    /// How many Project pictures are still to draw.
+    pub fn bottom_pictures_pending(&self) -> usize {
+        self.bottom.wanted_pictures(usize::MAX).len()
     }
 
     /// Whether a text field has the keyboard: the window turns the input
@@ -787,6 +793,14 @@ impl Studio {
 
         self.poll_disk();
         self.bottom.update_git(&mut self.ui, &mut self.session);
+        // Two of the Project's pictures a frame, until it has them all.
+        for (name, image) in self.bottom.wanted_pictures(2) {
+            match self.session.thumbnail(&name, 128) {
+                Ok(pixels) => self.pending_images.push((image, 128, pixels)),
+                Err(_) => {}
+            }
+            self.bottom.picture_ready(&mut self.ui, &name);
+        }
         if let Some(job) = &self.job {
             if let Ok(result) = job.try_recv() {
                 self.job = None;
