@@ -887,7 +887,10 @@ fn pause_holds_the_crate_in_the_air_and_step_moves_it_one_step() {
         .unwrap()
         .value;
     let y: Vec3 = runity::ron::from_str(&shown).unwrap();
-    assert!((y.y - falling).abs() < 1e-3, "{shown} while falling at {falling}");
+    assert!(
+        (y.y - falling).abs() < 1e-3,
+        "{shown} while falling at {falling}"
+    );
     assert!((session.transform(crate_id).unwrap().position.y - 4.0).abs() < 1e-3);
 
     // Ctrl Shift P: held in the air, however long the frames are.

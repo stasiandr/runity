@@ -8,16 +8,19 @@
 //! p:campfire           an instance of the `campfire` prefab
 //! model:pine_large     draws that model
 //! body:dynamic         moved by physics (static, dynamic, kinematic, trigger, none)
+//! has:light            carries a light (camera, particles, route, joint, collider)
+//! layer:debris         on that collision layer
 //! ```
 //!
 //! Terms combine with "and": `c:door m:bark` is every bark door. The same
 //! words in the editor, over MCP and in a game's debug console, because an
 //! agent asked "which doors are still locked?" should not have to walk the
 //! tree itself. Unity's `t:` filters by class; there are no classes here,
-//! only the components a line carries, so `c:` is the one that matters.
+//! only what a line carries: the game's components are `c:`, the engine's
+//! own parts of a line — a light, a camera — are `has:`.
 
 use crate::id::EntityId;
-use crate::scene::{Body, EntityDesc, MaterialRef, Scene};
+use crate::scene::{Body, Collider, EntityDesc, Joint, MaterialRef, Scene};
 
 /// A parsed search.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -33,9 +36,24 @@ enum Term {
     Prefab(String),
     Model(String),
     Body(Body),
+    Has(Part),
+    Layer(String),
 }
 
-const PREFIXES: &str = "c: (component), m: (material), p: (prefab), model:, body:";
+/// The engine's own parts of a line, which `has:` asks about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Light,
+    Camera,
+    Particles,
+    Route,
+    Joint,
+    Collider,
+}
+
+const PARTS: &str = "has:light, has:camera, has:particles, has:route, has:joint or has:collider";
+
+const PREFIXES: &str = "c: (component), m: (material), p: (prefab), model:, body:, has:, layer:";
 
 impl std::str::FromStr for Query {
     type Err = String;
@@ -66,6 +84,16 @@ impl std::str::FromStr for Query {
                                 ))
                             }
                         }),
+                        "has" => Term::Has(match value.to_lowercase().as_str() {
+                            "light" => Part::Light,
+                            "camera" => Part::Camera,
+                            "particles" => Part::Particles,
+                            "route" => Part::Route,
+                            "joint" => Part::Joint,
+                            "collider" => Part::Collider,
+                            other => return Err(format!("no part `{other}`: {PARTS}")),
+                        }),
+                        "layer" => Term::Layer(value.to_string()),
                         other => {
                             return Err(format!(
                                 "no filter `{other}:` — there are {PREFIXES}, and a plain word matches names"
@@ -93,6 +121,23 @@ impl Query {
             Term::Prefab(name) => prefab == name,
             Term::Model(name) => desc.model == *name,
             Term::Body(body) => desc.body == *body,
+            Term::Has(part) => match part {
+                Part::Light => desc.light.is_some(),
+                Part::Camera => desc.camera.is_some(),
+                Part::Particles => desc.particles.is_some(),
+                Part::Route => desc.route.is_some(),
+                Part::Joint => desc.joint != Joint::None,
+                Part::Collider => desc.collider != Collider::None,
+            },
+            Term::Layer(layer) => {
+                // Unnamed is the default layer, which every project has.
+                let on = if desc.layer.is_empty() {
+                    "default"
+                } else {
+                    desc.layer.as_str()
+                };
+                on == layer
+            }
         })
     }
 
@@ -156,8 +201,10 @@ mod tests {
                 (name: "back door", model: "builtin:cube", material: "stone",
                  components: { "Door": (locked: false) }),
                 (name: "west fire", prefab: "campfire", children: [
-                    (name: "ember", model: "builtin:sphere", material: "ember"),
+                    (name: "ember", model: "builtin:sphere", material: "ember",
+                     light: (color: (1.0, 0.5, 0.2)), layer: "debris"),
                 ]),
+                (name: "eye", camera: (fov_deg: 60.0), collider: Sphere(radius: 0.2)),
             ])"#,
         )
         .unwrap();
@@ -184,7 +231,15 @@ mod tests {
         assert_eq!(names(&scene, "p:campfire"), ["west fire"]);
         assert_eq!(names(&scene, "model:pine_large body:static"), ["tree near"]);
         assert_eq!(names(&scene, "ember"), ["ember"], "children too");
-        assert_eq!(names(&scene, "").len(), 6, "nothing asked is everything");
+        assert_eq!(names(&scene, "").len(), 7, "nothing asked is everything");
+        assert_eq!(names(&scene, "has:light"), ["ember"]);
+        assert_eq!(names(&scene, "has:camera has:collider"), ["eye"]);
+        assert_eq!(names(&scene, "layer:debris"), ["ember"]);
+        assert_eq!(
+            names(&scene, "layer:default").len(),
+            6,
+            "unnamed is default"
+        );
         assert!(names(&scene, "m:granite").is_empty());
     }
 
@@ -195,6 +250,8 @@ mod tests {
             e.contains("no filter `t:`") && e.contains("c: (component)"),
             "{e}"
         );
+        let e = "has:rigidbody".parse::<Query>().unwrap_err();
+        assert!(e.contains("has:light"), "{e}");
         let e = "body:floaty".parse::<Query>().unwrap_err();
         assert!(e.contains("body:static"), "{e}");
         let e = "\"tree".parse::<Query>().unwrap_err();
