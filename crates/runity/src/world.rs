@@ -221,6 +221,7 @@ fn animates(desc: &EntityDesc) -> crate::motion::Animates {
     walk(desc, "", &mut parts);
     crate::motion::Animates {
         graph: desc.animator.clone(),
+        model: desc.model.clone(),
         parts,
     }
 }

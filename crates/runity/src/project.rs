@@ -691,6 +691,11 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::per
     // moving what is under them; then everything placed.
     profile.time("routes", || runity::routes::run_routes(world, seconds));
     profile.time("motion", || runity::motion::run(world, seconds));
+    // Characters: their graphs pick the clip, the skeleton takes the pose.
+    profile.time("animation", || {
+        runity::animgraph::run_controllers(world);
+        runity::advance_animations(world, seconds);
+    });
     runity::world::apply_hierarchy(world);
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
@@ -772,7 +777,9 @@ impl shell::Game for Game {
             eprintln!("{line}");
         }
         // Lines that came in with an `animator` start their graphs.
-        for problem in runity::motion::attach(&mut self.world, &self.motions) {
+        let library = self.live.library();
+        let skins = |model: &runity::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        for problem in runity::motion::attach(&mut self.world, &self.motions, skins) {
             eprintln!("{problem}");
         }
         for (shader, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {

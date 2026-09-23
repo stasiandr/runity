@@ -121,6 +121,8 @@ pub fn step(keys: &[(f32, f32)], time: f32) -> Option<f32> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Animates {
     pub graph: String,
+    /// The line's model: a skinned one plays the graph on its skeleton.
+    pub model: crate::AssetLink,
     /// Every thing under the line by its path of names, the line itself `""`.
     pub parts: Vec<(String, EntityId)>,
 }
@@ -207,10 +209,16 @@ pub fn clips_of(graph: &Graph) -> BTreeSet<String> {
     out
 }
 
-/// Start every line's graph that is not playing yet. A graph none of whose
-/// clips is in `clips/` is left alone: its clips are a skeleton's, and the
-/// game plays those. Returns what it could not do.
-pub fn attach(world: &mut World, motions: &Motions) -> Vec<String> {
+/// Start every line's graph that is not playing yet. A graph with clips in
+/// `clips/` moves the things under the line; one without plays on the
+/// line's model's skeleton, with the model's own clips and those of any
+/// model named as a clip (a Mixamo file a clip) — `skins` finds a model's
+/// skin by its link. Returns what it could not do.
+pub fn attach(
+    world: &mut World,
+    motions: &Motions,
+    skins: impl Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
+) -> Vec<String> {
     let waiting: Vec<(hecs::Entity, Animates)> = world
         .query::<(hecs::Entity, &Animates)>()
         .without::<&Moving>()
@@ -239,6 +247,24 @@ pub fn attach(world: &mut World, motions: &Motions) -> Vec<String> {
             .collect();
         if names.is_empty() {
             let _ = world.remove_one::<Animates>(entity);
+            match skins(&animates.model) {
+                Some(skin) => {
+                    let mut animator = Animator::new(Arc::new(skin.skeleton), Arc::new(skin.clips));
+                    for clip in clips_of(graph) {
+                        if animator.clips.iter().any(|c| c.name == clip) {
+                            continue;
+                        }
+                        if let Some(from) = skins(&crate::AssetLink::named(clip.clone())) {
+                            animator.take_clips(&clip, &from.skeleton, &from.clips);
+                        }
+                    }
+                    let _ = world.insert(entity, (animator, Controller::new(graph.clone())));
+                }
+                None => problems.push(format!(
+                    "animator `{}`: none of its clips is in clips/, and `{}` has no skeleton",
+                    animates.graph, animates.model
+                )),
+            }
             continue;
         }
         let part = |path: &str| -> Option<hecs::Entity> {
@@ -451,6 +477,75 @@ mod tests {
     use crate::render::MeshHandle;
 
     #[test]
+    fn a_graph_with_no_clips_here_plays_on_the_models_skeleton() {
+        use crate::animation::{Joint, Skeleton};
+        let scene: crate::scene::Scene = ron::from_str(
+            r#"(entities: [
+                (id: "0000000000000001", name: "mouse", model: "mouse", animator: "mouse"),
+                (id: "0000000000000002", name: "rock", model: "rock", animator: "mouse"),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let mut motions = Motions::default();
+        motions.graphs.insert(
+            "mouse".into(),
+            ron::from_str(
+                r#"(start: "idle", states: {
+                    "idle": (clip: "idle", transitions: [(to: "wave", when: [Trigger("wave")])]),
+                    "wave": (clip: "wave"),
+                })"#,
+            )
+            .unwrap(),
+        );
+        let skeleton = Skeleton {
+            joints: vec![Joint {
+                name: "root".into(),
+                parent: None,
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest: PoseTransform::default(),
+            }],
+        };
+        let clip = |name: &str| Clip {
+            name: name.into(),
+            duration: 1.0,
+            channels: Vec::new(),
+        };
+        let skins = |model: &crate::AssetLink| match model.as_str() {
+            "mouse" => Some(crate::asset::MeshSkin {
+                skeleton: skeleton.clone(),
+                clips: vec![clip("idle")],
+                joints: Vec::new(),
+                weights: Vec::new(),
+            }),
+            // A Mixamo file: one clip, named as the file.
+            "wave" => Some(crate::asset::MeshSkin {
+                skeleton: skeleton.clone(),
+                clips: vec![clip("mixamo.com")],
+                joints: Vec::new(),
+                weights: Vec::new(),
+            }),
+            _ => None,
+        };
+        let said = attach(&mut world, &motions, skins);
+        assert!(said.iter().any(|p| p.contains("`rock` has no skeleton")), "{said:?}");
+        let mouse = crate::net::addressable(&world)[&EntityId::from_raw(1)];
+        let names: Vec<String> = world
+            .get::<&Animator>(mouse)
+            .unwrap()
+            .clips
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, ["idle", "wave"], "the wave from its own file");
+        crate::animgraph::run_controllers(&mut world);
+        world.get::<&mut Controller>(mouse).unwrap().trigger("wave");
+        crate::animgraph::run_controllers(&mut world);
+        assert_eq!(world.get::<&Controller>(mouse).unwrap().state(), Some("wave"));
+    }
+
+    #[test]
     fn a_lines_graph_moves_and_switches_what_is_under_it() {
         let scene: crate::scene::Scene = ron::from_str(
             r#"(entities: [
@@ -486,7 +581,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let said = attach(&mut world, &motions);
+        let said = attach(&mut world, &motions, |_| None);
         assert!(said.iter().any(|p| p.contains("Chimney")), "{said:?}");
         let ids = crate::net::addressable(&world);
         let (well, lid, glow) = (
