@@ -1,0 +1,13 @@
+// The end of a round: how it went, and again or back to the menu.
+(
+    elements: [
+        (id: "card", anchor: Center, at: (0, 0), size: (440, 300), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -100), size: (400, 56), kind: Text("@results.title"), text_size: 44, align: Center),
+        (id: "score", anchor: Center, at: (0, -40), size: (400, 40), kind: Text(""), text_size: 32, align: Center),
+        (id: "served", anchor: Center, at: (0, 4), size: (400, 26), kind: Text(""), text_size: 20, align: Center),
+        (id: "best", anchor: Center, at: (0, 32), size: (400, 24), kind: Text(""), text_size: 18, align: Center),
+        (id: "again", anchor: Center, at: (-90, 70), size: (160, 44), kind: Button("@results.again")),
+        (id: "menu", anchor: Center, at: (90, 70), size: (160, 44), kind: Button("@results.menu")),
+        (id: "wait", anchor: Center, at: (0, 118), size: (400, 22), kind: Text(""), text_size: 15, align: Center),
+    ],
+)

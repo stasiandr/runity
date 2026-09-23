@@ -1,0 +1,21 @@
+// The menu, over a still of the kitchen: cook here (two at one keyboard),
+// host a kitchen for others to join, or join one by its address; the
+// volumes and the language, kept for next time.
+(
+    elements: [
+        (id: "card", anchor: Center, at: (0, 40), size: (480, 600), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -224), size: (420, 56), kind: Text("Kitchen Rush"), text_size: 44, align: Center),
+        (id: "tagline", anchor: Center, at: (0, -176), size: (420, 26), kind: Text("@menu.tagline"), text_size: 17, align: Center),
+        (id: "local", anchor: Center, at: (0, -122), size: (320, 46), kind: Button("@menu.local")),
+        (id: "host", anchor: Center, at: (0, -66), size: (320, 46), kind: Button("@menu.host")),
+        (id: "name", anchor: Center, at: (-58, -8), size: (204, 40), kind: Field("@menu.name")),
+        (id: "address", anchor: Center, at: (-58, 40), size: (204, 40), kind: Field("@menu.address")),
+        (id: "join", anchor: Center, at: (106, 40), size: (108, 40), kind: Button("@menu.join")),
+        (id: "music", anchor: Center, at: (0, 98), size: (320, 32), kind: Slider(label: "@menu.music", min: 0.0, max: 1.0)),
+        (id: "sfx", anchor: Center, at: (0, 138), size: (320, 32), kind: Slider(label: "@menu.sfx", min: 0.0, max: 1.0)),
+        (id: "language", anchor: Center, at: (0, 180), size: (320, 36), kind: Choice(label: "@menu.language", options: ["English", "Русский"])),
+        (id: "quit", anchor: Center, at: (0, 234), size: (320, 40), kind: Button("@menu.quit")),
+        (id: "best", anchor: Center, at: (0, 280), size: (420, 24), kind: Text(""), text_size: 17, align: Center),
+        (id: "status", anchor: Center, at: (0, 310), size: (420, 24), kind: Text(""), text_size: 15, align: Center),
+    ],
+)

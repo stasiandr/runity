@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/screen.rmat",
+    hash: "5cc1dd302cfca5d56c3e55438131804c",
+    id: Some("9167548842b05f5693ee92c775e9419c"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

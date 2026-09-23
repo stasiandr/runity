@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/stain.rmat",
+    hash: "ded7531b6afac7718d4e442678c9bbef",
+    id: Some("4d084b92dc472b0b95dfafb86d46b6fb"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

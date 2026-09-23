@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/plate.rmat",
+    hash: "2db80f2d75fca445e9a8e439181056ca",
+    id: Some("696a3fb14951a0f12e8e02879890aec8"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

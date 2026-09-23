@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/main.ron",
+    id: Some("fc47e8b0e3740fbd06e57277b3256469"),
+)

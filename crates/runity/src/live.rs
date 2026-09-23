@@ -360,8 +360,71 @@ impl LiveScene {
         gpu: &Gpu,
         renderer: &mut Renderer,
     ) -> Result<Instance, String> {
-        if self.prefabs.get(name).is_none() {
-            let names = self.prefabs.names();
+        let library = self.library.as_ref();
+        let (spawned, problems) = Self::spawn_prefab_with(
+            &self.prefabs,
+            &self.components,
+            library,
+            name,
+            transform,
+            parent,
+            world,
+            resolver(&mut self.meshes, library, gpu, renderer),
+        )?;
+        let mut problems = problems;
+        problems.extend(crate::world::upload_material_maps(
+            world,
+            self.library.as_ref(),
+            gpu,
+            renderer,
+        ));
+        Ok(Instance {
+            root: spawned,
+            problems,
+        })
+    }
+
+    /// [`Self::spawn_prefab`] without a GPU — for a test, a server, a
+    /// headless run: every model resolves to a placeholder handle, as
+    /// [`Self::spawn_headless`] does for a scene.
+    pub fn spawn_prefab_headless(
+        &mut self,
+        name: &str,
+        transform: crate::Transform,
+        parent: Option<hecs::Entity>,
+        world: &mut World,
+    ) -> Result<Instance, String> {
+        let library = self.library.as_ref();
+        let (root, problems) = Self::spawn_prefab_with(
+            &self.prefabs,
+            &self.components,
+            library,
+            name,
+            transform,
+            parent,
+            world,
+            |link: &crate::AssetLink| {
+                let known = builtin::by_name(link).is_some()
+                    || library.is_some_and(|l| l.mesh_link(link).is_some());
+                known.then_some(MeshHandle::TEST)
+            },
+        )?;
+        Ok(Instance { root, problems })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_prefab_with(
+        prefabs: &crate::Prefabs,
+        components: &Components,
+        library: Option<&Library>,
+        name: &str,
+        transform: crate::Transform,
+        parent: Option<hecs::Entity>,
+        world: &mut World,
+        resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    ) -> Result<(hecs::Entity, Vec<String>), String> {
+        if prefabs.get(name).is_none() {
+            let names = prefabs.names();
             let hint = crate::spelling::closest(name, names.iter().copied())
                 .map(|n| format!(" — did you mean `{n}`?"))
                 .unwrap_or_default();
@@ -379,14 +442,13 @@ impl LiveScene {
                 entities: vec![instance],
                 ..Scene::default()
             },
-            &self.prefabs,
+            prefabs,
         );
-        let library = self.library.as_ref();
         let (spawned, missing) = crate::world::spawn_owned(
             &expanded.scene.entities[0],
             parent,
             world,
-            resolver(&mut self.meshes, library, gpu, renderer),
+            resolve,
             |link| library?.material_link(link),
         );
         let mut problems: Vec<String> = missing
@@ -397,22 +459,13 @@ impl LiveScene {
         crate::physics::attach_collision_meshes(world, spawned.iter().copied(), library);
         for (entity, desc) in &spawned {
             problems.extend(
-                self.components
+                components
                     .insert_all(desc, *entity, world)
                     .iter()
                     .map(ToString::to_string),
             );
         }
-        problems.extend(crate::world::upload_material_maps(
-            world,
-            self.library.as_ref(),
-            gpu,
-            renderer,
-        ));
-        Ok(Instance {
-            root: spawned[0].0,
-            problems,
-        })
+        Ok((spawned[0].0, problems))
     }
 
     /// Take this scene out of a world: every entity its lines spawned, and

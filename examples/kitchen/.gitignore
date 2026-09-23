@@ -1,0 +1,7 @@
+# Built from the sources and their .rimport sidecars; a clone rebuilds it.
+/library/
+/target/
+# What `runity build` makes.
+/build/
+# The editor's memory for whoever uses it: views, the last scene.
+/.runity/

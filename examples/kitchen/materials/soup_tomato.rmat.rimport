@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/soup_tomato.rmat",
+    hash: "7e92f955fffc82d481a195293761d5c3",
+    id: Some("9489b4a92b2d00c50ff28465ed8578c6"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/cook_orange.rmat",
+    hash: "6211f10edcfcaac69ed03ce49a167822",
+    id: Some("a3761a1a4e59a163be5c1df285d7fca5"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

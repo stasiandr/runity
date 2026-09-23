@@ -1,0 +1,11 @@
+// The head chef's word before the doors open: shown over the kitchen as
+// the round starts, a line every few seconds. Texts are keys in strings/.
+(
+    start: "hello",
+    lines: {
+        "hello": (speaker: "@chef.name", text: "@chef.hello", next: "soup"),
+        "soup": (speaker: "@chef.name", text: "@chef.soup", next: "pots"),
+        "pots": (speaker: "@chef.name", text: "@chef.pots", next: "go"),
+        "go": (speaker: "@chef.name", text: "@chef.go", event: "doors_open"),
+    },
+)

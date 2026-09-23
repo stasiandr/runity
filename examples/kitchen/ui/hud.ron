@@ -1,0 +1,13 @@
+// Over the round: the clock, the score and who is in; a word when something
+// happens; the keys. The order cards down the left are the game's own
+// (src/front.rs), one for each order.
+(
+    elements: [
+        (id: "clock", anchor: Top, at: (0, 12), size: (200, 44), kind: Text(""), text_size: 36, align: Center),
+        (id: "score", anchor: TopRight, at: (-24, 16), size: (240, 34), kind: Text(""), text_size: 28, align: Right),
+        (id: "players", anchor: TopRight, at: (-24, 54), size: (320, 22), kind: Text(""), text_size: 15, align: Right),
+        (id: "note", anchor: Bottom, at: (0, -72), size: (720, 34), kind: Text(""), text_size: 24, align: Center),
+        (id: "keys", anchor: Bottom, at: (0, -26), size: (960, 22), kind: Text(""), text_size: 15, align: Center),
+        (id: "leave", anchor: BottomRight, at: (-20, -16), size: (110, 32), kind: Button("@hud.leave")),
+    ],
+)

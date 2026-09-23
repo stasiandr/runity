@@ -1,0 +1,4 @@
+// A tomato: from the crate, to the board, to the pot. Its root is unscaled (spawning places it); the fruit is its size.
+(id: "c03987108976e334", name: "tomato", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Food(Tomato)) }, children: [
+(id: "e2817efdae849217", name: "fruit", model: "builtin:sphere", transform: (position: (0.000, 0.000, 0.000), scale: (0.340, 0.340, 0.340)), material: "tomato"),
+])

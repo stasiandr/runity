@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/coat_teal.rmat",
+    hash: "3c4a962b4dfa805cab8da491a4456b44",
+    id: Some("7a7d3ebc3cf4bda6cba75ce883792692"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

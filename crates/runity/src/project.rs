@@ -1118,6 +1118,12 @@ pub fn register(components: &mut runity::Components) {
         // and across a hot patch.
         let how = if serializable(path) { "register_saved" } else { "register" };
         let _ = writeln!(text, "    components.{how}::<{}>({name:?});", type_name(name));
+        // One whose file says `pub const NETWORKED: bool = true;` goes to
+        // the other players from whoever owns the entity.
+        if networked(path) {
+            let _ = writeln!(text, "    let _ = {name}::NETWORKED;
+    components.register_networked::<{}>({name:?});", type_name(name));
+        }
     }
     text.push_str("}
 ");
@@ -1135,6 +1141,13 @@ pub mod {name};");
 fn serializable(path: &str) -> bool {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     text.match_indices("Serialize").any(|(at, _)| !text[..at].ends_with("De"))
+}
+
+/// Whether a component's file marks it networked.
+fn networked(path: &str) -> bool {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .contains("pub const NETWORKED: bool = true;")
 }
 
 /// `(module name, absolute path)` for every .rs file in a folder, sorted.
@@ -1268,7 +1281,10 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
   a scene carries `SceneId`. `runity add component door` writes
   `src/components/door.rs` (struct `Door`), and build.rs registers it as
   `\"door\"` — a scene line then gives it:
-  `components: { \"door\": (locked: true) }`. `runity add system patrol`
+  `components: { \"door\": (locked: true) }`. A component the other
+  players must see derives `Serialize` too and says
+  `pub const NETWORKED: bool = true;` in its file: whoever owns the entity
+  sends it. `runity add system patrol`
   writes `src/systems/patrol.rs` and adds its call last in `step`; move the
   line to change the order. Never register components by hand or keep a
   list of them: the folder is the list. `runity check` reports a component

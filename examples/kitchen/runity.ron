@@ -1,0 +1,12 @@
+(
+    name: "kitchen",
+    engine: "0.1.0",
+    game: (
+        start_scene: "main",
+        title: "Kitchen Rush",
+        width: 1280,
+        height: 720,
+        steps_per_second: 60,
+        language: "en",
+    ),
+)

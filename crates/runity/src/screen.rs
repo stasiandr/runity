@@ -119,6 +119,34 @@ pub struct Element {
     /// For text, in reference pixels.
     #[serde(default = "text_size")]
     pub text_size: f32,
+    /// Where a text's words sit in its box: from the left (the default),
+    /// in the middle, or to the right.
+    #[serde(default, skip_serializing_if = "Align::is_left")]
+    pub align: Align,
+}
+
+/// Where words sit across their box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Align {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl Align {
+    fn is_left(&self) -> bool {
+        *self == Align::Left
+    }
+
+    /// Where words `width` wide start in a box from `x`, `box_width` wide.
+    pub fn start(self, x: f32, box_width: f32, width: f32) -> f32 {
+        match self {
+            Align::Left => x,
+            Align::Center => x + (box_width - width).max(0.0) * 0.5,
+            Align::Right => x + (box_width - width).max(0.0),
+        }
+    }
 }
 
 fn text_size() -> f32 {
@@ -357,12 +385,16 @@ impl Screen {
             };
             match &e.kind {
                 Kind::Text(text) => {
+                    let words = label(text);
+                    let size = e.text_size * scale;
+                    // An estimate of the width, as a button centres its label.
+                    let width = words.chars().count() as f32 * size * 0.52;
                     ui.text(TextRun::new(
-                        rect.x,
+                        e.align.start(rect.x, rect.width, width),
                         rect.y,
-                        e.text_size * scale,
+                        size,
                         style.text,
-                        label(text),
+                        words,
                     ));
                 }
                 Kind::Panel => {
@@ -464,6 +496,28 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_sit_left_in_the_middle_or_right_of_their_box() {
+        let layout: Layout = ron::from_str(
+            r#"(elements: [
+                (id: "a", anchor: TopLeft, at: (0, 0), size: (400, 30), kind: Text("hi")),
+                (id: "b", anchor: TopLeft, at: (0, 40), size: (400, 30), kind: Text("hi"), align: Center),
+                (id: "c", anchor: TopLeft, at: (0, 80), size: (400, 30), kind: Text("hi"), align: Right),
+            ])"#,
+        )
+        .unwrap();
+        let mut screen = Screen::from_layout(layout);
+        let mut ui = Ui::new();
+        screen.draw(&mut Widgets::new(), &mut ui, &Input::default(), Vec2::new(1280.0, 720.0));
+        let xs: Vec<f32> = ui.texts.iter().map(|t| t.x).collect();
+        assert_eq!(xs[0], 0.0);
+        assert!(xs[1] > 150.0 && xs[1] < 200.0, "{xs:?}");
+        assert!(xs[2] > 350.0, "{xs:?}");
+        // Left is not written: old files and new read the same.
+        let text = ron::to_string(&screen.layout().elements[0]).unwrap();
+        assert!(!text.contains("align"), "{text}");
+    }
     use crate::input::{InputEvent, MouseButton};
 
     const MENU: &str = r#"(elements: [
