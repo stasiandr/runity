@@ -29,6 +29,8 @@
 //! | Ctrl Z / Ctrl Y, Ctrl Shift Z | undo / redo |
 //! | Ctrl C / Ctrl V | copy / paste |
 //! | Ctrl S | save |
+//! | Ctrl A | select everything |
+//! | Ctrl Shift N / Ctrl Shift G | an empty entity at the view / one around the selection |
 //! | Ctrl Alt F / Ctrl Shift F | move the selection to the view / put it where the view is |
 //! | Escape | select nothing |
 //!
@@ -201,6 +203,18 @@ impl Session {
             if pressed(Key::S) {
                 self.save_scene(None)?;
                 did.push("save");
+            }
+            if pressed(Key::A) && !flying {
+                self.select_everything()?;
+                did.push("select all");
+            }
+            if pressed(Key::N) && shift {
+                self.create_empty("")?;
+                did.push("create empty");
+            }
+            if pressed(Key::G) && shift && !self.selection().is_empty() {
+                self.group_selection("")?;
+                did.push("group");
             }
             if pressed(Key::F) && alt && self.move_to_view()? {
                 did.push("move to view");

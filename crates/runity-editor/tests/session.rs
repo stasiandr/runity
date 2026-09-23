@@ -3196,3 +3196,78 @@ fn view_frame_result(
     }
     session.scene_view(input, 1.0 / 60.0)
 }
+
+#[test]
+fn a_heap_of_cubes_becomes_a_group_without_anything_moving() {
+    use runity::glam::Vec3;
+    use runity::input::{Input, InputEvent as E, Key};
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"post\", model: \"builtin:cube\", transform: (position: (4.0, 0.5, 0.0))),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("group", &scene) else {
+        return;
+    };
+    let (crate_id, post, lid) = (
+        id(&session, "crate"),
+        id(&session, "post"),
+        id(&session, "lid"),
+    );
+    let before: Vec<Vec3> = [crate_id, post, lid]
+        .iter()
+        .map(|i| session.world_position(*i).unwrap())
+        .collect();
+    session.select(Some(crate_id)).unwrap();
+    session.add_to_selection(post).unwrap();
+    let steps = session.undo_steps().len();
+    let group = session.group_selection("hut").unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    let names: Vec<(String, usize)> = session
+        .hierarchy()
+        .into_iter()
+        .map(|r| (r.name, r.depth))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("ground".into(), 0),
+            ("hut".into(), 0),
+            ("crate".into(), 1),
+            ("lid".into(), 2),
+            ("post".into(), 1)
+        ]
+    );
+    for (i, id) in [crate_id, post, lid].iter().enumerate() {
+        assert!((session.world_position(*id).unwrap() - before[i]).length() < 1e-4);
+    }
+    let middle = session.world_position(group).unwrap();
+    assert!(
+        (middle - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-3,
+        "on the ground in the middle: {middle}"
+    );
+    assert_eq!(session.selected(), Some(group));
+
+    // Ctrl A takes every top line; Ctrl Shift N makes an empty where the view looks.
+    let mut input = Input::new();
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::KeyDown(Key::LeftControl), E::KeyDown(Key::A)],
+    );
+    assert!(did.contains(&"select all"), "{did:?}");
+    assert_eq!(session.selection().len(), 2, "ground and the hut");
+    view_frame(&mut session, &mut input, (1.0, 1.0), &[E::KeyUp(Key::A)]);
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::KeyDown(Key::LeftShift), E::KeyDown(Key::N)],
+    );
+    assert!(did.contains(&"create empty"), "{did:?}");
+    let empty = session.selected().unwrap();
+    assert_eq!(
+        session.world_position(empty).unwrap(),
+        session.camera().target
+    );
+}

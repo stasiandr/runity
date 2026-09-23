@@ -19,6 +19,7 @@
 
 pub mod console;
 mod error;
+mod grouping;
 pub mod history;
 pub mod panels;
 mod scene_view;
