@@ -14,15 +14,14 @@ use runity_import::poly::PolySource;
 use crate::{EditError, EditResult, Session};
 
 impl Session {
-    /// Draw a solid from an outline: `points` are x and z in metres around
-    /// its origin, `height` how far up it goes. Writes
-    /// `assets/<name>.rpoly`, imports it, and places it at `at` as a static
-    /// body with a collider of its own shape — selected, one undo step.
+    /// Draw a solid from an outline (see [`PolySource`]: points around its
+    /// origin, a height, lying or standing). Writes `assets/<name>.rpoly`,
+    /// imports it, and places it at `at` as a static body with a collider
+    /// of its own shape — selected, one undo step.
     pub fn poly_shape(
         &mut self,
         name: &str,
-        points: &[(f32, f32)],
-        height: f32,
+        source: &PolySource,
         at: Vec3,
     ) -> EditResult<EntityId> {
         self.refuse_while_playing()?;
@@ -42,12 +41,8 @@ impl Session {
                 "there is already a model named `{name}`; pick another name, or change its points with set_poly"
             )));
         }
-        let source = PolySource {
-            points: points.to_vec(),
-            height,
-        };
         // Refused before anything is written.
-        runity_import::poly::build(&source).map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        runity_import::poly::build(source).map_err(|e| EditError::Scene(format!("{e:#}")))?;
         std::fs::create_dir_all(project.assets())
             .and_then(|()| std::fs::write(&file, source.to_text()))
             .map_err(|e| EditError::Io(format!("{}: {e}", file.display())))?;

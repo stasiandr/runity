@@ -3978,6 +3978,14 @@ fn what_the_game_prints_comes_back_into_the_console() {
     assert!(!session.game_running() && !session.stop_game());
 }
 
+fn poly(points: &[(f32, f32)], height: f32) -> runity_import::poly::PolySource {
+    runity_import::poly::PolySource {
+        points: points.to_vec(),
+        height,
+        standing: false,
+    }
+}
+
 #[test]
 fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     let Some((mut session, path)) = open("poly") else {
@@ -3993,7 +4001,7 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     ];
     let steps = session.undo_steps().len();
     let hall = session
-        .poly_shape("hall", &l, 0.5, Vec3::new(20.0, 0.0, 0.0))
+        .poly_shape("hall", &poly(&l, 0.5), Vec3::new(20.0, 0.0, 0.0))
         .unwrap();
     assert_eq!(session.undo_steps().len(), steps + 1, "one step");
     assert_eq!(session.selected(), Some(hall));
@@ -4063,15 +4071,7 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
 
     // Push the wall along z = 0 out by two metres: the hall is longer
     // toward -z, by exactly that, whichever way the outline runs.
-    session
-        .set_poly(
-            "hall",
-            &runity_import::poly::PolySource {
-                points: l.to_vec(),
-                height: 2.0,
-            },
-        )
-        .unwrap();
+    session.set_poly("hall", &poly(&l, 2.0)).unwrap();
     session.push_poly_edge("hall", 0, 2.0).unwrap();
     let (low, high) = session.world_bounds(hall).unwrap();
     assert!(
@@ -4080,15 +4080,7 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     );
     let mut reversed: Vec<(f32, f32)> = l.to_vec();
     reversed.reverse();
-    session
-        .set_poly(
-            "hall",
-            &runity_import::poly::PolySource {
-                points: reversed,
-                height: 2.0,
-            },
-        )
-        .unwrap();
+    session.set_poly("hall", &poly(&reversed, 2.0)).unwrap();
     // Reversed, the wall along z = 0 runs from point 4 to point 5.
     session.push_poly_edge("hall", 4, -1.0).unwrap();
     let (low, _) = session.world_bounds(hall).unwrap();
@@ -4096,12 +4088,12 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     assert!(session.push_poly_edge("hall", 6, 1.0).is_err());
 
     let e = session
-        .poly_shape("hall", &l, 1.0, Vec3::ZERO)
+        .poly_shape("hall", &poly(&l, 1.0), Vec3::ZERO)
         .unwrap_err()
         .to_string();
     assert!(e.contains("already"), "{e}");
     let e = session
-        .poly_shape("Big Hall", &l, 1.0, Vec3::ZERO)
+        .poly_shape("Big Hall", &poly(&l, 1.0), Vec3::ZERO)
         .unwrap_err()
         .to_string();
     assert!(e.contains("snake_case"), "{e}");

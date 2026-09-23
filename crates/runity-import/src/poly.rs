@@ -12,6 +12,10 @@
 //! it goes. The outline may be any shape that does not cross itself — an
 //! L-shaped room, a platform, a plinth — which a box cannot be.
 //!
+//! `standing: true` stands it up: the points are x and y, a wall drawn as
+//! seen from the front, and `height` is its thickness along z — a U of
+//! points is a wall with a doorway in it.
+//!
 //! Imported into an ordinary mesh named after the file, where the points
 //! say rather than centred: the outline is what someone drew, and moving
 //! it would move what they drew. Placed like any model — `model: "hall",
@@ -29,10 +33,15 @@ use serde::{Deserialize, Serialize};
 use crate::ImportSettings;
 
 /// What a `.rpoly` says.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PolySource {
     pub points: Vec<(f32, f32)>,
     pub height: f32,
+    /// The outline stands up instead of lying down: points are x and y —
+    /// a wall seen from its front — and `height` is how thick it is, along
+    /// z. A U-shaped outline is a wall with a doorway.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub standing: bool,
 }
 
 impl PolySource {
@@ -44,9 +53,14 @@ impl PolySource {
             .map(|(x, z)| format!("({x:?}, {z:?})"))
             .collect();
         format!(
-            "(\n    points: [{}],\n    height: {:?},\n)\n",
+            "(\n    points: [{}],\n    height: {:?},\n{})\n",
             points.join(", "),
-            self.height
+            self.height,
+            if self.standing {
+                "    standing: true,\n"
+            } else {
+                ""
+            }
         )
     }
 }
@@ -178,6 +192,18 @@ pub fn build(source: &PolySource) -> Result<(Vec<Vertex>, Vec<u32>)> {
         indices.extend_from_slice(&[al, bl, bh, al, bh, ah]);
         around += along;
     }
+    if source.standing {
+        // Stood up: what was up is now along z, what was z is up. A swap
+        // of two axes is a mirror, so every triangle turns the other way
+        // to keep facing out.
+        for v in &mut vertices {
+            v.position.swap(1, 2);
+            v.normal.swap(1, 2);
+        }
+        for t in indices.chunks_mut(3) {
+            t.swap(1, 2);
+        }
+    }
     Ok((vertices, indices))
 }
 
@@ -255,6 +281,7 @@ mod tests {
                 (0.0, 10.0),
             ],
             height: 3.0,
+            standing: false,
         }
     }
 
@@ -294,9 +321,13 @@ mod tests {
     #[test]
     fn an_outline_that_cannot_be_a_floor_says_why() {
         let e = |points: Vec<(f32, f32)>, height: f32| {
-            build(&PolySource { points, height })
-                .unwrap_err()
-                .to_string()
+            build(&PolySource {
+                points,
+                height,
+                standing: false,
+            })
+            .unwrap_err()
+            .to_string()
         };
         assert!(e(vec![(0.0, 0.0), (1.0, 0.0)], 1.0).contains("three points"));
         assert!(e(vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)], 1.0).contains("one line"));
@@ -307,6 +338,38 @@ mod tests {
         let mut closed = l_shape();
         closed.points.push((0.0, 0.0));
         assert!(build(&closed).is_ok());
+    }
+
+    #[test]
+    fn a_standing_outline_is_a_wall_with_a_doorway() {
+        // Four metres wide, three high, a door 1 m wide and 2.1 m high.
+        let wall = PolySource {
+            points: vec![
+                (0.0, 0.0),
+                (1.5, 0.0),
+                (1.5, 2.1),
+                (2.5, 2.1),
+                (2.5, 0.0),
+                (4.0, 0.0),
+                (4.0, 3.0),
+                (0.0, 3.0),
+            ],
+            height: 0.2,
+            standing: true,
+        };
+        let (vertices, indices) = build(&wall).unwrap();
+        let expected = (4.0 * 3.0 - 1.0 * 2.1) * 0.2;
+        assert!((volume(&vertices, &indices) - expected).abs() < 1e-3);
+        let bounds = Bounds::of(&vertices);
+        assert_eq!(bounds.max, [4.0, 3.0, 0.2]);
+        // The front faces -z, toward someone standing in front of it.
+        assert!(vertices
+            .iter()
+            .any(|v| v.normal == [0.0, 0.0, -1.0] && v.position[2] == 0.0));
+        let text = wall.to_text();
+        assert!(text.contains("standing: true"), "{text}");
+        assert_eq!(ron::from_str::<PolySource>(&text).unwrap(), wall);
+        assert!(!l_shape().to_text().contains("standing"));
     }
 
     #[test]
