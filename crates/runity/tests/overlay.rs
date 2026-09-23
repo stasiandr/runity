@@ -206,3 +206,43 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         OffscreenTarget::pixel(&overlaid, WIDTH, WIDTH / 2, HEIGHT / 2)
     );
 }
+
+#[test]
+fn a_menu_of_widgets_draws_where_it_says() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let (mut widgets, input, mut ui) = (runity::Widgets::new(), runity::Input::new(), Ui::new());
+    let first = runity::Rect::new(20.0, 20.0, 160.0, 36.0);
+    widgets.button(&mut ui, &input, first, "Play");
+    let mut on = true;
+    widgets.toggle(&mut ui, &input, first.below(8.0), "Shadows", &mut on);
+    let mut volume = 0.7;
+    widgets.slider(
+        &mut ui,
+        &input,
+        first.below(8.0).below(8.0),
+        "Volume",
+        &mut volume,
+        0.0..=1.0,
+    );
+    let pixels = shoot(&gpu, &ui);
+    if let Ok(dir) = std::env::var("RUNITY_SHOT_DIR") {
+        image::save_buffer(
+            std::path::Path::new(&dir).join("widgets.png"),
+            &pixels,
+            WIDTH,
+            HEIGHT,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+    }
+    // The slider's filled part is the accent colour, 70% along.
+    let filled = pixel(&pixels, 20 + 160 * 6 / 10, 20 + 2 * 44 + 18);
+    let empty = pixel(&pixels, 20 + 160 * 9 / 10, 20 + 2 * 44 + 18);
+    assert!(
+        filled[0] > empty[0] + 60,
+        "filled {filled:?} against empty {empty:?}"
+    );
+}
