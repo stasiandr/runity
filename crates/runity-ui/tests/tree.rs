@@ -363,3 +363,31 @@ fn a_hover_over_a_long_list_repaints_quickly() {
     eprintln!("repaint of 2000 lines on a hover: {each:?}");
     assert!(each.as_millis() < 40, "{each:?}");
 }
+
+#[test]
+fn text_sits_in_the_middle_of_a_taller_box() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let field = ui.add_field(
+        root,
+        Style::row()
+            .size(200.0, 30.0)
+            .padding_x(6.0)
+            .text_size(12.0),
+        "2.6",
+    );
+    let layers = ui.paint().to_vec();
+    let text = layers
+        .iter()
+        .flat_map(|l| &l.texts)
+        .find(|t| t.node == field)
+        .unwrap();
+    let rect = ui.rect(field);
+    // A 12 px line is 16.2 px tall: centred in 30 it starts 6.9 down.
+    let line = 12.0 * 1.35;
+    assert!(
+        (text.y - (rect.y + (30.0 - line) / 2.0)).abs() < 0.5,
+        "{} in {rect:?}",
+        text.y
+    );
+}

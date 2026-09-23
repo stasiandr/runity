@@ -882,7 +882,14 @@ impl Ui {
             let pad = &layout.padding;
             let border_w = &layout.border;
             let x = rect.x + pad.left + border_w.left;
-            let y = rect.y + pad.top + border_w.top;
+            // The text sits in the middle of the box's height, as a label
+            // in a button or the value in a field does: a box taller than
+            // its text — a 22 px field with a 16 px line — would otherwise
+            // hold it at the top.
+            let top = rect.y + pad.top + border_w.top;
+            let room = layout.size.height - pad.top - pad.bottom - border_w.top - border_w.bottom;
+            let text_height = self.text_height(id);
+            let y = top + ((room - text_height) / 2.0).max(0.0);
             let inner = Rect {
                 x,
                 y: rect.y,
@@ -920,6 +927,16 @@ impl Ui {
     /// Where a node was drawn, after the last [`Ui::paint`].
     pub fn rect(&self, id: NodeId) -> Rect {
         self.node(id).rect
+    }
+
+    /// How tall a node's text is as laid out: its lines times the line
+    /// height.
+    fn text_height(&self, id: NodeId) -> f32 {
+        let Some(text) = self.node(id).text.as_ref() else {
+            return 0.0;
+        };
+        let lines = text.buffer.layout_runs().count().max(1);
+        lines as f32 * text.buffer.metrics().line_height
     }
 
     /// The fonts and every node's shaped text at once, for the renderer:
