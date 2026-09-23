@@ -496,6 +496,7 @@ const INPUT_RON: &str = "\
 (
     actions: {
         \"quit\": [Key(Escape)],
+        \"profile\": [Key(F3)],
         \"jump\": [Key(Space), Pad(South)],
     },
     axes: {
@@ -524,7 +525,7 @@ use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
 use runity::screen::Screen;
-use runity::ui::Ui;
+use runity::ui::{TextRun, Ui};
 use runity::widgets::Widgets;
 use runity::{Actions, Components, LiveScene, Tuned};
 use serde::Deserialize;
@@ -552,6 +553,8 @@ struct Game {
     layers: Tuned<runity::layers::Layers>,
     hud: Screen,
     strings: runity::strings::Strings,
+    profile: runity::perf::Profiler,
+    show_profile: bool,
     widgets: Widgets,
     ui: Ui,
     world: World,
@@ -570,13 +573,15 @@ impl shell::Game for Game {
     /// Fixed-step game logic: the systems, in order.
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
+        let started = std::time::Instant::now();
         // systems, in order
         systems::spin::run(&mut self.world, seconds);
         runity::world::apply_hierarchy(&mut self.world);
+        self.profile.record("systems", started.elapsed());
         self.physics.gravity.y = self.tuning.gravity;
         // Physics is a system too: bodies from the scene, a fixed step, and
         // where the dynamic ones went written back.
-        self.physics.run(&mut self.world);
+        self.profile.time("physics", || self.physics.run(&mut self.world));
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
@@ -607,17 +612,30 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
+        // F3: what each part costs, over the game.
+        if self.actions.pressed(ctx.input, "profile") {
+            self.show_profile = !self.show_profile;
+        }
+        if self.show_profile {
+            for (i, line) in self.profile.lines().into_iter().enumerate() {
+                let at = 60.0 + 20.0 * i as f32;
+                self.ui.text(TextRun::new(20.0, at, 16.0, runity::glam::Vec4::ONE, line));
+            }
+        }
         let scene = self.live.scene();
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view));
-        runity::build_frame(
+        let started = std::time::Instant::now();
+        let frame = runity::build_frame(
             &self.world,
             camera,
             runity::scene_lighting(&scene.sun),
             runity::scene_fog(&scene.fog),
-        )
+        );
+        self.profile.record("frame", started.elapsed());
+        frame
     }
 
     fn overlay(&mut self) -> &Ui {
@@ -661,6 +679,8 @@ fn main() -> anyhow::Result<()> {
         layers,
         hud,
         strings,
+        profile: runity::perf::Profiler::new(600),
+        show_profile: false,
         widgets: Widgets::new(),
         ui: Ui::new(),
         world: World::new(),
