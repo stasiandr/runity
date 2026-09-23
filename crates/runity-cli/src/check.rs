@@ -91,6 +91,11 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
+    for path in files(&project.root().join(runity::project::TUNING), "ron") {
+        let file = relative(project, &path);
+        let _: Option<ron::Value> = parse(&path, &file, &mut out);
+    }
+
     check_sidecars(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use runity::project::{DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES};
+use runity::project::{DATA, FILE, INPUT, LIBRARY, PREFABS, SCENES, TUNING};
 use runity::Project;
 
 pub struct Built {
@@ -109,7 +109,7 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
     if project.root().join(INPUT).is_file() {
         std::fs::copy(project.root().join(INPUT), data.join(INPUT))?;
     }
-    for dir in [SCENES, PREFABS, LIBRARY] {
+    for dir in [SCENES, PREFABS, LIBRARY, TUNING] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;
     }
     let shipped = out.join(

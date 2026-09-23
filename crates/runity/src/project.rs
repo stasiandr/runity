@@ -14,6 +14,7 @@
 //!   prefabs/        *.prefab
 //!   materials/      *.rmat
 //!   assets/         sources: models, textures, sounds
+//!   tuning/         the game's numbers, RON, reloaded while it runs
 //!   library/        built .rasset — derived, never committed
 //!   Cargo.toml      the game crate, its own workspace
 //!   src/main.rs     the game: a window on scenes/main.ron, reloading live
@@ -49,6 +50,9 @@ pub const LIBRARY: &str = "library";
 pub const SRC: &str = "src";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
+/// The game's numbers, as RON a designer turns while it runs: see
+/// [`crate::Tuned`].
+pub const TUNING: &str = "tuning";
 
 /// Where a built game keeps its project data, beside the executable.
 pub const DATA: &str = "data";
@@ -225,6 +229,8 @@ impl Project {
         std::fs::write(root.join("CLAUDE.md"), CLAUDE_MD.replace("{name}", name))?;
         std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
         std::fs::write(root.join(INPUT), INPUT_RON)?;
+        std::fs::create_dir_all(root.join(TUNING))?;
+        std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(SRC))?;
         std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine))?;
         std::fs::write(root.join(SRC).join("main.rs"), GAME.replace("{name}", name))?;
@@ -394,6 +400,14 @@ opt-level = 3
     )
 }
 
+/// The numbers a new project starts with.
+const WORLD_RON: &str = "\
+// The world's numbers. Change one and save while the game runs.
+(
+    gravity: -9.81,
+)
+";
+
 /// The bindings a new project starts with.
 const INPUT_RON: &str = "\
 // What the player does, by name. The game asks for \"jump\", not Space;
@@ -424,8 +438,14 @@ use runity::hecs::World;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
-use runity::{Actions, Components, LiveScene, Transform};
+use runity::{Actions, Components, LiveScene, Transform, Tuned};
 use serde::Deserialize;
+
+/// Numbers from `tuning/world.ron`, reloaded while the game runs.
+#[derive(Deserialize)]
+struct WorldNumbers {
+    gravity: f32,
+}
 
 /// A component: a plain struct. A scene line gives it by the name it is
 /// registered under in `main` —
@@ -447,6 +467,7 @@ fn spin(world: &mut World, seconds: f32) {
 struct Game {
     live: LiveScene,
     actions: Actions,
+    tuning: Tuned<WorldNumbers>,
     world: World,
     physics: PhysicsWorld,
 }
@@ -463,6 +484,7 @@ impl shell::Game for Game {
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
         spin(&mut self.world, seconds);
+        self.physics.gravity.y = self.tuning.gravity;
         // Physics is a system too: bodies from the scene, a fixed step, and
         // where the dynamic ones went written back.
         self.physics.run(&mut self.world);
@@ -470,6 +492,9 @@ impl shell::Game for Game {
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
         if let Some(Err(problem)) = self.actions.reload_if_changed() {
+            eprintln!("{problem}");
+        }
+        if let Some(Err(problem)) = self.tuning.poll(ctx.time.delta()) {
             eprintln!("{problem}");
         }
         if self.actions.pressed(ctx.input, "quit") {
@@ -507,9 +532,12 @@ fn main() -> anyhow::Result<()> {
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
+    let tuning = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/world.ron"))
+        .map_err(anyhow::Error::msg)?;
     let game = Game {
         live,
         actions,
+        tuning,
         world: World::new(),
         physics: PhysicsWorld::default(),
     };
@@ -560,6 +588,7 @@ things in the same place:
 ```
 runity.ron   the project file
 input.ron    actions by name (\"jump\"), and the keys for each
+tuning/      the game's numbers, RON, typed in code with runity::Tuned
 scenes/      scenes, RON — one entity per block, `id` first
 prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`
 materials/   .rmat sources: `(color: \"#rrggbb\")`, sRGB hex

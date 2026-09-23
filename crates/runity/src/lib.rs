@@ -51,6 +51,7 @@ pub mod shell;
 pub mod spelling;
 pub mod surface;
 pub mod time;
+pub mod tuned;
 pub mod ui;
 pub mod ui_render;
 pub mod widgets;
@@ -86,6 +87,7 @@ pub use render::{
 pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
+pub use tuned::Tuned;
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use widgets::{Rect, Widgets};
