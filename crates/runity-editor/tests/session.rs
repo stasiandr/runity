@@ -3883,3 +3883,63 @@ fn an_instance_changes_its_part_s_light_and_the_others_keep_the_prefab_s() {
         "every fire now"
     );
 }
+
+#[test]
+fn what_the_game_prints_comes_back_into_the_console() {
+    use runity_editor::console::Level;
+    let Some((mut session, _)) = open("game-output") else {
+        return;
+    };
+    let mut command = std::process::Command::new("sh");
+    command.args([
+        "-c",
+        "echo 'the door opened'; echo 'warning: slow frame' >&2; \
+         echo \"thread 'main' panicked at src/main.rs:3:5:\" >&2; \
+         echo '   0: game::main' >&2; echo '   1: std::rt::lang_start' >&2; exit 101",
+    ]);
+    session.run_in_console(command).unwrap();
+    let started = std::time::Instant::now();
+    let code = loop {
+        if let Some(code) = session.poll_game() {
+            break code;
+        }
+        assert!(started.elapsed().as_secs() < 10, "the game never ended");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(code, 101);
+    assert!(!session.game_running());
+    let said = |level: Level, text: &str| {
+        session
+            .console()
+            .iter()
+            .any(|l| l.level == level && l.text.contains(text))
+    };
+    assert!(
+        said(Level::Info, "the door opened"),
+        "{:#?}",
+        session.console()
+    );
+    assert!(said(Level::Warning, "slow frame"));
+    assert!(said(Level::Error, "panicked at src/main.rs"));
+    // The trace is part of the panic's entry, not lines of its own.
+    let panic = session
+        .console()
+        .iter()
+        .find(|l| l.text.contains("panicked"))
+        .unwrap();
+    assert!(panic.text.ends_with("1: std::rt::lang_start"), "{panic:?}");
+    assert!(!session
+        .console()
+        .iter()
+        .any(|l| l.text.starts_with("   0:")));
+    assert!(said(Level::Error, "the game ended with"));
+
+    // A game still running is stopped by the editor, and a second start
+    // replaces the first.
+    let mut forever = std::process::Command::new("sleep");
+    forever.arg("30");
+    session.run_in_console(forever).unwrap();
+    assert!(session.game_running());
+    assert!(session.stop_game());
+    assert!(!session.game_running() && !session.stop_game());
+}

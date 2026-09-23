@@ -120,7 +120,9 @@ pub fn list() -> Vec<Value> {
         tool("place", "Put entities on whatever a pixel of the last render shows — a table's top, a wall, a slope — by the bottom of their box, keeping their places relative to each other. One undo step. Pixels from the top left, as `pick` takes them.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["ids", "x", "y"]),
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
-        tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
+        tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
+        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running.", json!({}), &[]),
+        tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
@@ -630,8 +632,27 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 format!("{field} is not overridden there")
             })])
         }
+        "start_game" => {
+            let session = server.session()?;
+            session.start_game().map_err(|e| e.to_string())?;
+            Ok(vec![text(
+                "started; its output goes to the console as it comes",
+            )])
+        }
+        "stop_game" => {
+            let session = server.session()?;
+            let answer = if let Some(code) = session.poll_game() {
+                format!("it had already ended, with code {code}")
+            } else if session.stop_game() {
+                "stopped".to_string()
+            } else {
+                "no game was running".to_string()
+            };
+            Ok(vec![text(answer)])
+        }
         "console" => {
             let session = server.session()?;
+            session.poll_game();
             let mut out = String::new();
             for line in session.console() {
                 let level = match line.level {

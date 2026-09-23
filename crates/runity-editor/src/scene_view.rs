@@ -51,6 +51,8 @@ impl Session {
     /// What it refuses — an edit during play, say — is also said in the
     /// Console, where a window's user sees it.
     pub fn scene_view(&mut self, input: &Input, dt: f32) -> EditResult<Vec<&'static str>> {
+        // What the game started from here printed since the last frame.
+        self.poll_game();
         let done = self.scene_view_frame(input, dt);
         if let Err(e) = &done {
             self.say(crate::console::Level::Error, e.to_string());

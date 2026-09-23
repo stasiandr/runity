@@ -19,6 +19,7 @@
 
 pub mod console;
 mod error;
+mod game;
 mod grouping;
 mod import_settings;
 pub use import_settings::IMPORT_FIELDS;
@@ -171,6 +172,8 @@ pub struct Session {
         Option<runity::navigation::NavGrid>,
     )>,
     console: console::Console,
+    /// The game started from here, its output on its way to the Console.
+    game: Option<game::Running>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -308,6 +311,7 @@ impl Session {
             vertex_grab: None,
             nav_shown: None,
             console: Default::default(),
+            game: None,
         })
     }
 
