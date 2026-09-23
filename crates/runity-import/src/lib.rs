@@ -63,9 +63,11 @@ pub struct ImportSettings {
     /// Uniform scale applied on the way in. Kits disagree about units; the
     /// engine works in meters and the disagreement is settled here, once,
     /// rather than by a scale on every instance in every scene.
+    #[serde(default = "one")]
     pub scale: f32,
     /// Recompute normals from the faces instead of trusting the file's.
     /// Needed for sources that carry none, which is most hand-made OBJ.
+    #[serde(default)]
     pub recompute_normals: bool,
     /// Whether an image holds colour, and so needs decoding from sRGB on
     /// the way to the GPU. True for an albedo map; false for a normal map, a
@@ -75,7 +77,12 @@ pub struct ImportSettings {
     /// Move the mesh so its base sits at y = 0. A tree whose origin is in the
     /// middle of its trunk has to be placed by feel; one whose origin is at
     /// its foot can be dropped on the ground.
+    #[serde(default = "yes")]
     pub origin_to_base: bool,
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for ImportSettings {
@@ -131,17 +138,30 @@ pub fn sidecar_for(source: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-/// Where a source's built asset goes in a library: `<file>.rasset`.
+/// Where an asset is built in a library: `<id>.rasset`.
 ///
-/// The whole file name, extension included, so `stone.rmat` and `stone.obj`
-/// build to two assets rather than one overwriting the other. The library
-/// finds assets by the name inside them, not by this.
-pub fn asset_for(source: &Path, library: &Path) -> PathBuf {
-    let name = source
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "asset".into());
-    library.join(format!("{name}.rasset"))
+/// By the asset's ID, not its source's name (docs/refs.md): two sources
+/// with one name in two folders build to two assets, and a source that is
+/// renamed or moved keeps its built file. The library finds assets by the
+/// ID and the name inside them, not by this.
+pub fn asset_for(id: AssetId, library: &Path) -> PathBuf {
+    library.join(format!("{id}.rasset"))
+}
+
+/// Where a source's asset is built, by the ID its sidecar holds: `None`
+/// for a source with no sidecar yet.
+pub fn built_for(source: &Path, library: &Path) -> Option<PathBuf> {
+    let settings = ImportSettings::load(sidecar_for(source)).ok()?;
+    Some(asset_for(settings.asset_id(), library))
+}
+
+/// Whether a library file is named the way [`asset_for`] names one. A
+/// library built before assets were named by ID has files named after
+/// their sources; they are removed and built again.
+fn named_by_id(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// A hash of a file's contents, as the hex a sidecar stores.
@@ -921,7 +941,7 @@ pub fn import_to(
         other => anyhow::bail!("no importer for .{other} yet"),
     };
 
-    let asset_path = asset_for(source, library);
+    let asset_path = asset_for(id, library);
     std::fs::write(&asset_path, bytes)?;
     settings.save(sidecar)?;
     let _ = kind;
@@ -1030,6 +1050,14 @@ pub struct Reimported {
 /// polling this every frame must not read every texture every frame.
 pub fn sync(project: &runity::Project) -> Vec<Reimported> {
     let library = project.library();
+    // Built before assets were named by ID: gone, and built again below.
+    if let Ok(entries) = std::fs::read_dir(&library) {
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.extension().and_then(|e| e.to_str()) == Some("rasset") && !named_by_id(&path) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
     let mut sidecars = Vec::new();
     let mut sources = Vec::new();
     for root in [project.assets(), project.materials()] {
@@ -1081,7 +1109,7 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         }
         claimed.push(source.clone());
 
-        let asset = asset_for(&source, &library);
+        let asset = asset_for(settings.asset_id(), &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
@@ -1149,13 +1177,9 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             .map(|imported| imported.id)
             .map_err(|e| format!("{e:#}"));
         if result.is_ok() {
+            // The asset is built under its ID, so the one built before the
+            // move has just been written over: only the old sidecar goes.
             let _ = std::fs::remove_file(&old_sidecar);
-            // The asset built under the old name would otherwise sit in the
-            // library as a second copy of the same ID.
-            let old_asset = asset_for(Path::new(&from), &library);
-            if !same(&old_asset, &asset_for(&source, &library)) {
-                let _ = std::fs::remove_file(old_asset);
-            }
         }
         out.push(Reimported {
             source,
@@ -1179,7 +1203,111 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             result,
         });
     }
+    // Prefabs, scenes, graphs and screens get their IDs too. Not reported:
+    // nothing in the library changed for them.
+    identify(project);
     out
+}
+
+/// Where the project's own text assets are — prefabs, scenes, animator
+/// graphs, screens — with the extension each folder's files have.
+fn text_assets(project: &runity::Project) -> [(PathBuf, &'static str); 4] {
+    [
+        (project.prefabs(), runity::prefab::EXTENSION),
+        (project.scenes(), "ron"),
+        (project.root().join(runity::project::ANIMATORS), "ron"),
+        (project.root().join(runity::project::UI), "ron"),
+    ]
+}
+
+/// Give every prefab, scene, animator graph and screen a sidecar with its
+/// ID, as models and materials have (docs/refs.md): what a link to it
+/// holds. These are not imported — the files are read as they are — so the
+/// sidecar holds only where the file is and its ID, and no hash: a scene
+/// changes with every save, and a hash would put its sidecar in every diff.
+///
+/// A sidecar whose file is gone follows a file of the same name that turned
+/// up without one — moved to another folder outside the editor. What this
+/// cannot follow, a file renamed outside the editor, a link finds by the
+/// name it keeps beside the ID.
+pub fn identify(project: &runity::Project) -> Vec<Reimported> {
+    let mut sidecars = Vec::new();
+    let mut files = Vec::new();
+    for (root, extension) in text_assets(project) {
+        walk(
+            &root,
+            &mut |path| match path.extension().and_then(|e| e.to_str()) {
+                Some("rimport") => sidecars.push(path.to_path_buf()),
+                Some(e) if e == extension => files.push(path.to_path_buf()),
+                _ => {}
+            },
+        );
+    }
+    sidecars.sort();
+    files.sort();
+    let name = |path: &Path| {
+        project
+            .relative(path)
+            .unwrap_or_else(|| path.to_string_lossy().into_owned())
+    };
+    let mut out = Vec::new();
+    let mut orphans = Vec::new();
+    for sidecar in sidecars {
+        let Ok(settings) = ImportSettings::load(&sidecar) else {
+            continue;
+        };
+        let source = project.resolve(&settings.source);
+        if source.is_file() {
+            files.retain(|f| *f != source);
+        } else {
+            orphans.push((sidecar, settings));
+        }
+    }
+    for (sidecar, mut settings) in orphans {
+        let file_name = Path::new(&settings.source)
+            .file_name()
+            .map(|n| n.to_owned());
+        let Some(at) = files
+            .iter()
+            .position(|f| f.file_name().map(|n| n.to_owned()) == file_name)
+        else {
+            continue;
+        };
+        let source = files.remove(at);
+        let from = std::mem::replace(&mut settings.source, name(&source));
+        let result = write_identity(&source, &settings).map(|()| settings.asset_id());
+        if result.is_ok() {
+            let _ = std::fs::remove_file(&sidecar);
+        }
+        out.push(Reimported {
+            source,
+            change: Change::Moved { from },
+            result: result.map_err(|e| format!("{e:#}")),
+        });
+    }
+    for source in files {
+        let mut settings = ImportSettings::for_source(name(&source));
+        settings.id = Some(settings.asset_id());
+        let result = write_identity(&source, &settings).map(|()| settings.asset_id());
+        out.push(Reimported {
+            source,
+            change: Change::New,
+            result: result.map_err(|e| format!("{e:#}")),
+        });
+    }
+    out
+}
+
+/// A text asset's sidecar: where it is and its ID, nothing an importer
+/// would read.
+fn write_identity(source: &Path, settings: &ImportSettings) -> Result<()> {
+    let text = format!(
+        "ImportSettings(\n    source: {:?},\n    id: Some({:?}),\n)\n",
+        settings.source,
+        settings.asset_id().to_string()
+    );
+    std::fs::write(sidecar_for(source), text)?;
+    Ok(())
 }
 
 /// Whether the importer knows what to do with a file.

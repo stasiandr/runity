@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/first-light.ron",
+    id: Some("638840602fb91eb4302000123e0f2d61"),
+)

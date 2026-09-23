@@ -1061,7 +1061,11 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
         "sRGB hex, not a dump of floats: {text}"
     );
     assert!(
-        library.join("clay.rmat.rasset").exists(),
+        runity::Library::open(&library)
+            .unwrap()
+            .0
+            .material_by_name("clay")
+            .is_some(),
         "and it was imported"
     );
 
@@ -1116,7 +1120,11 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     )
     .unwrap();
     session.import(&source).unwrap();
-    assert!(library.join("wedge.obj.rasset").exists());
+    assert!(runity::Library::open(&library)
+        .unwrap()
+        .0
+        .mesh_by_name("wedge")
+        .is_some());
 
     // And a scene can use it straight away, by the name the file had.
     let added = session.add(None, "wedge").unwrap();

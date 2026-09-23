@@ -159,7 +159,7 @@ fn editing_the_hex_changes_what_the_scene_draws() {
     let done = runity_import::sync(&project);
     assert_eq!(done.len(), 1, "the one changed material");
     assert!(done[0].result.is_ok(), "{:?}", done[0].result);
-    touch_forward(&runity_import::asset_for(&source, &project.library()));
+    touch_forward(&runity_import::built_for(&source, &project.library()).unwrap());
 
     let changed = library.reload_changed();
     assert_eq!(changed.len(), 1);

@@ -43,9 +43,8 @@ fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
 /// the asset itself.
 ///
 /// Not from the library file's name: that is the importer's business, and
-/// it is `stone.rmat.rasset` beside `stone.obj.rasset` precisely so that two
-/// sources with one stem do not overwrite each other. The name a scene uses
-/// is the one inside.
+/// it is the asset's ID (`<id>.rasset`), so that two sources with one stem
+/// do not overwrite each other. The name a scene uses is the one inside.
 fn name_of(bytes: &[u8], kind: AssetKind) -> Option<String> {
     let name = match kind {
         AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok()?.name.as_str(),

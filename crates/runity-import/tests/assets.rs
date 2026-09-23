@@ -349,7 +349,8 @@ fn deleting_what_is_still_used_is_refused_with_the_lines_and_the_rest_goes() {
     assert!(said.contains("scenes/camp.ron: `kettle`"), "{said}");
     assert!(root.join("materials/stone.rmat").is_file());
 
-    let built = runity_import::asset_for(&root.join("assets/models/axe.obj"), &project.library());
+    let built =
+        runity_import::built_for(&root.join("assets/models/axe.obj"), &project.library()).unwrap();
     assert!(built.is_file());
     runity_import::assets::delete(&project, Path::new("assets/models/axe.obj")).unwrap();
     assert!(!root.join("assets/models/axe.obj").exists());
@@ -386,4 +387,92 @@ fn a_duplicate_is_a_new_asset_with_the_same_settings() {
     )
     .unwrap_err();
     assert!(format!("{e:#}").contains("already called `axe`"), "{e:#}");
+}
+
+#[test]
+fn two_sources_with_one_name_in_two_folders_are_two_assets() {
+    let root = std::env::temp_dir().join(format!("runity-same-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = runity::Project::create(&root, "same-name").unwrap();
+    let square = "v 0 0 0\nv 1 0 0\nv 1 0 1\nf 1 2 3\n";
+    let bigger = "v 0 0 0\nv 4 0 0\nv 4 0 4\nf 1 2 3\n";
+    for (folder, text) in [("rocks", square), ("cliffs", bigger)] {
+        let dir = root.join("assets").join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rock.obj"), text).unwrap();
+    }
+    runity_import::sync(&project);
+    let a =
+        runity_import::built_for(&root.join("assets/rocks/rock.obj"), &project.library()).unwrap();
+    let b =
+        runity_import::built_for(&root.join("assets/cliffs/rock.obj"), &project.library()).unwrap();
+    assert_ne!(a, b, "two files in the library");
+    assert!(a.is_file() && b.is_file(), "neither wrote over the other");
+
+    // A library from before assets were named by ID is rebuilt by ID.
+    std::fs::write(project.library().join("rock.obj.rasset"), b"old").unwrap();
+    runity_import::sync(&project);
+    assert!(!project.library().join("rock.obj.rasset").exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn prefabs_scenes_graphs_and_screens_get_an_id_that_follows_a_move() {
+    let root = std::env::temp_dir().join(format!("runity-identify-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = runity::Project::create(&root, "identify").unwrap();
+    std::fs::write(root.join("prefabs/door.prefab"), "(name: \"door\")").unwrap();
+    std::fs::create_dir_all(root.join("animators")).unwrap();
+    std::fs::write(
+        root.join("animators/hero.ron"),
+        "(start: \"idle\", states: {}, transitions: [])",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("ui")).unwrap();
+    std::fs::write(root.join("ui/menu.ron"), "(elements: [])").unwrap();
+
+    let made = runity_import::identify(&project);
+    assert!(made.len() >= 3, "{made:?}");
+    let id_of = |path: &std::path::Path| {
+        runity_import::ImportSettings::load(runity_import::sidecar_for(path))
+            .unwrap()
+            .asset_id()
+    };
+    let door = id_of(&root.join("prefabs/door.prefab"));
+    let sidecar = std::fs::read_to_string(root.join("prefabs/door.prefab.rimport")).unwrap();
+    assert!(
+        !sidecar.contains("hash"),
+        "no hash to change with every save: {sidecar}"
+    );
+    for scene in std::fs::read_dir(project.scenes()).unwrap().flatten() {
+        let path = scene.path();
+        if path.extension().is_some_and(|e| e == "ron") {
+            assert!(
+                runity_import::sidecar_for(&path).is_file(),
+                "{}",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        runity_import::identify(&project).is_empty(),
+        "the second time, nothing"
+    );
+
+    // Moved to another folder in Finder, without its sidecar: the sidecar
+    // follows, and the ID is the same.
+    std::fs::create_dir_all(root.join("prefabs/props")).unwrap();
+    std::fs::rename(
+        root.join("prefabs/door.prefab"),
+        root.join("prefabs/props/door.prefab"),
+    )
+    .unwrap();
+    let moved = runity_import::identify(&project);
+    assert!(
+        matches!(moved[0].change, runity_import::Change::Moved { .. }),
+        "{moved:?}"
+    );
+    assert_eq!(id_of(&root.join("prefabs/props/door.prefab")), door);
+    assert!(!root.join("prefabs/door.prefab.rimport").exists());
+    let _ = std::fs::remove_dir_all(&root);
 }

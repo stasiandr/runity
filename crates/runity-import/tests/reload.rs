@@ -120,7 +120,7 @@ fn a_source_touched_but_not_changed_is_not_rebuilt() {
     let source = root.join("assets/shape.obj");
     write(&source, SQUARE);
     import_into(&project, &source, None).unwrap();
-    let asset = runity_import::asset_for(&source, &project.library());
+    let asset = runity_import::built_for(&source, &project.library()).unwrap();
     let built = std::fs::metadata(&asset).unwrap().modified().unwrap();
 
     touch_forward(&source);
@@ -297,11 +297,14 @@ fn a_library_re_reads_only_what_changed() {
     write(&one, BIGGER);
     touch_forward(&one);
     sync(&project);
-    touch_forward(&runity_import::asset_for(&one, &project.library()));
+    touch_forward(&runity_import::built_for(&one, &project.library()).unwrap());
 
     let changed = loaded.reload_changed();
     assert_eq!(changed.len(), 1, "one asset, not both");
-    assert_eq!(changed[0].path.file_name().unwrap(), "one.obj.rasset");
+    assert_eq!(
+        changed[0].path,
+        runity_import::built_for(&one, &project.library()).unwrap()
+    );
 
     // The library now holds the new geometry, without being reopened.
     let mesh = loaded.mesh_by_name("one").unwrap();
@@ -385,7 +388,8 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
         field.bounds.min[1].to_native().abs() < 0.01,
         "black is the ground"
     );
-    let before = asset::read(runity_import::asset_for(&source, &project.library())).unwrap();
+    let before =
+        asset::read(runity_import::built_for(&source, &project.library()).unwrap()).unwrap();
 
     // Repaint only the image: the terrain is rebuilt, lower.
     paint(128);
@@ -395,6 +399,7 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
             .any(|r| r.source == source && r.change == Change::Changed),
         "the terrain counts as changed: {done:?}"
     );
-    let after = asset::read(runity_import::asset_for(&source, &project.library())).unwrap();
+    let after =
+        asset::read(runity_import::built_for(&source, &project.library()).unwrap()).unwrap();
     assert_ne!(before, after);
 }

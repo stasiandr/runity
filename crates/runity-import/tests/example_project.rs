@@ -59,3 +59,25 @@ fn every_example_source_has_a_current_sidecar() {
         assert!(settings.id.is_some(), "{}: no asset id", sidecar.display());
     }
 }
+
+#[test]
+fn every_example_prefab_and_scene_has_an_id() {
+    let project = example();
+    let fix = "run `cargo run -p runity-cli -- sync examples/valley` and commit the .rimport";
+    let mut found = 0;
+    for (dir, extension) in [(project.prefabs(), "prefab"), (project.scenes(), "ron")] {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != extension) {
+                continue;
+            }
+            found += 1;
+            let sidecar = sidecar_for(&path);
+            let settings = ImportSettings::load(&sidecar)
+                .unwrap_or_else(|e| panic!("{}: {e:#}; {fix}", sidecar.display()));
+            assert_eq!(settings.source, project.relative(&path).unwrap(), "{fix}");
+            assert!(settings.id.is_some(), "{}: no id; {fix}", sidecar.display());
+        }
+    }
+    assert!(found >= 3, "only {found}");
+}
