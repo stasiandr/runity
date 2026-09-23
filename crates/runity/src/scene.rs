@@ -765,6 +765,11 @@ pub struct EntityDesc {
     /// (`PhysicsWorld::broken`).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub joint_break: Option<f32>,
+    /// Held by this joint of the parent's skeleton, not by the parent
+    /// itself: a spade in a hand, a hat on a head, going where the
+    /// animation takes the bone. `transform` is then relative to the bone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bone: String,
     /// The game's own components, by the name the game registered each
     /// under (see [`crate::components`]), each value in RON:
     ///
@@ -1598,6 +1603,7 @@ mod tests {
                 physics: Default::default(),
                 joint: Default::default(),
                 joint_break: None,
+                bone: String::new(),
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1628,6 +1634,7 @@ mod tests {
                     physics: Default::default(),
                     joint: Default::default(),
                     joint_break: None,
+                    bone: String::new(),
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1684,6 +1691,7 @@ mod tests {
                 physics: Default::default(),
                 joint: Default::default(),
                 joint_break: None,
+                bone: String::new(),
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),

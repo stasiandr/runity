@@ -61,6 +61,12 @@ pub struct SceneId(pub crate::id::EntityId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parent(pub hecs::Entity);
 
+/// Held by a joint of the parent's skeleton, by the joint's name: from a
+/// line's `bone`. [`apply_hierarchy`] places it where the parent's pose
+/// puts that joint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnBone(pub String);
+
 /// Kept from the scene so that physics can pick entities up later without the
 /// scene having to be re-read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +266,9 @@ fn spawn_one(
     }
     if let Some(force) = desc.joint_break {
         let _ = world.insert_one(entity, JointBreak(force));
+    }
+    if !desc.bone.is_empty() {
+        let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
     }
     if !desc.physics.is_default() {
         let _ = world.insert_one(entity, Props(desc.physics));
@@ -650,6 +659,14 @@ impl Patch<'_> {
             let _ = world.remove_one::<JointBroken>(entity);
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.bone != desc.bone) {
+            if desc.bone.is_empty() {
+                let _ = world.remove_one::<OnBone>(entity);
+            } else {
+                let _ = world.insert_one(entity, OnBone(desc.bone.clone()));
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.joint_break != desc.joint_break) {
             match desc.joint_break {
                 Some(force) => {
@@ -697,6 +714,36 @@ pub fn apply_hierarchy(world: &mut World) {
         .iter()
     {
         locals.insert(entity, (local.matrix(), parent.map(|p| p.0)));
+    }
+    // What is held by a bone is relative to that bone, as the parent's
+    // pose has it: the bone's place in the parent's model goes between.
+    let mut held: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
+    for (entity, bone, parent) in world.query::<(hecs::Entity, &OnBone, &Parent)>().iter() {
+        let mut q = world.query_one::<(&crate::Animator, &Posed)>(parent.0);
+        let Ok((animator, posed)) = q.get() else {
+            continue;
+        };
+        let Some((i, joint)) = animator
+            .skeleton
+            .joints
+            .iter()
+            .enumerate()
+            .find(|(_, j)| j.name == bone.0)
+        else {
+            continue;
+        };
+        let Some(skinning) = posed.0.get(i) else {
+            continue;
+        };
+        // Skinning is the joint's place times its inverse bind: undo the
+        // second to get the first.
+        let placed = *skinning * glam::Mat4::from_cols_array_2d(&joint.inverse_bind).inverse();
+        held.push((entity, placed));
+    }
+    for (entity, bone) in held {
+        if let Some((local, _)) = locals.get_mut(&entity) {
+            *local = bone * *local;
+        }
     }
 
     let mut resolved: Vec<(hecs::Entity, glam::Mat4)> = Vec::with_capacity(locals.len());
@@ -1069,6 +1116,7 @@ mod tests {
             physics: Default::default(),
             joint: Default::default(),
             joint_break: None,
+            bone: String::new(),
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1101,6 +1149,7 @@ mod tests {
                     physics: Default::default(),
                     joint: Default::default(),
                     joint_break: None,
+                    bone: String::new(),
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1626,4 +1675,34 @@ mod tests {
         let _ = player;
         assert!(camera_of(&World::new()).is_none());
     }
+
+    #[test]
+    fn a_thing_on_a_bone_goes_where_the_pose_puts_the_bone() {
+        use crate::animation::{Joint, PoseTransform, Skeleton};
+        let bind = glam::Mat4::from_translation(glam::Vec3::new(1.0, 0.0, 0.0));
+        let skeleton = std::sync::Arc::new(Skeleton {
+            joints: vec![Joint {
+                name: "hand".into(),
+                parent: None,
+                inverse_bind: bind.inverse().to_cols_array_2d(),
+                rest: PoseTransform::default(),
+            }],
+        });
+        let animator = crate::Animator::new(skeleton, std::sync::Arc::new(Vec::new()));
+        // The pose lifts the hand to (1, 2, 0) in the model.
+        let hand = glam::Mat4::from_translation(glam::Vec3::new(1.0, 2.0, 0.0));
+        let mut world = World::new();
+        let at = |x: f32, y: f32, z: f32| Transform {
+            position: glam::Vec3::new(x, y, z),
+            ..Transform::default()
+        };
+        let body = world.spawn((at(10.0, 0.0, 0.0), animator, Posed(vec![hand * bind.inverse()])));
+        let spade = world.spawn((at(0.0, 0.0, 0.5), Parent(body), OnBone("hand".into())));
+        let beside = world.spawn((at(0.0, 0.0, 0.5), Parent(body)));
+        apply_hierarchy(&mut world);
+        let place = |e| world.get::<&WorldTransform>(e).unwrap().0.w_axis.truncate();
+        assert_eq!(place(spade), glam::Vec3::new(11.0, 2.0, 0.5));
+        assert_eq!(place(beside), glam::Vec3::new(10.0, 0.0, 0.5), "not on a bone: the body");
+    }
+
 }
