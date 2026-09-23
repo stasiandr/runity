@@ -118,15 +118,28 @@ pub enum Message {
 pub struct NetPrefab(pub String);
 
 impl Message {
-    /// RON: readable in a log, and the same text an agent reads in a test.
-    /// A compact binary encoding is a transport's business later.
+    /// What goes on the wire: compact binary ([postcard]), a few times
+    /// smaller than the text, since snapshots go out many times a second
+    /// and a datagram has room for about 1.2 kB before it is split.
     pub fn encode(&self) -> Vec<u8> {
-        ron::to_string(self).unwrap_or_default().into_bytes()
+        postcard::to_stdvec(self).unwrap_or_default()
     }
 
+    /// RON: readable in a log, and the same text an agent reads in a test.
+    /// [`Message::decode`] takes it too.
+    pub fn encode_text(&self) -> String {
+        ron::to_string(self).unwrap_or_default()
+    }
+
+    /// Either encoding. Text starts with a variant's name, a letter; the
+    /// binary with the variant's number, a small byte — so the two cannot
+    /// be mistaken for each other.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
-        ron::from_str(text).map_err(|e| e.to_string())
+        if bytes.first().is_some_and(u8::is_ascii_alphabetic) {
+            let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+            return ron::from_str(text).map_err(|e| e.to_string());
+        }
+        postcard::from_bytes(bytes).map_err(|e| format!("a message that does not decode: {e}"))
     }
 }
 
@@ -1150,5 +1163,32 @@ mod tests {
             "{:?}",
             done.refused
         );
+    }
+
+    #[test]
+    fn the_wire_is_binary_and_a_log_can_be_text_and_both_decode() {
+        let mut host = hecs::World::new();
+        let components = components();
+        for i in 0..50u64 {
+            host.spawn((
+                SceneId(EntityId::from_raw(i + 1)),
+                Transform {
+                    position: glam::Vec3::new(i as f32 * 1.25, 0.5, -3.75),
+                    ..Transform::default()
+                },
+                Lit(i % 2 == 0),
+            ));
+        }
+        let message = Message::Snapshot(snapshot(&host, &components, PeerId::HOST));
+        let (binary, text) = (message.encode(), message.encode_text());
+        assert_eq!(Message::decode(&binary).unwrap(), message);
+        assert_eq!(Message::decode(text.as_bytes()).unwrap(), message);
+        assert!(
+            binary.len() * 2 < text.len(),
+            "binary {} bytes, text {}",
+            binary.len(),
+            text.len()
+        );
+        assert!(Message::decode(&[0xff, 0x00, 0x13]).is_err());
     }
 }
