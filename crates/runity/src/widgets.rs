@@ -75,11 +75,22 @@ impl Rect {
     }
 }
 
+/// What typing into a text field did this frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Typed {
+    /// The text is different.
+    pub changed: bool,
+    /// Enter was pressed in it.
+    pub submitted: bool,
+}
+
 /// The widgets' memory between frames.
 #[derive(Debug, Default)]
 pub struct Widgets {
     /// The widget the mouse went down on, while it is held.
     active: Option<u64>,
+    /// The text field typing goes into.
+    focused: Option<u64>,
     pub style: Style,
 }
 
@@ -183,6 +194,76 @@ impl Widgets {
         clicked
     }
 
+    /// A line of text the player types — a name, a seed, a chat line:
+    /// Unity's InputField. A click on it takes the keyboard, a click
+    /// anywhere else or Escape lets it go; Backspace takes a character back,
+    /// Enter submits and lets go. Shows `placeholder` greyed while empty.
+    pub fn text_field(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        placeholder: &str,
+        value: &mut String,
+    ) -> Typed {
+        let id = key(rect, placeholder);
+        let (over, _, _) = self.track(input, rect, id);
+        if input.mouse_pressed(MouseButton::Left) {
+            self.focused = if over {
+                Some(id)
+            } else {
+                self.focused.filter(|f| *f != id)
+            };
+        }
+        let mut typed = Typed::default();
+        if self.focused == Some(id) {
+            let before = value.len();
+            value.extend(input.text().chars().filter(|c| !c.is_control()));
+            if input.pressed(crate::input::Key::Backspace) {
+                value.pop();
+            }
+            typed.changed = value.len() != before || input.pressed(crate::input::Key::Backspace);
+            if input.pressed(crate::input::Key::Enter) {
+                typed.submitted = true;
+                self.focused = None;
+            } else if input.pressed(crate::input::Key::Escape) {
+                self.focused = None;
+            }
+        }
+        let focused = self.focused == Some(id);
+        let back = if focused || over {
+            self.style.hover
+        } else {
+            self.style.idle
+        };
+        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, back));
+        let size = self.style.text_size;
+        let (shown, color) = if value.is_empty() && !focused {
+            (
+                placeholder.to_string(),
+                self.style.text * glam::Vec4::new(1.0, 1.0, 1.0, 0.45),
+            )
+        } else if focused {
+            (format!("{value}|"), self.style.text)
+        } else {
+            (value.clone(), self.style.text)
+        };
+        ui.text(TextRun::new(
+            rect.x + size * 0.5,
+            rect.y + (rect.height - size) * 0.5,
+            size,
+            color,
+            shown,
+        ));
+        typed
+    }
+
+    /// Whether a text field has the keyboard: while it does, the game
+    /// should not read letters as its own keys.
+    pub fn typing(&self) -> bool {
+        self.focused.is_some()
+    }
+
     /// A value between `min` and `max`, set by dragging along the bar.
     /// `true` on frames it changes. The range is `min..=max`.
     pub fn slider(
@@ -251,6 +332,47 @@ mod tests {
         width: 100.0,
         height: 30.0,
     };
+
+    #[test]
+    fn a_field_takes_the_keyboard_on_a_click_and_gives_it_back_on_enter() {
+        use crate::input::{Key, MouseButton as M};
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let mut name = String::new();
+        let field = |widgets: &mut Widgets, input: &Input, name: &mut String| {
+            widgets.text_field(&mut Ui::new(), input, PLAY, "your name", name)
+        };
+        // Typing before a click goes nowhere.
+        frame(&mut input, (500.0, 500.0), &[InputEvent::Text("x".into())]);
+        field(&mut widgets, &input, &mut name);
+        assert!(name.is_empty() && !widgets.typing());
+
+        frame(&mut input, (20.0, 20.0), &[InputEvent::MouseDown(M::Left)]);
+        field(&mut widgets, &input, &mut name);
+        assert!(widgets.typing());
+        frame(
+            &mut input,
+            (20.0, 20.0),
+            &[InputEvent::MouseUp(M::Left), InputEvent::Text("Adx".into())],
+        );
+        assert!(field(&mut widgets, &input, &mut name).changed);
+        frame(
+            &mut input,
+            (20.0, 20.0),
+            &[InputEvent::KeyDown(Key::Backspace)],
+        );
+        field(&mut widgets, &input, &mut name);
+        assert_eq!(name, "Ad");
+        frame(
+            &mut input,
+            (20.0, 20.0),
+            &[
+                InputEvent::KeyUp(Key::Backspace),
+                InputEvent::KeyDown(Key::Enter),
+            ],
+        );
+        let typed = field(&mut widgets, &input, &mut name);
+        assert!(typed.submitted && !widgets.typing());
+    }
 
     #[test]
     fn a_button_clicks_on_release_over_it_and_not_on_a_drag_from_elsewhere() {

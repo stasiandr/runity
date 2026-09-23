@@ -86,6 +86,9 @@ pub enum Kind {
     },
     /// A bar filled to a value in `0..=1`: health, loading, a timer.
     Bar,
+    /// A line the player types; the words are shown greyed while it is
+    /// empty. Read with [`Screen::entered`].
+    Field(String),
 }
 
 /// One element of a screen.
@@ -151,8 +154,10 @@ fn place(e: &Element, screen: Vec2) -> Rect {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Done {
     pub clicked: Vec<String>,
-    /// Toggles flipped and sliders moved.
+    /// Toggles flipped, sliders moved, fields typed into.
     pub changed: Vec<String>,
+    /// Fields Enter was pressed in.
+    pub submitted: Vec<String>,
 }
 
 impl Done {
@@ -162,6 +167,10 @@ impl Done {
 
     pub fn changed(&self, id: &str) -> bool {
         self.changed.iter().any(|c| c == id)
+    }
+
+    pub fn submitted(&self, id: &str) -> bool {
+        self.submitted.iter().any(|c| c == id)
     }
 }
 
@@ -209,6 +218,11 @@ impl Screen {
         self.texts.insert(id.to_string(), text.into());
     }
 
+    /// What the player typed into a field: its text, empty before any.
+    pub fn entered(&self, id: &str) -> &str {
+        self.texts.get(id).map_or("", String::as_str)
+    }
+
     /// Fill a bar, or move a slider.
     pub fn set_value(&mut self, id: &str, value: f32) {
         self.values.insert(id.to_string(), value);
@@ -252,7 +266,9 @@ impl Screen {
             .elements
             .iter()
             .filter_map(|e| match &e.kind {
-                Kind::Text(t) | Kind::Button(t) | Kind::Toggle(t) => Some(t.as_str()),
+                Kind::Text(t) | Kind::Button(t) | Kind::Toggle(t) | Kind::Field(t) => {
+                    Some(t.as_str())
+                }
                 Kind::Slider { label, .. } => Some(label.as_str()),
                 Kind::Panel | Kind::Bar => None,
             })
@@ -307,6 +323,18 @@ impl Screen {
                 Kind::Button(text) => {
                     if widgets.button(ui, input, rect, &label(text)) {
                         done.clicked.push(e.id.clone());
+                    }
+                }
+                Kind::Field(placeholder) => {
+                    let mut value = self.texts.get(&e.id).cloned().unwrap_or_default();
+                    let typed =
+                        widgets.text_field(ui, input, rect, &label(placeholder), &mut value);
+                    if typed.changed {
+                        self.texts.insert(e.id.clone(), value);
+                        done.changed.push(e.id.clone());
+                    }
+                    if typed.submitted {
+                        done.submitted.push(e.id.clone());
                     }
                 }
                 Kind::Toggle(text) => {

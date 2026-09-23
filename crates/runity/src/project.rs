@@ -1323,7 +1323,10 @@ mod tests {
         assert!(root.join(SYSTEMS).join("spin.rs").is_file());
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(main.contains("components::register(&mut components);"));
-        assert!(main.contains("// systems, in order\n    systems::spin::run("), "{main}");
+        assert!(
+            main.contains("// systems, in order\n    systems::spin::run("),
+            "{main}"
+        );
         // The build script is compiled only in the game; a stray escape in
         // this template is a game that does not build.
         let build = std::fs::read_to_string(root.join("build.rs")).unwrap();
