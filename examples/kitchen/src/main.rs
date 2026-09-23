@@ -114,6 +114,7 @@ impl Game {
     /// Out of any session, and the kitchen as the scene has it.
     fn leave(&mut self, ctx: &mut Context) {
         self.lobby.leave();
+        self.front.host_lost = None;
         self.party = Party::alone(&self.scene, &self.components);
         match self.live.switch(&self.scene, &mut self.world, ctx.gpu, ctx.renderer) {
             Ok((_, problems)) => problems.iter().for_each(|p| eprintln!("{p}")),
@@ -395,11 +396,14 @@ impl shell::Game for Game {
                 Event::Left { name, clean, .. } => {
                     eprintln!("{} {}", name, if clean { "left" } else { "went quiet, and is gone" })
                 }
-                Event::HostLost { quit } => eprintln!(
-                    "the host {}; waiting for them to come back",
-                    if quit { "left" } else { "is not answering" }
-                ),
-                Event::HostBack => eprintln!("the host is back"),
+                Event::HostLost { quit } => {
+                    eprintln!("the host {}", if quit { "left" } else { "is not answering" });
+                    self.front.host_lost = Some(quit);
+                }
+                Event::HostBack => {
+                    eprintln!("the host is back");
+                    self.front.host_lost = None;
+                }
                 Event::Rejected(why) => {
                     self.front.status = format!("Could not join: {why}");
                     self.front.phase = front::Phase::Menu;

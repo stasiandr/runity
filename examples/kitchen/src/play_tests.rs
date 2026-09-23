@@ -538,12 +538,15 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     for id in ["score", "served", "best", "again", "menu", "wait"] {
         assert!(ids(&front.results).contains(&id.to_string()), "results have no `{id}`");
     }
+    for id in ["title", "hint", "menu"] {
+        assert!(ids(&front.lost).contains(&id.to_string()), "the host-lost card has no `{id}`");
+    }
     for id in ["players", "start", "wait", "invite", "leave"] {
         assert!(ids(&front.lobby).contains(&id.to_string()), "the lobby has no `{id}`");
     }
     // Every @key the screens, the code and the chef use, in English and
     // Russian.
-    let mut keys: Vec<String> = [&front.menu, &front.hud, &front.results, &front.lobby, &front.pause]
+    let mut keys: Vec<String> = [&front.menu, &front.hud, &front.results, &front.lobby, &front.pause, &front.lost]
         .iter()
         .flat_map(|s| runity::screen::Screen::keys(s.layout()))
         .collect();
@@ -1239,4 +1242,34 @@ fn recipes_close() {
         k.lens = Some((50.0, 8.0));
         k.picture(None, name);
     }
+}
+
+#[test]
+fn a_guest_whose_host_closes_the_kitchen_is_told_and_offered_the_menu() {
+    let (host, mut guest) = together();
+    drop(host);
+    guest.events.clear();
+    for _ in 0..10 {
+        guest.frame();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(guest.events.contains(&Event::HostLost { quit: true }), "{:?}", guest.events);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    front.host_lost = Some(true);
+    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let mut ui = runity::ui::Ui::new();
+    let wish = front.draw(
+        &guest.world,
+        &guest.party,
+        &mut runity::widgets::Widgets::new(),
+        &mut ui,
+        &runity::input::Input::default(),
+        runity::glam::Vec2::new(1280.0, 720.0),
+        &strings,
+    );
+    assert_eq!(wish, None);
+    let words: Vec<&str> = ui.texts.iter().map(|t| t.text.as_str()).collect();
+    assert!(words.contains(&"The host closed the kitchen") && words.contains(&"Back to the menu"), "{words:?}");
 }

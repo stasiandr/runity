@@ -64,6 +64,10 @@ pub struct Front {
     pub pause: Screen,
     /// Who is in, and the host's start, while the doors are shut.
     pub lobby: Screen,
+    /// The host is gone: `Some(true)` closed the kitchen, `Some(false)`
+    /// stopped answering and may come back.
+    pub host_lost: Option<bool>,
+    pub lost: Screen,
     /// Steam is running: lobbies and invites, not addresses.
     pub steam: bool,
     /// The doors were open last frame: the chef talks as they open.
@@ -107,6 +111,8 @@ impl Front {
             results: screen("results")?,
             pause: screen("pause")?,
             lobby: screen("lobby")?,
+            host_lost: None,
+            lost: screen("lost")?,
             steam: false,
             was_open: false,
             paused: false,
@@ -124,7 +130,7 @@ impl Front {
 
     /// The screens saved since, reloaded; what did not parse, said.
     pub fn poll(&mut self, delta: f32) -> Vec<String> {
-        [&mut self.menu, &mut self.hud, &mut self.results, &mut self.speech, &mut self.pause, &mut self.lobby]
+        [&mut self.menu, &mut self.hud, &mut self.results, &mut self.speech, &mut self.pause, &mut self.lobby, &mut self.lost]
             .into_iter()
             .filter_map(|s| s.poll(delta))
             .filter_map(Result::err)
@@ -177,6 +183,14 @@ impl Front {
                     return Some(Wish::Language(LANGUAGES[chosen]));
                 }
                 None
+            }
+            Phase::Kitchen if self.host_lost.is_some() => {
+                // Over everything: the host is gone.
+                let quit = self.host_lost == Some(true);
+                self.lost.set_text("title", if quit { "@lost.quit" } else { "@lost.quiet" });
+                self.lost.set_text("hint", if quit { "" } else { "@lost.wait" });
+                let done = self.lost.draw_localized(widgets, ui, input, size, strings);
+                done.clicked("menu").then_some(Wish::Leave)
             }
             Phase::Kitchen => {
                 let round = round_of(world);
