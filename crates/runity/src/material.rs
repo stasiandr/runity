@@ -51,6 +51,12 @@ pub enum Shading {
     /// `clarity` how far down one sees, `foam` how much there is. Put on a
     /// level plane, transparent. See `water.rs`'s notes in the shader.
     Water,
+    /// Sand: lit, with ripples the wind has laid across it (their crests
+    /// square to the scene's wind), grains that glint in the sun, and in a
+    /// strong wind sand drifting over it in streaks. All drawn by the
+    /// shader in world space, so it needs no texture and a dune of any
+    /// size has ripples the same size. Its `base_color` is the sand's.
+    Sand,
 }
 
 /// Whether a surface hides what is behind it: URP's Surface Type.
@@ -353,6 +359,7 @@ impl From<&ArchivedMaterial> for Material {
                 ArchivedShading::Lit => Shading::Lit,
                 ArchivedShading::Grid => Shading::Grid,
                 ArchivedShading::Water => Shading::Water,
+                ArchivedShading::Sand => Shading::Sand,
             },
             metallic: archived.metallic.to_native(),
             smoothness: archived.smoothness.to_native(),

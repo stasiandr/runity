@@ -2255,6 +2255,7 @@ impl Session {
                 runity::Shading::Unlit => ", unlit: true",
                 runity::Shading::Grid => ", grid: true",
                 runity::Shading::Water => ", water: true",
+                runity::Shading::Sand => ", sand: true",
                 runity::Shading::Lit => "",
             }
         );

@@ -831,6 +831,9 @@ pub struct MaterialSource {
     /// shore. `color` is the deep water's, `wind` the waves.
     #[serde(default)]
     pub water: bool,
+    /// Sand: wind ripples, glinting grains, drifting sand in a gale.
+    #[serde(default)]
+    pub sand: bool,
     /// For water: metres one sees down through it.
     #[serde(default = "clear_water")]
     pub clarity: f32,
@@ -1197,13 +1200,14 @@ pub fn material_from_ron(
             .unwrap_or_else(|| "material".into()),
         material: Material {
             base_color: source.color.linear()?,
-            shading: match (source.unlit, source.grid, source.water) {
-                (false, false, false) => Shading::Lit,
-                (true, false, false) => Shading::Unlit,
-                (false, true, false) => Shading::Grid,
-                (false, false, true) => Shading::Water,
+            shading: match (source.unlit, source.grid, source.water, source.sand) {
+                (false, false, false, false) => Shading::Lit,
+                (true, false, false, false) => Shading::Unlit,
+                (false, true, false, false) => Shading::Grid,
+                (false, false, true, false) => Shading::Water,
+                (false, false, false, true) => Shading::Sand,
                 _ => anyhow::bail!(
-                    "{}: more than one of unlit, grid and water — pick one",
+                    "{}: more than one of unlit, grid, water and sand — pick one",
                     path.display()
                 ),
             },

@@ -1195,7 +1195,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
     let flags = u32(in.emission.w + 0.5);
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
-    let grid = f32(in.shading > 1.5);
+    let grid = f32(abs(in.shading - 2.0) < 0.5);
+    let is_sand = in.shading > 3.5;
 
     var albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
     var smoothness = in.surface.y * mask.a;
@@ -1256,6 +1257,15 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         }
     }
 
+    // Sand: the wind's ripples in it, and in a gale sand running over it.
+    var glint_facet = vec3<f32>(0.0);
+    if is_sand {
+        let sand = sand_surface(in.world_position, normal, geometric, across, down);
+        normal = sand.normal;
+        albedo = albedo * sand.shade;
+        glint_facet = sand.glint;
+    }
+
     // The weather on it: wet, under water, under snow.
     let weather = weathered(albedo, smoothness, normal, geometric, in.world_position);
     albedo = weather.albedo;
@@ -1299,6 +1309,15 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)
         * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
+    // A grain of sand turned just so throws the sun straight at the eye.
+    if dot(glint_facet, glint_facet) > 0.0 {
+        // Its length is how much it shows, fading as the grains shrink
+        // towards a pixel.
+        let facet = normalize(glint_facet);
+        let flash = pow(max(dot(reflect(-to_sun, facet), to_eye), 0.0), 250.0);
+        color += frame.sun_color.rgb * shadow * flash * 12.0 * length(glint_facet)
+            * max(dot(geometric, to_sun), 0.0);
+    }
     // Lit through from behind: a leaf, a blade of grass — brightest looking
     // straight at the sun through it.
     let translucency = in.detail.w;
@@ -1387,6 +1406,93 @@ fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location
         discard;
     }
     return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
+}
+
+struct Sand {
+    normal: vec3<f32>,
+    // what the albedo is times: drifting sand lightens it
+    shade: f32,
+    // a glinting grain's facet here, or zero
+    glint: vec3<f32>,
+};
+
+/// The height of wind ripples at `u` along the wind and `v` across it, in
+/// wavelengths: a gentle slope up the windward side and a short steep one
+/// down the lee, the crests wandering and now and then forking.
+fn ripple_height(u: f32, v: f32) -> f32 {
+    let wander = cloud_noise(vec3<f32>(u * 0.18, v * 0.55, 0.0)) * 2.4
+        + cloud_noise(vec3<f32>(u * 0.5, v * 1.7, 3.0)) * 0.6;
+    let x = fract(u + wander);
+    // Up for most of a wavelength, then down the lee.
+    return select((1.0 - x) / 0.25, x / 0.75, x < 0.75) - 0.5;
+}
+
+/// Sand's surface at `p`: ripples laid square to the wind, faded where a
+/// pixel spans more than a few of them (so far sand does not shimmer) and
+/// on slopes too steep to hold them; streaks of drifting sand in a strong
+/// wind; now and then a grain that glints.
+fn sand_surface(p: vec3<f32>, normal: vec3<f32>, geometric: vec3<f32>, across: vec3<f32>, down: vec3<f32>) -> Sand {
+    let wind = frame.foliage.wind;
+    var w = vec2<f32>(wind.x, wind.y);
+    if dot(w, w) < 1e-6 {
+        w = vec2<f32>(1.0, 0.0);
+    }
+    w = normalize(w);
+    let side = vec2<f32>(-w.y, w.x);
+    let flat_enough = smoothstep(0.7, 0.93, geometric.y);
+    let wavelength = 0.14;
+    let u = dot(p.xz, w) / wavelength;
+    let v = dot(p.xz, side) / wavelength;
+    // How many wavelengths one pixel spans: past about a third, fade out.
+    let footprint = max(length(across.xz), length(down.xz)) / wavelength;
+    let fade = (1.0 - smoothstep(0.15, 0.45, footprint)) * flat_enough;
+    var out: Sand;
+    out.normal = normal;
+    out.shade = 1.0;
+    out.glint = vec3<f32>(0.0);
+    let along = vec3<f32>(w.x, 0.0, w.y);
+    let square = vec3<f32>(side.x, 0.0, side.y);
+    var slope = vec3<f32>(0.0);
+    let e = 0.05;
+    if fade > 0.0 {
+        let du = (ripple_height(u + e, v) - ripple_height(u - e, v)) / (2.0 * e);
+        let dv = (ripple_height(u, v + e) - ripple_height(u, v - e)) / (2.0 * e);
+        // A centimetre high in fourteen: slope per metre.
+        slope += (along * du + square * dv) * (0.012 / wavelength) * fade;
+    }
+    // And the bigger ripples they ride on, which still show further off.
+    let big = 0.6;
+    let far_fade = (1.0 - smoothstep(0.15, 0.45, footprint * wavelength / big)) * flat_enough;
+    if far_fade > 0.0 {
+        let bu = dot(p.xz, w) / big + 7.3;
+        let bv = dot(p.xz, side) / big;
+        let du = (ripple_height(bu + e, bv) - ripple_height(bu - e, bv)) / (2.0 * e);
+        let dv = (ripple_height(bu, bv + e) - ripple_height(bu, bv - e)) / (2.0 * e);
+        slope += (along * du + square * dv) * (0.025 / big) * far_fade;
+    }
+    out.normal = normalize(normal - slope);
+    // Drifting: in a wind past a stiff breeze, sand running along the
+    // ground in streaks, lighter than what lies still.
+    let gale = clamp((wind.z - 1.2) / 1.5, 0.0, 1.0) + frame.weather[1].y;
+    if gale > 0.0 {
+        let run = vec3<f32>(dot(p.xz, w) * 0.9 - wind.w * 4.0 * max(wind.z, 1.0), dot(p.xz, side) * 6.0, wind.w * 0.7);
+        let streak = smoothstep(0.55, 0.85, cloud_noise(run) * 0.7 + cloud_noise(run * 2.7) * 0.3);
+        out.shade = 1.0 + 0.18 * streak * clamp(gale, 0.0, 1.0) * flat_enough;
+    }
+    // Glints: one grain in a few dozen, each its own random facet, in
+    // cells of a centimetre and a half — only while a cell is bigger than
+    // the pixel, or they would crawl.
+    let cells = 1.0 / 0.015;
+    let cell_footprint = max(length(across), length(down)) * cells;
+    if cell_footprint < 1.2 {
+        let cell = floor(p * cells);
+        let h = cloud_hash(cell);
+        if h > 0.965 {
+            let tilt = vec3<f32>(cloud_hash(cell + 17.0), cloud_hash(cell + 31.0), cloud_hash(cell + 53.0)) * 2.0 - 1.0;
+            out.glint = normalize(out.normal + tilt * 0.8) * (1.0 - smoothstep(0.6, 1.2, cell_footprint));
+        }
+    }
+    return out;
 }
 
 /// A footprint's height across it, in its depth: −1 pressed right in, up

@@ -766,6 +766,7 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         Shading::Unlit => 1.0,
         Shading::Grid => 2.0,
         Shading::Water => 3.0,
+        Shading::Sand => 4.0,
     };
     let mut flags = 0;
     if material.specular_highlights {
