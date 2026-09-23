@@ -434,6 +434,26 @@ pub struct Light {
     pub shadows: bool,
 }
 
+/// A box whose surroundings polished things in it reflect — URP's baked
+/// Reflection Probe, at the entity. `reflection_probe: (size: (8.0, 4.0,
+/// 8.0))`: the box, metres, centred on the entity and not turned with it;
+/// `box_projection: false` reflects as if the room were infinitely far;
+/// `blend_distance` (1 m) fades it out inside its edge. See
+/// [`crate::reflections`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Probe {
+    #[serde(default = "probe_size")]
+    pub size: Vec3,
+    #[serde(default = "yes_look", skip_serializing_if = "is_true")]
+    pub box_projection: bool,
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub blend_distance: f32,
+}
+
+fn probe_size() -> Vec3 {
+    Vec3::new(10.0, 10.0, 10.0)
+}
+
 /// A way an entity travels by itself — a moving platform, a lift, a boat
 /// on a loop, a cart on a track: Unity's Splines with SplineAnimate.
 /// `route: (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends:
@@ -611,6 +631,9 @@ pub struct EntityDesc {
     /// Particles given off from this entity; see [`Emitter`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub particles: Option<Emitter>,
+    /// A reflection probe at this entity; see [`Probe`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub reflection_probe: Option<Probe>,
     /// Moving along points by itself; see [`Route`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -700,6 +723,8 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub particles: Option<Emitter>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub reflection_probe: Option<Probe>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
@@ -746,6 +771,9 @@ impl Override {
         if self.particles.is_some() {
             part.particles = self.particles;
         }
+        if self.reflection_probe.is_some() {
+            part.reflection_probe = self.reflection_probe;
+        }
         if self.route.is_some() {
             part.route = self.route.clone();
         }
@@ -770,6 +798,8 @@ impl Override {
             camera: differs(prefab.camera != edited.camera).and(edited.camera),
             light: differs(prefab.light != edited.light).and(edited.light),
             particles: differs(prefab.particles != edited.particles).and(edited.particles),
+            reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
+                .and(edited.reflection_probe),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
@@ -798,6 +828,7 @@ impl Override {
             camera,
             light,
             particles,
+            reflection_probe,
             route,
             components,
         } = later;
@@ -812,6 +843,7 @@ impl Override {
         self.camera = camera.or(self.camera);
         self.light = light.or(self.light);
         self.particles = particles.or(self.particles);
+        self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.route = route.or(self.route.take());
         self.components.extend(components);
     }
@@ -1291,6 +1323,7 @@ mod tests {
                 camera: None,
                 light: None,
                 particles: None,
+                reflection_probe: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1316,6 +1349,7 @@ mod tests {
                     camera: None,
                     light: None,
                     particles: None,
+                    reflection_probe: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -1366,6 +1400,7 @@ mod tests {
                 camera: None,
                 light: None,
                 particles: None,
+                reflection_probe: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),

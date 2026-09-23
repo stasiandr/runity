@@ -49,6 +49,13 @@ struct Frame {
     ray: vec4<f32>,
     // rays to the sun, occlusion rays, occlusion reach in metres
     ray_params: vec4<f32>,
+    // reflection probes: how many, their last mip
+    probe_params: vec4<f32>,
+    // each probe: centre and blend distance; half size and 1 for box
+    // projection
+    probes: array<vec4<f32>, 16>,
+    // each face's projection of a direction: +x, -x, +y, -y, +z, -z
+    probe_faces: array<mat4x4<f32>, 6>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -76,6 +83,10 @@ struct Light {
 // The lamps' shadow maps: a spot's one, a point's six cube faces.
 @group(0) @binding(9) var light_shadow_map: texture_depth_2d_array;
 @group(0) @binding(10) var<storage, read> light_views: array<mat4x4<f32>>;
+// Reflection probes' pictures (reflections.rs): six layers a probe, a mip a
+// step rougher.
+@group(0) @binding(11) var probe_maps: texture_2d_array<f32>;
+@group(0) @binding(12) var probe_sampler: sampler;
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -482,6 +493,62 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     return mix(sky * frame.sky_ground.w, hemisphere, perceptual_roughness);
 }
 
+/// A probe's picture the way `direction` looks, `lod` mips blurred.
+fn probe_picture(probe: u32, direction: vec3<f32>, lod: f32) -> vec3<f32> {
+    let a = abs(direction);
+    var face = 0u;
+    if a.x >= a.y && a.x >= a.z {
+        face = select(1u, 0u, direction.x > 0.0);
+    } else if a.y >= a.z {
+        face = select(3u, 2u, direction.y > 0.0);
+    } else {
+        face = select(5u, 4u, direction.z > 0.0);
+    }
+    let clip = frame.probe_faces[face] * vec4<f32>(direction, 1.0);
+    let ndc = clip.xy / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return textureSampleLevel(probe_maps, probe_sampler, uv, i32(probe * 6u + face), lod).rgb;
+}
+
+/// What a surface at `position` reflects along `direction`: the probes
+/// whose boxes hold it — bent to the box's walls where asked, fading out
+/// inside each box's edge, the first ones first — and the sky for what
+/// they leave.
+fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let sky = environment(direction, perceptual_roughness);
+    let count = u32(frame.probe_params.x);
+    if count == 0u {
+        return sky;
+    }
+    // Unity's mip for a roughness: rougher reads blurrier, not linearly.
+    let lod = perceptual_roughness * (1.7 - 0.7 * perceptual_roughness) * frame.probe_params.y;
+    var sum = vec3<f32>(0.0);
+    var covered = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let centre = frame.probes[i * 2u];
+        let extents = frame.probes[i * 2u + 1u];
+        let inside = extents.xyz - abs(position - centre.xyz);
+        let edge = min(inside.x, min(inside.y, inside.z));
+        if edge <= 0.0 {
+            continue;
+        }
+        let weight = clamp(edge / max(centre.w, 1e-3), 0.0, 1.0) * (1.0 - covered);
+        var look = direction;
+        if extents.w > 0.5 {
+            // Where the ray leaves the box, seen from the probe's centre.
+            let far_wall = (sign(direction) * extents.xyz + centre.xyz - position) / direction;
+            let leaves = min(far_wall.x, min(far_wall.y, far_wall.z));
+            look = position + direction * leaves - centre.xyz;
+        }
+        sum = sum + probe_picture(i, normalize(look), lod) * weight;
+        covered = covered + weight;
+        if covered > 0.999 {
+            break;
+        }
+    }
+    return sum + sky * (1.0 - covered);
+}
+
 /// A tangent-space normal from the map, turned into the world. The
 /// tangent frame is worked out from how position and UV change across the
 /// pixel (Schüler's cotangent frame), so meshes need no tangents stored.
@@ -596,8 +663,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
         let fresnel = pow(1.0 - n_v, 4.0);
         let reduction = 1.0 / (b.roughness2 + 1.0);
-        let reflected = environment(reflect(-to_eye, normal), b.perceptual_roughness);
-        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
+        let seen = reflected(in.world_position, reflect(-to_eye, normal), b.perceptual_roughness);
+        color = color + seen * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
     }
     let emission = in.emission.rgb * emitted;
     color = color + emission;

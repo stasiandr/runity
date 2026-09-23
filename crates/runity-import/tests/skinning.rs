@@ -55,6 +55,7 @@ fn shoot(
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

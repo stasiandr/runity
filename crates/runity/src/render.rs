@@ -492,6 +492,9 @@ pub struct Frame {
     pub overlay_draws: Vec<Draw>,
     /// Point lights besides the sun.
     pub lights: Vec<PointLight>,
+    /// Boxes whose surroundings are baked for reflections
+    /// ([`crate::reflections`]).
+    pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -513,6 +516,7 @@ impl Default for Frame {
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
+            reflection_probes: Vec::new(),
             poses: Vec::new(),
         }
     }
@@ -575,6 +579,13 @@ struct FrameUniform {
     ray: [f32; 4],
     /// Rays to the sun, occlusion rays, occlusion reach.
     ray_params: [f32; 4],
+    /// How many reflection probes there are, and their last mip.
+    probe_params: [f32; 4],
+    /// Each probe: its centre and blend distance; its half size and 1 to
+    /// bend reflections to its box.
+    probes: [[f32; 4]; crate::reflections::MAX_PROBES * 2],
+    /// Each face's projection of a direction.
+    probe_faces: [[[f32; 4]; 4]; 6],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -741,6 +752,8 @@ pub struct Renderer {
     lens: crate::lens::LensRenderer,
     /// Last frame's camera, for motion blur.
     previous_view_projection: Option<Mat4>,
+    /// The reflection probes' pictures.
+    reflections: crate::reflections::ProbeStore,
     ssao: crate::ssao::SsaoRenderer,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -1479,6 +1492,24 @@ impl Renderer {
                 count: None,
             },
             storage(10),
+            // The reflection probes' pictures, six layers each, and how
+            // they are filtered across mips.
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 12,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
         ]);
         // The scene as rays see it, on a device that traces.
         if gpu.ray_tracing {
@@ -1539,10 +1570,13 @@ impl Renderer {
             light_shadow_resolution,
             crate::lights::SHADOW_LAYERS as u32,
         );
+        let reflections = crate::reflections::ProbeStore::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                probes: &reflections.view,
+                probe_sampler: &reflections.sampler,
                 frame: &frame_buffer,
                 shadow_map: &shadow_map,
                 shadow_sampler: &shadow_sampler,
@@ -1740,6 +1774,7 @@ impl Renderer {
             post: crate::post::PostRenderer::new(gpu, format),
             lens: crate::lens::LensRenderer::new(gpu),
             previous_view_projection: None,
+            reflections,
             ssao,
             ray,
             light_buffer,
@@ -1785,11 +1820,20 @@ impl Renderer {
     }
 
     /// Make the frame's bind group again, after something in it was remade.
+    /// While probes are being baked their pictures are left out of it:
+    /// they are being drawn.
     fn rebind(&mut self, gpu: &Gpu) {
+        let baking = self.reflections.baking;
         self.bind_group = frame_bind_group(
             gpu,
             &self.layout,
             &FrameInputs {
+                probes: if baking {
+                    &self.reflections.blank
+                } else {
+                    &self.reflections.view
+                },
+                probe_sampler: &self.reflections.sampler,
                 frame: &self.frame_buffer,
                 shadow_map: &self.shadow_map,
                 shadow_sampler: &self.shadow_sampler,
@@ -2369,6 +2413,12 @@ impl Renderer {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
+    /// Take the reflection probes' pictures again on the next frame — after
+    /// what is around them changed.
+    pub fn rebake_reflections(&mut self) {
+        self.reflections.baked.clear();
+    }
+
     pub(crate) fn render_into(
         &mut self,
         gpu: &Gpu,
@@ -2377,13 +2427,67 @@ impl Renderer {
         height: u32,
         frame: &Frame,
     ) {
+        self.bake_probes(gpu, frame);
+        self.render_view(gpu, Some(view), width, height, frame, None);
+    }
+
+    /// The probes' pictures, when the probes are not the ones they are of:
+    /// each face the scene as seen from the probe, lit and with its sky,
+    /// but with no probes of its own, no post-processing and no tools.
+    fn bake_probes(&mut self, gpu: &Gpu, frame: &Frame) {
+        let wanted: Vec<crate::reflections::ReflectionProbe> = frame
+            .reflection_probes
+            .iter()
+            .take(crate::reflections::MAX_PROBES)
+            .copied()
+            .collect();
+        if wanted == self.reflections.baked {
+            return;
+        }
+        self.reflections.baked.clear();
+        self.reflections.baking = true;
+        self.rebind(gpu);
+        let size = crate::reflections::PROBE_SIZE;
+        for (i, probe) in wanted.iter().enumerate() {
+            for face in 0..6 {
+                let seen = Frame {
+                    camera: crate::reflections::face_camera(probe, face),
+                    post: crate::post::PostProcess::OFF,
+                    ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
+                    ray_tracing: crate::ray::RayTracing::default(),
+                    overlay_draws: Vec::new(),
+                    reflection_probes: Vec::new(),
+                    ..frame.clone()
+                };
+                self.render_view(gpu, None, size, size, &seen, Some((i * 6 + face) as u32));
+            }
+        }
+        self.reflections
+            .make_mips(gpu, 0..(wanted.len() * 6) as u32);
+        self.reflections.baked = wanted;
+        self.reflections.baking = false;
+        self.rebind(gpu);
+    }
+
+    /// One view of the frame: into `view` with everything, or with
+    /// `probe` into that layer of the probes' pictures, lit and nothing
+    /// more.
+    fn render_view(
+        &mut self,
+        gpu: &Gpu,
+        view: Option<&wgpu::TextureView>,
+        width: u32,
+        height: u32,
+        frame: &Frame,
+        probe: Option<u32>,
+    ) {
         let aspect = width as f32 / height.max(1) as f32;
         if self.depth_size != (width, height) {
             self.depth = depth_view(gpu, width, height, self.samples);
             self.scene = scene_targets(gpu, width, height, self.samples);
             self.depth_size = (width, height);
         }
-        if self.ssao.resize(gpu, (width, height)) {
+        if probe.is_none() && self.ssao.resize(gpu, (width, height)) {
             self.rebind(gpu);
         }
 
@@ -2595,6 +2699,26 @@ impl Renderer {
                 frame.ray_tracing.occlusion_radius.max(0.01),
                 0.0,
             ],
+            probe_params: [
+                self.reflections.baked.len() as f32,
+                (crate::reflections::PROBE_MIPS - 1) as f32,
+                0.0,
+                0.0,
+            ],
+            probes: {
+                let mut out = [[0.0; 4]; crate::reflections::MAX_PROBES * 2];
+                for (i, probe) in self.reflections.baked.iter().enumerate() {
+                    out[i * 2] = extend(probe.position, probe.blend_distance.max(0.0));
+                    out[i * 2 + 1] = extend(
+                        probe.extents.abs(),
+                        if probe.box_projection { 1.0 } else { 0.0 },
+                    );
+                }
+                out
+            },
+            probe_faces: std::array::from_fn(|f| {
+                crate::reflections::face_matrix(f).to_cols_array_2d()
+            }),
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -2954,20 +3078,15 @@ impl Renderer {
         }
 
         {
+            // A probe's face is drawn straight into its layer.
+            let face = probe.map(|layer| self.reflections.layer(layer, 0));
+            let resolved = face.as_ref().unwrap_or(&self.scene.resolved);
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("runity::render"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: self
-                        .scene
-                        .multisampled
-                        .as_ref()
-                        .unwrap_or(&self.scene.resolved),
+                    view: self.scene.multisampled.as_ref().unwrap_or(resolved),
                     depth_slice: None,
-                    resolve_target: self
-                        .scene
-                        .multisampled
-                        .as_ref()
-                        .map(|_| &self.scene.resolved),
+                    resolve_target: self.scene.multisampled.as_ref().map(|_| resolved),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: frame.clear_color.x as f64,
@@ -3009,6 +3128,11 @@ impl Renderer {
             }
         }
 
+        let Some(view) = view else {
+            // A probe's face: lit, and that is all.
+            gpu.queue.submit(Some(encoder.finish()));
+            return;
+        };
         let view_projection = frame.camera.view_projection(aspect);
         let previous = self
             .previous_view_projection
@@ -3176,6 +3300,8 @@ struct FrameInputs<'a> {
     indices: &'a wgpu::Buffer,
     light_views: &'a wgpu::Buffer,
     light_shadow_map: &'a wgpu::TextureView,
+    probes: &'a wgpu::TextureView,
+    probe_sampler: &'a wgpu::Sampler,
 }
 
 fn frame_bind_group(
@@ -3208,6 +3334,11 @@ fn frame_bind_group(
         buffer(8, inputs.indices),
         view(9, inputs.light_shadow_map),
         buffer(10, inputs.light_views),
+        view(11, inputs.probes),
+        wgpu::BindGroupEntry {
+            binding: 12,
+            resource: wgpu::BindingResource::Sampler(inputs.probe_sampler),
+        },
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

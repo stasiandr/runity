@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 17] = [
+pub const FIELDS: [&str; 18] = [
     "name",
     "model",
     "prefab",
@@ -68,6 +68,7 @@ pub const FIELDS: [&str; 17] = [
     "camera",
     "light",
     "particles",
+    "reflection_probe",
     "route",
     "components.<name>",
 ];
@@ -94,6 +95,7 @@ fn take_field(
         "camera" => one.camera = from.camera.take(),
         "light" => one.light = from.light.take(),
         "particles" => one.particles = from.particles.take(),
+        "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
@@ -225,6 +227,7 @@ impl Session {
                 "camera" => o.camera.is_some(),
                 "light" => o.light.is_some(),
                 "particles" => o.particles.is_some(),
+                "reflection_probe" => o.reflection_probe.is_some(),
                 "route" => o.route.is_some(),
                 other => other
                     .strip_prefix("components.")
@@ -259,6 +262,11 @@ impl Session {
             (
                 "particles".into(),
                 desc.particles.map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "reflection_probe".into(),
+                desc.reflection_probe
+                    .map_or("None".to_string(), |p| ron(&p)),
             ),
             (
                 "route".into(),
@@ -485,7 +493,7 @@ impl Session {
             "physics" => ron(&blank.physics),
             "joint" => ron(&blank.joint),
             "layer" => String::new(),
-            "camera" | "light" | "particles" | "route" => "None".into(),
+            "camera" | "light" | "particles" | "reflection_probe" | "route" => "None".into(),
             other if other.starts_with("components.") => {
                 let name = &other["components.".len()..];
                 return match self.component_shapes().get(name) {
@@ -611,6 +619,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Emitter>(field, text)?)
+                }
+            }
+            "reflection_probe" => {
+                next.reflection_probe = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Probe>(field, text)?)
                 }
             }
             other => {

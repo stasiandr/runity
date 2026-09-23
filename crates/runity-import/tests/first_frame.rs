@@ -124,6 +124,7 @@ fn a_source_model_becomes_a_frame() {
         shadows: runity::ShadowSettings::OFF,
         clear_color: fog.color,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
         draws: vec![
             Draw {
                 mesh: handle,

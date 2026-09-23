@@ -74,6 +74,10 @@ pub struct CameraLens(pub crate::scene::Lens);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightSource(pub crate::scene::Light);
 
+/// A reflection probe at an entity, from its line's `reflection_probe`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeBox(pub crate::scene::Probe);
+
 /// The collision layer's name, kept from the scene when not `default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer(pub String);
@@ -251,6 +255,9 @@ fn spawn_one(
     }
     if let Some(light) = desc.light {
         let _ = world.insert_one(entity, LightSource(light));
+    }
+    if let Some(probe) = desc.reflection_probe {
+        let _ = world.insert_one(entity, ProbeBox(probe));
     }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
@@ -532,6 +539,17 @@ impl Patch<'_> {
                 }
                 None => {
                     let _ = world.remove_one::<LightSource>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.reflection_probe != desc.reflection_probe) {
+            match desc.reflection_probe {
+                Some(probe) => {
+                    let _ = world.insert_one(entity, ProbeBox(probe));
+                }
+                None => {
+                    let _ = world.remove_one::<ProbeBox>(entity);
                 }
             }
             changed = true;
@@ -904,9 +922,21 @@ pub fn build_frame_where(
             }
         })
         .collect();
+    let reflection_probes = world
+        .query::<(&ProbeBox, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(probe, placed, _)| crate::reflections::ReflectionProbe {
+            position: placed.0.w_axis.truncate(),
+            extents: probe.0.size.abs() * 0.5,
+            box_projection: probe.0.box_projection,
+            blend_distance: probe.0.blend_distance,
+        })
+        .collect();
     Frame {
         camera,
         lighting,
+        reflection_probes,
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.
@@ -937,6 +967,7 @@ mod tests {
             camera: None,
             light: None,
             particles: None,
+            reflection_probe: None,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -964,6 +995,7 @@ mod tests {
                     camera: None,
                     light: None,
                     particles: None,
+                    reflection_probe: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),

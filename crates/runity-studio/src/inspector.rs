@@ -28,7 +28,7 @@ use crate::theme::*;
 const OBJECT: [&str; 4] = ["model", "material", "prefab", "layer"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 4] = ["body", "collider", "physics", "joint"];
-const PARTS: [&str; 4] = ["camera", "light", "particles", "route"];
+const PARTS: [&str; 5] = ["camera", "light", "particles", "reflection_probe", "route"];
 
 /// A field that says nothing: not shown, offered as a chip.
 fn is_empty(value: &str) -> bool {
