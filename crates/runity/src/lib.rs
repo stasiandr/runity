@@ -24,6 +24,7 @@ pub mod animation;
 pub mod animator;
 pub mod animgraph;
 pub mod asset;
+pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod builtin;

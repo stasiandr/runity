@@ -76,6 +76,8 @@ struct Frame {
     // behind everything, with a plain-colour sky
     clear_color: vec4<f32>,
     foliage: Foliage,
+    // the physical sky: 1 when on, the aerial grid's far end in metres
+    air: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -134,6 +136,54 @@ struct Decal {
 @group(3) @binding(1) var fog_scatter_in: texture_3d<f32>;
 @group(3) @binding(2) var fog_integrated_out: texture_storage_3d<rgba16float, write>;
 const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
+
+// The physical sky (atmosphere.rs): the whole sky from the camera, and per
+// cell of a grid over the view, what the air adds and lets through.
+@group(0) @binding(18) var sky_view: texture_2d<f32>;
+@group(0) @binding(19) var aerial: texture_3d<f32>;
+
+/// The physical sky the way `direction` looks: its table's azimuth
+/// across, latitude up, squeezed towards the horizon as it was filled.
+fn physical_sky(direction: vec3<f32>) -> vec3<f32> {
+    var d = normalize(direction);
+    // Below the horizon, the horizon a little dimmed: the table's ground is
+    // a planet's, far below any scene's.
+    var below = 1.0;
+    if d.y < 0.0 {
+        below = mix(1.0, 0.55, smoothstep(0.0, 0.4, -d.y));
+        d = normalize(vec3<f32>(d.x, 0.0, d.z) + vec3<f32>(0.0, 0.01, 0.0));
+    }
+    let azimuth = atan2(d.z, d.x);
+    let latitude = asin(clamp(d.y, -1.0, 1.0));
+    let t = sign(latitude) * sqrt(abs(latitude) / 1.5707963);
+    let uv = vec2<f32>(azimuth / 6.2831853 + 0.5, t * 0.5 + 0.5);
+    return textureSampleLevel(sky_view, fog_sampler, uv, 0.0).rgb * below;
+}
+
+/// The distance fog's colour: the scene's, or with a physical sky the sky
+/// itself just above the horizon that way, so the distance melts into it.
+fn fog_color_towards(direction: vec3<f32>) -> vec3<f32> {
+    if frame.air.x < 0.5 {
+        return frame.fog_color.rgb;
+    }
+    let level = vec3<f32>(direction.x, max(direction.y, 0.03), direction.z);
+    return physical_sky(level) * frame.sky_ground.w;
+}
+
+/// A colour seen through the air between it and the eye: the physical
+/// sky's aerial perspective.
+fn through_air(color: vec3<f32>, pixel: vec2<f32>, distance: f32) -> vec3<f32> {
+    if frame.air.x < 0.5 {
+        return color;
+    }
+    let uv = pixel / frame.cluster_depth.zw;
+    // Slices by the square root of distance, as they were filled; each
+    // holds the sum to its far end.
+    let t = sqrt(clamp(distance / frame.air.y, 0.0, 1.0));
+    let w = clamp(t - 0.5 / 32.0, 0.0, 1.0);
+    let a = textureSampleLevel(aerial, fog_sampler, vec3<f32>(uv, w), 0.0);
+    return color * a.a + a.rgb;
+}
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -706,6 +756,9 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     if frame.sky_zenith.w < 0.5 {
         return hemisphere;
     }
+    if frame.sky_zenith.w > 1.5 {
+        return mix(physical_sky(direction) * frame.sky_ground.w, hemisphere, perceptual_roughness);
+    }
     var sky: vec3<f32>;
     if direction.y >= 0.0 {
         sky = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(direction.y, 0.45));
@@ -940,13 +993,14 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     color = color + emission;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
-    color = mix(color, frame.fog_color.rgb, fog_amount(distance));
+    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), fog_amount(distance));
 
     // An unlit surface takes neither the light nor the fog: it is not a
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
     var out = mix(color, albedo + emission, unlit);
+    out = through_air(out, in.clip_position.xy, length(in.world_position - frame.camera_position.xyz));
     out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
     if (flags & 8u) != 0u {
         out = out * alpha;
@@ -1032,7 +1086,9 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let direction = normalize(far.xyz / far.w - near.xyz / near.w);
     let up = direction.y;
     var color: vec3<f32>;
-    if up >= 0.0 {
+    if frame.sky_zenith.w > 1.5 {
+        color = physical_sky(direction);
+    } else if up >= 0.0 {
         color = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(up, 0.45));
     } else {
         color = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-up, 0.3));

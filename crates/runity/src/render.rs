@@ -293,6 +293,10 @@ pub enum SkyMode {
     Procedural,
     /// A flat colour: the frame's `clear_color`. URP's Solid Color.
     Color,
+    /// Sunlight scattered by the air: blue at noon, orange at sunset, with
+    /// the sun's colour and the light from all round worked out from it —
+    /// HDRP's Physically Based Sky ([`crate::atmosphere`]).
+    Physical,
 }
 
 /// The sky, in linear light: HDR, so the sun's disc is far past white and
@@ -312,6 +316,8 @@ pub struct Sky {
     pub sun_size: f32,
     /// How bright the whole sky is.
     pub exposure: f32,
+    /// The air, for [`SkyMode::Physical`].
+    pub atmosphere: crate::atmosphere::Atmosphere,
 }
 
 impl Default for Sky {
@@ -323,6 +329,7 @@ impl Default for Sky {
             ground: [0.30, 0.28, 0.25],
             sun_size: 1.5,
             exposure: 1.0,
+            atmosphere: crate::atmosphere::Atmosphere::default(),
         }
     }
 }
@@ -614,6 +621,8 @@ struct FrameUniform {
     clear_color: [f32; 4],
     /// Wind and benders, for the vertex shaders.
     foliage: crate::foliage::FoliageUniform,
+    /// The physical sky: 1 when on, the aerial grid's far end in metres.
+    air: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -832,6 +841,8 @@ pub struct Renderer {
     volumes: crate::volume::Volumes,
     /// The clock foliage sways by when a frame does not say the time.
     started: std::time::Instant,
+    /// The physical sky's table and aerial grid.
+    atmosphere: crate::atmosphere::AtmosphereRenderer,
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
@@ -1624,6 +1635,27 @@ impl Renderer {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // The physical sky's table, and its aerial grid.
+            wgpu::BindGroupLayoutEntry {
+                binding: 18,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 19,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ]);
         // The fog's compute passes read the frame as the lit shader does.
         for entry in &mut frame_entries {
@@ -1697,10 +1729,13 @@ impl Renderer {
         );
         let decal_atlases = crate::decals::DecalAtlases::new(gpu);
         let volumes = crate::volume::Volumes::new(gpu);
+        let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                sky_view: &atmosphere.sky_view,
+                aerial: &atmosphere.aerial,
                 fog: &volumes.integrated,
                 fog_sampler: &volumes.sampler,
                 decals: &decal_buffer,
@@ -1964,6 +1999,7 @@ impl Renderer {
             volumes,
             fog_bind_group,
             started: std::time::Instant::now(),
+            atmosphere,
         };
         renderer.rebind(gpu);
 
@@ -1991,6 +2027,8 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                sky_view: &self.atmosphere.sky_view,
+                aerial: &self.atmosphere.aerial,
                 fog: if making_fog {
                     &self.volumes.blank
                 } else {
@@ -2779,6 +2817,23 @@ impl Renderer {
             // to clear at a grazing angle.
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
+        // With a physical sky, the sun's colour and the light from all
+        // round come from the air, not from the scene's picked colours.
+        let physical = frame.sky.mode == SkyMode::Physical;
+        let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
+        let altitude = frame.camera.position.y.max(1.0);
+        let (sun_light, sky_light, ground_light) = if physical {
+            frame
+                .sky
+                .atmosphere
+                .lighting(altitude, to_sun, frame.lighting.sun_intensity)
+        } else {
+            (
+                frame.lighting.sun_color * frame.lighting.sun_intensity,
+                frame.lighting.sky_color,
+                frame.lighting.ground_color,
+            )
+        };
         let foliage = crate::foliage::FoliageUniform::new(
             &frame.wind,
             &frame.benders,
@@ -2806,9 +2861,9 @@ impl Renderer {
         let uniform = FrameUniform {
             view_projection: frame.camera.view_projection(aspect).to_cols_array_2d(),
             sun_direction: extend(frame.lighting.sun_direction.normalize_or_zero(), 0.0),
-            sun_color: extend(frame.lighting.sun_color * frame.lighting.sun_intensity, 0.0),
-            sky_color: extend(frame.lighting.sky_color, 0.0),
-            ground_color: extend(frame.lighting.ground_color, 0.0),
+            sun_color: extend(sun_light, 0.0),
+            sky_color: extend(sky_light, 0.0),
+            ground_color: extend(ground_light, 0.0),
             fog_color: extend(frame.fog.color, 0.0),
             fog_range: [
                 frame.fog.start,
@@ -2853,10 +2908,10 @@ impl Renderer {
                 frame.sky.zenith[0],
                 frame.sky.zenith[1],
                 frame.sky.zenith[2],
-                if frame.sky.mode == SkyMode::Procedural {
-                    1.0
-                } else {
-                    0.0
+                match frame.sky.mode {
+                    SkyMode::Color => 0.0,
+                    SkyMode::Procedural => 1.0,
+                    SkyMode::Physical => 2.0,
                 },
             ],
             sky_horizon: [
@@ -2955,6 +3010,7 @@ impl Renderer {
             fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
             clear_color: extend(frame.clear_color, 1.0),
             foliage,
+            air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3265,6 +3321,36 @@ impl Renderer {
             }
         }
 
+        // The physical sky's table and aerial grid.
+        if physical {
+            let a = &frame.sky.atmosphere;
+            self.atmosphere.run(
+                gpu,
+                &mut encoder,
+                &crate::atmosphere::AtmosphereUniform {
+                    inverse_view_projection: frame
+                        .camera
+                        .view_projection(aspect)
+                        .inverse()
+                        .to_cols_array_2d(),
+                    to_sun: extend(to_sun, altitude),
+                    eye: extend(frame.camera.position, frame.camera.far),
+                    amounts: [
+                        a.rayleigh,
+                        a.mie,
+                        a.ozone,
+                        a.mie_anisotropy.clamp(0.0, 0.99),
+                    ],
+                    scale: [
+                        a.brightness.max(0.0),
+                        frame.lighting.sun_intensity,
+                        a.aerial_scale.max(0.0),
+                        a.ground_albedo.clamp(0.0, 1.0),
+                    ],
+                },
+            );
+        }
+
         // The fog in the air, once every shadow it looks through is drawn.
         if frame.volumetric_fog.enabled {
             self.volumes.run(
@@ -3364,7 +3450,7 @@ impl Renderer {
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all. A plain colour needs no pass —
             // unless there is fog in the air in front of it.
-            if frame.sky.mode == SkyMode::Procedural || frame.volumetric_fog.enabled {
+            if frame.sky.mode != SkyMode::Color || frame.volumetric_fog.enabled {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
@@ -3558,6 +3644,8 @@ struct FrameInputs<'a> {
     decal_normals: &'a wgpu::TextureView,
     fog: &'a wgpu::TextureView,
     fog_sampler: &'a wgpu::Sampler,
+    sky_view: &'a wgpu::TextureView,
+    aerial: &'a wgpu::TextureView,
 }
 
 fn frame_bind_group(
@@ -3603,6 +3691,8 @@ fn frame_bind_group(
             binding: 17,
             resource: wgpu::BindingResource::Sampler(inputs.fog_sampler),
         },
+        view(18, inputs.sky_view),
+        view(19, inputs.aerial),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
