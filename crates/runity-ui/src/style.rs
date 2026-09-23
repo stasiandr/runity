@@ -221,6 +221,12 @@ impl Style {
         self.width(w).height(h)
     }
 
+    /// A fraction of the parent's width: a progress bar's fill.
+    pub fn width_fraction(mut self, f: f32) -> Self {
+        self.layout.size.width = percent(f.clamp(0.0, 1.0));
+        self
+    }
+
     /// As wide as the parent allows.
     pub fn full_width(mut self) -> Self {
         self.layout.size.width = percent(1.0);
@@ -234,6 +240,12 @@ impl Style {
 
     pub fn full(self) -> Self {
         self.full_width().full_height()
+    }
+
+    /// As tall as its content: undoes a fixed height.
+    pub fn auto_height(mut self) -> Self {
+        self.layout.size.height = auto();
+        self
     }
 
     pub fn min_width(mut self, w: f32) -> Self {
@@ -323,6 +335,13 @@ impl Style {
     pub fn center(mut self) -> Self {
         self.layout.align_items = Some(taffy::AlignItems::CENTER);
         self.layout.justify_content = Some(taffy::JustifyContent::CENTER);
+        self
+    }
+
+    /// Undo [`Style::center`]: children at the start again.
+    pub fn center_items_reset(mut self) -> Self {
+        self.layout.align_items = None;
+        self.layout.justify_content = None;
         self
     }
 

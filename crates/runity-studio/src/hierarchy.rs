@@ -23,9 +23,9 @@ use crate::theme::*;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Part {
     Line(EntityId),
-    Arrow(EntityId, bool),
-    Eye(EntityId, bool),
-    Lock(EntityId, bool),
+    Arrow(EntityId),
+    Eye(EntityId),
+    Lock(EntityId),
     Rename(EntityId),
 }
 
@@ -43,18 +43,40 @@ pub struct Hierarchy {
     /// The first line in view the last time a line was selected, so the
     /// view can follow a selection made in the Scene view.
     followed: Option<EntityId>,
+    /// The lines as last shown, in order.
+    shown: Vec<Row>,
+    /// The arrow keys move the selection here.
+    active: bool,
+    /// Each line's node as last updated.
+    lines: HashMap<EntityId, NodeId>,
+    /// Where a Shift click selects from.
+    anchor: Option<EntityId>,
+    /// The accent line that shows where a dragged line will land.
+    indicator: NodeId,
+}
+
+/// Where a dragged line lands, relative to the line under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Drop {
+    Before(EntityId),
+    Into(EntityId),
+    After(EntityId),
+    /// Below every line: the end of the top level.
+    End,
 }
 
 impl Hierarchy {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let (card, header, body) = panel(ui, parent, "Hierarchy");
+        // The panel's own content: a dock puts it in a card with a tab.
+        let card = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(card, "hierarchy");
-        let count = ui.add_text(header, caption(), "");
+        let body = card;
         let bar = ui.add(
             body,
             Style::row()
                 .full_width()
                 .padding_x(SPACE_2)
+                .gap(SPACE_2)
                 .height(28.0)
                 .fixed()
                 .center_items(),
@@ -62,6 +84,7 @@ impl Hierarchy {
         let search = ui.add_field(bar, field_style().fill().height(24.0), "");
         ui.set_name(search, "hierarchy search");
         ui.set_placeholder(search, "Search  (c:door  m:bark)");
+        let count = ui.add_text(bar, caption(), "");
         let list = ui.add(
             body,
             Style::column()
@@ -73,7 +96,21 @@ impl Hierarchy {
                 .clickable(),
         );
         ui.set_name(list, "hierarchy list");
+        let indicator = ui.add(
+            card,
+            Style::row()
+                .absolute(0.0, 0.0)
+                .size(0.0, 2.0)
+                .radius(1.0)
+                .background(ACCENT)
+                .hidden(),
+        );
         Self {
+            shown: Vec::new(),
+            active: false,
+            lines: HashMap::new(),
+            anchor: None,
+            indicator,
             card,
             count,
             search,
@@ -100,41 +137,65 @@ impl Hierarchy {
         let keys: Vec<u64> = rows.iter().map(|r| r.id.raw()).collect();
         let by_key: HashMap<u64, &Row> = rows.iter().map(|r| (r.id.raw(), r)).collect();
         let renaming = self.renaming;
-        let mut parts = HashMap::new();
+        // Lines made for new rows say what their nodes stand for once, when
+        // they are made; a line kept keeps its parts.
+        let mut made: Vec<(EntityId, NodeId)> = Vec::new();
         ui.sync_children(
             self.list,
             &keys,
-            |ui, list, key| make_line(ui, list, by_key[key]),
+            |ui, list, key| {
+                let row = by_key[key];
+                let line = make_line(ui, list, row);
+                made.push((row.id, line));
+                line
+            },
             |_, _, _| {},
         );
-        // Every line brought up to date, and what its nodes stand for.
-        for (line, row) in ui.children(self.list).into_iter().zip(&rows) {
-            update_line(ui, line, row, renaming);
+        for (id, line) in made {
             let kids = ui.children(line);
-            parts.insert(line, Part::Line(row.id));
-            parts.insert(kids[0], Part::Arrow(row.id, row.open));
-            let tools = kids[4];
-            let t = ui.children(tools);
-            parts.insert(t[0], Part::Eye(row.id, row.hidden));
-            parts.insert(t[1], Part::Lock(row.id, row.locked));
-            if let Some((id, field)) = renaming {
-                if id == row.id {
-                    parts.insert(field, Part::Rename(id));
-                }
+            let tools = ui.children(kids[4]);
+            self.parts.insert(line, Part::Line(id));
+            self.parts.insert(kids[0], Part::Arrow(id));
+            self.parts.insert(tools[0], Part::Eye(id));
+            self.parts.insert(tools[1], Part::Lock(id));
+            self.lines.insert(id, line);
+        }
+        // Lines whose rows went: forget their parts.
+        let alive: std::collections::HashSet<EntityId> = rows.iter().map(|r| r.id).collect();
+        if self.lines.len() > alive.len() {
+            let gone: Vec<EntityId> = self
+                .lines
+                .keys()
+                .filter(|id| !alive.contains(id))
+                .copied()
+                .collect();
+            for id in gone {
+                self.lines.remove(&id);
+            }
+            self.parts.retain(|node, _| ui.exists(*node));
+        }
+        // Every line brought up to date — only those whose row changed: a
+        // selection change touches two lines, not two thousand.
+        let before: HashMap<EntityId, &Row> = self.shown.iter().map(|r| (r.id, r)).collect();
+        for row in &rows {
+            let Some(&line) = self.lines.get(&row.id) else {
+                continue;
+            };
+            let same = before.get(&row.id).is_some_and(|b| *b == row) && renaming.is_none();
+            if !same {
+                update_line(ui, line, row, renaming);
             }
         }
-        self.parts = parts;
+        if let Some((id, field)) = renaming {
+            self.parts.insert(field, Part::Rename(id));
+        }
+        self.shown = rows.clone();
+
         // Follow the selection into view when it changed from elsewhere.
         let selected = session.selected();
         if selected != self.followed {
             self.followed = selected;
-            if let Some(line) = ui
-                .children(self.list)
-                .into_iter()
-                .zip(&rows)
-                .find(|(_, r)| Some(r.id) == selected)
-                .map(|(n, _)| n)
-            {
+            if let Some(line) = selected.and_then(|id| self.lines.get(&id).copied()) {
                 ui.scroll_to(self.list, line);
             }
         }
@@ -162,10 +223,11 @@ impl Hierarchy {
     }
 
     fn line_of(&self, id: EntityId) -> Option<NodeId> {
-        self.parts
-            .iter()
-            .find(|(_, p)| **p == Part::Line(id))
-            .map(|(n, _)| *n)
+        self.lines.get(&id).copied()
+    }
+
+    fn row(&self, id: EntityId) -> Option<&Row> {
+        self.shown.iter().find(|r| r.id == id)
     }
 
     /// Whether `node` is this panel's.
@@ -210,15 +272,18 @@ impl Hierarchy {
                 self.stop_renaming(ui);
                 requests.refresh = true;
             }
-            (Some(Part::Arrow(id, open)), Event::Click { .. }) => {
+            (Some(Part::Arrow(id)), Event::Click { .. }) => {
+                let open = self.row(id).is_some_and(|r| r.open);
                 session.set_open(id, !open);
                 requests.refresh = true;
             }
-            (Some(Part::Eye(id, hidden)), Event::Click { .. }) => {
+            (Some(Part::Eye(id)), Event::Click { .. }) => {
+                let hidden = self.row(id).is_some_and(|r| r.hidden);
                 let _ = session.set_hidden(&[id], !hidden);
                 requests.refresh = true;
             }
-            (Some(Part::Lock(id, locked)), Event::Click { .. }) => {
+            (Some(Part::Lock(id)), Event::Click { .. }) => {
+                let locked = self.row(id).is_some_and(|r| r.locked);
                 let _ = session.set_pickable(&[id], locked);
                 requests.refresh = true;
             }
@@ -235,32 +300,38 @@ impl Hierarchy {
                     _ if *count >= 2 => {
                         session.focus_selected();
                     }
-                    _ if shift || ctrl || command => {
-                        let _ = session.add_to_selection(id);
+                    _ if shift => self.select_range(session, id),
+                    _ if ctrl || command => {
+                        // Cmd toggles one line in or out.
+                        let mut ids = session.selection();
+                        if let Some(i) = ids.iter().position(|x| *x == id) {
+                            ids.remove(i);
+                        } else {
+                            ids.push(id);
+                        }
+                        let _ = session.select(None);
+                        for x in ids {
+                            let _ = session.add_to_selection(x);
+                        }
+                        self.anchor = Some(id);
                     }
                     _ => {
                         let _ = session.select(Some(id));
+                        self.anchor = Some(id);
                     }
                 }
+                self.active = true;
                 self.followed = Some(id);
                 requests.refresh = true;
                 requests.keyboard_to_scene = true;
             }
-            (Some(Part::Line(id)), Event::DragEnd { over }) => {
-                let target = over.and_then(|o| match self.parts.get(&o) {
-                    Some(Part::Line(t)) => Some(Some(*t)),
-                    _ if o == self.list => Some(None),
-                    _ => None,
-                });
-                if let Some(parent) = target {
-                    if parent != Some(id) {
-                        if let Err(e) = session.reparent(id, parent) {
-                            session.say(runity_editor::console::Level::Warning, e.to_string());
-                        }
-                        if let Some(p) = parent {
-                            session.set_open(p, true);
-                        }
-                    }
+            (Some(Part::Line(_)), Event::Drag { .. }) => {
+                self.show_drop(ui);
+            }
+            (Some(Part::Line(id)), Event::DragEnd { .. }) => {
+                ui.restyle(self.indicator, |s| s.hidden());
+                if let Some(drop) = self.drop_at(ui) {
+                    self.land(session, id, drop);
                 }
                 requests.refresh = true;
             }
@@ -275,6 +346,221 @@ impl Hierarchy {
             }
             _ => {}
         }
+    }
+
+    /// Where something from elsewhere — a Project entry — let go at the
+    /// pointer lands: `Some(Some(line))` on a line, `Some(None)` on the list
+    /// past its lines, `None` off the Hierarchy.
+    pub fn drop_target(&self, ui: &Ui) -> Option<Option<EntityId>> {
+        match self.drop_at(ui)? {
+            Drop::Into(id) | Drop::Before(id) | Drop::After(id) => Some(Some(id)),
+            Drop::End => Some(None),
+        }
+    }
+
+    /// Where the pointer is over the list, as a drop.
+    fn drop_at(&self, ui: &Ui) -> Option<Drop> {
+        let (x, y) = ui.pointer();
+        if !ui.rect(self.list).contains(x, y) {
+            return None;
+        }
+        for (line, row) in ui.children(self.list).into_iter().zip(&self.shown) {
+            let r = ui.rect(line);
+            if y >= r.y && y < r.y + r.height {
+                let t = (y - r.y) / r.height;
+                return Some(if t < 0.25 {
+                    Drop::Before(row.id)
+                } else if t > 0.75 && !(row.has_children && row.open) {
+                    Drop::After(row.id)
+                } else {
+                    Drop::Into(row.id)
+                });
+            }
+        }
+        Some(Drop::End)
+    }
+
+    /// The accent line (or the outlined line) where a drop would land.
+    fn show_drop(&mut self, ui: &mut Ui) {
+        let Some(drop) = self.drop_at(ui) else {
+            ui.restyle(self.indicator, |s| s.hidden());
+            return;
+        };
+        let card = ui.rect(self.card);
+        let line_of = |id: EntityId| {
+            ui.children(self.list)
+                .into_iter()
+                .zip(&self.shown)
+                .find(|(_, r)| r.id == id)
+                .map(|(n, r)| (ui.rect(n), r.depth))
+        };
+        let (y, x, w, h) = match drop {
+            Drop::Before(id) | Drop::After(id) | Drop::Into(id) => {
+                let Some((r, depth)) = line_of(id) else {
+                    return;
+                };
+                let indent = 22.0 + depth as f32 * INDENT;
+                match drop {
+                    Drop::Before(_) => (r.y - 1.0, r.x + indent, r.width - indent, 2.0),
+                    Drop::After(_) => (r.y + r.height - 1.0, r.x + indent, r.width - indent, 2.0),
+                    _ => (r.y, r.x, r.width, r.height),
+                }
+            }
+            Drop::End => {
+                let last = ui.children(self.list).last().map(|n| ui.rect(*n));
+                let Some(r) = last else { return };
+                (r.y + r.height, r.x, r.width, 2.0)
+            }
+        };
+        let into = matches!(drop, Drop::Into(_));
+        ui.restyle(self.indicator, |s| {
+            let s = s.shown().absolute(x - card.x, y - card.y).size(w, h);
+            if into {
+                s.background(ACCENT.alpha(12)).border(1.0, ACCENT)
+            } else {
+                s.background(ACCENT)
+                    .border(0.0, runity_ui::Color::TRANSPARENT)
+            }
+        });
+    }
+
+    /// Put `id` where it was dropped: before or after a line (a sibling
+    /// of it), into a line (its last child), or at the end of the top.
+    fn land(&mut self, session: &mut Session, id: EntityId, drop: Drop) {
+        let parent_of = |target: EntityId| -> Option<EntityId> {
+            let i = self.shown.iter().position(|r| r.id == target)?;
+            let depth = self.shown[i].depth;
+            self.shown[..i]
+                .iter()
+                .rev()
+                .find(|r| r.depth + 1 == depth)
+                .map(|r| r.id)
+        };
+        let index_of = |target: EntityId| -> usize {
+            let Some(i) = self.shown.iter().position(|r| r.id == target) else {
+                return 0;
+            };
+            let depth = self.shown[i].depth;
+            let mut n = 0;
+            for r in self.shown[..i].iter().rev() {
+                if r.depth < depth {
+                    break;
+                }
+                if r.depth == depth && r.id != id {
+                    n += 1;
+                }
+            }
+            n
+        };
+        let (parent, index) = match drop {
+            Drop::Into(t) if t == id => return,
+            Drop::Into(t) => (Some(t), None),
+            Drop::Before(t) if t == id => return,
+            Drop::After(t) if t == id => return,
+            Drop::Before(t) => (parent_of(t), Some(index_of(t))),
+            Drop::After(t) => (parent_of(t), Some(index_of(t) + 1)),
+            Drop::End => (None, None),
+        };
+        // A line of the selection takes the whole selection with it, in the
+        // order the lines are shown, as one undo step.
+        let selection = session.selection();
+        let moving: Vec<EntityId> = if selection.contains(&id) && selection.len() > 1 {
+            self.shown
+                .iter()
+                .map(|r| r.id)
+                .filter(|r| selection.contains(r) && Some(*r) != parent)
+                .collect()
+        } else {
+            vec![id]
+        };
+        let mut moved = 0;
+        for (i, one) in moving.iter().enumerate() {
+            match session.move_in_hierarchy(*one, parent, index.map(|at| at + i)) {
+                Ok(_) => moved += 1,
+                Err(e) => session.say(runity_editor::console::Level::Warning, e.to_string()),
+            }
+        }
+        if moved > 1 {
+            session.squash_last(moved);
+        }
+        if let Some(p) = parent {
+            session.set_open(p, true);
+        }
+    }
+
+    /// Shift click: everything between the last line clicked and this one.
+    fn select_range(&mut self, session: &mut Session, to: EntityId) {
+        let from = self.anchor.unwrap_or(to);
+        let a = self.shown.iter().position(|r| r.id == from);
+        let b = self.shown.iter().position(|r| r.id == to);
+        let (Some(a), Some(b)) = (a, b) else {
+            let _ = session.add_to_selection(to);
+            return;
+        };
+        let (lo, hi) = (a.min(b), a.max(b));
+        let _ = session.select(None);
+        for r in &self.shown[lo..=hi] {
+            let _ = session.add_to_selection(r.id);
+        }
+    }
+
+    /// The arrow keys, while the Hierarchy was the last thing clicked: up
+    /// and down move the selection, left folds (or goes to the parent),
+    /// right unfolds. `true` when it used the key.
+    pub fn key(&mut self, session: &mut Session, key: runity::input::Key, shift: bool) -> bool {
+        use runity::input::Key;
+        if !self.active {
+            return false;
+        }
+        let Some(current) = session.selected() else {
+            return false;
+        };
+        let Some(i) = self.shown.iter().position(|r| r.id == current) else {
+            return false;
+        };
+        let row = &self.shown[i];
+        match key {
+            Key::Up | Key::Down => {
+                let j = if key == Key::Up {
+                    i.checked_sub(1)
+                } else {
+                    Some(i + 1)
+                };
+                let Some(next) = j.and_then(|j| self.shown.get(j)) else {
+                    return true;
+                };
+                if shift {
+                    let _ = session.add_to_selection(next.id);
+                } else {
+                    let _ = session.select(Some(next.id));
+                    self.anchor = Some(next.id);
+                }
+            }
+            Key::Left => {
+                if row.has_children && row.open {
+                    session.set_open(row.id, false);
+                } else if let Some(p) = self.shown[..i]
+                    .iter()
+                    .rev()
+                    .find(|r| r.depth + 1 == row.depth)
+                {
+                    let _ = session.select(Some(p.id));
+                }
+            }
+            Key::Right => {
+                if row.has_children {
+                    session.set_open(row.id, true);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Whether the Hierarchy has the arrows: after a click on it, until a
+    /// click elsewhere.
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
     }
 
     /// F2 on the selection, from the Edit menu or the keyboard.

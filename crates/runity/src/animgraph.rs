@@ -434,6 +434,30 @@ mod tests {
     }
 
     #[test]
+    fn a_report_of_the_world_says_which_state_each_controller_is_in() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.update(&mut animator);
+        let mut world = hecs::World::new();
+        let id = crate::EntityId::fresh();
+        world.spawn((
+            crate::world::SceneId(id),
+            crate::scene::Transform::default(),
+            controller,
+        ));
+        let report = crate::save::capture(
+            &world,
+            &crate::components::Components::new(),
+            &crate::Scene::default(),
+        );
+        assert_eq!(report.entities[0].animator, "idle");
+        let text = ron::to_string(&report).unwrap();
+        let back: crate::save::SaveGame = ron::from_str(&text).unwrap();
+        assert_eq!(back, report);
+    }
+
+    #[test]
     fn parameters_pick_the_clip_and_the_game_never_names_one() {
         let graph: Graph = ron::from_str(GRAPH).unwrap();
         assert!(graph.problems(&["idle", "walk", "jump"]).is_empty());

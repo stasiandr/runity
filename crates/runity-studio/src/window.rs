@@ -26,6 +26,14 @@ struct Running {
     surface: Surface,
     renderer: UiRenderer,
     studio: Studio,
+    title: String,
+    /// Whether the input method is on: while a text field is focused.
+    ime: bool,
+    /// Text that came as a key and text an input method committed, with
+    /// when: some platforms send both for one keystroke, and it is typed
+    /// once.
+    last_key_text: Option<(String, Instant)>,
+    last_commit: Option<(String, Instant)>,
 }
 
 struct App {
@@ -40,6 +48,9 @@ struct App {
     next: Instant,
 }
 
+/// How much longer an idle frame waits: four a second.
+const IDLE: Duration = Duration::from_millis(242);
+
 /// The most frames a second the editor draws.
 const FRAME: Duration = Duration::from_micros(1_000_000 / 120);
 
@@ -48,11 +59,18 @@ impl ApplicationHandler for App {
         let Some(run) = self.running.as_ref() else {
             return;
         };
-        if Instant::now() >= self.next {
+        // Idle, a few frames a second: the disk is still watched and
+        // emitters still play, but nothing burns a core for a still scene.
+        let due = if run.studio.wants_frame() {
+            self.next
+        } else {
+            self.next + IDLE
+        };
+        if Instant::now() >= due {
             run.window.request_redraw();
             event_loop.set_control_flow(ControlFlow::Wait);
         } else {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
         }
     }
 
@@ -97,6 +115,10 @@ impl ApplicationHandler for App {
             surface,
             renderer,
             studio,
+            title: String::new(),
+            ime: false,
+            last_key_text: None,
+            last_commit: None,
         });
     }
 
@@ -132,8 +154,52 @@ impl ApplicationHandler for App {
                     .resize(size.width as f32 / scale, size.height as f32 / scale, scale);
             }
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
+            WindowEvent::Ime(ime) => {
+                match ime {
+                    winit::event::Ime::Preedit(text, _) => run.studio.ime_preedit(text),
+                    winit::event::Ime::Commit(text) => {
+                        let twice = run.last_key_text.as_ref().is_some_and(|(t, at)| {
+                            t == text && at.elapsed() < Duration::from_millis(60)
+                        });
+                        if !twice {
+                            run.studio.handle(&InputEvent::Text(text.clone()));
+                        }
+                        run.last_commit = Some((text.clone(), Instant::now()));
+                    }
+                    _ => {}
+                }
+                return;
+            }
             WindowEvent::RedrawRequested => {
                 run.studio.frame();
+                let cursor = match run.studio.cursor() {
+                    crate::studio::Cursor::Default => winit::window::CursorIcon::Default,
+                    crate::studio::Cursor::Text => winit::window::CursorIcon::Text,
+                    crate::studio::Cursor::ResizeColumn => winit::window::CursorIcon::ColResize,
+                    crate::studio::Cursor::ResizeRow => winit::window::CursorIcon::RowResize,
+                    crate::studio::Cursor::Brush => winit::window::CursorIcon::Crosshair,
+                };
+                run.window.set_cursor(cursor);
+                // The input method only while typing, its candidates at
+                // the caret.
+                let typing = run.studio.typing();
+                if typing != run.ime {
+                    run.window.set_ime_allowed(typing);
+                    run.ime = typing;
+                }
+                if typing {
+                    if let Some(r) = run.studio.ime_area() {
+                        run.window.set_ime_cursor_area(
+                            winit::dpi::LogicalPosition::new(r.x, r.y),
+                            winit::dpi::LogicalSize::new(r.width.max(1.0), r.height),
+                        );
+                    }
+                }
+                let title = run.studio.title();
+                if title != run.title {
+                    run.window.set_title(&title);
+                    run.title = title;
+                }
                 let gpu = run.studio.session.gpu();
                 match run.surface.begin_frame() {
                     Ok(frame) => {
@@ -159,6 +225,16 @@ impl ApplicationHandler for App {
                     x: x / scale,
                     y: y / scale,
                 },
+                InputEvent::Text(text) => {
+                    let twice = run.last_commit.as_ref().is_some_and(|(t, at)| {
+                        *t == text && at.elapsed() < Duration::from_millis(60)
+                    });
+                    run.last_key_text = Some((text.clone(), Instant::now()));
+                    if twice {
+                        continue;
+                    }
+                    InputEvent::Text(text)
+                }
                 other => other,
             };
             run.studio.handle(&input);

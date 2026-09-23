@@ -17,6 +17,7 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+mod animation;
 mod blockout;
 pub mod console;
 mod error;
@@ -99,6 +100,10 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Where a camera entity's preview is drawn.
+    preview_target: Option<OffscreenTarget>,
+    /// Entities whose clips are playing in the view, for a preview.
+    previewing: Vec<EntityId>,
     /// Draw what the game would show instead of the Scene view: Unity's
     /// Game view (see [`Session::set_game_view`]).
     game_view: bool,
@@ -170,6 +175,9 @@ pub struct Session {
     fly_speed: f32,
     /// What a surface drag lands on, built once when the gesture begins.
     surface: Option<runity::PhysicsWorld>,
+    /// Every solid, for [`Session::point_under`], and the revision it was
+    /// built at; dropped when an asset changes shape.
+    solids: Option<(u64, runity::PhysicsWorld)>,
     /// A vertex snap in progress.
     vertex_grab: Option<surface::VertexGrab>,
     /// Showing where a walker can go: with what walker, and the grid baked
@@ -292,6 +300,8 @@ impl Session {
             pixels: Vec::new(),
             readback: true,
             game_view: false,
+            previewing: Vec::new(),
+            preview_target: None,
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -318,6 +328,7 @@ impl Session {
             marquee: None,
             fly_speed: 6.0,
             surface: None,
+            solids: None,
             vertex_grab: None,
             nav_shown: None,
             console: Default::default(),
@@ -1193,6 +1204,50 @@ impl Session {
         Ok(())
     }
 
+    /// The scene's sun and fog, as the RON its file holds: `("sun",
+    /// "(hour: 9.0, intensity: 1.0)")` — Unity's Lighting window.
+    pub fn environment(&self) -> Vec<(&'static str, String)> {
+        let scene = self.history.scene();
+        vec![
+            (
+                "sun",
+                runity::ron::to_string(&scene.sun).unwrap_or_default(),
+            ),
+            (
+                "fog",
+                runity::ron::to_string(&scene.fog).unwrap_or_default(),
+            ),
+        ]
+    }
+
+    /// Set the scene's `sun` or `fog` from RON, as one undo step. Text that
+    /// does not parse costs no step and says why.
+    pub fn set_environment(&mut self, field: &str, ron: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let mut scene = self.history.scene().clone();
+        match field {
+            "sun" => {
+                scene.sun =
+                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("sun: {e}")))?
+            }
+            "fog" => {
+                scene.fog =
+                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("fog: {e}")))?
+            }
+            other => {
+                return Err(EditError::Scene(format!(
+                    "`{other}` is not part of the scene's environment — there are sun and fog"
+                )))
+            }
+        }
+        if &scene == self.history.scene() {
+            return Ok(());
+        }
+        *self.history.edit() = scene;
+        self.respawn();
+        Ok(())
+    }
+
     /// Pick up the scene's file, or a prefab, changed by someone else — a
     /// text editor, `git pull`, an agent.
     ///
@@ -1861,6 +1916,19 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// Make the last `steps` undo steps one: what a caller that made
+    /// something and then named it wants undone in one go.
+    pub fn squash_last(&mut self, steps: usize) {
+        self.history.squash(steps);
+    }
+
+    /// A number that changes whenever the document does: an edit, an undo,
+    /// a reload. What a window compares once a frame; asking for the undo
+    /// labels instead compares whole documents.
+    pub fn revision(&self) -> u64 {
+        self.history.revision()
+    }
+
     /// Every step undo can take back, oldest first, in words.
     pub fn undo_steps(&self) -> Vec<String> {
         self.history.steps()
@@ -2043,6 +2111,19 @@ impl Session {
     /// The tree needs this to say so: an instance is one row whose insides
     /// belong to a file, and a row that looks like every other row hides the
     /// difference until someone tries to move a stone and moves twelve.
+    /// Whether a model by this name exists: builtin, imported, or a Poly
+    /// Shape — what a new asset's name must not clash with.
+    pub fn has_model(&self, name: &str) -> bool {
+        self.bounds_of(name).is_some()
+    }
+
+    /// The model an entity draws, when it draws one of its own.
+    pub fn entity_model(&self, id: EntityId) -> Option<String> {
+        self.line(id)
+            .map(|l| l.model.clone())
+            .filter(|m| !m.is_empty())
+    }
+
     pub fn entity_prefab(&self, id: EntityId) -> Option<String> {
         self.history
             .scene()
@@ -2289,7 +2370,24 @@ impl Session {
     /// first — a changed `.png` becomes a changed `.rasset` — and then the
     /// library re-reads exactly those, so a colour tweaked in a text file
     /// shows up in the viewport without anything being reopened.
+    /// The point of the world a pixel of the view shows, on whatever solid
+    /// is there — where a brush lands, where a click on the ground is.
+    /// `None` over the sky.
+    pub fn point_under(&mut self, x: u32, y: u32) -> Option<Vec3> {
+        let revision = self.history.revision();
+        if self.solids.as_ref().is_none_or(|(r, _)| *r != revision) {
+            self.solids = Some((revision, self.solid_without(&[])));
+        }
+        let (from, direction) = self.ray(x, y);
+        let far = self.camera.far;
+        let (_, world) = self.solids.as_ref()?;
+        world
+            .cast_ray_with_normal(from, direction, far, false)
+            .map(|(point, _, _)| point)
+    }
+
     pub fn reload_assets(&mut self) -> usize {
+        self.solids = None;
         // In a project the sources are the truth: whatever changed, moved
         // or appeared in `assets/` and `materials/` is rebuilt first, and the
         // library read again if anything was. Without one there are no
@@ -2392,37 +2490,16 @@ impl Session {
         // Emitters play while they are looked at, as Unity previews them:
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
-        let scene = self.history.scene();
+        // A clip previewed moves the same way: a thirtieth a frame drawn.
+        if !self.previewing.is_empty() && self.play.is_none() {
+            runity::advance_animations(&mut self.world, 1.0 / 30.0);
+        }
         let camera = if self.game_view {
             self.game_camera().unwrap_or(self.camera)
         } else {
             self.camera
         };
-        let mut frame = Frame {
-            camera,
-            // From the scene's hour, like every other tool: an editor
-            // lighting a scene differently from the render is an editor you
-            // cannot trust about anything you are looking at.
-            lighting: runity::scene_lighting(&scene.sun),
-            fog: runity::scene_fog(&scene.fog),
-            clear_color: Vec3::from_array(scene.fog.color),
-            sky: runity::render::Sky {
-                horizon: scene.fog.color,
-                ..Default::default()
-            },
-            ..{
-                let unseen = self.unseen();
-                runity::build_frame_where(
-                    &self.world,
-                    camera,
-                    Lighting::default(),
-                    FogSettings::default(),
-                    |line| line.is_none_or(|id| !unseen.contains(&id)),
-                )
-            }
-        };
-        // The scene's own sky and post-processing, as the game draws it.
-        runity::world::scene_look(&mut frame, scene);
+        let mut frame = self.base_frame(camera);
         // The maps its materials draw with, uploaded the first time they
         // are seen — an import that brought a new one shows at once.
         let _ = runity::world::upload_material_maps(
@@ -2682,6 +2759,96 @@ impl Session {
         }
     }
 
+    /// The scene as a camera sees it, lit and fogged as the scene says, with
+    /// nothing of the editor's drawn over it.
+    fn base_frame(&self, camera: Camera) -> Frame {
+        let scene = self.history.scene();
+        let mut frame = Frame {
+            camera,
+            // From the scene's hour, like every other tool: an editor
+            // lighting a scene differently from the render is an editor you
+            // cannot trust about anything you are looking at.
+            lighting: runity::scene_lighting(&scene.sun),
+            fog: runity::scene_fog(&scene.fog),
+            clear_color: Vec3::from_array(scene.fog.color),
+            sky: runity::render::Sky {
+                horizon: scene.fog.color,
+                ..Default::default()
+            },
+            ..{
+                let unseen = self.unseen();
+                runity::build_frame_where(
+                    &self.world,
+                    camera,
+                    Lighting::default(),
+                    FogSettings::default(),
+                    |line| line.is_none_or(|id| !unseen.contains(&id)),
+                )
+            }
+        };
+        // The scene's own sky and post-processing, as the game draws it.
+        runity::world::scene_look(&mut frame, scene);
+        frame
+    }
+
+    /// A sound asset by the name scenes use, from the library: what the
+    /// Project window plays to preview it.
+    pub fn sound(&self, name: &str) -> Option<&runity::asset::ArchivedSoundAsset> {
+        self.library.as_ref()?.sound_by_name(name)
+    }
+
+    /// What a camera entity sees: its lens where it stands.
+    pub fn camera_of(&self, id: EntityId) -> Option<Camera> {
+        let (lens, placed) = self
+            .world
+            .query::<(
+                &runity::SceneId,
+                &runity::world::CameraLens,
+                &runity::world::WorldTransform,
+            )>()
+            .iter()
+            .find(|(s, _, _)| s.0 == id)
+            .map(|(_, l, w)| (l.0, w.0))?;
+        let (_, rotation, position) = placed.to_scale_rotation_translation();
+        Some(Camera {
+            position,
+            target: position + rotation * Vec3::Z,
+            up: rotation * Vec3::Y,
+            fov_y_degrees: lens.fov_deg,
+            ortho: lens.ortho,
+            ..Camera::default()
+        })
+    }
+
+    /// Draw what a camera entity sees into a picture of its own — Unity's
+    /// Camera Preview in the corner of the Scene view. `false` when `id` has
+    /// no camera. The picture is [`Session::preview_target`], the size of
+    /// the view's own: the renderer keeps one depth buffer, and a picture of
+    /// another size every frame would have it made again twice a frame. A
+    /// window shows it smaller.
+    pub fn render_camera_preview(&mut self, id: EntityId) -> bool {
+        let Some(camera) = self.camera_of(id) else {
+            return false;
+        };
+        let size = (self.target.width, self.target.height);
+        if self
+            .preview_target
+            .as_ref()
+            .is_none_or(|t| (t.width, t.height) != size)
+        {
+            self.preview_target = Some(OffscreenTarget::new(&self.gpu, size.0, size.1));
+        }
+        let frame = self.base_frame(camera);
+        let target = self.preview_target.as_ref().expect("made above");
+        self.renderer.render(&self.gpu, target, &frame);
+        true
+    }
+
+    /// The camera preview's picture, once one was drawn.
+    pub fn preview_target(&self) -> Option<&OffscreenTarget> {
+        self.preview_target.as_ref()
+    }
+
     /// Show the game's view — through the scene's camera, or the Scene
     /// view's own when it has none — with none of the editor's overlays.
     /// Unity's Game view. A view setting, not an edit.
@@ -2806,6 +2973,68 @@ impl Session {
             }
         }
         best.map(|(_, id)| id)
+    }
+
+    /// The face of an entity's box under a pixel of the view: ProBuilder's
+    /// face selection, over the faces [`Session::push_face`] moves. The
+    /// entity is what [`Session::pick`] finds there; one without a model of
+    /// its own (a prefab's root) has no faces.
+    pub fn face_under(&self, x: u32, y: u32) -> Option<(EntityId, runity::edit::Face)> {
+        let id = self.pick(x, y)?;
+        let (bounds, world) = self.own_box(id)?;
+        let (origin, direction) = self.ray(x, y);
+        Some((id, entry_face(origin, direction, bounds, world)?))
+    }
+
+    /// A face's four corners in the view, in pixels, and where one metre
+    /// out along it lands: what a window outlines under the pointer, and
+    /// how far a drag of so many pixels pushes the face.
+    pub fn face_on_screen(&self, id: EntityId, face: runity::edit::Face) -> Option<FaceOnScreen> {
+        let ((min, max), world) = self.own_box(id)?;
+        let (axis, sign) = (face.axis(), if face.positive() { 1.0 } else { -1.0 });
+        let at = if face.positive() {
+            max[axis]
+        } else {
+            min[axis]
+        };
+        let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+        let corner = |a: f32, b: f32| {
+            let mut p = Vec3::ZERO;
+            p[axis] = at;
+            p[u] = a;
+            p[v] = b;
+            world.transform_point3(p)
+        };
+        let corners = [
+            corner(min[u], min[v]),
+            corner(max[u], min[v]),
+            corner(max[u], max[v]),
+            corner(min[u], max[v]),
+        ];
+        let (w, h) = self.size();
+        let size = runity::glam::Vec2::new(w as f32, h as f32);
+        let on_screen = |p: Vec3| self.camera.screen_point(p, size).map(|q| (q.x, q.y));
+        let mut out = [(0.0, 0.0); 4];
+        for (o, c) in out.iter_mut().zip(corners) {
+            *o = on_screen(c)?;
+        }
+        let centre = corners.iter().copied().sum::<Vec3>() / 4.0;
+        let mut normal = Vec3::ZERO;
+        normal[axis] = sign;
+        let normal = world.transform_vector3(normal).normalize_or_zero();
+        let from = on_screen(centre)?;
+        let to = on_screen(centre + normal)?;
+        Some((out, (to.0 - from.0, to.1 - from.1)))
+    }
+
+    /// An entity's own model's box and where it is in the world.
+    fn own_box(&self, id: EntityId) -> Option<((Vec3, Vec3), Mat4)> {
+        self.instanced
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(desc, _)| desc.id == id)
+            .and_then(|(desc, world)| Some((self.bounds_of(&desc.model)?, world)))
     }
 
     /// Put the gizmo on an entity, or clear the selection with `None`.
@@ -3447,6 +3676,8 @@ impl Session {
 
     /// Rebuild the world from the scene.
     fn respawn(&mut self) {
+        // A new world has no previews on it.
+        self.previewing.clear();
         if let Some((_, grid)) = &mut self.nav_shown {
             *grid = None;
         }
@@ -3625,6 +3856,49 @@ fn ray_box(origin: Vec3, direction: Vec3, bounds: (Vec3, Vec3), transform: Mat4)
         }
     }
     (far >= 0.0).then(|| near.max(0.0))
+}
+
+/// A face's corners in the view's pixels, and the pixels one metre out
+/// along it moves on screen (see [`Session::face_on_screen`]).
+pub type FaceOnScreen = ([(f32, f32); 4], (f32, f32));
+
+/// Which face of a box in the world a ray goes in by: the slab it
+/// enters last is the face it crosses.
+fn entry_face(
+    origin: Vec3,
+    direction: Vec3,
+    bounds: (Vec3, Vec3),
+    transform: Mat4,
+) -> Option<runity::edit::Face> {
+    use runity::edit::Face;
+    let inverse = transform.inverse();
+    let o = inverse.transform_point3(origin);
+    let d = inverse.transform_vector3(direction);
+    let mut best: Option<(f32, usize, bool)> = None;
+    for axis in 0..3 {
+        if d[axis].abs() < 1e-6 {
+            continue;
+        }
+        // Coming in through the low side when heading up the axis.
+        let (plane, positive) = if d[axis] > 0.0 {
+            (bounds.0[axis], false)
+        } else {
+            (bounds.1[axis], true)
+        };
+        let t = (plane - o[axis]) / d[axis];
+        if best.is_none_or(|(b, _, _)| t > b) {
+            best = Some((t, axis, positive));
+        }
+    }
+    let (_, axis, positive) = best?;
+    Some(match (axis, positive) {
+        (0, true) => Face::PosX,
+        (0, false) => Face::NegX,
+        (1, true) => Face::PosY,
+        (1, false) => Face::NegY,
+        (_, true) => Face::PosZ,
+        (_, false) => Face::NegZ,
+    })
 }
 
 fn is_prefab(path: Option<&Path>) -> bool {

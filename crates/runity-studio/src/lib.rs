@@ -17,13 +17,18 @@
 //! [`Studio`] is the whole editor without a window: the tests and the
 //! `shot` example drive it off-screen. [`window::run`] is winit around it.
 
+mod animator;
 mod bottom;
 mod clipboard;
+mod dock;
 mod hierarchy;
 mod inspector;
 pub mod menu;
+mod patch;
+mod screens;
 mod studio;
 pub mod theme;
+mod tools;
 pub mod window;
 
 use std::path::Path;

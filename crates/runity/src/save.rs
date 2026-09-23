@@ -35,6 +35,12 @@ pub struct Saved {
     /// spawned again on load. Empty for the scene's own.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefab: String,
+    /// The state its [`crate::animgraph::Controller`] is in, if it has one:
+    /// what the editor's Animator lights up while the game runs. A load
+    /// does not put it back — the graph finds its state again from the
+    /// parameters.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub animator: String,
 }
 
 /// A game in progress.
@@ -66,6 +72,7 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
             transform: *transform,
             components: components.write_saved(world, entity),
             prefab: String::new(),
+            animator: animator_state(world, entity),
         });
     }
     for (entity, id, prefab, transform) in world
@@ -77,6 +84,7 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
             transform: *transform,
             components: components.write_saved(world, entity),
             prefab: prefab.0.clone(),
+            animator: animator_state(world, entity),
         });
     }
     entities.sort_by_key(|s| s.id);
@@ -89,6 +97,14 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
         .collect();
     gone.sort();
     SaveGame { entities, gone }
+}
+
+fn animator_state(world: &hecs::World, entity: hecs::Entity) -> String {
+    world
+        .get::<&crate::animgraph::Controller>(entity)
+        .ok()
+        .and_then(|c| c.state().map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// Put a save back into a world freshly spawned from the same scene.

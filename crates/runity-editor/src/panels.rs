@@ -130,9 +130,20 @@ impl Session {
     pub fn hierarchy(&self) -> Vec<Row> {
         let selection = self.selection();
         let unseen = self.unseen();
+        // Every document line by id, once: looking each up by walking the
+        // tree made the panel quadratic — two thousand lines took tens of
+        // milliseconds a frame.
+        let index: std::collections::HashMap<EntityId, &EntityDesc> = self
+            .scene()
+            .flatten()
+            .into_iter()
+            .map(|(d, _)| (d.id, d))
+            .collect();
         let mut out = Vec::new();
+        #[allow(clippy::too_many_arguments)]
         fn walk(
             session: &Session,
+            index: &std::collections::HashMap<EntityId, &EntityDesc>,
             entities: &[EntityDesc],
             depth: usize,
             part: bool,
@@ -140,11 +151,16 @@ impl Session {
             unseen: &std::collections::HashSet<EntityId>,
             out: &mut Vec<Row>,
         ) {
-            let document = session.scene();
             for e in entities {
-                let line = document.get(e.id);
-                let prefab = line.map(|l| l.prefab.clone()).filter(|p| !p.is_empty());
-                let open = session.is_open(e.id);
+                let prefab = index
+                    .get(&e.id)
+                    .map(|l| l.prefab.clone())
+                    .filter(|p| !p.is_empty());
+                let open = if prefab.is_some() {
+                    session.opened.contains(&e.id)
+                } else {
+                    !session.folded.contains(&e.id)
+                };
                 out.push(Row {
                     id: e.id,
                     name: e.name.clone(),
@@ -160,6 +176,7 @@ impl Session {
                 if open {
                     walk(
                         session,
+                        index,
                         &e.children,
                         depth + 1,
                         part || prefab.is_some(),
@@ -172,6 +189,7 @@ impl Session {
         }
         walk(
             self,
+            &index,
             &self.expanded().entities,
             0,
             false,
@@ -180,18 +198,6 @@ impl Session {
             &mut out,
         );
         out
-    }
-
-    fn is_open(&self, id: EntityId) -> bool {
-        let instance = self
-            .scene()
-            .get(id)
-            .is_some_and(|line| !line.prefab.is_empty());
-        if instance {
-            self.opened.contains(&id)
-        } else {
-            !self.folded.contains(&id)
-        }
     }
 
     /// Open or close a line of the Hierarchy. A view setting, not an edit.
@@ -293,6 +299,9 @@ impl Session {
                 fields.push(("game.scale".into(), ron(&t.scale)));
                 for (name, value) in &saved.components {
                     fields.push((format!("game.components.{name}"), value.clone()));
+                }
+                if !saved.animator.is_empty() {
+                    fields.push(("game.animator".into(), saved.animator.clone()));
                 }
             } else if state.gone.contains(&id) {
                 fields.push(("game".into(), "gone".into()));

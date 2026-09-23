@@ -55,7 +55,7 @@ impl Anchor {
     /// Where the anchor is, as a fraction of the screen, and which point of
     /// the element sits on it — the same fraction of the element, so a
     /// bottom-right element hangs up and left from the corner.
-    fn fraction(self) -> Vec2 {
+    pub fn fraction(self) -> Vec2 {
         match self {
             Anchor::TopLeft => Vec2::new(0.0, 0.0),
             Anchor::Top => Vec2::new(0.5, 0.0),
@@ -205,6 +205,17 @@ impl Screen {
             values: HashMap::new(),
             toggles: HashMap::new(),
         })
+    }
+
+    /// A screen of a layout held in memory, not read from a file: an
+    /// editor's picture of one being changed.
+    pub fn from_layout(layout: Layout) -> Self {
+        Self {
+            layout: Tuned::fixed(layout),
+            texts: HashMap::new(),
+            values: HashMap::new(),
+            toggles: HashMap::new(),
+        }
     }
 
     /// Reread the file when it has changed, at most a few times a second:

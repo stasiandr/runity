@@ -333,3 +333,186 @@ fn every_icon_has_a_name_and_a_node_shows_one() {
         .any(|l| l.icons.iter().any(|i| i.rect.width == 14.0)));
     let _ = play;
 }
+
+#[test]
+fn a_hover_over_a_long_list_repaints_quickly() {
+    let mut ui = Ui::new();
+    ui.set_viewport(800.0, 600.0, 1.0);
+    let root = ui.root();
+    let list = ui.add(root, Style::column().fill().clip());
+    for i in 0..2000 {
+        let line = ui.add(
+            list,
+            Style::row()
+                .height(22.0)
+                .fixed()
+                .hover(Color::hex(0x333333)),
+        );
+        ui.add_text(line, Style::default(), &format!("entity number {i}"));
+    }
+    ui.paint();
+    let t = std::time::Instant::now();
+    for i in 0..10 {
+        ui.handle(&InputEvent::MouseMoved {
+            x: 10.0,
+            y: 11.0 + 22.0 * i as f32,
+        });
+        ui.paint();
+    }
+    let each = t.elapsed() / 10;
+    eprintln!("repaint of 2000 lines on a hover: {each:?}");
+    assert!(each.as_millis() < 40, "{each:?}");
+}
+
+#[test]
+fn text_sits_in_the_middle_of_a_taller_box() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let field = ui.add_field(
+        root,
+        Style::row()
+            .size(200.0, 30.0)
+            .padding_x(6.0)
+            .text_size(12.0),
+        "2.6",
+    );
+    let layers = ui.paint().to_vec();
+    let text = layers
+        .iter()
+        .flat_map(|l| &l.texts)
+        .find(|t| t.node == field)
+        .unwrap();
+    let rect = ui.rect(field);
+    // A 12 px line is 16.2 px tall: centred in 30 it starts 6.9 down.
+    let line = 12.0 * 1.35;
+    assert!(
+        (text.y - (rect.y + (30.0 - line) / 2.0)).abs() < 0.5,
+        "{} in {rect:?}",
+        text.y
+    );
+}
+
+#[test]
+fn a_node_moves_to_another_parent_whole() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let a = ui.add(root, Style::column().size(100.0, 100.0));
+    let b = ui.add(root, Style::column().size(100.0, 100.0));
+    let panel = ui.add(a, Style::column());
+    let label = ui.add_text(panel, Style::default(), "inside");
+    ui.move_to(panel, b);
+    assert_eq!(ui.parent(panel), Some(b));
+    assert_eq!(ui.children(a), vec![]);
+    assert_eq!(ui.text(label), Some("inside"));
+    ui.paint();
+    assert_eq!(ui.rect(label).y, ui.rect(b).y);
+}
+
+#[test]
+fn a_textarea_takes_new_lines_and_moves_between_them() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let area = ui.add_textarea(
+        root,
+        Style::column().width(300.0).padding(6.0),
+        "(\n    a: 1,\n)",
+    );
+    ui.click(area);
+    ui.events();
+    // To the end of everything, then up one line: inside `a: 1,`.
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::A));
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::Right));
+    ui.handle(&InputEvent::KeyDown(Key::Up));
+    ui.handle(&InputEvent::KeyDown(Key::End));
+    ui.handle(&InputEvent::KeyDown(Key::Enter));
+    ui.handle(&InputEvent::Text("    b: 2,".into()));
+    assert_eq!(ui.text(area), Some("(\n    a: 1,\n    b: 2,\n)"));
+    // Enter was a new line, not a commit; Cmd Enter commits.
+    assert!(!ui
+        .events()
+        .iter()
+        .any(|(_, e)| matches!(e, Event::Submit(_))));
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::Enter));
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert!(ui
+        .events()
+        .iter()
+        .any(|(_, e)| matches!(e, Event::Submit(t) if t.contains("b: 2"))));
+    // It is as tall as its four lines.
+    ui.paint();
+    assert!(
+        ui.rect(area).height > 4.0 * 13.0 * 1.3,
+        "{:?}",
+        ui.rect(area)
+    );
+}
+
+#[test]
+fn an_input_method_composes_in_place_and_commits_once() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let field = ui.add_field(root, Style::row().size(200.0, 24.0), "ab");
+    ui.click(field);
+    ui.handle(&InputEvent::KeyDown(Key::End));
+    ui.events();
+    ui.ime_preedit("に");
+    ui.ime_preedit("にほ");
+    assert_eq!(ui.text(field), Some("abにほ"), "shown while composing");
+    assert!(
+        !ui.events()
+            .iter()
+            .any(|(_, e)| matches!(e, Event::Changed(_))),
+        "composing is not typing"
+    );
+    assert!(ui.caret_rect().is_some());
+    ui.ime_preedit("");
+    assert_eq!(ui.text(field), Some("ab"));
+    ui.handle(&InputEvent::Text("日本".into()));
+    assert_eq!(ui.text(field), Some("ab日本"));
+    assert!(ui
+        .events()
+        .contains(&(field, Event::Changed("ab日本".into()))));
+}
+
+#[test]
+fn asking_about_a_removed_node_is_an_answer_not_a_crash() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let gone = ui.add_text(root, Style::default(), "here a moment");
+    ui.remove(gone);
+    assert_eq!(ui.parent(gone), None);
+    assert_eq!(ui.name(gone), None);
+    assert_eq!(ui.text(gone), None);
+    assert!(ui.children(gone).is_empty());
+    assert_eq!(ui.rect(gone).width, 0.0);
+    assert!(!ui.is_field(gone));
+}
+
+#[test]
+fn a_palette_recolours_a_built_tree() {
+    let mut ui = editor_like();
+    let before = ui.revision();
+    ui.paint();
+    let red = [0xe0, 0x40, 0x40];
+    ui.set_palette([([0x23, 0x25, 0x32], red)].into_iter().collect());
+    let layers = ui.paint();
+    let fills: Vec<Color> = layers
+        .iter()
+        .flat_map(|l| l.rects.iter().map(|r| r.fill))
+        .collect();
+    assert!(
+        fills.iter().any(|c| [c.r, c.g, c.b] == red),
+        "SURFACE drawn red"
+    );
+    assert!(!fills.iter().any(|c| [c.r, c.g, c.b] == [0x23, 0x25, 0x32]));
+    assert!(fills.contains(&BG), "the rest as it was");
+    assert!(ui.revision() > before);
+    // The same palette again: nothing to redo.
+    let r = ui.revision();
+    ui.set_palette([([0x23, 0x25, 0x32], red)].into_iter().collect());
+    ui.paint();
+    assert_eq!(ui.revision(), r);
+}

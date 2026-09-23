@@ -68,6 +68,9 @@ pub const SYSTEMS: &str = "src/systems";
 /// The game's screens — menus, the HUD — one RON file each: see
 /// [`crate::screen`].
 pub const UI: &str = "ui";
+/// Which animation plays when — Animator Controllers — one RON file each:
+/// see [`crate::animgraph`].
+pub const ANIMATORS: &str = "animators";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see

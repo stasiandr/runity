@@ -240,6 +240,50 @@ impl UiRenderer {
         self.images.insert(image, group);
     }
 
+    /// Show a picture from memory — RGBA, sRGB, `width` × `height` — wherever
+    /// a node shows `image`: a thumbnail, a preview.
+    pub fn set_image_rgba(
+        &mut self,
+        gpu: &Gpu,
+        image: ImageId,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("runity-ui picture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            size,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.set_image(gpu, image, &view);
+    }
+
     /// Upload what changed since the last call. `width` and `height` are
     /// the target's, in physical pixels.
     pub fn prepare(&mut self, gpu: &Gpu, ui: &mut Ui, width: u32, height: u32) {

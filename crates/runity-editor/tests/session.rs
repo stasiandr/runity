@@ -3712,6 +3712,7 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
             },
             components: vec![("door".into(), "(open: true)".into())],
             prefab: String::new(),
+            animator: "walk".into(),
         }],
         gone: vec![],
     }
@@ -3729,6 +3730,8 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
         value("game.components.door").as_deref(),
         Some("(open: true)")
     );
+    assert_eq!(value("game.animator").as_deref(), Some("walk"));
+    assert_eq!(session.game_animator(box_id).as_deref(), Some("walk"));
     assert_ne!(
         value("position"),
         value("game.position"),
@@ -4248,4 +4251,152 @@ fn the_game_view_draws_through_the_game_camera_without_the_editors_marks() {
     session.set_game_view(false);
     session.render();
     assert_eq!(session.frame_pixels(), &scene_view[..], "and come back");
+}
+
+#[test]
+fn the_sun_and_the_fog_are_one_undo_step_each() {
+    let Some((mut session, _path)) = open("environment") else {
+        return;
+    };
+    let before = session.environment();
+    session
+        .set_environment("sun", "(hour: 18.5, intensity: 0.6)")
+        .unwrap();
+    let sun = &session.environment()[0].1;
+    assert!(sun.contains("18.5"), "{sun}");
+    assert!(session.set_environment("fog", "(nonsense").is_err());
+    assert!(session.set_environment("rain", "()").is_err());
+    session.undo().unwrap();
+    assert_eq!(session.environment(), before);
+}
+
+#[test]
+fn a_new_terrain_is_found_under_the_cursor_and_rises_where_it_is_stroked() {
+    let Some((mut session, _path)) = open("terrain") else {
+        return;
+    };
+    let terrain = session.new_terrain("meadow", 30.0).unwrap();
+    assert_eq!(session.selected(), Some(terrain));
+    session.set_camera(Vec3::new(0.0, 20.0, 20.0), Vec3::ZERO);
+    let (w, h) = session.size();
+    let at = session
+        .point_under(w / 2, h / 2)
+        .expect("the ground is under the middle");
+    assert!(at.length() < 1.0, "{at:?}");
+    session.sculpt(terrain, at, 4.0, 2.0, false).unwrap();
+    let after = session.point_under(w / 2, h / 2).unwrap();
+    assert!(after.y > 1.5, "raised: {after:?}");
+    assert!(
+        session.new_terrain("meadow", 30.0).is_err(),
+        "the name is taken"
+    );
+}
+
+#[test]
+fn a_skinned_models_clips_play_in_the_view_without_touching_the_document() {
+    let Some((mut session, path)) = open("anim") else {
+        return;
+    };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runity-import/tests/fixtures/skinned_banner.gltf");
+    let assets = root_of(&path).join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::copy(&fixture, assets.join("banner.gltf")).unwrap();
+    session.reload_assets();
+    let model = session
+        .assets()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.kind == "model" && a.name.contains("banner"))
+        .expect("the banner imported")
+        .name;
+    let id = session.add(None, &model).unwrap();
+    let clips = session.clips(id);
+    assert_eq!(
+        clips.first().map(|c| c.0.as_str()),
+        Some("furl"),
+        "{clips:?}"
+    );
+
+    session.select(Some(id)).unwrap();
+    session.focus_selected();
+    session.select(None).unwrap();
+    session.render();
+    let rest = session.frame_pixels().to_vec();
+    let revision = session.revision();
+    session.preview_clip(id, Some(0), 1.0).unwrap();
+    for _ in 0..10 {
+        session.render();
+    }
+    assert_ne!(session.frame_pixels(), &rest[..], "the banner moved");
+    assert_eq!(session.revision(), revision, "and the document did not");
+    session.preview_clip(id, None, 1.0).unwrap();
+    assert!(session.previewing().is_empty());
+}
+
+#[test]
+fn a_cameras_preview_is_drawn_through_it() {
+    let Some((mut session, _path)) = open("camera_preview") else {
+        return;
+    };
+    let cam = session.create_empty("eye").unwrap();
+    session.set_field(cam, "camera", "()").unwrap();
+    session
+        .set_field(cam, "position", "(0.0, 30.0, 0.0)")
+        .unwrap();
+    session
+        .set_field(cam, "rotation", "(90.0, 0.0, 0.0)")
+        .unwrap();
+    assert!(session.camera_of(cam).is_some());
+    assert!(session.render_camera_preview(cam));
+    let target = session.preview_target().unwrap();
+    assert_eq!((target.width, target.height), session.size());
+    let crate_id = id(&session, "crate");
+    assert!(
+        !session.render_camera_preview(crate_id),
+        "a crate has no camera"
+    );
+}
+
+#[test]
+fn the_face_under_the_pointer_is_the_one_facing_it() {
+    let Some((mut session, _)) = open_with(
+        "face-under",
+        r#"(entities: [(name: "block", model: "builtin:cube", transform: (position: (0.0, 0.5, 0.0), scale: (2.0, 1.0, 2.0)))])"#,
+    ) else {
+        return;
+    };
+    let block = id(&session, "block");
+    let (w, h) = session.size();
+    // From the front: the +Z face.
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    assert_eq!(
+        session.face_under(w / 2, h / 2),
+        Some((block, runity::edit::Face::PosZ))
+    );
+    // From above: the top.
+    session.set_camera(Vec3::new(0.0, 8.0, 0.01), Vec3::new(0.0, 0.5, 0.0));
+    assert_eq!(
+        session.face_under(w / 2, h / 2),
+        Some((block, runity::edit::Face::PosY))
+    );
+    // Its outline holds the pixel, and a metre out goes up the screen.
+    session.set_camera(Vec3::new(3.0, 4.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let (corners, out) = session
+        .face_on_screen(block, runity::edit::Face::PosY)
+        .unwrap();
+    let (x0, x1) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c.0), b.max(c.0)));
+    let (y0, y1) = corners
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(a, b), c| (a.min(c.1), b.max(c.1)));
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    assert_eq!(
+        session.face_under(cx as u32, cy as u32),
+        Some((block, runity::edit::Face::PosY))
+    );
+    assert!(out.1 < 0.0, "up is up the screen: {out:?}");
+    // Past it, sky: no face.
+    assert_eq!(session.face_under(w / 2, 0), None);
 }

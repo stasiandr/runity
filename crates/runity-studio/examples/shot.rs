@@ -33,6 +33,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => eprintln!("nothing called {name:?}"),
         }
     }
+    // Names of nodes to click first, comma-separated: what a person would
+    // do before looking (`asset campfire,menu bar View`).
+    let clicks = std::env::var("RUNITY_SHOT_CLICK").unwrap_or_default();
+    studio.frame();
+    for name in clicks.split(',').filter(|n| !n.is_empty()) {
+        studio.ui.paint();
+        let Some(node) = studio.ui.find(name) else {
+            eprintln!("no node called {name:?}");
+            continue;
+        };
+        let (x, y) = studio.ui.rect(node).center();
+        use runity::input::{InputEvent, MouseButton};
+        studio.handle(&InputEvent::MouseMoved { x, y });
+        studio.handle(&InputEvent::MouseDown(MouseButton::Left));
+        studio.handle(&InputEvent::MouseUp(MouseButton::Left));
+        studio.frame();
+    }
+    // A few frames more: what is drawn lazily (the Project's pictures)
+    // gets drawn.
+    for _ in 0..30 {
+        studio.frame();
+    }
     let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
     let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
     let mut renderer = studio.renderer(target.format());

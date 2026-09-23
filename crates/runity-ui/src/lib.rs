@@ -161,6 +161,8 @@ struct TextBox {
     buffer: Buffer,
     /// The style it was shaped with: reshaped only when this changes.
     style: TextStyle,
+    /// The width it was last laid out at for drawing.
+    drawn_at: Option<Option<f32>>,
 }
 
 struct Node {
@@ -293,6 +295,9 @@ pub struct Ui {
     alt: bool,
     command: bool,
     clipboard: Box<dyn Clipboard>,
+    /// Colours drawn as others, by their RGB: a theme changed while the
+    /// tree stays as built (see [`Ui::set_palette`]).
+    palette: HashMap<[u8; 3], [u8; 3]>,
 }
 
 /// How far a press moves before it is a drag rather than a click.
@@ -348,6 +353,7 @@ impl Ui {
             alt: false,
             command: false,
             clipboard: Box::new(field::LocalClipboard::default()),
+            palette: HashMap::new(),
         }
     }
 
@@ -472,6 +478,15 @@ impl Ui {
         self.exists(id) && self.node(id).field.is_some()
     }
 
+    /// A text field of several lines: Enter makes a new line, Cmd/Ctrl
+    /// Enter commits, the text wraps at the box's width.
+    pub fn add_textarea(&mut self, parent: NodeId, style: Style, text: &str) -> NodeId {
+        let id = self.add(parent, style.focusable());
+        self.node_mut(id).field = Some(field::FieldState::multiline());
+        self.set_text(id, text);
+        id
+    }
+
     /// A built-in icon by name (`"play"`, `"move-3d"`), drawn in the
     /// node's text colour at the node's size. `None` for a name the set
     /// does not have.
@@ -520,7 +535,7 @@ impl Ui {
     }
 
     pub fn name(&self, id: NodeId) -> Option<&str> {
-        self.node(id).name.as_deref()
+        self.tree.get_node_context(id.0)?.name.as_deref()
     }
 
     /// Remove a node and everything under it.
@@ -553,6 +568,23 @@ impl Ui {
         self.layout_dirty = true;
     }
 
+    /// Move a node, with everything under it, to the end of another
+    /// parent's children: a panel docked elsewhere keeps its nodes, its
+    /// scroll and its focus.
+    pub fn move_to(&mut self, id: NodeId, parent: NodeId) {
+        if id.0 == self.root || !self.exists(id) || !self.exists(parent) {
+            return;
+        }
+        if let Some(old) = self.tree.parent(id.0) {
+            let _ = self.tree.remove_child(old, id.0);
+            if let Some(p) = self.tree.get_node_context_mut(old) {
+                p.keyed.retain(|_, child| *child != id);
+            }
+        }
+        let _ = self.tree.add_child(parent.0, id.0);
+        self.layout_dirty = true;
+    }
+
     /// Remove every child of `id`.
     pub fn clear(&mut self, id: NodeId) {
         for child in self.children(id) {
@@ -561,6 +593,9 @@ impl Ui {
     }
 
     pub fn children(&self, id: NodeId) -> Vec<NodeId> {
+        if !self.exists(id) {
+            return Vec::new();
+        }
         self.tree
             .children(id.0)
             .unwrap_or_default()
@@ -569,7 +604,12 @@ impl Ui {
             .collect()
     }
 
+    /// The node's parent; `None` for the root and for a node removed since
+    /// — events about it can still be on their way.
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        if !self.exists(id) {
+            return None;
+        }
         self.tree.parent(id.0).map(NodeId)
     }
 
@@ -655,7 +695,11 @@ impl Ui {
     }
 
     pub fn text(&self, id: NodeId) -> Option<&str> {
-        self.node(id).text.as_ref().map(|t| t.string.as_str())
+        self.tree
+            .get_node_context(id.0)?
+            .text
+            .as_ref()
+            .map(|t| t.string.as_str())
     }
 
     /// Set a node's text. The same text again costs nothing.
@@ -673,6 +717,7 @@ impl Ui {
                     string: text.to_string(),
                     buffer: Buffer::new(&mut self.fonts, metrics),
                     style: s.clone(),
+                    drawn_at: None,
                 });
             }
         }
@@ -697,6 +742,7 @@ impl Ui {
         if !self.layout_dirty {
             return;
         }
+        let started = Instant::now();
         let root_style = self.tree.style(self.root).cloned().unwrap_or_default();
         let sized = taffy::Style {
             size: taffy::Size {
@@ -724,6 +770,12 @@ impl Ui {
         );
         self.layout_dirty = false;
         self.paint_dirty = true;
+        if std::env::var_os("RUNITY_UI_TIMING").is_some() {
+            eprintln!(
+                "runity-ui: layout {:.1} ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
     }
 
     /// Whether anything needs doing before the next frame looks right: a
@@ -739,9 +791,31 @@ impl Ui {
     }
 
     /// What to draw: laid out and painted again only if something changed.
+    /// Draw every colour whose RGB is a key as the value's RGB, keeping
+    /// its alpha: a theme's tokens swapped under a built tree, so that a
+    /// theme file edited while the editor runs shows at once (DNA,
+    /// postulate 1). An empty map draws the colours as they are.
+    pub fn set_palette(&mut self, palette: HashMap<[u8; 3], [u8; 3]>) {
+        if palette != self.palette {
+            self.palette = palette;
+            self.paint_dirty = true;
+        }
+    }
+
+    /// A colour as the palette draws it.
+    pub fn tint(&self, c: Color) -> Color {
+        let [r, g, b] = self
+            .palette
+            .get(&[c.r, c.g, c.b])
+            .copied()
+            .unwrap_or([c.r, c.g, c.b]);
+        Color { r, g, b, a: c.a }
+    }
+
     pub fn paint(&mut self) -> &[Layer] {
         self.layout();
         if self.paint_dirty {
+            let started = Instant::now();
             self.layers.clear();
             self.layers.push(Layer::default());
             self.order.clear();
@@ -754,6 +828,12 @@ impl Ui {
             });
             self.paint_dirty = false;
             self.revision += 1;
+            if std::env::var_os("RUNITY_UI_TIMING").is_some() {
+                eprintln!(
+                    "runity-ui: paint {:.1} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+            }
         }
         &self.layers
     }
@@ -784,9 +864,20 @@ impl Ui {
                 } else {
                     Some(layout.content_box_width())
                 };
-                text.buffer.set_size(width, None);
-                text.buffer.shape_until_scroll(&mut self.fonts, false);
+                if text.drawn_at != Some(width) {
+                    text.buffer.set_size(width, None);
+                    text.buffer.shape_until_scroll(&mut self.fonts, false);
+                    text.drawn_at = Some(width);
+                }
             }
+        }
+        // Outside what its ancestors show: nothing of it can be seen or
+        // clicked, so neither it nor what is under it is painted — a list
+        // of thousands costs the lines in view.
+        let visible = clip.intersect(&rect);
+        if (visible.width <= 0.0 || visible.height <= 0.0) && !self.node(id).layer {
+            self.node_mut(id).rect = rect;
+            return;
         }
         let hovered = self.hovered == Some(id);
         let pressed = self.press.is_some_and(|p| p.node == id) && hovered;
@@ -821,7 +912,8 @@ impl Ui {
         let is_field = node.field.is_some();
         let focused = self.focused == Some(id);
         let has_text = node.text.is_some();
-        let text_color = node.style.text.color;
+        let text_color = self.tint(node.style.text.color);
+        let (fill, border) = (self.tint(fill), self.tint(border));
         let scroll = node.scroll;
         let layer = self.layers.last_mut().expect("there is always a layer");
         if fill.is_visible() || (border.is_visible() && look.border_width > 0.0) {
@@ -854,7 +946,14 @@ impl Ui {
             let pad = &layout.padding;
             let border_w = &layout.border;
             let x = rect.x + pad.left + border_w.left;
-            let y = rect.y + pad.top + border_w.top;
+            // The text sits in the middle of the box's height, as a label
+            // in a button or the value in a field does: a box taller than
+            // its text — a 22 px field with a 16 px line — would otherwise
+            // hold it at the top.
+            let top = rect.y + pad.top + border_w.top;
+            let room = layout.size.height - pad.top - pad.bottom - border_w.top - border_w.bottom;
+            let text_height = self.text_height(id);
+            let y = top + ((room - text_height) / 2.0).max(0.0);
             let inner = Rect {
                 x,
                 y: rect.y,
@@ -891,7 +990,24 @@ impl Ui {
 
     /// Where a node was drawn, after the last [`Ui::paint`].
     pub fn rect(&self, id: NodeId) -> Rect {
-        self.node(id).rect
+        self.tree
+            .get_node_context(id.0)
+            .map(|n| n.rect)
+            .unwrap_or_default()
+    }
+
+    /// How tall a node's text is as laid out: its lines times the line
+    /// height.
+    pub(crate) fn text_height_of(&self, id: NodeId) -> f32 {
+        self.text_height(id)
+    }
+
+    fn text_height(&self, id: NodeId) -> f32 {
+        let Some(text) = self.node(id).text.as_ref() else {
+            return 0.0;
+        };
+        let lines = text.buffer.layout_runs().count().max(1);
+        lines as f32 * text.buffer.metrics().line_height
     }
 
     /// The fonts and every node's shaped text at once, for the renderer:
@@ -999,7 +1115,7 @@ impl Ui {
                 if let Some(press) = self.press {
                     let node = press.node;
                     if press.dragging && self.node(node).field.is_some() {
-                        self.field_drag(node, *x);
+                        self.field_drag(node, *x, *y);
                     } else if press.dragging {
                         self.events.push((
                             node,
@@ -1042,7 +1158,7 @@ impl Ui {
                     self.focus(focus);
                     if self.node(node).field.is_some() {
                         let extend = self.shift;
-                        self.field_press(node, x, extend);
+                        self.field_press(node, x, y, extend);
                     }
                     self.paint_dirty = true;
                 }
@@ -1175,14 +1291,35 @@ impl Ui {
 
     /// Scroll so that `child` (somewhere under `id`) is in view.
     pub fn scroll_to(&mut self, id: NodeId, child: NodeId) {
-        self.paint();
-        let view = self.rect(id);
-        let at = self.rect(child);
+        self.layout();
+        let (Some(view), Some(at)) = (self.layout_rect(id), self.layout_rect(child)) else {
+            return;
+        };
         if at.y < view.y {
             self.scroll_by(id, at.y - view.y);
         } else if at.y + at.height > view.y + view.height {
             self.scroll_by(id, at.y + at.height - view.y - view.height);
         }
+    }
+
+    /// Where a node is by the layout, scrolls included — whether or not
+    /// it was painted.
+    pub fn layout_rect(&self, id: NodeId) -> Option<Rect> {
+        let own = self.tree.layout(id.0).ok()?;
+        let (mut x, mut y) = (own.location.x, own.location.y);
+        let mut at = self.parent(id);
+        while let Some(p) = at {
+            let l = self.tree.layout(p.0).ok()?;
+            x += l.location.x;
+            y += l.location.y - self.node(p).scroll;
+            at = self.parent(p);
+        }
+        Some(Rect {
+            x,
+            y,
+            width: own.size.width,
+            height: own.size.height,
+        })
     }
 
     pub fn scroll(&self, id: NodeId) -> f32 {
@@ -1312,6 +1449,7 @@ fn shape(fonts: &mut FontSystem, node: &mut Node) {
         .set_text(&text.string, &attrs, Shaping::Advanced, None);
     text.buffer.shape_until_scroll(fonts, false);
     text.style = style;
+    text.drawn_at = None;
 }
 
 /// How big a node's content is: its text at the width it is offered.
@@ -1348,6 +1486,7 @@ fn measure(
     });
     text.buffer.set_size(width, None);
     text.buffer.shape_until_scroll(fonts, false);
+    text.drawn_at = None;
     let mut w: f32 = 0.0;
     let mut lines = 0;
     for run in text.buffer.layout_runs() {

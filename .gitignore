@@ -19,3 +19,6 @@ crates/runity-gpu/tests/diff/
 # The shader library tools/package-macos.sh compiles into the bundle. The MSL
 # source in the tree is the only copy that is committed.
 *.metallib
+
+# The editor window's own layout: panel sizes and the open tab, per person.
+**/.runity/studio.ron

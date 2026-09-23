@@ -81,6 +81,19 @@ impl<T: DeserializeOwned> Tuned<T> {
     }
 }
 
+impl<T> Tuned<T> {
+    /// Values held as they are, with no file behind them: what an editor
+    /// shows while they are being changed and not yet written.
+    pub fn fixed(value: T) -> Self {
+        Self {
+            value,
+            path: PathBuf::new(),
+            stamp: None,
+            since_poll: 0.0,
+        }
+    }
+}
+
 impl<T> std::ops::Deref for Tuned<T> {
     type Target = T;
 

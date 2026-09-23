@@ -14,6 +14,8 @@
 //! Icons are Lucide, shipped by `runity-ui`. Nocturne names Phosphor; the
 //! two share a 24-unit grid and stroke, and swapping sets is swapping files.
 
+use std::collections::HashMap;
+
 use runity_ui::{Color, NodeId, Style, Ui};
 
 // --- colour roles -----------------------------------------------------
@@ -55,6 +57,53 @@ pub const HOVER: Color = TEXT.alpha(7);
 pub const PRESSED: Color = TEXT.alpha(14);
 /// The outlined primary button's hover.
 pub const ACCENT_HOVER: Color = ACCENT.alpha(12);
+
+/// The colour tokens a theme file can set, by name. The text at an alpha
+/// (`MUTED`, `DIVIDER`, …) follows `TEXT`, and the accent's tints follow
+/// `ACCENT`, because a palette swaps colours by RGB and keeps the alpha.
+pub const TOKENS: [(&str, Color); 16] = [
+    ("BG", BG),
+    ("SURFACE", SURFACE),
+    ("TEXT", TEXT),
+    ("ACCENT", ACCENT),
+    ("NEUTRAL_300", NEUTRAL_300),
+    ("NEUTRAL_500", NEUTRAL_500),
+    ("NEUTRAL_800", NEUTRAL_800),
+    ("NEUTRAL_900", NEUTRAL_900),
+    ("ACCENT_100", ACCENT_100),
+    ("ACCENT_200", ACCENT_200),
+    ("ACCENT_300", ACCENT_300),
+    ("ACCENT_400", ACCENT_400),
+    ("ACCENT_800", ACCENT_800),
+    ("ACCENT_900", ACCENT_900),
+    ("WARNING", WARNING),
+    ("ERROR", ERROR),
+];
+
+/// A theme file's text — a RON map from token name to `#rrggbb`,
+/// `{"ACCENT": "#e07a5f", "BG": "#101014"}` — as the palette that draws
+/// Nocturne's colours as the file's. Tokens it leaves out stay Nocturne's.
+pub fn palette(text: &str) -> Result<HashMap<[u8; 3], [u8; 3]>, String> {
+    let map: std::collections::BTreeMap<String, String> =
+        runity::ron::from_str(text).map_err(|e| e.to_string())?;
+    let mut palette = HashMap::new();
+    for (name, value) in map {
+        let Some((_, token)) = TOKENS.iter().find(|(n, _)| *n == name) else {
+            let names: Vec<&str> = TOKENS.iter().map(|(n, _)| *n).collect();
+            return Err(format!("no token {name:?}; there are {}", names.join(", ")));
+        };
+        let hex = value.trim().trim_start_matches('#');
+        let n = (hex.len() == 6)
+            .then(|| u32::from_str_radix(hex, 16).ok())
+            .flatten()
+            .ok_or_else(|| format!("{name}: {value:?} is not #rrggbb"))?;
+        palette.insert(
+            [token.r, token.g, token.b],
+            [(n >> 16) as u8, (n >> 8) as u8, n as u8],
+        );
+    }
+    Ok(palette)
+}
 
 // --- space and radius -------------------------------------------------
 
