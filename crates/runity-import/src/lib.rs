@@ -1272,6 +1272,26 @@ pub struct Reimported {
 /// a modification time only says whether hashing is worth doing, because
 /// polling this every frame must not read every texture every frame.
 pub fn sync(project: &runity::Project) -> Vec<Reimported> {
+    sync_settled(project, std::time::Duration::ZERO)
+}
+
+/// [`sync`], leaving alone a `.blend` written less than `settle` ago.
+///
+/// What an editor polls with while an open Blender can send it the file
+/// it just saved (docs/blender.md): that arrives in a moment and costs
+/// nothing, where importing it here would start a second Blender for the
+/// same work. A `.blend` changed any other way — a pull, a Blender without
+/// the plugin — is imported once it has settled.
+pub fn sync_settled(project: &runity::Project, settle: std::time::Duration) -> Vec<Reimported> {
+    let fresh = |path: &Path| {
+        !settle.is_zero()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("blend"))
+            && modified(path)
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age < settle)
+    };
     let library = project.library();
     // Built before assets were named by ID: gone, and built again below.
     if let Ok(entries) = std::fs::read_dir(&library) {
@@ -1331,6 +1351,9 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             continue;
         }
         claimed.push(source.clone());
+        if fresh(&source) {
+            continue;
+        }
 
         let asset = output_for(&settings, &library);
         let change = if !asset.is_file() {
@@ -1366,6 +1389,7 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
     let mut unclaimed: Vec<PathBuf> = sources
         .into_iter()
         .filter(|source| !claimed.iter().any(|c| same(c, source)))
+        .filter(|source| !fresh(source))
         .collect();
 
     // A sidecar whose source is gone, and a source with no sidecar holding

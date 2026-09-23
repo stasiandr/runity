@@ -262,6 +262,48 @@ fn axis(v: [f32; 3]) -> Vec3 {
     Vec3::new(v[0], v[2], -v[1])
 }
 
+/// A placement as Blender gives it — location, rotation as w, x, y, z,
+/// scale — in the engine's space.
+pub fn placement(location: [f32; 3], rotation: [f32; 4], scale: [f32; 3]) -> Transform {
+    let [w, x, y, z] = rotation;
+    let mut transform = Transform {
+        position: axis(location),
+        scale: Vec3::new(scale[0], scale[2], scale[1]),
+        ..Default::default()
+    };
+    transform.set_rotation(Quat::from_xyzw(x, z, -y, w).normalize());
+    transform
+}
+
+/// Import a `.blend` from a stream an open Blender sent — the plugin does
+/// on every save — rather than by starting Blender: the same assets, a
+/// second sooner. The sidecar is written as [`crate::import_into`] would,
+/// with the hash of the file as saved, so the next poll finds it current.
+pub fn import_stream(
+    project: &runity::Project,
+    source: &Path,
+    bytes: &[u8],
+) -> Result<runity::AssetId> {
+    let data = parse(bytes)?;
+    let name = project
+        .relative(source)
+        .with_context(|| format!("{} is not in the project", source.display()))?;
+    let sidecar = crate::sidecar_for(source);
+    let mut settings = crate::ImportSettings::load(&sidecar)
+        .unwrap_or_else(|_| crate::ImportSettings::for_source(name.clone()));
+    settings.source = name;
+    settings.scene = true;
+    settings.hash = crate::content_hash(source)?;
+    settings.id = Some(settings.asset_id());
+    let stem = source
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "scene".into());
+    let id = crate::scene::build(data, &stem, &project.library(), &mut settings)?;
+    settings.save(&sidecar)?;
+    Ok(id)
+}
+
 /// Read the stream the plugin sends.
 pub fn parse(bytes: &[u8]) -> Result<SceneData> {
     let mut at = 0usize;
@@ -413,13 +455,7 @@ pub fn parse(bytes: &[u8]) -> Result<SceneData> {
         });
     }
     fn node(n: NodeHeader) -> NodeData {
-        let [w, x, y, z] = n.rotation;
-        let mut transform = Transform {
-            position: axis(n.location),
-            scale: Vec3::new(n.scale[0], n.scale[2], n.scale[1]),
-            ..Default::default()
-        };
-        transform.set_rotation(Quat::from_xyzw(x, z, -y, w).normalize());
+        let transform = placement(n.location, n.rotation, n.scale);
         NodeData {
             name: n.name,
             id: n.id.and_then(|id| id.parse::<EntityId>().ok()),

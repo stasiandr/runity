@@ -18,6 +18,7 @@
 //! needs a prototype on a Mac before anything is built on it.
 
 mod animation;
+mod blender_link;
 mod blockout;
 pub mod console;
 mod error;
@@ -96,6 +97,8 @@ pub struct Session {
         std::thread::JoinHandle<Vec<runity_import::Reimported>>,
         std::time::Instant,
     )>,
+    /// Listening for an open Blender (docs/blender.md).
+    blender: Option<blender_link::Link>,
     /// Prefabs a scene's instances name: the project's `prefabs/`.
     prefabs: runity::Prefabs,
     /// Where those came from, so the editor can write a new one back.
@@ -303,6 +306,7 @@ impl Session {
             library_dir: None,
             material_dir: None,
             syncing: None,
+            blender: None,
             prefabs: runity::Prefabs::new(),
             prefab_dir: None,
             instanced: runity::Instanced::default(),
@@ -2583,13 +2587,80 @@ impl Session {
                 None
             }
             None => {
+                // A .blend an open Blender just saved is on its way over
+                // the link; this leaves it a moment to arrive.
                 self.syncing = Some((
-                    std::thread::spawn(move || runity_import::sync(&project)),
+                    std::thread::spawn(move || {
+                        runity_import::sync_settled(&project, std::time::Duration::from_secs(2))
+                    }),
                     std::time::Instant::now(),
                 ));
                 None
             }
         }
+    }
+
+    /// Listen for an open Blender and take in what it sent: a saved
+    /// `.blend` imported without starting another Blender, and objects
+    /// being moved there, previewed here (docs/blender.md). Starts
+    /// listening on the first call for the open project, and writes the
+    /// port where the plugin looks, `library/blender-link`. Returns how
+    /// many messages were taken in.
+    pub fn poll_blender(&mut self) -> usize {
+        let Some(project) = self.project.clone() else {
+            self.blender = None;
+            return 0;
+        };
+        if self.blender.as_ref().is_none_or(|l| l.project != project) {
+            self.blender = blender_link::Link::start(project).ok();
+        }
+        let Some(link) = &self.blender else { return 0 };
+        let messages = link.drain();
+        let count = messages.len();
+        // In the order they came: a drag after a save moves what the save
+        // brought in.
+        let mut moved = false;
+        for message in messages {
+            match message {
+                blender_link::Message::Imported { source, result } => {
+                    if result.is_ok() {
+                        let name = source
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        self.console.say(
+                            console::Level::Info,
+                            format!("{name}: saved in Blender, imported"),
+                        );
+                    }
+                    self.apply_synced(vec![runity_import::Reimported {
+                        source,
+                        change: runity_import::Change::Changed,
+                        result,
+                    }]);
+                    moved = false;
+                }
+                blender_link::Message::Moved(moves) => {
+                    for (id, transform) in moves {
+                        for tree in self.prefabs.trees_mut() {
+                            if let Some(part) = find_in(tree, id) {
+                                part.transform = transform;
+                                moved = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if moved {
+            self.respawn();
+        }
+        count
+    }
+
+    /// The port the editor listens on for Blender, once it does.
+    pub fn blender_port(&self) -> Option<u16> {
+        self.blender.as_ref().map(|l| l.port)
     }
 
     /// Whether a library update is running in the background.
@@ -4308,4 +4379,12 @@ pub enum Align {
     Min,
     Center,
     Max,
+}
+
+/// The entity with this ID in a tree.
+fn find_in(tree: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
+    if tree.id == id {
+        return Some(tree);
+    }
+    tree.children.iter_mut().find_map(|c| find_in(c, id))
 }

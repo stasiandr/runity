@@ -20,6 +20,7 @@ importer turns them.
 
 import array
 import json
+import os
 import random
 import socket
 import struct
@@ -336,6 +337,79 @@ def send(port):
     data = stream()
     with socket.create_connection(("127.0.0.1", port)) as connection:
         connection.sendall(data)
+
+
+# --- the live link with an open editor ---------------------------------
+
+LINK = b"RUNITYLK"
+SCENE, MOVES = 1, 2
+
+
+def project_root(path):
+    """The runity project a file is in: the folder above it holding
+    runity.ron."""
+    folder = os.path.dirname(os.path.abspath(path))
+    while True:
+        if os.path.isfile(os.path.join(folder, "runity.ron")):
+            return folder
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return None
+        folder = parent
+
+
+def link_target():
+    """Where an open editor listens for this file, and the file's path in
+    its project: None when the file is in no project or no editor has it
+    open."""
+    path = bpy.data.filepath
+    if not path:
+        return None
+    root = project_root(path)
+    if root is None:
+        return None
+    try:
+        with open(os.path.join(root, "library", "blender-link")) as f:
+            port = int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    return port, os.path.relpath(path, root).replace(os.sep, "/")
+
+
+def send_link(kind, payload):
+    """One message to the editor; False when none is listening."""
+    target = link_target()
+    if target is None:
+        return False
+    port, source = target
+    source = source.encode("utf-8")
+    message = LINK + struct.pack("<I", kind) + struct.pack("<I", len(source)) + source + payload
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5) as connection:
+            connection.sendall(message)
+        return True
+    except OSError:
+        return False
+
+
+def moves(objects):
+    """Where objects stand now, for the editor's preview: in their
+    parent's space, or the world's for one without a parent — as the
+    exporter places them."""
+    out = []
+    for obj in objects:
+        stamp_id = obj.get(PROP)
+        if not isinstance(stamp_id, str):
+            continue
+        matrix = obj.matrix_local if obj.parent is not None else obj.matrix_world
+        location, rotation, scale = matrix.decompose()
+        out.append({
+            "id": stamp_id,
+            "location": list(location),
+            "rotation": [rotation.w, rotation.x, rotation.y, rotation.z],
+            "scale": list(scale),
+        })
+    return json.dumps({"moves": out}).encode("utf-8")
 
 
 def main(argv):

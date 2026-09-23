@@ -167,6 +167,12 @@ impl Prefabs {
         self.by_name.get(name)
     }
 
+    /// Every prefab's tree, to change in memory: what a live preview from
+    /// another program does (docs/blender.md) until the file is saved.
+    pub fn trees_mut(&mut self) -> impl Iterator<Item = &mut EntityDesc> {
+        self.by_name.values_mut()
+    }
+
     /// Follow a link to a prefab: by its ID, then by its name. The name
     /// found is the prefab's name now.
     pub fn find(&self, link: &crate::AssetLink) -> Option<(&str, &EntityDesc)> {

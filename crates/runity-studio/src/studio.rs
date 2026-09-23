@@ -976,6 +976,9 @@ impl Studio {
         let t3 = Instant::now();
 
         self.poll_disk();
+        // An open Blender: saves and objects being moved, every frame, so
+        // a drag there moves here while it happens.
+        self.session.poll_blender();
         self.bottom.update_git(&mut self.ui, &mut self.session);
         // Two of the Project's pictures a frame, until it has them all.
         for (name, image) in self.bottom.wanted_pictures(2) {
