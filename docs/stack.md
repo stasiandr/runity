@@ -739,6 +739,13 @@ Unity-шного «Missing» в сценах после удаления; коп
 `Field("@chat.hint")`: набранное — `Screen::entered(id)`, Enter —
 `done.submitted(id)`.
 
+Выпадающий список (Dropdown) — `dropdown`: показывает выбранное, клик
+раскрывает варианты под ним, клик по варианту выбирает, клик мимо
+закрывает. В экране — `Choice(label: "@menu.language", options: ["English",
+"Русский"])`: выбранный индекс — `Screen::chosen(id)`, из сохранённых
+настроек — `set_chosen`; варианты с `@` берутся из `strings/`, и `check`
+знает их ключи.
+
 ### Числа игры — `tuning/`
 
 ScriptableObject из Unity, для данных: структура игры, лежащая RON-файлом в

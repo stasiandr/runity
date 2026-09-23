@@ -91,6 +91,8 @@ pub struct Widgets {
     active: Option<u64>,
     /// The text field typing goes into.
     focused: Option<u64>,
+    /// The dropdown whose options are showing.
+    open: Option<u64>,
     pub style: Style,
 }
 
@@ -258,6 +260,79 @@ impl Widgets {
         typed
     }
 
+    /// One of a few options — Unity's Dropdown: shows the chosen one; a
+    /// click lists them all below it, a click on one chooses it, a click
+    /// anywhere else closes the list. `true` on the frame the choice
+    /// changes.
+    pub fn dropdown(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        label: &str,
+        options: &[String],
+        chosen: &mut usize,
+    ) -> bool {
+        let id = key(rect, label);
+        let (over, _, clicked) = self.track(input, rect, id);
+        let mut changed = false;
+        let was_open = self.open == Some(id);
+        if was_open {
+            // The options, below, one row each.
+            for (i, option) in options.iter().enumerate() {
+                let row = Rect::new(
+                    rect.x,
+                    rect.y + rect.height * (i + 1) as f32,
+                    rect.width,
+                    rect.height,
+                );
+                let hovered = row.contains(input.mouse_position());
+                let color = if hovered || i == *chosen {
+                    self.style.hover
+                } else {
+                    self.style.idle
+                };
+                ui.quad(Quad::new(row.x, row.y, row.width, row.height, color));
+                self.label(ui, row, option);
+                if hovered && input.mouse_released(MouseButton::Left) {
+                    if *chosen != i {
+                        *chosen = i;
+                        changed = true;
+                    }
+                    self.open = None;
+                }
+            }
+            if input.mouse_pressed(MouseButton::Left) && !over {
+                let below = Rect::new(
+                    rect.x,
+                    rect.y + rect.height,
+                    rect.width,
+                    rect.height * options.len() as f32,
+                );
+                if !below.contains(input.mouse_position()) {
+                    self.open = None;
+                }
+            }
+        }
+        if clicked {
+            self.open = if was_open { None } else { Some(id) };
+        }
+        let back = if over {
+            self.style.hover
+        } else {
+            self.style.idle
+        };
+        ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, back));
+        let shown = options.get(*chosen).map_or("", String::as_str);
+        let text = if label.is_empty() {
+            format!("{shown} ▾")
+        } else {
+            format!("{label}: {shown} ▾")
+        };
+        self.label(ui, rect, &text);
+        changed
+    }
+
     /// Whether a text field has the keyboard: while it does, the game
     /// should not read letters as its own keys.
     pub fn typing(&self) -> bool {
@@ -332,6 +407,38 @@ mod tests {
         width: 100.0,
         height: 30.0,
     };
+
+    #[test]
+    fn a_dropdown_opens_on_a_click_and_a_click_on_an_option_chooses_it() {
+        use crate::input::MouseButton as M;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let options: Vec<String> = ["English", "Русский", "Deutsch"].map(String::from).to_vec();
+        let mut chosen = 0;
+        let mut pick = |widgets: &mut Widgets, input: &Input, chosen: &mut usize| {
+            widgets.dropdown(&mut Ui::new(), input, PLAY, "Language", &options, chosen)
+        };
+        let click = |input: &mut Input, at: (f32, f32)| {
+            frame(input, at, &[InputEvent::MouseDown(M::Left)]);
+        };
+        // Open it: a press and a release on it.
+        click(&mut input, (20.0, 20.0));
+        pick(&mut widgets, &input, &mut chosen);
+        frame(&mut input, (20.0, 20.0), &[InputEvent::MouseUp(M::Left)]);
+        pick(&mut widgets, &input, &mut chosen);
+        // The second option is the second row below it.
+        let row = (20.0, 10.0 + 30.0 * 2.0 + 5.0);
+        click(&mut input, row);
+        pick(&mut widgets, &input, &mut chosen);
+        frame(&mut input, row, &[InputEvent::MouseUp(M::Left)]);
+        assert!(pick(&mut widgets, &input, &mut chosen));
+        assert_eq!(chosen, 1);
+        // Closed now: the same spot does nothing.
+        click(&mut input, row);
+        pick(&mut widgets, &input, &mut chosen);
+        frame(&mut input, row, &[InputEvent::MouseUp(M::Left)]);
+        assert!(!pick(&mut widgets, &input, &mut chosen));
+        assert_eq!(chosen, 1);
+    }
 
     #[test]
     fn a_field_takes_the_keyboard_on_a_click_and_gives_it_back_on_enter() {

@@ -89,6 +89,12 @@ pub enum Kind {
     /// A line the player types; the words are shown greyed while it is
     /// empty. Read with [`Screen::entered`].
     Field(String),
+    /// One of a few options; the chosen one's index is
+    /// [`Screen::chosen`]. Options starting `@` are looked up in `strings/`.
+    Choice {
+        label: String,
+        options: Vec<String>,
+    },
 }
 
 /// One element of a screen.
@@ -218,6 +224,16 @@ impl Screen {
         self.texts.insert(id.to_string(), text.into());
     }
 
+    /// Which option of a choice is chosen: its index, the first before any.
+    pub fn chosen(&self, id: &str) -> usize {
+        self.values.get(id).map_or(0, |v| v.max(0.0) as usize)
+    }
+
+    /// Choose an option of a choice from code: the setting as saved.
+    pub fn set_chosen(&mut self, id: &str, index: usize) {
+        self.values.insert(id.to_string(), index as f32);
+    }
+
     /// What the player typed into a field: its text, empty before any.
     pub fn entered(&self, id: &str) -> &str {
         self.texts.get(id).map_or("", String::as_str)
@@ -265,12 +281,15 @@ impl Screen {
         layout
             .elements
             .iter()
-            .filter_map(|e| match &e.kind {
+            .flat_map(|e| match &e.kind {
                 Kind::Text(t) | Kind::Button(t) | Kind::Toggle(t) | Kind::Field(t) => {
-                    Some(t.as_str())
+                    vec![t.as_str()]
                 }
-                Kind::Slider { label, .. } => Some(label.as_str()),
-                Kind::Panel | Kind::Bar => None,
+                Kind::Slider { label, .. } => vec![label.as_str()],
+                Kind::Choice { label, options } => std::iter::once(label.as_str())
+                    .chain(options.iter().map(String::as_str))
+                    .collect(),
+                Kind::Panel | Kind::Bar => Vec::new(),
             })
             .filter_map(|t| t.strip_prefix('@').map(str::to_string))
             .collect()
@@ -335,6 +354,17 @@ impl Screen {
                     }
                     if typed.submitted {
                         done.submitted.push(e.id.clone());
+                    }
+                }
+                Kind::Choice {
+                    label: text,
+                    options,
+                } => {
+                    let options: Vec<String> = options.iter().map(|o| label(o)).collect();
+                    let mut chosen = self.chosen(&e.id);
+                    if widgets.dropdown(ui, input, rect, &label(text), &options, &mut chosen) {
+                        self.values.insert(e.id.clone(), chosen as f32);
+                        done.changed.push(e.id.clone());
                     }
                 }
                 Kind::Toggle(text) => {
