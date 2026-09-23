@@ -66,6 +66,10 @@ pub struct Parent(pub hecs::Entity);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physics(pub Body);
 
+/// What holds the body to another, kept from the scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Jointed(pub crate::scene::Joint);
+
 /// The shape physics sees, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape(pub crate::scene::Collider);
@@ -216,6 +220,9 @@ fn spawn_one(
     ));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
+    }
+    if !desc.joint.is_none() {
+        let _ = world.insert_one(entity, Jointed(desc.joint));
     }
     dress(desc, entity, world, resolve, palette, missing);
     entity
@@ -441,6 +448,14 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, Shape(desc.collider));
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.joint != desc.joint) {
+            if desc.joint.is_none() {
+                let _ = world.remove_one::<Jointed>(entity);
+            } else {
+                let _ = world.insert_one(entity, Jointed(desc.joint));
+            }
+            changed = true;
+        }
         if was.is_none_or(|(_, old_parent)| old_parent != parent.map(|(id, _)| id)) {
             match parent {
                 Some((_, parent)) => {
@@ -603,6 +618,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            joint: Default::default(),
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -623,6 +639,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    joint: Default::default(),
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),

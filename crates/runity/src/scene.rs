@@ -112,6 +112,89 @@ pub enum Collider {
     },
 }
 
+/// What holds a body to another, or to the world: a door's hinge, a lamp's
+/// chain, a drawer's runner. On the line of the body that moves, naming the
+/// one it hangs from by `id` — or nothing, for a fixed point in the world.
+///
+/// ```text
+/// joint: Hinge(to: "5f1c09aa3e7b2d10", anchor: (-0.5, 0.0, 0.0), axis: (0.0, 1.0, 0.0), limits_deg: (0.0, 110.0)),
+/// ```
+///
+/// `anchor` and `axis` are in this entity's own space, so a door's hinge is
+/// "its left edge, turning about its up" wherever the door is placed. A
+/// prefab's joints name other parts by their ids in the prefab file, and
+/// every instance gets its own.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub enum Joint {
+    #[default]
+    None,
+    /// Held rigidly: two bodies that move as one but break apart as two.
+    Fixed {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+    },
+    /// Turns about one axis through the anchor, within limits if given.
+    Hinge {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+        #[serde(default)]
+        anchor: Vec3,
+        #[serde(default = "up")]
+        axis: Vec3,
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        limits_deg: Option<(f32, f32)>,
+    },
+    /// Turns any way about the anchor: a chain, a ball-and-socket.
+    Ball {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+        #[serde(default)]
+        anchor: Vec3,
+    },
+    /// Slides along one axis, within limits in metres if given.
+    Slider {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+        #[serde(default = "up")]
+        axis: Vec3,
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        limits: Option<(f32, f32)>,
+    },
+}
+
+fn up() -> Vec3 {
+    Vec3::Y
+}
+
+impl Joint {
+    pub fn is_none(&self) -> bool {
+        *self == Joint::None
+    }
+
+    /// The body it hangs from; unassigned for the world.
+    pub fn to(&self) -> Option<EntityId> {
+        match *self {
+            Joint::None => None,
+            Joint::Fixed { to }
+            | Joint::Hinge { to, .. }
+            | Joint::Ball { to, .. }
+            | Joint::Slider { to, .. } => Some(to),
+        }
+    }
+
+    /// The same joint, hanging from another body.
+    pub fn with_to(mut self, other: EntityId) -> Self {
+        match &mut self {
+            Joint::None => {}
+            Joint::Fixed { to }
+            | Joint::Hinge { to, .. }
+            | Joint::Ball { to, .. }
+            | Joint::Slider { to, .. } => *to = other,
+        }
+        self
+    }
+}
+
 /// How an entity takes part in the physics world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Body {
@@ -185,6 +268,9 @@ pub struct EntityDesc {
     /// saying so in one place beats guessing a box from the mesh.
     #[serde(default)]
     pub collider: Collider,
+    /// What holds this body to another; see [`Joint`].
+    #[serde(default, skip_serializing_if = "Joint::is_none")]
+    pub joint: Joint,
     /// The game's own components, by the name the game registered each
     /// under (see [`crate::components`]), each value in RON:
     ///
@@ -761,6 +847,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -778,6 +865,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    joint: Default::default(),
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -814,6 +902,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),

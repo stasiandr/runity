@@ -210,3 +210,22 @@ fn a_component_scenes_name_is_a_file_in_src_components() {
 fn errors_of(project: &Project) -> Vec<String> {
     errors(&check(project))
 }
+
+#[test]
+fn a_joint_to_nothing_is_named() {
+    let project = project("joints");
+    write(
+        &project.root().join("scenes/door.ron"),
+        r#"(entities: [
+            (id: "a1", name: "frame", model: "builtin:cube", body: Static),
+            (id: "a2", name: "door", model: "builtin:cube", body: Dynamic, joint: Hinge(to: "a1")),
+            (id: "a3", name: "flap", model: "builtin:cube", body: Dynamic, joint: Hinge(to: "a9")),
+        ])"#,
+    );
+    let errors = errors(&check(&project));
+    let line = one_containing(&errors, "its joint hangs from");
+    assert!(
+        line.contains("`flap`") && line.contains("00000000000000a9"),
+        "{line}"
+    );
+}

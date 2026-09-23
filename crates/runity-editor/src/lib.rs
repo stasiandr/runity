@@ -1091,6 +1091,17 @@ impl Session {
         let materials = names_of(AssetKind::Material);
         let components = self.project.as_ref().and_then(|p| p.component_names());
         for (desc, _) in self.instanced.scene.flatten() {
+            if let Some(to) = desc.joint.to().filter(|to| !to.is_unassigned()) {
+                if self.instanced.scene.get(to).is_none() {
+                    out.push(Diagnostic {
+                        entity: Some(desc.id),
+                        message: format!(
+                            "`{}` ({}): its joint hangs from {to}, which is not in the scene",
+                            desc.name, desc.id
+                        ),
+                    });
+                }
+            }
             let who = format!("`{}` ({})", desc.name, desc.id);
             if let Some(known) = &components {
                 for name in desc.components.keys().filter(|n| !known.contains(n)) {

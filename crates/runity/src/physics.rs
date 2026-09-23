@@ -31,7 +31,7 @@ use hecs::World;
 use rapier3d::prelude::*;
 
 use crate::scene::{Body, Collider as ColliderShape, Transform};
-use crate::world::{Parent, Physics, Shape, WorldTransform};
+use crate::world::{Jointed, Parent, Physics, SceneId, Shape, WorldTransform};
 
 /// Who is touching an entity's body: for a [`Body::Trigger`], what is
 /// inside it; for a solid body, what it is in contact with.
@@ -201,6 +201,17 @@ pub struct PhysicsWorld {
     multibody_joints: MultibodyJointSet,
     ccd: CCDSolver,
     queries: QueryPipeline,
+    /// A fixed body with no shape, for joints to the world to hang from.
+    /// Made the first time one asks.
+    ground: Option<RigidBodyHandle>,
+}
+
+/// The joint a body was given, and what it was built between, so a change
+/// to either end rebuilds it.
+struct JointBuilt {
+    joint: crate::scene::Joint,
+    handle: ImpulseJointHandle,
+    bodies: (RigidBodyHandle, RigidBodyHandle),
 }
 
 impl Default for PhysicsWorld {
@@ -229,6 +240,7 @@ impl PhysicsWorld {
             multibody_joints: MultibodyJointSet::new(),
             ccd: CCDSolver::new(),
             queries: QueryPipeline::new(),
+            ground: None,
         }
     }
 
@@ -278,7 +290,7 @@ impl PhysicsWorld {
             .bodies
             .iter()
             .map(|(handle, _)| handle)
-            .filter(|handle| !live.contains(handle))
+            .filter(|handle| !live.contains(handle) && Some(*handle) != self.ground)
             .collect();
         for handle in orphans {
             self.bodies.remove(
@@ -369,6 +381,91 @@ impl PhysicsWorld {
             if trigger && world.get::<&Contacts>(entity).is_err() {
                 let _ = world.insert_one(entity, Contacts::default());
             }
+        }
+        self.sync_joints(world);
+    }
+
+    /// Joints after bodies: build each once both of its bodies exist,
+    /// rebuild it when the joint or either body changed, drop it when its
+    /// entity no longer asks for one. A joint whose partner is not there —
+    /// not built yet, or a typo'd id — waits rather than guessing.
+    fn sync_joints(&mut self, world: &mut World) {
+        let bodies_by_id: std::collections::HashMap<crate::id::EntityId, RigidBodyHandle> = world
+            .query::<(&SceneId, &BodyHandle)>()
+            .iter()
+            .map(|(id, handle)| (id.0, handle.0))
+            .collect();
+        let mut drop: Vec<hecs::Entity> = Vec::new();
+        let mut build: Vec<(
+            hecs::Entity,
+            crate::scene::Joint,
+            RigidBodyHandle,
+            glam::Mat4,
+        )> = Vec::new();
+        for (entity, joint, body, placed, built) in world
+            .query::<(
+                hecs::Entity,
+                Option<&Jointed>,
+                Option<&BodyHandle>,
+                &WorldTransform,
+                Option<&JointBuilt>,
+            )>()
+            .iter()
+        {
+            let wanted = joint.zip(body).map(|(joint, body)| (joint.0, body.0));
+            let partner = |joint: &crate::scene::Joint| -> Option<RigidBodyHandle> {
+                match joint.to() {
+                    Some(to) if !to.is_unassigned() => bodies_by_id.get(&to).copied(),
+                    _ => self.ground,
+                }
+            };
+            if let Some(built) = built {
+                let still = wanted.is_some_and(|(joint, body)| {
+                    joint == built.joint
+                        && body == built.bodies.1
+                        && partner(&joint).is_none_or(|p| p == built.bodies.0)
+                        && self.impulse_joints.get(built.handle).is_some()
+                });
+                if still {
+                    continue;
+                }
+                drop.push(entity);
+            }
+            if let Some((joint, body)) = wanted {
+                build.push((entity, joint, body, placed.0));
+            }
+        }
+        for entity in drop {
+            if let Ok(built) = world.remove_one::<JointBuilt>(entity) {
+                self.impulse_joints.remove(built.handle, true);
+            }
+        }
+        for (entity, joint, body, placed) in build {
+            let other = match joint.to() {
+                Some(to) if !to.is_unassigned() => match bodies_by_id.get(&to) {
+                    Some(handle) => *handle,
+                    None => continue,
+                },
+                _ => *self
+                    .ground
+                    .get_or_insert_with(|| self.bodies.insert(RigidBodyBuilder::fixed().build())),
+            };
+            let (Some(one), Some(two)) = (self.bodies.get(other), self.bodies.get(body)) else {
+                continue;
+            };
+            let data = joint_data(&joint, placed, one.position(), two.position());
+            let Some(data) = data else {
+                continue;
+            };
+            let handle = self.impulse_joints.insert(other, body, data, true);
+            let _ = world.insert_one(
+                entity,
+                JointBuilt {
+                    joint,
+                    handle,
+                    bodies: (other, body),
+                },
+            );
         }
     }
 
@@ -612,6 +709,68 @@ impl PhysicsWorld {
     }
 }
 
+/// A scene joint as rapier's, between a body at `one` and the jointed body
+/// at `two`, from where the jointed entity stands now.
+///
+/// Both ends get the same frame in the world — at the anchor, its X along
+/// the joint's axis — expressed in each body's own frame, so the joint
+/// holds the two where they are at the moment it is made. The bodies do
+/// not collide with each other: a door rubbing on its own frame is jitter,
+/// not physics.
+fn joint_data(
+    joint: &crate::scene::Joint,
+    placed: glam::Mat4,
+    one: &Isometry<Real>,
+    two: &Isometry<Real>,
+) -> Option<GenericJoint> {
+    use crate::scene::Joint;
+    let (_, rotation, _) = placed.to_scale_rotation_translation();
+    let (anchor, axis) = match *joint {
+        Joint::None => return None,
+        Joint::Fixed { .. } => (Vec3::ZERO, Vec3::X),
+        Joint::Hinge { anchor, axis, .. } => (anchor, axis),
+        Joint::Ball { anchor, .. } => (anchor, Vec3::X),
+        Joint::Slider { axis, .. } => (Vec3::ZERO, axis),
+    };
+    let at = placed.transform_point3(anchor);
+    let along = (rotation * axis).normalize_or_zero();
+    if along == Vec3::ZERO {
+        return None;
+    }
+    let turn = Quat::from_rotation_arc(Vec3::X, along);
+    let frame = Isometry::from_parts(
+        nalgebra::Translation3::new(at.x, at.y, at.z),
+        nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(turn.w, turn.x, turn.y, turn.z)),
+    );
+    let locked = match joint {
+        Joint::Fixed { .. } => JointAxesMask::LOCKED_FIXED_AXES,
+        Joint::Hinge { .. } => JointAxesMask::LOCKED_REVOLUTE_AXES,
+        Joint::Ball { .. } => JointAxesMask::LOCKED_SPHERICAL_AXES,
+        Joint::Slider { .. } => JointAxesMask::LOCKED_PRISMATIC_AXES,
+        Joint::None => return None,
+    };
+    let mut builder = GenericJointBuilder::new(locked)
+        .local_frame1(one.inverse() * frame)
+        .local_frame2(two.inverse() * frame)
+        .contacts_enabled(false);
+    match *joint {
+        Joint::Hinge {
+            limits_deg: Some((low, high)),
+            ..
+        } => {
+            builder = builder.limits(JointAxis::AngX, [low.to_radians(), high.to_radians()]);
+        }
+        Joint::Slider {
+            limits: Some((low, high)),
+            ..
+        } => {
+            builder = builder.limits(JointAxis::LinX, [low, high]);
+        }
+        _ => {}
+    }
+    Some(builder.build())
+}
+
 /// Where a world matrix puts a body: its translation and rotation. Scale
 /// lives in the collider's shape.
 fn isometry(placed: glam::Mat4) -> Isometry<Real> {
@@ -730,6 +889,7 @@ mod tests {
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
+            joint: Default::default(),
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -808,6 +968,7 @@ mod tests {
         // the first step, which reads as the physics being wrong.
         let scene = Scene {
             entities: vec![crate::EntityDesc {
+                joint: Default::default(),
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1346,5 +1507,88 @@ mod tests {
         );
         let y = world.get::<&WorldTransform>(crate_).unwrap().0.w_axis.y;
         assert!(y > 2.4, "the crate rode up on it: {y}");
+    }
+
+    fn scene_world(text: &str) -> (PhysicsWorld, World, Scene) {
+        let mut scene: Scene = ron::from_str(text).unwrap();
+        scene.assign_ids();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        (PhysicsWorld::new(1.0 / 60.0), world, scene)
+    }
+
+    fn by_id(world: &World, id: crate::id::EntityId) -> hecs::Entity {
+        world
+            .query::<(hecs::Entity, &SceneId)>()
+            .iter()
+            .find(|(_, s)| s.0 == id)
+            .map(|(e, _)| e)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_plank_on_a_hinge_swings_down_to_its_limit_and_its_hinge_stays_put() {
+        // Two metres long, level, hinged to the world at its left end about
+        // z, allowed thirty degrees down.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [(name: "flap", model: "m", body: Dynamic,
+                collider: Box(half: (0.5, 0.5, 0.5)),
+                transform: (position: (0.0, 3.0, 0.0), scale: (2.0, 0.1, 0.5)),
+                joint: Hinge(anchor: (-0.5, 0.0, 0.0), axis: (0.0, 0.0, 1.0), limits_deg: (-30.0, 0.0)))])"#,
+        );
+        let flap = by_id(&world, scene.entities[0].id);
+        run_for(&mut physics, &mut world, 180);
+        let placed = world.get::<&WorldTransform>(flap).unwrap().0;
+        let (_, rotation, _) = placed.to_scale_rotation_translation();
+        let (axis, angle) = rotation.to_axis_angle();
+        let degrees = angle.to_degrees() * axis.z.signum();
+        assert!((degrees + 30.0).abs() < 3.0, "down to the limit: {degrees}");
+        let hinge = placed.transform_point3(Vec3::new(-0.5, 0.0, 0.0));
+        assert!(
+            (hinge - Vec3::new(-1.0, 3.0, 0.0)).length() < 0.05,
+            "the hinge did not move: {hinge:?}"
+        );
+    }
+
+    #[test]
+    fn two_bodies_held_fixed_fall_together() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000b1", name: "head", model: "m", body: Dynamic,
+                 collider: Sphere(radius: 0.3), transform: (position: (0.0, 5.0, 0.0))),
+                (id: "00000000000000b2", name: "tail", model: "m", body: Dynamic,
+                 collider: Sphere(radius: 0.3), transform: (position: (1.0, 5.0, 0.0)),
+                 joint: Fixed(to: "00000000000000b1")),
+            ])"#,
+        );
+        let (head, tail) = (
+            by_id(&world, scene.entities[0].id),
+            by_id(&world, scene.entities[1].id),
+        );
+        run_for(&mut physics, &mut world, 40);
+        let a = world
+            .get::<&WorldTransform>(head)
+            .unwrap()
+            .0
+            .w_axis
+            .truncate();
+        let b = world
+            .get::<&WorldTransform>(tail)
+            .unwrap()
+            .0
+            .w_axis
+            .truncate();
+        assert!(a.y < 4.0, "fell: {a:?}");
+        assert!(
+            ((b - a).length() - 1.0).abs() < 0.02,
+            "a metre apart still: {a:?} {b:?}"
+        );
+        assert!((a.y - b.y).abs() < 0.02, "and level: {a:?} {b:?}");
+
+        // The joint taken out of the line (a reload): the tail goes free.
+        world.remove_one::<Jointed>(tail).unwrap();
+        run_for(&mut physics, &mut world, 1);
+        assert!(world.get::<&JointBuilt>(tail).is_err());
+        assert_eq!(physics.impulse_joints.len(), 0);
     }
 }

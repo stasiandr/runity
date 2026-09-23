@@ -281,6 +281,13 @@ fn expand(
         });
     expanded.id = id;
     expanded.prefab = String::new();
+    // A joint in a prefab names another part of it, by its id in the file:
+    // in the instance, that part has the instance's scope too.
+    if let (Some(instance), Some(to)) = (scope, expanded.joint.to()) {
+        if !to.is_unassigned() {
+            expanded.joint = expanded.joint.with_to(instance.within(to));
+        }
+    }
     // Its own children come after whatever the prefab brought, in the same
     // scope as itself: a kettle put beside a campfire in the scene is the
     // scene's, not the campfire's.
@@ -369,6 +376,10 @@ fn resolve(
     }
     if desc.collider != Collider::default() {
         root.collider = desc.collider;
+    }
+    // The instance's own joint names something in the scene, as written.
+    if !desc.joint.is_none() {
+        root.joint = desc.joint;
     }
     // Components one by one: an instance that says `"door": (locked:
     // true)` changes the door and keeps the prefab's other components.
@@ -858,5 +869,32 @@ mod tests {
             "{:?}",
             done.problems
         );
+    }
+
+    #[test]
+    fn a_joint_inside_a_prefab_holds_the_parts_of_its_own_instance() {
+        let mut prefabs = Prefabs::new();
+        let lamp: EntityDesc = ron::from_str(
+            r#"(id: "00000000000000c1", name: "lamp post", model: "builtin:cube", body: Static,
+                children: [(id: "00000000000000c2", name: "lamp", model: "builtin:sphere", body: Dynamic,
+                    joint: Ball(to: "00000000000000c1", anchor: (0.0, 0.5, 0.0)))])"#,
+        )
+        .unwrap();
+        prefabs.insert("lamp", lamp);
+        let scene = parse(
+            r#"(entities: [
+                (id: "00000000000000a1", name: "west", prefab: "lamp"),
+                (id: "00000000000000a2", name: "east", prefab: "lamp"),
+            ])"#,
+        );
+        let done = instantiate(&scene, &prefabs);
+        let (west, east): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
+        let part: EntityId = "c2".parse().unwrap();
+        let root: EntityId = "c1".parse().unwrap();
+        let joint_of = |id: EntityId| done.scene.get(id).unwrap().joint.to().unwrap();
+        // The lamp hangs from its own post — the instance's root, which
+        // keeps the instance's id — not from the file's.
+        assert_eq!(joint_of(west.within(part)), west.within(root));
+        assert_eq!(joint_of(east.within(part)), east.within(root));
     }
 }

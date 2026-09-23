@@ -39,6 +39,7 @@ fn entity_fields() -> Value {
         "scale": vec3("per axis"),
         "body": { "type": "string", "enum": ["None", "Static", "Dynamic", "Kinematic", "Trigger"] },
         "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r), Cylinder(half_height: h, radius: r), Ramp(half: (x, y, z)), Stairs(half: (x, y, z), steps: n). builtin:cube/cylinder/ramp/stairs fit Box/Cylinder/Ramp/Stairs with half 0.5 (stairs: steps 4)" },
+        "joint": { "type": "string", "description": "RON, on the body that moves: None, Hinge(to: \"<id>\", anchor: (x, y, z), axis: (x, y, z), limits_deg: (min, max)), Ball(to: \"<id>\", anchor: (x, y, z)), Fixed(to: \"<id>\"), Slider(to: \"<id>\", axis: (x, y, z), limits: (min, max)). Anchor and axis in its own space; leave out `to` to hang from the world" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
 }
@@ -867,6 +868,10 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
     if let Some(collider) = optional_string(args, "collider")? {
         desc.collider =
             ron::from_str::<Collider>(&collider).map_err(|e| format!("collider: {e}"))?;
+    }
+    if let Some(joint) = optional_string(args, "joint")? {
+        desc.joint =
+            ron::from_str::<runity::scene::Joint>(&joint).map_err(|e| format!("joint: {e}"))?;
     }
     match args.get("components") {
         None | Some(Value::Null) => {}

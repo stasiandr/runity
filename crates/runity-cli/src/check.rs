@@ -204,6 +204,14 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
 }
 
 fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut Vec<Finding>) {
+    // Every id in the file, for joints to be checked against: a joint names
+    // a body in the same file.
+    let mut all: HashSet<EntityId> = HashSet::new();
+    let mut walk: Vec<&EntityDesc> = entities.iter().collect();
+    while let Some(e) = walk.pop() {
+        all.insert(e.id);
+        walk.extend(e.children.iter());
+    }
     let mut seen: HashSet<EntityId> = HashSet::new();
     let mut unnamed = 0;
     let mut stack: Vec<&EntityDesc> = entities.iter().rev().collect();
@@ -241,6 +249,14 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         }
         if let MaterialRef::Named(name) = &entity.material {
             check_material(name, &who, file, names, out);
+        }
+        if let Some(to) = entity.joint.to().filter(|to| !to.is_unassigned()) {
+            if !all.contains(&to) {
+                out.push(error(
+                    file,
+                    format!("{who}: its joint hangs from {to}, which is not in this file — the body it holds on to has to be"),
+                ));
+            }
         }
         if let Some(known) = &names.components {
             let used = entity
