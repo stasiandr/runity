@@ -3997,6 +3997,8 @@ impl Session {
             &self.instanced.scene,
             self.library.as_ref(),
         );
+        // The scene's wind carries what it says is `blown`.
+        physics.wind = self.instanced.scene.wind.unwrap_or_default();
         physics.sync_from_world(&mut self.world);
         self.play = Some(Play {
             physics,

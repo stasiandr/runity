@@ -18,6 +18,7 @@ models/:
   models/logs_loose.obj — брёвна россыпью; из nature/log, nature/log, survival/tree-log-small; CC0 (Kenney).
   models/logs_bundle.obj — брёвна в связке; из nature/log_stackLarge; CC0 (Kenney).
   models/axe.obj — топор; из survival/tool-axe; CC0 (Kenney).
+  models/tumbleweed.obj — перекати-поле; не из набора, сгенерировано tools/example-assets/tumbleweed.py; CC0.
   models/settler_stand.obj — поселенец: стоит; из blocky/character-a; CC0 (Kenney).
   models/settler_carry.obj — поселенец: несёт груз перед собой; из blocky/character-a; CC0 (Kenney).
   models/settler_walk.obj — поселенец: шагает; из blocky/character-a; CC0 (Kenney).

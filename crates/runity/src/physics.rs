@@ -74,6 +74,24 @@ pub struct ColliderRef(pub ColliderHandle);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyHandle(pub RigidBodyHandle);
 
+/// Metres per second of wind at `strength: 1` — a breeze.
+const WIND_SPEED: f32 = 4.0;
+/// How fast something blown takes up the wind's speed, per second, at
+/// `blown: 1`: a tumbleweed is nearly carried along within a second.
+const WIND_GRIP: f32 = 2.5;
+/// How often something blown hops off the ground, at `blown: 1` in a
+/// breeze.
+const HOPS_PER_SECOND: f32 = 0.6;
+
+/// A number in [0, 1) from two others: the same two, the same number.
+fn hashed(a: u64, b: u64) -> f32 {
+    let mut x = a.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ b.wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+    x ^= x >> 31;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 29;
+    (x >> 40) as f32 / (1u64 << 24) as f32
+}
+
 /// What a body was built from, and the transform it last agreed with: how
 /// a change from outside the solver is told from the solver's own motion.
 #[derive(Debug, Clone, PartialEq)]
@@ -233,6 +251,12 @@ pub fn attach_scene_collision_meshes(
 /// Everything rapier needs to take a step.
 pub struct PhysicsWorld {
     pub gravity: Vec3,
+    /// The scene's wind: what carries bodies that say `blown` — a
+    /// tumbleweed, a plastic bag, a hat. Still air until the game says.
+    pub wind: crate::foliage::Wind,
+    /// Steps taken: the clock gusts and hops are read from, so a replay
+    /// blows the same way.
+    steps: u64,
     bodies: RigidBodySet,
     colliders: ColliderSet,
     parameters: IntegrationParameters,
@@ -305,6 +329,11 @@ impl PhysicsWorld {
         };
         Self {
             gravity: Vec3::new(0.0, -9.81, 0.0),
+            wind: crate::foliage::Wind {
+                direction: Vec3::X,
+                strength: 0.0,
+            },
+            steps: 0,
             bodies: RigidBodySet::new(),
             colliders: ColliderSet::new(),
             broken: Vec::new(),
@@ -751,10 +780,79 @@ impl PhysicsWorld {
     /// once per simulation step.
     pub fn run(&mut self, world: &mut World) {
         self.sync_from_world(world);
+        self.blow(world);
         self.step();
         self.break_joints(world);
         self.sync_to_world(world);
         self.update_contacts(world);
+    }
+
+    /// The wind on everything `blown`: dragged toward the wind's own speed,
+    /// harder in gusts, and now and then — when it is on the ground — a
+    /// hop, the way a tumbleweed bounds across open sand. The ground's grip
+    /// makes it roll. Gusts and hops come from the step count and the
+    /// entity, so the same step blows the same way on every machine.
+    fn blow(&mut self, world: &World) {
+        let level = Vec3::new(self.wind.direction.x, 0.0, self.wind.direction.z).normalize_or_zero();
+        let speed = WIND_SPEED * self.wind.strength.max(0.0);
+        if speed <= 0.0 || level == Vec3::ZERO {
+            return;
+        }
+        let dt = self.parameters.dt;
+        let time = self.steps as f32 * dt;
+        let up = Vec3::Y;
+        for (entity, handle, props) in world.query::<(hecs::Entity, &BodyHandle, &Props)>().iter() {
+            let blown = props.0.blown;
+            if blown <= 0.0 {
+                continue;
+            }
+            let Some(body) = self.bodies.get(handle.0) else {
+                continue;
+            };
+            if !body.is_dynamic() {
+                continue;
+            }
+            let seed = (entity.to_bits().get() % 997) as f32 * 7.31;
+            // Gusts: two slow waves that do not repeat together.
+            let gust = 0.65
+                + 0.25 * (time * 0.9 + seed).sin()
+                + 0.2 * (time * 2.3 + seed * 1.7).sin().max(0.0);
+            let wind = level * speed * gust;
+            let at = body.translation();
+            let centre = Vec3::new(at.x, at.y, at.z);
+            let v = body.linvel();
+            let moving = Vec3::new(v.x, 0.0, v.z);
+            let mass = body.mass();
+            let push = (wind - moving) * (WIND_GRIP * blown * mass);
+            // Half its height, from its colliders' bounds: how far down the
+            // ground is when it is on it.
+            let half = body
+                .colliders()
+                .iter()
+                .filter_map(|c| self.colliders.get(*c))
+                .map(|c| c.compute_aabb().half_extents().y)
+                .fold(0.0f32, f32::max)
+                .max(0.05);
+            let down = Ray::new(point![centre.x, centre.y, centre.z], vector![0.0, -1.0, 0.0]);
+            let others = QueryFilter::default().exclude_rigid_body(handle.0).exclude_sensors();
+            let grounded = self
+                .queries
+                .cast_ray(&self.bodies, &self.colliders, &down, half + 0.08, true, others)
+                .is_some();
+            let mut hop = 0.0;
+            if grounded && v.y.abs() < 1.0 {
+                // A hop now and then, likelier in a strong gust.
+                let chance = HOPS_PER_SECOND * blown * gust * self.wind.strength.min(3.0) * dt;
+                if hashed(entity.to_bits().get(), self.steps) < chance {
+                    hop = mass * (2.2 + 2.5 * hashed(entity.to_bits().get() ^ 0x9e37, self.steps)) * gust;
+                }
+            }
+            // A twist about the axis it rolls on, so it turns in the air too.
+            let roll = up.cross(level) * (mass * half * half * blown * 2.0 * gust);
+            let body = self.bodies.get_mut(handle.0).expect("looked up above");
+            body.apply_impulse(vector![push.x * dt, hop, push.z * dt], true);
+            body.apply_torque_impulse(vector![roll.x * dt, roll.y * dt, roll.z * dt], true);
+        }
     }
 
     /// Break every joint pulled harder than its `joint_break` this step:
@@ -793,6 +891,7 @@ impl PhysicsWorld {
 
     /// Take one step. Call it once per simulation step, never per frame.
     pub fn step(&mut self) {
+        self.steps += 1;
         let gravity = vector![self.gravity.x, self.gravity.y, self.gravity.z];
         self.pipeline.step(
             &gravity,
@@ -1613,6 +1712,69 @@ mod tests {
             .map(|(e, _)| e)
             .expect("the ball is the dynamic one");
         (physics, world, ball)
+    }
+
+    #[test]
+    fn the_wind_bowls_a_tumbleweed_along_and_leaves_a_stone_where_it_lay() {
+        let weed = |x: f32, blown: f32| {
+            let mut e = entity("weed", 0.6, Body::Dynamic, ColliderShape::Sphere { radius: 0.5 });
+            e.transform.position.x = x;
+            e.physics.blown = blown;
+            e.physics.density = 0.05;
+            e
+        };
+        let scene = Scene {
+            entities: vec![
+                entity(
+                    "floor",
+                    0.0,
+                    Body::Static,
+                    ColliderShape::Box {
+                        half: Vec3::new(200.0, 0.1, 200.0),
+                        center: glam::Vec3::ZERO,
+                    },
+                ),
+                weed(0.0, 1.0),
+                weed(-5.0, 0.0),
+            ],
+            ..Default::default()
+        };
+        let run = || {
+            let mut world = World::new();
+            crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+            let mut physics = PhysicsWorld::new(1.0 / 60.0);
+            physics.wind = crate::foliage::Wind {
+                direction: Vec3::new(0.0, 0.0, 1.0),
+                strength: 1.5,
+            };
+            let mut highest = 0.0f32;
+            for _ in 0..600 {
+                physics.run(&mut world);
+                for (_, t, p) in world.query::<(hecs::Entity, &Transform, &Props)>().iter() {
+                    if p.0.blown > 0.0 {
+                        highest = highest.max(t.position.y);
+                    }
+                }
+            }
+            let mut at: Vec<(f32, Vec3)> = world
+                .query::<(&Transform, Option<&Props>, &Physics)>()
+                .iter()
+                .filter(|(_, _, b)| b.0 == Body::Dynamic)
+                .map(|(t, p, _)| (p.map_or(0.0, |p| p.0.blown), t.position))
+                .collect();
+            at.sort_by(|a, b| a.0.total_cmp(&b.0));
+            (at, highest)
+        };
+        let (at, highest) = run();
+        let (stone, weed) = (at[0].1, at[1].1);
+        // Ten seconds of a stiff breeze: well down the wind, and off the
+        // ground now and then.
+        assert!(weed.z > 20.0, "the tumbleweed went only {weed}");
+        assert!(weed.x.abs() < weed.z * 0.2, "it went across the wind: {weed}");
+        assert!(highest > 1.1, "it never hopped: highest {highest}");
+        assert!(stone.distance(Vec3::new(-5.0, 0.6, 0.0)) < 0.3, "the stone moved to {stone}");
+        // The same steps blow the same way.
+        assert_eq!(run().0, at);
     }
 
     #[test]
