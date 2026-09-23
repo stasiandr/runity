@@ -1159,7 +1159,7 @@ pub fn importable(path: &Path) -> bool {
 
 /// Every file under `root`, depth first. Hidden files and folders are
 /// skipped: `.gitkeep`, editor droppings, a `.git` someone nested.
-fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
+pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
     let Ok(entries) = std::fs::read_dir(root) else {
         return;
     };

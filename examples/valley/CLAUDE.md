@@ -20,8 +20,11 @@ with no library at all; keep it that way.
   never copy an existing one.
 * Every source in `assets/` and `materials/` has its `.rimport` beside it,
   committed. After adding or changing one, run
-  `cargo run -p runity-import -- --sync examples/valley` and commit what it
+  `cargo run -p runity-cli -- sync examples/valley` and commit what it
   writes; a test fails when a sidecar is missing or stale.
+* After editing a scene or prefab, `cargo run -p runity-cli -- check
+  examples/valley` says whether every model, material and prefab it names
+  exists, and which one it meant if not. CI runs it.
 * Unlike a generated project this one has no `.gitattributes` of its own:
   it lives inside the engine's repository, which does not use Git LFS, and
   whose root `.gitattributes` keeps text LF.

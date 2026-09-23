@@ -2470,6 +2470,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ron",
+ "runity",
+ "runity-import",
+ "serde",
+]
+
+[[package]]
 name = "runity-editor"
 version = "0.1.0"
 dependencies = [

@@ -41,8 +41,7 @@ fn every_example_source_has_a_current_sidecar() {
 
     for source in found {
         let sidecar = sidecar_for(&source);
-        let fix =
-            "run `cargo run -p runity-import -- --sync examples/valley` and commit the .rimport";
+        let fix = "run `cargo run -p runity-cli -- sync examples/valley` and commit the .rimport";
         let settings = ImportSettings::load(&sidecar)
             .unwrap_or_else(|e| panic!("{}: {e:#}; {fix}", sidecar.display()));
         assert_eq!(

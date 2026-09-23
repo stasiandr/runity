@@ -17,7 +17,7 @@
 //!
 //! The library is the importer's output, not the importer: a game does not
 //! link the importers (third postulate). Something else — the editor, or
-//! `runity-import --sync` — turns a changed `.png` into a changed `.rasset`,
+//! `runity sync` — turns a changed `.png` into a changed `.rasset`,
 //! and this picks the `.rasset` up.
 //!
 //! Polling, not a watcher, for the reason the library polls: the game
@@ -48,6 +48,7 @@ pub struct LiveScene {
     current: Scene,
     stamps: Stamps,
     meshes: HashMap<String, MeshHandle>,
+    since_poll: f32,
 }
 
 /// What one [`LiveScene::reload`] found and did.
@@ -68,7 +69,34 @@ impl Reload {
             && self.assets.is_empty()
             && self.problems.is_empty()
     }
+
+    /// What happened, a line each, for a terminal or a log.
+    pub fn lines(&self) -> Vec<String> {
+        let mut out = self.problems.clone();
+        if let Some(patched) = self.patched.as_ref().filter(|p| !p.is_empty()) {
+            out.push(format!(
+                "scene: {} spawned, {} changed, {} removed",
+                patched.spawned, patched.updated, patched.despawned
+            ));
+            out.extend(
+                patched
+                    .missing
+                    .iter()
+                    .map(|m| format!("{}: no model named {}", m.entity_name, m.model)),
+            );
+        }
+        out.extend(
+            self.assets
+                .iter()
+                .map(|asset| format!("reloaded {}", asset.path.display())),
+        );
+        out
+    }
 }
+
+/// How often [`LiveScene::poll`] looks at the files: as fast as anyone
+/// saves one, and slow enough that the `stat`s cost nothing.
+pub const POLL_SECONDS: f32 = 0.25;
 
 impl LiveScene {
     /// Read a scene, with the prefabs and library of the project it is in.
@@ -101,6 +129,7 @@ impl LiveScene {
                 current,
                 stamps,
                 meshes: HashMap::new(),
+                since_poll: 0.0,
             },
             problems,
         ))
@@ -137,6 +166,23 @@ impl LiveScene {
             resolver(&mut self.meshes, library, gpu, renderer),
             |name| library?.material_by_name(name),
         )
+    }
+
+    /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
+    /// frame with the frame's delta.
+    pub fn poll(
+        &mut self,
+        delta: f32,
+        world: &mut World,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> Reload {
+        self.since_poll += delta;
+        if self.since_poll < POLL_SECONDS {
+            return Reload::default();
+        }
+        self.since_poll = 0.0;
+        self.reload(world, gpu, renderer)
     }
 
     /// Look at the files and bring the world up to date with them.

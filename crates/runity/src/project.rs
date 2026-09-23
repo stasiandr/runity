@@ -15,6 +15,8 @@
 //!   materials/      *.rmat
 //!   assets/         sources: models, textures, sounds
 //!   library/        built .rasset — derived, never committed
+//!   Cargo.toml      the game crate, its own workspace
+//!   src/main.rs     the game: a window on scenes/main.ron, reloading live
 //!   CLAUDE.md       what an agent needs to work here
 //! ```
 //!
@@ -23,10 +25,10 @@
 //! somewhere clever is a project the next tool gets wrong. Custom is done by
 //! replacing a module, not by a hundred options (postulate 7).
 //!
-//! Code will get its place — `src/` for the game crate — when there is a
-//! game crate to put there.
+//! The game is its own crate, at the root, and its own workspace: editing
+//! it rebuilds the game and never the engine (postulate 1).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +45,25 @@ pub const ASSETS: &str = "assets";
 /// Where built assets go. Derived from everything above, and never
 /// committed: a clone builds it.
 pub const LIBRARY: &str = "library";
+/// Where the game's code lives.
+pub const SRC: &str = "src";
+
+/// Where a new project's game crate gets the engine from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Engine {
+    /// A git repository — the default, until the engine is published.
+    Git(String),
+    /// A checkout on this machine: the `crates/runity` folder. Written into
+    /// `Cargo.toml` relative to the project when it can be, so the project
+    /// and the engine can move together.
+    Path(PathBuf),
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Engine::Git("https://github.com/stasiandr/runity".into())
+    }
+}
 
 /// What `runity.ron` holds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,11 +164,21 @@ impl Project {
         Err(ProjectError::NotAProject(path.to_path_buf()))
     }
 
-    /// Make a new project, laid out to the standard, with one scene to open.
+    /// Make a new project, laid out to the standard, with one scene to open
+    /// and a game crate that opens it, getting the engine from git.
     ///
     /// Refuses a folder that is already a project rather than overwriting
     /// its files: the generator is for starting, not for resetting.
     pub fn create(root: impl AsRef<Path>, name: &str) -> Result<Self, ProjectError> {
+        Self::create_with(root, name, &Engine::default())
+    }
+
+    /// [`Project::create`], with the engine the game crate depends on.
+    pub fn create_with(
+        root: impl AsRef<Path>,
+        name: &str,
+        engine: &Engine,
+    ) -> Result<Self, ProjectError> {
         let root = root.as_ref().to_path_buf();
         if root.join(FILE).exists() {
             return Err(ProjectError::AlreadyAProject(root));
@@ -173,6 +204,9 @@ impl Project {
         std::fs::write(root.join(".gitattributes"), GITATTRIBUTES)?;
         std::fs::write(root.join("CLAUDE.md"), CLAUDE_MD.replace("{name}", name))?;
         std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
+        std::fs::create_dir_all(root.join(SRC))?;
+        std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine))?;
+        std::fs::write(root.join(SRC).join("main.rs"), GAME.replace("{name}", name))?;
 
         Self::open(root)
     }
@@ -237,7 +271,154 @@ impl Project {
 const GITIGNORE: &str = "\
 # Built from the sources and their .rimport sidecars; a clone rebuilds it.
 /library/
+/target/
 ";
+
+/// The name Cargo will accept for a project called `name`.
+fn crate_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !out.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        out.insert_str(0, "game_");
+    }
+    out
+}
+
+/// `to` as seen from `from`, both folders: `../engine/crates/runity`.
+/// `None` when there is no relative way, such as another drive.
+fn relative_path(from: &Path, to: &Path) -> Option<String> {
+    let from = std::path::absolute(from).ok()?;
+    let to = std::path::absolute(to).ok()?;
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = to.components().collect();
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    // Sharing only the root (or drive) is not being near each other: a
+    // path that climbs to `/` and back down says less than the absolute one.
+    let root = from
+        .iter()
+        .take_while(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+        .count();
+    if shared <= root {
+        return None;
+    }
+    let mut parts: Vec<String> = vec!["..".into(); from.len() - shared];
+    parts.extend(
+        to[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    Some(if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join("/")
+    })
+}
+
+fn cargo_toml(root: &Path, name: &str, engine: &Engine) -> String {
+    let source = match engine {
+        Engine::Git(url) => format!("git = \"{url}\""),
+        Engine::Path(path) => {
+            let path = relative_path(root, path)
+                .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"));
+            format!("path = \"{path}\"")
+        }
+    };
+    format!(
+        "\
+[package]
+name = \"{crate_name}\"
+version = \"0.1.0\"
+edition = \"2021\"
+publish = false
+
+# The game is its own workspace: editing it rebuilds the game, never the
+# engine.
+[workspace]
+
+[dependencies]
+anyhow = \"1\"
+runity = {{ {source}, features = [\"desktop-shell\"] }}
+
+# The engine and every other dependency optimised even in a dev build, the
+# game itself not: a frame that runs at speed, a rebuild that takes seconds.
+[profile.dev.package.\"*\"]
+opt-level = 2
+",
+        crate_name = crate_name(name),
+    )
+}
+
+/// The game a new project starts with: a window on `scenes/main.ron` that
+/// keeps up with the files.
+const GAME: &str = r#"//! {name}.
+//!
+//! `cargo run` opens a window on `scenes/main.ron`. Save the scene, a
+//! prefab, or re-import an asset while it runs, and the change is in the
+//! next frames without the game losing its state. Game logic goes in
+//! `step`; run under `dx serve --hotpatch` and a rebuilt `step` or `frame`
+//! takes effect without closing the window.
+
+use runity::hecs::World;
+use runity::render::Frame;
+use runity::shell::{self, run, Context, WindowConfig};
+use runity::{Key, LiveScene};
+
+struct Game {
+    live: LiveScene,
+    world: World,
+}
+
+impl shell::Game for Game {
+    fn start(&mut self, ctx: &mut Context) {
+        for missing in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer) {
+            eprintln!("{}: no model named {}", missing.entity_name, missing.model);
+        }
+    }
+
+    fn step(&mut self, _ctx: &mut Context) {
+        // Fixed-step game logic: query `self.world`, move things, spawn
+        // things. Components are plain structs; add your own.
+    }
+
+    fn frame(&mut self, ctx: &mut Context) -> Frame {
+        if ctx.input.pressed(Key::Escape) {
+            ctx.quit();
+        }
+        let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
+        for line in reload.lines() {
+            eprintln!("{line}");
+        }
+        let scene = self.live.scene();
+        runity::build_frame(
+            &self.world,
+            runity::scene_camera(&scene.view),
+            runity::scene_lighting(&scene.sun),
+            runity::scene_fog(&scene.fog),
+        )
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let scene = concat!(env!("CARGO_MANIFEST_DIR"), "/scenes/main.ron");
+    let (live, problems) = LiveScene::open(scene)?;
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
+    let config = WindowConfig {
+        title: "{name}".into(),
+        ..Default::default()
+    };
+    run(config, Game { live, world: World::new() })
+}
+"#;
 
 /// Binary sources go to LFS and are lockable from the first commit
 /// (DNA, postulate 2). Two people editing the same texture cannot merge it,
@@ -281,16 +462,25 @@ prefabs/     one entity subtree per file; a scene places it with `prefab: \"name
 materials/   .rmat sources: `(color: \"#rrggbb\")`, sRGB hex
 assets/      models, textures, sounds; each source gets a .rimport beside it
 library/     built assets — derived, never committed
+Cargo.toml   the game crate; src/main.rs is the game
 ```
 
+* `cargo run` plays `scenes/main.ron`. It keeps running while you edit:
+  saved scenes, prefabs and rebuilt assets show up in the window.
+* `runity check` says what does not resolve — a model, a material or a
+  prefab nobody has, a repeated id, a stale sidecar — with the file and the
+  entity. Run it after editing scenes; it exits non-zero on errors.
+* `runity sync` builds `library/` from the sources. After adding, changing
+  or moving a source, run it and commit the `.rimport` it writes beside the
+  source. Never edit a sidecar's `hash` or `id` by hand: the hash is how a
+  moved file is found, the id is what the library refers to.
 * Every entity has an `id`: sixteen hex digits, unique in its file. When
   writing one by hand, leave it out and the engine assigns one on load;
   never copy an existing one.
-* Everything a person makes is text and is committed; `library/` is not.
-* After adding, changing or moving a source, run `runity-import --sync` and
-  commit the `.rimport` it writes beside the source. Never edit its `hash`
-  or `id` by hand: the hash is how a moved file is found, the id is what
-  scenes and the library refer to.
+* Game logic is Rust in `src/`, on the ECS (`runity::hecs`): components are
+  plain structs, and an entity spawned from a scene carries `SceneId`.
+* Everything a person makes is text and is committed; `library/` and
+  `target/` are not.
 * Binary sources are in Git LFS and lockable — lock before editing one.
 ";
 
@@ -327,7 +517,14 @@ mod tests {
         for dir in [SCENES, PREFABS, MATERIALS, ASSETS] {
             assert!(root.join(dir).is_dir(), "{dir}/");
         }
-        for file in [FILE, ".gitignore", ".gitattributes", "CLAUDE.md"] {
+        for file in [
+            FILE,
+            ".gitignore",
+            ".gitattributes",
+            "CLAUDE.md",
+            "Cargo.toml",
+            "src/main.rs",
+        ] {
             assert!(root.join(file).is_file(), "{file}");
         }
         // The library is derived: ignored, and not made until something is
@@ -347,6 +544,27 @@ mod tests {
         );
 
         assert_eq!(Project::open(&root).unwrap(), project);
+    }
+
+    #[test]
+    fn the_game_crate_names_the_engine_relative_to_the_project() {
+        let root = temp("engine-path");
+        let engine = std::env::temp_dir().join("runity-project-engine/crates/runity");
+        Project::create_with(&root, "My Game", &Engine::Path(engine)).unwrap();
+        let cargo = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("name = \"my_game\""), "{cargo}");
+        assert!(
+            cargo.contains("path = \"../runity-project-engine/crates/runity\""),
+            "relative, so the two can move together: {cargo}"
+        );
+        assert!(cargo.contains("[workspace]"), "its own workspace: {cargo}");
+        let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        assert!(main.contains("title: \"My Game\""), "{main}");
+
+        let default = Project::create(temp("engine-git"), "7 seas").unwrap();
+        let cargo = std::fs::read_to_string(default.root().join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("git = \"https://"), "{cargo}");
+        assert!(cargo.contains("name = \"game_7_seas\""), "{cargo}");
     }
 
     #[test]

@@ -476,6 +476,15 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
     }
 }
 
+/// The fog a scene describes.
+pub fn scene_fog(fog: &crate::scene::Fog) -> FogSettings {
+    FogSettings {
+        color: glam::Vec3::from_array(fog.color),
+        start: fog.start,
+        end: fog.end,
+    }
+}
+
 /// The camera a scene's view describes.
 ///
 /// Here rather than on either type: a scene is not allowed to know about the

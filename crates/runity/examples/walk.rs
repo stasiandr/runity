@@ -14,14 +14,12 @@
 //! not reloaded over it.
 
 use runity::glam::Vec3;
-use runity::render::{Camera, FogSettings, Frame};
+use runity::render::{Camera, Frame};
 use runity::shell::{run, Context, Game, WindowConfig};
 use runity::{Key, LiveScene, TextRun, Ui};
 
 struct Walk {
     live: LiveScene,
-    /// Seconds since the files were last looked at.
-    since_reload: f32,
     world: hecs::World,
     /// Where the eye is. Moved on the fixed step, so two machines walking the
     /// same input end up in the same place.
@@ -44,7 +42,6 @@ impl Walk {
         let look = (view.target - eye).normalize_or_zero();
         Self {
             live,
-            since_reload: 0.0,
             world: hecs::World::new(),
             eye,
             yaw: look.x.atan2(-look.z),
@@ -94,23 +91,11 @@ impl Game for Walk {
         if ctx.input.pressed(Key::Escape) {
             ctx.quit();
         }
-        // A few times a second is as fast as anyone saves a file.
-        self.since_reload += ctx.time.delta();
-        if self.since_reload > 0.25 {
-            self.since_reload = 0.0;
-            let done = self.live.reload(&mut self.world, ctx.gpu, ctx.renderer);
-            for problem in &done.problems {
-                eprintln!("{problem}");
-            }
-            if let Some(patched) = done.patched.filter(|p| !p.is_empty()) {
-                eprintln!(
-                    "scene: {} spawned, {} changed, {} removed",
-                    patched.spawned, patched.updated, patched.despawned
-                );
-            }
-            for asset in &done.assets {
-                eprintln!("reloaded {}", asset.path.display());
-            }
+        let done = self
+            .live
+            .poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
+        for line in done.lines() {
+            eprintln!("{line}");
         }
         // On the frame, not the step: the head turns as fast as the screen
         // refreshes, and waiting for a tick is what makes 15 Hz feel sticky
@@ -121,11 +106,7 @@ impl Game for Walk {
             self.pitch = (self.pitch - motion.y * 0.003).clamp(-1.4, 1.4);
         }
 
-        let fog = FogSettings {
-            color: Vec3::from_array(self.live.scene().fog.color),
-            start: self.live.scene().fog.start,
-            end: self.live.scene().fog.end,
-        };
+        let fog = runity::scene_fog(&self.live.scene().fog);
         let camera = Camera {
             position: self.eye,
             target: self.eye + self.forward(),

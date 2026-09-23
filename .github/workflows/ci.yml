@@ -54,3 +54,16 @@ jobs:
       # the engine bare and the first to notice would be a game that tried.
       - name: Check (no optional subsystems)
         run: cargo check -p runity --no-default-features
+      # `runity check` over the example: every model, material and prefab
+      # its scenes name resolves, and every sidecar is current.
+      - name: Check the example project
+        run: cargo run -q -p runity-cli -- check examples/valley
+      # What `runity new` makes has to build against the engine it came
+      # with: a template that rots is the first thing a new project meets.
+      - name: A new project checks clean and its game builds
+        shell: bash
+        run: |
+          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/fresh" --engine-path crates/runity
+          cargo run -q -p runity-cli -- check "$RUNNER_TEMP/fresh"
+          cp Cargo.lock "$RUNNER_TEMP/fresh/"
+          CARGO_TARGET_DIR="$PWD/target" cargo check --manifest-path "$RUNNER_TEMP/fresh/Cargo.toml"
