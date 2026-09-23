@@ -487,7 +487,7 @@ mod link_tests {
     }
 }
 
-/// Point every model and prefab link under `roots` at what it names now:
+/// Point every model, material, sound and prefab link under `roots` at what it names now:
 /// its ID, and the name its file has. How a scene opened in the editor
 /// gets IDs for lines written by name, and names that follow files renamed
 /// since; the next save writes them. A link that finds nothing is left as
@@ -526,6 +526,11 @@ pub fn settle(
         material(&mut desc.material, &mut changed);
         if let Some(along) = desc.along.as_mut() {
             model(&mut along.model, &mut changed);
+        }
+        if let Some(sound) = desc.sound.as_mut() {
+            if let Some((id, name)) = library.and_then(|l| l.find(&sound.clip, AssetKind::Sound)) {
+                changed += usize::from(sound.clip.settle(name, id));
+            }
         }
         for part in desc.overrides.values_mut() {
             if let Some(link) = part.model.as_mut() {

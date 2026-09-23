@@ -498,6 +498,65 @@ pub struct RenderTexture {
     pub mirror: bool,
 }
 
+/// A sound this entity makes — the radio on the table, the fire's
+/// crackle, the music of the menu: Unity's AudioSource. `sound: (clip:
+/// "radio", looped: true)` plays the sound asset `radio` from here, from the
+/// moment the entity is in the world and switched on, fading with distance
+/// from the listener between `near` (1 m, full) and `far` (40 m, silent).
+/// `spatial: false` is everywhere at `volume`: music. `pitch` 0.8 plays it
+/// slower and lower. `on_start: false`
+/// waits for the game to start it. `group` is the mixer group its volume
+/// slider is (see [`crate::audio::Audio::set_group_volume`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SoundSource {
+    pub clip: crate::AssetLink,
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub volume: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub looped: bool,
+    /// Faster and higher above 1, slower and lower below.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub pitch: f32,
+    #[serde(default = "yes_sound", skip_serializing_if = "is_true")]
+    pub on_start: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    #[serde(default = "yes_sound", skip_serializing_if = "is_true")]
+    pub spatial: bool,
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub near: f32,
+    #[serde(default = "forty", skip_serializing_if = "is_forty")]
+    pub far: f32,
+}
+
+impl Default for SoundSource {
+    fn default() -> Self {
+        Self {
+            clip: crate::AssetLink::default(),
+            volume: 1.0,
+            looped: false,
+            pitch: 1.0,
+            on_start: true,
+            group: String::new(),
+            spatial: true,
+            near: 1.0,
+            far: 40.0,
+        }
+    }
+}
+
+fn yes_sound() -> bool {
+    true
+}
+
+fn forty() -> f32 {
+    40.0
+}
+
+fn is_forty(v: &f32) -> bool {
+    *v == 40.0
+}
+
 /// A place that looks different — the cellar darker and greener, the
 /// sauna hazy — URP's local Volume. `post_volume: (size: (6.0, 3.0, 6.0),
 /// post: (exposure: -0.5, saturation: 0.6))`: inside the box (metres,
@@ -806,6 +865,9 @@ pub struct EntityDesc {
     /// see [`RenderTexture`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_texture: Option<RenderTexture>,
+    /// A sound it makes; see [`SoundSource`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub sound: Option<SoundSource>,
     /// A place that looks different; see [`PostVolume`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub post_volume: Option<PostVolume>,
@@ -1688,6 +1750,7 @@ mod tests {
                 bone: String::new(),
                 post_volume: None,
                 render_texture: None,
+                sound: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
@@ -1722,6 +1785,7 @@ mod tests {
                     bone: String::new(),
                     post_volume: None,
                     render_texture: None,
+                    sound: None,
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
@@ -1782,6 +1846,7 @@ mod tests {
                 bone: String::new(),
                 post_volume: None,
                 render_texture: None,
+                sound: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),

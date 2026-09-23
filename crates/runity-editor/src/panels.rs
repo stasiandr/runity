@@ -50,8 +50,11 @@ pub fn default_text(field: &str) -> Option<String> {
         "physics" => ron(&blank.physics),
         "joint" => ron(&blank.joint),
         "layer" | "bone" => String::new(),
+        "inactive" => "false".into(),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "render_texture" | "route" | "spline" | "along" | "joint_break" => "None".into(),
+        | "render_texture" | "sound" | "route" | "spline" | "along" | "joint_break" => {
+            "None".into()
+        }
         _ => return None,
     })
 }
@@ -118,6 +121,7 @@ fn take_field(
         "collider" => one.collider = from.collider.take(),
         "physics" => one.physics = from.physics.take(),
         "layer" => one.layer = from.layer.take(),
+        "inactive" => one.inactive = from.inactive.take(),
         "camera" => one.camera = from.camera.take(),
         "light" => one.light = from.light.take(),
         "particles" => one.particles = from.particles.take(),
@@ -257,6 +261,7 @@ impl Session {
                 "collider" => o.collider.is_some(),
                 "physics" => o.physics.is_some(),
                 "layer" => o.layer.is_some(),
+                "inactive" => o.inactive.is_some(),
                 "camera" => o.camera.is_some(),
                 "light" => o.light.is_some(),
                 "particles" => o.particles.is_some(),
@@ -284,6 +289,7 @@ impl Session {
             ("collider".into(), ron(&desc.collider)),
             ("physics".into(), ron(&desc.physics)),
             ("layer".into(), desc.layer.clone()),
+            ("inactive".into(), desc.inactive.to_string()),
             ("bone".into(), desc.bone.clone()),
             ("joint".into(), ron(&desc.joint)),
             (
@@ -310,6 +316,10 @@ impl Session {
             (
                 "render_texture".into(),
                 desc.render_texture.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "sound".into(),
+                desc.sound.as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "post_volume".into(),
@@ -634,6 +644,7 @@ impl Session {
             "model" => next.model = text.into(),
             "prefab" => next.prefab = text.into(),
             "layer" => next.layer = text.to_string(),
+            "inactive" => next.inactive = parse::<bool>(field, text)?,
             "bone" => next.bone = text.trim().to_string(),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,
@@ -703,6 +714,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Decal>(field, text)?)
+                }
+            }
+            "sound" => {
+                next.sound = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SoundSource>(field, text)?)
                 }
             }
             "render_texture" => {

@@ -122,7 +122,7 @@ pub fn kind_of(path: &Path) -> Option<&'static str> {
         "mat" => "material",
         "fbx" | "obj" | "gltf" | "glb" | "blend" => "model",
         "png" | "jpg" | "jpeg" | "tga" | "bmp" | "psd" | "tif" | "tiff" | "exr" => "texture",
-        "wav" | "ogg" | "mp3" => "sound",
+        "wav" | "ogg" | "mp3" | "flac" => "sound",
         "controller" => "animator",
         "cs" => "script",
         _ => return None,

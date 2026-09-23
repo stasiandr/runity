@@ -241,6 +241,12 @@ impl Library {
     }
 
     /// Look a sound up by file stem.
+    /// The sound a link names — a scene's `sound: (clip: ...)`.
+    pub fn sound_of(&self, link: &crate::AssetLink) -> Option<&ArchivedSoundAsset> {
+        let (id, _) = self.find(link, AssetKind::Sound)?;
+        self.sound(id)
+    }
+
     pub fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
         asset::view::<SoundAsset>(&self.named(name, AssetKind::Sound)?.bytes).ok()
     }

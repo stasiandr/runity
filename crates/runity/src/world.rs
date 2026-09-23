@@ -204,6 +204,11 @@ pub fn inactive_in_hierarchy(world: &World) -> std::collections::HashSet<hecs::E
     out
 }
 
+/// A sound the entity makes, from its line's `sound`; played by
+/// [`crate::audio::Sources`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sounding(pub crate::scene::SoundSource);
+
 /// A camera drawing into a picture, from its line's `render_texture`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
@@ -579,6 +584,9 @@ fn spawn_one(
     if let Some(picture) = &desc.render_texture {
         let _ = world.insert_one(entity, ToTexture(picture.clone()));
     }
+    if let Some(sound) = &desc.sound {
+        let _ = world.insert_one(entity, Sounding(sound.clone()));
+    }
     if desc.inactive {
         let _ = world.insert_one(entity, Inactive);
     }
@@ -910,6 +918,17 @@ impl Patch<'_> {
         }
         if was.is_none_or(|(old, _)| old.inactive != desc.inactive) {
             set_active(world, entity, !desc.inactive);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.sound != desc.sound) {
+            match &desc.sound {
+                Some(sound) => {
+                    let _ = world.insert_one(entity, Sounding(sound.clone()));
+                }
+                None => {
+                    let _ = world.remove_one::<Sounding>(entity);
+                }
+            }
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
@@ -1539,6 +1558,7 @@ mod tests {
             bone: String::new(),
             post_volume: None,
             render_texture: None,
+            sound: None,
             inactive: false,
             overrides: Default::default(),
             components: Default::default(),
@@ -1575,6 +1595,7 @@ mod tests {
                     bone: String::new(),
                     post_volume: None,
                     render_texture: None,
+                    sound: None,
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),

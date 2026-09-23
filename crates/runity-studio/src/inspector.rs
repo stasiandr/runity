@@ -29,15 +29,18 @@ pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
-const OBJECT: [&str; 4] = ["model", "material", "prefab", "layer"];
+const OBJECT: [&str; 5] = ["model", "material", "prefab", "layer", "inactive"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 8] = [
+const PARTS: [&str; 11] = [
     "camera",
     "light",
     "particles",
+    "sound",
     "reflection_probe",
     "decal",
+    "render_texture",
+    "post_volume",
     "route",
     "spline",
     "along",
@@ -45,7 +48,8 @@ const PARTS: [&str; 8] = [
 
 /// A field that says nothing: not shown, offered as a chip.
 fn is_empty(value: &str) -> bool {
-    matches!(value, "" | "None" | "r#None" | "()" | "\"\"")
+    // `false`: a switch that is off — `inactive` — says nothing either.
+    matches!(value, "" | "None" | "r#None" | "()" | "\"\"" | "false")
 }
 
 /// A vector field's three numbers, when its text is one.
@@ -1811,6 +1815,11 @@ impl Inspector {
                         "camera",
                         "light",
                         "particles",
+                        "sound",
+                        "render_texture",
+                        "post_volume",
+                        "decal",
+                        "reflection_probe",
                         "route",
                         "joint",
                         "collider",

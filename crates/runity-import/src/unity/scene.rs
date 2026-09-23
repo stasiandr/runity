@@ -513,6 +513,57 @@ impl Parts {
     }
 }
 
+/// An AudioSource: its clip, volume, loop, whether it plays on awake, how
+/// far it carries and its mixer group, by the group's name.
+fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Report) {
+    // Unity 6 keeps the clip as `m_Resource`, before it `m_audioClip`.
+    let clip = ["m_Resource", "m_audioClip"]
+        .iter()
+        .filter_map(|key| b.reference(key))
+        .find_map(|r| unity.named(r.guid.as_deref()?))
+        .filter(|(kind, _)| *kind == "sound");
+    let Some((_, clip)) = clip else {
+        report.skip("an AudioSource with no clip (the game gives it one)");
+        return;
+    };
+    if desc.sound.is_some() {
+        report.skip("a second AudioSource on one object (one sound an entity)");
+        return;
+    }
+    if b.i64("Mute") == Some(1) {
+        report.skip("a muted AudioSource");
+    }
+    // Spatial blend: the first key of its curve, 0 flat and 1 in the world.
+    let blend = b["panLevelCustomCurve"]
+        .list("m_Curve")
+        .first()
+        .and_then(|k| k.f32("value"))
+        .unwrap_or(0.0);
+    let group = b
+        .reference("OutputAudioMixerGroup")
+        .filter(|r| r.file_id != 0)
+        .and_then(|r| {
+            let text = std::fs::read_to_string(unity.guids.get(r.guid.as_deref()?)?).ok()?;
+            yaml::documents(&text)
+                .into_iter()
+                .find(|d| d.file_id == r.file_id)
+                .and_then(|d| d.body.str("m_Name").map(snake))
+        })
+        .unwrap_or_default();
+    desc.sound = Some(runity::scene::SoundSource {
+        clip: AssetLink::named(clip),
+        volume: b.f32("m_Volume").unwrap_or(1.0),
+        looped: b.i64("Loop") == Some(1),
+        pitch: b.f32("m_Pitch").unwrap_or(1.0),
+        // A switched-off AudioSource plays only when the game says so.
+        on_start: b.i64("m_PlayOnAwake") != Some(0) && b.i64("m_Enabled") != Some(0),
+        group,
+        spatial: blend >= 0.5,
+        near: b.f32("MinDistance").unwrap_or(1.0),
+        far: b.f32("MaxDistance").unwrap_or(40.0),
+    });
+}
+
 /// The field a property path is about: `hunts.any.Array.data[0]` → `hunts`.
 fn field_of(path: &str) -> &str {
     path.split('.').next().unwrap_or(path)
@@ -686,7 +737,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "Animator" => {
             report.skip("Animator (the graph comes over from animators/; the game attaches it)")
         }
-        "AudioSource" => report.skip("AudioSource"),
+        "AudioSource" => audio_source(desc, b, refs.unity, report),
         "ParticleSystem" => shuriken(desc, b, report),
         "ParticleSystemRenderer" => {
             let e = desc.particles.get_or_insert_with(Default::default);
@@ -1021,6 +1072,7 @@ mod tests {
                 ("mmm".to_string(), "Assets/Mats/wood.mat".into()),
                 ("sss".to_string(), "Assets/Scripts/Door.cs".into()),
                 ("ppp".to_string(), "Assets/Prefabs/Lamp.prefab".into()),
+                ("www".to_string(), "Assets/Sounds/Radio.ogg".into()),
             ]
             .into_iter()
             .collect(),
@@ -1030,6 +1082,7 @@ mod tests {
                 ("mmm", "wood"),
                 ("sss", "Door"),
                 ("ppp", "Lamp"),
+                ("www", "radio"),
             ]
             .into_iter()
             .map(|(g, n)| (g.to_string(), n.to_string()))
@@ -1179,6 +1232,44 @@ ParticleSystemRenderer:
   m_Materials:
   - {fileID: 2100000, guid: mmm, type: 2}
 ";
+
+    #[test]
+    fn an_audio_source_becomes_the_entitys_sound() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Radio
+  m_Component:
+  - component: {fileID: 11}
+  - component: {fileID: 12}
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_Father: {fileID: 0}
+--- !u!82 &12
+AudioSource:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Resource: {fileID: 8300000, guid: www, type: 3}
+  m_PlayOnAwake: 1
+  m_Volume: 0.5
+  m_Pitch: 0.8
+  Loop: 1
+  MinDistance: 2
+  MaxDistance: 12
+  panLevelCustomCurve:
+    m_Curve:
+    - time: 0
+      value: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), text, &mut report);
+        let sound = roots[0].sound.clone().expect("a sound");
+        assert_eq!(sound.clip.as_str(), "radio");
+        assert_eq!((sound.volume, sound.pitch), (0.5, 0.8));
+        assert!(sound.looped && sound.on_start && sound.spatial);
+        assert_eq!((sound.near, sound.far), (2.0, 12.0));
+    }
 
     #[test]
     fn a_shuriken_system_becomes_an_emitter() {

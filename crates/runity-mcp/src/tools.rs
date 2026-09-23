@@ -44,6 +44,8 @@ fn entity_fields() -> Value {
         "route": { "type": "string", "description": "RON: travels by itself — (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends: Back|Loop|Stop, smooth: true, pause: 1.0), points from where it stands; with a Kinematic body it carries what stands on it (a lift, a moving platform); or None" },
         "decal": { "type": "string", "description": "RON: a decal's box, centred here and pressed down its -y — (size: (2.0, 1.0, 2.0)); the entity's material is the picture (base map, alpha, normal map) — or None" },
         "reflection_probe": { "type": "string", "description": "RON: a reflection probe's box, centred here — (size: (8.0, 4.0, 8.0)); box_projection: false, blend_distance: 1.0 — what polished things in it reflect instead of the sky; or None" },
+        "sound": { "type": "string", "description": "RON: a sound it makes — (clip: \"radio\", looped: true); volume: 1.0, on_start: true, spatial: true (false: everywhere, music), near: 1.0, far: 40.0, group: \"music\" — or None" },
+        "inactive": { "type": "boolean", "description": "switched off: it and everything under it is not drawn, has no body, makes no sound" },
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
         "physics": { "type": "string", "description": "RON, only what differs: (friction: 0.5, bounce: 0.0, density: 1.0) — a ball is (bounce: 0.8), iron is (density: 8.0); freeze_turn: \"xz\" keeps it upright, freeze_move: \"y\" at its height" },
@@ -1577,6 +1579,21 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
                     .map_err(|e| format!("reflection_probe: {e}"))?,
             )
         };
+    }
+    if let Some(sound) = optional_string(args, "sound")? {
+        desc.sound = if sound.trim() == "None" {
+            None
+        } else {
+            Some(
+                ron::from_str::<runity::scene::SoundSource>(&sound)
+                    .map_err(|e| format!("sound: {e}"))?,
+            )
+        };
+    }
+    if let Some(inactive) = args.get("inactive") {
+        desc.inactive = inactive
+            .as_bool()
+            .ok_or_else(|| "inactive is true or false".to_string())?;
     }
     if let Some(particles) = optional_string(args, "particles")? {
         desc.particles = if particles.trim() == "None" {

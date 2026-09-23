@@ -181,20 +181,42 @@ where
         sound: &ArchivedSoundAsset,
         gain: f32,
     ) -> Result<Playing, String> {
+        self.start(Some(group), sound, gain, false, 1.0)
+    }
+
+    /// Play, in a group or straight to the main track, once or round and
+    /// round.
+    fn start(
+        &mut self,
+        group: Option<&str>,
+        sound: &ArchivedSoundAsset,
+        gain: f32,
+        looped: bool,
+        pitch: f32,
+    ) -> Result<Playing, String> {
+        let rate = kira::PlaybackRate(pitch.max(0.01) as f64);
         let volume = gain_to_decibels(gain);
-        let streaming = if sound.encoded.is_empty() {
-            None
-        } else {
-            Some(streamed(sound)?.volume(volume))
-        };
-        let (track, _) = self.group(group)?;
-        if let Some(data) = streaming {
-            let handle = track.play(data).map_err(|e| e.to_string())?;
+        if !sound.encoded.is_empty() {
+            let mut data = streamed(sound)?.volume(volume).playback_rate(rate);
+            if looped {
+                data = data.loop_region(0.0..);
+            }
+            let handle = match group {
+                Some(group) => self.group(group)?.0.play(data),
+                None => self.manager.play(data),
+            }
+            .map_err(|e| e.to_string())?;
             return Ok(Playing(Handle::Streamed(handle)));
         }
-        let handle = track
-            .play(to_static(sound).volume(volume))
-            .map_err(|e| e.to_string())?;
+        let mut data = to_static(sound).volume(volume).playback_rate(rate);
+        if looped {
+            data = data.loop_region(0.0..);
+        }
+        let handle = match group {
+            Some(group) => self.group(group)?.0.play(data),
+            None => self.manager.play(data),
+        }
+        .map_err(|e| e.to_string())?;
         Ok(Playing(Handle::Decoded(handle)))
     }
 
@@ -230,17 +252,7 @@ where
     ///
     /// For music, narration, and anything that is not coming from somewhere.
     pub fn play(&mut self, sound: &ArchivedSoundAsset, gain: f32) -> Result<Playing, String> {
-        let volume = gain_to_decibels(gain);
-        if !sound.encoded.is_empty() {
-            let data = streamed(sound)?.volume(volume);
-            let handle = self.manager.play(data).map_err(|e| e.to_string())?;
-            return Ok(Playing(Handle::Streamed(handle)));
-        }
-        let handle = self
-            .manager
-            .play(to_static(sound).volume(volume))
-            .map_err(|e| e.to_string())?;
-        Ok(Playing(Handle::Decoded(handle)))
+        self.start(None, sound, gain, false, 1.0)
     }
 
     /// Play a sound somewhere in the world.
@@ -262,6 +274,170 @@ where
             return Ok(None);
         }
         self.play(sound, gain).map(Some)
+    }
+}
+
+/// The world's [`crate::world::Sounding`] entities, played: each started
+/// once it is in the world and switched on (when it says `on_start`),
+/// turned up and down as the listener comes and goes, and stopped when it
+/// is switched off or gone. Switched on again, it starts again, as a Unity
+/// AudioSource that plays on awake does. Run once a frame, after the
+/// listener has moved.
+#[derive(Debug, Default)]
+pub struct Sources {
+    playing: std::collections::HashMap<hecs::Entity, Voice>,
+    /// Asked to play by the game, for the next update.
+    wanted: std::collections::HashSet<hecs::Entity>,
+}
+
+#[derive(Debug)]
+struct Voice {
+    /// `None` for a one-shot that was out of earshot when it started.
+    sound: Option<Playing>,
+    source: crate::scene::SoundSource,
+}
+
+impl Sources {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `sound` finds a clip by the link the source names.
+    pub fn update<'a, B: Backend>(
+        &mut self,
+        audio: &mut Audio<B>,
+        world: &hecs::World,
+        sound: impl Fn(&crate::AssetLink) -> Option<&'a ArchivedSoundAsset>,
+    ) -> Vec<String>
+    where
+        B::Error: std::fmt::Debug,
+        AudioManagerSettings<B>: Default,
+    {
+        let mut problems = Vec::new();
+        let off = crate::world::inactive_in_hierarchy(world);
+        let mut seen = std::collections::HashSet::new();
+        for (entity, sounding, placed) in world
+            .query::<(
+                hecs::Entity,
+                &crate::world::Sounding,
+                Option<&crate::world::WorldTransform>,
+            )>()
+            .iter()
+        {
+            if off.contains(&entity) {
+                continue;
+            }
+            let source = &sounding.0;
+            let at = placed.map_or(Vec3::ZERO, |t| t.0.w_axis.truncate());
+            let gain = source.volume
+                * if source.spatial {
+                    Falloff {
+                        full_volume_distance: source.near,
+                        silence_distance: source.far,
+                    }
+                    .gain((at - audio.listener).length())
+                } else {
+                    1.0
+                };
+            match self.playing.get_mut(&entity) {
+                // Changed in the scene while it plays: from the start.
+                Some(voice) if voice.source != *source => {
+                    if let Some(mut s) = voice.sound.take() {
+                        s.stop();
+                    }
+                    self.playing.remove(&entity);
+                }
+                Some(voice) => {
+                    if let Some(s) = &mut voice.sound {
+                        if source.spatial {
+                            s.set_volume(gain);
+                        }
+                    }
+                    seen.insert(entity);
+                    continue;
+                }
+                None => {}
+            }
+            if !source.on_start && !self.wanted.remove(&entity) {
+                continue;
+            }
+            seen.insert(entity);
+            // A one-shot nobody can hear is not started; a loop is, quiet,
+            // to be heard when the listener comes near.
+            let started = if gain <= 0.0 && !source.looped {
+                None
+            } else {
+                let Some(clip) = sound(&source.clip) else {
+                    problems.push(format!("sound `{}`: no such sound", source.clip));
+                    self.playing.insert(
+                        entity,
+                        Voice {
+                            sound: None,
+                            source: source.clone(),
+                        },
+                    );
+                    continue;
+                };
+                let group = (!source.group.is_empty()).then_some(source.group.as_str());
+                match audio.start(group, clip, gain, source.looped, source.pitch) {
+                    Ok(playing) => Some(playing),
+                    Err(e) => {
+                        problems.push(e);
+                        None
+                    }
+                }
+            };
+            self.playing.insert(
+                entity,
+                Voice {
+                    sound: started,
+                    source: source.clone(),
+                },
+            );
+        }
+        // Switched off, gone, or no longer a source: quiet, and ready to
+        // start again.
+        self.playing.retain(|entity, voice| {
+            let keep = seen.contains(entity);
+            if !keep {
+                if let Some(s) = &mut voice.sound {
+                    s.stop();
+                }
+            }
+            keep
+        });
+        problems
+    }
+
+    /// Play an entity's sound from the start at the next update — one that
+    /// waits (`on_start: false`), or again: Unity's `AudioSource.Play()`.
+    pub fn play(&mut self, entity: hecs::Entity) {
+        if let Some(mut voice) = self.playing.remove(&entity) {
+            if let Some(s) = &mut voice.sound {
+                s.stop();
+            }
+        }
+        self.wanted.insert(entity);
+    }
+
+    /// Stop it; one that plays on start stays quiet until [`Self::play`].
+    pub fn stop(&mut self, entity: hecs::Entity) {
+        if let Some(voice) = self.playing.get_mut(&entity) {
+            if let Some(s) = &mut voice.sound {
+                s.stop();
+            }
+            voice.sound = None;
+        }
+        self.wanted.remove(&entity);
+    }
+
+    /// How many sources are playing — or would be, heard from here.
+    pub fn len(&self) -> usize {
+        self.playing.values().filter(|v| v.sound.is_some()).count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -379,6 +555,63 @@ mod tests {
             audio.play(sound, 1.0).is_err(),
             "said in words, not a crash"
         );
+    }
+
+    #[test]
+    fn a_scenes_sources_play_while_they_are_switched_on() {
+        use crate::scene::SoundSource;
+        use crate::world::{Sounding, WorldTransform};
+        let mut audio = silent();
+        let bytes = archived();
+        let clip = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        let find = |link: &crate::AssetLink| (link.to_string() == "tone").then_some(clip);
+        let mut world = hecs::World::new();
+        let at = |x: f32| WorldTransform(glam::Mat4::from_translation(Vec3::new(x, 0.0, 0.0)));
+        let radio = world.spawn((
+            Sounding(SoundSource {
+                clip: crate::AssetLink::named("tone"),
+                looped: true,
+                ..Default::default()
+            }),
+            at(100.0),
+            crate::Transform::default(),
+        ));
+        let bang = world.spawn((
+            Sounding(SoundSource {
+                clip: crate::AssetLink::named("tone"),
+                ..Default::default()
+            }),
+            at(100.0),
+        ));
+        let waits = world.spawn((
+            Sounding(SoundSource {
+                clip: crate::AssetLink::named("tone"),
+                on_start: false,
+                spatial: false,
+                ..Default::default()
+            }),
+            at(0.0),
+        ));
+        let mut sources = Sources::new();
+        assert!(sources.update(&mut audio, &world, find).is_empty());
+        assert_eq!(sources.len(), 1, "the far loop runs quiet; the far bang never starts");
+        sources.play(waits);
+        sources.update(&mut audio, &world, find);
+        assert_eq!(sources.len(), 2, "asked to, it plays");
+        crate::world::set_active(&mut world, radio, false);
+        sources.update(&mut audio, &world, find);
+        assert_eq!(sources.len(), 1, "switched off, it stops");
+        crate::world::set_active(&mut world, radio, true);
+        world.despawn(bang).unwrap();
+        sources.update(&mut audio, &world, find);
+        assert_eq!(sources.len(), 2, "switched on, it starts again");
+        let missing = world.spawn((Sounding(SoundSource {
+            clip: crate::AssetLink::named("nope"),
+            ..Default::default()
+        }),));
+        let said = sources.update(&mut audio, &world, find);
+        assert!(said.iter().any(|p| p.contains("nope")), "{said:?}");
+        let _ = missing;
     }
 
     #[test]

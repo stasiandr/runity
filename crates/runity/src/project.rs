@@ -525,7 +525,7 @@ publish = false
 
 [dependencies]
 anyhow = \"1\"
-runity = {{ {source}, features = [\"desktop-shell\"] }}
+runity = {{ {source}, features = [\"desktop-shell\", \"audio\"] }}
 serde = {{ version = \"1\", features = [\"derive\"] }}
 
 # The engine and every other dependency optimised even in a dev build, the
@@ -665,6 +665,10 @@ struct Game {
     physics: PhysicsWorld,
     party: Party,
     components: Components,
+    /// The mixer; `None` on a machine with no sound device.
+    audio: Option<runity::audio::Audio>,
+    /// The scene's `sound`s, played.
+    sounds: runity::audio::Sources,
 }
 
 impl Game {
@@ -837,6 +841,13 @@ impl shell::Game for Game {
         // post-processing.
         let frame = runity::world::scene_frame(&self.world, camera, scene);
         self.profile.record("frame", started.elapsed());
+        // The scene's sounds, heard from where the camera is.
+        if let (Some(audio), Some(library)) = (self.audio.as_mut(), self.live.library()) {
+            audio.set_listener(camera.position);
+            for problem in self.sounds.update(audio, &self.world, |link| library.sound_of(link)) {
+                eprintln!("{problem}");
+            }
+        }
         frame
     }
 
@@ -914,6 +925,8 @@ fn main() -> anyhow::Result<()> {
         physics: PhysicsWorld::default(),
         party,
         components: game_components(),
+        audio: runity::audio::Audio::new().map_err(|e| eprintln!("no sound: {e}")).ok(),
+        sounds: runity::audio::Sources::new(),
     };
     run(config, game)
 }

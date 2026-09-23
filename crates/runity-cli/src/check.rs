@@ -479,6 +479,21 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 out,
             );
         }
+        if let Some(sound) = &entity.sound {
+            let clip = &sound.clip;
+            let by_id = clip.id.is_some_and(|id| names.ids.contains(&id));
+            if clip.is_empty() {
+                out.push(error(file, format!("{who}: a sound with no clip")));
+            } else if !by_id && !names.sounds.contains(clip.as_str()) {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: its sound plays `{clip}`, and there is no such sound in assets/{}",
+                        suggest(clip, names.sounds.iter().map(String::as_str))
+                    ),
+                ));
+            }
+        }
         // A game component's links to assets.
         for (component, value) in &entity.components {
             for (kind, link) in runity::refs::links_in(value.get_ron()) {
