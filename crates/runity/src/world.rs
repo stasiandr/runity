@@ -252,6 +252,12 @@ fn spawn_one(
     if let Some(light) = desc.light {
         let _ = world.insert_one(entity, LightSource(light));
     }
+    if let Some(route) = &desc.route {
+        let _ = world.insert_one(
+            entity,
+            crate::routes::Travelling::new(route.clone(), desc.transform.position),
+        );
+    }
     if let Some(emitter) = desc.particles {
         if let Some(mesh) = resolve("builtin:cube") {
             let _ = world.insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
@@ -479,6 +485,20 @@ impl Patch<'_> {
         }
         if was.is_none_or(|(old, _)| old.collider != desc.collider) {
             let _ = world.insert_one(entity, Shape(desc.collider));
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.route != desc.route) {
+            match &desc.route {
+                Some(route) => {
+                    let _ = world.insert_one(
+                        entity,
+                        crate::routes::Travelling::new(route.clone(), desc.transform.position),
+                    );
+                }
+                None => {
+                    let _ = world.remove_one::<crate::routes::Travelling>(entity);
+                }
+            }
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.particles != desc.particles) {
@@ -791,6 +811,7 @@ mod tests {
             camera: None,
             light: None,
             particles: None,
+            route: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -817,6 +838,7 @@ mod tests {
                     camera: None,
                     light: None,
                     particles: None,
+                    route: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),

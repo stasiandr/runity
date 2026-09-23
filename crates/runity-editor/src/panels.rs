@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 16] = [
+pub const FIELDS: [&str; 17] = [
     "name",
     "model",
     "prefab",
@@ -68,6 +68,7 @@ pub const FIELDS: [&str; 16] = [
     "camera",
     "light",
     "particles",
+    "route",
     "components.<name>",
 ];
 
@@ -247,6 +248,10 @@ impl Session {
             (
                 "particles".into(),
                 desc.particles.map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "route".into(),
+                desc.route.as_ref().map_or("None".to_string(), ron),
             ),
         ];
         for (name, value) in &desc.components {
@@ -442,7 +447,7 @@ impl Session {
             "physics" => ron(&blank.physics),
             "joint" => ron(&blank.joint),
             "layer" => String::new(),
-            "camera" | "light" | "particles" => "None".into(),
+            "camera" | "light" | "particles" | "route" => "None".into(),
             other if other.starts_with("components.") => {
                 let name = &other["components.".len()..];
                 return match self.component_shapes().get(name) {
@@ -549,6 +554,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Light>(field, text)?)
+                }
+            }
+            "route" => {
+                next.route = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Route>(field, text)?)
                 }
             }
             "particles" => {

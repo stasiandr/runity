@@ -3658,3 +3658,48 @@ fn a_box_collider_is_fitted_to_the_model() {
     let empty = session.add(None, "").unwrap();
     assert!(!session.fit_collider(empty).unwrap(), "nothing to fit");
 }
+
+#[test]
+fn a_lift_on_a_route_carries_what_stands_on_it() {
+    let scene = r#"(
+    entities: [
+        (name: "lift", model: "builtin:cube", transform: (scale: (3.0, 0.2, 3.0)),
+         body: Kinematic, collider: Box(half: (0.5, 0.5, 0.5)),
+         route: (points: [(0.0, 0.0, 0.0), (0.0, 3.0, 0.0)], speed: 1.0, ends: Stop, smooth: false)),
+        (name: "crate", model: "builtin:cube", transform: (position: (0.0, 0.7, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+    ],
+)"#;
+    let Some((mut session, _)) = open_with("lift", scene) else {
+        return;
+    };
+    let (lift, crate_id) = (id(&session, "lift"), id(&session, "crate"));
+    // Selected, it shows where it goes.
+    session.select(Some(lift)).unwrap();
+    session.render();
+    let route = session
+        .inspect(lift)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "route")
+        .unwrap();
+    assert!(route.value.contains("Stop"), "{}", route.value);
+
+    session.play();
+    for _ in 0..240 {
+        session.step(1.0 / 60.0);
+    }
+    let top = session.world_position(lift).unwrap();
+    assert!(
+        (top.y - 3.0).abs() < 0.05,
+        "the lift reached the top: {top}"
+    );
+    let riding = session.world_position(crate_id).unwrap();
+    assert!(riding.y > 3.3, "the crate rode up with it: {riding}");
+    session.stop();
+    assert_eq!(
+        session.world_position(lift).unwrap().y,
+        0.0,
+        "back where it was"
+    );
+}

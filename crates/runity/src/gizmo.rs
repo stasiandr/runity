@@ -481,6 +481,18 @@ pub fn camera_draws(
     lines(arm, segments, frame, thickness, material)
 }
 
+/// A line through points, in world space, as thin boxes: a route drawn
+/// in the Scene view.
+pub fn polyline_draws(
+    arm: MeshHandle,
+    points: &[Vec3],
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
+    let segments = points.windows(2).map(|w| (w[0], w[1])).collect();
+    lines(arm, segments, Mat4::IDENTITY, thickness, material)
+}
+
 /// Line segments in `frame`'s space as thin boxes.
 fn lines(
     arm: MeshHandle,

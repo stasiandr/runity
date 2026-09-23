@@ -53,6 +53,7 @@ pub mod refs;
 pub mod relay;
 pub mod render;
 mod ron_text;
+pub mod routes;
 pub mod save;
 pub mod scene;
 pub mod screen;

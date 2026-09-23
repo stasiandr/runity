@@ -2420,6 +2420,22 @@ impl Session {
                         gizmo::selection_color(),
                     ));
                 }
+                if let Some(route) = &desc.route {
+                    // Where a selected thing travels, as a line.
+                    let parent = placed * desc.transform.matrix().inverse();
+                    let way: Vec<Vec3> =
+                        runity::routes::Travelling::new(route.clone(), desc.transform.position)
+                            .points()
+                            .into_iter()
+                            .map(|p| parent.transform_point3(p))
+                            .collect();
+                    frame.overlay_draws.extend(gizmo::polyline_draws(
+                        arm,
+                        &way,
+                        thickness,
+                        gizmo::selection_color(),
+                    ));
+                }
                 let Some((min, max)) = self.bounds_of(&desc.model) else {
                     continue;
                 };
@@ -3017,13 +3033,15 @@ impl Session {
         };
         let seconds = seconds.max(0.0);
         play.clock.advance(seconds);
+        let fixed = play.clock.settings().fixed_delta;
         let mut steps = 0;
         while play.clock.next_step().is_some() {
-            play.physics.step();
+            // What travels by itself moves first, and physics sees it where
+            // it went — a platform carries what stands on it.
+            runity::routes::run_routes(&mut self.world, fixed);
+            runity::world::apply_hierarchy(&mut self.world);
+            play.physics.run(&mut self.world);
             steps += 1;
-        }
-        if steps > 0 {
-            play.physics.sync_to_world(&mut self.world);
         }
         // Animation runs on the frame rather than the step: a pose
         // interpolates and does not need to be deterministic the way a

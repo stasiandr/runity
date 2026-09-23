@@ -665,6 +665,8 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::per
     let started = std::time::Instant::now();
     // systems, in order
     systems::spin::run(world, seconds);
+    // Platforms and lifts on their routes, then everything placed.
+    runity::routes::run_routes(world, seconds);
     runity::world::apply_hierarchy(world);
     profile.record("systems", started.elapsed());
     // Physics is a system too: bodies from the scene, a fixed step, and
