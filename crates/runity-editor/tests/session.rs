@@ -3593,3 +3593,38 @@ fn an_asset_s_import_settings_are_edited_and_it_is_built_again() {
         .is_err());
     assert!(session.import_settings("assets/nothing.obj").is_err());
 }
+
+#[test]
+fn the_hierarchy_search_shows_only_matches_and_reset_puts_a_field_back() {
+    let Some((mut session, _)) = open("hierarchy-search") else {
+        return;
+    };
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
+    let rows = session.hierarchy_matching("lid").unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+        ["lid"]
+    );
+    assert_eq!(rows[0].depth, 0, "flat, as Unity's search shows it");
+    let all = session.hierarchy_matching("  ").unwrap();
+    assert_eq!(all.len(), 3);
+    let cubes = session.hierarchy_matching("model:builtin:cube").unwrap();
+    assert_eq!(cubes.len(), 2, "{cubes:?}");
+
+    session.set_field(lid, "scale", "(2.0, 2.0, 2.0)").unwrap();
+    session.reset_field(lid, "scale").unwrap();
+    assert_eq!(
+        session.transform(lid).unwrap().scale,
+        runity::glam::Vec3::ONE
+    );
+    session.set_field(crate_id, "body", "Dynamic").unwrap();
+    session.reset_field(crate_id, "body").unwrap();
+    let body = session
+        .inspect(crate_id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "body")
+        .unwrap();
+    assert!(body.value.ends_with("None"), "{}", body.value);
+    assert!(session.reset_field(crate_id, "name").is_err());
+}

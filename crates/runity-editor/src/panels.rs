@@ -391,6 +391,79 @@ impl Session {
             .ok_or(EditError::NoEntity(id))
     }
 
+    /// The Hierarchy while its search box has text: the lines that match,
+    /// flat and in tree order, parts of prefabs included — Unity's
+    /// Hierarchy search. An empty query is the whole tree.
+    pub fn hierarchy_matching(&self, query: &str) -> EditResult<Vec<Row>> {
+        if query.trim().is_empty() {
+            return Ok(self.hierarchy());
+        }
+        let found = self.search(query)?;
+        let selection = self.selection();
+        let unseen = self.unseen();
+        let document = self.scene();
+        Ok(self
+            .expanded()
+            .flatten()
+            .into_iter()
+            .filter(|(e, _)| found.contains(&e.id))
+            .map(|(e, _)| {
+                let line = document.get(e.id);
+                Row {
+                    id: e.id,
+                    name: e.name.clone(),
+                    depth: 0,
+                    has_children: false,
+                    open: false,
+                    selected: selection.contains(&e.id),
+                    prefab: line.map(|l| l.prefab.clone()).filter(|p| !p.is_empty()),
+                    part: line.is_none(),
+                    hidden: unseen.contains(&e.id),
+                    locked: !self.is_pickable(self.instanced_owner(e.id)),
+                }
+            })
+            .collect())
+    }
+
+    /// Put a field back as a new entity has it — the Inspector's Reset; on
+    /// a prefab's part, back to what the prefab says. One undo step.
+    pub fn reset_field(&mut self, id: EntityId, field: &str) -> EditResult<()> {
+        if self.scene().get(id).is_none() {
+            return self.revert_field(id, field).map(|_| ());
+        }
+        let blank = EntityDesc::default();
+        let text = match field {
+            "position" => ron(&blank.transform.position),
+            "rotation" => ron(&blank.transform.rotation_deg),
+            "scale" => ron(&blank.transform.scale),
+            "material" => ron(&blank.material),
+            "body" => ron(&blank.body),
+            "collider" => ron(&blank.collider),
+            "physics" => ron(&blank.physics),
+            "joint" => ron(&blank.joint),
+            "layer" => String::new(),
+            "camera" | "light" | "particles" => "None".into(),
+            other if other.starts_with("components.") => {
+                let name = &other["components.".len()..];
+                return match self.component_shapes().get(name) {
+                    Some(shape) => {
+                        let value = shape.example();
+                        self.set_component(id, name, Some(&value))
+                    }
+                    None => Err(EditError::Scene(format!(
+                        "`{name}`: the game has not said what it looks like (library/components.ron), so there is nothing to reset it to"
+                    ))),
+                };
+            }
+            other => {
+                return Err(EditError::Scene(format!(
+                    "`{other}` has no default to go back to — name and model are the entity's own"
+                )))
+            }
+        };
+        self.set_field(id, field, &text)
+    }
+
     /// The Inspector for several things at once: the first one's fields,
     /// with `—` where the others say something else — Unity's mixed value.
     pub fn inspect_all(&self, ids: &[EntityId]) -> Option<Vec<Field>> {
