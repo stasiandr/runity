@@ -275,7 +275,15 @@ impl Inspector {
         if ids != self.showing {
             self.revealed.clear();
         }
-        let shown = |f: &Field| !is_empty(&f.value) || self.revealed.contains(&f.name);
+        // A material means nothing without a model to wear it: an empty,
+        // a camera, a light.
+        let no_model = fields
+            .iter()
+            .any(|f| f.name == "model" && f.value.is_empty());
+        let shown = |f: &Field| {
+            (!is_empty(&f.value) && !(no_model && f.name == "material"))
+                || self.revealed.contains(&f.name)
+        };
         let mut shape = Vec::new();
         for f in &fields {
             if f.name.starts_with("game")
@@ -393,7 +401,13 @@ impl Inspector {
             );
         }
 
-        let shown = |f: &&Field| !is_empty(&f.value) || self.revealed.contains(&f.name);
+        let no_model = fields
+            .iter()
+            .any(|f| f.name == "model" && f.value.is_empty());
+        let shown = |f: &&Field| {
+            (!is_empty(&f.value) && !(no_model && f.name == "material"))
+                || self.revealed.contains(&f.name)
+        };
         let transform: Vec<&Field> = TRANSFORM.iter().filter_map(|n| find(n)).collect();
         let object: Vec<&Field> = OBJECT
             .iter()

@@ -99,6 +99,8 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Where a camera entity's preview is drawn.
+    preview_target: Option<OffscreenTarget>,
     /// Entities whose clips are playing in the view, for a preview.
     previewing: Vec<EntityId>,
     /// Draw what the game would show instead of the Scene view: Unity's
@@ -298,6 +300,7 @@ impl Session {
             readback: true,
             game_view: false,
             previewing: Vec::new(),
+            preview_target: None,
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -2490,35 +2493,12 @@ impl Session {
         if !self.previewing.is_empty() && self.play.is_none() {
             runity::advance_animations(&mut self.world, 1.0 / 30.0);
         }
-        let scene = self.history.scene();
         let camera = if self.game_view {
             self.game_camera().unwrap_or(self.camera)
         } else {
             self.camera
         };
-        let mut frame = Frame {
-            camera,
-            // From the scene's hour, like every other tool: an editor
-            // lighting a scene differently from the render is an editor you
-            // cannot trust about anything you are looking at.
-            lighting: runity::scene_lighting(&scene.sun),
-            fog: FogSettings {
-                color: Vec3::from_array(scene.fog.color),
-                start: scene.fog.start,
-                end: scene.fog.end,
-            },
-            clear_color: Vec3::from_array(scene.fog.color),
-            ..{
-                let unseen = self.unseen();
-                runity::build_frame_where(
-                    &self.world,
-                    camera,
-                    Lighting::default(),
-                    FogSettings::default(),
-                    |line| line.is_none_or(|id| !unseen.contains(&id)),
-                )
-            }
-        };
+        let mut frame = self.base_frame(camera);
         if self.game_view {
             // What the player sees: no grid, no handles, no outlines.
             self.renderer.render(&self.gpu, &self.target, &frame);
@@ -2756,6 +2736,87 @@ impl Session {
         if self.readback {
             self.pixels = self.target.read_rgba(&self.gpu);
         }
+    }
+
+    /// The scene as a camera sees it, lit and fogged as the scene says, with
+    /// nothing of the editor's drawn over it.
+    fn base_frame(&self, camera: Camera) -> Frame {
+        let scene = self.history.scene();
+        Frame {
+            camera,
+            // From the scene's hour, like every other tool: an editor
+            // lighting a scene differently from the render is an editor you
+            // cannot trust about anything you are looking at.
+            lighting: runity::scene_lighting(&scene.sun),
+            fog: FogSettings {
+                color: Vec3::from_array(scene.fog.color),
+                start: scene.fog.start,
+                end: scene.fog.end,
+            },
+            clear_color: Vec3::from_array(scene.fog.color),
+            ..{
+                let unseen = self.unseen();
+                runity::build_frame_where(
+                    &self.world,
+                    camera,
+                    Lighting::default(),
+                    FogSettings::default(),
+                    |line| line.is_none_or(|id| !unseen.contains(&id)),
+                )
+            }
+        }
+    }
+
+    /// What a camera entity sees: its lens where it stands.
+    pub fn camera_of(&self, id: EntityId) -> Option<Camera> {
+        let (lens, placed) = self
+            .world
+            .query::<(
+                &runity::SceneId,
+                &runity::world::CameraLens,
+                &runity::world::WorldTransform,
+            )>()
+            .iter()
+            .find(|(s, _, _)| s.0 == id)
+            .map(|(_, l, w)| (l.0, w.0))?;
+        let (_, rotation, position) = placed.to_scale_rotation_translation();
+        Some(Camera {
+            position,
+            target: position + rotation * Vec3::Z,
+            up: rotation * Vec3::Y,
+            fov_y_degrees: lens.fov_deg,
+            ortho: lens.ortho,
+            ..Camera::default()
+        })
+    }
+
+    /// Draw what a camera entity sees into a picture of its own — Unity's
+    /// Camera Preview in the corner of the Scene view. `false` when `id` has
+    /// no camera. The picture is [`Session::preview_target`], the size of
+    /// the view's own: the renderer keeps one depth buffer, and a picture of
+    /// another size every frame would have it made again twice a frame. A
+    /// window shows it smaller.
+    pub fn render_camera_preview(&mut self, id: EntityId) -> bool {
+        let Some(camera) = self.camera_of(id) else {
+            return false;
+        };
+        let size = (self.target.width, self.target.height);
+        if self
+            .preview_target
+            .as_ref()
+            .is_none_or(|t| (t.width, t.height) != size)
+        {
+            self.preview_target = Some(OffscreenTarget::new(&self.gpu, size.0, size.1));
+        }
+        let frame = self.base_frame(camera);
+        let target = self.preview_target.as_ref().expect("made above");
+        self.renderer.render(&self.gpu, target, &frame);
+        true
+    }
+
+    /// The camera preview's picture, once one was drawn.
+    pub fn preview_target(&self) -> Option<&OffscreenTarget> {
+        self.preview_target.as_ref()
     }
 
     /// Show the game's view — through the scene's camera, or the Scene

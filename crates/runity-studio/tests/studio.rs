@@ -1218,3 +1218,30 @@ fn an_input_method_composes_in_the_focused_field_only() {
     s.frame();
     assert_eq!(s.ui.text(search), Some("crate"));
 }
+
+#[test]
+fn a_selected_camera_shows_what_it_sees_in_the_corner() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "GameObject", "Camera");
+    s.frame();
+    s.ui.paint();
+    let shown = |s: &Studio| s.ui.rect(s.ui.find("camera preview image").unwrap()).width > 0.0;
+    assert!(
+        shown(&s),
+        "{}",
+        s.ui.dump()
+            .lines()
+            .filter(|l| l.contains("camera"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(s.session.preview_target().is_some());
+    key(&mut s, Key::Escape);
+    s.ui.paint();
+    assert!(
+        !s.ui.dump().contains("#camera preview image"),
+        "hidden with nothing selected"
+    );
+}

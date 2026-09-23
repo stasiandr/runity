@@ -42,6 +42,8 @@ pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
 
 /// The Scene view's picture, as the renderer knows it.
 const SCENE: ImageId = ImageId(0);
+/// A selected camera's view, in the Scene view's corner.
+const CAMERA_PREVIEW: ImageId = ImageId(2);
 
 /// The pointer's look, as [`Studio::cursor`] asks for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +191,12 @@ pub struct Studio {
     /// The Game view's width to height, or free.
     aspect: Option<(u32, u32)>,
     aspect_button: NodeId,
+    /// The camera preview's box, its caption, its picture, and the size the
+    /// renderer was last shown it at.
+    cam_holder: NodeId,
+    cam_label: NodeId,
+    cam_image: NodeId,
+    cam_registered: Option<(u32, u32)>,
     /// The orientation gizmo in the view's corner: its six axes and its
     /// middle, and the camera it was last turned for.
     compass: Compass,
@@ -386,6 +394,35 @@ impl Studio {
         );
         ui.set_name(viewport, "scene view");
         let compass = build_compass(&mut ui, view_frame);
+        // Unity's Camera Preview: what a selected camera sees, in the corner.
+        let cam_holder = ui.add(view_frame, Style::row().absolute(0.0, 0.0).full().hidden());
+        ui.add(cam_holder, Style::row().fill());
+        let cam_col = ui.add(cam_holder, Style::column().fill().full_height());
+        ui.add(cam_col, Style::row().fill());
+        let cam_card = ui.add(
+            cam_col,
+            Style::column()
+                .width(248.0)
+                .padding(4.0)
+                .gap(2.0)
+                .margin(10.0)
+                .radius(RADIUS_MD)
+                .background(SURFACE)
+                .border(1.0, NEUTRAL_800),
+        );
+        ui.set_layer(cam_card, true);
+        ui.set_name(cam_card, "camera preview");
+        let cam_label = ui.add_text(
+            cam_card,
+            Style::default().text_size(11.0).text_color(LABEL).nowrap(),
+            "Camera Preview",
+        );
+        let cam_image = ui.add_image(
+            cam_card,
+            Style::default().size(240.0, 135.0).radius(RADIUS_SM),
+            CAMERA_PREVIEW,
+        );
+        ui.set_name(cam_image, "camera preview image");
         let split_lower = splitter(&mut ui, center, false, "split lower");
         let lower = ui.add(
             center,
@@ -454,6 +491,10 @@ impl Studio {
             last_draw_ms: 0.0,
             aspect: None,
             aspect_button,
+            cam_holder,
+            cam_label,
+            cam_image,
+            cam_registered: None,
             compass,
             maximized: false,
             stroke: None,
@@ -712,6 +753,7 @@ impl Studio {
         self.scene_input.begin_frame();
         let t2 = Instant::now();
         self.session.render();
+        self.camera_preview();
         let t3 = Instant::now();
 
         self.poll_disk();
@@ -790,6 +832,32 @@ impl Studio {
                 self.ui
                     .restyle(n, |s| if on { s.shown() } else { s.hidden() });
             }
+        }
+    }
+
+    /// Draw the selected camera's view into the corner, or hide the box.
+    fn camera_preview(&mut self) {
+        let camera = self
+            .session
+            .selected()
+            .filter(|_| !self.session.is_game_view())
+            .filter(|id| self.session.camera_of(*id).is_some());
+        let shown = match camera {
+            Some(id) => self.session.render_camera_preview(id),
+            None => false,
+        };
+        self.ui.restyle(
+            self.cam_holder,
+            |s| if shown { s.shown() } else { s.hidden() },
+        );
+        if let Some(id) = camera.filter(|_| shown) {
+            let name = self.session.entity_name(id).unwrap_or_default();
+            self.ui
+                .set_text(self.cam_label, &format!("{name} — Camera Preview"));
+            let (w, h) = self.session.size();
+            let ratio = h as f32 / w.max(1) as f32;
+            self.ui
+                .restyle(self.cam_image, |s| s.size(240.0, (240.0 * ratio).round()));
         }
     }
 
@@ -1141,6 +1209,13 @@ impl Studio {
                 self.session.frame_target().view(),
             );
             self.registered = Some(size);
+        }
+        if let Some(target) = self.session.preview_target() {
+            let size = (target.width, target.height);
+            if self.cam_registered != Some(size) {
+                renderer.set_image(self.session.gpu(), CAMERA_PREVIEW, target.view());
+                self.cam_registered = Some(size);
+            }
         }
         for (image, size, pixels) in self.pending_images.drain(..) {
             renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);

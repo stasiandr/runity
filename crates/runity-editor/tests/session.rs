@@ -4330,3 +4330,27 @@ fn a_skinned_models_clips_play_in_the_view_without_touching_the_document() {
     session.preview_clip(id, None, 1.0).unwrap();
     assert!(session.previewing().is_empty());
 }
+
+#[test]
+fn a_cameras_preview_is_drawn_through_it() {
+    let Some((mut session, _path)) = open("camera_preview") else {
+        return;
+    };
+    let cam = session.create_empty("eye").unwrap();
+    session.set_field(cam, "camera", "()").unwrap();
+    session
+        .set_field(cam, "position", "(0.0, 30.0, 0.0)")
+        .unwrap();
+    session
+        .set_field(cam, "rotation", "(90.0, 0.0, 0.0)")
+        .unwrap();
+    assert!(session.camera_of(cam).is_some());
+    assert!(session.render_camera_preview(cam));
+    let target = session.preview_target().unwrap();
+    assert_eq!((target.width, target.height), session.size());
+    let crate_id = id(&session, "crate");
+    assert!(
+        !session.render_camera_preview(crate_id),
+        "a crate has no camera"
+    );
+}
