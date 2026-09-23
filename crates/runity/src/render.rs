@@ -937,6 +937,8 @@ pub struct Renderer {
     /// Drawing a camera's picture for a texture, not the screen: no
     /// antialiasing history is touched.
     picturing: bool,
+    /// When the exposure was last metered, on the frame's clock.
+    metered_at: Option<f32>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
@@ -2435,6 +2437,7 @@ impl Renderer {
             ssao,
             taa: crate::taa::Taa::new(gpu),
             picturing: false,
+            metered_at: None,
             ray,
             light_buffer,
             cell_buffer,
@@ -4397,6 +4400,15 @@ impl Renderer {
             Some(_) => 0.0,
             None => frame.camera.fov_y_degrees,
         };
+        // The eye's clock: the frame's own time where it says one.
+        let metered = (!self.picturing).then(|| {
+            let now = frame
+                .time
+                .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+            let dt = self.metered_at.map_or(0.0, |was| (now - was).max(0.0));
+            self.metered_at = Some(now);
+            dt
+        });
         self.post.run(
             gpu,
             &mut encoder,
@@ -4404,6 +4416,7 @@ impl Renderer {
             view,
             (width, height),
             &frame.post,
+            metered,
         );
 
         // Tools go on the finished picture: no tonemapper, bloom or

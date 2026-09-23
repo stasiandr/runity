@@ -62,6 +62,8 @@ struct Post {
 @group(0) @binding(1) var source: texture_2d<f32>;
 @group(0) @binding(2) var linear_clamp: sampler;
 @group(0) @binding(3) var bloom_texture: texture_2d<f32>;
+// The exposure the eye has got used to, in stops (exposure.rs).
+@group(0) @binding(4) var<storage, read> adapted: array<f32, 4>;
 
 struct Varyings {
     @builtin(position) position: vec4<f32>,
@@ -108,7 +110,7 @@ fn downsample13(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
 // soft knee so the edge of what glows is not a hard line.
 @fragment
 fn fs_prefilter(in: Varyings) -> @location(0) vec4<f32> {
-    let c = min(downsample13(in.uv, post.texel.xy), vec3<f32>(post.bloom.w));
+    let c = min(downsample13(in.uv, post.texel.xy) * exp2(adapted[0]), vec3<f32>(post.bloom.w));
     let brightness = max(c.r, max(c.g, c.b));
     let knee = max(post.bloom.y, 1e-4);
     var soft = clamp(brightness - post.bloom.x + knee, 0.0, 2.0 * knee);
@@ -363,7 +365,7 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
         textureSampleLevel(source, linear_clamp, uv - fringe, 0.0).r,
         textureSampleLevel(source, linear_clamp, uv, 0.0).g,
         textureSampleLevel(source, linear_clamp, uv + fringe, 0.0).b,
-    );
+    ) * exp2(adapted[0]);
     color += textureSampleLevel(bloom_texture, linear_clamp, uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
     color += lens_flare(uv);
     color += lamp_flares(uv);

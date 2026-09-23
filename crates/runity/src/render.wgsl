@@ -320,6 +320,22 @@ fn physical_sky(direction: vec3<f32>) -> vec3<f32> {
     return textureSampleLevel(sky_view, fog_sampler, uv, 0.0).rgb * below;
 }
 
+/// The sky's light on a face turned `n`, from the physical sky itself: its
+/// picture averaged over the half of it the face sees, as a share of what
+/// a face turned straight up sees — so the sky's light keeps its level
+/// and gains its direction: warmer and brighter on the side toward the
+/// sun, bluer away from it. What lets relief in shade still read.
+fn sky_toward(n: vec3<f32>) -> vec3<f32> {
+    let t = basis_of(n);
+    var sum = physical_sky(n) * 2.0;
+    for (var i = 0; i < 6; i = i + 1) {
+        let a = f32(i) * 1.0471976;
+        let d = normalize(n + (t.t * cos(a) + t.b * sin(a)) * 1.2);
+        sum += physical_sky(d);
+    }
+    return sum / 8.0;
+}
+
 /// The distance fog's colour: the scene's, or with a physical sky the sky
 /// itself just above the horizon that way, so the distance melts into it.
 fn fog_color_towards(direction: vec3<f32>) -> vec3<f32> {
@@ -1422,7 +1438,15 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
     // bounce off the ground. A single constant here is what makes every
     // shaded surface in a scene the same dead colour.
-    let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5));
+    var sky_light = frame.sky_color.rgb;
+    if frame.air.x > 0.5 {
+        // The physical sky's light, with its direction: its picture round
+        // this face, over its picture round a face turned up.
+        let up = sky_toward(vec3<f32>(0.0, 1.0, 0.0));
+        let here = sky_toward(normal);
+        sky_light = sky_light * here / max(up, vec3<f32>(1e-4));
+    }
+    let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
     color = color + b.diffuse * (ambient * ao + bounce) * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);

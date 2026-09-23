@@ -319,6 +319,9 @@ pub struct PostProcess {
     pub lens_flare: LensFlare,
     /// Shimmering hot air and the mirage ([`crate::lens::HeatHaze`]).
     pub heat_haze: crate::lens::HeatHaze,
+    /// The eye getting used to the light ([`crate::exposure`]): on by
+    /// default. `exposure` still adds its stops on top.
+    pub auto_exposure: crate::exposure::AutoExposure,
 }
 
 impl Default for PostProcess {
@@ -350,6 +353,7 @@ impl Default for PostProcess {
             panini_projection: PaniniProjection::OFF,
             lens_flare: LensFlare::OFF,
             heat_haze: crate::lens::HeatHaze::OFF,
+            auto_exposure: crate::exposure::AutoExposure::default(),
         }
     }
 }
@@ -413,6 +417,7 @@ impl PostProcess {
         panini_projection: PaniniProjection::OFF,
         lens_flare: LensFlare::OFF,
         heat_haze: crate::lens::HeatHaze::OFF,
+        auto_exposure: crate::exposure::AutoExposure::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -534,6 +539,11 @@ impl PostProcess {
                 ),
             },
             heat_haze: self.heat_haze.lerp(&other.heat_haze, t),
+            auto_exposure: if half {
+                other.auto_exposure
+            } else {
+                self.auto_exposure
+            },
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
                 tint: v3(self.lens_flare.tint, other.lens_flare.tint),
@@ -713,6 +723,8 @@ pub(crate) struct PostRenderer {
     /// Whether the output format encodes sRGB itself.
     output_srgb: bool,
     started: std::time::Instant,
+    /// The meter and the exposure it keeps ([`crate::exposure`]).
+    metering: crate::exposure::Metering,
     /// The camera's vertical field of view, 0 for an orthographic one:
     /// what Panini unbends.
     pub(crate) fov_y_degrees: f32,
@@ -775,6 +787,16 @@ impl PostRenderer {
                         count: None,
                     },
                     texture_entry(3),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let pipeline_layout = gpu
@@ -845,6 +867,7 @@ impl PostRenderer {
             size: (0, 0),
             output_srgb: output.is_srgb(),
             started: std::time::Instant::now(),
+            metering: crate::exposure::Metering::new(gpu),
             fov_y_degrees: 0.0,
             flares: Vec::new(),
         }
@@ -895,11 +918,16 @@ impl PostRenderer {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(bloom),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.metering.state.as_entire_binding(),
+                },
             ],
         })
     }
 
     /// Turn the high-dynamic-range `scene` into the picture in `output`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &mut self,
         gpu: &Gpu,
@@ -908,6 +936,9 @@ impl PostRenderer {
         output: &wgpu::TextureView,
         size: (u32, u32),
         settings: &PostProcess,
+        // Seconds since the last frame metered, and whether this one is
+        // (the screen's view is; a camera's picture for a texture is not).
+        metered: Option<f32>,
     ) {
         self.resize(gpu, size);
         let settings = if settings.enabled {
@@ -915,6 +946,12 @@ impl PostRenderer {
         } else {
             PostProcess::OFF
         };
+        if !settings.auto_exposure.enabled {
+            self.metering.hold(gpu);
+        } else if let Some(dt) = metered {
+            self.metering
+                .run(gpu, encoder, scene, size, &settings.auto_exposure, dt);
+        }
         let base = self.uniform(&settings, size);
         let mut slots: Vec<PostUniform> = Vec::new();
         let texel = |(w, h): (u32, u32)| [1.0 / w.max(1) as f32, 1.0 / h.max(1) as f32, 0.0, 0.0];

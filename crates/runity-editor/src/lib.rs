@@ -2928,12 +2928,16 @@ impl Session {
         } else {
             self.camera
         };
+        // Ground made from numbers gets its mesh before it is drawn.
+        runity::terrain::upload_terrains(&mut self.world, &self.gpu, &mut self.renderer);
         let mut frame = self.base_frame(camera);
         // The Scene view answers at once, as Unity's does: temporal
-        // antialiasing would fade a handle or an outline in over frames.
+        // antialiasing would fade a handle or an outline in over frames,
+        // and an exposure finding its level would change what is compared.
         // The Game view is what the player sees, and has it.
         if !self.game_view {
             frame.post.taa = false;
+            frame.post.auto_exposure.enabled = false;
         }
         // The maps its materials draw with, uploaded the first time they
         // are seen — an import that brought a new one shows at once.

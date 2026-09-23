@@ -190,6 +190,11 @@ pub fn attach_collision_meshes<'a>(
         if desc.collider != ColliderShape::Model {
             continue;
         }
+        // Shaped ground stands on its own mesh.
+        if let Some(terrain) = desc.terrain {
+            let _ = world.insert_one(entity, CollisionMesh::of(&terrain.mesh()));
+            continue;
+        }
         let mesh = made
             .entry(desc.model.as_str())
             .or_insert_with(|| collision_mesh_for(&desc.model, library))
@@ -1547,6 +1552,7 @@ mod tests {
             reflection_probe: None,
             decal: None,
             footprints: None,
+            terrain: None,
             bends_grass: 0.0,
             route: None,
             layer: Default::default(),
@@ -1643,6 +1649,7 @@ mod tests {
                 reflection_probe: None,
                 decal: None,
                 footprints: None,
+                terrain: None,
                 bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
