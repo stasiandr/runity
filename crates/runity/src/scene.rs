@@ -531,7 +531,10 @@ mod tests {
 
     #[test]
     fn the_sun_rises_crosses_and_sets_and_warms_at_both_ends() {
-        let at = |hour| Sun { hour, intensity: 1.0 };
+        let at = |hour| Sun {
+            hour,
+            intensity: 1.0,
+        };
 
         // Noon is overhead; morning and evening are low and on opposite
         // sides, which is what makes shadows point somewhere believable.

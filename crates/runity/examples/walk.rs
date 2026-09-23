@@ -141,7 +141,12 @@ impl Game for Walk {
             ),
         ));
 
-        runity::build_frame(&self.world, camera, runity::scene_lighting(&self.scene.sun), fog)
+        runity::build_frame(
+            &self.world,
+            camera,
+            runity::scene_lighting(&self.scene.sun),
+            fog,
+        )
     }
 
     fn overlay(&mut self) -> &Ui {
