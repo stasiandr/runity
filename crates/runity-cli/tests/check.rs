@@ -315,3 +315,23 @@ fn the_game_settings_name_a_scene_and_a_language_that_are_there() {
     assert_eq!(settings.start_scene, "mian");
     assert!((settings.fixed_delta() - 1.0 / 60.0).abs() < 1e-6);
 }
+
+#[test]
+fn a_file_outside_the_layout_is_named_with_where_it_goes() {
+    let project = project("layout");
+    write(&project.root().join("rock.obj"), CUBE);
+    write(&project.root().join("notes.txt"), "todo");
+    let findings = check(&project);
+    let warnings: Vec<String> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .map(ToString::to_string)
+        .collect();
+    one_containing(&warnings, "`rock.obj` is outside the layout");
+    assert!(one_containing(&warnings, "rock.obj").contains("assets/"));
+    one_containing(&warnings, "`notes.txt` is not part of the project layout");
+    assert!(
+        errors(&findings).is_empty(),
+        "warnings, not errors: {findings:#?}"
+    );
+}

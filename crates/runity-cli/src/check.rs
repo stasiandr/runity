@@ -171,8 +171,79 @@ pub fn check(project: &Project) -> Vec<Finding> {
     }
 
     check_sidecars(project, &mut out);
+    check_layout(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out
+}
+
+/// What is at the top of the project that the layout has no place for
+/// (DNA, postulate 7): a model dropped next to `runity.ron` is a model no
+/// tool looks for. A warning with where it goes, when that can be told.
+fn check_layout(project: &Project, out: &mut Vec<Finding>) {
+    use runity::project::*;
+    let known = [
+        FILE,
+        SCENES,
+        PREFABS,
+        MATERIALS,
+        ASSETS,
+        LIBRARY,
+        SRC,
+        UI,
+        INPUT,
+        TUNING,
+        runity::layers::FILE,
+        runity::strings::DIR,
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        "target",
+        "build",
+        "CLAUDE.md",
+        "README.md",
+        "LICENSE",
+    ];
+    let Ok(entries) = std::fs::read_dir(project.root()) else {
+        return;
+    };
+    let mut strays: Vec<(String, bool)> = entries
+        .flatten()
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                e.path().is_dir(),
+            )
+        })
+        .filter(|(name, _)| !name.starts_with('.') && !known.contains(&name.as_str()))
+        .collect();
+    strays.sort();
+    for (name, dir) in strays {
+        let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+        let home = match extension.as_deref() {
+            _ if dir => None,
+            Some("prefab") => Some(PREFABS),
+            Some("rmat") => Some(MATERIALS),
+            Some(
+                "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg"
+                | "rterrain",
+            ) => Some(ASSETS),
+            Some("ron") => Some(SCENES),
+            _ => None,
+        };
+        let message = match home {
+            Some(home) => format!(
+                "`{name}` is outside the layout, where no tool looks for it — it goes in {home}/"
+            ),
+            None => format!(
+                "`{name}` is not part of the project layout; nothing reads it (see the layout in CLAUDE.md)"
+            ),
+        };
+        out.push(Finding {
+            severity: Severity::Warning,
+            file: name.clone(),
+            message,
+        });
+    }
 }
 
 /// What only expanding prefabs finds: an override for a part the prefab no

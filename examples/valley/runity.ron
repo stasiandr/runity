@@ -1,4 +1,7 @@
 (
     name: "valley",
     engine: "0.1.0",
+    game: (
+        start_scene: "first-light",
+    ),
 )
