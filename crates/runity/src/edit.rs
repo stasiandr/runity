@@ -378,6 +378,18 @@ pub fn array(scene: &mut Scene, id: EntityId, count: usize, step: glam::Vec3) ->
 /// Also refuses a parent that is not in the scene, rather than losing the
 /// entity on the way.
 pub fn reparent(scene: &mut Scene, id: EntityId, new_parent: Option<EntityId>) -> bool {
+    reparent_at(scene, id, new_parent, None)
+}
+
+/// [`reparent`] to a place among the new siblings — `Some(0)` first, `None`
+/// or past the end last: a line dragged between two others in the
+/// Hierarchy. The same parent is fine; that is reordering.
+pub fn reparent_at(
+    scene: &mut Scene,
+    id: EntityId,
+    new_parent: Option<EntityId>,
+    index: Option<usize>,
+) -> bool {
     let Some(moving) = scene.get(id) else {
         return false;
     };
@@ -389,14 +401,18 @@ pub fn reparent(scene: &mut Scene, id: EntityId, new_parent: Option<EntityId>) -
     let Some(desc) = remove(scene, id) else {
         return false;
     };
+    let put = |siblings: &mut Vec<EntityDesc>, desc: EntityDesc| {
+        let at = index.unwrap_or(siblings.len()).min(siblings.len());
+        siblings.insert(at, desc);
+    };
     match new_parent {
-        None => scene.entities.push(desc),
+        None => put(&mut scene.entities, desc),
         // Checked above, before anything was removed; an ID does not move
         // when something else is taken out, which is the point of having
         // one.
         Some(parent) => match scene.get_mut(parent) {
-            Some(target) => target.children.push(desc),
-            None => scene.entities.push(desc),
+            Some(target) => put(&mut target.children, desc),
+            None => put(&mut scene.entities, desc),
         },
     }
     true

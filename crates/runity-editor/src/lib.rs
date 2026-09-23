@@ -1563,6 +1563,47 @@ impl Session {
         Ok(true)
     }
 
+    /// Drag a line of the Hierarchy: under `new_parent` (or at the top),
+    /// `index`-th among its new siblings (`None`: last). It stays where it
+    /// is in the world, as a Hierarchy drag does in Unity — its local
+    /// transform changes to the new parent's space. One undo step; `false`
+    /// when it would be its own ancestor.
+    pub fn move_in_hierarchy(
+        &mut self,
+        id: EntityId,
+        new_parent: Option<EntityId>,
+        index: Option<usize>,
+    ) -> EditResult<bool> {
+        self.refuse_while_playing()?;
+        self.require(id)?;
+        if let Some(parent) = new_parent {
+            self.require(parent)?;
+        }
+        let Some((_, world)) = self.placed(id) else {
+            return Err(EditError::Scene(format!(
+                "{id} is a part of a prefab; open the prefab to move it"
+            )));
+        };
+        let parent_world = match new_parent {
+            Some(parent) => self.placed(parent).map(|(_, m)| m),
+            None => Some(Mat4::IDENTITY),
+        };
+        let mut trial = self.history.scene().clone();
+        if !runity::edit::reparent_at(&mut trial, id, new_parent, index) {
+            return Ok(false);
+        }
+        if let (Some(parent_world), Some(desc)) = (parent_world, trial.get_mut(id)) {
+            let (scale, rotation, position) =
+                (parent_world.inverse() * world).to_scale_rotation_translation();
+            desc.transform.position = position;
+            desc.transform.set_rotation(rotation);
+            desc.transform.scale = scale;
+        }
+        *self.history.edit() = trial;
+        self.after_structural_change();
+        Ok(true)
+    }
+
     /// Step back. `false` when there is nothing to undo.
     pub fn undo(&mut self) -> EditResult<bool> {
         self.refuse_while_playing()?;

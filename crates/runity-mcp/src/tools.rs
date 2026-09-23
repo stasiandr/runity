@@ -80,7 +80,7 @@ pub fn list() -> Vec<Value> {
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
         tool("delete_entity", "Delete an entity and everything under it.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("duplicate_entity", "Copy an entity with its children, as its next sibling. Returns the copy's id.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
-        tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID } }), &["id"]),
+        tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops. Its transform stays as written (now relative to the new parent) unless `stay` is true, which keeps it where it is in the world as a Hierarchy drag does; `index` puts it at that place among its new siblings (0 first) — the same parent reorders.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID }, "index": { "type": "integer" }, "stay": { "type": "boolean" } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("make_variant", "Save a prefab instance, with its overrides, material, components and children, as prefabs/<name>.prefab — a variant of its prefab — and make it an instance of that. Later changes to the base still reach the variant where it said nothing.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("measure", "How big a thing is in the world, in metres — its box, prefab parts and children included — and, given `to`, how far it is from another and the gap between them on each axis.", json!({ "id": { "type": "string", "description": ID }, "to": { "type": "string", "description": ID } }), &["id"]),
@@ -253,10 +253,18 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "reparent" => {
             let id = id(args, "id")?;
             let parent = optional_id(args, "parent")?;
-            let moved = server
-                .session()?
-                .reparent(id, parent)
-                .map_err(|e| e.to_string())?;
+            let index = args
+                .get("index")
+                .and_then(Value::as_u64)
+                .map(|i| i as usize);
+            let stay = args.get("stay").and_then(Value::as_bool).unwrap_or(false);
+            let session = server.session()?;
+            let moved = if stay || index.is_some() {
+                session.move_in_hierarchy(id, parent, index)
+            } else {
+                session.reparent(id, parent)
+            }
+            .map_err(|e| e.to_string())?;
             Ok(vec![text(if moved {
                 "moved"
             } else {

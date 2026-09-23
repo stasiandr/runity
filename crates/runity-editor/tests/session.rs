@@ -2883,3 +2883,52 @@ fn the_inspector_edits_several_things_at_once_in_one_step() {
         .is_err());
     assert_eq!(session.undo_steps().len(), steps);
 }
+
+#[test]
+fn a_hierarchy_drag_reorders_and_reparents_without_moving_anything_in_the_world() {
+    let Some((mut session, _)) = open("hierarchy-drag") else {
+        return;
+    };
+    let (ground, crate_id, lid) = (
+        id(&session, "ground"),
+        id(&session, "crate"),
+        id(&session, "lid"),
+    );
+    let names =
+        |s: &Session| -> Vec<String> { s.hierarchy().into_iter().map(|r| r.name).collect() };
+
+    // Between two lines: the ground after the crate.
+    assert!(session.move_in_hierarchy(ground, None, Some(1)).unwrap());
+    assert_eq!(names(&session), ["crate", "lid", "ground"]);
+
+    // Out of its parent to the top, staying where it is in the world.
+    session
+        .set_transform(
+            crate_id,
+            runity::Transform {
+                position: runity::glam::Vec3::new(2.0, 0.5, 0.0),
+                rotation_deg: runity::glam::Vec3::new(0.0, 90.0, 0.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let world = session.world_position(lid).unwrap();
+    assert!(session.move_in_hierarchy(lid, None, Some(0)).unwrap());
+    assert_eq!(names(&session), ["lid", "crate", "ground"]);
+    assert!((session.world_position(lid).unwrap() - world).length() < 1e-4);
+    assert!((session.transform(lid).unwrap().rotation_deg.y - 90.0).abs() < 1e-3);
+
+    // And back under it, still where it is.
+    assert!(session
+        .move_in_hierarchy(lid, Some(crate_id), None)
+        .unwrap());
+    assert!((session.world_position(lid).unwrap() - world).length() < 1e-4);
+    assert!(session.transform(lid).unwrap().rotation_deg.length() < 1e-3);
+
+    // Never under itself.
+    assert!(!session
+        .move_in_hierarchy(crate_id, Some(lid), None)
+        .unwrap());
+    session.undo().unwrap();
+    assert_eq!(names(&session), ["lid", "crate", "ground"]);
+}
