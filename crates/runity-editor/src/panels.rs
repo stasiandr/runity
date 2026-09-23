@@ -52,8 +52,8 @@ pub fn default_text(field: &str) -> Option<String> {
         "layer" | "bone" => String::new(),
         "bends_grass" => ron(&blank.bends_grass),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "route" | "spline" | "along"
-        | "joint_break" => "None".into(),
+        | "footprints" | "terrain" | "cloth" | "rope" | "crumble" | "heap" | "render_texture"
+        | "route" | "spline" | "along" | "joint_break" => "None".into(),
         _ => return None,
     })
 }
@@ -79,7 +79,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 22] = [
+pub const FIELDS: [&str; 26] = [
     "name",
     "model",
     "prefab",
@@ -99,6 +99,10 @@ pub const FIELDS: [&str; 22] = [
     "decal",
     "footprints",
     "terrain",
+    "cloth",
+    "rope",
+    "crumble",
+    "heap",
     "bends_grass",
     "route",
     "components.<name>",
@@ -130,6 +134,10 @@ fn take_field(
         "decal" => one.decal = from.decal.take(),
         "footprints" => one.footprints = from.footprints.take(),
         "terrain" => one.terrain = from.terrain.take(),
+        "cloth" => one.cloth = from.cloth.take(),
+        "rope" => one.rope = from.rope.take(),
+        "crumble" => one.crumble = from.crumble.take(),
+        "heap" => one.heap = from.heap.take(),
         "bends_grass" => one.bends_grass = from.bends_grass.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
@@ -272,6 +280,10 @@ impl Session {
                 "decal" => o.decal.is_some(),
                 "footprints" => o.footprints.is_some(),
                 "terrain" => o.terrain.is_some(),
+                "cloth" => o.cloth.is_some(),
+                "rope" => o.rope.is_some(),
+                "crumble" => o.crumble.is_some(),
+                "heap" => o.heap.is_some(),
                 "bends_grass" => o.bends_grass.is_some(),
                 "route" => o.route.is_some(),
                 other => other
@@ -339,6 +351,10 @@ impl Session {
                 "terrain".into(),
                 desc.terrain.map_or("None".to_string(), |t| ron(&t)),
             ),
+            ("cloth".into(), desc.cloth.map_or("None".to_string(), |t| ron(&t))),
+            ("rope".into(), desc.rope.map_or("None".to_string(), |t| ron(&t))),
+            ("crumble".into(), desc.crumble.map_or("None".to_string(), |t| ron(&t))),
+            ("heap".into(), desc.heap.map_or("None".to_string(), |t| ron(&t))),
             (
                 "route".into(),
                 desc.route.as_ref().map_or("None".to_string(), ron),
@@ -738,6 +754,34 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::terrain::Terrain>(field, text)?)
+                }
+            }
+            "cloth" => {
+                next.cloth = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::cloth::Cloth>(field, text)?)
+                }
+            }
+            "rope" => {
+                next.rope = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::rope::Rope>(field, text)?)
+                }
+            }
+            "crumble" => {
+                next.crumble = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::crumble::Crumble>(field, text)?)
+                }
+            }
+            "heap" => {
+                next.heap = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::heap::Heap>(field, text)?)
                 }
             }
             "render_texture" => {

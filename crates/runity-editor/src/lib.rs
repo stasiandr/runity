@@ -4044,6 +4044,11 @@ impl Session {
         runity::routes::run_routes(world, fixed);
         runity::world::apply_hierarchy(world);
         physics.run(world);
+        // Cloth in the wind physics has from the scene.
+        runity::cloth::run_cloth(world, fixed, &physics.wind);
+        runity::heap::run_heaps(world, fixed);
+        runity::rope::run_ropes(world, fixed, &physics.wind);
+        runity::crumble::run_crumble(world, physics, fixed);
     }
 
     /// Hold play still, or let it go on — Unity's Pause button. While

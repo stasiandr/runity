@@ -223,6 +223,52 @@ fn shots() -> Vec<Shot> {
     ]
 }
 
+/// Cloth, ropes, crumbling and heaps (`--reel bazaar`): a desert market in
+/// the wind (bazaar.ron).
+fn bazaar_shots() -> Vec<Shot> {
+    vec![
+        Shot {
+            name: "bazaar-wind",
+            caption: "Ткань на ветру: навесы вздуваются, флаги полощутся, простыни на верёвке, гирлянда провисает и качается",
+            scene: "bazaar.ron",
+            seconds: 9.0,
+            from: (v(-3.0, 3.6, 11.0), v(-3.0, 1.8, -2.0)),
+            to: (v(4.0, 3.4, 10.0), v(1.0, 2.0, -3.0)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: false,
+            look: &[],
+        },
+        Shot {
+            name: "bazaar-wall",
+            caption: "Разрушение: глинобитная стена рушится на блоки в облаке пыли, блоки падают и рассыпаются в песок",
+            scene: "bazaar.ron",
+            seconds: 12.0,
+            from: (v(3.0, 2.2, 8.5), v(6.0, 1.2, 2.5)),
+            to: (v(8.5, 2.0, 8.0), v(6.0, 0.6, 2.8)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: false,
+            look: &[],
+        },
+        Shot {
+            name: "bazaar-sand",
+            caption: "Песок из порванного мешка струится вниз и растёт кучей под углом естественного откоса",
+            scene: "bazaar.ron",
+            seconds: 8.0,
+            from: (v(-2.8, 1.6, 9.0), v(-4.9, 1.1, 6.5)),
+            to: (v(-3.4, 1.3, 8.2), v(-4.9, 0.8, 6.5)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: false,
+            look: &[],
+        },
+    ]
+}
+
 /// The ray-tracing reel (`--reel rays`): a courtyard made for the rays
 /// (lanterns.ron) — lattice shadows, mirrors that see behind the camera,
 /// glass, and a score of lamps each shadowing every bar.
@@ -345,7 +391,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let list = match reel.as_deref() {
         None | Some("main") => shots(),
         Some("rays") => ray_shots(),
-        Some(other) => return Err(format!("no reel `{other}`: main or rays").into()),
+        Some("bazaar") => bazaar_shots(),
+        Some(other) => return Err(format!("no reel `{other}`: main, rays or bazaar").into()),
     };
     let total: u32 = list
         .iter()
@@ -540,10 +587,14 @@ fn render_shot(
         owed += dt * shot.speed;
         while owed >= step {
             physics.run(&mut world);
+            runity::crumble::run_crumble(&mut world, &mut physics, step);
             owed -= step;
         }
         runity::world::apply_hierarchy(&mut world);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
+        runity::cloth::run_cloth(&mut world, dt * shot.speed, &physics.wind);
+        runity::heap::run_heaps(&mut world, dt * shot.speed);
+        runity::rope::run_ropes(&mut world, dt * shot.speed, &physics.wind);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {
             scene.sun.hour = a + (b - a) * t;

@@ -173,10 +173,19 @@ impl Emitting {
             } else {
                 (origin, turn * along)
             };
+            // Given off some time within the step: as far on as it would
+            // have got by now, gravity too — so what falls in one step is a
+            // stream, not a bead.
             let born = self.random() * dt;
+            let down = if e.local {
+                turn.inverse() * Vec3::Y
+            } else {
+                Vec3::Y
+            };
+            let pull = down * e.gravity;
             self.particles.push(Particle {
-                at: from + direction * e.speed * born,
-                velocity: direction * e.speed,
+                at: from + direction * e.speed * born + pull * (0.5 * born * born),
+                velocity: direction * e.speed + pull * born,
                 age: born,
             });
         }

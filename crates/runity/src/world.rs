@@ -236,6 +236,22 @@ pub fn texture_views(
         .collect()
 }
 
+/// A rope on an entity: its state, and its mesh strung straight until it
+/// is first stepped.
+fn string_rope(world: &mut World, entity: hecs::Entity, rope: crate::rope::Rope) {
+    let state = crate::rope::RopeState::new(rope);
+    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
+    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
+}
+
+/// A cloth on an entity: its state, and its mesh as it hangs at rest,
+/// drawn with the entity's material until it is first stepped.
+fn hang_cloth(world: &mut World, entity: hecs::Entity, cloth: crate::cloth::Cloth) {
+    let state = crate::cloth::ClothState::new(cloth);
+    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
+    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
+}
+
 /// A mesh the game rewrites as it goes — the water's surface, a rope
 /// between two hands — drawn at the entity with its material. Changing it
 /// ([`LiveMesh::set`]) uploads it again on the next frame; leaving it
@@ -537,6 +553,18 @@ fn spawn_one(
     if let Some(prints) = desc.footprints {
         let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
     }
+    if let Some(cloth) = desc.cloth {
+        hang_cloth(world, entity, cloth);
+    }
+    if let Some(rope) = desc.rope {
+        string_rope(world, entity, rope);
+    }
+    if let Some(crumble) = desc.crumble {
+        let _ = world.insert_one(entity, crate::crumble::CrumbleState::new(crumble));
+    }
+    if let Some(heap) = desc.heap {
+        let _ = world.insert(entity, (crate::heap::HeapState::new(heap), LiveMesh::new(Vec::new(), Vec::new())));
+    }
     if let Some(volume) = desc.post_volume {
         let _ = world.insert_one(entity, PostVolumeBox(volume));
     }
@@ -616,7 +644,14 @@ pub(crate) fn dress(
     // No model is nothing to draw — a probe, a decal, a light, an empty to
     // hang children on — not a model that could not be found.
     if desc.model.is_empty() {
-        let _ = world.remove::<(Model, Surface)>(entity);
+        let _ = world.remove_one::<Model>(entity);
+        // Unless it draws a mesh of its own — cloth, a rope, a heap — in
+        // its material.
+        if desc.cloth.is_some() || desc.rope.is_some() || desc.heap.is_some() {
+            let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
+        } else {
+            let _ = world.remove_one::<Surface>(entity);
+        }
         return;
     }
     match resolve(&desc.model) {
@@ -892,6 +927,49 @@ impl Patch<'_> {
                 }
                 None => {
                     let _ = world.remove_one::<crate::footprints::Trail>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.heap != desc.heap) {
+            // Retuned, it starts again from its start.
+            match desc.heap {
+                Some(heap) => {
+                    let _ = world.insert(entity, (crate::heap::HeapState::new(heap), LiveMesh::new(Vec::new(), Vec::new())));
+                }
+                None => {
+                    let _ = world.remove::<(crate::heap::HeapState, LiveMesh)>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.crumble != desc.crumble) {
+            // Retuned, it stands again and waits its time afresh.
+            match desc.crumble {
+                Some(crumble) => {
+                    let _ = world.insert_one(entity, crate::crumble::CrumbleState::new(crumble));
+                }
+                None => {
+                    let _ = world.remove_one::<crate::crumble::CrumbleState>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.rope != desc.rope) {
+            match desc.rope {
+                Some(rope) => string_rope(world, entity, rope),
+                None => {
+                    let _ = world.remove::<(crate::rope::RopeState, LiveMesh)>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.cloth != desc.cloth) {
+            // Retuned, it hangs afresh, still.
+            match desc.cloth {
+                Some(cloth) => hang_cloth(world, entity, cloth),
+                None => {
+                    let _ = world.remove::<(crate::cloth::ClothState, LiveMesh)>(entity);
                 }
             }
             changed = true;
@@ -1574,6 +1652,15 @@ pub fn build_frame_where(
         let linear = |v: f32| crate::material::srgb_to_linear((v * 1.25).clamp(0.0, 1.0));
         puffs.extend(trail.dust([linear(c[0]), linear(c[1]), linear(c[2])]));
     }
+    // And the dust of what came down.
+    for (falling, line) in world
+        .query::<(&crate::crumble::CrumbleState, Option<&SceneId>)>()
+        .iter()
+    {
+        if keep(line.map(|l| l.0)) {
+            puffs.extend(falling.puffs());
+        }
+    }
     Frame {
         camera,
         lighting,
@@ -1688,6 +1775,10 @@ mod tests {
             decal: None,
             footprints: None,
             terrain: None,
+            cloth: None,
+            heap: None,
+            rope: None,
+            crumble: None,
             bends_grass: 0.0,
             route: None,
             layer: Default::default(),
@@ -1726,6 +1817,10 @@ mod tests {
                     decal: None,
                     footprints: None,
                     terrain: None,
+                    cloth: None,
+                    heap: None,
+                    rope: None,
+                    crumble: None,
                     bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),

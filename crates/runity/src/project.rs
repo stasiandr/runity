@@ -689,6 +689,8 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::per
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));
+    // What comes down, after the physics: its blocks are bodies.
+    runity::crumble::run_crumble(world, physics, seconds);
 }
 
 /// In the project, write what the components look like, for the editor's
@@ -827,6 +829,11 @@ impl shell::Game for Game {
         // Sparks and dust move on the frame's time: they are for the eye.
         runity::particles::run_particles(&mut self.world, ctx.time.delta());
         runity::footprints::run_footprints(&mut self.world, ctx.time.delta());
+        // Cloth flaps in the scene's wind; only a look, stepped by the frame.
+        let wind = self.live.scene().wind.unwrap_or_default();
+        runity::cloth::run_cloth(&mut self.world, ctx.time.delta(), &wind);
+        runity::heap::run_heaps(&mut self.world, ctx.time.delta());
+        runity::rope::run_ropes(&mut self.world, ctx.time.delta(), &wind);
         let scene = self.live.scene();
         // Cameras that follow keep after their targets, then the one that
         // looks is found.

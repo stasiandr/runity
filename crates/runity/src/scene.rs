@@ -826,6 +826,24 @@ pub struct EntityDesc {
     /// (size: 400.0, dunes: (height: 8.0))`. See [`crate::terrain`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub terrain: Option<crate::terrain::Terrain>,
+    /// A sheet of cloth hung from it, flapping in the wind — a banner, a
+    /// flag, an awning: `cloth: (size: (2.0, 3.0), pinned: Top)`. See
+    /// [`crate::cloth`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub cloth: Option<crate::cloth::Cloth>,
+    /// A rope strung from it to a point in its space, sagging and swaying:
+    /// `rope: (to: (6.0, 0.0, 0.0), slack: 0.08)`. See [`crate::rope`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub rope: Option<crate::rope::Rope>,
+    /// It comes down: at that second of its life into so many blocks,
+    /// knocked away in a cloud of dust, crumbling to sand where they lie:
+    /// `crumble: (at: 3.0, pieces: (6, 4, 2))`. See [`crate::crumble`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub crumble: Option<crate::crumble::Crumble>,
+    /// A heap of sand growing where it pours: `heap: (rate: 0.002)`. See
+    /// [`crate::heap`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub heap: Option<crate::heap::Heap>,
     /// Grass and anything else that sways is pushed aside within this many
     /// metres of it — a player walking through a meadow. 0 is none. See
     /// [`crate::foliage`].
@@ -938,6 +956,14 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub terrain: Option<crate::terrain::Terrain>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub cloth: Option<crate::cloth::Cloth>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub rope: Option<crate::rope::Rope>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub crumble: Option<crate::crumble::Crumble>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub heap: Option<crate::heap::Heap>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub bends_grass: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -998,6 +1024,18 @@ impl Override {
         if self.terrain.is_some() {
             part.terrain = self.terrain;
         }
+        if self.cloth.is_some() {
+            part.cloth = self.cloth;
+        }
+        if self.heap.is_some() {
+            part.heap = self.heap;
+        }
+        if self.rope.is_some() {
+            part.rope = self.rope;
+        }
+        if self.crumble.is_some() {
+            part.crumble = self.crumble;
+        }
         if let Some(radius) = self.bends_grass {
             part.bends_grass = radius;
         }
@@ -1030,6 +1068,10 @@ impl Override {
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
             footprints: differs(prefab.footprints != edited.footprints).and(edited.footprints),
             terrain: differs(prefab.terrain != edited.terrain).and(edited.terrain),
+            cloth: differs(prefab.cloth != edited.cloth).and(edited.cloth),
+            heap: differs(prefab.heap != edited.heap).and(edited.heap),
+            rope: differs(prefab.rope != edited.rope).and(edited.rope),
+            crumble: differs(prefab.crumble != edited.crumble).and(edited.crumble),
             bends_grass: differs(prefab.bends_grass != edited.bends_grass)
                 .map(|_| edited.bends_grass),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
@@ -1064,6 +1106,10 @@ impl Override {
             decal,
             footprints,
             terrain,
+            cloth,
+            heap,
+            rope,
+            crumble,
             bends_grass,
             route,
             components,
@@ -1083,6 +1129,10 @@ impl Override {
         self.decal = decal.or(self.decal);
         self.footprints = footprints.or(self.footprints);
         self.terrain = terrain.or(self.terrain);
+        self.cloth = cloth.or(self.cloth);
+        self.heap = heap.or(self.heap);
+        self.rope = rope.or(self.rope);
+        self.crumble = crumble.or(self.crumble);
         self.bends_grass = bends_grass.or(self.bends_grass);
         self.route = route.or(self.route.take());
         self.components.extend(components);
@@ -1857,6 +1907,10 @@ mod tests {
                 decal: None,
                 footprints: None,
                 terrain: None,
+                cloth: None,
+                heap: None,
+                rope: None,
+                crumble: None,
                 bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
@@ -1893,6 +1947,10 @@ mod tests {
                     decal: None,
                     footprints: None,
                     terrain: None,
+                    cloth: None,
+                    heap: None,
+                    rope: None,
+                    crumble: None,
                     bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
@@ -1959,6 +2017,10 @@ mod tests {
                 decal: None,
                 footprints: None,
                 terrain: None,
+                cloth: None,
+                heap: None,
+                rope: None,
+                crumble: None,
                 bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
