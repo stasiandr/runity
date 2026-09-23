@@ -1,0 +1,378 @@
+//! Settings and Profiler: two panels a dock can hold.
+//!
+//! **Settings** is Unity's Project Settings at the grain this engine has
+//! them: the project's own files — `runity.ron`, `input.ron`, the tuning
+//! numbers in `tuning/` — listed, one open in a field of several lines,
+//! saved only when it still reads as RON. The engine picks the change up
+//! from disk as it picks up any other (DNA, postulate 1); nothing here
+//! knows what the fields mean, so nothing here goes stale when they grow.
+//!
+//! **Profiler** is what a frame of the editor costs, as Unity's Profiler
+//! shows a frame of the game: the last seconds as bars, each split into
+//! the Scene view's input, the render, the panels and the UI, with the
+//! slowest and the median beside them.
+
+use std::path::PathBuf;
+
+use runity_editor::console::Level;
+use runity_editor::Session;
+use runity_ui::{Event, NodeId, Style, Ui};
+
+use crate::theme::*;
+
+pub struct Settings {
+    pub root: NodeId,
+    list: NodeId,
+    editor: NodeId,
+    title: NodeId,
+    save: NodeId,
+    files: Vec<(NodeId, PathBuf)>,
+    open: Option<PathBuf>,
+    listed: bool,
+}
+
+impl Settings {
+    pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
+        let root = ui.add(parent, Style::row().fill().full_width());
+        ui.set_name(root, "settings");
+        let list = ui.add(
+            root,
+            Style::column()
+                .width(200.0)
+                .full_height()
+                .fixed()
+                .padding(SPACE_2)
+                .gap(2.0)
+                .clip(),
+        );
+        ui.set_name(list, "settings files");
+        let right = ui.add(
+            root,
+            Style::column()
+                .fill()
+                .full_height()
+                .padding(SPACE_2)
+                .gap(SPACE_2),
+        );
+        let bar = ui.add(right, Style::row().full_width().gap(SPACE_2).center_items());
+        let title = ui.add_text(
+            bar,
+            text().fill().text_color(LABEL),
+            "Choose a file on the left.",
+        );
+        let save = button(ui, bar, "settings save", "Save", true);
+        let scroll = ui.add(right, Style::column().fill().full_width().clip());
+        let editor = ui.add_textarea(
+            scroll,
+            field_style()
+                .full_width()
+                .auto_height()
+                .min_height(80.0)
+                .padding_y(6.0)
+                .mono()
+                .text_size(12.0),
+            "",
+        );
+        ui.set_name(editor, "settings text");
+        Self {
+            root,
+            list,
+            editor,
+            title,
+            save,
+            files: Vec::new(),
+            open: None,
+            listed: false,
+        }
+    }
+
+    /// The project's settings files, in the order they matter.
+    fn files(session: &Session) -> Vec<PathBuf> {
+        let Some(project) = session.project() else {
+            return Vec::new();
+        };
+        let root = project.root();
+        let mut out = vec![root.join(runity::project::FILE)];
+        let input = root.join(runity::project::INPUT);
+        if input.is_file() {
+            out.push(input);
+        }
+        for dir in [runity::project::TUNING, runity::project::UI] {
+            if let Ok(read) = std::fs::read_dir(root.join(dir)) {
+                let mut more: Vec<PathBuf> = read
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().is_some_and(|e| e == "ron"))
+                    .collect();
+                more.sort();
+                out.extend(more);
+            }
+        }
+        out
+    }
+
+    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        if self.listed {
+            return;
+        }
+        self.listed = true;
+        ui.clear(self.list);
+        self.files.clear();
+        let root = session
+            .project()
+            .map(|p| p.root().to_path_buf())
+            .unwrap_or_default();
+        for path in Self::files(session) {
+            let name = path
+                .strip_prefix(&root)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let row = ui.add(
+                self.list,
+                Style::row()
+                    .full_width()
+                    .height(24.0)
+                    .fixed()
+                    .padding_x(SPACE_2)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .hover(HOVER),
+            );
+            ui.set_name(row, format!("settings {name}"));
+            icon(ui, row, "settings", MUTED);
+            ui.add_text(row, text(), &name);
+            self.files.push((row, path));
+        }
+    }
+
+    fn open(&mut self, ui: &mut Ui, session: &mut Session, path: PathBuf) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                ui.set_text(self.editor, text.trim_end());
+                let root = session
+                    .project()
+                    .map(|p| p.root().to_path_buf())
+                    .unwrap_or_default();
+                let name = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .display()
+                    .to_string();
+                ui.set_text(self.title, &name);
+                ui.restyle(self.title, |s| s.text_color(TEXT));
+                for (row, p) in &self.files {
+                    let on = *p == path;
+                    ui.restyle(*row, |s| {
+                        s.background(if on {
+                            ACCENT_900
+                        } else {
+                            runity_ui::Color::TRANSPARENT
+                        })
+                    });
+                }
+                self.open = Some(path);
+            }
+            Err(e) => session.say(Level::Error, format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// Write the open file back, if it still reads as RON.
+    fn save(&mut self, ui: &mut Ui, session: &mut Session) {
+        let Some(path) = self.open.clone() else {
+            return;
+        };
+        let text = ui.text(self.editor).unwrap_or_default().to_string();
+        if let Err(e) = runity::ron::from_str::<runity::ron::Value>(&text) {
+            session.say(Level::Error, format!("{}: not saved, {e}", path.display()));
+            return;
+        }
+        match std::fs::write(&path, format!("{text}\n")) {
+            Ok(()) => session.say(Level::Info, format!("saved {}", path.display())),
+            Err(e) => session.say(Level::Error, format!("{}: {e}", path.display())),
+        }
+    }
+
+    pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
+        ancestor(ui, node, self.root)
+    }
+
+    pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
+        match event {
+            Event::Click { .. } if node == self.save => self.save(ui, session),
+            Event::Submit(_) if node == self.editor => self.save(ui, session),
+            Event::Click { .. } => {
+                if let Some(path) = self
+                    .files
+                    .iter()
+                    .find(|(n, _)| *n == node)
+                    .map(|(_, p)| p.clone())
+                {
+                    self.open(ui, session, path);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether `node` is `root` or under it.
+fn ancestor(ui: &Ui, node: NodeId, root: NodeId) -> bool {
+    let mut at = Some(node);
+    while let Some(n) = at {
+        if n == root {
+            return true;
+        }
+        at = ui.parent(n);
+    }
+    false
+}
+
+/// A frame's cost, by part, in milliseconds.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FrameCost {
+    pub input: f32,
+    pub render: f32,
+    pub panels: f32,
+    pub ui: f32,
+}
+
+impl FrameCost {
+    fn total(&self) -> f32 {
+        self.input + self.render + self.panels + self.ui
+    }
+}
+
+/// How many frames the Profiler keeps.
+const FRAMES: usize = 120;
+
+pub struct Profiler {
+    pub root: NodeId,
+    bars: NodeId,
+    summary: NodeId,
+    frames: Vec<FrameCost>,
+}
+
+/// The parts' colours: the three accents of the gizmo and a neutral.
+fn part_colors() -> [runity_ui::Color; 4] {
+    [
+        runity_ui::Color::hex(0x8cc26b),
+        runity_ui::Color::hex(0x6f9be5),
+        ACCENT,
+        NEUTRAL_500,
+    ]
+}
+
+impl Profiler {
+    pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
+        let root = ui.add(
+            parent,
+            Style::column()
+                .fill()
+                .full_width()
+                .padding(SPACE_2)
+                .gap(SPACE_2),
+        );
+        ui.set_name(root, "profiler");
+        let legend = ui.add(root, Style::row().full_width().gap(SPACE_4).center_items());
+        for (label, color) in ["scene input", "render", "panels", "UI"]
+            .into_iter()
+            .zip(part_colors())
+        {
+            let item = ui.add(legend, Style::row().gap(SPACE_1).center_items());
+            ui.add(
+                item,
+                Style::row().size(10.0, 10.0).radius(2.0).background(color),
+            );
+            ui.add_text(
+                item,
+                Style::default().text_size(11.0).text_color(LABEL).nowrap(),
+                label,
+            );
+        }
+        spacer(ui, legend);
+        let summary = ui.add_text(
+            legend,
+            Style::default().text_size(11.0).text_color(MUTED).nowrap(),
+            "",
+        );
+        ui.set_name(summary, "profiler summary");
+        let bars = ui.add(
+            root,
+            Style::row()
+                .fill()
+                .full_width()
+                .gap(1.0)
+                .radius(RADIUS_SM)
+                .background(BG)
+                .clip(),
+        );
+        ui.set_name(bars, "profiler bars");
+        let _ = &bars;
+        Self {
+            root,
+            bars,
+            summary,
+            frames: Vec::new(),
+        }
+    }
+
+    pub fn record(&mut self, cost: FrameCost) {
+        self.frames.push(cost);
+        if self.frames.len() > FRAMES {
+            self.frames.remove(0);
+        }
+    }
+
+    /// Draw the bars: taller is slower, 33 ms is the top.
+    pub fn update(&mut self, ui: &mut Ui) {
+        let keys: Vec<usize> = (0..self.frames.len()).collect();
+        let colors = part_colors();
+        ui.sync_children(
+            self.bars,
+            &keys,
+            |ui, bars, _| {
+                let bar = ui.add(bars, Style::column().width(4.0).full_height().fixed());
+                ui.add(bar, Style::row().fill());
+                for c in colors {
+                    ui.add(
+                        bar,
+                        Style::row().full_width().height(0.0).fixed().background(c),
+                    );
+                }
+                bar
+            },
+            |_, _, _| {},
+        );
+        let height = ui.rect(self.bars).height.max(1.0);
+        let scale = height / 33.0;
+        for (bar, cost) in ui.children(self.bars).into_iter().zip(self.frames.clone()) {
+            let kids = ui.children(bar);
+            // Top to bottom as the legend reads.
+            for (node, ms) in kids[1..]
+                .iter()
+                .zip([cost.input, cost.render, cost.panels, cost.ui])
+            {
+                let h = (ms * scale).min(height);
+                ui.restyle(*node, |s| s.height(h));
+            }
+        }
+        if !self.frames.is_empty() {
+            let mut totals: Vec<f32> = self.frames.iter().map(FrameCost::total).collect();
+            totals.sort_by(|a, b| a.total_cmp(b));
+            let median = totals[totals.len() / 2];
+            let worst = *totals.last().unwrap();
+            ui.set_text(
+                self.summary,
+                &format!(
+                    "median {median:.1} ms · worst {worst:.1} ms · {} frames",
+                    totals.len()
+                ),
+            );
+        }
+    }
+
+    pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
+        ancestor(ui, node, self.root)
+    }
+}

@@ -24,16 +24,20 @@ pub enum Panel {
     Console,
     History,
     Git,
+    Settings,
+    Profiler,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 6] = [
+    pub const ALL: [Panel; 8] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
         Panel::Console,
         Panel::History,
         Panel::Git,
+        Panel::Settings,
+        Panel::Profiler,
     ];
 
     pub fn name(self) -> &'static str {
@@ -44,6 +48,8 @@ impl Panel {
             Panel::Console => "console",
             Panel::History => "history",
             Panel::Git => "git",
+            Panel::Settings => "settings",
+            Panel::Profiler => "profiler",
         }
     }
 
@@ -55,6 +61,8 @@ impl Panel {
             Panel::Console => "Console",
             Panel::History => "History",
             Panel::Git => "Git",
+            Panel::Settings => "Settings",
+            Panel::Profiler => "Profiler",
         }
     }
 
@@ -66,6 +74,8 @@ impl Panel {
             Panel::Console => "terminal",
             Panel::History => "undo-2",
             Panel::Git => "layers-2",
+            Panel::Settings => "settings",
+            Panel::Profiler => "sliders-horizontal",
         }
     }
 
@@ -351,7 +361,14 @@ impl Docks {
         [
             vec![Panel::Hierarchy],
             vec![Panel::Inspector],
-            vec![Panel::Project, Panel::Console, Panel::History, Panel::Git],
+            vec![
+                Panel::Project,
+                Panel::Console,
+                Panel::History,
+                Panel::Git,
+                Panel::Settings,
+                Panel::Profiler,
+            ],
         ]
     }
 }

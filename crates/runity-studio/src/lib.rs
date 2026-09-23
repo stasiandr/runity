@@ -25,6 +25,7 @@ mod inspector;
 pub mod menu;
 mod studio;
 pub mod theme;
+mod tools;
 pub mod window;
 
 use std::path::Path;

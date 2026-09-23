@@ -35,6 +35,7 @@ use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
 use crate::theme::*;
+use crate::tools::{FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
 pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
@@ -180,6 +181,10 @@ pub struct Studio {
     colliders_button: NodeId,
     sculpt_button: NodeId,
     docks: Docks,
+    settings: Settings,
+    profiler: Profiler,
+    /// What the last draw cost, for the Profiler.
+    last_draw_ms: f32,
     /// The orientation gizmo in the view's corner: its six axes and its
     /// middle, and the camera it was last turned for.
     compass: Compass,
@@ -392,6 +397,10 @@ impl Studio {
         {
             roots.insert(panel, root);
         }
+        let settings = Settings::new(&mut ui, lower);
+        let profiler = Profiler::new(&mut ui, lower);
+        roots.insert(Panel::Settings, settings.root);
+        roots.insert(Panel::Profiler, profiler.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -416,6 +425,9 @@ impl Studio {
             panels: [true; 3],
             last_input: Instant::now(),
             docks,
+            settings,
+            profiler,
+            last_draw_ms: 0.0,
             compass,
             maximized: false,
             stroke: None,
@@ -675,11 +687,6 @@ impl Studio {
         let t5 = Instant::now();
         let moving = self.session.is_dragging() || self.session.is_playing();
         if self.seen.as_ref() != Some(&stamp) || moving {
-            let errors_before = self.seen.as_ref().map_or(0, |s| s.console.2);
-            if stamp.console.2 > errors_before {
-                self.docks.activate(&mut self.ui, Panel::Console);
-                self.sync_visible();
-            }
             if self
                 .seen
                 .as_ref()
@@ -689,6 +696,22 @@ impl Studio {
             }
             self.seen = Some(stamp);
             self.update_panels(moving);
+        }
+        {
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1e3;
+            self.profiler.record(FrameCost {
+                input: ms(t1, t2),
+                render: ms(t2, t3),
+                panels: ms(t5, Instant::now()) + ms(t0, t1),
+                ui: self.last_draw_ms,
+            });
+            let live = self.wants_frame();
+            if live && self.docks.is_active(Panel::Profiler) {
+                self.profiler.update(&mut self.ui);
+            }
+            if self.docks.is_active(Panel::Settings) {
+                self.settings.update(&mut self.ui, &self.session);
+            }
         }
         if timing {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
@@ -1024,8 +1047,10 @@ impl Studio {
         for (image, size, pixels) in self.pending_images.drain(..) {
             renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);
         }
+        let started = Instant::now();
         let gpu = self.session.gpu();
         renderer.draw(gpu, view, width, height, &mut self.ui, Some(BG));
+        self.last_draw_ms = started.elapsed().as_secs_f32() * 1e3;
     }
 
     /// The renderer for this studio's frames, targets of `format`.
@@ -1274,6 +1299,10 @@ impl Studio {
         } else if self.inspector.owns(node) {
             self.inspector
                 .event(&mut self.ui, &mut self.session, node, event, requests);
+        } else if self.settings.owns(&self.ui, node) {
+            self.settings
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.profiler.owns(&self.ui, node) {
         } else if self.bottom.owns(&self.ui, node) {
             self.bottom
                 .event(&mut self.ui, &mut self.session, node, event, requests);
@@ -1292,6 +1321,12 @@ impl Studio {
         if node == self.compass.middle {
             requests.action = Some(Action::ToggleOrtho);
             requests.keyboard_to_scene = true;
+            return true;
+        }
+        if node == self.status.problems {
+            self.docks.activate(&mut self.ui, Panel::Console);
+            self.sync_visible();
+            requests.refresh = true;
             return true;
         }
         if node == self.prefab_back {
@@ -2430,7 +2465,9 @@ fn build_status(ui: &mut Ui, root: NodeId) -> (Status, NodeId) {
     let selected = ui.add_text(bar, small(), "");
     let last = ui.add_text(bar, small(), "");
     spacer(ui, bar);
-    let problems = ui.add_text(bar, small(), "");
+    // Warnings and errors: a click shows the Console, wherever it is.
+    let problems = ui.add_text(bar, small().clickable(), "");
+    ui.set_name(problems, "status problems");
     let fps = ui.add_text(bar, small(), "");
     let mode = ui.add_text(bar, small(), "");
     (
@@ -2501,6 +2538,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "view scene" => "The Scene view: edit",
         "view game" => "The Game view: what the game's camera sees",
         "console clear" => "Clear the Console",
+        "status problems" => "Show the Console",
         _ => return None,
     })
 }

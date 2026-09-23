@@ -1037,3 +1037,88 @@ fn snap_steps_and_navigation_from_the_view_menu() {
     // itself may be nothing).
     assert!(s.session.walkable_cells().is_some(), "navigation is shown");
 }
+
+#[test]
+fn project_settings_open_and_save_only_what_reads() {
+    let Some((mut s, dir)) = studio() else { return };
+    click(&mut s, "tab settings");
+    click(&mut s, "settings runity.ron");
+    assert!(s
+        .ui
+        .text(s.ui.find("settings text").unwrap())
+        .unwrap()
+        .contains("valley"));
+    let select_all = |s: &mut Studio| {
+        s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+        s.handle(&InputEvent::KeyDown(Key::A));
+        s.handle(&InputEvent::KeyUp(Key::A));
+        s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    };
+    click(&mut s, "settings text");
+    select_all(&mut s);
+    type_text(&mut s, "(name: \"valley\"");
+    click(&mut s, "settings save");
+    let text = std::fs::read_to_string(dir.join("runity.ron")).unwrap();
+    assert!(
+        text.contains("start_scene"),
+        "broken RON is not written: {text}"
+    );
+    click(&mut s, "settings text");
+    select_all(&mut s);
+    type_text(
+        &mut s,
+        "(name: \"valley\", engine: \"0.1.0\", game: (start_scene: \"camp\"))",
+    );
+    click(&mut s, "settings save");
+    let text = std::fs::read_to_string(dir.join("runity.ron")).unwrap();
+    assert!(
+        text.contains("\"camp\""),
+        "{text}\nfield: {:?}\n{:?}",
+        s.ui.text(s.ui.find("settings text").unwrap()),
+        s.session
+            .console()
+            .iter()
+            .map(|l| &l.text)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn the_profiler_shows_what_frames_cost() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "tab profiler");
+    for _ in 0..5 {
+        s.handle(&InputEvent::MouseMoved { x: 600.0, y: 400.0 });
+        s.frame();
+    }
+    let summary =
+        s.ui.text(s.ui.find("profiler summary").unwrap())
+            .unwrap()
+            .to_string();
+    assert!(summary.contains("median"), "{summary}");
+}
+
+#[test]
+fn an_error_does_not_take_the_tab_but_the_status_line_leads_to_it() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "tab settings");
+    s.session
+        .say(runity_editor::console::Level::Error, "something broke");
+    s.frame();
+    s.refresh();
+    s.ui.paint();
+    assert!(
+        s.ui.rect(s.ui.find("settings files").unwrap()).width > 0.0,
+        "Settings stays on top"
+    );
+    click(&mut s, "status problems");
+    s.ui.paint();
+    assert!(
+        s.ui.rect(s.ui.find("console lines").unwrap()).width > 0.0,
+        "the Console is shown"
+    );
+}
