@@ -29,10 +29,14 @@ pub enum Panel {
     Animation,
     Screens,
     Animator,
+    Network,
+    WorldDiff,
+    Saves,
+    Systems,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 15] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -44,6 +48,10 @@ impl Panel {
         Panel::Animation,
         Panel::Screens,
         Panel::Animator,
+        Panel::Network,
+        Panel::WorldDiff,
+        Panel::Saves,
+        Panel::Systems,
     ];
 
     pub fn name(self) -> &'static str {
@@ -59,6 +67,10 @@ impl Panel {
             Panel::Animation => "animation",
             Panel::Screens => "screens",
             Panel::Animator => "animator",
+            Panel::Network => "network",
+            Panel::WorldDiff => "world-diff",
+            Panel::Saves => "saves",
+            Panel::Systems => "systems",
         }
     }
 
@@ -75,6 +87,10 @@ impl Panel {
             Panel::Animation => "Animation",
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
+            Panel::Network => "Network",
+            Panel::WorldDiff => "World Diff",
+            Panel::Saves => "Saves",
+            Panel::Systems => "Systems",
         }
     }
 
@@ -91,6 +107,10 @@ impl Panel {
             Panel::Animation => "play",
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
+            Panel::Network => "globe",
+            Panel::WorldDiff => "layers-2",
+            Panel::Saves => "save",
+            Panel::Systems => "list-tree",
         }
     }
 
@@ -161,14 +181,19 @@ impl Docks {
                     .clickable(),
             );
             ui.set_name(card, format!("dock {i}"));
+            // More tabs than room: they wrap onto another row rather than
+            // run off the dock's edge.
             let strip = ui.add(
                 card,
                 Style::row()
-                    .height(32.0)
+                    .auto_height()
+                    .min_height(32.0)
                     .fixed()
                     .full_width()
                     .padding_x(SPACE_2)
+                    .padding_y(4.0)
                     .gap(SPACE_1)
+                    .wrap()
                     .center_items(),
             );
             let body = ui.add(card, Style::column().fill().full_width());
@@ -426,6 +451,10 @@ impl Docks {
                 Panel::Animation,
                 Panel::Animator,
                 Panel::Screens,
+                Panel::Network,
+                Panel::WorldDiff,
+                Panel::Saves,
+                Panel::Systems,
                 Panel::Settings,
                 Panel::Profiler,
             ],

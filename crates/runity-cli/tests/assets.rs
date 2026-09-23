@@ -156,7 +156,9 @@ fn add_writes_a_component_and_a_system_where_they_go() {
     assert!(root.join("src/systems/patrol.rs").is_file());
     let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
     let spin = main.find("systems::spin::run(").unwrap();
-    let patrol = main.find("systems::patrol::run(world, seconds);").unwrap();
+    let patrol = main
+        .find("profile.time(\"patrol\", || systems::patrol::run(world, seconds));")
+        .unwrap();
     assert!(spin < patrol, "last in the order:\n{main}");
 
     let refused = runity(&root, &["add", "component", "Front Door"]);

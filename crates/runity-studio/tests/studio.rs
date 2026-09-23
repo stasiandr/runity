@@ -2189,3 +2189,83 @@ fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
         "{problems:?}"
     );
 }
+
+#[test]
+fn the_play_tools_show_systems_saves_the_network_and_the_diff() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let dump_of = |s: &mut Studio| {
+        std::thread::sleep(std::time::Duration::from_millis(550));
+        s.frame();
+        s.ui.paint();
+        s.ui.dump()
+    };
+
+    // Systems: the game's, in the order its step calls them.
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(
+        dir.join("src/main.rs"),
+        "fn tick() {\n    // systems, in order\n    profile.time(\"wind\", || systems::wind::run(world, seconds));\n    systems::mice::run(world, seconds);\n    physics();\n}\n",
+    )
+    .unwrap();
+    click(&mut s, "tab systems");
+    let dump = dump_of(&mut s);
+    let order = s.session.systems();
+    assert_eq!(order, ["wind", "mice"]);
+    assert!(dump.contains(&format!("1. {}", order[0])), "{dump}");
+
+    // Saves: one on disk is listed, opens, and goes.
+    let crate_ = s.session.find("crate").unwrap();
+    let save = runity::save::SaveGame {
+        entities: vec![runity::save::Saved {
+            id: crate_,
+            transform: Default::default(),
+            components: Vec::new(),
+            prefab: String::new(),
+            animator: String::new(),
+        }],
+        ..Default::default()
+    };
+    let slot = dir.join(".runity/players/1/slot1.ron");
+    std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+    save.write(&slot).unwrap();
+    click(&mut s, "tab saves");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("slot1.ron"), "{dump}");
+    click(&mut s, "save slot1.ron");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("    crate"), "opened: {dump}");
+    click(&mut s, "delete save slot1.ron");
+    assert!(!slot.exists());
+
+    // A game that reports: who owns the crate, and where it has gone.
+    let state = dir.join(".runity/state.ron");
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30").env("RUNITY_STATE_FILE", &state);
+    s.session.run_in_console(game).unwrap();
+    let mut report = save.clone();
+    report.entities[0].transform.position = runity::glam::Vec3::new(0.0, 40.0, 0.0);
+    report.diagnostics = Some(runity::save::Diagnostics {
+        me: 0,
+        net: vec![runity::save::NetLine {
+            id: crate_,
+            owner: 1,
+            replica: true,
+            tick: Some((42, 16.0)),
+        }],
+        systems: Vec::new(),
+    });
+    report.write(&state).unwrap();
+    click(&mut s, "tab network");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("player 2 copy tick 42"), "{dump}");
+    click(&mut s, "tab world-diff");
+    let dump = dump_of(&mut s);
+    assert!(dump.contains("AGAINST THE SCENE"), "{dump}");
+    assert!(
+        dump.contains("m apart"),
+        "the crate is up in the air: {dump}"
+    );
+    s.session.stop_game();
+}

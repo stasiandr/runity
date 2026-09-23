@@ -673,13 +673,11 @@ impl Game {
 /// window runs it, and so does the play-mode test below — the same step
 /// with nothing drawn.
 fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::perf::Profiler, seconds: f32) {
-    let started = std::time::Instant::now();
     // systems, in order
-    systems::spin::run(world, seconds);
+    profile.time("spin", || systems::spin::run(world, seconds));
     // Platforms and lifts on their routes, then everything placed.
-    runity::routes::run_routes(world, seconds);
+    profile.time("routes", || runity::routes::run_routes(world, seconds));
     runity::world::apply_hierarchy(world);
-    profile.record("systems", started.elapsed());
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));
@@ -794,7 +792,9 @@ impl shell::Game for Game {
                 Event::Problem(why) => eprintln!("{why}"),
             }
         }
-        // Started from the editor: tell it where things are.
+        // Started from the editor: tell it where things are, who this is
+        // and what the systems cost.
+        self.live.note(self.party.me().0, &self.profile);
         if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
             eprintln!("{problem}");
         }
@@ -1419,7 +1419,7 @@ mod tests {
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(main.contains("components::register(&mut components);"));
         assert!(
-            main.contains("// systems, in order\n    systems::spin::run("),
+            main.contains("// systems, in order\n    profile.time(\"spin\", || systems::spin::run("),
             "{main}"
         );
         // The build script is compiled only in the game; a stray escape in

@@ -56,6 +56,9 @@ pub struct LiveScene {
     /// this game (`RUNITY_STATE_FILE`); see [`LiveScene::report`].
     report_to: Option<PathBuf>,
     since_report: f32,
+    /// What the game said about its systems and who it is, for the next
+    /// report ([`LiveScene::note`]).
+    noted: crate::save::Diagnostics,
 }
 
 /// The variable an editor names the state file in, for a game it starts.
@@ -175,6 +178,7 @@ impl LiveScene {
                 components: Components::new(),
                 report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
                 since_report: 0.0,
+                noted: Default::default(),
             },
             problems,
         ))
@@ -214,7 +218,32 @@ impl LiveScene {
             return Ok(());
         }
         self.since_report = 0.0;
-        crate::save::capture(world, &self.components, &self.current).write(path)
+        let mut report = crate::save::capture(world, &self.components, &self.current);
+        let mut diagnostics = self.noted.clone();
+        diagnostics.net = crate::save::net_lines(world);
+        report.diagnostics = Some(diagnostics);
+        report.write(path)
+    }
+
+    /// Tell the next report which player this is and what the systems
+    /// cost — a [`crate::perf::Profiler`]'s spans, in the order they ran.
+    /// Cheap enough to call every frame: it only keeps them.
+    pub fn note(&mut self, me: u32, systems: &crate::perf::Profiler) {
+        if self.report_to.is_none() {
+            return;
+        }
+        self.noted.me = me;
+        self.noted.systems = systems
+            .report()
+            .into_iter()
+            .map(|(name, s)| {
+                (
+                    name,
+                    s.median.as_secs_f32() * 1000.0,
+                    s.worst.as_secs_f32() * 1000.0,
+                )
+            })
+            .collect();
     }
 
     /// Report to this file instead of the one `RUNITY_STATE_FILE` names;

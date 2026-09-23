@@ -38,6 +38,7 @@ use crate::dock::{Docked, Docks, Panel};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
+use crate::playtools::{PlayTool, Tool as PlayKind};
 use crate::screens::{self, Screens};
 use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
@@ -240,6 +241,8 @@ pub struct Studio {
     animation: Animation,
     screens: Screens,
     animator: Animator,
+    /// The network inspector, the world diff, the saves, the systems.
+    play_tools: Vec<(Panel, PlayTool)>,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The sound device, opened the first time a sound is listened to, and
@@ -587,6 +590,18 @@ impl Studio {
         roots.insert(Panel::Screens, screens.root);
         let animator = Animator::new(&mut ui, lower);
         roots.insert(Panel::Animator, animator.root);
+        let play_tools: Vec<(Panel, PlayTool)> = [
+            (Panel::Network, PlayKind::Network),
+            (Panel::WorldDiff, PlayKind::Diff),
+            (Panel::Saves, PlayKind::Saves),
+            (Panel::Systems, PlayKind::Systems),
+        ]
+        .into_iter()
+        .map(|(panel, tool)| (panel, PlayTool::new(&mut ui, lower, tool)))
+        .collect();
+        for (panel, tool) in &play_tools {
+            roots.insert(*panel, tool.root);
+        }
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -633,6 +648,7 @@ impl Studio {
             animation,
             screens,
             animator,
+            play_tools,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -1044,6 +1060,11 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Animator) {
                 self.animator.update(&mut self.ui, &self.session);
+            }
+            for (panel, tool) in &mut self.play_tools {
+                if self.docks.is_showing(*panel) {
+                    tool.update(&mut self.ui, &mut self.session);
+                }
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
@@ -2289,6 +2310,12 @@ impl Studio {
         } else if self.settings.owns(&self.ui, node) {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
+        } else if let Some((_, tool)) = self
+            .play_tools
+            .iter_mut()
+            .find(|(_, t)| t.owns(&self.ui, node))
+        {
+            tool.event(&mut self.ui, &mut self.session, node, event);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
                 .event(&mut self.ui, &mut self.session, node, event);

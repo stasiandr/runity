@@ -3723,6 +3723,7 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
             animator: "walk".into(),
         }],
         gone: vec![],
+        diagnostics: None,
     }
     .write(&state)
     .unwrap();

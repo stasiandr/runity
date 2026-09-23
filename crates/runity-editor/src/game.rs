@@ -522,6 +522,96 @@ impl Session {
             .filter(|a| !a.is_empty())
     }
 
+    /// Every player's report while a game started from here runs: player
+    /// 1 (the host) first, then each other window, as `(player, report)`.
+    /// What the network inspector and the world diff read.
+    pub fn player_states(&self) -> Vec<(u32, runity::save::SaveGame)> {
+        let Some(host) = self.game.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, running) in std::iter::once(host).chain(host.guests.iter()).enumerate() {
+            if let Some(state) = running
+                .state
+                .as_ref()
+                .and_then(|p| runity::save::SaveGame::read(p).ok())
+            {
+                let player = state.diagnostics.as_ref().map_or(i as u32, |d| d.me) + 1;
+                out.push((player, state));
+            }
+        }
+        out
+    }
+
+    /// The game's systems, in the order its step calls them: read from
+    /// `src/main.rs`, after its `// systems, in order` line. What the
+    /// systems list shows before the game runs, and orders timings by.
+    pub fn systems(&self) -> Vec<String> {
+        let Some(project) = self.project() else {
+            return Vec::new();
+        };
+        let Ok(text) = std::fs::read_to_string(project.root().join("src/main.rs")) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut listing = false;
+        for line in text.lines() {
+            let line = line.trim();
+            if line == "// systems, in order" {
+                listing = true;
+                continue;
+            }
+            if !listing {
+                continue;
+            }
+            match line
+                .split("systems::")
+                .nth(1)
+                .and_then(|rest| rest.split("::").next())
+            {
+                Some(name) => out.push(name.to_string()),
+                None if line.starts_with("//") || line.is_empty() => {}
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// Saved games on disk: every RON file that reads as one, in the game's
+    /// own folder for this machine and in each editor player's folder
+    /// (`.runity/players/N/`), newest first.
+    pub fn save_files(&self) -> Vec<(PathBuf, runity::save::SaveGame)> {
+        let Some(project) = self.project() else {
+            return Vec::new();
+        };
+        let mut dirs = Vec::new();
+        if let Ok(dir) = runity::player_prefs::user_dir(project.name()) {
+            dirs.push(dir);
+        }
+        for n in 1..=MAX_PLAYERS {
+            dirs.push(project.root().join(format!(".runity/players/{n}")));
+        }
+        let mut out: Vec<(PathBuf, runity::save::SaveGame, std::time::SystemTime)> = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for path in entries.flatten().map(|e| e.path()) {
+                if path.extension().is_none_or(|e| e != "ron") {
+                    continue;
+                }
+                if let Ok(save) = runity::save::SaveGame::read(&path) {
+                    let when = std::fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH);
+                    out.push((path, save, when));
+                }
+            }
+        }
+        out.sort_by(|a, b| b.2.cmp(&a.2));
+        out.into_iter().map(|(p, s, _)| (p, s)).collect()
+    }
+
     /// Whether a game started from here is still running.
     pub fn game_running(&mut self) -> bool {
         self.poll_game();

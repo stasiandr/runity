@@ -14,7 +14,15 @@ use runity::project::{self, Project};
 
 /// The line `step` runs a system with.
 pub fn system_call(name: &str) -> String {
-    format!("systems::{name}::run(world, seconds);")
+    format!("profile.time({name:?}, || systems::{name}::run(world, seconds));")
+}
+
+/// Whether a line of `step` is a system's call: `systems::x::run(…)`, or
+/// that inside `profile.time("x", || …)` as a project made now writes it.
+fn is_call(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("systems::")
+        || (line.starts_with("profile.time(") && line.contains("systems::"))
 }
 
 /// Where `step`'s list of systems is marked in `src/main.rs`.
@@ -85,17 +93,19 @@ fn insert_call(text: &str, name: &str) -> Option<String> {
         .take_while(|c| c.is_whitespace())
         .collect();
     let mut last = marker;
-    while lines
-        .get(last + 1)
-        .is_some_and(|l| l.trim_start().starts_with("systems::"))
-    {
+    while lines.get(last + 1).is_some_and(|l| is_call(l)) {
         last += 1;
     }
-    // Called the way the one before it is: `run(world, seconds)` in a
-    // project made now, `run(&mut self.world, seconds)` in an older one.
-    let call = match lines[last].trim_start().split_once("::run(") {
-        Some((_, args)) if last > marker => format!("systems::{name}::run({args}"),
-        _ => system_call(name),
+    // Called the way the one before it is: timed as a project made now
+    // does it, or `run(&mut self.world, seconds)` as an older one.
+    let before = lines[last].trim_start();
+    let call = if last == marker || before.starts_with("profile.time(") {
+        system_call(name)
+    } else {
+        match before.split_once("::run(") {
+            Some((_, args)) => format!("systems::{name}::run({args}"),
+            None => system_call(name),
+        }
     };
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     out.insert(last + 1, format!("{indent}{call}"));
@@ -121,7 +131,12 @@ mod tests {
         // A list with nothing in it yet takes the current form.
         assert_eq!(
             insert_call("fn tick() {\n    // systems, in order\n}\n", "patrol").unwrap(),
-            "fn tick() {\n    // systems, in order\n    systems::patrol::run(world, seconds);\n}\n"
+            "fn tick() {\n    // systems, in order\n    profile.time(\"patrol\", || systems::patrol::run(world, seconds));\n}\n"
         );
+        // After a timed call, timed.
+        let timed = "    // systems, in order\n    profile.time(\"spin\", || systems::spin::run(world, seconds));\n";
+        assert!(insert_call(timed, "patrol")
+            .unwrap()
+            .contains("    profile.time(\"patrol\", || systems::patrol::run(world, seconds));"));
     }
 }
