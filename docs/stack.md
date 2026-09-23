@@ -168,6 +168,14 @@ pak/               один блоб, mmap
 сохраняется, жёсткость её петли — нет, и правка баланса доходит до
 старых сохранений.
 
+**Настройки игрока.** `player_prefs::user_dir("game")` — папка для личных
+файлов игрока вне установки (которую патч заменит): сейвы, привязки,
+настройки — `Application.persistentDataPath` из Unity (`~/.local/share`,
+`~/Library/Application Support`, `%APPDATA%`). `PlayerPrefs` — PlayerPrefs:
+ключ → флаг, число, текст в `prefs.ron` там же, отсортированно и читаемо;
+отсутствующий ключ — значение по умолчанию, а файл, который не читается, —
+ошибка, а не тихий сброс всех настроек.
+
 **Таймеры.** `Invoke`, `InvokeRepeating` и `WaitForSeconds` из Unity — один
 компонент: `Timer::once("boom", 3.0)` или `Timer::repeating("blink", 0.5,
 0.5)` на сущности, а `tick_timers(world, dt)` в фиксированном шаге
