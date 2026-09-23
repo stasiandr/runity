@@ -2397,11 +2397,27 @@ impl Session {
                     .instanced
                     .owner_of(desc.id)
                     .is_some_and(|owner| selection.iter().any(|r| self.is_within(owner, *r)));
-                let Some((min, max)) = chosen.then(|| self.bounds_of(&desc.model)).flatten() else {
+                if !chosen {
                     continue;
-                };
+                }
                 let thickness =
                     (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
+                if let Some(light) = desc.light {
+                    // How far a selected light reaches, as Unity shows it.
+                    let at = Mat4::from_translation(placed.w_axis.truncate());
+                    frame.overlay_draws.extend(gizmo::collider_draws(
+                        arm,
+                        runity::scene::Collider::Sphere {
+                            radius: light.range.max(0.0),
+                        },
+                        at,
+                        thickness,
+                        gizmo::selection_color(),
+                    ));
+                }
+                let Some((min, max)) = self.bounds_of(&desc.model) else {
+                    continue;
+                };
                 frame.overlay_draws.extend(gizmo::bounds_draws(
                     arm,
                     min,

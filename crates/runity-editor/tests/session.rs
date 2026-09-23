@@ -3503,3 +3503,48 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
         .unwrap();
     assert_eq!(scene, "scene");
 }
+
+#[test]
+fn a_selected_light_shows_how_far_it_reaches() {
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"lamp\", transform: (position: (0.0, 1.0, 0.0)), light: (range: 3.0)),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("light-range", &scene) else {
+        return;
+    };
+    let lamp = id(&session, "lamp");
+    session.set_camera(
+        runity::glam::Vec3::new(0.0, 12.0, 0.1),
+        runity::glam::Vec3::ZERO,
+    );
+    let orange = |s: &Session| {
+        s.frame_pixels()
+            .chunks(4)
+            .filter(|p| p[0] > 200 && (60..180).contains(&p[1]) && p[2] < 60)
+            .count()
+    };
+    session.render();
+    let before = orange(&session);
+    session.select(Some(lamp)).unwrap();
+    session.render();
+    assert!(
+        orange(&session) > before + 50,
+        "a ring of its range: {} vs {before}",
+        orange(&session)
+    );
+    let fields = session.inspect(lamp).unwrap();
+    let light = fields.iter().find(|f| f.name == "light").unwrap();
+    assert!(light.value.contains("range:3.0"), "{}", light.value);
+    session.set_field(lamp, "light", "None").unwrap();
+    assert_eq!(
+        session
+            .inspect(lamp)
+            .unwrap()
+            .iter()
+            .find(|f| f.name == "light")
+            .unwrap()
+            .value,
+        "None"
+    );
+}
