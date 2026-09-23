@@ -107,7 +107,7 @@ pub fn list() -> Vec<Value> {
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
         tool("apply_overrides", "Write a prefab instance's overrides into the prefab file, so every instance gets them, and clear them from this instance.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("revert_overrides", "Drop a prefab instance's overrides: it is the prefab again. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
-        tool("undo", "Take back the last edit.", json!({}), &[]),
+        tool("undo", "Take back the last edit; says what it was (\"move `crate`\").", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
@@ -422,12 +422,24 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!("{id} is the prefab again"))])
         }
         "undo" => {
-            let done = server.session()?.undo().map_err(|e| e.to_string())?;
-            Ok(vec![text(if done { "undone" } else { "nothing to undo" })])
+            let session = server.session()?;
+            let what = session.undo_label();
+            let done = session.undo().map_err(|e| e.to_string())?;
+            Ok(vec![text(match (done, what) {
+                (true, Some(what)) => format!("undone: {what}"),
+                (true, None) => "undone".into(),
+                (false, _) => "nothing to undo".into(),
+            })])
         }
         "redo" => {
-            let done = server.session()?.redo().map_err(|e| e.to_string())?;
-            Ok(vec![text(if done { "redone" } else { "nothing to redo" })])
+            let session = server.session()?;
+            let what = session.redo_label();
+            let done = session.redo().map_err(|e| e.to_string())?;
+            Ok(vec![text(match (done, what) {
+                (true, Some(what)) => format!("redone: {what}"),
+                (true, None) => "redone".into(),
+                (false, _) => "nothing to redo".into(),
+            })])
         }
         "render" => {
             camera(server, args)?;

@@ -147,9 +147,9 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     );
 
     // One step, so one undo takes all of it back, and redo returns it.
-    assert_eq!(agent.text("undo", json!({})), "undone");
+    assert_eq!(agent.text("undo", json!({})), "undone: add `tower`");
     assert!(!agent.text("scene_tree", json!({})).contains("\"tower\""));
-    assert_eq!(agent.text("redo", json!({})), "redone");
+    assert_eq!(agent.text("redo", json!({})), "redone: add `tower`");
 
     // A material name nothing answers to is legal — it draws grey — and
     // `check` is where it is caught, with the fix.

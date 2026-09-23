@@ -95,6 +95,17 @@ impl History {
         true
     }
 
+    /// What undo would take back, in words — "move `crate`" — read off the
+    /// two states rather than recorded, so it cannot disagree with them.
+    pub fn undo_description(&self) -> Option<String> {
+        self.past.last().map(|before| describe(before, &self.scene))
+    }
+
+    /// What redo would put back, in words.
+    pub fn redo_description(&self) -> Option<String> {
+        self.future.last().map(|after| describe(&self.scene, after))
+    }
+
     /// Replace the scene entirely, as opening a file does. Clears both
     /// stacks: undoing across an open would put a different document's
     /// entities into this one.
@@ -102,6 +113,141 @@ impl History {
         self.scene = scene;
         self.past.clear();
         self.future.clear();
+    }
+}
+
+/// What changed from one state of a scene to another, in the words an
+/// editor's Undo menu uses: "move `crate`", "rename `tree` to `pine`",
+/// "delete `rock`", "add 12 entities".
+pub fn describe(before: &Scene, after: &Scene) -> String {
+    use std::collections::HashMap;
+    fn index<'a>(
+        entities: &'a [EntityDesc],
+        parent: Option<EntityId>,
+        out: &mut HashMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
+    ) {
+        for e in entities {
+            out.insert(e.id, (e, parent));
+            index(&e.children, Some(e.id), out);
+        }
+    }
+    let (mut old, mut new) = (HashMap::new(), HashMap::new());
+    index(&before.entities, None, &mut old);
+    index(&after.entities, None, &mut new);
+    let name = |e: &EntityDesc| format!("`{}`", e.name);
+
+    // Only the tops of what came and went: deleting a hut is one thing, not
+    // a hut and its door.
+    let added: Vec<&EntityDesc> = new
+        .iter()
+        .filter(|(id, (_, parent))| {
+            !old.contains_key(*id) && parent.is_none_or(|p| old.contains_key(&p))
+        })
+        .map(|(_, (e, _))| *e)
+        .collect();
+    let removed: Vec<&EntityDesc> = old
+        .iter()
+        .filter(|(id, (_, parent))| {
+            !new.contains_key(*id) && parent.is_none_or(|p| new.contains_key(&p))
+        })
+        .map(|(_, (e, _))| *e)
+        .collect();
+    let mut changed: Vec<(&EntityDesc, &EntityDesc, bool)> = Vec::new();
+    for (id, (after_e, after_parent)) in &new {
+        if let Some((before_e, before_parent)) = old.get(id) {
+            let mut a = (*before_e).clone();
+            let mut b = (*after_e).clone();
+            a.children.clear();
+            b.children.clear();
+            let moved = before_parent != after_parent;
+            if a != b || moved {
+                changed.push((before_e, after_e, moved));
+            }
+        }
+    }
+
+    let count = |n: usize| {
+        if n == 1 {
+            "1 entity".to_string()
+        } else {
+            format!("{n} entities")
+        }
+    };
+    match (added.len(), removed.len(), changed.len()) {
+        (0, 0, 0) => {
+            let mut parts = Vec::new();
+            if before.view != after.view {
+                parts.push("the view");
+            }
+            if before.sun != after.sun {
+                parts.push("the sun");
+            }
+            if before.fog != after.fog {
+                parts.push("the fog");
+            }
+            if parts.is_empty() {
+                "nothing".into()
+            } else {
+                format!("change {}", parts.join(" and "))
+            }
+        }
+        (1, 0, 0) => format!("add {}", name(added[0])),
+        (0, 1, 0) => format!("delete {}", name(removed[0])),
+        (n, 0, 0) => format!("add {}", count(n)),
+        (0, n, 0) => format!("delete {}", count(n)),
+        (0, 0, 1) => {
+            let (a, b, moved) = changed[0];
+            let mut what = Vec::new();
+            if a.transform.position != b.transform.position {
+                what.push("move");
+            }
+            if a.transform.rotation_deg != b.transform.rotation_deg {
+                what.push("rotate");
+            }
+            if a.transform.scale != b.transform.scale {
+                what.push("scale");
+            }
+            if moved {
+                what.push("reparent");
+            }
+            if a.material != b.material {
+                what.push("recolour");
+            }
+            if a.model != b.model {
+                what.push("change the model of");
+            }
+            if a.components != b.components {
+                what.push("change the components of");
+            }
+            if a.overrides != b.overrides {
+                what.push("override a part of");
+            }
+            if a.body != b.body || a.collider != b.collider {
+                what.push("change the physics of");
+            }
+            if a.name != b.name && what.is_empty() {
+                return format!("rename {} to {}", name(a), name(b));
+            }
+            match what.as_slice() {
+                [one] => format!("{one} {}", name(b)),
+                [] => format!("change {}", name(b)),
+                _ => format!("change {}", name(b)),
+            }
+        }
+        (0, 0, n) => format!("change {}", count(n)),
+        (a, r, c) => {
+            let mut parts = Vec::new();
+            if a > 0 {
+                parts.push(format!("add {}", count(a)));
+            }
+            if r > 0 {
+                parts.push(format!("delete {}", count(r)));
+            }
+            if c > 0 {
+                parts.push(format!("change {}", count(c)));
+            }
+            parts.join(", ")
+        }
     }
 }
 
@@ -551,5 +697,38 @@ mod tests {
             ..layout
         });
         assert!(crowded.len() < 50 && !crowded.is_empty());
+    }
+
+    #[test]
+    fn undo_says_what_it_would_take_back() {
+        let mut scene: Scene = ron::from_str(
+            r#"(entities: [(id: "a1", name: "tree", model: "m"), (id: "b2", name: "hut", model: "m", children: [(id: "c3", name: "door", model: "m")])])"#,
+        )
+        .unwrap();
+        scene.assign_ids();
+        let mut history = History::new(scene, 16);
+        assert_eq!(history.undo_description(), None);
+
+        history
+            .edit()
+            .get_mut("a1".parse().unwrap())
+            .unwrap()
+            .transform
+            .position
+            .x = 3.0;
+        assert_eq!(history.undo_description().as_deref(), Some("move `tree`"));
+        history.edit().get_mut("a1".parse().unwrap()).unwrap().name = "pine".into();
+        assert_eq!(
+            history.undo_description().as_deref(),
+            Some("rename `tree` to `pine`")
+        );
+        remove(history.edit(), "b2".parse().unwrap());
+        assert_eq!(
+            history.undo_description().as_deref(),
+            Some("delete `hut`"),
+            "not the door too"
+        );
+        history.undo();
+        assert_eq!(history.redo_description().as_deref(), Some("delete `hut`"));
     }
 }

@@ -1146,6 +1146,17 @@ impl Session {
         Ok(stepped)
     }
 
+    /// What undo would take back, in words — "move `crate`" — for the
+    /// menu item and for an agent deciding whether to press it.
+    pub fn undo_label(&self) -> Option<String> {
+        self.history.undo_description()
+    }
+
+    /// What redo would put back, in words.
+    pub fn redo_label(&self) -> Option<String> {
+        self.history.redo_description()
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }
