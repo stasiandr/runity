@@ -64,6 +64,8 @@ pub struct Requests {
     pub action: Option<Action>,
     /// A Project entry was dragged and let go.
     pub dropped: Option<Asset>,
+    /// A Project entry was clicked: show it in the Inspector.
+    pub inspect: Option<Asset>,
 }
 
 /// An open menu: its overlay, and what each line does.
@@ -179,6 +181,8 @@ pub struct Studio {
     discard_asked: Option<std::path::PathBuf>,
     colliders: bool,
     conflict_said: bool,
+    /// Pictures made on the CPU waiting for the renderer: previews.
+    pending_images: Vec<(ImageId, u32, Vec<u8>)>,
     /// A build running in the background: what it says when it is done.
     job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The scene to go back to from prefab mode.
@@ -363,6 +367,7 @@ impl Studio {
             colliders: false,
             conflict_said: false,
             job: None,
+            pending_images: Vec::new(),
             scene_before_prefab: None,
             prefab_bar,
             prefab_name,
@@ -556,6 +561,13 @@ impl Studio {
             if stamp.console.2 > errors_before {
                 self.bottom.show_console(&mut self.ui);
             }
+            if self
+                .seen
+                .as_ref()
+                .is_none_or(|s| s.selection != stamp.selection)
+            {
+                self.inspector.clear_asset();
+            }
             self.seen = Some(stamp);
             self.update_panels(moving);
         }
@@ -683,6 +695,9 @@ impl Studio {
                 self.session.frame_target().view(),
             );
             self.registered = Some(size);
+        }
+        for (image, size, pixels) in self.pending_images.drain(..) {
+            renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);
         }
         let gpu = self.session.gpu();
         renderer.draw(gpu, view, width, height, &mut self.ui, Some(BG));
@@ -964,6 +979,15 @@ impl Studio {
         if let Some(action) = requests.action {
             self.run(action);
         }
+        if let Some(asset) = requests.inspect {
+            if let Some(pixels) = self
+                .inspector
+                .show_asset(&mut self.ui, &mut self.session, asset)
+            {
+                self.pending_images
+                    .push((crate::inspector::PREVIEW, 256, pixels));
+            }
+        }
         if let Some(asset) = requests.dropped {
             self.drop_asset(asset);
         }
@@ -1002,7 +1026,7 @@ impl Studio {
         );
         let s = &mut self.session;
         let result = match asset {
-            Asset::Model(name) | Asset::Prefab(name) => s.drop_asset(&name, x, y).map(|_| ()),
+            Asset::Model(name, _) | Asset::Prefab(name) => s.drop_asset(&name, x, y).map(|_| ()),
             Asset::Material(name) => match s.pick(x, y) {
                 Some(id) => s.set_material_name(id, &name),
                 None => Ok(()),

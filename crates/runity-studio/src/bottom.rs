@@ -26,7 +26,8 @@ use crate::theme::*;
 pub enum Asset {
     Scene(PathBuf),
     Prefab(String),
-    Model(String),
+    /// A model by name, and its source file when it has one in the project.
+    Model(String, Option<String>),
     Material(String),
 }
 
@@ -35,7 +36,7 @@ impl Asset {
         match self {
             Asset::Scene(_) => "mountain",
             Asset::Prefab(_) => "package",
-            Asset::Model(_) => "box",
+            Asset::Model(..) => "box",
             Asset::Material(_) => "sparkles",
         }
     }
@@ -46,7 +47,7 @@ impl Asset {
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default(),
-            Asset::Prefab(n) | Asset::Model(n) | Asset::Material(n) => {
+            Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) => {
                 n.strip_prefix("builtin:").unwrap_or(n).to_string()
             }
         }
@@ -285,14 +286,14 @@ impl Bottom {
         out.extend(
             runity::builtin::NAMES
                 .iter()
-                .map(|n| Asset::Model(n.to_string())),
+                .map(|n| Asset::Model(n.to_string(), None)),
         );
         if let Ok(assets) = session.assets() {
             out.extend(
                 assets
                     .into_iter()
                     .filter(|a| a.kind == "model")
-                    .map(|a| Asset::Model(a.name)),
+                    .map(|a| Asset::Model(a.name, Some(a.file))),
             );
         }
         out.extend(
@@ -496,12 +497,20 @@ impl Bottom {
                     let _ = session;
                     requests.action = Some(Action::OpenPrefab(name));
                 }
-                Some(Asset::Model(name)) => requests.action = Some(Action::Place(name)),
+                Some(Asset::Model(name, _)) => requests.action = Some(Action::Place(name)),
                 Some(Asset::Material(name)) => {
                     requests.action = Some(Action::SetField("material".into(), name))
                 }
                 None => {}
             },
+            Event::Click {
+                count: 1,
+                button: runity::input::MouseButton::Left,
+            } => {
+                if let Some(asset) = self.entries.get(&node).cloned() {
+                    requests.inspect = Some(asset);
+                }
+            }
             Event::DragEnd { .. } => {
                 if let Some(asset) = self.entries.get(&node).cloned() {
                     requests.dropped = Some(asset);

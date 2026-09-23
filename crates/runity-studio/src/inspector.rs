@@ -21,7 +21,11 @@ use runity_editor::panels::{Field, MIXED};
 use runity_editor::Session;
 use runity_ui::{Event, NodeId, Style, Ui};
 
+use crate::bottom::Asset;
 use crate::menu::{Action, MenuItem};
+
+/// The picture the Inspector previews an asset in.
+pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
@@ -87,6 +91,10 @@ enum Part {
     Hex,
     /// One of the colour's hue, saturation and value, 0 to 1.
     Slider(usize),
+    /// An import setting of the asset shown, by name: a box.
+    Import(String),
+    /// An import setting that is on or off: a switch.
+    ImportToggle(String, bool),
 }
 
 /// sRGB bytes of a linear colour.
@@ -153,6 +161,9 @@ pub struct Inspector {
     swatch: Option<NodeId>,
     hex: Option<NodeId>,
     tracks: [Option<NodeId>; 3],
+    /// An asset from the Project shown instead of the selection, with its
+    /// source file.
+    asset: Option<(Asset, Option<String>)>,
     /// Built at least once: an empty selection at the start is still a
     /// panel to build.
     built: bool,
@@ -173,6 +184,7 @@ impl Inspector {
             revealed: BTreeSet::new(),
             playing: false,
             built: false,
+            asset: None,
             hsv: [0.0; 3],
             swatch: None,
             hex: None,
@@ -185,6 +197,9 @@ impl Inspector {
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        if self.asset.is_some() {
+            return;
+        }
         let ids = session.selection();
         let fields = session.inspect_all(&ids).unwrap_or_default();
         let playing = session.is_playing();
@@ -533,6 +548,224 @@ impl Inspector {
         }
     }
 
+    /// Go back to showing the selection.
+    pub fn clear_asset(&mut self) {
+        if self.asset.take().is_some() {
+            self.built = false;
+        }
+    }
+
+    /// Show an asset from the Project: its picture, how it is imported,
+    /// where it is used — Unity's Inspector on a selected asset. Returns
+    /// the preview's pixels (256 square) for the renderer, when it has one.
+    pub fn show_asset(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        asset: Asset,
+    ) -> Option<Vec<u8>> {
+        ui.clear(self.body);
+        self.parts.clear();
+        self.slots.clear();
+        self.swatch = None;
+        self.hex = None;
+        self.tracks = [None; 3];
+        self.showing.clear();
+        let (name, kind, file) = match &asset {
+            Asset::Model(n, f) => (n.clone(), "model", f.clone()),
+            Asset::Prefab(n) => (n.clone(), "prefab", Some(format!("prefabs/{n}.prefab"))),
+            Asset::Material(n) => (n.clone(), "material", None),
+            Asset::Scene(p) => (
+                p.file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                "scene",
+                None,
+            ),
+        };
+        let head = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(SPACE_1)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        icon(
+            ui,
+            head,
+            match kind {
+                "prefab" => "package",
+                "material" => "sparkles",
+                "scene" => "mountain",
+                _ => "box",
+            },
+            ACCENT,
+        );
+        ui.add_text(head, text().fill().text_size(13.0), &name);
+        tag(ui, head, kind, ACCENT_900, ACCENT_300);
+
+        let pixels = match kind {
+            "model" | "prefab" => session.thumbnail(&name, 256).ok(),
+            _ => None,
+        };
+        if pixels.is_some() {
+            let frame = ui.add(
+                self.body,
+                Style::row()
+                    .full_width()
+                    .padding_x(SPACE_4)
+                    .padding_y(SPACE_2),
+            );
+            let img = ui.add_image(
+                frame,
+                Style::default().size(200.0, 200.0).radius(RADIUS_MD),
+                PREVIEW,
+            );
+            ui.set_name(img, "asset preview");
+        }
+        if kind == "material" {
+            if let Some((_, m)) = session.palette().into_iter().find(|(n, _)| *n == name) {
+                let rgb = to_srgb(m.base_color);
+                let line = ui.add(
+                    self.body,
+                    Style::row()
+                        .full_width()
+                        .padding_x(SPACE_4)
+                        .gap(SPACE_2)
+                        .center_items(),
+                );
+                ui.add(
+                    line,
+                    Style::row()
+                        .size(40.0, 40.0)
+                        .radius(RADIUS_MD)
+                        .border(1.0, DIVIDER)
+                        .background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255)),
+                );
+                ui.add_text(
+                    line,
+                    text().mono(),
+                    &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
+                );
+            }
+        }
+        // How it is imported: a model with a source in the project.
+        if let (Some(source), "model") = (&file, kind) {
+            if let Ok(settings) = session.import_settings(source) {
+                self.heading(ui, "Import");
+                let line = ui.add(
+                    self.body,
+                    Style::row()
+                        .full_width()
+                        .padding_x(SPACE_4)
+                        .padding_y(2.0)
+                        .gap(SPACE_2)
+                        .center_items(),
+                );
+                ui.add_text(
+                    line,
+                    Style::default()
+                        .width(120.0)
+                        .fixed()
+                        .text_size(12.0)
+                        .text_color(LABEL)
+                        .nowrap(),
+                    "Scale",
+                );
+                let f = ui.add_field(
+                    line,
+                    field_style().fill().mono(),
+                    &trim_number(&settings.scale.to_string()),
+                );
+                ui.set_name(f, "import scale");
+                self.parts.insert(f, Part::Import("scale".into()));
+                for (field, label, on) in [
+                    (
+                        "recompute_normals",
+                        "Recompute normals",
+                        settings.recompute_normals,
+                    ),
+                    ("srgb", "Colour is sRGB", settings.srgb),
+                    (
+                        "origin_to_base",
+                        "Origin at the base",
+                        settings.origin_to_base,
+                    ),
+                ] {
+                    let line = ui.add(
+                        self.body,
+                        Style::row()
+                            .full_width()
+                            .padding_x(SPACE_4)
+                            .padding_y(2.0)
+                            .gap(SPACE_2)
+                            .center_items(),
+                    );
+                    ui.add_text(
+                        line,
+                        Style::default()
+                            .width(120.0)
+                            .fixed()
+                            .text_size(12.0)
+                            .text_color(LABEL)
+                            .nowrap(),
+                        label,
+                    );
+                    let switch = ui.add(
+                        line,
+                        Style::row()
+                            .size(34.0, 18.0)
+                            .radius(9.0)
+                            .padding(2.0)
+                            .border(1.0, if on { ACCENT } else { DIVIDER })
+                            .background(if on {
+                                ACCENT.alpha(25)
+                            } else {
+                                runity_ui::Color::TRANSPARENT
+                            })
+                            .clickable(),
+                    );
+                    ui.set_name(switch, format!("import {field}"));
+                    if on {
+                        ui.add(switch, Style::row().fill());
+                    }
+                    ui.add(
+                        switch,
+                        Style::row().size(12.0, 12.0).radius(6.0).background(if on {
+                            ACCENT
+                        } else {
+                            MUTED
+                        }),
+                    );
+                    self.parts
+                        .insert(switch, Part::ImportToggle(field.into(), on));
+                }
+            }
+        }
+        // Where it is used.
+        if let Some(f) = &file {
+            if let Ok(usages) = session.asset_usages(f) {
+                self.heading(ui, &format!("Used in ({})", usages.len()));
+                for u in usages.iter().take(30) {
+                    let line = ui.add(
+                        self.body,
+                        Style::row().full_width().padding_x(SPACE_4).padding_y(1.0),
+                    );
+                    ui.add_text(
+                        line,
+                        Style::default().text_size(11.5).text_color(MUTED).nowrap(),
+                        &u.to_string(),
+                    );
+                }
+            }
+        }
+        self.asset = Some((asset, file));
+        self.built = true;
+        pixels
+    }
+
     /// The material's colour: a swatch, `#rrggbb`, and hue, saturation
     /// and value tracks. Unity's colour field, flattened into the panel.
     fn color_editor(&mut self, ui: &mut Ui, linear: [f32; 3]) {
@@ -684,6 +917,34 @@ impl Inspector {
                     None => session.say(Level::Error, format!("{text:?} is not a colour: #rrggbb")),
                 }
                 requests.refresh = true;
+            }
+            (Part::Import(field), Event::Submit(value)) => {
+                if let Some((asset, Some(source))) = self.asset.clone() {
+                    match session.set_import_setting(&source, &field, value.trim()) {
+                        Ok(()) => session.say(
+                            Level::Info,
+                            format!("{source}: {field} = {value}, reimported"),
+                        ),
+                        Err(e) => session.say(Level::Error, e.to_string()),
+                    }
+                    requests.inspect = Some(asset);
+                }
+            }
+            (Part::ImportToggle(field, on), Event::Click { .. }) => {
+                if let Some((asset, Some(source))) = self.asset.clone() {
+                    match session.set_import_setting(
+                        &source,
+                        &field,
+                        if on { "false" } else { "true" },
+                    ) {
+                        Ok(()) => session.say(
+                            Level::Info,
+                            format!("{source}: {field} = {}, reimported", !on),
+                        ),
+                        Err(e) => session.say(Level::Error, e.to_string()),
+                    }
+                    requests.inspect = Some(asset);
+                }
             }
             (Part::AddComponent, Event::Submit(name)) => {
                 let name = name.trim().to_string();

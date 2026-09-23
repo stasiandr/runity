@@ -448,3 +448,18 @@ fn a_big_scene_stays_quick() {
     assert!(select.as_millis() < 80, "a selection took {select:?}");
     assert!(idle.as_millis() < 20, "an idle frame took {idle:?}");
 }
+
+#[test]
+fn an_asset_clicked_in_the_project_is_shown_in_the_inspector() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "asset campfire");
+    let dump = s.ui.dump();
+    assert!(dump.contains("#asset preview"), "{dump}");
+    assert!(dump.contains("Used in ("), "{dump}");
+    // Choosing something in the scene goes back to it.
+    click(&mut s, "line crate");
+    assert!(s.ui.find("asset preview").is_none());
+    assert!(s.ui.find("position x").is_some());
+}
