@@ -780,3 +780,47 @@ fn a_game_component_is_a_form_by_its_shape() {
         "the other fields kept theirs"
     );
 }
+
+#[test]
+fn edit_undo_names_the_step_and_an_asset_drops_into_the_hierarchy() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    click(&mut s, "menu bar Edit");
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"Undo "), "{dump}");
+    key(&mut s, Key::Escape);
+
+    // The sphere from the Project, let go on the campfire's line.
+    s.ui.paint();
+    let tile = s.ui.rect(s.ui.find("asset sphere").unwrap());
+    let line = s.ui.rect(s.ui.find("line campfire").unwrap());
+    let (ax, ay) = tile.center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 20.0,
+        y: ay - 20.0,
+    });
+    s.handle(&InputEvent::MouseMoved {
+        x: line.x + 60.0,
+        y: line.y + line.height / 2.0,
+    });
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let rows = s.session.hierarchy();
+    let sphere = rows.iter().find(|r| r.name == "sphere").unwrap_or_else(|| {
+        panic!(
+            "no sphere: {:?}\n{:?}",
+            rows.iter().map(|r| (&r.name, r.depth)).collect::<Vec<_>>(),
+            s.session
+                .console()
+                .iter()
+                .map(|l| &l.text)
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(sphere.depth, 1, "under the campfire");
+}

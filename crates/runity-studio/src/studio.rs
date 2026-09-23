@@ -1156,7 +1156,26 @@ impl Studio {
         let t = &self.toolbar;
         if let Some((_, items)) = t.menus.iter().find(|(n, _)| *n == node) {
             let r = self.ui.rect(node);
-            requests.menu = Some((items.clone(), r.x, r.y + r.height + 4.0));
+            // Undo and Redo say what they would do, as Unity's Edit menu.
+            let mut items = items.clone();
+            for item in &mut items {
+                match item.action {
+                    Some(Action::Undo) => {
+                        item.label = match self.session.undo_label() {
+                            Some(l) => format!("Undo {l}"),
+                            None => "Undo".into(),
+                        }
+                    }
+                    Some(Action::Redo) => {
+                        item.label = match self.session.redo_label() {
+                            Some(l) => format!("Redo {l}"),
+                            None => "Redo".into(),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            requests.menu = Some((items, r.x, r.y + r.height + 4.0));
             return true;
         }
         let action = if let Some(i) = t.tools.iter().position(|n| *n == node) {
@@ -1227,6 +1246,38 @@ impl Studio {
     /// it landed; a material, onto what it landed on.
     fn drop_asset(&mut self, asset: Asset) {
         let (px, py) = self.ui.pointer();
+        // Onto the Hierarchy: under the line it lands on, or at the top.
+        if let Some(parent) = self.hierarchy.drop_target(&self.ui) {
+            let s = &mut self.session;
+            let made = match &asset {
+                Asset::Prefab(name) => s.add_instance(parent, name).map(Some),
+                Asset::Model(name, _) => s.add(parent, name).map(Some),
+                _ => Ok(None),
+            };
+            match made {
+                Ok(Some(id)) => {
+                    // Named after what it is, as a drop into the view names it.
+                    let name = match &asset {
+                        Asset::Prefab(n) | Asset::Model(n, _) => {
+                            n.rsplit(':').next().unwrap_or(n).to_string()
+                        }
+                        _ => String::new(),
+                    };
+                    if !name.is_empty() {
+                        let _ = s.rename(id, &name);
+                        s.squash_last(2);
+                    }
+                    let _ = s.select(Some(id));
+                    if let Some(p) = parent {
+                        s.set_open(p, true);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => s.say(Level::Error, e.to_string()),
+            }
+            self.refresh();
+            return;
+        }
         let view = self.ui.rect(self.viewport);
         if !view.contains(px, py) {
             return;

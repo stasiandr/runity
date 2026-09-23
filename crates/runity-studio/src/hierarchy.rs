@@ -345,6 +345,16 @@ impl Hierarchy {
         }
     }
 
+    /// Where something from elsewhere — a Project entry — let go at the
+    /// pointer lands: `Some(Some(line))` on a line, `Some(None)` on the list
+    /// past its lines, `None` off the Hierarchy.
+    pub fn drop_target(&self, ui: &Ui) -> Option<Option<EntityId>> {
+        match self.drop_at(ui)? {
+            Drop::Into(id) | Drop::Before(id) | Drop::After(id) => Some(Some(id)),
+            Drop::End => Some(None),
+        }
+    }
+
     /// Where the pointer is over the list, as a drop.
     fn drop_at(&self, ui: &Ui) -> Option<Drop> {
         let (x, y) = ui.pointer();

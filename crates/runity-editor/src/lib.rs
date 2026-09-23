@@ -1908,6 +1908,12 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// Make the last `steps` undo steps one: what a caller that made
+    /// something and then named it wants undone in one go.
+    pub fn squash_last(&mut self, steps: usize) {
+        self.history.squash(steps);
+    }
+
     /// A number that changes whenever the document does: an edit, an undo,
     /// a reload. What a window compares once a frame; asking for the undo
     /// labels instead compares whole documents.
