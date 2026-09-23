@@ -9,6 +9,7 @@
 //!     states: {
 //!         "idle": (clip: "idle"),
 //!         "walk": (clip: "walk", speed_from: "speed"),
+//!         "move": (blend_by: "speed", blend: [(0.0, "idle"), (2.0, "walk")]),
 //!         "jump": (clip: "jump", looping: false),
 //!     },
 //!     transitions: [
@@ -34,7 +35,17 @@ use crate::animator::Animator;
 /// A state: which clip, and how it plays.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    /// The clip; empty for a blend state.
+    #[serde(default)]
     pub clip: String,
+    /// A 1D blend tree instead of one clip: clips at values of the
+    /// `blend_by` parameter, in rising order —
+    /// `[(0.0, "idle"), (1.5, "walk"), (5.0, "run")]` — and between two of
+    /// them a mix of both, in step. Unity's Blend Tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blend: Vec<(f32, String)>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend_by: String,
     #[serde(default = "yes")]
     pub looping: bool,
     /// Play speed, or `1.0`.
@@ -140,6 +151,25 @@ impl Graph {
             }
         }
         for (name, state) in &self.states {
+            if !state.blend.is_empty() {
+                if state.blend_by.is_empty() {
+                    out.push(format!(
+                        "state `{name}` blends by no parameter: say blend_by"
+                    ));
+                }
+                if state.blend.windows(2).any(|w| w[1].0 <= w[0].0) {
+                    out.push(format!("state `{name}`'s blend values do not rise"));
+                }
+                for (_, clip) in &state.blend {
+                    if !clips.contains(&clip.as_str()) {
+                        out.push(format!(
+                            "state `{name}` blends `{clip}`, which the model does not have{}",
+                            near(clip, clips)
+                        ));
+                    }
+                }
+                continue;
+            }
             if !clips.contains(&state.clip.as_str()) {
                 out.push(format!(
                     "state `{name}` plays `{}`, which the model does not have{}",
@@ -194,6 +224,27 @@ impl Controller {
         self.params.get(name).copied().unwrap_or(0.0)
     }
 
+    /// Which two of a blend state's clips, and how far between them, for
+    /// the parameter's value now: below the first is all the first, above
+    /// the last all the last.
+    fn mix(&self, state: &State, animator: &Animator) -> Option<(usize, usize, f32)> {
+        let index = |name: &str| animator.clips.iter().position(|c| c.name == name);
+        let value = self.param(&state.blend_by);
+        let points = &state.blend;
+        let (first, last) = (points.first()?, points.last()?);
+        if value <= first.0 {
+            let a = index(&first.1)?;
+            return Some((a, a, 0.0));
+        }
+        if value >= last.0 {
+            let a = index(&last.1)?;
+            return Some((a, a, 0.0));
+        }
+        let pair = points.windows(2).find(|w| value <= w[1].0)?;
+        let weight = (value - pair[0].0) / (pair[1].0 - pair[0].0).max(1e-6);
+        Some((index(&pair[0].1)?, index(&pair[1].1)?, weight))
+    }
+
     /// Take the first transition whose conditions hold, if any, and play
     /// what the state says on `animator`. Returns the state entered.
     pub fn update(&mut self, animator: &mut Animator) -> Option<String> {
@@ -220,7 +271,13 @@ impl Controller {
         };
         self.triggers.clear();
         if let Some((name, fade)) = &entered {
-            if let Some(state) = self.graph.states.get(name) {
+            if let Some(state) = self.graph.states.get(name).filter(|s| !s.blend.is_empty()) {
+                if let Some((a, b, w)) = self.mix(state, animator) {
+                    // From a plain clip: fade in. Between blend states:
+                    // the same cycle, other clips.
+                    animator.blend(a, b, w, *fade);
+                }
+            } else if let Some(state) = self.graph.states.get(name) {
                 if let Some(clip) = animator.clips.iter().position(|c| c.name == state.clip) {
                     if state.looping {
                         animator.play(clip, *fade);
@@ -232,6 +289,11 @@ impl Controller {
             self.state = Some(name.clone());
         }
         if let Some(state) = self.state.as_ref().and_then(|s| self.graph.states.get(s)) {
+            if entered.is_none() && !state.blend.is_empty() {
+                if let Some((a, b, w)) = self.mix(state, animator) {
+                    animator.blend(a, b, w, 0.0);
+                }
+            }
             let factor = state.speed_from.as_deref().map_or(1.0, |p| self.param(p));
             animator.set_speed(state.speed * factor);
         }
@@ -328,6 +390,57 @@ mod tests {
         );
         animator.advance(0.6);
         assert_eq!(controller.update(&mut animator).as_deref(), Some("idle"));
+    }
+
+    #[test]
+    fn a_blend_state_mixes_the_two_clips_either_side_of_the_parameter() {
+        let graph: Graph = ron::from_str(
+            r#"(
+            start: "move",
+            states: {
+                "move": (blend_by: "speed", blend: [(0.0, "idle"), (2.0, "walk")]),
+                "jump": (clip: "jump", looping: false),
+            },
+            transitions: [
+                (from: "move", to: "jump", when: [Trigger("jump")], fade: 0.1),
+                (from: "jump", to: "move", when: [Finished]),
+            ],
+        )"#,
+        )
+        .unwrap();
+        assert!(graph.problems(&["idle", "walk", "jump"]).is_empty());
+        assert!(graph
+            .problems(&["idle", "jump"])
+            .iter()
+            .any(|p| p.contains("blends `walk`")));
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+
+        controller.set("speed", 0.5);
+        controller.update(&mut animator);
+        let blend = animator.blending().expect("a blend");
+        assert_eq!((blend.a, blend.b), (0, 1));
+        assert!((blend.weight - 0.25).abs() < 1e-6, "{blend:?}");
+
+        // The weight follows the parameter and the cycle keeps going.
+        animator.advance(0.3);
+        controller.set("speed", 1.5);
+        controller.update(&mut animator);
+        let later = animator.blending().unwrap();
+        assert!((later.weight - 0.75).abs() < 1e-6);
+        assert!(later.phase > 0.0, "the cycle kept going: {later:?}");
+        controller.set("speed", 9.0);
+        controller.update(&mut animator);
+        assert_eq!(animator.blending().unwrap().a, 1, "all walk past the end");
+
+        // Out to a plain clip and back.
+        controller.trigger("jump");
+        assert_eq!(controller.update(&mut animator).as_deref(), Some("jump"));
+        assert!(animator.blending().is_none());
+        animator.advance(0.6);
+        assert_eq!(controller.update(&mut animator).as_deref(), Some("move"));
+        assert!(animator.blending().is_some());
+        assert_eq!(animator.advance(0.05).len(), 1, "a pose for the one joint");
     }
 
     #[test]

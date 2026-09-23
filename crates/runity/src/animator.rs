@@ -42,6 +42,23 @@ pub struct Animator {
     previous: Option<Playing>,
     fade_remaining: f32,
     fade_length: f32,
+    /// Two clips mixed by a weight, in step: a blend tree's output, in
+    /// place of `current` while it is set.
+    blend: Option<Blend>,
+}
+
+/// Two clips playing in step and mixed: idle and walk at half a metre a
+/// second is a quarter of the way between them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blend {
+    pub a: usize,
+    pub b: usize,
+    /// 0 is all `a`, 1 all `b`.
+    pub weight: f32,
+    /// Where both are in their cycle, 0..1: a walk and a run mixed out of
+    /// step put the left foot of one on the right foot of the other.
+    pub phase: f32,
+    pub speed: f32,
 }
 
 impl Animator {
@@ -53,6 +70,7 @@ impl Animator {
             previous: None,
             fade_remaining: 0.0,
             fade_length: 0.0,
+            blend: None,
         }
     }
 
@@ -66,10 +84,11 @@ impl Animator {
     /// calls `play(walk)` every frame while walking would otherwise restart
     /// the walk every frame and stand still with its legs twitching.
     pub fn play(&mut self, clip: usize, fade: f32) {
-        if self.current.map(|p| p.clip) == Some(clip) {
+        if self.blend.is_none() && self.current.map(|p| p.clip) == Some(clip) {
             return;
         }
-        self.previous = self.current;
+        self.previous = self.freeze_blend().or(self.current);
+        self.blend = None;
         self.fade_length = fade.max(0.0);
         self.fade_remaining = self.fade_length;
         self.current = Some(Playing {
@@ -92,6 +111,55 @@ impl Animator {
         if let Some(playing) = &mut self.current {
             playing.speed = speed;
         }
+        if let Some(blend) = &mut self.blend {
+            blend.speed = speed;
+        }
+    }
+
+    /// Mix two clips by `weight`, in step — what a blend tree plays. Called
+    /// again while blending, it only moves the clips and the weight on and
+    /// keeps the cycle where it is; called from a plain clip, it fades in
+    /// over `fade` seconds.
+    pub fn blend(&mut self, a: usize, b: usize, weight: f32, fade: f32) {
+        let weight = weight.clamp(0.0, 1.0);
+        if let Some(blend) = &mut self.blend {
+            (blend.a, blend.b, blend.weight) = (a, b, weight);
+            return;
+        }
+        self.previous = self.current;
+        self.fade_length = fade.max(0.0);
+        self.fade_remaining = self.fade_length;
+        self.current = Some(Playing {
+            clip: a,
+            time: 0.0,
+            speed: 1.0,
+            looping: true,
+        });
+        self.blend = Some(Blend {
+            a,
+            b,
+            weight,
+            phase: 0.0,
+            speed: 1.0,
+        });
+    }
+
+    /// The blend now, if one is playing.
+    pub fn blending(&self) -> Option<Blend> {
+        self.blend
+    }
+
+    /// The heavier clip of a blend at its time, for a fade out of it.
+    fn freeze_blend(&self) -> Option<Playing> {
+        let blend = self.blend?;
+        let clip = if blend.weight < 0.5 { blend.a } else { blend.b };
+        let duration = self.clips.get(clip)?.duration;
+        Some(Playing {
+            clip,
+            time: blend.phase * duration,
+            speed: blend.speed,
+            looping: true,
+        })
     }
 
     /// Whether a non-looping clip has run out.
@@ -110,6 +178,12 @@ impl Animator {
         if let Some(playing) = &mut self.current {
             playing.time += dt * playing.speed;
         }
+        if let Some(blend) = &mut self.blend {
+            // One cycle takes as long as the mix of the two lengths.
+            let length = |c: usize| self.clips.get(c).map_or(1.0, |c| c.duration.max(1e-3));
+            let cycle = length(blend.a) + (length(blend.b) - length(blend.a)) * blend.weight;
+            blend.phase = (blend.phase + dt * blend.speed / cycle).rem_euclid(1.0);
+        }
         if let Some(previous) = &mut self.previous {
             // The outgoing clip keeps running while it fades. Freezing it
             // instead makes the blend cross from a still pose, which looks
@@ -126,7 +200,25 @@ impl Animator {
             Some(clip.sample(&self.skeleton, playing.time, playing.looping))
         };
 
-        let Some(current) = self.current.and_then(sample) else {
+        let current = match self.blend {
+            Some(blend) => {
+                let at = |c: usize| -> Option<Vec<PoseTransform>> {
+                    let clip = self.clips.get(c)?;
+                    Some(clip.sample(&self.skeleton, blend.phase * clip.duration, true))
+                };
+                match (at(blend.a), at(blend.b)) {
+                    (Some(a), Some(b)) => Some(
+                        a.iter()
+                            .zip(b.iter())
+                            .map(|(x, y)| x.lerp(y, blend.weight))
+                            .collect(),
+                    ),
+                    (a, b) => a.or(b),
+                }
+            }
+            None => self.current.and_then(sample),
+        };
+        let Some(current) = current else {
             return self.skeleton.rest_pose();
         };
         let Some(previous) = self.previous.and_then(sample) else {
