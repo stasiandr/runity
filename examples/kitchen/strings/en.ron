@@ -36,5 +36,8 @@
     "lobby.start": "Open the doors",
     "lobby.invite": "Invite friends",
     "lobby.leave": "Leave",
+    "lobby.ready": "I'm ready",
+    "lobby.unready": "Not ready after all",
+    "lobby.is_ready": "ready",
     "lobby.wait": "The host opens the doors",
 }

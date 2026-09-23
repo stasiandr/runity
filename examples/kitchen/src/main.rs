@@ -154,6 +154,7 @@ impl Game {
             }
             Wish::Friends => self.lobby.friends(),
             Wish::Invite => self.lobby.invite(),
+            Wish::Ready(ready) => front::set_ready(&mut self.world, &self.party, ready),
             Wish::Start => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Again => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Leave => self.leave(ctx),

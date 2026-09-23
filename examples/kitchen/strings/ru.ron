@@ -36,5 +36,8 @@
     "lobby.start": "Открыть двери",
     "lobby.invite": "Позвать друзей",
     "lobby.leave": "Уйти",
+    "lobby.ready": "Я готов",
+    "lobby.unready": "Ещё не готов",
+    "lobby.is_ready": "готов",
     "lobby.wait": "Двери откроет хозяин",
 }

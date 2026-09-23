@@ -1337,3 +1337,29 @@ fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are
     }
     assert!(!draw(&k, &mut front).iter().any(|(t, ..)| t.starts_with('+')), "and gone");
 }
+
+#[test]
+fn a_guest_says_they_are_ready_and_the_host_sees_it_in_the_lobby() {
+    let (mut host, mut guest) = together_shut();
+    until(&mut host, &mut guest, |_, g| owns(g, 1));
+    crate::front::set_ready(&mut guest.world, &guest.party, true);
+    let me = guest.party.me().0;
+    until(&mut host, &mut guest, |h, _| crate::front::ready_players(&h.world).contains(&me));
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let mut ui = runity::ui::Ui::new();
+    front.draw(
+        &host.world,
+        &host.party,
+        &mut runity::widgets::Widgets::new(),
+        &mut ui,
+        &runity::input::Input::default(),
+        runity::glam::Vec2::new(1280.0, 720.0),
+        &strings,
+    );
+    let words: Vec<&str> = ui.texts.iter().map(|t| t.text.as_str()).collect();
+    assert!(words.contains(&"guest — ready") && words.contains(&"host"), "{words:?}");
+    assert!(words.iter().any(|w| w.starts_with("Open the doors") && w.ends_with("(1/2)")), "{words:?}");
+}

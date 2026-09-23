@@ -43,6 +43,8 @@ pub enum Wish {
     Start,
     /// Steam's invite dialog, for the lobby.
     Invite,
+    /// This player is ready, or not after all.
+    Ready(bool),
     Again,
     /// Back to the menu, out of any session.
     Leave,
@@ -233,8 +235,22 @@ impl Front {
                     // The lobby: who is in, and the host's start.
                     self.talk = None;
                     let host = party.is_host();
-                    self.lobby
-                        .set_items("players", party.roster().into_iter().map(|(_, name)| name).collect());
+                    // Who is in, and who is ready: said on their cooks.
+                    let ready = ready_players(world);
+                    let roster = party.roster();
+                    let set = roster.iter().filter(|(p, _)| ready.contains(&p.0)).count();
+                    let is_ready = strings.resolve("@lobby.is_ready");
+                    self.lobby.set_items(
+                        "players",
+                        roster
+                            .iter()
+                            .map(|(p, name)| if ready.contains(&p.0) { format!("{name} — {is_ready}") } else { name.clone() })
+                            .collect(),
+                    );
+                    let mine = ready.contains(&party.me().0);
+                    self.lobby.set_text("ready", if mine { "@lobby.unready" } else { "@lobby.ready" });
+                    let start = strings.resolve("@lobby.start");
+                    self.lobby.set_text("start", format!("{start} ({set}/{})", roster.len()));
                     self.lobby.set_hidden("start", !host);
                     self.lobby.set_hidden("wait", host);
                     self.lobby.set_hidden("invite", !self.steam);
@@ -244,6 +260,9 @@ impl Front {
                     }
                     if done.clicked("invite") {
                         wish = Some(Wish::Invite);
+                    }
+                    if done.clicked("ready") {
+                        wish = Some(Wish::Ready(!mine));
                     }
                     if done.clicked("leave") {
                         wish = Some(Wish::Leave);
@@ -474,6 +493,25 @@ pub fn style() -> runity::widgets::Style {
         radius: 10.0,
         bevel: 5.0,
         shadow: 6.0,
+    }
+}
+
+/// The players who said they are ready, by peer: whoever sits at a cook
+/// that says so.
+pub fn ready_players(world: &World) -> Vec<u32> {
+    world
+        .query::<(&Seat, &crate::components::Ready)>()
+        .iter()
+        .filter(|(_, r)| r.0)
+        .map(|(s, _)| s.0)
+        .collect()
+}
+
+/// This player ready or not: on the cook they play, which is theirs to
+/// send.
+pub fn set_ready(world: &mut World, party: &Party, ready: bool) {
+    for (cook, _) in local_cooks(world, party) {
+        let _ = world.insert_one(cook, crate::components::Ready(ready));
     }
 }
 
