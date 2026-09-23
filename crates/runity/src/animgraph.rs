@@ -330,6 +330,91 @@ impl Graph {
 
     /// What cannot work, in words: a start or a transition naming a state
     /// that is not there, a state naming a clip the model does not have.
+    /// What is wrong with the graph's shape, whatever the model: a state
+    /// nothing leads to, a state nothing leaves that is not meant to hold
+    /// (one playing once), and a transition that can never be taken
+    /// because one before it from the same state always is.
+    pub fn shape_problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        // Reachable from the start, by any transition (Any State's from
+        // every state).
+        let mut reached: std::collections::BTreeSet<&str> = Default::default();
+        let mut next = vec![self.start.as_str()];
+        while let Some(state) = next.pop() {
+            if !reached.insert(state) {
+                continue;
+            }
+            for t in &self.transitions {
+                if t.from == state || t.from == ANY {
+                    next.push(t.to.as_str());
+                }
+            }
+        }
+        for (name, state) in &self.states {
+            if !reached.contains(name.as_str()) {
+                out.push(format!(
+                    "state `{name}` is never reached: no transition from `{}` leads there",
+                    self.start
+                ));
+            }
+            let leaves = self
+                .transitions
+                .iter()
+                .any(|t| (t.from == *name || t.from == ANY) && t.to != *name);
+            if !leaves && !state.looping && self.states.len() > 1 {
+                out.push(format!(
+                    "state `{name}` plays once and nothing leaves it: the character stops there"
+                ));
+            }
+        }
+        // First match wins: after an unconditional exit from a state, the
+        // rest from it are never looked at.
+        let mut open: std::collections::BTreeMap<&str, &str> = Default::default();
+        for t in &self.transitions {
+            if let Some(first) = open.get(t.from.as_str()) {
+                out.push(format!(
+                    "the transition `{}` → `{}` is never taken: `{}` → `{first}` before it always is",
+                    t.from, t.to, t.from
+                ));
+                continue;
+            }
+            if t.when.is_empty() {
+                open.insert(t.from.as_str(), t.to.as_str());
+            }
+        }
+        out
+    }
+
+    /// Every parameter the graph reads: in conditions, blends and speeds.
+    pub fn parameters(&self) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for t in &self.transitions {
+            for c in &t.when {
+                match c {
+                    Condition::Above(p, _)
+                    | Condition::Below(p, _)
+                    | Condition::Is(p)
+                    | Condition::Not(p)
+                    | Condition::Trigger(p) => {
+                        out.insert(p.clone());
+                    }
+                    Condition::Finished => {}
+                }
+            }
+        }
+        for state in self.states.values() {
+            for p in [&state.blend_by, &state.blend_by_y] {
+                if !p.is_empty() {
+                    out.insert(p.clone());
+                }
+            }
+            for p in [&state.speed_from, &state.time_from].into_iter().flatten() {
+                out.insert(p.clone());
+            }
+        }
+        out
+    }
+
     pub fn problems(&self, clips: &[&str]) -> Vec<String> {
         let mut out = Vec::new();
         let states: Vec<&str> = self.states.keys().map(String::as_str).collect();
@@ -966,6 +1051,41 @@ mod tests {
         }
         // Two seconds of a one-second walk: each foot twice, in order.
         assert_eq!(heard, ["left", "right", "left", "right"]);
+    }
+
+    #[test]
+    fn a_graph_says_what_is_never_reached_never_left_or_never_taken() {
+        let graph: Graph = ron::from_str(
+            r#"(start: "idle", states: {
+                "idle": (clip: "idle", transitions: [
+                    (to: "walk"),
+                    (to: "jump", when: [Trigger("jump")]),
+                ]),
+                "walk": (clip: "walk", speed_from: "speed"),
+                "jump": (clip: "jump", looping: false),
+                "swim": (clip: "idle"),
+            })"#,
+        )
+        .unwrap();
+        let found = graph.shape_problems();
+        assert!(
+            found.iter().any(|p| p.contains("`swim` is never reached")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("`idle` → `jump` is never taken")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("`jump` plays once and nothing leaves")),
+            "{found:?}"
+        );
+        let wanted: Vec<String> = graph.parameters().into_iter().collect();
+        assert_eq!(wanted, ["jump", "speed"]);
     }
 
     #[test]

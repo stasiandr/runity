@@ -99,6 +99,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
     }
 
     expansion(project, &mut out);
+    animators(project, &mut out);
 
     let input = project.root().join(runity::project::INPUT);
     if input.is_file() {
@@ -688,6 +689,57 @@ fn parse<T: serde::de::DeserializeOwned>(
             // ron says where: line, column, and what it expected.
             out.push(error(file, e));
             None
+        }
+    }
+}
+
+/// The animator graphs: their shape (a state never reached, never left, a
+/// transition never taken), and every parameter they read that the game's
+/// code never names — a graph waiting on a number nobody sets.
+fn animators(project: &Project, out: &mut Vec<Finding>) {
+    let dir = project.root().join(runity::project::ANIMATORS);
+    let graphs = files(&dir, "ron");
+    if graphs.is_empty() {
+        return;
+    }
+    // The game's code, as text: a parameter is set by name.
+    let mut code = String::new();
+    let mut stack = vec![project.root().join("src")];
+    while let Some(folder) = stack.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                code.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+            }
+        }
+    }
+    for path in graphs {
+        let file = relative(project, &path);
+        let Some(graph) = parse::<runity::animgraph::Graph>(&path, &file, out) else {
+            continue;
+        };
+        for problem in graph.shape_problems() {
+            out.push(Finding {
+                severity: Severity::Warning,
+                file: file.clone(),
+                message: problem,
+            });
+        }
+        if code.is_empty() {
+            continue;
+        }
+        for parameter in graph.parameters() {
+            if !code.contains(&format!("\"{parameter}\"")) {
+                out.push(Finding {
+                    severity: Severity::Warning,
+                    file: file.clone(),
+                    message: format!(
+                        "parameter `{parameter}` is never set: no \"{parameter}\" in src/"
+                    ),
+                });
+            }
         }
     }
 }
