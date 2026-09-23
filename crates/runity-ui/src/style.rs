@@ -221,6 +221,12 @@ impl Style {
         self.width(w).height(h)
     }
 
+    /// A fraction of the parent's width: a progress bar's fill.
+    pub fn width_fraction(mut self, f: f32) -> Self {
+        self.layout.size.width = percent(f.clamp(0.0, 1.0));
+        self
+    }
+
     /// As wide as the parent allows.
     pub fn full_width(mut self) -> Self {
         self.layout.size.width = percent(1.0);

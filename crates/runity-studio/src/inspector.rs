@@ -841,10 +841,9 @@ impl Inspector {
         }
         for (i, track) in self.tracks.iter().enumerate() {
             let Some(track) = track else { continue };
-            let width = ui.rect(*track).width.max(1.0);
             if let Some(fill) = ui.children(*track).first().copied() {
                 let v = self.hsv[i];
-                ui.restyle(fill, |s| s.width((v * width).max(6.0)));
+                ui.restyle(fill, |s| s.width_fraction(v.max(0.04)));
             }
         }
     }
