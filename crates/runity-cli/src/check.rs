@@ -84,6 +84,8 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
+    expansion(project, &mut out);
+
     let input = project.root().join(runity::project::INPUT);
     if input.is_file() {
         if let Err(e) = runity::Actions::load(&input) {
@@ -99,6 +101,54 @@ pub fn check(project: &Project) -> Vec<Finding> {
     check_sidecars(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out
+}
+
+/// What only expanding prefabs finds: an override for a part the prefab no
+/// longer has, and a variant that is, some levels down, a variant of
+/// itself. A missing prefab is not repeated here; the line naming it was
+/// already reported.
+///
+/// Prefab files first, each placed once on its own, so a variant's stale
+/// override is reported against the variant — and then not again for every
+/// scene that places it.
+fn expansion(project: &Project, out: &mut Vec<Finding>) {
+    let (prefabs, _) = runity::Prefabs::of(project);
+    let mut said: HashSet<String> = HashSet::new();
+    let mut report = |file: &str, done: runity::Instanced, out: &mut Vec<Finding>| {
+        for problem in done.problems {
+            if problem.reason == "no prefab by that name" {
+                continue;
+            }
+            let message = format!(
+                "`{}` (an instance of `{}`): {}",
+                problem.entity_name, problem.prefab, problem.reason
+            );
+            if said.insert(message.clone()) {
+                out.push(error(file, message));
+            }
+        }
+    };
+    for path in files(&project.prefabs(), "prefab") {
+        let file = relative(project, &path);
+        let Some(name) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let alone = Scene {
+            entities: vec![EntityDesc {
+                name: name.clone(),
+                prefab: name,
+                ..EntityDesc::default()
+            }],
+            ..Scene::default()
+        };
+        report(&file, runity::instantiate(&alone, &prefabs), out);
+    }
+    for path in files(&project.scenes(), "ron") {
+        let file = relative(project, &path);
+        if let Ok(scene) = Scene::load(&path) {
+            report(&file, runity::instantiate(&scene, &prefabs), out);
+        }
+    }
 }
 
 fn names(project: &Project, out: &mut Vec<Finding>) -> Names {

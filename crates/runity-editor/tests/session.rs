@@ -1716,3 +1716,71 @@ fn renaming_a_material_keeps_the_open_scene_and_its_undo_pointing_at_it() {
     session.save_scene(None).unwrap();
     assert!(!std::fs::read_to_string(&path).unwrap().contains("clay"));
 }
+
+#[test]
+fn an_instance_becomes_a_variant_and_its_overrides_apply_to_the_variant_only() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "variant",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    let root = root_of(&path);
+    let base = root.join("prefabs/campfire.prefab");
+    let base_text = "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n";
+    std::fs::write(&base, base_text).unwrap();
+    session.open_scene(&path).unwrap();
+    let (one, two): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
+    let part: EntityId = "c2".parse().unwrap();
+
+    // A mossy fire, saved as what the next fire placed will be.
+    session.set_material_name(one.within(part), "moss").unwrap();
+    session.make_variant(one, "mossy").unwrap();
+    let variant = std::fs::read_to_string(root.join("prefabs/mossy.prefab")).unwrap();
+    assert!(variant.contains("prefab: \"campfire\""), "{variant}");
+    assert!(variant.contains("\"00000000000000c2\""), "{variant}");
+    assert_eq!(session.entity_prefab(one).as_deref(), Some("mossy"));
+    assert!(session.scene().get(one).unwrap().overrides.is_empty());
+    assert_eq!(
+        session.material_name(one.within(part)).as_deref(),
+        Some("moss"),
+        "drawn as before"
+    );
+    assert_eq!(
+        session.material_name(two.within(part)).as_deref(),
+        Some("ember")
+    );
+
+    // An override on the variant's instance, applied: into the variant,
+    // never into the base the other fire still uses.
+    session
+        .set_transform(
+            one.within(part),
+            transform([0.0, 1.5, 0.0], [0.0; 3], [1.0; 3]),
+        )
+        .unwrap();
+    assert_eq!(session.apply_overrides(one).unwrap(), 1);
+    assert_eq!(std::fs::read_to_string(&base).unwrap(), base_text);
+    let variant = std::fs::read_to_string(root.join("prefabs/mossy.prefab")).unwrap();
+    assert!(variant.contains("1.5"), "{variant}");
+    assert!(
+        variant.contains("moss"),
+        "the earlier override kept: {variant}"
+    );
+    assert_eq!(session.transform(one.within(part)).unwrap().position.y, 1.5);
+
+    // A second instance of the variant is mossy from the start.
+    let three = session.add_instance(None, "mossy").unwrap();
+    assert_eq!(
+        session.material_name(three.within(part)).as_deref(),
+        Some("moss")
+    );
+    assert!(
+        session.make_variant(two, "mossy").is_err(),
+        "the name is taken"
+    );
+}

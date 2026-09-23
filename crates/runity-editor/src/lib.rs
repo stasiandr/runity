@@ -632,6 +632,16 @@ impl Session {
             if let Some(target) = prefab.children.iter_mut().find_map(|c| find(c, *part)) {
                 change.apply(target);
                 applied += 1;
+            } else if !prefab.prefab.is_empty() {
+                // A variant: the part is its base's, so the change becomes
+                // one of the variant's own overrides — the base file is
+                // other variants' base too, and stays as it is.
+                prefab
+                    .overrides
+                    .entry(*part)
+                    .or_default()
+                    .merge(change.clone());
+                applied += 1;
             }
         }
         runity::Prefabs::save(&prefab, &path).map_err(EditError::Io)?;
@@ -639,6 +649,62 @@ impl Session {
         self.edit_entity(instance)?.overrides.clear();
         self.respawn();
         Ok(applied)
+    }
+
+    /// Save an instance, with everything its line changes, as a new prefab
+    /// variant — Unity's "Create Prefab Variant" — and make the instance an
+    /// instance of that.
+    ///
+    /// The variant file is the instance's line minus its placement: the
+    /// same `prefab:`, material, physics, components, overrides and
+    /// children. Nothing is drawn differently afterwards; the difference is
+    /// that the next campfire placed from `name` is already mossy. One undo
+    /// step in the scene; the file stays, as a saved prefab does.
+    pub fn make_variant(&mut self, instance: EntityId, name: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        if name.is_empty() {
+            return Err(EditError::EmptyName("a prefab variant"));
+        }
+        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
+        let line = self
+            .history
+            .scene()
+            .get(instance)
+            .ok_or(EditError::NoEntity(instance))?
+            .clone();
+        if line.prefab.is_empty() {
+            return Err(EditError::Scene(format!(
+                "{instance} is not a prefab instance; make_prefab makes a prefab of it"
+            )));
+        }
+        if self.prefabs.get(name).is_some() {
+            return Err(EditError::Scene(format!(
+                "there is a prefab called `{name}` already"
+            )));
+        }
+        let variant = EntityDesc {
+            id: EntityId::fresh(),
+            name: name.to_string(),
+            model: String::new(),
+            prefab: line.prefab.clone(),
+            transform: runity::Transform::default(),
+            ..line.clone()
+        };
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(format!("{name}.{}", runity::prefab::EXTENSION));
+        runity::Prefabs::save(&variant, &path).map_err(EditError::Io)?;
+        self.prefabs.insert(name.to_string(), variant);
+
+        let entity = self.edit_entity(instance)?;
+        *entity = EntityDesc {
+            id: line.id,
+            name: line.name,
+            prefab: name.to_string(),
+            transform: line.transform,
+            ..EntityDesc::default()
+        };
+        self.respawn();
+        Ok(())
     }
 
     /// Drop an instance's overrides — Unity's "Revert" — as one undoable

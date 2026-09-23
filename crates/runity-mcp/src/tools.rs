@@ -71,6 +71,7 @@ pub fn list() -> Vec<Value> {
         tool("duplicate_entity", "Copy an entity with its children, as its next sibling. Returns the copy's id.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
+        tool("make_variant", "Save a prefab instance, with its overrides, material, components and children, as prefabs/<name>.prefab — a variant of its prefab — and make it an instance of that. Later changes to the base still reach the variant where it said nothing.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("scatter", "Scatter copies of a model, or instances of a prefab, over a disc — trees, rocks, grass — as one group and one undo step. The same seed gives the same layout. Returns the group's id.", json!({
             "what": { "type": "string", "description": "a model (builtin:cone, or a name from assets/) or a prefab name" },
             "centre": vec3("the middle of the disc"),
@@ -179,6 +180,17 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!(
                 "prefabs/{name}.prefab written; {id} is now an instance"
+            ))])
+        }
+        "make_variant" => {
+            let id = id(args, "id")?;
+            let name = string(args, "name")?;
+            server
+                .session()?
+                .make_variant(id, &name)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "prefabs/{name}.prefab written as a variant; {id} is now an instance of it"
             ))])
         }
         "scatter" => {

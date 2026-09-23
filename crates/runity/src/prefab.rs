@@ -14,15 +14,17 @@
 //! reason scenes are RON while meshes are binary. It is authored input, not
 //! compiled output.
 //!
-//! **What this does not do yet:** overriding something deep inside an
-//! instance — "this campfire's third stone is turned a bit" — which is the
-//! part of Unity's prefab system that is genuinely hard, and the part that
-//! goes wrong quietly when it is built in a hurry. An instance overrides its
-//! own name, placement, material and physics, and can have children of its
-//! own; anything deeper is a change to the prefab. When that turns out to be
-//! too little, the missing piece is an override list on the instance, keyed
-//! by a path through the prefab — and it should be designed then, against a
-//! real scene that needs it.
+//! An instance changes its own name, placement, material, physics and
+//! components on its line, can have children of its own, and changes parts
+//! of the prefab through `overrides`, keyed by each part's id in the prefab
+//! file — so moving a stone in the file does not orphan the override.
+//!
+//! A **variant** is a prefab file whose root is itself an instance: a
+//! campfire with mossy stones is `(name: "mossy campfire", prefab:
+//! "campfire", overrides: {…})`. Unity needs a separate asset kind for
+//! this; here it is the same line a scene would write, in its own file.
+//! The base still reaches every variant where the variant said nothing, and
+//! a scene overrides a variant's parts by the same ids as the base's.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -326,9 +328,31 @@ fn resolve(
     // Everything in the prefab is scoped to this instance. A prefab that is
     // itself built out of prefabs is expanded on the way, so a shelter made
     // of walls is one thing to place.
-    let mut root = expand(template, Some(id), prefabs, depth + 1, problems, parts);
-    // The root is the instance itself, not a part of it.
-    parts.remove(&id.within(template.id));
+    let mut root =
+        if template.prefab.is_empty() {
+            let root = expand(template, Some(id), prefabs, depth + 1, problems, parts);
+            // The root is the instance itself, not a part of it.
+            parts.remove(&id.within(template.id));
+            root
+        } else {
+            // A variant: a prefab whose root is an instance of another — Unity's
+            // prefab variant, which here is nothing but a prefab file written
+            // the way a scene line is. Its root *is* this instance, so the base
+            // is expanded straight into this instance's scope: a scene override
+            // names a base part by the same id the variant's own overrides do,
+            // and a variant of a variant is no deeper to address.
+            let mut root = resolve(template, id, prefabs, depth + 1, problems, parts)
+                .unwrap_or_else(|| EntityDesc {
+                    children: Vec::new(),
+                    ..template.clone()
+                });
+            root.prefab = String::new();
+            for child in &template.children {
+                root.children
+                    .push(expand(child, Some(id), prefabs, depth + 1, problems, parts));
+            }
+            root
+        };
 
     // The instance *is* the prefab's root, so it keeps the instance's ID.
     // Its own overrides: name and placement always, because that is what
@@ -724,6 +748,115 @@ mod tests {
             out.parts.get(&one.within("c3".parse().unwrap())),
             Some(&(one, "c3".parse().unwrap())),
             "and every part knows where it came from"
+        );
+    }
+
+    /// A campfire with mossy stones, a kettle, and no fire of its own
+    /// making: the variant's file is a scene line. With the base stone's id.
+    fn with_variant() -> (Prefabs, EntityId) {
+        let base = campfire();
+        let stone = base.children[1].id;
+        let mut prefabs = Prefabs::new();
+        prefabs.insert("campfire", base);
+        let text = format!(
+            r#"(
+                name: "camp kitchen",
+                prefab: "campfire",
+                overrides: {{ "{stone}": (material: "moss") }},
+                children: [(name: "kettle", model: "builtin:sphere", transform: (position: (0.0, 0.5, 0.0)))],
+            )"#
+        );
+        let mut variant: EntityDesc = ron::from_str(&text).unwrap();
+        crate::scene::assign_ids(std::slice::from_mut(&mut variant), &mut HashSet::new());
+        prefabs.insert("kitchen", variant);
+        (prefabs, stone)
+    }
+
+    #[test]
+    fn a_variant_is_its_base_with_its_own_changes() {
+        let (prefabs, _) = with_variant();
+        let scene = parse(
+            r#"(entities: [(name: "west", model: "", prefab: "kitchen",
+                transform: (position: (5.0, 0.0, 0.0)))])"#,
+        );
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        let names: Vec<&str> = done
+            .scene
+            .flatten()
+            .iter()
+            .map(|(e, _)| e.name.as_str())
+            .collect();
+        assert_eq!(names, ["west", "ember", "stone", "kettle"]);
+        assert_eq!(
+            done.scene.find("stone").unwrap().material,
+            MaterialRef::Named("moss".into()),
+            "the variant's override"
+        );
+        assert_eq!(
+            done.scene.find("ember").unwrap().material,
+            MaterialRef::Named("ember".into()),
+            "the base, where the variant said nothing"
+        );
+        let west = scene.entities[0].id;
+        assert!(done
+            .scene
+            .flatten()
+            .iter()
+            .all(|(e, _)| done.owner_of(e.id) == Some(west)));
+    }
+
+    #[test]
+    fn a_scene_overrides_a_variant_by_the_base_part_ids() {
+        let (prefabs, stone) = with_variant();
+        let scene = parse(&format!(
+            r#"(entities: [(name: "west", model: "", prefab: "kitchen",
+                overrides: {{ "{stone}": (material: "bark") }})])"#
+        ));
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        assert_eq!(
+            done.scene.find("stone").unwrap().material,
+            MaterialRef::Named("bark".into()),
+            "the instance beats the variant, as the variant beats the base"
+        );
+        let id = done.scene.find("stone").unwrap().id;
+        assert_eq!(
+            done.parts.get(&id),
+            Some(&(scene.entities[0].id, stone)),
+            "addressed as a part of the instance, by its id in the base"
+        );
+    }
+
+    #[test]
+    fn a_variant_of_a_variant_and_a_variant_of_itself() {
+        let (mut prefabs, _) = with_variant();
+        let mut grand: EntityDesc =
+            ron::from_str(r#"(name: "big kitchen", prefab: "kitchen", material: "stone")"#)
+                .unwrap();
+        crate::scene::assign_ids(std::slice::from_mut(&mut grand), &mut HashSet::new());
+        prefabs.insert("big kitchen", grand);
+        let scene = parse(r#"(entities: [(name: "camp", model: "", prefab: "big kitchen")])"#);
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        assert_eq!(done.scene.flatten().len(), 4);
+        assert_eq!(
+            done.scene.find("stone").unwrap().material,
+            MaterialRef::Named("moss".into())
+        );
+
+        let mut prefabs = Prefabs::new();
+        let mut ouroboros: EntityDesc = ron::from_str(r#"(name: "loop", prefab: "loop")"#).unwrap();
+        crate::scene::assign_ids(std::slice::from_mut(&mut ouroboros), &mut HashSet::new());
+        prefabs.insert("loop", ouroboros);
+        let scene = parse(r#"(entities: [(name: "x", model: "", prefab: "loop")])"#);
+        let done = instantiate(&scene, &prefabs);
+        assert!(
+            done.problems[0]
+                .reason
+                .contains("a prefab containing itself?"),
+            "{:?}",
+            done.problems
         );
     }
 }

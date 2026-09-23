@@ -146,3 +146,39 @@ fn a_source_without_a_current_sidecar_is_a_warning_until_synced() {
         "{warnings:?}"
     );
 }
+
+#[test]
+fn a_stale_override_and_a_variant_of_itself_are_found_once_each() {
+    let project = project("variants");
+    let root = project.root();
+    write(
+        &root.join("prefabs/campfire.prefab"),
+        r#"(id: "c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "c2", name: "ember", model: "builtin:sphere")])"#,
+    );
+    // A variant overriding a part the base no longer has.
+    write(
+        &root.join("prefabs/mossy.prefab"),
+        r#"(id: "d1", name: "mossy", prefab: "campfire", overrides: { "c9": (material: "moss") })"#,
+    );
+    write(
+        &root.join("prefabs/loop.prefab"),
+        r#"(id: "e1", name: "loop", prefab: "loop")"#,
+    );
+    write(
+        &root.join("scenes/main.ron"),
+        r#"(entities: [
+            (id: "a1", name: "west", prefab: "mossy"),
+            (id: "a2", name: "east", prefab: "mossy"),
+            (id: "a3", name: "fire", prefab: "campfire", overrides: { "c8": (material: "bark") }),
+        ])"#,
+    );
+    let errors = errors(&check(&project));
+    let stale = one_containing(&errors, "part 00000000000000c9");
+    assert!(stale.contains("prefabs/mossy.prefab:"), "{stale}");
+    let scene = one_containing(&errors, "part 00000000000000c8");
+    assert!(scene.contains("scenes/main.ron:"), "{scene}");
+    assert!(scene.contains("`fire`"), "{scene}");
+    let looped = one_containing(&errors, "a prefab containing itself?");
+    assert!(looped.contains("prefabs/loop.prefab:"), "{looped}");
+}
