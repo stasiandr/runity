@@ -131,6 +131,14 @@ fn a_source_model_becomes_a_frame() {
         reflection_probes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),
+        wind: Default::default(),
+        benders: Vec::new(),
+        time: None,
+        weather: Default::default(),
+        screen_space_reflections: Default::default(),
+        puffs: Vec::new(),
+        plumes: Vec::new(),
+        terrain: None,
         draws: vec![
             Draw {
                 mesh: handle,

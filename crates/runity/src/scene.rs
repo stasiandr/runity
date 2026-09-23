@@ -278,6 +278,11 @@ pub struct BodyProps {
     /// twice as hard.
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub gravity: f32,
+    /// How much the scene's wind carries it: 0 not at all, 1 a tumbleweed
+    /// bounding over the sand. Dragged toward the wind's speed, now and
+    /// then a hop.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blown: f32,
     /// Checked between steps as well as at them, so something fast and
     /// small — a thrown stone, a bullet — cannot pass through a wall between
     /// one step and the next. Costs more; Unity's continuous collision
@@ -349,6 +354,7 @@ impl Default for BodyProps {
             drag: 0.0,
             spin_drag: 0.0,
             gravity: 1.0,
+            blown: 0.0,
             fast: false,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),
@@ -885,6 +891,19 @@ pub struct EntityDesc {
     /// A decal pressed from this entity; see [`Decal`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
+    /// Prints left in the ground as it walks, and dust from each step:
+    /// `footprints: (stride: 0.75)`. See [`crate::footprints`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub footprints: Option<crate::footprints::Footprints>,
+    /// Ground shaped from a few numbers — a field of dunes: `terrain:
+    /// (size: 400.0, dunes: (height: 8.0))`. See [`crate::terrain`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub terrain: Option<crate::terrain::Terrain>,
+    /// Grass and anything else that sways is pushed aside within this many
+    /// metres of it — a player walking through a meadow. 0 is none. See
+    /// [`crate::foliage`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bends_grass: f32,
     /// Moving along points by itself; see [`Route`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -995,6 +1014,12 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub footprints: Option<crate::footprints::Footprints>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub terrain: Option<crate::terrain::Terrain>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub bends_grass: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
@@ -1075,6 +1100,15 @@ impl Override {
         if self.decal.is_some() {
             part.decal = self.decal;
         }
+        if self.footprints.is_some() {
+            part.footprints = self.footprints;
+        }
+        if self.terrain.is_some() {
+            part.terrain = self.terrain;
+        }
+        if let Some(radius) = self.bends_grass {
+            part.bends_grass = radius;
+        }
         if self.route.is_some() {
             part.route = self.route.clone();
         }
@@ -1123,6 +1157,10 @@ impl Override {
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
+            footprints: differs(prefab.footprints != edited.footprints).and(edited.footprints),
+            terrain: differs(prefab.terrain != edited.terrain).and(edited.terrain),
+            bends_grass: differs(prefab.bends_grass != edited.bends_grass)
+                .map(|_| edited.bends_grass),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
@@ -1185,6 +1223,9 @@ impl Override {
             particles,
             reflection_probe,
             decal,
+            footprints,
+            terrain,
+            bends_grass,
             route,
             components,
             removed,
@@ -1203,6 +1244,9 @@ impl Override {
         self.particles = particles.or(self.particles.take());
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
+        self.footprints = footprints.or(self.footprints);
+        self.terrain = terrain.or(self.terrain);
+        self.bends_grass = bends_grass.or(self.bends_grass);
         self.route = route.or(self.route.take());
         // Set again after it was taken away: back.
         self.removed.retain(|name| !components.contains_key(name));
@@ -1363,13 +1407,38 @@ pub struct Sun {
     /// by the game, so a scene stores the hour, not a vector.
     pub hour: f32,
     pub intensity: f32,
+    /// What the ground under the sun is, as a colour picker says it (sRGB):
+    /// the light it throws back up onto everything from below. Sand throws
+    /// a lot, and warm; dark earth little.
+    #[serde(default = "default_ground", skip_serializing_if = "is_default_ground")]
+    pub ground: [f32; 3],
+    /// Which way the light travels, when a scene brought from elsewhere
+    /// says exactly: the hour's arc goes east to west only, and a sun from
+    /// Unity can stand anywhere. Unset, the hour decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toward: Option<Vec3>,
+    /// The light's colour as a picker says it (sRGB), when it is not the
+    /// hour's: white overhead, orange low.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<[f32; 3]>,
+}
+
+fn default_ground() -> [f32; 3] {
+    [0.36, 0.33, 0.29]
+}
+
+fn is_default_ground(g: &[f32; 3]) -> bool {
+    *g == default_ground()
 }
 
 impl Default for Sun {
     fn default() -> Self {
         Self {
+            ground: default_ground(),
             hour: 9.0,
             intensity: 1.15,
+            toward: None,
+            tint: None,
         }
     }
 }
@@ -1385,6 +1454,9 @@ impl Sun {
     /// what the editor showed. A game that wants a real ephemeris replaces
     /// this; a scene's `hour` has to mean one thing first.
     pub fn direction(&self) -> Vec3 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return toward.normalize();
+        }
         let day = ((self.hour - 6.0) / 12.0).clamp(0.0, 1.0);
         let angle = day * std::f32::consts::PI;
         // The height is floored well above zero: a sun exactly on the
@@ -1393,12 +1465,51 @@ impl Sun {
         Vec3::new(-angle.cos(), -angle.sin().max(0.15), -0.35).normalize()
     }
 
+    /// How high the sun really stands, −1 to 1: the sine of its height
+    /// over the horizon on the hour's arc, below it at night — where
+    /// [`Self::direction`] keeps it just over the horizon so there is a
+    /// light to see by. With `toward` set, that says it.
+    pub fn elevation(&self) -> f32 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return -toward.normalize().y;
+        }
+        let angle = (self.hour - 6.0) / 12.0 * std::f32::consts::PI;
+        angle.sin()
+    }
+
+    /// Which way the sun's light would travel if the sun were where it
+    /// really is — under the ground at night: what the sky is lit by.
+    pub fn true_direction(&self) -> Vec3 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return toward.normalize();
+        }
+        let angle = (self.hour - 6.0) / 12.0 * std::f32::consts::PI;
+        Vec3::new(-angle.cos(), -angle.sin(), -0.35).normalize()
+    }
+
+    /// Which way the moon's light travels: the moon across the sky from
+    /// the sun, as when it is full, never lower than the sun is let be.
+    pub fn moon_direction(&self) -> Vec3 {
+        let angle = (self.hour - 18.0) / 12.0 * std::f32::consts::PI;
+        Vec3::new(-angle.cos(), -angle.sin().max(0.2), 0.3).normalize()
+    }
+
+    /// How much it is night, 0 to 1: nothing while the sun is up, whole
+    /// once it is well below the horizon, the dusk between.
+    pub fn night(&self) -> f32 {
+        ((0.02 - self.elevation()) / 0.14).clamp(0.0, 1.0)
+    }
+
     /// How warm the light is: white overhead, orange near the horizon.
     ///
     /// Not physics — the sky is not scattering anything here — but the one
     /// cue that reads as a time of day at a glance, and cheaper than every
     /// scene hand-picking a colour to go with its hour.
     pub fn color(&self) -> Vec3 {
+        if let Some(t) = self.tint {
+            let l = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+            return Vec3::new(l(t[0]), l(t[1]), l(t[2]));
+        }
         let noon = Vec3::new(1.0, 0.96, 0.88);
         let low = Vec3::new(1.0, 0.72, 0.48);
         let height = (-self.direction().y).clamp(0.0, 1.0);
@@ -1572,6 +1683,18 @@ pub struct Scene {
     /// 0.05)`. See [`crate::volume`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub volumetric_fog: Option<crate::volume::VolumetricFog>,
+    /// The wind foliage sways in: `wind: (direction: (1.0, 0.0, 0.3),
+    /// strength: 1.0)`; a breeze when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub wind: Option<crate::foliage::Wind>,
+    /// Rain, snow, wet ground and puddles: `weather: (rain: 1.0, wetness:
+    /// 1.0, puddles: 0.6)`. See [`crate::weather`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub weather: Option<crate::weather::Weather>,
+    /// Reflections marched across the screen: `screen_space_reflections:
+    /// (enabled: true)`. See [`crate::reflections::ScreenSpaceReflections`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub screen_space_reflections: Option<crate::reflections::ScreenSpaceReflections>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1817,6 +1940,72 @@ impl Scene {
     }
 }
 
+/// One of the scene's look fields ([`crate::moods::LOOK_FIELDS`]) as the
+/// file writes it; `None` for an optional one the scene does not set.
+pub fn look_field(scene: &Scene, field: &str) -> Result<String, String> {
+    fn text<T: Serialize>(value: &T) -> String {
+        ron::to_string(value).unwrap_or_default()
+    }
+    fn optional<T: Serialize>(value: &Option<T>) -> String {
+        value.as_ref().map_or_else(|| "None".to_string(), text)
+    }
+    Ok(match field {
+        "sun" => text(&scene.sun),
+        "fog" => text(&scene.fog),
+        "sky" => optional(&scene.sky),
+        "post" => optional(&scene.post),
+        "ambient_occlusion" => optional(&scene.ambient_occlusion),
+        "volumetric_fog" => optional(&scene.volumetric_fog),
+        "weather" => optional(&scene.weather),
+        "wind" => optional(&scene.wind),
+        "screen_space_reflections" => optional(&scene.screen_space_reflections),
+        "ray_tracing" => optional(&scene.ray_tracing),
+        other => {
+            return Err(format!(
+                "`{other}` is not part of the scene's look — there are {}",
+                crate::moods::LOOK_FIELDS.join(", ")
+            ))
+        }
+    })
+}
+
+/// Set one of the scene's look fields from RON; `None` clears an optional
+/// one back to the engine's default.
+pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<(), String> {
+    fn parse<T: serde::de::DeserializeOwned>(field: &str, text: &str) -> Result<T, String> {
+        ron::from_str(text).map_err(|e| format!("{field}: {e}"))
+    }
+    fn optional<T: serde::de::DeserializeOwned>(
+        field: &str,
+        text: &str,
+    ) -> Result<Option<T>, String> {
+        if text.trim() == "None" {
+            Ok(None)
+        } else {
+            parse(field, text).map(Some)
+        }
+    }
+    match field {
+        "sun" => scene.sun = parse(field, ron_text)?,
+        "fog" => scene.fog = parse(field, ron_text)?,
+        "sky" => scene.sky = optional(field, ron_text)?,
+        "post" => scene.post = optional(field, ron_text)?,
+        "ambient_occlusion" => scene.ambient_occlusion = optional(field, ron_text)?,
+        "volumetric_fog" => scene.volumetric_fog = optional(field, ron_text)?,
+        "weather" => scene.weather = optional(field, ron_text)?,
+        "wind" => scene.wind = optional(field, ron_text)?,
+        "screen_space_reflections" => scene.screen_space_reflections = optional(field, ron_text)?,
+        "ray_tracing" => scene.ray_tracing = optional(field, ron_text)?,
+        other => {
+            return Err(format!(
+                "`{other}` is not part of the scene's look — there are {}",
+                crate::moods::LOOK_FIELDS.join(", ")
+            ))
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1837,6 +2026,9 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                footprints: None,
+                terrain: None,
+                bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1874,6 +2066,9 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    footprints: None,
+                    terrain: None,
+                    bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -1919,12 +2114,16 @@ mod tests {
             sun: Sun {
                 hour: 17.5,
                 intensity: 0.8,
+                ..Sun::default()
             },
             fog: Fog::default(),
             sky: None,
             ambient_occlusion: None,
             ray_tracing: None,
             volumetric_fog: None,
+            wind: None,
+            weather: None,
+            screen_space_reflections: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()
@@ -1937,6 +2136,9 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                footprints: None,
+                terrain: None,
+                bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -2157,6 +2359,7 @@ mod tests {
         let at = |hour| Sun {
             hour,
             intensity: 1.0,
+            ..Sun::default()
         };
 
         // Noon is overhead; morning and evening are low and on opposite

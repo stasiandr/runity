@@ -348,3 +348,35 @@ mod tests {
         assert!(ndc.x.abs() < 1.0 && ndc.x.abs() > 0.85, "{ndc}");
     }
 }
+
+/// Screen-space reflections: URP's own is absent, HDRP's SSR is the model.
+///
+/// A smooth surface's reflection is marched across the screen along the
+/// prepass's depth; where it meets something, the colour there is taken
+/// from the last frame (moved to where it was then), so reflections see
+/// reflections. What the march misses — off the screen, behind something —
+/// falls back to the probes and the sky. The water especially gains: the
+/// bank and the trees on it, exactly, where a probe only has them roughly.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ScreenSpaceReflections {
+    pub enabled: bool,
+    /// How far a reflected ray is followed, metres.
+    pub max_distance: f32,
+    /// How thick what the ray meets is taken to be, metres: too thin and
+    /// rays slip behind things, too thick and they hit what they pass.
+    pub thickness: f32,
+    /// Steps along the ray.
+    pub steps: u32,
+}
+
+impl Default for ScreenSpaceReflections {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_distance: 30.0,
+            thickness: 0.4,
+            steps: 32,
+        }
+    }
+}

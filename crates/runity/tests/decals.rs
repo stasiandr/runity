@@ -108,6 +108,7 @@ fn a_decal_paints_the_floor_in_its_box_and_nothing_else() {
     let square = Decal {
         transform: box_of(Vec3::new(2.0, 1.0, 2.0)),
         material: red,
+        shape: runity::decals::DecalShape::Picture,
     };
     let inside = pixel(&mut renderer, vec![square], middle.0, middle.1);
     assert!(
@@ -146,6 +147,7 @@ fn a_decal_paints_the_floor_in_its_box_and_nothing_else() {
     let tall = Decal {
         transform: box_of(Vec3::new(4.0, 3.0, 4.0)),
         material: red,
+        shape: runity::decals::DecalShape::Picture,
     };
     renderer.render(
         &gpu,

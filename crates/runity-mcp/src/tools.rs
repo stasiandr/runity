@@ -43,6 +43,8 @@ fn entity_fields() -> Value {
         "layer": { "type": "string", "description": "collision layer by its name in layers.ron; empty is default" },
         "route": { "type": "string", "description": "RON: travels by itself — (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends: Back|Loop|Stop, smooth: true, pause: 1.0), points from where it stands; with a Kinematic body it carries what stands on it (a lift, a moving platform); or None" },
         "decal": { "type": "string", "description": "RON: a decal's box, centred here and pressed down its -y — (size: (2.0, 1.0, 2.0)); the entity's material is the picture (base map, alpha, normal map) — or None" },
+        "footprints": { "type": "string", "description": "RON: leaves prints in the ground as it walks and kicks up dust at each step — (stride: 0.75, stance: 0.12, size: 0.28, depth: 0.03, lasts: 60.0, dust: 1.0, feet: 0.9, color: (0.62, 0.46, 0.3)); feet is how far below its origin its feet are; or None" },
+        "terrain": { "type": "string", "description": "RON: ground shaped from numbers, centred here, wind along its +x — (size: 400.0, cells: 256, dunes: (height: 8.0, wavelength: 60.0, sinuosity: 0.5, barchans: 0.4, seed: 1)); give it material (shading: Sand) and collider: Model to walk on it; or None" },
         "reflection_probe": { "type": "string", "description": "RON: a reflection probe's box, centred here — (size: (8.0, 4.0, 8.0)); box_projection: false, blend_distance: 1.0 — what polished things in it reflect instead of the sky; or None" },
         "sound": { "type": "string", "description": "RON: a sound it makes — (clip: \"radio\", looped: true); volume: 1.0, on_start: true, spatial: true (false: everywhere, music), near: 1.0, far: 40.0, group: \"music\" — or None" },
         "animator": { "type": "string", "description": "the graph in animators/ that moves it and what is under it, with clips from clips/ (Unity's Animator); empty for none" },
@@ -174,6 +176,19 @@ pub fn list() -> Vec<Value> {
         tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
+        tool("look", "The scene's look — sun, fog, sky (mode: Procedural|Physical, clouds), post (bloom, grading, depth_of_field, lens_flare...), ambient_occlusion, volumetric_fog, weather (rain, wetness, puddles, snow, snowfall), wind, screen_space_reflections, ray_tracing — as the file writes them. Give any of them as RON to set them, all in one undo step; \"None\" clears an optional one back to the engine's default. Returns the look after; render to see it.", json!({
+            "sun": { "type": "string", "description": "(hour: 17.5, intensity: 1.2)" },
+            "fog": { "type": "string", "description": "(color: (0.62, 0.68, 0.74), start: 30.0, end: 180.0)" },
+            "sky": { "type": "string", "description": "(mode: Physical, clouds: (coverage: 0.4)) or None" },
+            "post": { "type": "string", "description": "(bloom: (intensity: 0.4), temperature: 10.0, depth_of_field: (mode: Bokeh, focus_distance: 6.0)) or None" },
+            "ambient_occlusion": { "type": "string" },
+            "volumetric_fog": { "type": "string", "description": "(enabled: true, density: 0.04) or None" },
+            "weather": { "type": "string", "description": "(rain: 1.0, wetness: 1.0, puddles: 0.5) or None" },
+            "wind": { "type": "string", "description": "(direction: (1.0, 0.0, 0.3), strength: 1.5) or None" },
+            "screen_space_reflections": { "type": "string", "description": "(enabled: true) or None" },
+            "ray_tracing": { "type": "string" }
+        }), &[]),
+        tool("mood", "Give the scene a mood in one step — its sun, sky, fog, weather, wind and grading together: clear noon, golden hour, overcast, misty morning, rainy, snowy, night, storm, desert noon, sandstorm. One undo step; returns what it set and a render of the result. Without `name`, lists the moods and what each is for. Tune further with look.", json!({ "name": { "type": "string" } }), &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
         tool("import", "Import a source file (.gltf .glb .obj .png .jpg .tga .bmp .wav .rmat) into the project.", json!({ "source": { "type": "string" } }), &["source"]),
         tool("rename_asset", "Rename or move an asset source (model, texture, sound in assets/, .rmat in materials/, .prefab in prefabs/), its .rimport with it, and rewrite every scene and prefab line that named it. Paths relative to the project root. Refused, with the reason, when the new name already means something.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
@@ -1206,6 +1221,46 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             camera(server, args)?;
             render(server)
         }
+        "look" => {
+            let mut changes = Vec::new();
+            for field in runity::moods::LOOK_FIELDS {
+                if let Some(value) = optional_string(args, field)? {
+                    changes.push((field, value));
+                }
+            }
+            let session = server.session()?;
+            if !changes.is_empty() {
+                let borrowed: Vec<(&str, &str)> =
+                    changes.iter().map(|(f, v)| (*f, v.as_str())).collect();
+                session.set_look(&borrowed).map_err(|e| e.to_string())?;
+            }
+            let mut out = String::new();
+            for (field, value) in session.environment() {
+                let _ = writeln!(out, "{field}: {value}");
+            }
+            Ok(vec![text(out)])
+        }
+        "mood" => {
+            let Some(name) = optional_string(args, "name")? else {
+                let mut out = String::new();
+                for mood in runity::moods::MOODS {
+                    let _ = writeln!(out, "{} — {}", mood.name, mood.about);
+                }
+                return Ok(vec![text(out)]);
+            };
+            server
+                .session()?
+                .apply_mood(&name)
+                .map_err(|e| e.to_string())?;
+            let mood = runity::moods::mood(&name).expect("applied above");
+            let mut out = format!("{}: {}\n", mood.name, mood.about);
+            for (field, value) in mood.fields {
+                let _ = writeln!(out, "  {field}: {value}");
+            }
+            let mut result = vec![text(out)];
+            result.extend(render(server)?);
+            Ok(result)
+        }
         "pick" => {
             let (x, y) = (integer(args, "x")?, integer(args, "y")?);
             let hit = server.session()?.pick(x, y);
@@ -1569,6 +1624,26 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
             None
         } else {
             Some(ron::from_str::<runity::scene::Decal>(&decal).map_err(|e| format!("decal: {e}"))?)
+        };
+    }
+    if let Some(prints) = optional_string(args, "footprints")? {
+        desc.footprints = if prints.trim() == "None" {
+            None
+        } else {
+            Some(
+                ron::from_str::<runity::footprints::Footprints>(&prints)
+                    .map_err(|e| format!("footprints: {e}"))?,
+            )
+        };
+    }
+    if let Some(ground) = optional_string(args, "terrain")? {
+        desc.terrain = if ground.trim() == "None" {
+            None
+        } else {
+            Some(
+                ron::from_str::<runity::terrain::Terrain>(&ground)
+                    .map_err(|e| format!("terrain: {e}"))?,
+            )
         };
     }
     if let Some(probe) = optional_string(args, "reflection_probe")? {

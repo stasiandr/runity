@@ -362,6 +362,7 @@ fn sync(project: &Project) -> Result<ExitCode> {
             Change::New => "new".to_string(),
             Change::Changed => "changed".to_string(),
             Change::Built => "built".to_string(),
+            Change::Outdated => "rebuilt in the new format".to_string(),
             Change::Moved { from } => format!("moved from {from}"),
             Change::Gone => "gone".to_string(),
         };

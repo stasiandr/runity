@@ -51,10 +51,10 @@ pub fn default_text(field: &str) -> Option<String> {
         "joint" => ron(&blank.joint),
         "layer" | "bone" | "animator" => String::new(),
         "inactive" => "false".into(),
+        "bends_grass" => ron(&blank.bends_grass),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "render_texture" | "sound" | "route" | "spline" | "along" | "joint_break" => {
-            "None".into()
-        }
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "spline" | "along"
+        | "joint_break" => "None".into(),
         _ => return None,
     })
 }
@@ -80,7 +80,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 19] = [
+pub const FIELDS: [&str; 22] = [
     "name",
     "model",
     "prefab",
@@ -98,6 +98,9 @@ pub const FIELDS: [&str; 19] = [
     "particles",
     "reflection_probe",
     "decal",
+    "footprints",
+    "terrain",
+    "bends_grass",
     "route",
     "components.<name>",
 ];
@@ -127,6 +130,9 @@ fn take_field(
         "particles" => one.particles = from.particles.take(),
         "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
         "decal" => one.decal = from.decal.take(),
+        "footprints" => one.footprints = from.footprints.take(),
+        "terrain" => one.terrain = from.terrain.take(),
+        "bends_grass" => one.bends_grass = from.bends_grass.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
@@ -267,6 +273,9 @@ impl Session {
                 "particles" => o.particles.is_some(),
                 "reflection_probe" => o.reflection_probe.is_some(),
                 "decal" => o.decal.is_some(),
+                "footprints" => o.footprints.is_some(),
+                "terrain" => o.terrain.is_some(),
+                "bends_grass" => o.bends_grass.is_some(),
                 "route" => o.route.is_some(),
                 other => other
                     .strip_prefix("components.")
@@ -291,6 +300,7 @@ impl Session {
             ("layer".into(), desc.layer.clone()),
             ("inactive".into(), desc.inactive.to_string()),
             ("animator".into(), desc.animator.clone()),
+            ("bends_grass".into(), ron(&desc.bends_grass)),
             ("bone".into(), desc.bone.clone()),
             ("joint".into(), ron(&desc.joint)),
             (
@@ -329,6 +339,14 @@ impl Session {
             (
                 "decal".into(),
                 desc.decal.map_or("None".to_string(), |d| ron(&d)),
+            ),
+            (
+                "footprints".into(),
+                desc.footprints.map_or("None".to_string(), |f| ron(&f)),
+            ),
+            (
+                "terrain".into(),
+                desc.terrain.map_or("None".to_string(), |t| ron(&t)),
             ),
             (
                 "route".into(),
@@ -647,6 +665,7 @@ impl Session {
             "layer" => next.layer = text.to_string(),
             "inactive" => next.inactive = parse::<bool>(field, text)?,
             "animator" => next.animator = text.trim().to_string(),
+            "bends_grass" => next.bends_grass = parse::<f32>(field, text)?.max(0.0),
             "bone" => next.bone = text.trim().to_string(),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,
@@ -723,6 +742,20 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::SoundSource>(field, text)?)
+                }
+            }
+            "footprints" => {
+                next.footprints = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::footprints::Footprints>(field, text)?)
+                }
+            }
+            "terrain" => {
+                next.terrain = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::terrain::Terrain>(field, text)?)
                 }
             }
             "render_texture" => {

@@ -302,6 +302,10 @@ pub struct PostProcess {
     /// multisampling the scene is already drawn with: it catches what MSAA
     /// cannot — edges inside a texture, the alpha-cut leaf.
     pub fxaa: bool,
+    /// Temporal antialiasing ([`crate::taa`]): on by default, as HDRP's —
+    /// what multisampling leaves crawling (thin grass, glints, ripples,
+    /// shadow steps) settles over a few frames.
+    pub taa: bool,
     /// A little noise, below a step of the screen's precision, so a gentle
     /// gradient — a sky, a lit wall — does not show its steps as bands.
     /// URP's camera Dithering.
@@ -313,6 +317,11 @@ pub struct PostProcess {
     pub lens_distortion: LensDistortion,
     pub panini_projection: PaniniProjection,
     pub lens_flare: LensFlare,
+    /// Shimmering hot air and the mirage ([`crate::lens::HeatHaze`]).
+    pub heat_haze: crate::lens::HeatHaze,
+    /// The eye getting used to the light ([`crate::exposure`]): on by
+    /// default. `exposure` still adds its stops on top.
+    pub auto_exposure: crate::exposure::AutoExposure,
 }
 
 impl Default for PostProcess {
@@ -336,12 +345,15 @@ impl Default for PostProcess {
             chromatic_aberration: 0.0,
             film_grain: 0.0,
             fxaa: false,
+            taa: true,
             dithering: true,
             depth_of_field: crate::lens::DepthOfField::OFF,
             motion_blur: crate::lens::MotionBlur::OFF,
             lens_distortion: LensDistortion::OFF,
             panini_projection: PaniniProjection::OFF,
             lens_flare: LensFlare::OFF,
+            heat_haze: crate::lens::HeatHaze::OFF,
+            auto_exposure: crate::exposure::AutoExposure::default(),
         }
     }
 }
@@ -397,12 +409,15 @@ impl PostProcess {
         chromatic_aberration: 0.0,
         film_grain: 0.0,
         fxaa: false,
+        taa: false,
         dithering: false,
         depth_of_field: crate::lens::DepthOfField::OFF,
         motion_blur: crate::lens::MotionBlur::OFF,
         lens_distortion: LensDistortion::OFF,
         panini_projection: PaniniProjection::OFF,
         lens_flare: LensFlare::OFF,
+        heat_haze: crate::lens::HeatHaze::OFF,
+        auto_exposure: crate::exposure::AutoExposure::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -480,6 +495,7 @@ impl PostProcess {
             chromatic_aberration: f(self.chromatic_aberration, other.chromatic_aberration),
             film_grain: f(self.film_grain, other.film_grain),
             fxaa: if half { other.fxaa } else { self.fxaa },
+            taa: if half { other.taa } else { self.taa },
             dithering: if half {
                 other.dithering
             } else {
@@ -521,6 +537,12 @@ impl PostProcess {
                     self.panini_projection.crop_to_fit,
                     other.panini_projection.crop_to_fit,
                 ),
+            },
+            heat_haze: self.heat_haze.lerp(&other.heat_haze, t),
+            auto_exposure: if half {
+                other.auto_exposure
+            } else {
+                self.auto_exposure
             },
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
@@ -636,6 +658,8 @@ struct PostUniform {
     lamp_count: [f32; 4],
     lamps: [[f32; 4]; FLARES],
     lamp_colors: [[f32; 4]; FLARES],
+    /// How much the eye sees as it does at night: grey and blue.
+    night: [f32; 4],
 }
 
 /// One uniform slot per pass of a frame, at the device's alignment.
@@ -701,12 +725,17 @@ pub(crate) struct PostRenderer {
     /// Whether the output format encodes sRGB itself.
     output_srgb: bool,
     started: std::time::Instant,
+    /// The meter and the exposure it keeps ([`crate::exposure`]).
+    metering: crate::exposure::Metering,
     /// The camera's vertical field of view, 0 for an orthographic one:
     /// what Panini unbends.
     pub(crate) fov_y_degrees: f32,
     /// Lamps' flares this frame, on the picture: `[u, v, intensity, _]`
     /// and colour.
     pub(crate) flares: Vec<([f32; 4], [f32; 4])>,
+    /// How much it is night: the eye's colour fades to grey and blue (the
+    /// Purkinje shift), as its cones give up to its rods.
+    pub(crate) night: f32,
 }
 
 impl PostRenderer {
@@ -763,6 +792,16 @@ impl PostRenderer {
                         count: None,
                     },
                     texture_entry(3),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let pipeline_layout = gpu
@@ -833,8 +872,10 @@ impl PostRenderer {
             size: (0, 0),
             output_srgb: output.is_srgb(),
             started: std::time::Instant::now(),
+            metering: crate::exposure::Metering::new(gpu),
             fov_y_degrees: 0.0,
             flares: Vec::new(),
+            night: 0.0,
         }
     }
 
@@ -883,11 +924,16 @@ impl PostRenderer {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(bloom),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.metering.state.as_entire_binding(),
+                },
             ],
         })
     }
 
     /// Turn the high-dynamic-range `scene` into the picture in `output`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &mut self,
         gpu: &Gpu,
@@ -896,6 +942,9 @@ impl PostRenderer {
         output: &wgpu::TextureView,
         size: (u32, u32),
         settings: &PostProcess,
+        // Seconds since the last frame metered, and whether this one is
+        // (the screen's view is; a camera's picture for a texture is not).
+        metered: Option<f32>,
     ) {
         self.resize(gpu, size);
         let settings = if settings.enabled {
@@ -903,6 +952,12 @@ impl PostRenderer {
         } else {
             PostProcess::OFF
         };
+        if !settings.auto_exposure.enabled {
+            self.metering.hold(gpu);
+        } else if let Some(dt) = metered {
+            self.metering
+                .run(gpu, encoder, scene, size, &settings.auto_exposure, dt);
+        }
         let base = self.uniform(&settings, size);
         let mut slots: Vec<PostUniform> = Vec::new();
         let texel = |(w, h): (u32, u32)| [1.0 / w.max(1) as f32, 1.0 / h.max(1) as f32, 0.0, 0.0];
@@ -1140,6 +1195,7 @@ impl PostRenderer {
             lamp_count: [self.flares.len() as f32, 0.0, 0.0, 0.0],
             lamps: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.0)),
             lamp_colors: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.1)),
+            night: [self.night.clamp(0.0, 1.0), 0.0, 0.0, 0.0],
         }
     }
 }

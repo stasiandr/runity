@@ -917,6 +917,19 @@ pub struct MaterialSource {
     /// The metre grid on it: a greybox surface. Lit, so not with `unlit`.
     #[serde(default)]
     pub grid: bool,
+    /// Water: waves, reflections, the colour of its depth, foam at the
+    /// shore. `color` is the deep water's, `wind` the waves.
+    #[serde(default)]
+    pub water: bool,
+    /// Sand: wind ripples, glinting grains, drifting sand in a gale.
+    #[serde(default)]
+    pub sand: bool,
+    /// For water: metres one sees down through it.
+    #[serde(default = "clear_water")]
+    pub clarity: f32,
+    /// For water: foam where it meets the shore, 0 to 1.
+    #[serde(default = "one")]
+    pub foam: f32,
     /// URP Lit's properties, with its names; what is not said is a matte
     /// opaque surface (see [`Material`]).
     #[serde(default)]
@@ -975,6 +988,12 @@ pub struct MaterialSource {
     pub normal_scale: f32,
     #[serde(default = "one")]
     pub occlusion_strength: f32,
+    /// How much it sways in the wind; see `runity::foliage`.
+    #[serde(default)]
+    pub wind: f32,
+    /// How much light comes through it from behind, 0 to 1.
+    #[serde(default)]
+    pub translucency: f32,
     #[serde(default = "no_tiling")]
     pub tiling: [f32; 2],
     #[serde(default)]
@@ -1074,6 +1093,9 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
     Ok(Some(settings.asset_id()))
 }
 
+fn clear_water() -> f32 {
+    3.0
+}
 fn one() -> f32 {
     1.0
 }
@@ -1283,14 +1305,16 @@ pub fn material_from_ron(
             .unwrap_or_else(|| "material".into()),
         material: Material {
             base_color: source.color.linear()?,
-            shading: match (source.unlit, source.grid) {
-                (true, true) => anyhow::bail!(
-                    "{}: unlit and grid at once — a grid is drawn on a lit surface; pick one",
+            shading: match (source.unlit, source.grid, source.water, source.sand) {
+                (false, false, false, false) => Shading::Lit,
+                (true, false, false, false) => Shading::Unlit,
+                (false, true, false, false) => Shading::Grid,
+                (false, false, true, false) => Shading::Water,
+                (false, false, false, true) => Shading::Sand,
+                _ => anyhow::bail!(
+                    "{}: more than one of unlit, grid, water and sand — pick one",
                     path.display()
                 ),
-                (true, false) => Shading::Unlit,
-                (false, true) => Shading::Grid,
-                (false, false) => Shading::Lit,
             },
             metallic: source.metallic,
             smoothness: source.smoothness,
@@ -1318,6 +1342,18 @@ pub fn material_from_ron(
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
             offset: source.offset,
+            wind: source.wind.max(0.0),
+            translucency: source.translucency.clamp(0.0, 1.0),
+            clarity: if source.water {
+                source.clarity.max(0.05)
+            } else {
+                0.0
+            },
+            foam: if source.water {
+                source.foam.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
         },
     })
 }
@@ -1492,6 +1528,9 @@ pub enum Change {
     Changed,
     /// Its asset was missing from the library and has been built.
     Built,
+    /// Its asset was written by an older build's format and has been built
+    /// again.
+    Outdated,
     /// The sidecar's source was gone and the same contents turned up
     /// elsewhere: the sidecar followed, with its settings and its asset's ID.
     Moved { from: String },
@@ -1581,9 +1620,8 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         let asset = asset_for(settings.asset_id(), &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
-        } else if runity::asset::stale_format(&asset) {
-            // Written by an older engine: built again, whatever the clock.
-            Some(Change::Changed)
+        } else if !runity::asset::is_current(&asset) {
+            Some(Change::Outdated)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
             // The clock says maybe; the hash decides.
             match content_hash(&source) {

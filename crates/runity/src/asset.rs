@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 13;
+pub const FORMAT_VERSION: u32 = 14;
 
 /// What kind of asset a file holds.
 ///
@@ -492,6 +492,18 @@ pub fn kind_of(bytes: &[u8]) -> Result<AssetKind, AssetError> {
         return Err(AssetError::BadMagic);
     }
     AssetKind::from_byte(bytes[12]).ok_or(AssetError::UnknownKind(bytes[12]))
+}
+
+/// Whether the `.rasset` at `path` was written in this build's format: its
+/// sixteen header bytes alone are read. A library built before a format
+/// change is out of date even though no source changed.
+pub fn is_current(path: impl AsRef<Path>) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; HEADER];
+    std::fs::File::open(path.as_ref())
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok()
+        && split_header(&header).is_ok()
 }
 
 /// Check the header and hand back the body, without touching it.

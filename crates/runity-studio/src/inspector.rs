@@ -29,10 +29,10 @@ pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
-const OBJECT: [&str; 4] = ["model", "material", "prefab", "animator"];
+const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 11] = [
+const PARTS: [&str; 13] = [
     "camera",
     "light",
     "particles",
@@ -41,6 +41,8 @@ const PARTS: [&str; 11] = [
     "decal",
     "render_texture",
     "post_volume",
+    "footprints",
+    "terrain",
     "route",
     "spline",
     "along",
@@ -96,8 +98,10 @@ const ADDABLE: [(&str, &str); 15] = [
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 17] = [
+const REMOVABLE: [&str; 19] = [
     "model",
+    "footprints",
+    "terrain",
     "camera",
     "light",
     "particles",

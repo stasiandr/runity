@@ -13,9 +13,11 @@
 //! * **Ambient occlusion** by short rays over the hemisphere, which sees
 //!   what is off screen and behind things, where SSAO cannot.
 //!
-//! What it is not, yet: temporal — each pixel's few rays are the whole
-//! answer, so penumbrae and occlusion are grainy up close; nothing is
-//! accumulated between frames or denoised. Everything in the acceleration
+//! What it is not, yet: temporal by itself — each pixel's few rays are
+//! the frame's whole answer, and only TAA's history, where it is on,
+//! smooths the grain; there is no denoiser. The terrain is seen as its
+//! coarse heightfield, so its rays start past a gap (`RAY_TERRAIN_GAP` in
+//! render.wgsl) rather than crack its ripples with shadow. Everything in the acceleration
 //! structure is opaque: a cut-out leaf shadows as its whole card, and a
 //! skinned mesh is traced in its bind pose. And it is off unless a frame
 //! asks ([`RayTracing`]); on a device without ray queries the ask changes
@@ -79,7 +81,7 @@ impl RayTracing {
     }
 }
 
-/// The traced half of the lit shader: `ray_visible`, and the binding it
+/// The traced half of the lit shader: `ray_clear`, and the binding it
 /// reads. Put in place of the stub in `render.wgsl` on a device that traces.
 pub const SHADER: &str = include_str!("ray.wgsl");
 
@@ -223,7 +225,7 @@ impl RayScene {
         &mut self,
         gpu: &Gpu,
         encoder: &mut wgpu::CommandEncoder,
-        instances: &[(&wgpu::Blas, glam::Mat4)],
+        instances: &[(&wgpu::Blas, glam::Mat4, u8)],
     ) -> bool {
         let needed = instances.len() as u32 + 1;
         let mut remade = false;
@@ -243,8 +245,8 @@ impl RayScene {
                 0,
                 0xff,
             ));
-            for (slot, (blas, transform)) in slots[1..].iter_mut().zip(instances) {
-                *slot = Some(wgpu::TlasInstance::new(blas, rows(*transform), 0, 0xff));
+            for (slot, (blas, transform, mask)) in slots[1..].iter_mut().zip(instances) {
+                *slot = Some(wgpu::TlasInstance::new(blas, rows(*transform), 0, *mask));
             }
         }
         encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&self.tlas));
@@ -258,7 +260,7 @@ mod tests {
 
     #[test]
     fn the_stub_is_replaced_and_the_extension_enabled() {
-        let source = "struct A { x: f32 };\n// ray: stub begin\nfn ray_visible() -> f32 { return 1.0; }\n// ray: stub end\nfn after() {}\n";
+        let source = "struct A { x: f32 };\n// ray: stub begin\nfn ray_clear() -> f32 { return 1.0; }\n// ray: stub end\nfn after() {}\n";
         let traced = traced(source);
         assert!(traced.starts_with("enable wgpu_ray_query;"));
         assert!(!traced.contains("return 1.0"));

@@ -272,6 +272,7 @@ impl LiveScene {
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
         crate::physics::attach_scene_collision_meshes(world, &self.current, self.library.as_ref());
+        crate::terrain::upload_terrains(world, gpu, renderer);
         for problem in
             crate::world::upload_material_maps(world, self.library.as_ref(), gpu, renderer)
         {
@@ -372,6 +373,7 @@ impl LiveScene {
             resolver(&mut self.meshes, library, gpu, renderer),
         )?;
         let mut problems = problems;
+        crate::terrain::upload_terrains(world, gpu, renderer);
         problems.extend(crate::world::upload_material_maps(
             world,
             self.library.as_ref(),
@@ -573,6 +575,7 @@ impl LiveScene {
             }
         }
         // What a reload brought in may draw with maps not uploaded yet.
+        crate::terrain::upload_terrains(world, gpu, renderer);
         out.problems.extend(crate::world::upload_material_maps(
             world,
             self.library.as_ref(),

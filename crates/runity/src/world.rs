@@ -80,6 +80,11 @@ pub struct CameraLens(pub crate::scene::Lens);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightSource(pub crate::scene::Light);
 
+/// Grass bends round an entity within this many metres: its line's
+/// `bends_grass`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BendsGrass(pub f32);
+
 /// A decal pressed from an entity: its line's `decal`, and the material it
 /// presses.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -600,6 +605,12 @@ fn spawn_one(
     if let Some(probe) = desc.reflection_probe {
         let _ = world.insert_one(entity, ProbeBox(probe));
     }
+    if desc.bends_grass > 0.0 {
+        let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
+    }
+    if let Some(prints) = desc.footprints {
+        let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
+    }
     if let Some(volume) = desc.post_volume {
         let _ = world.insert_one(entity, PostVolumeBox(volume));
     }
@@ -671,6 +682,20 @@ pub(crate) fn dress(
             let _ = world.remove_one::<Pressing>(entity);
         }
     }
+    // Ground made from its numbers: its mesh comes when it is first drawn
+    // (`terrain::upload_terrains`), and again only if they changed.
+    if let Some(terrain) = desc.terrain {
+        let same = world
+            .get::<&crate::terrain::Relief>(entity)
+            .is_ok_and(|r| r.terrain == terrain);
+        if !same {
+            let _ = world.remove_one::<Model>(entity);
+            let _ = world.insert_one(entity, crate::terrain::Relief::new(terrain));
+        }
+        let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
+        return;
+    }
+    let _ = world.remove_one::<crate::terrain::Relief>(entity);
     // No model is nothing to draw — a probe, a decal, a light, an empty to
     // hang children on — not a model that could not be found.
     if desc.model.is_empty() {
@@ -965,6 +990,27 @@ impl Patch<'_> {
             }
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.footprints != desc.footprints) {
+            // Retuned, it starts a fresh trail: the old prints were made
+            // by the old settings.
+            match desc.footprints {
+                Some(prints) => {
+                    let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
+                }
+                None => {
+                    let _ = world.remove_one::<crate::footprints::Trail>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.bends_grass != desc.bends_grass) {
+            if desc.bends_grass > 0.0 {
+                let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
+            } else {
+                let _ = world.remove_one::<BendsGrass>(entity);
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
             match &desc.render_texture {
                 Some(picture) => {
@@ -1160,11 +1206,54 @@ pub fn apply_hierarchy(world: &mut World) {
 /// entirely and the third had its own curve, and the difference only showed
 /// up when a screenshot was compared with what the editor was showing.
 pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
+    // The light from all round goes with the sun: a dim sun is dusk or
+    // night, and a sky as bright as noon's would light it like day.
+    let day = Lighting::default();
+    let share = (sun.intensity / day.sun_intensity).clamp(0.05, 1.3);
+    // What faces down sees the ground: lit by the sun and the sky, and
+    // sending back its own colour — a lot, and warm, off sand.
+    let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+    let albedo = glam::Vec3::new(
+        linear(sun.ground[0]),
+        linear(sun.ground[1]),
+        linear(sun.ground[2]),
+    );
+    let sky = day.sky_color * share;
+    let sun_light = sun.color() * sun.intensity * (-sun.direction().y).max(0.0);
+    let night = sun.night();
+    if night <= 0.0 {
+        return Lighting {
+            sun_direction: sun.direction(),
+            sun_color: sun.color(),
+            sun_intensity: sun.intensity,
+            sky_color: sky,
+            ground_color: albedo * (sun_light + sky * 0.5),
+            ground_albedo: albedo,
+            sky_sun: None,
+            night: 0.0,
+        };
+    }
+    // Night: the moon is the light above — cold, an eighth of the sun, and
+    // casting shadows; the sky is lit by the sun where it really is, under
+    // the horizon, and the stars come out. At dusk the two cross over.
+    let moon = glam::Vec3::new(0.62, 0.72, 1.0);
+    let night_sky = glam::Vec3::new(0.012, 0.017, 0.035) * share.max(0.5);
+    let (direction, color, intensity) = if night < 0.5 {
+        (sun.direction(), sun.color(), sun.intensity * (1.0 - 2.0 * night))
+    } else {
+        (sun.moon_direction(), moon, sun.intensity * 0.07 * (2.0 * night - 1.0))
+    };
+    let sky = sky.lerp(night_sky, night);
+    let key = color * intensity * (-direction.y).max(0.0);
     Lighting {
-        sun_direction: sun.direction(),
-        sun_color: sun.color(),
-        sun_intensity: sun.intensity,
-        ..Lighting::default()
+        sun_direction: direction,
+        sun_color: color,
+        sun_intensity: intensity,
+        sky_color: sky,
+        ground_color: albedo * (key + sky * 0.5),
+        ground_albedo: albedo,
+        sky_sun: Some((sun.true_direction(), sun.intensity)),
+        night,
     }
 }
 
@@ -1251,6 +1340,15 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     }
     if let Some(fog) = scene.volumetric_fog {
         frame.volumetric_fog = fog;
+    }
+    if let Some(wind) = scene.wind {
+        frame.wind = wind;
+    }
+    if let Some(weather) = scene.weather {
+        frame.weather = weather;
+    }
+    if let Some(ssr) = scene.screen_space_reflections {
+        frame.screen_space_reflections = ssr;
     }
 }
 
@@ -1531,21 +1629,88 @@ pub fn build_frame_where(
             blend_distance: probe.0.blend_distance,
         })
         .collect();
-    let decals = world
+    let mut decals: Vec<crate::decals::Decal> = world
         .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
         .iter()
         .filter(|(_, _, line)| keep(line.map(|l| l.0)))
         .map(|(pressing, placed, _)| crate::decals::Decal {
             transform: placed.0 * glam::Mat4::from_scale(pressing.0.size),
             material: pressing.1,
+            shape: crate::decals::DecalShape::Picture,
         })
         .collect();
+    // Walkers' prints, and the dust their steps kick up — the dust the
+    // colour of the ground's top, lighter than the print turned over.
+    let mut puffs = Vec::new();
+    // The terrain drawn finely near the camera: the first there is.
+    let terrain = world
+        .query::<(&crate::terrain::Relief, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .find_map(|(relief, placed, _)| {
+            Some(crate::terrain::TerrainSurface {
+                mesh: relief.mesh()?,
+                placed: placed.0,
+                terrain: relief.terrain,
+            })
+        });
+    // Dune crests, into the world: where the wind may lift sand off them.
+    let plumes: Vec<crate::volume::Plume> = world
+        .query::<(&crate::terrain::Relief, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .flat_map(|(relief, placed, _)| {
+            let m = placed.0;
+            let along = m
+                .transform_vector3(glam::Vec3::Z)
+                .normalize_or(glam::Vec3::Z);
+            let half = (relief.terrain.dunes.wavelength * 0.06).max(1.0) * m.z_axis.length();
+            relief
+                .crests
+                .iter()
+                .map(move |c| crate::volume::Plume {
+                    position: m.transform_point3(*c),
+                    along,
+                    half_length: half,
+                    strength: 1.0,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (trail, line) in world
+        .query::<(&crate::footprints::Trail, Option<&SceneId>)>()
+        .iter()
+    {
+        if !keep(line.map(|l| l.0)) {
+            continue;
+        }
+        decals.extend(trail.decals());
+        let c = trail.settings.color;
+        let linear = |v: f32| crate::material::srgb_to_linear((v * 1.25).clamp(0.0, 1.0));
+        puffs.extend(trail.dust([linear(c[0]), linear(c[1]), linear(c[2])]));
+    }
     Frame {
         camera,
         lighting,
         reflection_probes,
         decals,
+        puffs,
+        plumes,
+        terrain,
         volumetric_fog: Default::default(),
+        wind: Default::default(),
+        benders: world
+            .query::<(&BendsGrass, &WorldTransform, Option<&SceneId>)>()
+            .iter()
+            .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+            .map(|(bends, placed, _)| crate::foliage::Bender {
+                position: placed.0.w_axis.truncate(),
+                radius: bends.0,
+            })
+            .collect(),
+        time: None,
+        weather: Default::default(),
+        screen_space_reflections: Default::default(),
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.
@@ -1571,6 +1736,58 @@ pub fn build_frame_where(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn at_night_the_moon_lights_from_above_and_the_sky_from_under_the_horizon() {
+        let day = scene_lighting(&crate::scene::Sun {
+            hour: 13.0,
+            ..crate::scene::Sun::default()
+        });
+        assert_eq!(day.night, 0.0);
+        assert!(day.sky_sun.is_none());
+        let night = scene_lighting(&crate::scene::Sun {
+            hour: 23.0,
+            intensity: 1.2,
+            ..crate::scene::Sun::default()
+        });
+        assert_eq!(night.night, 1.0);
+        assert!(night.sun_direction.y < -0.1, "the moon is up: {}", night.sun_direction);
+        assert!(night.sun_color.z > night.sun_color.x, "and cold: {}", night.sun_color);
+        assert!(night.sun_intensity < day.sun_intensity * 0.15, "and dim");
+        let (sun, _) = night.sky_sun.expect("the sky lit by the sun where it is");
+        assert!(sun.y > 0.0, "under the horizon, its light travels up: {sun}");
+    }
+
+    #[test]
+    fn sand_underfoot_lights_what_faces_down_warm_and_bright() {
+        let grass = scene_lighting(&crate::scene::Sun::default());
+        let sand = scene_lighting(&crate::scene::Sun {
+            ground: [0.78, 0.6, 0.38],
+            ..crate::scene::Sun::default()
+        });
+        assert!(
+            sand.ground_color.x > grass.ground_color.x * 3.0,
+            "{} vs {}",
+            sand.ground_color,
+            grass.ground_color
+        );
+        assert!(
+            sand.ground_color.x > sand.ground_color.z * 1.5,
+            "warm: {}",
+            sand.ground_color
+        );
+        // With the sun down to a glimmer the ground has little to send back.
+        let night = scene_lighting(&crate::scene::Sun {
+            intensity: 0.05,
+            ground: [0.78, 0.6, 0.38],
+            ..crate::scene::Sun::default()
+        });
+        assert!(
+            night.ground_color.x < sand.ground_color.x * 0.2,
+            "{}",
+            night.ground_color
+        );
+    }
     use super::*;
     use glam::Vec3;
 
@@ -1584,6 +1801,9 @@ mod tests {
             particles: None,
             reflection_probe: None,
             decal: None,
+            footprints: None,
+            terrain: None,
+            bends_grass: 0.0,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -1623,6 +1843,9 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    footprints: None,
+                    terrain: None,
+                    bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -2013,6 +2236,44 @@ mod tests {
         let (a, b) = (entity(&world, "a"), entity(&world, "b"));
         assert_eq!(world.get::<&Parent>(b).unwrap().0, a);
         assert_eq!(world.get::<&WorldTransform>(b).unwrap().0.w_axis.x, 10.0);
+    }
+
+    #[test]
+    fn a_walker_with_footprints_leaves_them_in_the_frame_and_retuned_starts_afresh() {
+        let text = r#"(entities: [
+            (id: "e7", name: "walker", model: "m", transform: (position: (0.0, 0.9, 0.0)), footprints: (feet: 0.9)),
+        ])"#;
+        let before = scene(text);
+        let mut world = spawned(&before);
+        let walker = entity(&world, "e7");
+        for i in 0..=120 {
+            world.get::<&mut WorldTransform>(walker).unwrap().0 =
+                glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.9, -0.05 * i as f32));
+            crate::footprints::run_footprints(&mut world, 1.0 / 60.0);
+        }
+        let frame = build_frame(
+            &world,
+            Camera::default(),
+            Lighting::default(),
+            FogSettings::default(),
+        );
+        let prints: Vec<_> = frame
+            .decals
+            .iter()
+            .filter(|d| d.shape == crate::decals::DecalShape::Footprint)
+            .collect();
+        assert_eq!(prints.len(), 8, "six metres at 0.75 a stride");
+        assert!(
+            prints.iter().all(|d| d.transform.w_axis.y.abs() < 1e-4),
+            "at its feet, not its middle"
+        );
+        assert!(!frame.puffs.is_empty(), "and dust");
+        // Retuned in the file: a fresh trail.
+        let after = scene(&text.replace("feet: 0.9", "feet: 0.9, stride: 0.5"));
+        patch(&before, &after, &mut world);
+        let trail = world.get::<&crate::footprints::Trail>(walker).unwrap();
+        assert_eq!(trail.prints(), 0);
+        assert_eq!(trail.settings.stride, 0.5);
     }
 
     #[test]

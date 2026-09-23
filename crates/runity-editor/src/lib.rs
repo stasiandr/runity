@@ -1214,41 +1214,36 @@ impl Session {
         Ok(())
     }
 
-    /// The scene's sun and fog, as the RON its file holds: `("sun",
-    /// "(hour: 9.0, intensity: 1.0)")` — Unity's Lighting window.
+    /// The scene's look — sun, fog, sky, post-processing, volumetric fog,
+    /// weather, wind, reflections — as the RON its file holds: `("sun",
+    /// "(hour: 9.0, intensity: 1.0)")`, `None` for what it leaves to the
+    /// engine. Unity's Lighting window, and the look tool's answer.
     pub fn environment(&self) -> Vec<(&'static str, String)> {
         let scene = self.history.scene();
-        vec![
-            (
-                "sun",
-                runity::ron::to_string(&scene.sun).unwrap_or_default(),
-            ),
-            (
-                "fog",
-                runity::ron::to_string(&scene.fog).unwrap_or_default(),
-            ),
-        ]
+        runity::moods::LOOK_FIELDS
+            .iter()
+            .map(|field| {
+                (
+                    *field,
+                    runity::scene::look_field(scene, field).unwrap_or_default(),
+                )
+            })
+            .collect()
     }
 
-    /// Set the scene's `sun` or `fog` from RON, as one undo step. Text that
-    /// does not parse costs no step and says why.
+    /// Set one of the scene's look fields from RON, as one undo step. Text
+    /// that does not parse costs no step and says why.
     pub fn set_environment(&mut self, field: &str, ron: &str) -> EditResult<()> {
+        self.set_look(&[(field, ron)])
+    }
+
+    /// Set several of the scene's look fields at once, as one undo step —
+    /// all of them or, if one does not parse, none.
+    pub fn set_look(&mut self, changes: &[(&str, &str)]) -> EditResult<()> {
         self.refuse_while_playing()?;
         let mut scene = self.history.scene().clone();
-        match field {
-            "sun" => {
-                scene.sun =
-                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("sun: {e}")))?
-            }
-            "fog" => {
-                scene.fog =
-                    runity::ron::from_str(ron).map_err(|e| EditError::Scene(format!("fog: {e}")))?
-            }
-            other => {
-                return Err(EditError::Scene(format!(
-                    "`{other}` is not part of the scene's environment — there are sun and fog"
-                )))
-            }
+        for (field, ron) in changes {
+            runity::scene::set_look_field(&mut scene, field, ron).map_err(EditError::Scene)?;
         }
         if &scene == self.history.scene() {
             return Ok(());
@@ -1256,6 +1251,22 @@ impl Session {
         *self.history.edit() = scene;
         self.respawn();
         Ok(())
+    }
+
+    /// Put a mood on the scene ([`runity::moods`]): its fields, as one
+    /// undo step.
+    pub fn apply_mood(&mut self, name: &str) -> EditResult<()> {
+        let mood = runity::moods::mood(name).ok_or_else(|| {
+            EditError::Scene(format!(
+                "no mood `{name}` — there are {}",
+                runity::moods::MOODS
+                    .iter()
+                    .map(|m| m.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        self.set_look(mood.fields)
     }
 
     /// Pick up the scene's file, or a prefab, changed by someone else — a
@@ -2268,6 +2279,8 @@ impl Session {
             match material.shading {
                 runity::Shading::Unlit => ", unlit: true",
                 runity::Shading::Grid => ", grid: true",
+                runity::Shading::Water => ", water: true",
+                runity::Shading::Sand => ", sand: true",
                 runity::Shading::Lit => "",
             }
         );
@@ -2937,7 +2950,17 @@ impl Session {
         } else {
             self.camera
         };
+        // Ground made from numbers gets its mesh before it is drawn.
+        runity::terrain::upload_terrains(&mut self.world, &self.gpu, &mut self.renderer);
         let mut frame = self.base_frame(camera);
+        // The Scene view answers at once, as Unity's does: temporal
+        // antialiasing would fade a handle or an outline in over frames,
+        // and an exposure finding its level would change what is compared.
+        // The Game view is what the player sees, and has it.
+        if !self.game_view {
+            frame.post.taa = false;
+            frame.post.auto_exposure.enabled = false;
+        }
         // The maps its materials draw with, uploaded the first time they
         // are seen — an import that brought a new one shows at once.
         let _ = runity::world::upload_material_maps(
@@ -3996,6 +4019,8 @@ impl Session {
             &self.instanced.scene,
             self.library.as_ref(),
         );
+        // The scene's wind carries what it says is `blown`.
+        physics.wind = self.instanced.scene.wind.unwrap_or_default();
         physics.sync_from_world(&mut self.world);
         self.play = Some(Play {
             physics,

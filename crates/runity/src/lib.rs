@@ -24,11 +24,13 @@ pub mod animation;
 pub mod animator;
 pub mod animgraph;
 pub mod asset;
+pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub mod audio;
 #[cfg(feature = "physics")]
 pub mod bench;
 pub mod builtin;
+pub mod clouds;
 pub mod components;
 pub mod crash;
 pub mod decals;
@@ -37,6 +39,9 @@ pub mod motion;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod edit;
+pub mod exposure;
+pub mod foliage;
+pub mod footprints;
 pub mod gizmo;
 pub mod gpu;
 pub mod graph_text;
@@ -50,6 +55,7 @@ pub mod lights;
 pub mod live;
 pub mod material;
 pub mod merge;
+pub mod moods;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
@@ -85,12 +91,15 @@ pub mod ssao;
 pub mod steam;
 pub mod strings;
 pub mod surface;
+pub mod taa;
+pub mod terrain;
 pub mod time;
 pub mod timers;
 pub mod tuned;
 pub mod ui;
 pub mod ui_render;
 pub mod volume;
+pub mod weather;
 pub mod widgets;
 pub mod world;
 

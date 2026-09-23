@@ -235,6 +235,15 @@ pub struct Lighting {
     /// Ambient seen by a surface facing straight down — bounce off the
     /// ground, standing in for the global illumination we do not compute.
     pub ground_color: Vec3,
+    /// The ground's colour, linear: with a physical sky, what the light
+    /// from below is worked out from.
+    pub ground_albedo: Vec3,
+    /// At dusk and night, the sun where it really is (under the horizon)
+    /// and how bright it is, for the sky to be lit by — the light above,
+    /// `sun_direction`, is then the moon's.
+    pub sky_sun: Option<(Vec3, f32)>,
+    /// How much it is night, 0 to 1: the stars come out.
+    pub night: f32,
 }
 
 impl Default for Lighting {
@@ -245,6 +254,9 @@ impl Default for Lighting {
             sun_intensity: 1.15,
             sky_color: Vec3::new(0.24, 0.28, 0.34),
             ground_color: Vec3::new(0.10, 0.09, 0.07),
+            ground_albedo: Vec3::new(0.107, 0.089, 0.069),
+            sky_sun: None,
+            night: 0.0,
         }
     }
 }
@@ -288,11 +300,17 @@ impl Default for FogSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SkyMode {
     /// A gradient from the horizon to the zenith, the ground below, and
-    /// the sun's disc where the sun is: URP's Procedural skybox.
-    #[default]
+    /// the sun's disc where the sun is: URP's Procedural skybox. Its
+    /// colours are the scene's to pick, for a look the air would not give.
     Procedural,
     /// A flat colour: the frame's `clear_color`. URP's Solid Color.
     Color,
+    /// Sunlight scattered by the air: blue at noon, orange at sunset, with
+    /// the sun's colour and the light from all round worked out from it —
+    /// HDRP's Physically Based Sky ([`crate::atmosphere`]). The default:
+    /// the hour alone gives a sky, a sun and a light that agree.
+    #[default]
+    Physical,
 }
 
 /// The sky, in linear light: HDR, so the sun's disc is far past white and
@@ -312,17 +330,23 @@ pub struct Sky {
     pub sun_size: f32,
     /// How bright the whole sky is.
     pub exposure: f32,
+    /// The air, for [`SkyMode::Physical`].
+    pub atmosphere: crate::atmosphere::Atmosphere,
+    /// Clouds over it ([`crate::clouds`]); none by default.
+    pub clouds: crate::clouds::Clouds,
 }
 
 impl Default for Sky {
     fn default() -> Self {
         Self {
-            mode: SkyMode::Procedural,
+            mode: SkyMode::Physical,
             zenith: [0.22, 0.38, 0.66],
             horizon: [0.62, 0.68, 0.74],
             ground: [0.30, 0.28, 0.25],
             sun_size: 1.5,
             exposure: 1.0,
+            atmosphere: crate::atmosphere::Atmosphere::default(),
+            clouds: crate::clouds::Clouds::default(),
         }
     }
 }
@@ -512,6 +536,27 @@ pub struct Frame {
     pub decals: Vec<crate::decals::Decal>,
     /// Light seen in the air ([`crate::volume`]); off by default.
     pub volumetric_fog: crate::volume::VolumetricFog,
+    /// Balls of dust in the air ([`crate::volume::Puff`]).
+    pub puffs: Vec<crate::volume::Puff>,
+    /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
+    /// how much does, the wind decides.
+    pub plumes: Vec<crate::volume::Plume>,
+    /// Shaped ground drawn finely round the camera, its ripples in the
+    /// geometry ([`crate::terrain::TerrainSurface`]).
+    pub terrain: Option<crate::terrain::TerrainSurface>,
+    /// What sways foliage, and what bends grass ([`crate::foliage`]).
+    pub wind: crate::foliage::Wind,
+    pub benders: Vec<crate::foliage::Bender>,
+    /// Seconds, for what moves by itself — foliage in the wind. `None`
+    /// takes the renderer's own clock; a test that wants the same picture
+    /// twice says a time.
+    pub time: Option<f32>,
+    /// Rain, snow, wet ground and puddles ([`crate::weather`]); clear by
+    /// default.
+    pub weather: crate::weather::Weather,
+    /// Reflections marched across the screen
+    /// ([`crate::reflections::ScreenSpaceReflections`]); off by default.
+    pub screen_space_reflections: crate::reflections::ScreenSpaceReflections,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -540,6 +585,14 @@ impl Default for Frame {
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
+            puffs: Vec::new(),
+            plumes: Vec::new(),
+            terrain: None,
+            wind: crate::foliage::Wind::default(),
+            benders: Vec::new(),
+            time: None,
+            weather: crate::weather::Weather::default(),
+            screen_space_reflections: Default::default(),
             poses: Vec::new(),
         }
     }
@@ -619,6 +672,41 @@ struct FrameUniform {
     fog_lamps: [f32; 4],
     /// What is behind everything with a plain-colour sky.
     clear_color: [f32; 4],
+    /// Wind and benders, for the vertex shaders.
+    foliage: crate::foliage::FoliageUniform,
+    /// The physical sky: 1 when on, the aerial grid's far end in metres.
+    air: [f32; 4],
+    /// Wetness, puddles, snow, rain; snowfall.
+    weather: [[f32; 4]; 3],
+    /// Up to four water surfaces, two vectors each: height and 1 when
+    /// there; the rectangle it covers (min x, min z, max x, max z).
+    waters: [[f32; 4]; 8],
+    /// Clouds: coverage, base, thickness, density; drift x and z, size,
+    /// how dark their shadows are.
+    clouds: [[f32; 4]; 2],
+    /// Last frame's camera, for reading the last frame's colour.
+    previous_view_projection: [[f32; 4]; 4],
+    /// Screen-space reflections: 1 when on and there is a last frame, how
+    /// far, how thick, how many steps.
+    ssr: [f32; 4],
+    /// Dust in the air, two vectors each: centre and radius; linear colour
+    /// and density. How many is `volume`'s w.
+    puffs: [[f32; 4]; 2 * crate::volume::MOST_PUFFS],
+    /// 1 when the clouds' pass marched dust devils or crest plumes: the
+    /// picture it made is laid over what is behind them.
+    dust: [f32; 4],
+    /// How much it is night (the stars); the moon's disc's size.
+    night: [f32; 4],
+    /// The terrain drawn finely: the world into its own space, and back.
+    terrain_to_local: [[f32; 4]; 4],
+    terrain_to_world: [[f32; 4]; 4],
+    /// Its size, its cells, 1 when there is one, the finest spacing.
+    terrain: [f32; 4],
+    /// Its lowest and highest ground in the world; patches per ring side.
+    terrain_bounds: [f32; 4],
+    /// What it is drawn with, for the mesh shader: the instance's numbers
+    /// (colour and shading, surface, emission, uv, detail, params).
+    terrain_look: [[f32; 4]; 7],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -626,6 +714,8 @@ struct FrameUniform {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CasterUniform {
     view_projection: [[f32; 4]; 4],
+    /// Foliage bends in the shadow passes as it does in the frame.
+    foliage: crate::foliage::FoliageUniform,
 }
 
 pub use crate::lights::MAX_LIGHTS;
@@ -717,6 +807,10 @@ const FLAG_SPECULAR: u32 = 1;
 const FLAG_REFLECTIONS: u32 = 2;
 const FLAG_SHADOWS: u32 = 4;
 const FLAG_PREMULTIPLY: u32 = 8;
+/// The base map is read on the screen: a camera's picture seen through it.
+const FLAG_SCREEN: u32 = 16;
+/// The same, flipped across: a mirror's.
+const FLAG_MIRROR: u32 = 32;
 
 /// What the GPU is told about one draw.
 fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
@@ -724,6 +818,8 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         Shading::Lit => 0.0,
         Shading::Unlit => 1.0,
         Shading::Grid => 2.0,
+        Shading::Water => 3.0,
+        Shading::Sand => 4.0,
     };
     let mut flags = 0;
     if material.specular_highlights {
@@ -738,19 +834,34 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
     if material.is_transparent() && material.blend == Blend::Premultiply {
         flags |= FLAG_PREMULTIPLY;
     }
+    flags |= match material.screen_map {
+        crate::material::ScreenMap::Off => 0,
+        crate::material::ScreenMap::Screen => FLAG_SCREEN,
+        crate::material::ScreenMap::Mirror => FLAG_MIRROR,
+    };
     InstanceRaw {
         model: transform.to_cols_array_2d(),
         color_and_shading: extend(material.color(), shading),
-        surface: [
-            material.metallic.clamp(0.0, 1.0),
-            material.smoothness.clamp(0.0, 1.0),
-            if material.is_transparent() || material.alpha_clip > 0.0 {
-                material.alpha.clamp(0.0, 1.0)
-            } else {
-                1.0
-            },
-            material.alpha_clip.clamp(0.0, 1.0),
-        ],
+        // Water reads its own: how far down one sees, and its foam.
+        surface: if material.shading == Shading::Water {
+            [
+                material.clarity.max(0.05),
+                material.foam.clamp(0.0, 1.0),
+                1.0,
+                0.0,
+            ]
+        } else {
+            [
+                material.metallic.clamp(0.0, 1.0),
+                material.smoothness.clamp(0.0, 1.0),
+                if material.is_transparent() || material.alpha_clip > 0.0 {
+                    material.alpha.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                },
+                material.alpha_clip.clamp(0.0, 1.0),
+            ]
+        },
         emission: [
             material.emission[0].max(0.0),
             material.emission[1].max(0.0),
@@ -766,12 +877,8 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         detail: [
             material.normal_scale,
             material.occlusion_strength.clamp(0.0, 1.0),
-            match material.screen_map {
-                crate::material::ScreenMap::Off => 0.0,
-                crate::material::ScreenMap::Screen => 1.0,
-                crate::material::ScreenMap::Mirror => 2.0,
-            },
-            0.0,
+            material.wind.max(0.0),
+            material.translucency.clamp(0.0, 1.0),
         ],
         params: [
             [
@@ -819,8 +926,6 @@ pub struct Renderer {
     /// Materials' own `surface` functions, by id: built again whenever the
     /// standard shader is reloaded.
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
-    /// Since when the renderer has run: the time a material's shader sees.
-    began: std::time::Instant,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -858,6 +963,19 @@ pub struct Renderer {
     decal_buffer: wgpu::Buffer,
     decal_atlases: crate::decals::DecalAtlases,
     ssao: crate::ssao::SsaoRenderer,
+    /// Temporal antialiasing's history ([`crate::taa`]).
+    taa: crate::taa::Taa,
+    /// Drawing a camera's picture for a texture, not the screen: no
+    /// antialiasing history is touched.
+    picturing: bool,
+    /// When the exposure was last metered, on the frame's clock.
+    metered_at: Option<f32>,
+    /// Terrain's fine grid round the camera, uploaded when first wanted.
+    clipmap: Option<MeshHandle>,
+    /// The drawn terrain's heights, for its vertex shader; and what they
+    /// were made from.
+    terrain_heights: wgpu::TextureView,
+    terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
@@ -897,6 +1015,11 @@ pub struct Renderer {
     texture_sampler: wgpu::Sampler,
     /// Kept to rebuild the pipelines when the shader is reloaded.
     pipeline_layout: wgpu::PipelineLayout,
+    /// The terrain's mesh-shader group and pipeline layouts, its uniform,
+    /// and the group bound (remade with the heights).
+    terrain_mesh_layouts: Option<(wgpu::BindGroupLayout, wgpu::PipelineLayout)>,
+    terrain_mesh_buffer: wgpu::Buffer,
+    terrain_mesh_group: Option<wgpu::BindGroup>,
     shadow_pipeline_layout: wgpu::PipelineLayout,
     shadow_clip_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
@@ -905,6 +1028,14 @@ pub struct Renderer {
     fog_integrate_layout: wgpu::PipelineLayout,
     /// Volumetric fog's grid.
     volumes: crate::volume::Volumes,
+    /// The clock foliage sways by when a frame does not say the time.
+    started: std::time::Instant,
+    /// The physical sky's table and aerial grid.
+    atmosphere: crate::atmosphere::AtmosphereRenderer,
+    /// One texel of depth, bound in place of the prepass's while it draws.
+    blank_depth: wgpu::TextureView,
+    /// The clouds' picture.
+    clouds: crate::clouds::CloudRenderer,
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
@@ -916,40 +1047,57 @@ struct SceneTargets {
     multisampled: Option<wgpu::TextureView>,
     /// Resolved into: what post-processing reads.
     resolved: wgpu::TextureView,
+    resolved_texture: wgpu::Texture,
+    /// The last frame, resolved: what screen-space reflections read.
+    history: wgpu::Texture,
+    history_view: wgpu::TextureView,
+    /// Whether `history` holds a frame yet.
+    has_history: bool,
 }
 
 fn scene_targets(gpu: &Gpu, width: u32, height: u32, samples: u32) -> SceneTargets {
-    let make = |label, samples, usage| {
-        gpu.device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: width.max(1),
-                    height: height.max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: samples,
-                dimension: wgpu::TextureDimension::D2,
-                format: crate::post::HDR_FORMAT,
-                usage,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
+    let texture = |label, samples, usage| {
+        gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::HDR_FORMAT,
+            usage,
+            view_formats: &[],
+        })
     };
+    let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+    let resolved = texture(
+        "scene",
+        1,
+        wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
+    );
+    let history = texture(
+        "last frame",
+        1,
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    );
     SceneTargets {
         multisampled: (samples > 1).then(|| {
-            make(
+            view(&texture(
                 "scene (multisampled)",
                 samples,
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )
+            ))
         }),
-        resolved: make(
-            "scene",
-            1,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        ),
+        resolved: view(&resolved),
+        resolved_texture: resolved,
+        history_view: view(&history),
+        history,
+        has_history: false,
     }
 }
 
@@ -986,6 +1134,12 @@ fn map_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 /// The engine's shader, as compiled in.
 pub const SHADER: &str = include_str!("render.wgsl");
+/// Terrain's task and mesh stages, appended to the renderer's shader where
+/// the device has mesh shaders.
+const TERRAIN_MESH: &str = include_str!("terrain_mesh.wgsl");
+/// Ray masks, as render.wgsl's RAY_THINGS and RAY_TERRAIN.
+const RAY_THINGS: u8 = 1;
+const RAY_TERRAIN: u8 = 2;
 
 /// Where the engine's shader source was when the engine was built — for
 /// watching it while working on the engine; see [`ShaderFile`].
@@ -1113,11 +1267,15 @@ struct Look {
     face: RenderFace,
     /// `None` is opaque.
     blend: Option<Blend>,
+    /// Water, drawn by its own fragment shader.
+    water: bool,
     /// A material's own shader ([`Renderer::set_material_shader`]); `None`
     /// is the standard one.
     shader: Option<crate::asset::AssetId>,
     /// Drawn over everything, walls included: see-through only.
     on_top: bool,
+    /// Terrain's fine grid, placed and raised by its own vertex shader.
+    terrain: bool,
 }
 
 impl Look {
@@ -1140,23 +1298,63 @@ impl Look {
                             skinned,
                             face,
                             blend,
+                            water: false,
                             shader: None,
                             on_top,
+                            terrain: false,
                         });
                     }
                 }
             }
         }
+        for face in [RenderFace::Front, RenderFace::Both] {
+            out.push(Look {
+                skinned: false,
+                face,
+                blend: Some(Blend::Premultiply),
+                water: true,
+                shader: None,
+                on_top: false,
+                terrain: false,
+            });
+        }
+        // Terrain's fine grid: solid, its front faces.
+        out.push(Look {
+            skinned: false,
+            face: RenderFace::Front,
+            blend: None,
+            water: false,
+            shader: None,
+            on_top: false,
+            terrain: true,
+        });
         out
     }
 
     fn of(material: &Material, skinned: bool) -> Look {
+        if material.shading == Shading::Water {
+            return Look {
+                skinned: false,
+                face: if material.render_face == RenderFace::Both {
+                    RenderFace::Both
+                } else {
+                    RenderFace::Front
+                },
+                blend: Some(Blend::Premultiply),
+                water: true,
+                shader: None,
+                on_top: false,
+                terrain: false,
+            };
+        }
         Look {
             skinned,
             face: material.render_face,
             blend: material.is_transparent().then_some(material.blend),
+            water: false,
             shader: material.shader,
             on_top: material.on_top && material.is_transparent(),
+            terrain: false,
         }
     }
 }
@@ -1169,12 +1367,17 @@ struct Pipelines {
     shadow_clip: wgpu::RenderPipeline,
     /// Depth and normals of what is solid, for ambient occlusion: by
     /// skinned and render face.
-    prepass: std::collections::HashMap<(bool, RenderFace), wgpu::RenderPipeline>,
+    prepass: std::collections::HashMap<(bool, RenderFace, bool), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
+    /// Rain and snow falling, over the frame.
+    precipitation: wgpu::RenderPipeline,
     /// Volumetric fog: what each cell scatters, and the sums along the view.
     fog_inject: wgpu::ComputePipeline,
     fog_integrate: wgpu::ComputePipeline,
+    /// Terrain's fine grid by task and mesh shaders — drawn and in the
+    /// prepass — where the device has them and they built.
+    terrain_mesh: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
 }
 
 /// The layouts the pipelines are built against, kept to rebuild them when
@@ -1187,6 +1390,8 @@ struct Layouts<'a> {
     sky: &'a wgpu::PipelineLayout,
     fog_inject: &'a wgpu::PipelineLayout,
     fog_integrate: &'a wgpu::PipelineLayout,
+    /// The terrain's mesh-shader pipelines: the main groups and its own.
+    terrain_mesh: Option<&'a wgpu::PipelineLayout>,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -1297,13 +1502,19 @@ fn scene_pipelines(
                 }),
                 vertex: wgpu::VertexState {
                     module: shader,
-                    entry_point: Some(if look.skinned { "vs_skinned" } else { "vs" }),
+                    entry_point: Some(if look.terrain {
+                        "vs_terrain"
+                    } else if look.skinned {
+                        "vs_skinned"
+                    } else {
+                        "vs"
+                    }),
                     compilation_options: Default::default(),
                     buffers: &buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some("fs"),
+                    entry_point: Some(if look.water { "fs_water" } else { "fs" }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -1350,9 +1561,138 @@ fn scene_pipelines(
 /// start, and again when the shader is reloaded. The scene draws into the
 /// HDR format, multisampled `samples` times; overlays onto `output`, after
 /// post-processing.
+/// The terrain functions of the renderer's shader, for the mesh stages:
+/// the same code reading their own group (`frame.` as `tframe.`, the
+/// heights as `mesh_heights`), each name with `_m`.
+fn mesh_stage_copy(source: &str) -> Option<String> {
+    let begin = source.find("// terrain-stage:begin")?;
+    let end = source.find("// terrain-stage:end")?;
+    let mut copy = source[begin..end]
+        .replace("frame.", "tframe.")
+        .replace("terrain_heights", "mesh_heights");
+    for name in [
+        "relief_height",
+        "sand_wind",
+        "ripples_at",
+        "terrain_ground",
+        "terrain_vertex",
+    ] {
+        copy = copy.replace(&format!("{name}("), &format!("{name}_m("));
+    }
+    Some(copy)
+}
+
+/// What of the frame the terrain's mesh stages read: `TerrainFrame` in
+/// terrain_mesh.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TerrainFrameUniform {
+    view_projection: [[f32; 4]; 4],
+    camera_position: [f32; 4],
+    wind: [f32; 4],
+    terrain_to_local: [[f32; 4]; 4],
+    terrain_to_world: [[f32; 4]; 4],
+    terrain: [f32; 4],
+    terrain_bounds: [f32; 4],
+    terrain_look: [[f32; 4]; 7],
+}
+
+/// The terrain's mesh-shader pipelines, from the renderer's shader `source`
+/// with the task and mesh stages after it: `None` where the device has no
+/// mesh shaders or they do not build (the vertex-shader grid draws then).
+fn terrain_mesh_pipelines(
+    gpu: &Gpu,
+    source: &str,
+    samples: u32,
+    layouts: &Layouts,
+) -> Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)> {
+    let layout = layouts.terrain_mesh?;
+    let full = format!(
+        "enable wgpu_mesh_shader;\n{source}\n{}\n{TERRAIN_MESH}",
+        mesh_stage_copy(source)?
+    );
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    // SAFETY: the task and mesh stages index only arrays they size
+    // themselves, within their loops' bounds; naga's added checks (and
+    // clearing the workgroups' memory) cost the mesh draw most of its time.
+    let module = unsafe {
+        gpu.device.create_shader_module_trusted(
+            wgpu::ShaderModuleDescriptor {
+                label: Some("runity::terrain mesh"),
+                source: wgpu::ShaderSource::Wgsl(full.into()),
+            },
+            wgpu::ShaderRuntimeChecks::unchecked(),
+        )
+    };
+    let pipeline = |fragment: &str, target: wgpu::ColorTargetState, depth, samples| {
+        gpu.device
+            .create_mesh_pipeline(&wgpu::MeshPipelineDescriptor {
+                label: Some("runity::terrain mesh"),
+                layout: Some(layout),
+                task: Some(wgpu::TaskState {
+                    module: &module,
+                    entry_point: Some("ts_terrain"),
+                    compilation_options: Default::default(),
+                }),
+                mesh: wgpu::MeshState {
+                    module: &module,
+                    entry_point: Some("ms_terrain"),
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &[Some(target)],
+                }),
+                multiview: None,
+                cache: None,
+            })
+    };
+    let drawn = pipeline(
+        "fs",
+        wgpu::ColorTargetState {
+            format: crate::post::HDR_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        },
+        DEPTH_FORMAT,
+        samples,
+    );
+    let prepass = pipeline(
+        "fs_normals",
+        crate::ssao::NORMAL_FORMAT.into(),
+        crate::ssao::PREPASS_DEPTH,
+        1,
+    );
+    match pollster::block_on(scope.pop()) {
+        Some(error) => {
+            eprintln!("terrain by mesh shaders did not build, drawn without: {error}");
+            None
+        }
+        None => Some((drawn, prepass)),
+    }
+}
+
 fn build_pipelines(
     gpu: &Gpu,
     shader: &wgpu::ShaderModule,
+    source: &str,
     output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
@@ -1363,7 +1703,7 @@ fn build_pipelines(
         ..Default::default()
     };
     let scene = scene_pipelines(gpu, shader, samples, layouts, Look::all());
-    let prepass_pipeline = |skinned: bool, face: RenderFace| {
+    let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1375,7 +1715,13 @@ fn build_pipelines(
                 }),
                 vertex: wgpu::VertexState {
                     module: shader,
-                    entry_point: Some(if skinned { "vs_skinned" } else { "vs" }),
+                    entry_point: Some(if terrain {
+                        "vs_terrain"
+                    } else if skinned {
+                        "vs_skinned"
+                    } else {
+                        "vs"
+                    }),
                     compilation_options: Default::default(),
                     buffers: &buffers,
                 },
@@ -1408,9 +1754,16 @@ fn build_pipelines(
     let mut prepass = std::collections::HashMap::new();
     for skinned in [false, true] {
         for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
-            prepass.insert((skinned, face), prepass_pipeline(skinned, face));
+            prepass.insert(
+                (skinned, face, false),
+                prepass_pipeline(skinned, face, false),
+            );
         }
     }
+    prepass.insert(
+        (false, RenderFace::Front, true),
+        prepass_pipeline(false, RenderFace::Front, true),
+    );
 
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
@@ -1515,6 +1868,41 @@ fn build_pipelines(
             cache: None,
         });
 
+    // Rain and snow: over everything, added, depth left alone.
+    let precipitation = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::precipitation"),
+            layout: Some(layouts.sky),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_precipitation"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend_state(Blend::Premultiply)),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            multiview_mask: None,
+            cache: None,
+        });
+
     let shadow_clip = gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1571,8 +1959,10 @@ fn build_pipelines(
         prepass,
         overlay,
         sky,
+        precipitation,
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
+        terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
     }
 }
 
@@ -1621,6 +2011,7 @@ impl Renderer {
         let pipelines = build_pipelines(
             gpu,
             &shader,
+            source,
             self.format,
             self.samples,
             &Layouts {
@@ -1631,6 +2022,7 @@ impl Renderer {
                 sky: &self.sky_layout,
                 fog_inject: &self.fog_inject_layout,
                 fog_integrate: &self.fog_integrate_layout,
+                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -1715,6 +2107,7 @@ impl Renderer {
                 sky: &self.sky_layout,
                 fog_inject: &self.fog_inject_layout,
                 fog_integrate: &self.fog_integrate_layout,
+                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
             looks,
         );
@@ -1895,6 +2288,72 @@ impl Renderer {
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // The physical sky's table, and its aerial grid.
+            wgpu::BindGroupLayoutEntry {
+                binding: 18,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // Terrain heights, read by the fine grid's vertex shader.
+            wgpu::BindGroupLayoutEntry {
+                binding: 23,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The last frame, for screen-space reflections.
+            wgpu::BindGroupLayoutEntry {
+                binding: 22,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The clouds, a quarter of the frame.
+            wgpu::BindGroupLayoutEntry {
+                binding: 21,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The solid scene's depth, from the prepass: what water sees
+            // under itself.
+            wgpu::BindGroupLayoutEntry {
+                binding: 20,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 19,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
         ]);
         // The fog's compute passes read the frame as the lit shader does.
         for entry in &mut frame_entries {
@@ -1968,10 +2427,21 @@ impl Renderer {
         );
         let decal_atlases = crate::decals::DecalAtlases::new(gpu);
         let volumes = crate::volume::Volumes::new(gpu);
+        let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
+        let clouds = crate::clouds::CloudRenderer::new(gpu);
+        let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                terrain_heights: &terrain_heights,
+                // Any texel will do until the scene's targets exist; the
+                // renderer rebinds once it is built.
+                history: clouds.view(),
+                clouds: clouds.view(),
+                scene_depth: &ssao.depth,
+                sky_view: &atmosphere.sky_view,
+                aerial: &atmosphere.aerial,
                 fog: &volumes.integrated,
                 fog_sampler: &volumes.sampler,
                 decals: &decal_buffer,
@@ -2029,6 +2499,52 @@ impl Renderer {
                 bind_group_layouts: &[Some(&layout), Some(&texture_layout)],
                 immediate_size: 0,
             });
+        // The terrain's task and mesh stages: a group of their own (see
+        // terrain_mesh.wgsl for why), after the main ones.
+        let terrain_mesh_layouts = gpu.mesh_shaders.then(|| {
+            let stages = wgpu::ShaderStages::TASK | wgpu::ShaderStages::MESH;
+            let group = gpu
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("terrain mesh"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: stages,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: stages,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline = gpu
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("runity::terrain mesh"),
+                    bind_group_layouts: &[Some(&layout), Some(&texture_layout), None, Some(&group)],
+                    immediate_size: 0,
+                });
+            (group, pipeline)
+        });
+        let terrain_mesh_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("terrain mesh"),
+            size: std::mem::size_of::<TerrainFrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // The shadow pass sees one cascade's matrix, picked by a dynamic
         // offset: binding 3, beside the frame's, so the one shader module
@@ -2153,9 +2669,15 @@ impl Renderer {
         let fog_inject_layout = fog_layout("runity::fog inject", &volumes.inject_layout);
         let fog_integrate_layout = fog_layout("runity::fog integrate", &volumes.integrate_layout);
         let samples = sample_count(gpu);
+        let shader_source = if gpu.ray_tracing {
+            crate::ray::traced(SHADER)
+        } else {
+            SHADER.to_string()
+        };
         let pipelines = build_pipelines(
             gpu,
             &shader,
+            &shader_source,
             format,
             samples,
             &Layouts {
@@ -2166,6 +2688,7 @@ impl Renderer {
                 sky: &sky_layout,
                 fog_inject: &fog_inject_layout,
                 fog_integrate: &fog_integrate_layout,
+                terrain_mesh: terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
 
@@ -2182,7 +2705,6 @@ impl Renderer {
             pipelines,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
-            began: std::time::Instant::now(),
             layout,
             bind_group,
             shadow_bind_group,
@@ -2200,6 +2722,11 @@ impl Renderer {
             decal_buffer,
             decal_atlases,
             ssao,
+            taa: crate::taa::Taa::new(gpu),
+            picturing: false,
+            metered_at: None,
+            clipmap: None,
+            terrain_made: None,
             ray,
             light_buffer,
             cell_buffer,
@@ -2231,6 +2758,9 @@ impl Renderer {
             texture_layout,
             texture_sampler,
             pipeline_layout,
+            terrain_mesh_layouts,
+            terrain_mesh_buffer,
+            terrain_mesh_group: None,
             shadow_pipeline_layout,
             shadow_clip_layout,
             skinned_layout,
@@ -2239,6 +2769,27 @@ impl Renderer {
             fog_integrate_layout,
             volumes,
             fog_bind_group,
+            started: std::time::Instant::now(),
+            atmosphere,
+            clouds,
+            terrain_heights,
+            blank_depth: gpu
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("no depth"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: crate::ssao::PREPASS_DEPTH,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default()),
         };
         renderer.rebind(gpu);
 
@@ -2258,14 +2809,24 @@ impl Renderer {
         self.fog_bind_group = self.frame_group(gpu, true);
     }
 
-    /// The frame's bind group; with `making_fog`, the fog's grid left out,
-    /// for the passes that fill it.
+    /// The frame's bind group; with `making_fog`, the fog's grid and the
+    /// prepass's depth left out, for the passes that fill them.
     fn frame_group(&self, gpu: &Gpu, making_fog: bool) -> wgpu::BindGroup {
         let baking = self.reflections.baking;
         frame_bind_group(
             gpu,
             &self.layout,
             &FrameInputs {
+                terrain_heights: &self.terrain_heights,
+                history: &self.scene.history_view,
+                clouds: self.clouds.view(),
+                scene_depth: if making_fog {
+                    &self.blank_depth
+                } else {
+                    &self.ssao.depth
+                },
+                sky_view: &self.atmosphere.sky_view,
+                aerial: &self.atmosphere.aerial,
                 fog: if making_fog {
                     &self.volumes.blank
                 } else {
@@ -2592,13 +3153,15 @@ impl Renderer {
             if let Some(look) = look {
                 if current != Some(*look) {
                     let pipeline = if prepass {
-                        self.pipelines.prepass.get(&(look.skinned, look.face))
+                        self.pipelines
+                            .prepass
+                            .get(&(look.skinned, look.face, look.terrain))
                     } else {
                         self.scene_pipeline(*look)
                     };
                     if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
-                        pass.set_bind_group(0, &self.bind_group, &[]);
+                        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
                     }
                     current = Some(*look);
                 }
@@ -2611,6 +3174,47 @@ impl Renderer {
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
             first += count;
+        }
+    }
+
+    /// Whether terrain is drawn by mesh shaders here: asked for, the device
+    /// has them, and they built.
+    pub fn terrain_by_mesh_shaders(&self) -> bool {
+        self.pipelines.terrain_mesh.is_some()
+    }
+
+    /// The terrain's fine grid by mesh shaders: every patch of every ring
+    /// to the task shader, which keeps what is worth drawing.
+    fn draw_mesh_terrain<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        maps: Option<Maps>,
+        prepass: bool,
+    ) {
+        let (Some(maps), Some((drawn, depth)), Some(group)) = (
+            maps,
+            self.pipelines.terrain_mesh.as_ref(),
+            self.terrain_mesh_group.as_ref(),
+        ) else {
+            return;
+        };
+        pass.set_pipeline(if prepass { depth } else { drawn });
+        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+        self.bind_maps(pass, maps);
+        pass.set_bind_group(3, group, &[]);
+        let patches = crate::terrain::CLIPMAP_LEVELS * crate::terrain::PATCHES_PER_RING;
+        // Sixty-four task invocations a group, eight patches each (see
+        // terrain_mesh.wgsl): a task group costs the same kept or not.
+        pass.draw_mesh_tasks(patches.div_ceil(64 * 8), 1, 1);
+    }
+
+    /// The frame's bind group — or, for the prepass, the one without the
+    /// prepass's own depth in it, which the prepass is drawing.
+    fn frame_group_for(&self, prepass: bool) -> &wgpu::BindGroup {
+        if prepass {
+            &self.fog_bind_group
+        } else {
+            &self.bind_group
         }
     }
 
@@ -2638,7 +3242,9 @@ impl Renderer {
             return;
         };
         let pipeline = if prepass {
-            self.pipelines.prepass.get(&(look.skinned, look.face))
+            self.pipelines
+                .prepass
+                .get(&(look.skinned, look.face, look.terrain))
         } else {
             self.scene_pipeline(look)
         };
@@ -2646,7 +3252,7 @@ impl Renderer {
             return;
         };
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
         self.bind_maps(pass, texture);
         pass.set_vertex_buffer(0, mesh.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -2997,7 +3603,9 @@ impl Renderer {
             .create_view(&wgpu::TextureViewDescriptor::default());
         // Motion blur's history is the screen camera's, not this one's.
         let history = self.previous_view_projection;
+        self.picturing = true;
         self.render_view(gpu, Some(&view), size.0, size.1, &frame, None);
+        self.picturing = false;
         self.previous_view_projection = history;
     }
 
@@ -3052,6 +3660,18 @@ impl Renderer {
             for face in 0..6 {
                 let seen = Frame {
                     camera: crate::reflections::face_camera(probe, face),
+                    // The clouds' picture is the camera's, not the probe's.
+                    weather: crate::weather::Weather {
+                        dust_wall: 0.0,
+                        ..frame.weather
+                    },
+                    sky: Sky {
+                        clouds: crate::clouds::Clouds {
+                            coverage: 0.0,
+                            ..frame.sky.clouds
+                        },
+                        ..frame.sky
+                    },
                     post: crate::post::PostProcess::OFF,
                     ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
                     ray_tracing: crate::ray::RayTracing::default(),
@@ -3086,8 +3706,73 @@ impl Renderer {
             self.depth = depth_view(gpu, width, height, self.samples);
             self.scene = scene_targets(gpu, width, height, self.samples);
             self.depth_size = (width, height);
+            self.rebind(gpu);
         }
         if probe.is_none() && self.ssao.resize(gpu, (width, height)) {
+            self.rebind(gpu);
+        }
+        // Temporal antialiasing: the screen's own view only, moved a
+        // fraction of a pixel each frame it has a history to blend into.
+        let taa_on = frame.post.taa && probe.is_none() && view.is_some() && !self.picturing;
+        if taa_on {
+            self.taa.resize(gpu, (width, height));
+            self.taa.follow(
+                frame.camera.position,
+                (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
+            );
+        }
+        let jitter = if taa_on {
+            self.taa.jitter()
+        } else {
+            glam::Vec2::ZERO
+        };
+        // Shaped ground drawn finely round the screen's camera: its heights
+        // up for the vertex shader, remade when it changes.
+        let fine_terrain = frame
+            .terrain
+            .filter(|_| probe.is_none() && view.is_some() && !self.picturing);
+        if let Some(t) = fine_terrain {
+            if self.clipmap.is_none() {
+                self.clipmap = Some(self.upload_mesh_owned(gpu, &crate::terrain::clipmap_mesh()));
+            }
+            if self.terrain_made != Some(t.terrain) {
+                let cells = t.terrain.cells.clamp(2, 2048);
+                self.terrain_heights = terrain_height_view(gpu, cells + 1, &t.terrain.heights());
+                self.terrain_made = Some(t.terrain);
+                self.rebind(gpu);
+                self.terrain_mesh_group = self.terrain_mesh_layouts.as_ref().map(|(layout, _)| {
+                    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("terrain mesh"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.terrain_mesh_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&self.terrain_heights),
+                            },
+                        ],
+                    })
+                });
+            }
+        }
+        // What is drawn with: the camera, moved by the jitter.
+        let drawn = Mat4::from_translation(Vec3::new(jitter.x, jitter.y, 0.0))
+            * frame.camera.view_projection(aspect);
+        // Dust near the ground — a wall, a devil, sand off a crest — is
+        // marched at half size; clouds alone at a quarter.
+        let near_dust = frame.weather.dust_wall > 0.0
+            || frame.weather.dust_devils > 0.0
+            || (!frame.plumes.is_empty()
+                && (frame.wind.strength > 1.0 || frame.weather.sandstorm > 0.0));
+        if probe.is_none()
+            && (frame.sky.clouds.coverage > 0.0 || near_dust)
+            && self
+                .clouds
+                .resize(gpu, (width, height), if near_dust { 2 } else { 4 })
+        {
             self.rebind(gpu);
         }
 
@@ -3207,6 +3892,132 @@ impl Renderer {
             // to clear at a grazing angle.
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
+        // The fog as the weather leaves it: a sandstorm thickens both.
+        let time = frame
+            .time
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+        // The weather where the camera is: inside a dust wall, a storm.
+        let weather = frame.weather.at(frame.camera.position, &frame.wind, time);
+        let mut volumetric = weather.storm_fog(&frame.volumetric_fog);
+        // Dust in the air is in the fog's grid: with any, the grid runs,
+        // clear where there is none.
+        let puffs = if probe.is_none() {
+            let mut near: Vec<&crate::volume::Puff> = frame.puffs.iter().collect();
+            let eye = frame.camera.position;
+            near.sort_by(|a, b| {
+                (a.position - eye)
+                    .length_squared()
+                    .total_cmp(&(b.position - eye).length_squared())
+            });
+            near.truncate(crate::volume::MOST_PUFFS);
+            near
+        } else {
+            Vec::new()
+        };
+        // Dust devils where the weather has them; sand off the crests as
+        // much as the wind is strong (past a stiff breeze) or a storm blows.
+        let devils = if probe.is_none() {
+            weather.devils(&frame.wind, time)
+        } else {
+            Vec::new()
+        };
+        let blowing = (((frame.wind.strength - 1.0) / 1.5).clamp(0.0, 1.0))
+            .max(weather.sandstorm.clamp(0.0, 1.0));
+        let plumes: Vec<crate::volume::Plume> = if probe.is_none() && blowing > 0.0 {
+            let eye = frame.camera.position;
+            let mut near: Vec<crate::volume::Plume> = frame
+                .plumes
+                .iter()
+                .filter(|p| (p.position - eye).length_squared() < 150.0 * 150.0)
+                .copied()
+                .collect();
+            near.sort_by(|a, b| {
+                (a.position - eye)
+                    .length_squared()
+                    .total_cmp(&(b.position - eye).length_squared())
+            });
+            near.truncate(crate::volume::MOST_PLUMES);
+            // Thinning toward the edge of those taken, so where the list
+            // ends there is no line across the sky.
+            let edge = near
+                .last()
+                .map_or(1.0, |p| (p.position - eye).length())
+                .max(1.0);
+            for p in &mut near {
+                let d = (p.position - eye).length();
+                p.strength *= blowing * ((edge - d) / (edge * 0.35)).clamp(0.0, 1.0);
+            }
+            near
+        } else {
+            Vec::new()
+        };
+        // Devils and plumes are marched with the clouds, precisely: too
+        // thin and too far for the fog's grid.
+        let local_dust = !devils.is_empty() || !plumes.is_empty();
+        if !puffs.is_empty() && !volumetric.enabled {
+            volumetric = crate::volume::VolumetricFog {
+                enabled: true,
+                density: 0.0,
+                ..crate::volume::VolumetricFog::OFF
+            };
+        }
+
+        let fog = weather.storm_distance(&frame.fog);
+        // With a physical sky, the sun's colour and the light from all
+        // round come from the air, not from the scene's picked colours.
+        let physical = frame.sky.mode == SkyMode::Physical;
+        let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
+        let altitude = frame.camera.position.y.max(1.0);
+        // The sun the sky is lit by: at night, under the horizon — the
+        // light above is then the moon's.
+        let (sky_to_sun, sky_sun_intensity) = match frame.lighting.sky_sun {
+            Some((direction, intensity)) => (-direction.normalize_or(Vec3::NEG_Y), intensity),
+            None => (to_sun, frame.lighting.sun_intensity),
+        };
+        let night = frame.lighting.night.clamp(0.0, 1.0);
+        let (sun_light, sky_light, ground_light) = if physical {
+            let (sun, sky, _) =
+                frame
+                    .sky
+                    .atmosphere
+                    .lighting(altitude, sky_to_sun, sky_sun_intensity);
+            // At night the moon, as the scene's lighting has it, and the
+            // night sky's own faint light on top of what the air still
+            // glows with.
+            let (sun, sky) = if frame.lighting.sky_sun.is_some() {
+                let moon = frame.lighting.sun_color * frame.lighting.sun_intensity;
+                (
+                    sun.lerp(moon, (night * 2.0 - 1.0).clamp(0.0, 1.0)),
+                    sky + frame.lighting.sky_color * night,
+                )
+            } else {
+                (sun, sky)
+            };
+            // The ground lit by them, sending its colour back up.
+            let ground = frame.lighting.ground_albedo * (sun * to_sun.y.max(0.0) + sky * 0.5);
+            (sun, sky, ground)
+        } else {
+            (
+                frame.lighting.sun_color * frame.lighting.sun_intensity,
+                frame.lighting.sky_color,
+                frame.lighting.ground_color,
+            )
+        };
+        // In a sandstorm the sun is a dim orange disc through the sand, and
+        // what light there is comes from the glowing air all round.
+        let storm = weather.sandstorm.clamp(0.0, 1.0);
+        let sun_light =
+            sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
+        let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
+        let ground_light = ground_light.lerp(Vec3::new(0.35, 0.25, 0.15), storm * 0.7);
+        let foliage = crate::foliage::FoliageUniform::new(
+            &frame.wind,
+            &frame.benders,
+            frame.camera.position,
+            frame
+                .time
+                .unwrap_or_else(|| self.started.elapsed().as_secs_f32()),
+        );
         let casters: Vec<u8> = light_view_projection
             .iter()
             .chain(light_views.iter())
@@ -3214,6 +4025,7 @@ impl Renderer {
                 let mut slot = vec![0u8; self.caster_stride as usize];
                 let one = CasterUniform {
                     view_projection: *matrix,
+                    foliage,
                 };
                 slot[..std::mem::size_of::<CasterUniform>()]
                     .copy_from_slice(bytemuck::bytes_of(&one));
@@ -3223,21 +4035,21 @@ impl Renderer {
         gpu.queue.write_buffer(&self.casters, 0, &casters);
 
         let uniform = FrameUniform {
-            view_projection: frame.camera.view_projection(aspect).to_cols_array_2d(),
+            view_projection: drawn.to_cols_array_2d(),
             sun_direction: extend(frame.lighting.sun_direction.normalize_or_zero(), 0.0),
-            sun_color: extend(frame.lighting.sun_color * frame.lighting.sun_intensity, 0.0),
-            sky_color: extend(frame.lighting.sky_color, 0.0),
-            ground_color: extend(frame.lighting.ground_color, 0.0),
-            fog_color: extend(frame.fog.color, 0.0),
+            sun_color: extend(sun_light, 0.0),
+            sky_color: extend(sky_light, 0.0),
+            ground_color: extend(ground_light, 0.0),
+            fog_color: extend(fog.color, 0.0),
             fog_range: [
-                frame.fog.start,
-                frame.fog.end,
-                match frame.fog.mode {
+                fog.start,
+                fog.end,
+                match fog.mode {
                     FogMode::Linear => 0.0,
                     FogMode::Exponential => 1.0,
                     FogMode::ExponentialSquared => 2.0,
                 },
-                frame.fog.density.max(0.0),
+                fog.density.max(0.0),
             ],
             camera_position: extend(frame.camera.apparent_eye(), 1.0),
             light_view_projection,
@@ -3263,19 +4075,15 @@ impl Renderer {
                 [near, (far / near).ln(), width as f32, height as f32]
             },
             light_shadow: [1.0 / self.light_shadow_resolution as f32, 0.0, 0.0, 0.0],
-            inverse_view_projection: frame
-                .camera
-                .view_projection(aspect)
-                .inverse()
-                .to_cols_array_2d(),
+            inverse_view_projection: drawn.inverse().to_cols_array_2d(),
             sky_zenith: [
                 frame.sky.zenith[0],
                 frame.sky.zenith[1],
                 frame.sky.zenith[2],
-                if frame.sky.mode == SkyMode::Procedural {
-                    1.0
-                } else {
-                    0.0
+                match frame.sky.mode {
+                    SkyMode::Color => 0.0,
+                    SkyMode::Procedural => 1.0,
+                    SkyMode::Physical => 2.0,
                 },
             ],
             sky_horizon: [
@@ -3349,21 +4157,21 @@ impl Renderer {
                 crate::reflections::face_matrix(f).to_cols_array_2d()
             }),
             volume: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 let near = frame.camera.near.max(1e-3);
                 [
                     if v.enabled { 1.0 } else { 0.0 },
                     v.distance.max(near * 2.0),
                     near,
-                    0.0,
+                    puffs.len() as f32,
                 ]
             },
             fog_medium: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 [v.color[0], v.color[1], v.color[2], v.density.max(0.0)]
             },
             fog_shape: {
-                let v = &frame.volumetric_fog;
+                let v = &volumetric;
                 [
                     v.base_height,
                     v.height_falloff.max(0.0),
@@ -3371,11 +4179,126 @@ impl Renderer {
                     v.ambient.max(0.0),
                 ]
             },
-            fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
-            clear_color: extend(frame.clear_color, self.began.elapsed().as_secs_f32()),
+            fog_lamps: [volumetric.lamps.max(0.0), 0.0, 0.0, 0.0],
+            clear_color: extend(frame.clear_color, time),
+            foliage,
+            air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
+            weather: {
+                let mut u = weather.uniform();
+                u[1][3] = weather.dust_front(&frame.wind, time);
+                u
+            },
+            previous_view_projection: self
+                .previous_view_projection
+                .unwrap_or_else(|| frame.camera.view_projection(aspect))
+                .to_cols_array_2d(),
+            dust: [if local_dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            night: [night, 0.0, 0.0, 0.0],
+            terrain_to_local: fine_terrain
+                .map_or(Mat4::IDENTITY, |t| t.placed.inverse())
+                .to_cols_array_2d(),
+            terrain_to_world: fine_terrain
+                .map_or(Mat4::IDENTITY, |t| t.placed)
+                .to_cols_array_2d(),
+            terrain: match fine_terrain {
+                Some(t) => [
+                    t.terrain.size.max(1.0),
+                    t.terrain.cells.clamp(2, 2048) as f32,
+                    1.0,
+                    crate::terrain::CLIPMAP_FINEST,
+                ],
+                None => [1.0, 2.0, 0.0, crate::terrain::CLIPMAP_FINEST],
+            },
+            terrain_bounds: match fine_terrain {
+                Some(t) => {
+                    let base = t.placed.w_axis.y;
+                    [
+                        base - 0.5,
+                        base + t.terrain.dunes.height * 1.3 + 0.5,
+                        crate::terrain::PATCHES_PER_RING as f32,
+                        0.0,
+                    ]
+                }
+                None => [0.0; 4],
+            },
+            terrain_look: fine_terrain
+                .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
+                .map_or([[0.0; 4]; 7], |d| {
+                    let raw = instance_of(d.transform, &d.material);
+                    [
+                        raw.color_and_shading,
+                        raw.surface,
+                        raw.emission,
+                        raw.uv,
+                        raw.detail,
+                        raw.params[0],
+                        raw.params[1],
+                    ]
+                }),
+            puffs: {
+                let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PUFFS];
+                for (i, p) in puffs.iter().enumerate() {
+                    out[2 * i] = [p.position.x, p.position.y, p.position.z, p.radius.max(0.01)];
+                    out[2 * i + 1] = [p.color[0], p.color[1], p.color[2], p.density.max(0.0)];
+                }
+                out
+            },
+            ssr: {
+                let s = &frame.screen_space_reflections;
+                [
+                    if s.enabled && probe.is_none() && self.scene.has_history {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                    s.max_distance.max(0.1),
+                    s.thickness.max(0.01),
+                    s.steps.clamp(4, 128) as f32,
+                ]
+            },
+            clouds: {
+                let (shape, mut drift) = frame.sky.clouds.vectors(&frame.wind);
+                drift[3] = frame.sky.clouds.shadows.clamp(0.0, 1.0);
+                if frame.sky.mode == SkyMode::Color {
+                    [[0.0; 4], drift]
+                } else {
+                    [shape, drift]
+                }
+            },
+            waters: {
+                let mut out = [[0.0f32; 4]; 8];
+                let planes = frame
+                    .draws
+                    .iter()
+                    .filter(|d| d.material.shading == Shading::Water)
+                    .filter_map(|d| {
+                        let bounds = self.meshes.get(d.mesh.0 as usize)?.bounds;
+                        Some(world_box(bounds, d.transform))
+                    })
+                    .take(4);
+                for (i, (min, max)) in planes.enumerate() {
+                    out[i * 2] = [max.y, 1.0, 0.0, 0.0];
+                    out[i * 2 + 1] = [min.x, min.z, max.x, max.z];
+                }
+                out
+            },
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
+            let t = TerrainFrameUniform {
+                view_projection: uniform.view_projection,
+                camera_position: uniform.camera_position,
+                wind: foliage.wind,
+                terrain_to_local: uniform.terrain_to_local,
+                terrain_to_world: uniform.terrain_to_world,
+                terrain: uniform.terrain,
+                terrain_bounds: uniform.terrain_bounds,
+                terrain_look: uniform.terrain_look,
+            };
+            gpu.queue
+                .write_buffer(&self.terrain_mesh_buffer, 0, bytemuck::bytes_of(&t));
+        }
 
         // Draws are grouped by pipeline, mesh and texture so that one mesh
         // drawn a hundred times costs one call. A forest is the same tree
@@ -3395,6 +4318,8 @@ impl Renderer {
         let mut clip_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut singles: Vec<(Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
+        // The terrain's maps, when mesh shaders draw it.
+        let mut mesh_terrain: Option<Maps> = None;
         let mut transparent: Vec<(f32, Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
         let mut stats = FrameStats {
             submitted: frame.draws.len() as u32,
@@ -3431,6 +4356,29 @@ impl Renderer {
             }
             stats.drawn += 1;
             let look = Look::of(&draw.material, skinned);
+            // The terrain near the camera: its fine grid instead, placed and
+            // raised by its own vertex shader. Its mesh still casts shadows.
+            if fine_terrain.is_some_and(|t| t.mesh == draw.mesh)
+                && self.pipelines.terrain_mesh.is_some()
+                && self.terrain_mesh_group.is_some()
+                && !draw.material.is_transparent()
+            {
+                // By mesh shaders, after the batches: its maps are all it
+                // needs from the draw; the rest is in the frame.
+                mesh_terrain = Some(maps);
+                continue;
+            }
+            if let (Some(t), Some(grid)) = (fine_terrain, self.clipmap) {
+                if draw.mesh == t.mesh && !draw.material.is_transparent() {
+                    let look = Look {
+                        terrain: true,
+                        face: RenderFace::Front,
+                        ..look
+                    };
+                    push(&mut batches, (Some(look), grid, maps), raw);
+                    continue;
+                }
+            }
             let pose = draw.pose.unwrap_or(0);
             if draw.material.is_transparent() {
                 let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
@@ -3512,6 +4460,7 @@ impl Renderer {
             .map(|((_, _, maps), _)| *maps)
             .chain(singles.iter().map(|single| single.2))
             .chain(transparent.iter().map(|t| t.3))
+            .chain(mesh_terrain)
             .collect();
         self.prepare_maps(gpu, sets);
 
@@ -3599,7 +4548,10 @@ impl Renderer {
         let traced = self.ray.is_some() && frame.ray_tracing.any();
         if traced {
             let meshes = &self.meshes;
-            let instances: Vec<(&wgpu::Blas, Mat4)> = frame
+            // The terrain apart from the rest (RAY_TERRAIN in render.wgsl):
+            // rays start past its coarse triangles.
+            let terrain = frame.terrain.as_ref().map(|t| t.mesh);
+            let instances: Vec<(&wgpu::Blas, Mat4, u8)> = frame
                 .draws
                 .iter()
                 // Glass lets the light through, and what is unlit is a light
@@ -3607,7 +4559,8 @@ impl Renderer {
                 .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
                 .filter_map(|d| {
                     let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
-                    Some((blas, d.transform))
+                    let mask = if Some(d.mesh) == terrain { RAY_TERRAIN } else { RAY_THINGS };
+                    Some((blas, d.transform, mask))
                 })
                 .collect();
             let remade = self
@@ -3683,8 +4636,34 @@ impl Renderer {
             }
         }
 
+        // The physical sky's table and aerial grid.
+        if physical {
+            let a = &frame.sky.atmosphere;
+            self.atmosphere.run(
+                gpu,
+                &mut encoder,
+                &crate::atmosphere::AtmosphereUniform {
+                    inverse_view_projection: drawn.inverse().to_cols_array_2d(),
+                    to_sun: extend(sky_to_sun, altitude),
+                    eye: extend(frame.camera.position, frame.camera.far),
+                    amounts: [
+                        a.rayleigh,
+                        a.mie,
+                        a.ozone,
+                        a.mie_anisotropy.clamp(0.0, 0.99),
+                    ],
+                    scale: [
+                        a.brightness.max(0.0),
+                        frame.lighting.sun_intensity,
+                        a.aerial_scale.max(0.0),
+                        a.ground_albedo.clamp(0.0, 1.0),
+                    ],
+                },
+            );
+        }
+
         // The fog in the air, once every shadow it looks through is drawn.
-        if frame.volumetric_fog.enabled {
+        if volumetric.enabled {
             self.volumes.run(
                 &mut encoder,
                 &self.fog_bind_group,
@@ -3699,7 +4678,20 @@ impl Renderer {
         let ssao_on = frame.ambient_occlusion.enabled && !traced_occlusion;
         // The lens reads the same depth.
         let lens_on = crate::lens::LensRenderer::wanted(&frame.post);
-        if ssao_on || lens_on {
+        // Water reads it too: how deep it is below its surface.
+        let water_on = frame
+            .draws
+            .iter()
+            .any(|d| d.material.shading == Shading::Water);
+        // So do screen-space reflections.
+        let ssr_on = frame.screen_space_reflections.enabled && probe.is_none();
+        // Bounced light reads it as well, and the last frame.
+        let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
+        // And the dust wall, to stand behind what is in front of it.
+        let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
+        let prepass_drawn =
+            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust;
+        if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -3725,20 +4717,96 @@ impl Renderer {
                     multiview_mask: None,
                 });
                 self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
+                self.draw_mesh_terrain(&mut pass, mesh_terrain, true);
                 let first = shadow_total + batched_total;
                 for (instance, (look, mesh, texture, pose, _)) in (first..).zip(&singles) {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
             }
             if ssao_on {
+                let now = drawn;
                 self.ssao.run(
                     gpu,
                     &mut encoder,
-                    frame.camera.view_projection(aspect),
+                    now,
+                    self.previous_view_projection.unwrap_or(now),
                     frame.camera.apparent_eye(),
                     &frame.ambient_occlusion,
+                    (bounce_on && self.scene.has_history).then_some(&self.scene.history_view),
                 );
             }
+        }
+
+        // The clouds and the dust wall, from where the camera stands, each
+        // ray stopped at what the prepass saw — so a wall of dust stands
+        // behind what is in front of it.
+        let dust_on = probe.is_none() && frame.weather.dust_wall > 0.0;
+        let clouds_on =
+            probe.is_none() && frame.sky.mode != SkyMode::Color && frame.sky.clouds.coverage > 0.0;
+        if clouds_on || dust_on || local_dust {
+            let (mut shape, drift) = frame.sky.clouds.vectors(&frame.wind);
+            if !clouds_on {
+                shape[0] = 0.0;
+            }
+            let w = &weather;
+            let near = frame.camera.near.max(1e-3);
+            self.clouds.run(
+                gpu,
+                &mut encoder,
+                crate::clouds::CloudUniform {
+                    inverse_view_projection: drawn.inverse().to_cols_array_2d(),
+                    eye: extend(frame.camera.position, foliage.wind[3]),
+                    to_sun: extend(to_sun, 1.0),
+                    sun: extend(sun_light, 0.0),
+                    ambient: extend(sky_light, 0.0),
+                    shape,
+                    drift,
+                    size: [0.0; 4],
+                    dust: [
+                        w.dust_wall.clamp(0.0, 1.0),
+                        w.dust_front(&frame.wind, time),
+                        w.dust_wall_height.max(10.0),
+                        if prepass_drawn { 1.0 } else { 0.0 },
+                    ],
+                    view_depth: crate::lights::view_of(&frame.camera).row(2).to_array(),
+                    depth_range: [
+                        near,
+                        frame.camera.far.max(near + 0.01),
+                        foliage.wind[0],
+                        foliage.wind[1],
+                    ],
+                    dust_box: crate::clouds::CloudUniform::dust_box(
+                        frame.camera.position,
+                        weather.dust_wall_height.max(10.0),
+                    ),
+                    local: [devils.len() as f32, plumes.len() as f32, 0.0, 0.0],
+                    devils: {
+                        let mut out = [[0.0; 4]; 2 * crate::volume::MOST_DEVILS];
+                        for (i, d) in devils.iter().enumerate() {
+                            out[2 * i] =
+                                [d.position.x, d.position.y, d.position.z, d.radius.max(0.2)];
+                            out[2 * i + 1] =
+                                [d.height.max(1.0), d.strength.clamp(0.0, 1.0), d.spin, 0.0];
+                        }
+                        out
+                    },
+                    plumes: {
+                        let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PLUMES];
+                        for (i, p) in plumes.iter().enumerate() {
+                            out[2 * i] = [
+                                p.position.x,
+                                p.position.y,
+                                p.position.z,
+                                p.half_length.max(0.1),
+                            ];
+                            out[2 * i + 1] =
+                                [p.along.x, p.along.y, p.along.z, p.strength.clamp(0.0, 1.0)];
+                        }
+                        out
+                    },
+                },
+                &self.ssao.depth,
+            );
         }
 
         {
@@ -3774,6 +4842,7 @@ impl Renderer {
                 multiview_mask: None,
             });
             self.draw_batches(&mut pass, &batches, shadow_total, true);
+            self.draw_mesh_terrain(&mut pass, mesh_terrain, false);
             let mut instance = shadow_total + batched_total;
             for (look, mesh, texture, pose, _) in &singles {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
@@ -3782,7 +4851,7 @@ impl Renderer {
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all. A plain colour needs no pass —
             // unless there is fog in the air in front of it.
-            if frame.sky.mode == SkyMode::Procedural || frame.volumetric_fog.enabled {
+            if frame.sky.mode != SkyMode::Color || volumetric.enabled {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
@@ -3791,8 +4860,24 @@ impl Renderer {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
             }
+            // What falls, in front of it all.
+            if weather.falling() {
+                pass.set_pipeline(&self.pipelines.precipitation);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            }
         }
 
+        // This frame, kept for the next one's screen-space reflections and
+        // bounced light.
+        if ssr_on || bounce_on {
+            encoder.copy_texture_to_texture(
+                self.scene.resolved_texture.as_image_copy(),
+                self.scene.history.as_image_copy(),
+                self.scene.resolved_texture.size(),
+            );
+            self.scene.has_history = true;
+        }
         let Some(view) = view else {
             // A probe's face: lit, and that is all.
             gpu.queue.submit(Some(encoder.finish()));
@@ -3803,10 +4888,22 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
+        let picture = if taa_on {
+            self.taa.run(
+                gpu,
+                &mut encoder,
+                &self.scene.resolved,
+                &self.ssao.depth,
+                drawn,
+                previous,
+            )
+        } else {
+            &self.scene.resolved
+        };
         let lensed = self.lens.run(
             gpu,
             &mut encoder,
-            &self.scene.resolved,
+            picture,
             &self.ssao.depth,
             (width, height),
             &frame.post,
@@ -3816,6 +4913,8 @@ impl Renderer {
                 near: frame.camera.near,
                 far: frame.camera.far,
                 orthographic: frame.camera.ortho.is_some(),
+                eye: frame.camera.position,
+                time: foliage.wind[3],
             },
         );
         self.post.flares = frame
@@ -3837,17 +4936,32 @@ impl Renderer {
             })
             .take(crate::post::FLARES)
             .collect();
+        self.post.night = frame.lighting.night;
         self.post.fov_y_degrees = match frame.camera.ortho {
             Some(_) => 0.0,
             None => frame.camera.fov_y_degrees,
         };
+        // The eye's clock: the frame's own time where it says one.
+        let metered = (!self.picturing).then(|| {
+            let now = frame
+                .time
+                .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+            let dt = self.metered_at.map_or(0.0, |was| (now - was).max(0.0));
+            self.metered_at = Some(now);
+            dt
+        });
+        // At night the eye does not get used to the dark the whole way:
+        // a moonlit desert stays a night.
+        let mut post = frame.post;
+        post.auto_exposure.compensation -= 1.6 * frame.lighting.night.clamp(0.0, 1.0);
         self.post.run(
             gpu,
             &mut encoder,
-            lensed.unwrap_or(&self.scene.resolved),
+            lensed.unwrap_or(picture),
             view,
             (width, height),
-            &frame.post,
+            &post,
+            metered,
         );
 
         // Tools go on the finished picture: no tonemapper, bloom or
@@ -3919,6 +5033,24 @@ fn frustum_planes(view_projection: Mat4) -> [glam::Vec4; 6] {
 /// Conservative: it tests the box's worst corner against each plane, so it
 /// keeps some things that are just outside. Keeping a thing that cannot be
 /// seen costs a draw; dropping one that can costs a hole.
+/// A mesh's box, placed: the world box round its eight corners.
+fn world_box(bounds: crate::asset::Bounds, transform: Mat4) -> (Vec3, Vec3) {
+    let (lo, hi) = (Vec3::from_array(bounds.min), Vec3::from_array(bounds.max));
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for i in 0..8 {
+        let corner = Vec3::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        let p = transform.transform_point3(corner);
+        min = min.min(p);
+        max = max.max(p);
+    }
+    (min, max)
+}
+
 fn aabb_in_frustum(
     planes: &[glam::Vec4; 6],
     bounds: crate::asset::Bounds,
@@ -3995,6 +5127,47 @@ struct FrameInputs<'a> {
     decal_normals: &'a wgpu::TextureView,
     fog: &'a wgpu::TextureView,
     fog_sampler: &'a wgpu::Sampler,
+    sky_view: &'a wgpu::TextureView,
+    aerial: &'a wgpu::TextureView,
+    scene_depth: &'a wgpu::TextureView,
+    clouds: &'a wgpu::TextureView,
+    history: &'a wgpu::TextureView,
+    /// Terrain heights, for the vertex shader.
+    terrain_heights: &'a wgpu::TextureView,
+}
+
+/// A terrain's heights as a texture of `side`² floats, read texel by
+/// texel by the vertex shader (no filtering asked of the device).
+fn terrain_height_view(gpu: &Gpu, side: u32, heights: &[f32]) -> wgpu::TextureView {
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("terrain heights"),
+        size: wgpu::Extent3d {
+            width: side.max(1),
+            height: side.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R32Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    gpu.queue.write_texture(
+        texture.as_image_copy(),
+        bytemuck::cast_slice(heights),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(side.max(1) * 4),
+            rows_per_image: None,
+        },
+        wgpu::Extent3d {
+            width: side.max(1),
+            height: side.max(1),
+            depth_or_array_layers: 1,
+        },
+    );
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 fn frame_bind_group(
@@ -4040,6 +5213,12 @@ fn frame_bind_group(
             binding: 17,
             resource: wgpu::BindingResource::Sampler(inputs.fog_sampler),
         },
+        view(18, inputs.sky_view),
+        view(19, inputs.aerial),
+        view(20, inputs.scene_depth),
+        view(21, inputs.clouds),
+        view(22, inputs.history),
+        view(23, inputs.terrain_heights),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

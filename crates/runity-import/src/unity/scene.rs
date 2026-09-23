@@ -68,9 +68,15 @@ pub fn sun(text: &str) -> Option<runity::scene::Sun> {
     } else {
         std::f32::consts::PI - up
     };
+    let tint = light.body.color("m_Color").map(|c| [c[0], c[1], c[2]]);
     Some(runity::scene::Sun {
         hour: 6.0 + angle / std::f32::consts::PI * 12.0,
         intensity: light.body.f32("m_Intensity").unwrap_or(1.0),
+        // Exactly where Unity's stood, and its colour: the hour is only
+        // near it.
+        toward: Some(travel),
+        tint: tint.filter(|c| *c != [1.0, 1.0, 1.0]),
+        ..runity::scene::Sun::default()
     })
 }
 
