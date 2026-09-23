@@ -115,6 +115,7 @@ pub fn list() -> Vec<Value> {
         tool("locks", "Who holds which Git LFS lock in the project: lock binary sources (textures, models, sounds) before editing them.", json!({}), &[]),
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
         tool("apply_overrides", "Write a prefab instance's overrides into the prefab file, so every instance gets them, and clear them from this instance.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
+        tool("unpack_prefab", "Turn a prefab instance into plain entities of the scene, overrides applied, no longer following the prefab file. One undo step; its parts keep their ids.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("revert_overrides", "Drop a prefab instance's overrides: it is the prefab again. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("undo", "Take back the last edit; says what it was (\"move `crate`\").", json!({}), &[]),
         tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
@@ -502,6 +503,14 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .apply_overrides(id)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{parts} parts written into the prefab"))])
+        }
+        "unpack_prefab" => {
+            let id = id(args, "id")?;
+            server
+                .session()?
+                .unpack_prefab(id)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{id} is plain entities now"))])
         }
         "revert_overrides" => {
             let id = id(args, "id")?;

@@ -2079,3 +2079,54 @@ fn colliders_can_be_shown_as_outlines_coloured_by_body() {
     );
     assert!(count(&session, yellow) > 10, "the zone, in yellow");
 }
+
+#[test]
+fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "unpack",
+        r#"(entities: [(id: "00000000000000a1", name: "fire", prefab: "campfire",
+            overrides: { "00000000000000c2": (material: "moss") })])"#,
+    );
+    let prefab = root_of(&path).join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let fire: EntityId = "a1".parse().unwrap();
+    let ember = fire.within("c2".parse().unwrap());
+
+    session.unpack_prefab(fire).unwrap();
+    let line = session.scene().get(fire).unwrap();
+    assert!(line.prefab.is_empty() && line.overrides.is_empty());
+    assert_eq!(line.model, "builtin:cube");
+    let part = session
+        .scene()
+        .get(ember)
+        .expect("the part is a line of the scene now");
+    assert_eq!(
+        part.material,
+        runity::scene::MaterialRef::Named("moss".into()),
+        "with the override applied"
+    );
+    // One step: undo is the instance again, redo unpacks it again.
+    assert!(session.undo().unwrap());
+    assert_eq!(session.scene().get(fire).unwrap().prefab, "campfire");
+    assert!(session.redo().unwrap());
+
+    // Saved, it no longer follows the prefab file.
+    session.save_scene(None).unwrap();
+    let text = std::fs::read_to_string(&prefab).unwrap();
+    std::fs::write(&prefab, text.replace("builtin:cube", "builtin:cone")).unwrap();
+    session.open_scene(&path).unwrap();
+    assert_eq!(session.scene().get(fire).unwrap().model, "builtin:cube");
+    assert!(
+        session.unpack_prefab(fire).is_err(),
+        "nothing left to unpack"
+    );
+}

@@ -779,6 +779,42 @@ impl Session {
         Ok(())
     }
 
+    /// Turn a prefab instance into plain entities of the scene — Unity's
+    /// "Unpack Prefab Completely" — as one undoable step: what it is now,
+    /// overrides applied and nested prefabs expanded, written into the
+    /// scene, and no longer following the prefab file. Its parts keep the
+    /// ids they had as parts, so a selection or a joint that named one
+    /// still does.
+    pub fn unpack_prefab(&mut self, instance: EntityId) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let line = self
+            .history
+            .scene()
+            .get(instance)
+            .ok_or(EditError::NoEntity(instance))?;
+        if line.prefab.is_empty() {
+            return Err(EditError::Scene(format!(
+                "{instance} is not a prefab instance"
+            )));
+        }
+        let mut unpacked = self
+            .instanced
+            .scene
+            .get(instance)
+            .cloned()
+            .ok_or(EditError::NoEntity(instance))?;
+        fn settle(desc: &mut EntityDesc) {
+            desc.prefab.clear();
+            desc.overrides.clear();
+            desc.children.iter_mut().for_each(settle);
+        }
+        settle(&mut unpacked);
+        *self.edit_entity(instance)? = unpacked;
+        self.respawn();
+        self.after_structural_change();
+        Ok(())
+    }
+
     /// Drop an instance's overrides — Unity's "Revert" — as one undoable
     /// step: it is the prefab again.
     pub fn revert_overrides(&mut self, instance: EntityId) -> EditResult<()> {
