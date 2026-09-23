@@ -977,8 +977,7 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub inactive: Option<bool>,
     /// A camera, a light, particles or a route set on the part — changed, or
-    /// added where the prefab has none. (Taking one away that the prefab
-    /// has is an edit of the prefab.)
+    /// added where the prefab has none. Taking one away is `removed`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub camera: Option<Lens>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
@@ -998,7 +997,32 @@ pub struct Override {
         deserialize_with = "trimmed_components"
     )]
     pub components: BTreeMap<String, ComponentValue>,
+    /// What this instance takes off the part: fields by name (`"light"`,
+    /// `"collider"`, `"model"`…) and the game's components by theirs —
+    /// Unity's removed components. It used to be that only an edit of the
+    /// prefab took things away; a prefab placed with one lamp dark and one
+    /// wall without its collider is common enough in Unity (Dacha has 505)
+    /// to say it here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
 }
+
+/// The fields of a line a part can have taken away, besides components.
+pub const REMOVABLE: [&str; 13] = [
+    "model",
+    "collider",
+    "body",
+    "camera",
+    "light",
+    "particles",
+    "reflection_probe",
+    "decal",
+    "route",
+    "sound",
+    "render_texture",
+    "post_volume",
+    "animator",
+];
 
 impl Override {
     /// Write what this override says onto a part.
@@ -1051,6 +1075,26 @@ impl Override {
         for (name, value) in &self.components {
             part.components.insert(name.clone(), value.clone());
         }
+        for name in &self.removed {
+            match name.as_str() {
+                "model" => part.model = Default::default(),
+                "collider" => part.collider = Collider::None,
+                "body" => part.body = Body::None,
+                "camera" => part.camera = None,
+                "light" => part.light = None,
+                "particles" => part.particles = None,
+                "reflection_probe" => part.reflection_probe = None,
+                "decal" => part.decal = None,
+                "route" => part.route = None,
+                "sound" => part.sound = None,
+                "render_texture" => part.render_texture = None,
+                "post_volume" => part.post_volume = None,
+                "animator" => part.animator.clear(),
+                component => {
+                    part.components.remove(component);
+                }
+            }
+        }
     }
 
     /// What it takes to turn `prefab` — the part as the prefab has it —
@@ -1080,6 +1124,37 @@ impl Override {
                 .filter(|(name, value)| prefab.components.get(*name) != Some(*value))
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect(),
+            removed: {
+                let gone = [
+                    ("camera", prefab.camera.is_some() && edited.camera.is_none()),
+                    ("light", prefab.light.is_some() && edited.light.is_none()),
+                    ("particles", prefab.particles.is_some() && edited.particles.is_none()),
+                    (
+                        "reflection_probe",
+                        prefab.reflection_probe.is_some() && edited.reflection_probe.is_none(),
+                    ),
+                    ("decal", prefab.decal.is_some() && edited.decal.is_none()),
+                    ("route", prefab.route.is_some() && edited.route.is_none()),
+                    ("sound", prefab.sound.is_some() && edited.sound.is_none()),
+                    (
+                        "render_texture",
+                        prefab.render_texture.is_some() && edited.render_texture.is_none(),
+                    ),
+                    ("post_volume", prefab.post_volume.is_some() && edited.post_volume.is_none()),
+                    ("animator", !prefab.animator.is_empty() && edited.animator.is_empty()),
+                ];
+                gone.iter()
+                    .filter(|(_, gone)| *gone)
+                    .map(|(name, _)| name.to_string())
+                    .chain(
+                        prefab
+                            .components
+                            .keys()
+                            .filter(|name| !edited.components.contains_key(*name))
+                            .cloned(),
+                    )
+                    .collect()
+            },
         }
     }
 
@@ -1106,6 +1181,7 @@ impl Override {
             decal,
             route,
             components,
+            removed,
         } = later;
         self.name = name.or(self.name.take());
         self.model = model.or(self.model.take());
@@ -1122,7 +1198,15 @@ impl Override {
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
         self.route = route.or(self.route.take());
+        // Set again after it was taken away: back.
+        self.removed.retain(|name| !components.contains_key(name));
         self.components.extend(components);
+        for name in removed {
+            self.components.remove(&name);
+            if !self.removed.contains(&name) {
+                self.removed.push(name);
+            }
+        }
     }
 }
 

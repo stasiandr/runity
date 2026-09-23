@@ -338,9 +338,20 @@ fn instance(
     } else {
         desc.prefab = AssetLink::named(name);
     }
-    // The root's transform is what the modifications say; which target is
-    // the root is the one carrying m_LocalPosition, as Unity always writes it.
-    let mut root_target = None;
+    // The root's transform is what the modifications say. Which target is
+    // the root: the one the prefab's own root is, or else the first carrying
+    // m_LocalPosition, as Unity always writes the root's.
+    let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
+    let key_of = |t: Option<i64>| of.as_ref().and_then(|o| o.keys.get(&t?).copied());
+    let root_key = of.as_ref().and_then(|o| o.root);
+    let mut root_target = modification
+        .list("m_Modifications")
+        .iter()
+        .filter_map(|m| m.reference("target").map(|r| r.file_id))
+        .find(|t| root_key.is_some() && key_of(Some(*t)) == root_key);
+    // A part moved, turned or scaled: its axes as Unity says them.
+    type Axes = ([Option<f32>; 3], [Option<f32>; 4], [Option<f32>; 3]);
+    let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
@@ -351,32 +362,52 @@ fn instance(
             let rest = path.strip_prefix(name)?.strip_prefix('.')?;
             ["x", "y", "z", "w"].iter().position(|a| *a == rest)
         };
-        if let Some(i) = axis("m_LocalPosition") {
-            root_target = root_target.or(target);
-            if target == root_target && i < 3 {
-                p[i] = value;
+        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+            .iter()
+            .find_map(|f| Some((*f, axis(f)?)));
+        if let Some((field, i)) = transforming {
+            if field == "m_LocalPosition" {
+                root_target = root_target.or(target);
             }
-        } else if let Some(i) = axis("m_LocalRotation") {
-            if target == root_target || root_target.is_none() {
-                q[i] = value;
-            }
-        } else if let Some(i) = axis("m_LocalScale") {
-            if target == root_target || root_target.is_none() {
-                if i < 3 {
-                    s[i] = value;
+            let on_root = target == root_target || root_target.is_none();
+            if on_root {
+                match field {
+                    "m_LocalPosition" if i < 3 => p[i] = value,
+                    "m_LocalRotation" => q[i] = value,
+                    "m_LocalScale" if i < 3 => s[i] = value,
+                    _ => {}
                 }
+            } else if let Some(part) = key_of(target).filter(|_| kind == "prefab") {
+                let axes = moved.entry(part).or_default();
+                match field {
+                    "m_LocalPosition" if i < 3 => axes.0[i] = Some(value),
+                    "m_LocalRotation" => axes.1[i] = Some(value),
+                    "m_LocalScale" if i < 3 => axes.2[i] = Some(value),
+                    _ => {}
+                }
+            } else if kind == "model" {
+                report.skip("a placed model's part moved (a model is one entity)");
             } else {
-                report.skip("a prefab instance's part rescaled (m_LocalScale on a part)");
+                report.skip("a prefab instance's part moved, where the part is not found");
             }
         } else if path == "m_Materials.Array.data[0]" {
-            // The first material swapped on the placed thing.
+            // The first material swapped: on the placed thing, or on the
+            // part whose renderer it is.
             let material = m
                 .reference("objectReference")
                 .and_then(|r| r.guid)
                 .and_then(|g| unity.named(&g))
                 .filter(|(k, _)| *k == "material");
             if let Some((_, name)) = material {
-                desc.material = MaterialRef::Named(AssetLink::named(name));
+                let reference = MaterialRef::Named(AssetLink::named(name));
+                let on = target
+                    .and_then(|t| of.as_ref()?.components.get(&t))
+                    .map(|(part, _)| *part)
+                    .filter(|part| Some(*part) != root_key);
+                match on {
+                    Some(part) => desc.overrides.entry(part).or_default().material = Some(reference),
+                    None => desc.material = reference,
+                }
             }
         } else if path.starts_with("m_Materials") {
             report.skip("a prefab modification of `m_Materials` past the first");
@@ -387,8 +418,7 @@ fn instance(
         } else if path == "m_IsActive" || path == "m_Layer" {
             // On the part it names — the prefab's root being the instance
             // itself, which the engine applies an override of the root to.
-            let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
-            let Some(part) = target.and_then(|t| of.as_ref()?.keys.get(&t).copied()) else {
+            let Some(part) = key_of(target) else {
                 report.skip(format!(
                     "a prefab modification of `{path}` on something not a GameObject of it"
                 ));
@@ -425,9 +455,41 @@ fn instance(
     local.scale = Vec3::from_array(s);
     local.set_rotation(rotation(q));
     desc.transform = local;
+    // Each part moved: the axes said, the rest where the prefab has it.
+    for (part, (at, turn, size)) in moved {
+        let base = of
+            .as_ref()
+            .and_then(|o| o.places.get(&part))
+            .copied()
+            .unwrap_or_default();
+        // The base back in Unity's hand, to fill the axes not said.
+        let (bp, bq) = (base.position, base.rotation());
+        let unity_p = [bp.x, bp.y, -bp.z];
+        let unity_q = [-bq.x, -bq.y, bq.z, bq.w];
+        let p: [f32; 3] = std::array::from_fn(|i| at[i].unwrap_or(unity_p[i]));
+        let q: [f32; 4] = std::array::from_fn(|i| turn[i].unwrap_or(unity_q[i]));
+        let s: [f32; 3] = std::array::from_fn(|i| size[i].unwrap_or(base.scale[i]));
+        let mut t = Transform {
+            position: position(p),
+            scale: Vec3::from_array(s),
+            ..Default::default()
+        };
+        t.set_rotation(rotation(q));
+        desc.overrides.entry(part).or_default().transform = Some(t);
+    }
+    // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
-        let _ = removed;
-        report.skip("a component removed from a prefab instance");
+        let found = yaml::reference(removed)
+            .and_then(|r| of.as_ref()?.components.get(&r.file_id).cloned());
+        match found {
+            Some((part, what)) => {
+                let change = desc.overrides.entry(part).or_default();
+                if !change.removed.contains(&what) {
+                    change.removed.push(what);
+                }
+            }
+            None => report.skip("a component removed from a prefab instance, of a kind runity has no place for"),
+        }
     }
     Some((desc, into))
 }
@@ -446,6 +508,74 @@ struct PrefabParts {
     keys: HashMap<i64, EntityId>,
     /// The key the prefab's root has — for a variant, its instance's.
     root: Option<EntityId>,
+    /// Each part's own place, as the prefab puts it.
+    places: HashMap<EntityId, Transform>,
+    /// Its components by the id a `m_RemovedComponents` names them: the
+    /// part they are on, and what a removal takes off it.
+    components: HashMap<i64, (EntityId, String)>,
+}
+
+/// What taking a component away takes off a line: the field, or the
+/// game component by its name.
+fn removal(d: &Doc, unity: &Unity) -> Option<String> {
+    Some(
+        match d.kind.as_str() {
+            "MeshFilter" | "MeshRenderer" | "SkinnedMeshRenderer" => "model",
+            "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider" => "collider",
+            "Rigidbody" => "body",
+            "Light" => "light",
+            "Camera" => "camera",
+            "ParticleSystem" | "ParticleSystemRenderer" => "particles",
+            "AudioSource" => "sound",
+            "Animator" => "animator",
+            "MonoBehaviour" => {
+                let script = d.body.reference("m_Script")?;
+                let path = unity.guids.get(script.guid.as_deref()?)?;
+                return Some(snake(&super::stem(path)));
+            }
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// Where a prefab instance puts its prefab's root, from its modifications:
+/// the target that carries `m_LocalPosition` is the root, as Unity writes.
+fn placement(modification: &Yaml) -> Transform {
+    let (mut p, mut q, mut s) = ([0.0f32; 3], [0.0, 0.0, 0.0, 1.0f32], [1.0f32; 3]);
+    let mut root = None;
+    for m in modification.list("m_Modifications") {
+        let (Some(path), target) = (m.str("propertyPath"), m.reference("target").map(|r| r.file_id))
+        else {
+            continue;
+        };
+        let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
+        let Some((field, axis)) = path.split_once('.') else {
+            continue;
+        };
+        let Some(i) = ["x", "y", "z", "w"].iter().position(|a| *a == axis) else {
+            continue;
+        };
+        if field == "m_LocalPosition" {
+            root = root.or(target);
+        }
+        if root.is_some() && target != root {
+            continue;
+        }
+        match field {
+            "m_LocalPosition" if i < 3 => p[i] = value,
+            "m_LocalRotation" => q[i] = value,
+            "m_LocalScale" if i < 3 => s[i] = value,
+            _ => {}
+        }
+    }
+    let mut out = Transform {
+        position: position(p),
+        scale: Vec3::from_array(s),
+        ..Default::default()
+    };
+    out.set_rotation(rotation(q));
+    out
 }
 
 impl Parts {
@@ -471,9 +601,15 @@ impl Parts {
                     out.keys.insert(d.file_id, entity_id(d.file_id));
                 }
                 TRANSFORM | RECT_TRANSFORM if !d.stripped => {
+                    let go = d.body.reference("m_GameObject").map(|r| entity_id(r.file_id));
                     let top = d.body.reference("m_Father").is_none_or(|r| r.file_id == 0);
                     if top {
-                        out.root = d.body.reference("m_GameObject").map(|r| entity_id(r.file_id));
+                        out.root = go;
+                    }
+                    if let Some(go) = go {
+                        out.places.insert(go, transform(&d.body));
+                        // A move names the transform: the same part.
+                        out.keys.insert(d.file_id, go);
                     }
                 }
                 PREFAB_INSTANCE => {
@@ -493,15 +629,32 @@ impl Parts {
                     if variant {
                         out.root = Some(n);
                     }
-                    for (x, e) in &inner.keys {
-                        let key = if Some(*e) == inner.root {
+                    let key_of = |e: EntityId| {
+                        if Some(e) == inner.root {
                             n
                         } else if variant {
-                            *e
+                            e
                         } else {
-                            n.within(*e)
-                        };
-                        out.keys.insert((d.file_id ^ x) & i64::MAX, key);
+                            n.within(e)
+                        }
+                    };
+                    for (x, e) in &inner.keys {
+                        out.keys.insert((d.file_id ^ x) & i64::MAX, key_of(*e));
+                    }
+                    for (e, place) in &inner.places {
+                        out.places.insert(key_of(*e), *place);
+                    }
+                    // Its root stands where this file puts it.
+                    out.places.insert(n, placement(&d.body["m_Modification"]));
+                    for (x, (e, what)) in &inner.components {
+                        out.components
+                            .insert((d.file_id ^ x) & i64::MAX, (key_of(*e), what.clone()));
+                    }
+                }
+                _ if !d.stripped => {
+                    let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
+                    if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
+                        out.components.insert(d.file_id, (entity_id(go.file_id), what));
                     }
                 }
                 _ => {}
@@ -1240,6 +1393,66 @@ ParticleSystemRenderer:
   m_Materials:
   - {fileID: 2100000, guid: mmm, type: 2}
 ";
+
+    #[test]
+    fn an_instance_moves_a_part_and_takes_its_light_away() {
+        let dir = std::env::temp_dir().join(format!("runity-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lamp = dir.join("Lamp.prefab");
+        std::fs::write(
+            &lamp,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Lamp
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!1 &200
+GameObject:
+  m_Name: Bulb
+--- !u!4 &201
+Transform:
+  m_GameObject: {fileID: 200}
+  m_Father: {fileID: 101}
+  m_LocalPosition: {x: 0, y: 2, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+--- !u!108 &202
+Light:
+  m_GameObject: {fileID: 200}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("ppp".into(), lamp);
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 101, guid: ppp, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 5
+    - target: {fileID: 201, guid: ppp, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 1
+    m_RemovedComponents:
+    - {fileID: 202, guid: ppp, type: 3}
+  m_SourcePrefab: {fileID: 100100000, guid: ppp, type: 3}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let lamp = &roots[0];
+        assert_eq!(lamp.transform.position.x, 5.0, "the root where the scene puts it");
+        let bulb = &lamp.overrides[&entity_id(200)];
+        let t = bulb.transform.expect("the bulb moved");
+        assert_eq!(t.position, Vec3::new(1.0, 2.0, 0.0), "x said, y as the prefab has it");
+        assert_eq!(bulb.removed, ["light"]);
+    }
 
     #[test]
     fn an_audio_source_becomes_the_entitys_sound() {

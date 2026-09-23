@@ -840,6 +840,44 @@ mod tests {
     }
 
     #[test]
+    fn an_instance_takes_away_what_a_part_has() {
+        let mut prefabs = Prefabs::new();
+        prefabs.insert(
+            "lamp",
+            ron::from_str(
+                r#"(id: "00000000000000d0", name: "lamp", model: "builtin:cube", children: [
+                    (id: "00000000000000d1", name: "bulb", model: "builtin:sphere",
+                     light: (color: (1.0, 1.0, 1.0), intensity: 1.0, range: 5.0),
+                     components: {"flicker": (rate: 2.0)}),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let scene = parse(
+            r#"(entities: [(id: "00000000000000a1", name: "dark lamp", model: "", prefab: "lamp",
+                overrides: { "00000000000000d1": (removed: ["light", "flicker", "model"]) })])"#,
+        );
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        let bulb = done
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(e, _)| e.name == "bulb")
+            .unwrap()
+            .0
+            .clone();
+        assert!(bulb.light.is_none() && bulb.components.is_empty() && bulb.model.is_empty());
+        // And an edit that takes the light away says so.
+        let prefab = prefabs.find(&crate::AssetLink::named("lamp")).unwrap().1.children[0].clone();
+        let dark = EntityDesc {
+            light: None,
+            ..prefab.clone()
+        };
+        assert_eq!(crate::scene::Override::between(&prefab, &dark).removed, ["light"]);
+    }
+
+    #[test]
     fn an_override_reaches_a_part_of_a_prefab_inside_the_prefab() {
         // Unity names a part of a nested prefab by one id in the outer
         // prefab's file; here it is the nested instance's id within the
