@@ -709,8 +709,10 @@ struct FrameUniform {
     /// (colour and shading, surface, emission, uv, detail, params).
     terrain_look: [[f32; 4]; 7],
     /// Glass by rays: 1 when it bends what is seen through it, and its
-    /// index of refraction.
+    /// index of refraction; the lightning's points, and its flash.
     glass: [f32; 4],
+    /// A stroke of lightning's channel: points, brightness in `w`.
+    bolt: [[f32; 4]; crate::weather::BOLT_POINTS],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1037,6 +1039,8 @@ pub struct Renderer {
     volumes: crate::volume::Volumes,
     /// The clock foliage sways by when a frame does not say the time.
     started: std::time::Instant,
+    /// The stroke of lightning of the frame being drawn, if any.
+    bolt: Option<crate::weather::Bolt>,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
     /// One texel of depth, bound in place of the prepass's while it draws.
@@ -2792,6 +2796,7 @@ impl Renderer {
             volumes,
             fog_bind_group,
             started: std::time::Instant::now(),
+            bolt: None,
             atmosphere,
             clouds,
             terrain_heights,
@@ -3499,6 +3504,33 @@ impl Renderer {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
+    /// The frame as a stroke of lightning lights it, when one is coming
+    /// down now; and the bolt for the sky to draw.
+    fn lightning(&mut self, frame: &Frame) -> Option<Frame> {
+        self.bolt = None;
+        if frame.weather.lightning <= 0.0 {
+            return None;
+        }
+        let time = frame
+            .time
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+        let bolt = frame.weather.bolt(time)?;
+        let mut lit = frame.clone();
+        let l = &mut lit.lighting;
+        let strength = bolt.flash * 7.0;
+        if strength > l.sun_intensity {
+            let toward = (frame.camera.position * Vec3::new(1.0, 0.0, 1.0) - bolt.from).normalize_or(Vec3::NEG_Y);
+            l.sun_direction = toward;
+            l.sun_color = Vec3::new(0.78, 0.84, 1.0);
+            l.sun_intensity = strength;
+        }
+        let glow = Vec3::new(0.4, 0.45, 0.6) * bolt.flash;
+        l.sky_color += glow * 1.2;
+        l.ground_color += glow * 0.3;
+        self.bolt = Some(bolt);
+        Some(lit)
+    }
+
     /// Take the reflection probes' pictures again on the next frame — after
     /// what is around them changed.
     pub fn rebake_reflections(&mut self) {
@@ -3516,6 +3548,17 @@ impl Renderer {
         for picture in &frame.texture_views {
             self.render_picture(gpu, picture, (width, height));
         }
+        // A stroke of lightning coming down: for its moment the light of
+        // the scene is its light — from where it struck, bright and blue,
+        // with hard shadows — and the whole sky flares.
+        let flashed;
+        let frame = match self.lightning(frame) {
+            Some(lit) => {
+                flashed = lit;
+                &flashed
+            }
+            None => frame,
+        };
         if frame.live_meshes.is_empty() {
             self.bake_probes(gpu, frame);
             self.render_view(gpu, Some(view), width, height, frame, None);
@@ -4285,9 +4328,18 @@ impl Renderer {
                     0.0
                 },
                 frame.ray_tracing.index_of_refraction.max(1.0),
-                0.0,
-                0.0,
+                self.bolt.as_ref().map_or(0.0, |b| b.points.len() as f32),
+                self.bolt.as_ref().map_or(0.0, |b| b.flash),
             ],
+            bolt: {
+                let mut out = [[0.0; 4]; crate::weather::BOLT_POINTS];
+                if let Some(b) = &self.bolt {
+                    for (o, p) in out.iter_mut().zip(&b.points) {
+                        *o = p.to_array();
+                    }
+                }
+                out
+            },
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {

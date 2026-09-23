@@ -51,7 +51,31 @@ pub struct Weather {
     /// Sand the wind has laid on things, 0 to 1: on what faces up, in
     /// drifts against what stands in its way — as snow lies, but sand.
     pub drifted: f32,
+    /// Lightning, 0 to 1: how often a stroke comes down out of the storm.
+    /// Each lights the whole scene for a moment, throwing hard shadows from
+    /// where it struck, and stands in the sky as a jagged line. Set in the
+    /// world by the clock, not round the camera: the same strokes at the
+    /// same times on every machine.
+    pub lightning: f32,
 }
+
+/// A stroke of lightning at a moment: its path from the cloud to the
+/// ground, and how bright it is now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bolt {
+    /// Points along it, the main channel then a branch; each `w` is how
+    /// bright the channel is from the point before to it, 0 where a branch
+    /// begins again.
+    pub points: Vec<glam::Vec4>,
+    /// How bright its flash is, 0 to about 1.5 — a few strokes down the
+    /// same channel, each dying away in a few hundredths of a second.
+    pub flash: f32,
+    /// The middle of its channel: where its light comes from.
+    pub from: glam::Vec3,
+}
+
+/// The most points a bolt has: its channel and one branch.
+pub const BOLT_POINTS: usize = 32;
 
 impl Default for Weather {
     fn default() -> Self {
@@ -67,6 +91,7 @@ impl Default for Weather {
             dust_wall_height: 350.0,
             dust_devils: 0.0,
             drifted: 0.0,
+            lightning: 0.0,
         }
     }
 }
@@ -126,6 +151,86 @@ impl Weather {
     /// wandering, swelling up and dying away over half a minute. As many as
     /// `dust_devils` says, up to [`crate::volume::MOST_DEVILS`]; the same
     /// ones for the same time on every machine.
+    /// The stroke of lightning coming down at `time`, if one is: in slots
+    /// of seven seconds, as many of them struck as `lightning` says, each
+    /// somewhere a few hundred metres round the world's middle. The same
+    /// stroke for the same time on every machine.
+    pub fn bolt(&self, time: f32) -> Option<Bolt> {
+        let amount = self.lightning.clamp(0.0, 1.0);
+        if amount <= 0.0 {
+            return None;
+        }
+        let hash = |a: i64, b: u32| {
+            let mut h = (a as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                ^ (b as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+            h ^= h >> 31;
+            h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+            h ^= h >> 29;
+            (h & 0xff_ffff) as f32 / 0xff_ffff as f32
+        };
+        let slot = 7.0;
+        let now = (time / slot).floor() as i64;
+        for epoch in [now, now - 1] {
+            if hash(epoch, 1) > amount * 0.85 + 0.05 {
+                continue;
+            }
+            let start = epoch as f32 * slot + hash(epoch, 2) * (slot - 1.0);
+            let t = time - start;
+            if !(0.0..1.0).contains(&t) {
+                continue;
+            }
+            // A few return strokes down the one channel, each dying away.
+            let strokes = [0.0, 0.07 + 0.06 * hash(epoch, 3), 0.22 + 0.18 * hash(epoch, 4)];
+            let flash: f32 = strokes
+                .iter()
+                .filter(|&&at| t >= at)
+                .map(|&at| (-(t - at) / 0.05).exp())
+                .sum::<f32>()
+                .min(1.5);
+            if flash < 0.01 {
+                return None;
+            }
+            let angle = hash(epoch, 5) * std::f32::consts::TAU;
+            let distance = 160.0 + 440.0 * hash(epoch, 6);
+            let ground = glam::Vec3::new(angle.cos() * distance, 0.0, angle.sin() * distance);
+            let top = ground
+                + glam::Vec3::new(hash(epoch, 7) * 140.0 - 70.0, 420.0, hash(epoch, 8) * 140.0 - 70.0);
+            let mut points = Vec::with_capacity(BOLT_POINTS);
+            let main = 22;
+            for i in 0..main {
+                let f = i as f32 / (main - 1) as f32;
+                let jag = if i == 0 || i == main - 1 { 0.0 } else { 1.0 };
+                let wobble = glam::Vec3::new(
+                    hash(epoch, 20 + i) - 0.5,
+                    (hash(epoch, 60 + i) - 0.5) * 0.4,
+                    hash(epoch, 100 + i) - 0.5,
+                ) * 34.0
+                    * jag;
+                points.push((top.lerp(ground, f) + wobble).extend(1.0));
+            }
+            // A branch off a third of the way down, fainter, dying out: it
+            // starts again where it leaves the channel (brightness 0 there).
+            let fork = 6 + (hash(epoch, 9) * 4.0) as usize;
+            let off = glam::Vec3::new(hash(epoch, 10) - 0.5, -0.6, hash(epoch, 11) - 0.5).normalize() * 150.0;
+            let from = points[fork].truncate();
+            points.push(from.extend(0.0));
+            let branch = BOLT_POINTS - points.len();
+            for i in 0..branch {
+                let f = (i + 1) as f32 / branch as f32;
+                let wobble = glam::Vec3::new(
+                    hash(epoch, 140 + i as u32) - 0.5,
+                    0.0,
+                    hash(epoch, 180 + i as u32) - 0.5,
+                ) * 22.0;
+                points.push((from + off * f + wobble).extend((0.5 * (1.0 - f)).max(0.05)));
+            }
+            points.truncate(BOLT_POINTS);
+            let from = top.lerp(ground, 0.5);
+            return Some(Bolt { points, flash, from });
+        }
+        None
+    }
+
     pub fn devils(&self, wind: &crate::foliage::Wind, time: f32) -> Vec<crate::volume::Devil> {
         let amount = self.dust_devils.clamp(0.0, 1.0);
         if amount <= 0.0 {
@@ -237,6 +342,32 @@ impl Weather {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lightning_strikes_now_and_then_from_the_cloud_to_the_ground_the_same_everywhere() {
+        let storm = Weather {
+            lightning: 1.0,
+            ..Weather::default()
+        };
+        // A minute of frames: some strokes, each a moment long.
+        let moments: Vec<f32> = (0..3600).map(|i| i as f32 / 60.0).collect();
+        let lit: Vec<f32> = moments.iter().filter(|&&t| storm.bolt(t).is_some()).copied().collect();
+        assert!(lit.len() > 20, "it strikes: {} frames of sixty seconds", lit.len());
+        assert!(lit.len() < 600, "only for moments: {} frames", lit.len());
+        let t = lit[0];
+        let bolt = storm.bolt(t).unwrap();
+        // From high in the cloud down to the ground.
+        let top = bolt.points.first().unwrap();
+        let foot = bolt.points[21];
+        assert!(top.y > 380.0 && foot.y.abs() < 1.0, "{top} to {foot}");
+        assert!(bolt.points.len() <= BOLT_POINTS);
+        // The same stroke for the same moment.
+        assert_eq!(storm.bolt(t), Some(bolt.clone()));
+        // Its flash dies away within the second.
+        assert!(storm.bolt(t + 1.2).is_none_or(|b| b != bolt));
+        // And no storm, no lightning.
+        assert!(Weather::default().bolt(t).is_none());
+    }
+
     use super::*;
 
     #[test]
