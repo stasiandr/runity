@@ -128,6 +128,9 @@ pub struct Session {
     gizmo_arm: Option<MeshHandle>,
     /// Whether frames show every collider as an outline.
     show_colliders: bool,
+    /// The grid on the ground (on the wall, in a side view): on until
+    /// turned off, as Unity's is.
+    show_grid: bool,
     /// Set while the scene is being simulated rather than edited.
     play: Option<Play>,
     /// The scene as its file last had it — read or written by this session
@@ -288,6 +291,7 @@ impl Session {
             pivot: Pivot::Pivot,
             gizmo_arm: None,
             show_colliders: false,
+            show_grid: true,
             play: None,
             on_disk: None,
             merge: None,
@@ -2337,6 +2341,41 @@ impl Session {
                 ));
             }
         }
+        // The grid, depth-tested so what stands on it hides it. Spaced as a
+        // drag snaps, so what lands on the grid lands on its lines.
+        if self.show_grid {
+            let arm = self.gizmo_arm_mesh();
+            let look = (self.camera.target - self.camera.position).normalize_or_zero();
+            let axis = match self.camera.ortho {
+                // A side view looks at a wall: the grid stands on it.
+                Some(_) if look.y.abs() < 0.9 => {
+                    if look.x.abs() > look.z.abs() {
+                        0
+                    } else {
+                        2
+                    }
+                }
+                _ => 1,
+            };
+            let spacing = match self.snap.meters {
+                m if m > 0.0 => m,
+                _ => 1.0,
+            };
+            let reach = match self.camera.ortho {
+                Some(half) => half * 2.0,
+                None => self.camera.apparent_distance(self.camera.target) * 1.5,
+            };
+            let cells = ((reach / spacing).ceil() as i32).clamp(10, 200);
+            let thickness = (self.camera.apparent_distance(self.camera.target) * 0.0012).max(0.003);
+            frame.draws.extend(gizmo::grid_draws(
+                arm,
+                self.camera.target,
+                axis,
+                spacing,
+                cells,
+                thickness,
+            ));
+        }
         // Where a walker can go, as blue strips on the ground: depth-tested,
         // so a wall hides what is behind it.
         if let Some((settings, grid)) = &self.nav_shown {
@@ -2490,6 +2529,15 @@ impl Session {
     /// Show where a walker with these settings can go, as blue on the
     /// ground — Unity's navmesh display — or `None` to stop. Baked again
     /// after every change, when next drawn. A view setting.
+    /// Show or hide the Scene view's grid.
+    pub fn set_show_grid(&mut self, show: bool) {
+        self.show_grid = show;
+    }
+
+    pub fn show_grid(&self) -> bool {
+        self.show_grid
+    }
+
     pub fn set_show_navigation(&mut self, walker: Option<runity::navigation::NavSettings>) {
         self.nav_shown = walker.map(|settings| (settings, None));
     }

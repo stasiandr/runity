@@ -2087,6 +2087,37 @@ fn problems_are_known_as_soon_as_an_edit_makes_them() {
 }
 
 #[test]
+fn the_scene_view_draws_its_grid_until_told_not_to() {
+    let text = r#"(entities: [(name: "floor", model: "builtin:plane", material: "white",
+        transform: (scale: (40.0, 1.0, 40.0)))])"#;
+    let Some((mut session, _)) = open_with("view-grid", text) else {
+        return;
+    };
+    assert!(session.show_grid(), "on by default, as Unity's");
+    session.set_camera(Vec3::new(0.3, 8.0, 0.2), Vec3::new(0.3, 0.0, 0.0));
+    let spread = |session: &mut Session| {
+        session.render();
+        let (width, height) = session.size();
+        let pixels = session.frame_pixels();
+        let row = (height / 2) as usize;
+        let luma: Vec<u32> = (0..width as usize)
+            .map(|x| {
+                let i = (row * width as usize + x) * 4;
+                pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+            })
+            .collect();
+        luma.iter().max().unwrap() - luma.iter().min().unwrap()
+    };
+    let with = spread(&mut session);
+    session.set_show_grid(false);
+    let without = spread(&mut session);
+    assert!(
+        with > 60 && without < 12,
+        "{with} with the grid, {without} without"
+    );
+}
+
+#[test]
 fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
     // The same floor, seen from above: plain, then with the metre grid.
     let row_contrast = |material: &str| -> Option<(u32, usize)> {
@@ -2095,6 +2126,8 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
                 transform: (scale: (40.0, 1.0, 40.0)))])"#
         );
         let (mut session, _) = open_with(&format!("grid-{material}"), &text)?;
+        // The material's lines, not the Scene view's.
+        session.set_show_grid(false);
         session.set_camera(Vec3::new(0.3, 8.0, 0.2), Vec3::new(0.3, 0.0, 0.0));
         session.render();
         let (width, height) = session.size();

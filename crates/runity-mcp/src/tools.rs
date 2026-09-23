@@ -66,6 +66,7 @@ pub fn list() -> Vec<Value> {
         "from_game": { "type": "boolean", "description": "look through the game's camera — the entity with `camera` — instead of the editor's" },
         "colliders": { "type": "boolean", "description": "draw every collider as an outline — green static, blue dynamic, orange kinematic, yellow trigger — until turned off" },
         "navigation": { "type": "boolean", "description": "show where a walker (0.35 m radius, 40° slope, 0.3 m step) can go, in blue on the ground, until turned off" },
+        "grid": { "type": "boolean", "description": "the Scene view's grid on the ground (on the wall in a side view), spaced as drags snap; on by default, stays until changed" },
         "view": { "type": "string", "enum": ["top", "bottom", "front", "back", "left", "right", "perspective", "orthographic"], "description": "look along an axis, orthographic, showing as much as before — `top` is the level's plan — or switch projection; stays until changed" },
     });
     let mut simulate = camera.clone();
@@ -1347,6 +1348,9 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
     }
     if let Some(show) = colliders {
         session.set_show_colliders(show);
+    }
+    if let Some(show) = args.get("grid").and_then(Value::as_bool) {
+        session.set_show_grid(show);
     }
     if let Some(show) = args.get("navigation").and_then(Value::as_bool) {
         session.set_show_navigation(show.then(runity::navigation::NavSettings::default));

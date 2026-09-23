@@ -493,6 +493,62 @@ pub fn polyline_draws(
     lines(arm, segments, Mat4::IDENTITY, thickness, material)
 }
 
+/// The Scene view's grid: lines `spacing` apart on the plane through the
+/// origin across `axis` (1: the ground; 0 and 2: the walls a side view
+/// looks at), `cells` either way of the line nearest `around`, so the grid
+/// is always under the view and never moves with it. Every tenth line is
+/// brighter, as Unity's are.
+pub fn grid_draws(
+    arm: MeshHandle,
+    around: Vec3,
+    axis: usize,
+    spacing: f32,
+    cells: i32,
+    thickness: f32,
+) -> Vec<Draw> {
+    let spacing = if spacing.is_finite() && spacing > 0.0 {
+        spacing
+    } else {
+        1.0
+    };
+    let axis = axis.min(2);
+    let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+    let unit = |i: usize| Vec3::AXES[i];
+    let snap = |x: f32| (x / spacing).round() as i32;
+    let (cu, cv) = (snap(around[u]), snap(around[v]));
+    let reach = cells as f32 * spacing;
+    let mut minor = Vec::new();
+    let mut major = Vec::new();
+    for (along, across, centre, other) in [(u, v, cu, cv), (v, u, cv, cu)] {
+        let middle = other as f32 * spacing;
+        for k in centre - cells..=centre + cells {
+            let at = unit(along) * (k as f32 * spacing);
+            let a = at + unit(across) * (middle - reach);
+            let b = at + unit(across) * (middle + reach);
+            if k % 10 == 0 {
+                major.push((a, b));
+            } else {
+                minor.push((a, b));
+            }
+        }
+    }
+    let mut out = lines(
+        arm,
+        minor,
+        Mat4::IDENTITY,
+        thickness,
+        Material::new(0.16, 0.16, 0.16).unlit(),
+    );
+    out.extend(lines(
+        arm,
+        major,
+        Mat4::IDENTITY,
+        thickness * 1.6,
+        Material::new(0.3, 0.3, 0.3).unlit(),
+    ));
+    out
+}
+
 /// Line segments in `frame`'s space as thin boxes.
 fn lines(
     arm: MeshHandle,
@@ -1179,5 +1235,32 @@ mod tests {
         assert_ne!(list[0].material.base_color, [1.0, 1.0, 1.0]);
         // And none of them is lit, so a handle never sinks into a shadow.
         assert!(list.iter().all(|d| d.material.shading == Shading::Unlit));
+    }
+
+    #[test]
+    fn the_grid_is_on_its_plane_around_the_view_and_does_not_slide() {
+        let arm = MeshHandle::TEST;
+        let draws = grid_draws(arm, Vec3::new(3.3, 7.0, -12.6), 1, 0.5, 4, 0.01);
+        assert_eq!(draws.len(), 2 * 9, "nine lines each way");
+        for d in &draws {
+            let (_, _, at) = d.transform.to_scale_rotation_translation();
+            assert!(at.y.abs() < 1e-5, "on the ground, not at the eye: {at}");
+            // Lines stay on multiples of the spacing: the grid is the
+            // world's, the view only chooses which part of it to show.
+            let on = |x: f32| ((x / 0.5).round() * 0.5 - x).abs() < 1e-4;
+            assert!(on(at.x) || on(at.z), "{at}");
+        }
+        let centre = draws
+            .iter()
+            .map(|d| d.transform.w_axis.truncate())
+            .fold(Vec3::ZERO, |a, b| a + b)
+            / draws.len() as f32;
+        assert!(
+            (centre - Vec3::new(3.5, 0.0, -12.5)).length() < 1e-3,
+            "{centre}"
+        );
+        // A front view's grid stands on the wall it looks at.
+        let wall = grid_draws(arm, Vec3::ZERO, 2, 1.0, 2, 0.01);
+        assert!(wall.iter().all(|d| d.transform.w_axis.z.abs() < 1e-5));
     }
 }
