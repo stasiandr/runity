@@ -118,6 +118,17 @@ pub fn check(project: &Project) -> Vec<Finding> {
             keys.extend(runity::screen::Screen::keys(&layout));
         }
     }
+    // Dialogues: what does not join up, and their texts' keys, checked
+    // against strings/ with the screens'.
+    for path in files(&project.root().join(runity::dialogue::DIR), "ron") {
+        let file = relative(project, &path);
+        if let Some(dialogue) = parse::<runity::dialogue::Dialogue>(&path, &file, &mut out) {
+            for problem in dialogue.problems() {
+                out.push(error(&file, problem));
+            }
+            keys.extend(dialogue.keys());
+        }
+    }
     let strings = project.root().join(runity::strings::DIR);
     let mut tables = Vec::new();
     for (language, path) in runity::strings::tables(&strings) {

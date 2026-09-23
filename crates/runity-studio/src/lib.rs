@@ -20,6 +20,7 @@
 mod animator;
 mod bottom;
 mod clipboard;
+mod dialogues;
 mod dock;
 mod hierarchy;
 mod inspector;

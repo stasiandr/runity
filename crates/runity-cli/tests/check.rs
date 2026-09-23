@@ -411,3 +411,44 @@ fn a_component_linking_an_asset_that_is_not_there_is_named() {
         .iter()
         .any(|l| l.contains("links to")));
 }
+
+#[test]
+fn a_dialogue_that_does_not_join_up_is_found() {
+    let project = project("dialogue");
+    write(
+        &project.root().join("dialogues/captain.ron"),
+        r#"(start: "hello", lines: {
+            "hello": (text: "Ahoy.", next: "ask"),
+            "lost": (text: "?"),
+        })"#,
+    );
+    let found = errors(&check(&project));
+    let line = one_containing(&found, "leads to `ask`");
+    assert!(line.contains("dialogues/captain.ron"), "{line}");
+    one_containing(&found, "`lost` is never reached");
+}
+
+#[test]
+fn an_animators_cases_are_played_by_check() {
+    let project = project("animator-cases");
+    write(
+        &project.root().join("animators/hero.ron"),
+        r#"(start: "idle", states: {
+            "idle": (clip: "idle", transitions: [(to: "walk", when: [Above("speed", 0.1)])]),
+            "walk": (clip: "walk"),
+        })"#,
+    );
+    write(
+        &project.root().join("animators/hero.cases.ron"),
+        r#"(cases: [
+            (name: "walks", steps: [(set: {"speed": 1.0}, expect: "walk")]),
+            (name: "wrong", steps: [(set: {"speed": 1.0}, expect: "idle")]),
+        ])"#,
+    );
+    let found = errors(&check(&project));
+    let line = one_containing(&found, "case `wrong`");
+    assert!(
+        line.contains("hero.cases.ron") && line.contains("in `walk`"),
+        "{line}"
+    );
+}
