@@ -1450,7 +1450,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
         out = out * c.a + c.rgb;
     }
-    out = through_air(out, in.clip_position.xy, length(in.world_position - frame.camera_position.xyz));
+    // Nor the air's haze, which is sunlight too.
+    out = mix(through_air(out, in.clip_position.xy, length(in.world_position - frame.camera_position.xyz)), out, unlit);
     out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
     if (flags & 8u) != 0u {
         out = out * alpha;

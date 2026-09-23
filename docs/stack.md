@@ -1590,9 +1590,11 @@ Physically Based Sky в HDRP и Sky Atmosphere в Unreal (по Hillaire 2020;
   растворяется в нём без шва.
 
 Настройки — `sky: (mode: Physical, atmosphere: (rayleigh, mie, ozone,
-mie_anisotropy, ground_albedo, brightness, aerial_scale))`. По умолчанию
-небо пока процедурное: сделать физическое небом по умолчанию — вопрос к
-постулату 7, он меняет вид всех сцен.
+mie_anisotropy, ground_albedo, brightness, aerial_scale))`. Физическое
+небо — по умолчанию (решение по постулату 7): сцене достаточно указать час,
+чтобы небо, солнце и свет совпали. `mode: Procedural` оставляет градиент с
+цветами, выбранными вручную, для вида, который воздух не даст. Unlit не
+принимает воздушную перспективу, как не принимает свет и туман.
 
 ## Погода
 

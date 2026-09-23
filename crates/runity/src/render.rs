@@ -292,14 +292,16 @@ impl Default for FogSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SkyMode {
     /// A gradient from the horizon to the zenith, the ground below, and
-    /// the sun's disc where the sun is: URP's Procedural skybox.
-    #[default]
+    /// the sun's disc where the sun is: URP's Procedural skybox. Its
+    /// colours are the scene's to pick, for a look the air would not give.
     Procedural,
     /// A flat colour: the frame's `clear_color`. URP's Solid Color.
     Color,
     /// Sunlight scattered by the air: blue at noon, orange at sunset, with
     /// the sun's colour and the light from all round worked out from it —
-    /// HDRP's Physically Based Sky ([`crate::atmosphere`]).
+    /// HDRP's Physically Based Sky ([`crate::atmosphere`]). The default:
+    /// the hour alone gives a sky, a sun and a light that agree.
+    #[default]
     Physical,
 }
 
@@ -329,7 +331,7 @@ pub struct Sky {
 impl Default for Sky {
     fn default() -> Self {
         Self {
-            mode: SkyMode::Procedural,
+            mode: SkyMode::Physical,
             zenith: [0.22, 0.38, 0.66],
             horizon: [0.62, 0.68, 0.74],
             ground: [0.30, 0.28, 0.25],
