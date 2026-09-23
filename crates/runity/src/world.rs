@@ -627,6 +627,7 @@ pub fn camera_of(world: &World) -> Option<Camera> {
             target: position + rotation * glam::Vec3::Z,
             up: rotation * glam::Vec3::Y,
             fov_y_degrees: lens.0.fov_deg,
+            ortho: lens.0.ortho,
             ..Camera::default()
         };
         let key = (
@@ -1211,10 +1212,12 @@ mod tests {
             CameraLens(crate::scene::Lens {
                 fov_deg: 40.0,
                 priority: 1,
+                ortho: Some(8.0),
             }),
             WorldTransform(glam::Mat4::IDENTITY),
         ));
         assert_eq!(camera_of(&world).unwrap().fov_y_degrees, 40.0);
+        assert_eq!(camera_of(&world).unwrap().ortho, Some(8.0));
         assert!(camera_of(&World::new()).is_none());
     }
 }

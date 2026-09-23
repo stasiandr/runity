@@ -2466,3 +2466,56 @@ fn hidden_things_are_neither_drawn_nor_picked_and_a_box_takes_what_it_touches() 
     assert!(did.contains(&"isolate"), "{did:?}");
     assert_eq!(session.isolated(), [crate_id]);
 }
+
+#[test]
+fn an_axis_view_is_a_plan_that_pans_zooms_and_picks() {
+    use runity_editor::Side;
+    let Some((mut session, _)) = open("axis-views") else {
+        return;
+    };
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let (w, h) = session.size();
+
+    // From above: the lid is what the middle of the plan shows.
+    session.look_from(Side::Top);
+    assert!(session.is_orthographic());
+    let camera = session.camera();
+    assert!(camera.position.y > camera.target.y + 10.0);
+    assert_eq!(session.pick(w / 2, h / 2), Some(lid));
+    session.render();
+    let centre = ((h / 2 * w + w / 2) * 4) as usize;
+    let sky = session.frame_pixels()[4..8].to_vec();
+    assert_ne!(session.frame_pixels()[centre..centre + 4], sky[..]);
+
+    // Zoom shows more, not nearer; pan slides the plan.
+    let before = session.camera();
+    session.zoom(2.0);
+    assert_eq!(session.camera().position, before.position);
+    assert!(session.camera().ortho.unwrap() > before.ortho.unwrap());
+    session.pan(3.0, 0.0);
+    let moved = session.camera().target - before.target;
+    assert!(
+        (moved.x - 3.0).abs() < 1e-3 && moved.y.abs() < 1e-3,
+        "{moved}"
+    );
+
+    // Framing still frames; back to perspective shows about as much.
+    session.focus_selected();
+    let half = session.camera().ortho.unwrap();
+    session.set_orthographic(false);
+    let camera = session.camera();
+    let seen = (camera.position - camera.target).length()
+        * (camera.fov_y_degrees.to_radians() * 0.5).tan();
+    assert!((seen - half).abs() < 1e-3, "{seen} vs {half}");
+    session.orbit(10.0, -20.0);
+    assert_eq!(session.camera().up, runity::glam::Vec3::Y);
+
+    // Every side has a name an agent can say.
+    for side in Side::ALL {
+        assert_eq!(Side::from_name(side.name()), Some(side));
+        session.look_from(side);
+        session.render();
+    }
+}

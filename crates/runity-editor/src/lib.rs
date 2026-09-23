@@ -21,7 +21,10 @@ mod error;
 pub mod history;
 pub mod panels;
 mod scene_view;
+mod views;
 mod visibility;
+
+pub use views::Side;
 
 use std::path::{Path, PathBuf};
 
@@ -596,12 +599,15 @@ impl Session {
             pitch.cos() * yaw.cos(),
         ) * distance;
         self.camera.position = self.camera.target + offset;
+        // Off an axis view, up is up again.
+        self.camera.up = Vec3::Y;
     }
 
     /// Slide the view sideways and up, in metres, keeping its direction.
     pub fn pan(&mut self, right: f32, up: f32) {
         let forward = (self.camera.target - self.camera.position).normalize_or_zero();
-        let side = forward.cross(Vec3::Y).normalize_or_zero();
+        // The view's own up, so a plan seen from straight above pans too.
+        let side = forward.cross(self.camera.up).normalize_or_zero();
         let lift = side.cross(forward).normalize_or_zero();
         let offset = side * right + lift * up;
         self.camera.position += offset;
@@ -610,6 +616,11 @@ impl Session {
 
     /// Move toward what the view looks at — `factor` below one — or away.
     pub fn zoom(&mut self, factor: f32) {
+        if let Some(half) = &mut self.camera.ortho {
+            // Nearer changes nothing in a plan; how much it shows does.
+            *half = (*half * factor.max(0.01)).max(0.05);
+            return;
+        }
         let offset = (self.camera.position - self.camera.target) * factor.max(0.01);
         self.camera.position = self.camera.target + offset.clamp_length_min(0.1);
     }
@@ -2014,6 +2025,7 @@ impl Session {
     pub fn set_camera(&mut self, eye: Vec3, target: Vec3) {
         self.camera.position = eye;
         self.camera.target = target;
+        self.camera.up = views::up_for(target - eye);
     }
 
     /// Write where the editor is looking into the scene, as one undoable
@@ -2059,6 +2071,10 @@ impl Session {
         };
         self.camera.target = target;
         self.camera.position = target + back * distance;
+        if self.camera.ortho.is_some() {
+            self.camera.ortho = Some(radius * 1.3);
+            self.camera.position = target + back * views::ORTHO_STAND;
+        }
         true
     }
 
@@ -2095,7 +2111,7 @@ impl Session {
                 if desc.body == runity::Body::None || unseen.contains(&desc.id) {
                     continue;
                 }
-                let distance = (placed.w_axis.truncate() - self.camera.position).length();
+                let distance = self.camera.apparent_distance(placed.w_axis.truncate());
                 frame.overlay_draws.extend(gizmo::collider_draws(
                     arm,
                     desc.collider,

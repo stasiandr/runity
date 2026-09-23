@@ -59,6 +59,11 @@ pub struct Camera {
     pub fov_y_degrees: f32,
     pub near: f32,
     pub far: f32,
+    /// Orthographic, with this many metres from the middle of the image to
+    /// its top edge; `None` is perspective. A plan of a level from above,
+    /// with no vanishing point: Unity's orthographic camera and the Scene
+    /// view's axis views.
+    pub ortho: Option<f32>,
 }
 
 impl Default for Camera {
@@ -70,6 +75,7 @@ impl Default for Camera {
             fov_y_degrees: 55.0,
             near: 0.1,
             far: 500.0,
+            ortho: None,
         }
     }
 }
@@ -78,13 +84,48 @@ impl Camera {
     pub fn view_projection(&self, aspect: f32) -> Mat4 {
         // `perspective_rh` and not `_gl`: wgpu's clip space runs z from 0 to
         // 1, and the `_gl` variant's -1..1 would halve the depth buffer.
-        let projection = Mat4::perspective_rh(
-            self.fov_y_degrees.to_radians(),
-            aspect.max(1e-3),
-            self.near,
-            self.far,
-        );
+        let aspect = aspect.max(1e-3);
+        let projection = match self.ortho {
+            Some(half) => {
+                let half = half.max(1e-3);
+                Mat4::orthographic_rh(
+                    -half * aspect,
+                    half * aspect,
+                    -half,
+                    half,
+                    self.near,
+                    self.far,
+                )
+            }
+            None => {
+                Mat4::perspective_rh(self.fov_y_degrees.to_radians(), aspect, self.near, self.far)
+            }
+        };
         projection * Mat4::look_at_rh(self.position, self.target, self.up)
+    }
+
+    /// How far away a point looks: its distance, or with an orthographic
+    /// camera the distance at which the perspective one would show as much.
+    /// What keeps a handle or an outline the same size on screen either way.
+    pub fn apparent_distance(&self, point: Vec3) -> f32 {
+        match self.ortho {
+            Some(half) => half / (self.fov_y_degrees.to_radians() * 0.5).tan().max(1e-3),
+            None => (point - self.position).length(),
+        }
+    }
+
+    /// Where fog and shine are measured from: the camera, or for an
+    /// orthographic one, where a perspective camera showing as much would
+    /// stand — its real place is far back, and the whole plan would drown
+    /// in fog.
+    pub fn apparent_eye(&self) -> Vec3 {
+        match self.ortho {
+            Some(_) => {
+                let back = (self.position - self.target).normalize_or_zero();
+                self.target + back * self.apparent_distance(self.target)
+            }
+            None => self.position,
+        }
     }
 
     /// The ray through a point of a `size`-pixel image, from the top left —
@@ -118,6 +159,33 @@ impl Camera {
 #[cfg(test)]
 mod camera_tests {
     use super::*;
+
+    #[test]
+    fn an_orthographic_camera_casts_parallel_rays_and_keeps_sizes() {
+        let camera = Camera {
+            position: Vec3::new(0.0, 200.0, 0.0),
+            target: Vec3::ZERO,
+            up: Vec3::NEG_Z,
+            ortho: Some(10.0),
+            ..Camera::default()
+        };
+        let size = glam::Vec2::new(200.0, 100.0);
+        let (a, da) = camera.ray_through(glam::Vec2::new(10.0, 10.0), size);
+        let (b, db) = camera.ray_through(glam::Vec2::new(150.0, 90.0), size);
+        assert!(da.abs_diff_eq(Vec3::NEG_Y, 1e-4) && db.abs_diff_eq(Vec3::NEG_Y, 1e-4));
+        assert!((a - b).length() > 1.0, "from different places");
+        // Ten metres up the image is its top edge, and +x is to the right,
+        // at any height.
+        for y in [0.0, 50.0] {
+            let top = camera.screen_point(Vec3::new(0.0, y, -10.0), size).unwrap();
+            assert!(top.abs_diff_eq(glam::Vec2::new(100.0, 0.0), 1e-2), "{top}");
+            let right = camera.screen_point(Vec3::new(5.0, y, 0.0), size).unwrap();
+            assert!(right.x > 100.0);
+        }
+        // Fog is measured from where a perspective camera would stand.
+        let eye = camera.apparent_eye();
+        assert!(eye.y > 5.0 && eye.y < 50.0, "{eye}");
+    }
 
     #[test]
     fn a_click_is_a_ray_and_a_point_lands_back_where_it_was_clicked() {
@@ -1269,6 +1337,15 @@ impl Renderer {
     /// texels resize under them.
     fn shadow_sphere(&self, frame: &Frame, aspect: f32) -> Option<(Vec3, f32)> {
         let camera = &frame.camera;
+        if let Some(half) = camera.ortho {
+            // Everything seen is equally near: the shadows cover the image
+            // around what the camera looks at, however far back it stands.
+            let radius = (half * glam::Vec2::new(aspect, 1.0)).length();
+            return Some((
+                camera.target,
+                radius.min(frame.shadows.max_distance).max(0.01),
+            ));
+        }
         let far = frame.shadows.max_distance.min(camera.far).max(camera.near);
         let forward = (camera.target - camera.position).normalize_or_zero();
         if forward.length_squared() < 0.5 {
@@ -1454,7 +1531,7 @@ impl Renderer {
             ground_color: extend(frame.lighting.ground_color, 0.0),
             fog_color: extend(frame.fog.color, 0.0),
             fog_range: [frame.fog.start, frame.fog.end, 0.0, 0.0],
-            camera_position: extend(frame.camera.position, 1.0),
+            camera_position: extend(frame.camera.apparent_eye(), 1.0),
             light_view_projection: light_view_projection.to_cols_array_2d(),
             shadow_params: [
                 frame.shadows.depth_bias,

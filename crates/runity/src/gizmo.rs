@@ -109,7 +109,7 @@ impl Default for GizmoStyle {
 impl GizmoStyle {
     /// The arm length for a gizmo at this position, seen from this camera.
     pub fn arm_length(&self, camera: &Camera, origin: Vec3) -> f32 {
-        let distance = (origin - camera.position).length().max(0.01);
+        let distance = camera.apparent_distance(origin).max(0.01);
         distance * self.screen_size
     }
 }

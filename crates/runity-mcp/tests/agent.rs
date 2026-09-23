@@ -333,6 +333,16 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     let seen = agent.call("render", json!({ "from_game": true })).unwrap();
     assert_eq!(seen[0]["type"], "image");
     agent.text("delete_entity", json!({ "id": eye }));
+    let plan = agent.text("render", json!({ "view": "top" }));
+    assert!(
+        plan.contains("eye (") && plan.contains("looking at"),
+        "{plan}"
+    );
+    let err = agent
+        .call("render", json!({ "view": "sideways" }))
+        .unwrap_err();
+    assert!(err.contains("view is top, bottom"), "{err}");
+    agent.text("render", json!({ "view": "perspective" }));
     agent.text(
         "set_field",
         json!({ "id": wall, "field": "layer", "value": "player" }),

@@ -62,6 +62,7 @@ pub fn list() -> Vec<Value> {
         "height": { "type": "integer" },
         "from_game": { "type": "boolean", "description": "look through the game's camera — the entity with `camera` — instead of the editor's" },
         "colliders": { "type": "boolean", "description": "draw every collider as an outline — green static, blue dynamic, orange kinematic, yellow trigger — until turned off" },
+        "view": { "type": "string", "enum": ["top", "bottom", "front", "back", "left", "right", "perspective", "orthographic"], "description": "look along an axis, orthographic, showing as much as before — `top` is the level's plan — or switch projection; stays until changed" },
     });
     let mut simulate = camera.clone();
     simulate["seconds"] = json!({ "type": "number", "description": "simulated time, fixed steps" });
@@ -1107,7 +1108,7 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
         let camera = session
             .game_camera()
             .ok_or("no entity has a camera; the game looks from the scene's view")?;
-        session.set_camera(camera.position, camera.target);
+        session.look_through(camera);
     }
     if let Some(show) = colliders {
         session.set_show_colliders(show);
@@ -1126,6 +1127,19 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
     if eye.is_some() || target.is_some() {
         let now = session.camera();
         session.set_camera(eye.unwrap_or(now.position), target.unwrap_or(now.target));
+    }
+    match args.get("view").and_then(Value::as_str) {
+        None => {}
+        Some("perspective") => session.set_orthographic(false),
+        Some("orthographic") => session.set_orthographic(true),
+        Some(name) => match runity_editor::Side::from_name(name) {
+            Some(side) => session.look_from(side),
+            None => {
+                return Err(format!(
+                    "view is top, bottom, front, back, left, right, perspective or orthographic, not {name}"
+                ))
+            }
+        },
     }
     Ok(())
 }

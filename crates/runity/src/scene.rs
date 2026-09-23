@@ -282,6 +282,10 @@ pub struct Lens {
     /// With several cameras, the highest looks.
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub priority: i32,
+    /// Orthographic, this many metres from the middle of the image to its
+    /// top: `camera: (ortho: 12.0)` for a top-down or isometric game.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub ortho: Option<f32>,
 }
 
 fn lens_fov() -> f32 {
