@@ -54,6 +54,8 @@ enum Part {
     Canvas,
     /// Show a state's blend tree or events fields.
     More(&'static str),
+    /// Take back one change since the last commit, by its place in the list.
+    Revert(usize),
 }
 
 pub struct Animator {
@@ -84,6 +86,9 @@ pub struct Animator {
     /// The state the running game says the selected entity is in, and
     /// when that was last asked.
     live: Option<String>,
+    /// The open graph as the last commit has it: what the changes are
+    /// against. `None` outside git, or for a file not yet committed.
+    head: Option<Graph>,
     asked: std::time::Instant,
 }
 
@@ -157,6 +162,7 @@ impl Animator {
             edge_nodes: Vec::new(),
             more: Vec::new(),
             live: None,
+            head: None,
             asked: std::time::Instant::now(),
         }
     }
@@ -229,6 +235,9 @@ impl Animator {
             .and_then(|t| runity::ron::from_str::<Graph>(&t).map_err(|e| e.to_string()));
         match graph {
             Ok(graph) => {
+                self.head = runity_editor::history::show(&path, "HEAD")
+                    .ok()
+                    .and_then(|t| runity::ron::from_str(&t).ok());
                 self.open = Some((path, graph));
                 self.chosen = None;
                 self.pan = (0.0, 0.0);
@@ -288,7 +297,8 @@ impl Animator {
             let start = name == graph.start;
             let any = name == ANY;
             let live = self.live.as_deref() == Some(name.as_str());
-            let b = ui.add(boxes, box_style(&graph, &name, on, live, (x, y)));
+            let mark = self.mark(&graph, &name);
+            let b = ui.add(boxes, box_style(&graph, &name, on, live, mark, (x, y)));
             ui.set_name(b, format!("state {name}"));
             let label = if any { "Any State" } else { name.as_str() };
             let glyph = if any {
@@ -329,7 +339,11 @@ impl Animator {
         for (name, node) in &self.boxes {
             let on = self.chosen == Some(Chosen::State(name.clone()));
             let live = self.live.as_deref() == Some(name.as_str());
-            ui.set_style(*node, box_style(&graph, name, on, live, self.place(name)));
+            let mark = self.mark(&graph, name);
+            ui.set_style(
+                *node,
+                box_style(&graph, name, on, live, mark, self.place(name)),
+            );
         }
     }
 
@@ -354,6 +368,7 @@ impl Animator {
                     | Part::To(_)
                     | Part::AddState
                     | Part::More(_)
+                    | Part::Revert(_)
             ) && !(matches!(p, Part::Edge(_))
                 && ui.parent(*n).is_some_and(|parent| parent == self.side))
         });
@@ -507,6 +522,26 @@ impl Animator {
             .collect();
         for p in problems.iter().take(3) {
             ui.add_text(side, Style::default().text_size(11.5).text_color(ERROR), p);
+        }
+        // What changed since the last commit — an agent's edit to look over
+        // — each with a way to take it back.
+        let changes = self.changes(graph);
+        if !changes.is_empty() {
+            ui.add_text(side, caption(), "CHANGES SINCE THE LAST COMMIT");
+            for (i, change) in changes.iter().enumerate() {
+                let row = ui.add(side, Style::row().full_width().gap(SPACE_2).center_items());
+                ui.add_text(
+                    row,
+                    Style::default()
+                        .text_size(11.5)
+                        .text_color(TEXT)
+                        .mono()
+                        .fill(),
+                    &change.to_string(),
+                );
+                let undo = button(ui, row, &format!("animator undo change {i}"), "Undo", false);
+                self.parts.insert(undo, Part::Revert(i));
+            }
         }
         let head = ui.add(side, Style::row().full_width().gap(SPACE_1).center_items());
         let add = button(ui, head, "animator add state", "+ State", false);
@@ -802,6 +837,15 @@ impl Animator {
                 }
                 self.show(ui, session);
             }
+            Part::Revert(i) if click => {
+                let Some(graph) = self.graph().cloned() else {
+                    return;
+                };
+                if let Some(change) = self.changes(&graph).into_iter().nth(i) {
+                    self.edit(session, |g| change.revert(g));
+                }
+                self.show(ui, session);
+            }
             Part::AddState if click => {
                 let Some(graph) = self.graph() else { return };
                 let mut name = "state".to_string();
@@ -923,6 +967,24 @@ impl Animator {
         }
     }
 
+    /// How a state is marked for what changed since the last commit: new
+    /// in the accent's light, changed in the warning colour.
+    fn mark(&self, graph: &Graph, name: &str) -> Option<Color> {
+        self.changes(graph).iter().find_map(|c| match c {
+            runity::animgraph::Change::StateAdded(n) if n == name => Some(ACCENT_400),
+            runity::animgraph::Change::StateChanged(n, _) if n == name => Some(WARNING),
+            _ => None,
+        })
+    }
+
+    /// What differs from the last commit's graph, if there is one.
+    fn changes(&self, graph: &Graph) -> Vec<runity::animgraph::Change> {
+        self.head
+            .as_ref()
+            .map(|head| runity::animgraph::diff(head, graph))
+            .unwrap_or_default()
+    }
+
     /// Change the graph and write it.
     fn edit(&mut self, session: &mut Session, change: impl FnOnce(&mut Graph)) {
         let Some((path, graph)) = self.open.as_mut() else {
@@ -1016,7 +1078,14 @@ pub fn layout(graph: &Graph) -> BTreeMap<String, (usize, usize)> {
 
 /// A state's box: the start filled with the accent, the chosen one ringed
 /// in it, and the one the running game is in ringed in warm light.
-fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)) -> Style {
+fn box_style(
+    graph: &Graph,
+    name: &str,
+    on: bool,
+    live: bool,
+    changed: Option<Color>,
+    (x, y): (f32, f32),
+) -> Style {
     let start = name == graph.start;
     Style::row()
         .absolute(x, y)
@@ -1033,11 +1102,17 @@ fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)
             SURFACE
         })
         .border(
-            if on || live { 2.0 } else { 1.0 },
+            if on || live || changed.is_some() {
+                2.0
+            } else {
+                1.0
+            },
             if live {
                 WARNING
             } else if on {
                 ACCENT
+            } else if let Some(mark) = changed {
+                mark
             } else {
                 NEUTRAL_800
             },

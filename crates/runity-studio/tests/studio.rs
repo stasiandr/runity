@@ -2270,3 +2270,60 @@ fn the_play_tools_show_systems_saves_the_network_and_the_diff() {
     );
     s.session.stop_game();
 }
+
+#[test]
+fn the_animator_shows_what_changed_since_the_commit_and_takes_one_back() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+    if !git(&["init", "-q"]) {
+        eprintln!("no git here; skipped");
+        return;
+    }
+    let file = dir.join("animators/hero.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n    },\n)\n",
+    )
+    .unwrap();
+    git(&["-c", "user.email=t@t", "-c", "user.name=t", "add", "."]);
+    git(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-qm",
+        "hero",
+    ]);
+    // An agent's edit: a new state and a way into it.
+    std::fs::write(
+        &file,
+        "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\", transitions: [\n            (to: \"swim\", when: [Is(\"wet\")]),\n        ]),\n        \"swim\": (clip: \"swim\"),\n    },\n)\n",
+    )
+    .unwrap();
+    click(&mut s, "tab animator");
+    click(&mut s, "animator wide");
+    s.frame();
+    click(&mut s, "animator hero");
+    let dump = s.ui.dump();
+    assert!(dump.contains("CHANGES SINCE THE LAST COMMIT"), "{dump}");
+    assert!(dump.contains("+ state swim"), "{dump}");
+    assert!(dump.contains("+ idle → swim when wet"), "{dump}");
+    // Taking the new way in back, alone: states come first in the list,
+    // so it is the second.
+    click(&mut s, "animator undo change 1");
+    let graph: runity::animgraph::Graph =
+        runity::ron::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(graph.transitions.is_empty(), "{graph:?}");
+    assert!(graph.states.contains_key("swim"), "the state stays");
+}
