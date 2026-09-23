@@ -1223,6 +1223,15 @@ pub struct Sun {
     /// a lot, and warm; dark earth little.
     #[serde(default = "default_ground", skip_serializing_if = "is_default_ground")]
     pub ground: [f32; 3],
+    /// Which way the light travels, when a scene brought from elsewhere
+    /// says exactly: the hour's arc goes east to west only, and a sun from
+    /// Unity can stand anywhere. Unset, the hour decides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toward: Option<Vec3>,
+    /// The light's colour as a picker says it (sRGB), when it is not the
+    /// hour's: white overhead, orange low.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tint: Option<[f32; 3]>,
 }
 
 fn default_ground() -> [f32; 3] {
@@ -1239,6 +1248,8 @@ impl Default for Sun {
             ground: default_ground(),
             hour: 9.0,
             intensity: 1.15,
+            toward: None,
+            tint: None,
         }
     }
 }
@@ -1254,6 +1265,9 @@ impl Sun {
     /// what the editor showed. A game that wants a real ephemeris replaces
     /// this; a scene's `hour` has to mean one thing first.
     pub fn direction(&self) -> Vec3 {
+        if let Some(toward) = self.toward.filter(|t| t.length_squared() > 1e-8) {
+            return toward.normalize();
+        }
         let day = ((self.hour - 6.0) / 12.0).clamp(0.0, 1.0);
         let angle = day * std::f32::consts::PI;
         // The height is floored well above zero: a sun exactly on the
@@ -1268,6 +1282,10 @@ impl Sun {
     /// cue that reads as a time of day at a glance, and cheaper than every
     /// scene hand-picking a colour to go with its hour.
     pub fn color(&self) -> Vec3 {
+        if let Some(t) = self.tint {
+            let l = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+            return Vec3::new(l(t[0]), l(t[1]), l(t[2]));
+        }
         let noon = Vec3::new(1.0, 0.96, 0.88);
         let low = Vec3::new(1.0, 0.72, 0.48);
         let height = (-self.direction().y).clamp(0.0, 1.0);
