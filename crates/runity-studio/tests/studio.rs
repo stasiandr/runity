@@ -1947,3 +1947,64 @@ fn a_field_that_differs_has_a_reset_arrow_and_search_narrows_the_inspector() {
     assert!(s.ui.find("label body").is_some(), "{}", s.ui.dump());
     assert!(s.ui.find("label position").is_none(), "only what matches");
 }
+
+#[test]
+fn the_foliage_brush_paints_the_selected_model_in_one_stroke() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let tree = s.session.find("tree near").unwrap();
+    let model = s.session.entity_model(tree).unwrap();
+    click(&mut s, "line tree near");
+    click(&mut s, "foliage");
+    let steps = s.session.undo_steps().len();
+
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (x, y) = (view.x + view.width / 2.0, view.y + view.height * 0.7);
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    for i in 1..=4 {
+        std::thread::sleep(std::time::Duration::from_millis(110));
+        s.handle(&InputEvent::MouseMoved {
+            x: x + 40.0 * i as f32,
+            y,
+        });
+        s.frame();
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+
+    let group = s
+        .session
+        .find(&format!(
+            "foliage: {}",
+            model.trim_start_matches("builtin:")
+        ))
+        .unwrap_or_else(|| {
+            panic!(
+                "no group; console: {:?}",
+                s.session
+                    .console()
+                    .iter()
+                    .map(|l| l.text.clone())
+                    .collect::<Vec<_>>()
+            )
+        });
+    let planted = s.session.scene().get(group).unwrap().children.len();
+    assert!(planted > 3, "{planted}");
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "one stroke, one step"
+    );
+
+    type_text(&mut s, "]");
+    s.frame();
+    assert!(s
+        .session
+        .console()
+        .iter()
+        .any(|l| l.text.contains("m across")));
+}

@@ -4507,3 +4507,60 @@ fn what_the_simulation_did_is_kept_for_the_marked_and_undone_in_one_step() {
         "nothing to keep when not playing"
     );
 }
+
+#[test]
+fn the_foliage_brush_plants_on_the_ground_keeps_its_spacing_and_erases() {
+    let Some((mut session, _)) = open_with(
+        "foliage",
+        r#"(entities: [(name: "floor", model: "builtin:cube", transform: (position: (0.0, -0.5, 0.0), scale: (40.0, 1.0, 40.0)), body: Static, collider: Box(half: (20.0, 0.5, 20.0)))])"#,
+    ) else {
+        return;
+    };
+    let steps = session.undo_steps().len();
+    let added = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 4.0, 1.0, false, false, 7)
+        .unwrap();
+    assert!(added >= 10, "about π·4²·1 tries, most kept: {added}");
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    let group = id(&session, "foliage: cone");
+    let children: Vec<Vec3> = session
+        .scene()
+        .get(group)
+        .unwrap()
+        .children
+        .iter()
+        .map(|c| c.transform.position)
+        .collect();
+    assert_eq!(children.len(), added);
+    for p in &children {
+        assert!(p.y.abs() < 0.01, "on the floor's top: {p}");
+        assert!(p.x * p.x + p.z * p.z <= 16.01, "inside the brush: {p}");
+    }
+    for (i, a) in children.iter().enumerate() {
+        for b in &children[i + 1..] {
+            assert!((*a - *b).length() >= 0.99, "a metre apart at one per m²");
+        }
+    }
+
+    // The same spot again: it is mostly full.
+    let more = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 4.0, 1.0, false, false, 8)
+        .unwrap();
+    assert!(more < added, "{more} more after {added}");
+
+    // Shift: erase inside a smaller disc.
+    let gone = session
+        .paint_foliage("builtin:cone", Vec3::ZERO, 2.0, 1.0, false, true, 0)
+        .unwrap();
+    assert!(gone > 0);
+    assert!(session
+        .scene()
+        .get(group)
+        .unwrap()
+        .children
+        .iter()
+        .all(|c| c.transform.position.length() > 2.0));
+    assert!(session
+        .paint_foliage("no-such-model", Vec3::ZERO, 2.0, 1.0, false, false, 0)
+        .is_err());
+}

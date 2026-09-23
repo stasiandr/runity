@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use runity::edit::Face;
 use runity::gizmo::Tool;
@@ -266,6 +266,16 @@ pub struct Studio {
     maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
+    /// The foliage brush (docs/artist.md): on, what it paints, how big it
+    /// is, and the stroke under way — when the last dab was and how many
+    /// undo steps the stroke has made, to be one.
+    foliage: bool,
+    foliage_button: NodeId,
+    foliage_what: Option<String>,
+    foliage_radius: f32,
+    foliage_stroke: Option<(Instant, usize)>,
+    /// A new seed per dab, so two dabs on one spot do not place the same.
+    foliage_seed: u64,
     /// Face mode: ProBuilder's face selection over the faces of boxes.
     faces: bool,
     faces_button: NodeId,
@@ -434,6 +444,8 @@ impl Studio {
         buttons.push((sculpt, Action::ToggleSculpt));
         let faces = icon_button(&mut ui, view_tabs, "faces", "square", false);
         buttons.push((faces, Action::ToggleFaces));
+        let foliage = icon_button(&mut ui, view_tabs, "foliage", "sparkles", false);
+        buttons.push((foliage, Action::ToggleFoliage));
         // Prefab mode's banner: what is open, and the way back.
         let prefab_bar = ui.add(
             view_slot,
@@ -587,6 +599,12 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            foliage: false,
+            foliage_button: foliage,
+            foliage_what: None,
+            foliage_radius: 4.0,
+            foliage_stroke: None,
+            foliage_seed: 0,
             faces: false,
             faces_button: faces,
             face_hover: None,
@@ -766,6 +784,26 @@ impl Studio {
                 if self.faces {
                     self.face_move(vx, vy, over_view);
                 }
+                if self.foliage_stroke.is_some() {
+                    self.foliage_dab(vx, vy);
+                }
+            }
+            // The foliage brush takes the left button; Alt still orbits.
+            InputEvent::MouseDown(MouseButton::Left)
+                if over_view && self.foliage && !self.ui.modifiers().2 =>
+            {
+                let (px, py) = self.ui.pointer();
+                let (vx, vy) = to_view(px, py);
+                self.foliage_stroke = Some((Instant::now() - Duration::from_secs(1), 0));
+                self.foliage_dab(vx, vy);
+            }
+            InputEvent::MouseUp(MouseButton::Left) if self.foliage_stroke.is_some() => {
+                if let Some((_, steps)) = self.foliage_stroke.take() {
+                    if steps > 1 {
+                        self.session.squash_last(steps);
+                    }
+                }
+                self.refresh();
             }
             // Face mode takes the left button on a face; Alt still orbits.
             InputEvent::MouseDown(MouseButton::Left)
@@ -850,6 +888,16 @@ impl Studio {
                     return;
                 }
                 self.scene_input.handle(event);
+            }
+            // The foliage brush's size: [ and ], as typed, since the
+            // engine's keys have no brackets.
+            InputEvent::Text(text) if self.foliage && !typing && (text == "[" || text == "]") => {
+                let grow = if text == "]" { 1.25 } else { 0.8 };
+                self.foliage_radius = (self.foliage_radius * grow).clamp(0.5, 50.0);
+                self.session.say(
+                    Level::Info,
+                    format!("foliage brush: {:.1} m across", self.foliage_radius * 2.0),
+                );
             }
             // Always: a key let go while typing must not stay held.
             InputEvent::KeyUp(_) | InputEvent::FocusLost => self.scene_input.handle(event),
@@ -1312,6 +1360,49 @@ impl Studio {
         let ground = self.ui.tint(BG);
         let gpu = self.session.gpu();
         renderer.draw(gpu, view, width, height, &mut self.ui, Some(ground));
+    }
+
+    /// One dab of the foliage brush where the view's pixel shows the
+    /// ground: at most ten a second, Shift erasing.
+    fn foliage_dab(&mut self, vx: f32, vy: f32) {
+        let Some((last, steps)) = self.foliage_stroke else {
+            return;
+        };
+        if last.elapsed() < Duration::from_millis(100) {
+            return;
+        }
+        let Some(what) = self.foliage_what.clone() else {
+            self.session.say(
+                Level::Warning,
+                "foliage brush: click a model or prefab in Project to paint it",
+            );
+            self.foliage_stroke = None;
+            return;
+        };
+        let Some(at) = self
+            .session
+            .point_under(vx.max(0.0) as u32, vy.max(0.0) as u32)
+        else {
+            return;
+        };
+        let erase = self.ui.modifiers().0;
+        self.foliage_seed = self.foliage_seed.wrapping_add(1);
+        match self.session.paint_foliage(
+            &what,
+            at,
+            self.foliage_radius,
+            0.4,
+            false,
+            erase,
+            self.foliage_seed,
+        ) {
+            Ok(0) => self.foliage_stroke = Some((Instant::now(), steps)),
+            Ok(_) => self.foliage_stroke = Some((Instant::now(), steps + 1)),
+            Err(e) => {
+                self.session.say(Level::Error, e.to_string());
+                self.foliage_stroke = None;
+            }
+        }
     }
 
     /// The pointer over the view in face mode: outline the face under it,
@@ -1839,6 +1930,7 @@ impl Studio {
         set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
         set_icon_button(ui, self.sculpt_button, "mountain", self.sculpt, true);
         set_icon_button(ui, self.faces_button, "square", self.faces, true);
+        set_icon_button(ui, self.foliage_button, "sparkles", self.foliage, true);
         let prefab = s.is_prefab();
         ui.restyle(self.prefab_bar, |st| {
             if prefab {
@@ -2180,6 +2272,13 @@ impl Studio {
             self.run(action);
         }
         if let Some(asset) = requests.inspect {
+            if self.foliage {
+                if let Asset::Model(name, _) | Asset::Prefab(name) = &asset {
+                    self.foliage_what = Some(name.clone());
+                    self.session
+                        .say(Level::Info, format!("foliage brush: painting {name}"));
+                }
+            }
             if let Some(pixels) = self
                 .inspector
                 .show_asset(&mut self.ui, &mut self.session, asset)
@@ -2837,6 +2936,31 @@ impl Studio {
                     );
                 }
                 Action::Float(panel) => self.float(panel),
+                Action::ToggleFoliage => {
+                    self.foliage = !self.foliage;
+                    self.foliage_stroke = None;
+                    if self.foliage {
+                        self.sculpt = false;
+                        self.faces = false;
+                        // What to paint: the model or prefab looked at in
+                        // the Inspector, or the selection's.
+                        if self.foliage_what.is_none() {
+                            self.foliage_what = self
+                                .inspector
+                                .asset_name()
+                                .or_else(|| s.selected().and_then(|id| s.entity_model(id)))
+                                .or_else(|| s.selected().and_then(|id| s.entity_prefab(id)));
+                        }
+                        let what = self.foliage_what.clone();
+                        s.say(
+                            Level::Info,
+                            match what {
+                                Some(w) => format!("foliage brush: painting {w}; Shift erases, [ and ] change the size; click another model in Project to paint it"),
+                                None => "foliage brush: click a model or prefab in Project to paint it".into(),
+                            },
+                        );
+                    }
+                }
                 Action::KeepSimulation => {
                     if !s.is_playing() {
                         return Err("Keep Simulation Changes works while playing".into());
@@ -3555,6 +3679,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "scene view" => "Shift Space: the view over the whole window",
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
+        "foliage" => "Foliage brush: paint the model chosen in Project; Shift erases, [ ] size",
         "view persp" => "Perspective view",
         "view top" => "Look down from above",
         "view front" => "Look from the front",

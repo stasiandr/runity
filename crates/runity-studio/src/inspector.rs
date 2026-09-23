@@ -294,6 +294,15 @@ impl Inspector {
         }
     }
 
+    /// The model or prefab the Inspector is showing from the Project, if
+    /// that is what it shows.
+    pub fn asset_name(&self) -> Option<String> {
+        match &self.asset {
+            Some((Asset::Model(name, _) | Asset::Prefab(name), _)) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     pub fn owns(&self, node: NodeId) -> bool {
         node == self.lock_button || node == self.search || self.parts.contains_key(&node)
     }

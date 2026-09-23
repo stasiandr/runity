@@ -138,6 +138,8 @@ pub enum Action {
     DockAll,
     /// During play: keep the selection where the simulation puts it.
     KeepSimulation,
+    /// The foliage brush: paint the chosen model onto the ground.
+    ToggleFoliage,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -279,6 +281,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Poly Shape: Wall", Action::PolyWall),
                 item("Sculpt Terrain (brush)", Action::ToggleSculpt),
                 item("Face Mode (drag a face)", Action::ToggleFaces),
+                item("Foliage Brush", Action::ToggleFoliage),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",

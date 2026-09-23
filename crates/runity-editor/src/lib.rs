@@ -1738,6 +1738,159 @@ impl Session {
         self.insert(parent, group)
     }
 
+    /// One dab of the foliage brush (docs/artist.md): copies of a model —
+    /// or instances of a prefab — painted onto whatever is under a disc of
+    /// `radius` around `centre`, about `density` per square metre, none
+    /// closer than the density allows. Each gets a random turn about its
+    /// up axis and a scale of 0.8 to 1.2; `align` leans it with the ground.
+    /// `erase` takes away this model's copies inside the disc instead.
+    ///
+    /// The copies are children of one group per model, `foliage: <name>`,
+    /// made on the first dab: lines of the scene like any other, so the
+    /// file says what stands where. One undoable step per dab. Returns how
+    /// many were added or taken away. `seed` makes a dab repeatable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_foliage(
+        &mut self,
+        what: &str,
+        centre: Vec3,
+        radius: f32,
+        density: f32,
+        align: bool,
+        erase: bool,
+        seed: u64,
+    ) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        if what.is_empty() {
+            return Err(EditError::EmptyName("a model or prefab to paint"));
+        }
+        let prefab = self.prefabs.get(what).is_some();
+        if !prefab && !self.has_model(what) {
+            return Err(EditError::Scene(format!(
+                "no model or prefab `{what}` to paint"
+            )));
+        }
+        let name = format!("foliage: {}", what.trim_start_matches("builtin:"));
+        let group = self
+            .history
+            .scene()
+            .entities
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.id);
+        let inside = |p: Vec3| {
+            let d = p - centre;
+            d.x * d.x + d.z * d.z <= radius * radius
+        };
+        if erase {
+            let Some(group) = group else { return Ok(0) };
+            let before = self
+                .history
+                .scene()
+                .get(group)
+                .map_or(0, |g| g.children.len());
+            let scene = self.history.edit();
+            if let Some(g) = scene.get_mut(group) {
+                g.children.retain(|c| !inside(c.transform.position));
+            }
+            let after = self
+                .history
+                .scene()
+                .get(group)
+                .map_or(0, |g| g.children.len());
+            self.after_structural_change();
+            return Ok(before - after);
+        }
+        let density = density.clamp(0.001, 100.0);
+        let spacing = 1.0 / density.sqrt();
+        let physics = self.solid_without(&group.into_iter().collect::<Vec<_>>());
+        let mut taken: Vec<Vec3> = group
+            .and_then(|g| self.history.scene().get(g))
+            .map(|g| g.children.iter().map(|c| c.transform.position).collect())
+            .unwrap_or_default();
+        // xorshift: a dab with the same seed places the same copies.
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f32 / (1u64 << 53) as f32
+        };
+        let tries = ((std::f32::consts::PI * radius * radius * density).ceil() as usize).max(1);
+        let mut placed = Vec::new();
+        for _ in 0..tries {
+            let angle = next() * std::f32::consts::TAU;
+            let r = radius * next().sqrt();
+            let (x, z) = (centre.x + r * angle.cos(), centre.z + r * angle.sin());
+            let from = Vec3::new(x, centre.y + 50.0, z);
+            let Some((point, normal, _)) =
+                physics.cast_ray_with_normal(from, -Vec3::Y, 100.0, false)
+            else {
+                continue;
+            };
+            let near = |p: &Vec3| {
+                let d = *p - point;
+                d.x * d.x + d.z * d.z < spacing * spacing
+            };
+            if taken.iter().any(near) {
+                continue;
+            }
+            let mut transform = runity::Transform {
+                position: point,
+                scale: Vec3::splat(0.8 + 0.4 * next()),
+                ..Default::default()
+            };
+            let yaw = runity::glam::Quat::from_rotation_y(next() * std::f32::consts::TAU);
+            let lean = if align {
+                runity::glam::Quat::from_rotation_arc(Vec3::Y, normal.normalize_or_zero())
+            } else {
+                runity::glam::Quat::IDENTITY
+            };
+            transform.set_rotation(lean * yaw);
+            taken.push(point);
+            placed.push(EntityDesc {
+                id: EntityId::fresh(),
+                name: what.trim_start_matches("builtin:").to_string(),
+                model: if prefab {
+                    Default::default()
+                } else {
+                    what.into()
+                },
+                prefab: if prefab {
+                    what.into()
+                } else {
+                    Default::default()
+                },
+                transform,
+                ..Default::default()
+            });
+        }
+        if placed.is_empty() {
+            return Ok(0);
+        }
+        let count = placed.len();
+        match group {
+            Some(group) => {
+                let scene = self.history.edit();
+                if let Some(g) = scene.get_mut(group) {
+                    g.children.extend(placed);
+                }
+                self.after_structural_change();
+            }
+            None => {
+                self.insert(
+                    None,
+                    EntityDesc {
+                        name,
+                        children: placed,
+                        ..Default::default()
+                    },
+                )?;
+            }
+        }
+        Ok(count)
+    }
+
     /// Delete an entity and everything under it.
     pub fn delete(&mut self, id: EntityId) -> EditResult<()> {
         self.refuse_while_playing()?;
