@@ -66,8 +66,32 @@ pub(crate) struct CloudUniform {
     pub dust: [f32; 4],
     /// The camera view's third row: how deep a point is.
     pub view_depth: [f32; 4],
-    /// Near, far.
+    /// Near, far; the wind's level direction.
     pub depth_range: [f32; 4],
+    /// The dust volume round the camera: its corner's x and z, a cell's
+    /// width and its height.
+    pub dust_box: [f32; 4],
+}
+
+/// Cells of the dust wall's volume: across, up, across.
+pub(crate) const DUST_CELLS: (u32, u32, u32) = (256, 64, 256);
+/// A cell's width, metres: the volume is nearly 4 km across, round the
+/// camera.
+pub(crate) const DUST_CELL: f32 = 15.0;
+
+impl CloudUniform {
+    /// The dust volume round `eye`, snapped to its cells so it does not
+    /// swim as the camera moves, for a wall `height` high.
+    pub(crate) fn dust_box(eye: glam::Vec3, height: f32) -> [f32; 4] {
+        let half = DUST_CELL * DUST_CELLS.0 as f32 * 0.5;
+        let snap = |v: f32| ((v - half) / DUST_CELL).floor() * DUST_CELL;
+        [
+            snap(eye.x),
+            snap(eye.z),
+            DUST_CELL,
+            height * 1.35 / DUST_CELLS.1 as f32,
+        ]
+    }
 }
 
 impl Clouds {
@@ -94,6 +118,12 @@ pub(crate) struct CloudRenderer {
     uniforms: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
+    /// The dust wall's volume: its shape, then its light, each a pass.
+    dust_shape: wgpu::ComputePipeline,
+    dust_light: wgpu::ComputePipeline,
+    dust_shape_group: wgpu::BindGroup,
+    dust_light_group: wgpu::BindGroup,
+    dust_march_group: wgpu::BindGroup,
     texture: Option<(wgpu::TextureView, (u32, u32))>,
     /// A clear sky, bound until there are clouds to show.
     blank: wgpu::TextureView,
@@ -150,23 +180,125 @@ impl CloudRenderer {
                 label: Some("runity::clouds"),
                 source: wgpu::ShaderSource::Wgsl(SHADER.into()),
             });
-        let pipeline_layout = gpu
-            .device
-            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("runity::clouds"),
-                bind_group_layouts: &[Some(&layout)],
-                immediate_size: 0,
-            });
-        let pipeline = gpu
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("cs_clouds"),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some("cs_clouds"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+        // The dust volume: two textures, and a layout for each pass's part.
+        let volume = |label| {
+            gpu.device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width: DUST_CELLS.0,
+                        height: DUST_CELLS.1,
+                        depth_or_array_layers: DUST_CELLS.2,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D3,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        let shape_view = volume("dust shape");
+        let lit_view = volume("dust light");
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::WriteOnly,
+                format: wgpu::TextureFormat::Rgba16Float,
+                view_dimension: wgpu::TextureViewDimension::D3,
+            },
+            count: None,
+        };
+        let sampled = |binding, filterable| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let group_layout = |label, entries: &[wgpu::BindGroupLayoutEntry]| {
+            gpu.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(label),
+                    entries,
+                })
+        };
+        let shape_layout = group_layout("dust shape", &[storage(0)]);
+        let light_layout = group_layout("dust light", &[sampled(1, false), storage(2)]);
+        let march_layout = group_layout(
+            "dust march",
+            &[
+                sampled(3, true),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        );
+        let dust_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("dust"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let group = |layout: &wgpu::BindGroupLayout, entries: &[wgpu::BindGroupEntry]| {
+            gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("dust"),
+                layout,
+                entries,
+            })
+        };
+        let view_entry = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
+        let dust_shape_group = group(&shape_layout, &[view_entry(0, &shape_view)]);
+        let dust_light_group = group(
+            &light_layout,
+            &[view_entry(1, &shape_view), view_entry(2, &lit_view)],
+        );
+        let dust_march_group = group(
+            &march_layout,
+            &[
+                view_entry(3, &lit_view),
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&dust_sampler),
+                },
+            ],
+        );
+        let pipeline_for = |entry: &str, second: &wgpu::BindGroupLayout| {
+            let pipeline_layout =
+                gpu.device
+                    .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                        label: Some(entry),
+                        bind_group_layouts: &[Some(&layout), Some(second)],
+                        immediate_size: 0,
+                    });
+            gpu.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some(entry),
+                    layout: Some(&pipeline_layout),
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+        };
+        let pipeline = pipeline_for("cs_clouds", &march_layout);
+        let dust_shape = pipeline_for("cs_dust_shape", &shape_layout);
+        let dust_light = pipeline_for("cs_dust_light", &light_layout);
         let blank = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("no clouds"),
             size: wgpu::Extent3d {
@@ -205,6 +337,11 @@ impl CloudRenderer {
             uniforms,
             layout,
             pipeline,
+            dust_shape,
+            dust_light,
+            dust_shape_group,
+            dust_light_group,
+            dust_march_group,
             texture: None,
             blank: blank.create_view(&wgpu::TextureViewDescriptor::default()),
         }
@@ -215,10 +352,14 @@ impl CloudRenderer {
         self.texture.as_ref().map_or(&self.blank, |t| &t.0)
     }
 
-    /// Make sure the picture is a quarter of `size`; true when it was
-    /// remade, so what binds it must be too.
-    pub(crate) fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) -> bool {
-        let quarter = (size.0.div_ceil(4).max(1), size.1.div_ceil(4).max(1));
+    /// Make sure the picture is `size` over `divisor` — a quarter for
+    /// clouds, which are soft; a half for a dust wall, whose billows have
+    /// edges.
+    pub(crate) fn resize(&mut self, gpu: &Gpu, size: (u32, u32), divisor: u32) -> bool {
+        let quarter = (
+            size.0.div_ceil(divisor).max(1),
+            size.1.div_ceil(divisor).max(1),
+        );
         if self.texture.as_ref().is_some_and(|t| t.1 == quarter) {
             return false;
         }
@@ -277,8 +418,27 @@ impl CloudRenderer {
             label: Some("runity::clouds"),
             timestamp_writes: None,
         });
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &group, &[]);
+        // The dust wall's volume first, when there is a wall.
+        if uniform.dust[0] > 0.0 {
+            let cells = |n: u32, by: u32| n.div_ceil(by);
+            pass.set_pipeline(&self.dust_shape);
+            pass.set_bind_group(1, &self.dust_shape_group, &[]);
+            pass.dispatch_workgroups(
+                cells(DUST_CELLS.0, 8),
+                cells(DUST_CELLS.1, 8),
+                cells(DUST_CELLS.2, 4),
+            );
+            pass.set_pipeline(&self.dust_light);
+            pass.set_bind_group(1, &self.dust_light_group, &[]);
+            pass.dispatch_workgroups(
+                cells(DUST_CELLS.0, 8),
+                cells(DUST_CELLS.1, 8),
+                cells(DUST_CELLS.2, 4),
+            );
+        }
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(1, &self.dust_march_group, &[]);
         pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
     }
 }

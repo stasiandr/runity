@@ -3067,7 +3067,11 @@ impl Renderer {
         }
         if probe.is_none()
             && (frame.sky.clouds.coverage > 0.0 || frame.weather.dust_wall > 0.0)
-            && self.clouds.resize(gpu, (width, height))
+            && self.clouds.resize(
+                gpu,
+                (width, height),
+                if frame.weather.dust_wall > 0.0 { 2 } else { 4 },
+            )
         {
             self.rebind(gpu);
         }
@@ -3895,6 +3899,10 @@ impl Renderer {
                         foliage.wind[0],
                         foliage.wind[1],
                     ],
+                    dust_box: crate::clouds::CloudUniform::dust_box(
+                        frame.camera.position,
+                        weather.dust_wall_height.max(10.0),
+                    ),
                 },
                 &self.ssao.depth,
             );

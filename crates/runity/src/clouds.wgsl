@@ -30,7 +30,84 @@ struct Cloud {
     view_depth: vec4<f32>,
     // near, far; which way the wind blows, level
     depth_range: vec4<f32>,
+    // the dust volume round the camera: its corner's x and z, a cell's
+    // width and its height, in metres
+    dust_box: vec4<f32>,
 };
+
+// The dust wall, worked out once a frame into a volume round the camera:
+// its shape, then the light in each cell. The march reads the second.
+const DUST_CELLS = vec3<u32>(256u, 64u, 256u);
+@group(1) @binding(0) var dust_shape_out: texture_storage_3d<rgba16float, write>;
+@group(1) @binding(1) var dust_shape: texture_3d<f32>;
+@group(1) @binding(2) var dust_lit_out: texture_storage_3d<rgba16float, write>;
+@group(1) @binding(3) var dust_lit: texture_3d<f32>;
+@group(1) @binding(4) var dust_sampler: sampler;
+
+fn dust_cell_centre(id: vec3<u32>) -> vec3<f32> {
+    let b = cloud.dust_box;
+    return vec3<f32>(b.x + (f32(id.x) + 0.5) * b.z, (f32(id.y) + 0.5) * b.w, b.y + (f32(id.z) + 0.5) * b.z);
+}
+
+/// Where a point falls in the volume, 0 to 1 each way.
+fn dust_uvw(p: vec3<f32>) -> vec3<f32> {
+    let b = cloud.dust_box;
+    return vec3<f32>(
+        (p.x - b.x) / (b.z * f32(DUST_CELLS.x)),
+        p.y / (b.w * f32(DUST_CELLS.y)),
+        (p.z - b.y) / (b.z * f32(DUST_CELLS.z)),
+    );
+}
+
+fn inside01(u: vec3<f32>) -> bool {
+    return all(u >= vec3<f32>(0.0)) && all(u <= vec3<f32>(1.0));
+}
+
+/// The shape's density at a point, from the first pass's volume.
+fn shape_at(p: vec3<f32>) -> f32 {
+    let u = dust_uvw(p);
+    if !inside01(u) {
+        return 0.0;
+    }
+    let cell = vec3<i32>(u * vec3<f32>(DUST_CELLS));
+    return textureLoad(dust_shape, min(cell, vec3<i32>(DUST_CELLS) - vec3<i32>(1)), 0).r;
+}
+
+// The wall's shape in each cell of the volume.
+@compute @workgroup_size(8, 8, 4)
+fn cs_dust_shape(@builtin(global_invocation_id) id: vec3<u32>) {
+    if any(id >= DUST_CELLS) {
+        return;
+    }
+    textureStore(dust_shape_out, id, vec4<f32>(dust_density(dust_cell_centre(id), true), 0.0, 0.0, 1.0));
+}
+
+// The light in each cell: how much sun comes through the dust towards it,
+// how much light turned many times reaches it, and how open to the sky it
+// is — a billow standing out, or a fold between two, or under a tier.
+@compute @workgroup_size(8, 8, 4)
+fn cs_dust_light(@builtin(global_invocation_id) id: vec3<u32>) {
+    if any(id >= DUST_CELLS) {
+        return;
+    }
+    let p = dust_cell_centre(id);
+    let density = textureLoad(dust_shape, vec3<i32>(id), 0).r;
+    let to_sun = cloud.to_sun.xyz;
+    var above = 0.0;
+    var previous = 0.0;
+    for (var j = 1; j <= 6; j = j + 1) {
+        let s = f32(j) * f32(j) * 12.0;
+        above += shape_at(p + to_sun * s) * (s - previous);
+        previous = s;
+    }
+    let step = cloud.dust_box.z * 1.6;
+    let over = shape_at(p + vec3<f32>(0.0, 35.0, 0.0));
+    let round = (shape_at(p + vec3<f32>(step, 0.0, 0.0)) + shape_at(p - vec3<f32>(step, 0.0, 0.0))
+        + shape_at(p + vec3<f32>(0.0, 0.0, step)) + shape_at(p - vec3<f32>(0.0, 0.0, step))) * 0.25;
+    let open = exp(-(over + round) * 1.2);
+    textureStore(dust_lit_out, id, vec4<f32>(density, exp(-above * 0.05), open, exp(-above * 0.006)));
+}
+
 
 @group(0) @binding(0) var<uniform> cloud: Cloud;
 @group(0) @binding(1) var clouds_out: texture_storage_2d<rgba16float, write>;
@@ -82,35 +159,60 @@ fn wind_way() -> vec2<f32> {
     return select(vec2<f32>(1.0, 0.0), normalize(w), length(w) > 1e-4);
 }
 
-/// How much dust the wall holds at a point, 0 to about 1: a front upwind,
-/// bulging and billowing like a heap of cumulus on the ground, its top
-/// ragged, its foot thickest.
-fn dust_density(p: vec3<f32>) -> f32 {
+/// Rounded masses: 1 at the heart of a ball, falling to 0 at its rim —
+/// one minus the distance to the nearest of points scattered one to a
+/// cell (Worley). What makes a cloud's cauliflower, where plain noise
+/// makes mush.
+fn puffs(p: vec3<f32>) -> f32 {
+    let cell = floor(p);
+    var nearest = 1.0e3;
+    for (var z = -1; z <= 1; z = z + 1) {
+        for (var y = -1; y <= 1; y = y + 1) {
+            for (var x = -1; x <= 1; x = x + 1) {
+                let c = cell + vec3<f32>(f32(x), f32(y), f32(z));
+                let point = c + vec3<f32>(hash3(c), hash3(c + 17.3), hash3(c + 41.9));
+                nearest = min(nearest, length(p - point));
+            }
+        }
+    }
+    return clamp(1.0 - nearest, 0.0, 1.0);
+}
+
+/// How much dust the wall holds at a point: a dense mass behind a front
+/// upwind, its face and top heaped with rounded billows of three sizes, its
+/// top rising in tiers the deeper into it — low in front, higher behind,
+/// highest at the back — and hard-edged, as a haboob is: a solid thing,
+/// not a haze. `detail` adds the smallest billows.
+fn dust_density(p: vec3<f32>, detail: bool) -> f32 {
     let w = wind_way();
     let along = dot(p.xz, w);
     let across = dot(p.xz, vec2<f32>(-w.y, w.x));
     let t = cloud.eye.w;
-    let front = -cloud.dust.y;
     let height = cloud.dust.z;
-    if p.y > height * 1.5 {
+    if p.y > height * 1.35 || p.y < -5.0 {
         return 0.0;
     }
-    // Billows: the cauliflower of a dust front, rolling forward.
-    let q = vec3<f32>(across, p.y * 1.2, along - t * 4.0) / 140.0;
-    let billow = noise3(q) * 0.55 + noise3(q * 2.1 + 7.0) * 0.3 + noise3(q * 4.4 + 3.0) * 0.15;
-    // The front, bulging out and in along its length.
-    let bulge = (noise3(vec3<f32>(across * 0.004, p.y * 0.004, t * 0.02)) - 0.5) * 260.0;
-    let behind = front + bulge - along + (billow - 0.5) * 220.0;
-    if behind <= 0.0 {
+    let behind = -cloud.dust.y - along;
+    if behind < -260.0 {
         return 0.0;
     }
-    let top = height * (0.7 + 0.6 * noise3(vec3<f32>(across * 0.0025, 0.0, along * 0.0025)));
-    let h = p.y / top + (billow - 0.5) * 0.7;
-    let vertical = 1.0 - smoothstep(0.75, 1.0, h);
-    let edge = smoothstep(0.0, 40.0, behind);
-    // Heaped masses with gaps between: the noise pushed apart.
-    let mass = 0.15 + smoothstep(0.32, 0.68, billow) * 1.2;
-    return clamp(edge * vertical * mass, 0.0, 1.0) * cloud.dust.x;
+    // The billows roll: carried a little faster than the front, and up.
+    let rolling = vec3<f32>(across, p.y - t * 1.5, along - t * 3.0);
+    var shape = puffs(rolling / 260.0) * 0.55 + puffs(rolling / 110.0 + 3.1) * 0.3;
+    if detail {
+        shape += puffs(rolling / 45.0 + 7.7) * 0.15;
+    } else {
+        shape += 0.07;
+    }
+    // Its face: where the billows push out past the front's line.
+    let face = behind + (shape - 0.5) * 360.0;
+    // Its top, in tiers set back one behind another.
+    let tiers = 0.42
+        + 0.28 * smoothstep(90.0, 150.0, behind + (shape - 0.5) * 120.0)
+        + 0.30 * smoothstep(330.0, 420.0, behind + (shape - 0.5) * 160.0);
+    let top = height * tiers + (shape - 0.5) * height * 0.55;
+    let inside = min(face, top - p.y);
+    return clamp(inside / 14.0, 0.0, 1.0) * cloud.dust.x;
 }
 
 fn henyey(cos: f32, g: f32) -> f32 {
@@ -157,41 +259,42 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
         let front = -cloud.dust.y + 260.0;
         var t0 = 0.0;
         var t1 = -1.0;
+        // Into the mass no further than it takes to go opaque, twice over.
         if along0 < front {
-            t1 = 3500.0;
+            t1 = 1400.0;
         } else if along_d < -1e-4 {
             t0 = (along0 - front) / -along_d;
-            t1 = t0 + 3500.0;
+            t1 = t0 + 1400.0;
         }
         if d.y > 1e-4 {
             t1 = min(t1, (cloud.dust.z * 1.5 - eye.y) / d.y);
         }
         t1 = min(t1, reach);
         if t1 > t0 {
-            let steps = 80;
+            let steps = 128;
             let step = (t1 - t0) / f32(steps);
-            let to_sun = cloud.to_sun.xyz;
             // A little noise in where the steps fall hides their banding;
             // little, since nothing averages it over frames.
             let jitter = 0.3 + 0.4 * fract(sin(dot(vec2<f32>(id.xy), vec2<f32>(12.9898, 78.233))) * 43758.547);
-            let sand = vec3<f32>(0.92, 0.66, 0.42);
+            let sand = vec3<f32>(0.93, 0.7, 0.47);
             for (var i = 0; i < steps; i = i + 1) {
                 let p = eye + d * (t0 + step * (f32(i) + jitter));
-                let density = dust_density(p);
+                let u = dust_uvw(p);
+                if !inside01(u) {
+                    continue;
+                }
+                // Shape and light, worked out beforehand: one fetch.
+                let cell = textureSampleLevel(dust_lit, dust_sampler, u, 0.0);
+                let density = cell.r;
                 if density <= 0.002 {
                     continue;
                 }
-                // Towards the sun through the dust: bright tops, dark foot.
-                var above = 0.0;
-                for (var j = 1; j <= 3; j = j + 1) {
-                    let s = f32(j) * f32(j) * 45.0;
-                    above += dust_density(p + to_sun * s) * s * 0.6;
-                }
-                let sun_through = exp(-above * 0.02);
                 let low = clamp(p.y / cloud.dust.z, 0.0, 1.0);
-                let lit = cloud.sun.rgb * cloud.to_sun.w * (sun_through * 1.1 + exp(-above * 0.004) * 0.15)
-                    + cloud.ambient.rgb * (0.25 + 0.75 * low);
-                let extinction = density * 0.035;
+                let open = cell.b;
+                let many = cell.a * 0.45 * (0.5 + 0.7 * open);
+                let lit = cloud.sun.rgb * cloud.to_sun.w * (cell.g * 1.2 + many)
+                    + cloud.ambient.rgb * (0.45 + 0.55 * low) * (0.3 + 1.0 * open);
+                let extinction = density * 0.07;
                 let passed = exp(-extinction * step);
                 dust_light += dust_through * lit * sand * (1.0 - passed);
                 dust_through *= passed;
