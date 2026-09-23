@@ -4165,3 +4165,44 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
         .to_string();
     assert!(e.contains("snake_case"), "{e}");
 }
+
+#[test]
+fn snapping_the_selection_puts_a_greybox_dragged_by_eye_on_the_grid() {
+    let Some((mut session, _)) = open("snap-all") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(
+            crate_id,
+            transform([1.37, 0.52, -2.26], [0.0, 47.0, 0.0], [1.0, 1.0, 1.0]),
+        )
+        .unwrap();
+    session.select(Some(crate_id)).unwrap();
+    let steps = session.undo_steps().len();
+    assert_eq!(session.snap_selection().unwrap(), 1);
+    let t = session.transform(crate_id).unwrap();
+    assert_eq!(
+        t.position,
+        Vec3::new(1.0, 1.0, -2.0),
+        "a metre with the grid off"
+    );
+    assert_eq!(t.rotation_deg.y, 47.0, "turns only with an angle step");
+    assert_eq!(session.undo_steps().len(), steps + 1);
+    session.set_snap(runity_editor::Snap {
+        meters: 0.25,
+        degrees: 15.0,
+        scale: 0.0,
+    });
+    session
+        .set_transform(
+            crate_id,
+            transform([1.37, 0.52, -2.26], [0.0, 47.0, 0.0], [1.0, 1.0, 1.0]),
+        )
+        .unwrap();
+    session.snap_selection().unwrap();
+    let t = session.transform(crate_id).unwrap();
+    assert_eq!(t.position, Vec3::new(1.25, 0.5, -2.25));
+    assert_eq!(t.rotation_deg.y, 45.0);
+    assert_eq!(session.snap_selection().unwrap(), 0, "already on it");
+}

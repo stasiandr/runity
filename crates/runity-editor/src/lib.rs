@@ -567,6 +567,54 @@ impl Session {
         Ok(moves.len())
     }
 
+    /// Put the selection on the grid: each position to the nearest step of
+    /// the snap settings (a metre when that is off), each turn to the
+    /// nearest angle step when there is one — Unity's Snap All Axes, for a
+    /// greybox that was dragged by eye. In the parent's space; one undo
+    /// step; how many moved.
+    pub fn snap_selection(&mut self) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        let roots = self.selection_roots();
+        let step = if self.snap.meters > 0.0 {
+            self.snap.meters
+        } else {
+            1.0
+        };
+        let turn = self.snap.degrees;
+        let round = |v: f32, s: f32| (v / s).round() * s;
+        let snapped: Vec<(EntityId, runity::scene::Transform)> = roots
+            .iter()
+            .filter_map(|id| {
+                let before = self.transform(*id)?;
+                let mut after = before;
+                after.position = Vec3::new(
+                    round(before.position.x, step),
+                    round(before.position.y, step),
+                    round(before.position.z, step),
+                );
+                if turn > 0.0 {
+                    after.rotation_deg = Vec3::new(
+                        round(before.rotation_deg.x, turn),
+                        round(before.rotation_deg.y, turn),
+                        round(before.rotation_deg.z, turn),
+                    );
+                }
+                (after != before).then_some((*id, after))
+            })
+            .collect();
+        if snapped.is_empty() {
+            return Ok(0);
+        }
+        let scene = self.history.edit();
+        for (id, transform) in &snapped {
+            if let Some(desc) = scene.get_mut(*id) {
+                desc.transform = *transform;
+            }
+        }
+        self.respawn();
+        Ok(snapped.len())
+    }
+
     /// A physics world where everything is solid except these and what is
     /// under them, parts of instances included: what a thing being put
     /// down can land on. Triggers are zones, not ground.

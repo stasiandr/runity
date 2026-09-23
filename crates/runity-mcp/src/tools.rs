@@ -132,6 +132,7 @@ pub fn list() -> Vec<Value> {
         tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.rpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
         tool("set_poly", "Change a Poly Shape's outline and/or height: its .rpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" }, "standing": { "type": "boolean" } }), &["name"]),
         tool("push_poly_edge", "Push one wall of a Poly Shape out by `metres` (negative pulls it in): both ends of edge `edge` — from point `edge` to the next — move along its outward normal; the walls beside it follow. push_face for an outline.", json!({ "name": { "type": "string" }, "edge": { "type": "integer" }, "metres": { "type": "number" } }), &["name", "edge", "metres"]),
+        tool("snap_selection", "Put the selection on the grid: positions to the nearest snap step (a metre when snapping is off), turns to the nearest angle step when there is one — Unity's Snap All Axes. One undo step; says how many moved.", json!({}), &[]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -863,6 +864,13 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             let source = session.poly(&name).map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{name}: points {:?}", source.points))])
+        }
+        "snap_selection" => {
+            let moved = server
+                .session()?
+                .snap_selection()
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{moved} moved onto the grid"))])
         }
         "fit_collider" => {
             let id = id(args, "id")?;
