@@ -238,7 +238,9 @@ impl Emitting {
                 (Vec3::splat(size), Quat::IDENTITY)
             };
             let tint = start + (end - start) * t;
-            let material = match self.material {
+            let alpha = e.alpha + (e.end_alpha.unwrap_or(e.alpha) - e.alpha) * t;
+            let fading = e.alpha < 1.0 || e.end_alpha.is_some_and(|a| a < 1.0);
+            let mut material = match self.material {
                 Some(mut m) => {
                     m.base_color = [
                         m.base_color[0] * tint.x,
@@ -249,6 +251,10 @@ impl Emitting {
                 }
                 None => Material::new(tint.x, tint.y, tint.z).unlit(),
             };
+            if fading {
+                material.surface = crate::material::SurfaceType::Transparent;
+                material.alpha *= alpha.clamp(0.0, 1.0);
+            }
             Draw {
                 mesh: self.mesh,
                 transform: Mat4::from_scale_rotation_translation(scale, rotation, at),
@@ -313,6 +319,23 @@ mod tests {
         }
         // 2.5 s: rounds starting at 0, 1 and 2.
         assert_eq!(emitting.count(), 15);
+    }
+
+    #[test]
+    fn particles_thin_to_nothing_with_an_end_alpha() {
+        let mut e = sparks();
+        e.end_alpha = Some(0.0);
+        e.life = 1.0;
+        let mut emitting = Emitting::new(e, MeshHandle::TEST);
+        emitting.emit(1);
+        emitting.advance(Mat4::IDENTITY, 0.5);
+        let d = emitting.draws().next().unwrap();
+        assert!(d.material.is_transparent());
+        assert!(
+            (d.material.alpha - 0.5).abs() < 0.05,
+            "{}",
+            d.material.alpha
+        );
     }
 
     #[test]

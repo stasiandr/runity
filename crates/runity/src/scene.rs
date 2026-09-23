@@ -609,6 +609,12 @@ pub struct Emitter {
     /// Lifetime. Unset, it keeps `color`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub end_color: Option<(f32, f32, f32)>,
+    /// How opaque each is when new, and when it dies: smoke thinning to
+    /// nothing is `end_alpha: 0.0`. Below 1, they are drawn see-through.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub alpha: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_alpha: Option<f32>,
     /// How big each is at the end: Unity's Size over Lifetime. Unset, it
     /// shrinks to nothing.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]

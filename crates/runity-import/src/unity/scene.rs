@@ -638,6 +638,7 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     e.size = min_max(&main["startSize"]).unwrap_or(1.0);
     if let Some((start, _)) = gradient(&main["startColor"]) {
         e.color = rgb(start);
+        e.alpha = start[3];
     }
     e.gravity = -9.81 * min_max(&main["gravityModifier"]).unwrap_or(0.0);
     // 0 is Local, 1 World.
@@ -694,6 +695,7 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     if colour.i64("enabled") == Some(1) {
         if let Some((_, end)) = gradient(&colour["gradient"]) {
             e.end_color = Some((e.color.0 * end[0], e.color.1 * end[1], e.color.2 * end[2]));
+            e.end_alpha = Some(e.alpha * end[3]);
         }
     }
     for module in [
@@ -1068,6 +1070,7 @@ ParticleSystemRenderer:
         assert!(e.local);
         assert_eq!(e.end_size, Some(1.2), "size over life: three times");
         assert_eq!(e.end_color, Some((0.4, 0.4, 0.4)));
+        assert_eq!(e.end_alpha, Some(0.0), "thins to nothing");
         assert_eq!(e.direction, Some(Vec3::new(0.0, 0.0, -1.0)));
         assert_eq!(e.model.as_str(), "builtin:sphere");
         assert_eq!(e.material.as_ref().map(|m| m.as_str()), Some("wood"));
