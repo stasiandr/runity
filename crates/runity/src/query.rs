@@ -7,7 +7,7 @@
 //! m:stone              drawn with the material named `stone`
 //! p:campfire           an instance of the `campfire` prefab
 //! model:pine_large     draws that model
-//! body:dynamic         moved by physics (static, dynamic, none)
+//! body:dynamic         moved by physics (static, dynamic, kinematic, trigger, none)
 //! ```
 //!
 //! Terms combine with "and": `c:door m:bark` is every bark door. The same
@@ -58,9 +58,11 @@ impl std::str::FromStr for Query {
                             "none" => Body::None,
                             "static" => Body::Static,
                             "dynamic" => Body::Dynamic,
+                            "kinematic" => Body::Kinematic,
+                            "trigger" => Body::Trigger,
                             other => {
                                 return Err(format!(
-                                    "no body `{other}`: body:static, body:dynamic or body:none"
+                                    "no body `{other}`: body:static, body:dynamic, body:kinematic, body:trigger or body:none"
                                 ))
                             }
                         }),

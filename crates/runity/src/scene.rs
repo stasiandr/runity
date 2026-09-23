@@ -122,6 +122,16 @@ pub enum Body {
     Static,
     /// Moved by the solver.
     Dynamic,
+    /// Moved by the game — a system sets its transform — and never by the
+    /// solver: it pushes dynamic bodies out of its way and is not pushed
+    /// back. Platforms, lifts, doors. Unity's kinematic rigidbody.
+    Kinematic,
+    /// Solid to nothing; knows what is inside it. A zone — a checkpoint, a
+    /// door's sensor, water — whose entity gets a
+    /// [`Contacts`](crate::physics::Contacts) saying who came in and who
+    /// left each step. Follows its transform like a kinematic body. Unity's
+    /// `isTrigger`.
+    Trigger,
 }
 
 /// One thing in the valley.

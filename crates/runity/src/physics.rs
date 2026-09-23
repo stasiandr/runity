@@ -33,6 +33,26 @@ use rapier3d::prelude::*;
 use crate::scene::{Body, Collider as ColliderShape, Transform};
 use crate::world::{Parent, Physics, Shape, WorldTransform};
 
+/// Who is touching an entity's body: for a [`Body::Trigger`], what is
+/// inside it; for a solid body, what it is in contact with.
+///
+/// A trigger gets one when its body is built. Any other body gets one when
+/// the game inserts `Contacts::default()` on the entity — contacts are
+/// tracked only where someone asked, because most of a scene never needs
+/// to know. Rewritten after every step: `entered` and `left` are this
+/// step's changes, so a system that runs every step sees each exactly once.
+/// Unity's `OnTriggerEnter`/`OnCollisionEnter`, as data a system queries
+/// rather than callbacks on a class.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Contacts {
+    /// Everything touching now, in no particular order.
+    pub inside: Vec<hecs::Entity>,
+    /// What started touching this step.
+    pub entered: Vec<hecs::Entity>,
+    /// What stopped touching this step — possibly an entity that is gone.
+    pub left: Vec<hecs::Entity>,
+}
+
 /// What a ray met.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RayHit {
@@ -225,7 +245,8 @@ impl PhysicsWorld {
     pub fn sync_from_world(&mut self, world: &mut World) {
         // Gone, or changed into something else: the old body goes.
         let mut stale: Vec<hecs::Entity> = Vec::new();
-        let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform)> = Vec::new();
+        let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
+            Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
         for (entity, handle, built, physics, shape, local, placed, mesh) in world
             .query::<(
@@ -246,7 +267,7 @@ impl PhysicsWorld {
             } else {
                 live.insert(handle.0);
                 if built.local != *local {
-                    teleport.push((entity, handle.0, placed.0, *local));
+                    teleport.push((entity, handle.0, placed.0, *local, physics.0));
                 }
             }
         }
@@ -269,11 +290,20 @@ impl PhysicsWorld {
                 true,
             );
         }
-        for (entity, handle, placed, local) in teleport {
+        for (entity, handle, placed, local, kind) in teleport {
             if let Some(body) = self.bodies.get_mut(handle) {
-                body.set_position(isometry(placed), true);
-                body.set_linvel(vector![0.0, 0.0, 0.0], true);
-                body.set_angvel(vector![0.0, 0.0, 0.0], true);
+                match kind {
+                    // Moved, not teleported: the solver sees the motion
+                    // over the step and pushes what is in the way.
+                    Body::Kinematic | Body::Trigger => {
+                        body.set_next_kinematic_position(isometry(placed));
+                    }
+                    _ => {
+                        body.set_position(isometry(placed), true);
+                        body.set_linvel(vector![0.0, 0.0, 0.0], true);
+                        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+                    }
+                }
             }
             if let Ok(mut built) = world.get::<&mut Built>(entity) {
                 built.local = local;
@@ -297,14 +327,24 @@ impl PhysicsWorld {
                 continue;
             }
             let dynamic = physics.0 == Body::Dynamic;
-            let Some(collider) = build_collider(shape.0, placed.0, mesh, dynamic) else {
+            let Some(mut collider) = build_collider(shape.0, placed.0, mesh, dynamic) else {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
                 // bounds is the kind of default that is wrong quietly.
                 continue;
             };
+            // Which entity a collider is, for contacts to be told in
+            // entities rather than rapier handles.
+            collider.user_data = entity.to_bits().get() as u128;
+            if physics.0 == Body::Trigger {
+                collider.set_sensor(true);
+                // A zone notices whatever enters it, a kinematic player or
+                // a static crate included — not only what the solver moves.
+                collider.set_active_collision_types(ActiveCollisionTypes::all());
+            }
             let body = match physics.0 {
                 Body::Dynamic => RigidBodyBuilder::dynamic(),
+                Body::Kinematic | Body::Trigger => RigidBodyBuilder::kinematic_position_based(),
                 _ => RigidBodyBuilder::fixed(),
             }
             .position(isometry(placed.0))
@@ -324,7 +364,59 @@ impl PhysicsWorld {
             ));
         }
         for (entity, handle, built) in added {
+            let trigger = built.body == Body::Trigger;
             let _ = world.insert(entity, (handle, built));
+            if trigger && world.get::<&Contacts>(entity).is_err() {
+                let _ = world.insert_one(entity, Contacts::default());
+            }
+        }
+    }
+
+    /// Rewrite every [`Contacts`] from what rapier found this step. Part of
+    /// [`PhysicsWorld::run`]; call it after [`PhysicsWorld::step`] when
+    /// stepping by hand.
+    pub fn update_contacts(&self, world: &mut World) {
+        let entity_of = |collider: ColliderHandle| {
+            self.colliders
+                .get(collider)
+                .and_then(|c| hecs::Entity::from_bits(c.user_data as u64))
+        };
+        for (entity, handle, contacts) in world
+            .query_mut::<(hecs::Entity, &BodyHandle, &mut Contacts)>()
+            .into_iter()
+        {
+            let Some(body) = self.bodies.get(handle.0) else {
+                continue;
+            };
+            let mut now: Vec<hecs::Entity> = Vec::new();
+            for &mine in body.colliders() {
+                let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
+                for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
+                    if touching {
+                        now.extend(entity_of(other(a, b)));
+                    }
+                }
+                for pair in self.narrow_phase.contact_pairs_with(mine) {
+                    if pair.has_any_active_contact {
+                        now.extend(entity_of(other(pair.collider1, pair.collider2)));
+                    }
+                }
+            }
+            now.retain(|e| *e != entity);
+            now.sort();
+            now.dedup();
+            contacts.entered = now
+                .iter()
+                .filter(|e| !contacts.inside.contains(e))
+                .copied()
+                .collect();
+            contacts.left = contacts
+                .inside
+                .iter()
+                .filter(|e| !now.contains(e))
+                .copied()
+                .collect();
+            contacts.inside = now;
         }
     }
 
@@ -335,6 +427,7 @@ impl PhysicsWorld {
         self.sync_from_world(world);
         self.step();
         self.sync_to_world(world);
+        self.update_contacts(world);
     }
 
     /// Take one step. Call it once per simulation step, never per frame.
@@ -451,7 +544,8 @@ impl PhysicsWorld {
             // passing through to the far wall. A camera inside a rock should
             // report the rock.
             true,
-            QueryFilter::default(),
+            // A trigger is a zone, not a surface: a ray passes through it.
+            QueryFilter::default().exclude_sensors(),
         )?;
         Some(RayHit {
             point: from + direction * distance,
@@ -461,8 +555,9 @@ impl PhysicsWorld {
     }
 
     /// The first thing a ray hits, with the surface's normal there. With
-    /// `statics_only`, bodies that move are looked through — what a
-    /// navigation bake wants, since a crate on the floor is not the floor.
+    /// `statics_only`, bodies that move — dynamic or kinematic — are looked
+    /// through: what a navigation bake wants, since a crate on the floor is
+    /// not the floor. Triggers are always looked through.
     pub fn cast_ray_with_normal(
         &self,
         from: Vec3,
@@ -479,10 +574,11 @@ impl PhysicsWorld {
             vector![direction.x, direction.y, direction.z],
         );
         let filter = if statics_only {
-            QueryFilter::exclude_dynamic()
+            QueryFilter::only_fixed()
         } else {
             QueryFilter::default()
-        };
+        }
+        .exclude_sensors();
         let (_, hit) = self.queries.cast_ray_and_get_normal(
             &self.bodies,
             &self.colliders,
@@ -1110,5 +1206,145 @@ mod tests {
             at.z > -0.5 && at.y < 1.5,
             "rolled down the modelled slope: {at:?}"
         );
+    }
+
+    /// The one entity with this kind of body.
+    fn the(world: &World, kind: Body) -> hecs::Entity {
+        world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == kind)
+            .map(|(e, _)| e)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_trigger_says_who_came_in_and_who_left_and_stops_nothing() {
+        // A ball falls through a zone, onto the floor below it.
+        let mut zone = entity(
+            "zone",
+            3.0,
+            Body::Trigger,
+            ColliderShape::Box {
+                half: Vec3::new(1.0, 0.5, 1.0),
+            },
+        );
+        zone.model = String::new();
+        let scene = Scene {
+            entities: vec![
+                entity(
+                    "floor",
+                    0.0,
+                    Body::Static,
+                    ColliderShape::Box {
+                        half: Vec3::new(20.0, 0.1, 20.0),
+                    },
+                ),
+                zone,
+                entity(
+                    "ball",
+                    6.0,
+                    Body::Dynamic,
+                    ColliderShape::Sphere { radius: 0.25 },
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        let (zone, ball) = (the(&world, Body::Trigger), the(&world, Body::Dynamic));
+
+        let mut entered_at = None;
+        let mut left_at = None;
+        for step in 0..180 {
+            run_for(&mut physics, &mut world, 1);
+            let contacts = world
+                .get::<&Contacts>(zone)
+                .expect("a trigger gets Contacts");
+            if contacts.entered.contains(&ball) {
+                assert!(entered_at.is_none(), "entered once");
+                entered_at = Some(step);
+                assert_eq!(contacts.inside, [ball]);
+            }
+            if contacts.left.contains(&ball) {
+                assert!(left_at.is_none(), "left once");
+                left_at = Some(step);
+                assert!(contacts.inside.is_empty());
+            }
+        }
+        let (entered, left) = (entered_at.expect("it came in"), left_at.expect("and left"));
+        assert!(entered < left);
+        let y = world.get::<&WorldTransform>(ball).unwrap().0.w_axis.y;
+        assert!(
+            (y - 0.35).abs() < 0.05,
+            "fell through the zone to the floor: {y}"
+        );
+
+        // A ray from above passes through the zone to the floor.
+        physics.refresh_queries();
+        let hit = physics
+            .cast_ray(Vec3::new(0.3, 10.0, 0.3), Vec3::NEG_Y, 20.0)
+            .unwrap();
+        assert!(
+            hit.point.y < 0.2,
+            "the zone is not a surface: {:?}",
+            hit.point
+        );
+    }
+
+    #[test]
+    fn a_kinematic_platform_moved_by_the_game_carries_what_is_on_it() {
+        let mut platform = entity(
+            "platform",
+            0.0,
+            Body::Kinematic,
+            ColliderShape::Box {
+                half: Vec3::new(2.0, 0.1, 2.0),
+            },
+        );
+        platform.model = String::new();
+        let scene = Scene {
+            entities: vec![
+                platform,
+                entity(
+                    "crate",
+                    0.6,
+                    Body::Dynamic,
+                    ColliderShape::Box {
+                        half: Vec3::splat(0.5),
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        let (platform, crate_) = (the(&world, Body::Kinematic), the(&world, Body::Dynamic));
+        world.insert_one(crate_, Contacts::default()).unwrap();
+        run_for(&mut physics, &mut world, 30);
+        assert!(
+            world
+                .get::<&Contacts>(crate_)
+                .unwrap()
+                .inside
+                .contains(&platform),
+            "resting on it"
+        );
+
+        // A lift: the game raises it two metres over two seconds.
+        for step in 1..=120 {
+            world.get::<&mut Transform>(platform).unwrap().position.y = step as f32 / 60.0;
+            crate::world::apply_hierarchy(&mut world);
+            run_for(&mut physics, &mut world, 1);
+        }
+        let lifted = world.get::<&WorldTransform>(platform).unwrap().0.w_axis.y;
+        assert!(
+            (lifted - 2.0).abs() < 1e-3,
+            "where the game put it: {lifted}"
+        );
+        let y = world.get::<&WorldTransform>(crate_).unwrap().0.w_axis.y;
+        assert!(y > 2.4, "the crate rode up on it: {y}");
     }
 }

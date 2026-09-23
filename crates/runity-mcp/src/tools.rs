@@ -37,7 +37,7 @@ fn entity_fields() -> Value {
         "position": vec3("metres, relative to the parent"),
         "rotation_deg": vec3("Euler degrees, applied Y then X then Z"),
         "scale": vec3("per axis"),
-        "body": { "type": "string", "enum": ["None", "Static", "Dynamic"] },
+        "body": { "type": "string", "enum": ["None", "Static", "Dynamic", "Kinematic", "Trigger"] },
         "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r), Cylinder(half_height: h, radius: r), Ramp(half: (x, y, z)), Stairs(half: (x, y, z), steps: n). builtin:cube/cylinder/ramp/stairs fit Box/Cylinder/Ramp/Stairs with half 0.5 (stairs: steps 4)" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
@@ -821,8 +821,9 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.transform.scale = v;
     }
     if let Some(body) = optional_string(args, "body")? {
-        desc.body = ron::from_str::<Body>(&body)
-            .map_err(|_| format!("body is None, Static or Dynamic, not {body}"))?;
+        desc.body = ron::from_str::<Body>(&body).map_err(|_| {
+            format!("body is None, Static, Dynamic, Kinematic or Trigger, not {body}")
+        })?;
     }
     if let Some(collider) = optional_string(args, "collider")? {
         desc.collider =

@@ -389,7 +389,8 @@ impl Session {
         let mut ground = self.instanced.scene.clone();
         fn solidify(entities: &mut [EntityDesc], moving: &std::collections::HashSet<EntityId>) {
             for e in entities {
-                if moving.contains(&e.id) {
+                if moving.contains(&e.id) || e.body == runity::Body::Trigger {
+                    // A zone is not ground.
                     e.body = runity::Body::None;
                 } else {
                     e.body = runity::Body::Static;
