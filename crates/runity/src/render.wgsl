@@ -96,6 +96,11 @@ struct Frame {
     puffs: array<vec4<f32>, 32>,
     // 1 when the clouds' pass marched dust devils or crest plumes
     dust: vec4<f32>,
+    // the terrain drawn finely: the world into its own space, and back
+    terrain_to_local: mat4x4<f32>,
+    terrain_to_world: mat4x4<f32>,
+    // its size, its cells, 1 when there is one, the finest spacing
+    terrain: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -165,6 +170,8 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 @group(0) @binding(21) var cloud_layer: texture_2d<f32>;
 // The last frame, resolved: what screen-space reflections read.
 @group(0) @binding(22) var last_frame: texture_2d<f32>;
+// The drawn terrain's heights on its grid of cells (terrain.rs).
+@group(0) @binding(23) var terrain_heights: texture_2d<f32>;
 
 /// Whether any of the dust wall can lie between the eye and a point: the
 /// point is past where the ray enters the wall's side of its front (its
@@ -1015,6 +1022,129 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
     return out;
 }
 
+/// The terrain's own height at `local` (metres in its space, from its
+/// middle): its grid of heights, between four of them; 0 off it.
+fn relief_height(local: vec2<f32>) -> f32 {
+    let size = frame.terrain.x;
+    let cells = frame.terrain.y;
+    let g = (local / size + 0.5) * cells;
+    if any(g < vec2<f32>(0.0)) || any(g > vec2<f32>(cells)) {
+        return 0.0;
+    }
+    let i = min(floor(g), vec2<f32>(cells - 1.0));
+    let f = g - i;
+    let at = vec2<i32>(i);
+    let h00 = textureLoad(terrain_heights, at, 0).r;
+    let h10 = textureLoad(terrain_heights, at + vec2<i32>(1, 0), 0).r;
+    let h01 = textureLoad(terrain_heights, at + vec2<i32>(0, 1), 0).r;
+    let h11 = textureLoad(terrain_heights, at + vec2<i32>(1, 1), 0).r;
+    return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+/// The wind's level way, for sand.
+fn sand_wind() -> vec2<f32> {
+    var w = vec2<f32>(frame.foliage.wind.x, frame.foliage.wind.y);
+    if dot(w, w) < 1e-6 {
+        w = vec2<f32>(1.0, 0.0);
+    }
+    return normalize(w);
+}
+
+/// The height of sand's ripples at `xz` in metres: the fine ones as much
+/// as `fine`, the big ones they ride on as much as `coarse` — the shapes
+/// the sand shader's normals draw, here as ground to stand on.
+fn ripples_at(xz: vec2<f32>, fine: f32, coarse: f32) -> f32 {
+    let w = sand_wind();
+    let side = vec2<f32>(-w.y, w.x);
+    var h = 0.0;
+    if fine > 0.0 {
+        h += ripple_height(dot(xz, w) / 0.14, dot(xz, side) / 0.14) * 0.012 * fine;
+    }
+    if coarse > 0.0 {
+        h += ripple_height(dot(xz, w) / 0.6 + 7.3, dot(xz, side) / 0.6) * 0.025 * coarse;
+    }
+    return h;
+}
+
+/// The terrain's ground at world `xz`: its height, and the ripples on it
+/// where the grid is fine enough to hold them (`fine`, `coarse`) and the
+/// ground level enough (`flat`).
+fn terrain_ground(xz: vec2<f32>, fine: f32, coarse: f32, sand: bool) -> f32 {
+    let local = (frame.terrain_to_local * vec4<f32>(xz.x, 0.0, xz.y, 1.0)).xz;
+    let h = relief_height(local);
+    var y = (frame.terrain_to_world * vec4<f32>(local.x, h, local.y, 1.0)).y;
+    if sand {
+        // Ripples keep off slopes too steep to hold them, as the sand
+        // shader's do: the slope from the heights round the point.
+        let e = frame.terrain.x / frame.terrain.y;
+        let sx = relief_height(local + vec2<f32>(e, 0.0)) - relief_height(local - vec2<f32>(e, 0.0));
+        let sz = relief_height(local + vec2<f32>(0.0, e)) - relief_height(local - vec2<f32>(0.0, e));
+        let up = 1.0 / sqrt(1.0 + (sx * sx + sz * sz) / (4.0 * e * e));
+        let flat_enough = smoothstep(0.7, 0.93, up);
+        y += ripples_at(xz, fine * flat_enough, coarse * flat_enough);
+    }
+    return y;
+}
+
+/// Terrain's fine grid round the camera — tessellation, done as the GPU
+/// allows it: rings of 128 cells, each twice the spacing of the one inside
+/// it, from three centimetres at one's feet; each ring snapped to its own
+/// grid as the camera moves, its outer edge folding into the next ring's
+/// spacing so no crack opens between them. Every vertex raised to the
+/// terrain's height and, where the grid is fine enough to hold them, to
+/// the sand's ripples — real relief, catching the light and standing out
+/// against the sky. Its normal is the slope of what it was raised to.
+@vertex
+fn vs_terrain(in: VertexInput) -> VertexOutput {
+    let level = in.position.y;
+    let spacing = frame.terrain.w * exp2(level);
+    let eye = frame.camera_position.xz;
+    let snap = spacing * 2.0;
+    let centre = floor(eye / snap) * snap;
+    let g = in.position.xz;
+    let first = centre + g * spacing;
+    // Toward the ring's edge, odd vertices fold onto their even
+    // neighbours: the next ring out has only those.
+    // Folded fully by 62 cells out, so the overlap with the next ring —
+    // to 66 — is the next ring's own grid, triangle for triangle.
+    let d = max(abs(first.x - eye.x), abs(first.y - eye.y)) / spacing;
+    let morph = clamp((d - 44.0) / 18.0, 0.0, 1.0);
+    let folded = g - fract(g * 0.5) * 2.0 * morph;
+    let xz = centre + folded * spacing;
+    let span = spacing * (1.0 + morph);
+    // Ripples fourteen centimetres apart need a vertex every three or
+    // four; the big ones, sixty apart, every twelve or so.
+    let fine = 1.0 - smoothstep(0.02, 0.045, span);
+    let coarse = 1.0 - smoothstep(0.1, 0.2, span);
+    let sand = in.color_and_shading.w > 3.5;
+    let y = terrain_ground(xz, fine, coarse, sand);
+    let e = max(span, 0.01);
+    let hx = terrain_ground(xz + vec2<f32>(e, 0.0), fine, coarse, sand) - terrain_ground(xz - vec2<f32>(e, 0.0), fine, coarse, sand);
+    let hz = terrain_ground(xz + vec2<f32>(0.0, e), fine, coarse, sand) - terrain_ground(xz - vec2<f32>(0.0, e), fine, coarse, sand);
+    let normal = normalize(vec3<f32>(-hx / (2.0 * e), 1.0, -hz / (2.0 * e)));
+    // Off the terrain the grid is not drawn: whatever ground is round it
+    // shows (a threshold past any alpha cuts it away).
+    let local = (frame.terrain_to_local * vec4<f32>(xz.x, 0.0, xz.y, 1.0)).xz;
+    let outside = any(abs(local) > vec2<f32>(frame.terrain.x * 0.5));
+
+    var out: VertexOutput;
+    let world = vec3<f32>(xz.x, y, xz.y);
+    out.clip_position = frame.view_projection * vec4<f32>(world, 1.0);
+    out.world_position = world;
+    out.normal = normal;
+    out.base_color = in.color_and_shading.rgb;
+    out.shading = in.color_and_shading.w;
+    out.uv = xz * in.uv_transform.xy + in.uv_transform.zw;
+    out.surface = vec4<f32>(in.surface.xyz, select(0.0, 2.0, outside));
+    out.emission = in.emission;
+    out.detail = in.detail;
+    out.params_0 = in.params_0;
+    // How much of the ripples the geometry holds: the sand shader draws
+    // only the rest.
+    out.params_1 = vec4<f32>(in.params_1.xy, fine, coarse);
+    return out;
+}
+
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
@@ -1355,7 +1485,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Sand: the wind's ripples in it, and in a gale sand running over it.
     var glint_facet = vec3<f32>(0.0);
     if is_sand {
-        let sand = sand_surface(in.world_position, normal, geometric, across, down);
+        let sand = sand_surface(in.world_position, normal, geometric, across, down, in.params_1.zw);
         normal = sand.normal;
         albedo = albedo * sand.shade;
         glint_facet = sand.glint;
@@ -1546,7 +1676,7 @@ fn ripple_height(u: f32, v: f32) -> f32 {
 /// pixel spans more than a few of them (so far sand does not shimmer) and
 /// on slopes too steep to hold them; streaks of drifting sand in a strong
 /// wind; now and then a grain that glints.
-fn sand_surface(p: vec3<f32>, normal: vec3<f32>, geometric: vec3<f32>, across: vec3<f32>, down: vec3<f32>) -> Sand {
+fn sand_surface(p: vec3<f32>, normal: vec3<f32>, geometric: vec3<f32>, across: vec3<f32>, down: vec3<f32>, built: vec2<f32>) -> Sand {
     let wind = frame.foliage.wind;
     var w = vec2<f32>(wind.x, wind.y);
     if dot(w, w) < 1e-6 {
@@ -1573,7 +1703,7 @@ fn sand_surface(p: vec3<f32>, normal: vec3<f32>, geometric: vec3<f32>, across: v
         let du = (ripple_height(u + e, v) - ripple_height(u - e, v)) / (2.0 * e);
         let dv = (ripple_height(u, v + e) - ripple_height(u, v - e)) / (2.0 * e);
         // A centimetre high in fourteen: slope per metre.
-        slope += (along * du + square * dv) * (0.012 / wavelength) * fade;
+        slope += (along * du + square * dv) * (0.012 / wavelength) * fade * (1.0 - built.x);
     }
     // And the bigger ripples they ride on, which still show further off.
     let big = 0.6;
@@ -1583,7 +1713,7 @@ fn sand_surface(p: vec3<f32>, normal: vec3<f32>, geometric: vec3<f32>, across: v
         let bv = dot(p.xz, side) / big;
         let du = (ripple_height(bu + e, bv) - ripple_height(bu - e, bv)) / (2.0 * e);
         let dv = (ripple_height(bu, bv + e) - ripple_height(bu, bv - e)) / (2.0 * e);
-        slope += (along * du + square * dv) * (0.025 / big) * far_fade;
+        slope += (along * du + square * dv) * (0.025 / big) * far_fade * (1.0 - built.y);
     }
     out.normal = normalize(normal - slope);
     // Drifting: in a wind past a stiff breeze, sand running along the

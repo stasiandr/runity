@@ -59,6 +59,10 @@ pub struct Dunes {
     /// The share of the size, at its edges, over which the dunes flatten
     /// into level ground.
     pub fade: f32,
+    /// A clearing: level ground round `(x, z)` in its own space, `radius`
+    /// metres across and easing into the dunes — a camp, a road, a place
+    /// to stand. Radius 0 is none.
+    pub clear: [f32; 3],
 }
 
 impl Default for Dunes {
@@ -70,6 +74,7 @@ impl Default for Dunes {
             barchans: 0.4,
             seed: 1,
             fade: 0.1,
+            clear: [0.0, 0.0, 0.0],
         }
     }
 }
@@ -133,7 +138,14 @@ impl Terrain {
         let half = self.size * 0.5;
         let edge = (half - x.abs()).min(half - z.abs()) / (self.size * d.fade.max(1e-3));
         let edge = edge.clamp(0.0, 1.0);
-        h * edge * edge * (3.0 - 2.0 * edge)
+        let mut h = h * edge * edge * (3.0 - 2.0 * edge);
+        let [cx, cz, radius] = d.clear;
+        if radius > 0.0 {
+            let r = Vec2::new(x - cx, z - cz).length() / radius;
+            let open = ((r - 0.55) / 0.45).clamp(0.0, 1.0);
+            h *= open * open * (3.0 - 2.0 * open);
+        }
+        h
     }
 
     /// The ground as a mesh: a grid of `cells`² squares, normals from the
@@ -208,6 +220,78 @@ impl Terrain {
     }
 }
 
+impl Terrain {
+    /// Its heights on the grid of its cells, row by row along z: what the
+    /// GPU raises the ground near the camera to.
+    pub fn heights(&self) -> Vec<f32> {
+        let n = self.cells.clamp(2, 2048);
+        let size = self.size.max(1.0);
+        let step = size / n as f32;
+        let half = size * 0.5;
+        (0..=n)
+            .flat_map(|z| (0..=n).map(move |x| (x, z)))
+            .map(|(x, z)| self.height(-half + x as f32 * step, -half + z as f32 * step))
+            .collect()
+    }
+}
+
+/// A terrain as a frame carries it: drawn near the camera as a finely
+/// divided grid raised on the GPU — its dunes, and the ripples on them
+/// in the geometry itself — and elsewhere, and in shadows, by its mesh.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerrainSurface {
+    /// The mesh it is drawn with elsewhere: the draw to stand in for.
+    pub mesh: crate::render::MeshHandle,
+    pub placed: glam::Mat4,
+    pub terrain: Terrain,
+}
+
+/// Rings of the grid round the camera: each twice the last's spacing.
+pub(crate) const CLIPMAP_LEVELS: u32 = 9;
+/// Cells across each ring.
+pub(crate) const CLIPMAP_CELLS: i32 = 128;
+/// The finest spacing, metres: a sand ripple is fourteen centimetres.
+pub(crate) const CLIPMAP_FINEST: f32 = 0.03;
+
+/// The grid, in its own terms: each vertex its cell `(x, ring, z)`; the
+/// vertex shader places and raises it. The innermost ring is whole, each
+/// outer one a square with a hole where the finer one lies.
+pub(crate) fn clipmap_mesh() -> MeshAsset {
+    let n = CLIPMAP_CELLS;
+    // Each ring reaches a cell of the next ring's spacing past its own
+    // half-width: the next ring's hole, snapped to its coarser grid, may
+    // sit a cell off, and this covers it wherever it lands.
+    let half = n / 2;
+    let reach = half + 2;
+    let stride = (2 * reach + 1) as u32;
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for level in 0..CLIPMAP_LEVELS {
+        let base = vertices.len() as u32;
+        for z in -reach..=reach {
+            for x in -reach..=reach {
+                vertices.push(Vertex {
+                    position: [x as f32, level as f32, z as f32],
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0, 0.0],
+                });
+            }
+        }
+        let inner = half / 2;
+        for z in -reach..reach {
+            for x in -reach..reach {
+                if level > 0 && (-inner..inner).contains(&x) && (-inner..inner).contains(&z) {
+                    continue;
+                }
+                let a = base + ((z + reach) as u32) * stride + (x + reach) as u32;
+                let (b, c, d) = (a + 1, a + stride, a + stride + 1);
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+    }
+    crate::builtin::finish("clipmap", vertices, indices)
+}
+
 /// A terrain on an entity: its settings, and the mesh drawn once made.
 #[derive(Debug, Clone)]
 pub struct Relief {
@@ -219,6 +303,11 @@ pub struct Relief {
 }
 
 impl Relief {
+    /// The mesh it is drawn with, once made.
+    pub fn mesh(&self) -> Option<crate::render::MeshHandle> {
+        self.made.map(|(handle, _)| handle)
+    }
+
     pub fn new(terrain: Terrain) -> Self {
         Self {
             crests: terrain.crests(),

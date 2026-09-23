@@ -1500,6 +1500,18 @@ pub fn build_frame_where(
     // Walkers' prints, and the dust their steps kick up — the dust the
     // colour of the ground's top, lighter than the print turned over.
     let mut puffs = Vec::new();
+    // The terrain drawn finely near the camera: the first there is.
+    let terrain = world
+        .query::<(&crate::terrain::Relief, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .find_map(|(relief, placed, _)| {
+            Some(crate::terrain::TerrainSurface {
+                mesh: relief.mesh()?,
+                placed: placed.0,
+                terrain: relief.terrain,
+            })
+        });
     // Dune crests, into the world: where the wind may lift sand off them.
     let plumes: Vec<crate::volume::Plume> = world
         .query::<(&crate::terrain::Relief, &WorldTransform, Option<&SceneId>)>()
@@ -1542,6 +1554,7 @@ pub fn build_frame_where(
         decals,
         puffs,
         plumes,
+        terrain,
         volumetric_fog: Default::default(),
         wind: Default::default(),
         benders: world

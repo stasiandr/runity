@@ -138,6 +138,7 @@ fn a_source_model_becomes_a_frame() {
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
         plumes: Vec::new(),
+        terrain: None,
         draws: vec![
             Draw {
                 mesh: handle,

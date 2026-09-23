@@ -59,6 +59,7 @@ fn shoot(
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
         plumes: Vec::new(),
+        terrain: None,
         draws: vec![Draw {
             mesh: floor,
             transform: Mat4::from_scale(Vec3::new(20.0, 1.0, 20.0)),
