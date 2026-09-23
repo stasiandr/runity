@@ -30,6 +30,8 @@ pub struct Row {
     pub part: bool,
     /// Not drawn in the Scene view: hidden, or outside what is isolated.
     pub hidden: bool,
+    /// Drawn, but a click or a box does not take it.
+    pub locked: bool,
 }
 
 /// One field of the Inspector.
@@ -138,6 +140,7 @@ impl Session {
                     prefab: prefab.clone(),
                     part,
                     hidden: unseen.contains(&e.id),
+                    locked: !session.is_pickable(session.instanced_owner(e.id)),
                 });
                 if open {
                     walk(

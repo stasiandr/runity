@@ -39,6 +39,26 @@ impl Session {
         Ok(hide)
     }
 
+    /// Let clicks and boxes take these (and what is under them), or not —
+    /// Unity's scene pickability: the ground stays drawn and stops being
+    /// grabbed by every box drawn over it. A view setting, like hiding.
+    pub fn set_pickable(&mut self, ids: &[EntityId], pickable: bool) -> EditResult<()> {
+        for id in ids {
+            self.require(*id)?;
+            if pickable {
+                self.unpickable.remove(id);
+            } else {
+                self.unpickable.insert(*id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a click or a box can take this document entity.
+    pub fn is_pickable(&self, id: EntityId) -> bool {
+        !self.unpickable.iter().any(|u| self.is_within(id, *u))
+    }
+
     /// What is hidden, by the lines it was asked of.
     pub fn hidden(&self) -> Vec<EntityId> {
         let mut out: Vec<EntityId> = self.hidden.iter().copied().collect();
@@ -63,6 +83,7 @@ impl Session {
 
     /// Show everything again: nothing hidden, nothing isolated.
     pub fn show_all(&mut self) {
+        self.unpickable.clear();
         self.hidden.clear();
         self.isolated.clear();
     }
@@ -113,6 +134,9 @@ impl Session {
             let Some(owner) = self.instanced.owner_of(desc.id) else {
                 continue;
             };
+            if !self.is_pickable(owner) {
+                continue;
+            }
             // The box the shape covers on screen, from its corners in front
             // of the camera.
             let mut on_screen: Option<(Vec2, Vec2)> = None;

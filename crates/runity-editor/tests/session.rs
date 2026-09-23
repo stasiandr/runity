@@ -3110,3 +3110,35 @@ fn one_overridden_field_of_a_part_is_applied_or_reverted_on_its_own() {
     );
     assert!(session.revert_field(ember, "colour").is_err());
 }
+
+#[test]
+fn a_locked_ground_is_drawn_but_neither_clicked_nor_boxed() {
+    use runity::glam::Vec2;
+    let Some((mut session, _)) = open("pickable") else {
+        return;
+    };
+    let (ground, crate_id) = (id(&session, "ground"), id(&session, "crate"));
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let (w, h) = session.size();
+    session.set_pickable(&[ground], false).unwrap();
+    assert!(session
+        .hierarchy()
+        .iter()
+        .any(|r| r.id == ground && r.locked && !r.hidden));
+    let taken = session
+        .select_in_rect(Vec2::ZERO, Vec2::new(w as f32, h as f32), false)
+        .unwrap();
+    assert!(
+        taken.contains(&crate_id) && !taken.contains(&ground),
+        "{taken:?}"
+    );
+    assert_ne!(
+        session.pick(1, h - 2),
+        Some(ground),
+        "the ground's own pixel"
+    );
+    assert!(!session.can_undo(), "a view setting");
+    session.set_pickable(&[ground], true).unwrap();
+    assert_eq!(session.pick(1, h - 2), Some(ground));
+}

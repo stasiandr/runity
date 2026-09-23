@@ -132,6 +132,9 @@ pub struct Session {
     /// setting, never written to the scene.
     hidden: std::collections::HashSet<EntityId>,
     isolated: Vec<EntityId>,
+    /// Drawn but not taken by a click or a box — the ground under a
+    /// greybox — and what is under them.
+    unpickable: std::collections::HashSet<EntityId>,
     /// Where a box selection began, while the mouse is held.
     marquee: Option<(runity::glam::Vec2, runity::glam::Vec2)>,
     /// How fast a flythrough goes, metres a second: the wheel sets it.
@@ -266,6 +269,7 @@ impl Session {
             opened: Default::default(),
             hidden: Default::default(),
             isolated: Vec::new(),
+            unpickable: Default::default(),
             marquee: None,
             fly_speed: 6.0,
             surface: None,
@@ -2336,7 +2340,7 @@ impl Session {
             let Some(owner) = self.instanced.owner_of(desc.id) else {
                 continue;
             };
-            if unseen.contains(&desc.id) {
+            if unseen.contains(&desc.id) || !self.is_pickable(owner) {
                 continue;
             }
             if let Some(distance) = ray_box(near, direction, bounds, world) {
@@ -2875,6 +2879,12 @@ impl Session {
 
     /// For every part a prefab instance brought: the instance and the part's
     /// id in the prefab file.
+    /// The document line an expanded line belongs to: itself, or the
+    /// instance a part came with.
+    pub(crate) fn instanced_owner(&self, id: EntityId) -> EntityId {
+        self.instanced.owner_of(id).unwrap_or(id)
+    }
+
     pub(crate) fn instanced_parts(
         &self,
     ) -> &std::collections::HashMap<EntityId, (EntityId, EntityId)> {
