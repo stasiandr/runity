@@ -131,6 +131,7 @@ fn every_instance_reaches_the_frame() {
     let mut world = hecs::World::new();
     let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
     let missing = runity::spawn_scene(&scene, &mut world, |name| {
+        let name: &str = name;
         if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
             return Some(found.1);
         }

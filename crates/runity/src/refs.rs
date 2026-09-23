@@ -120,7 +120,8 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
                     // ignored; it is still a name in the file, and leaving
                     // it stale would only confuse the next reader.
                     if desc.model == *name {
-                        desc.model = to.to_string();
+                        // The same asset under its new name: the ID stays.
+                        desc.model.name = to.to_string();
                         count += 1;
                     }
                 }
@@ -132,7 +133,7 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
                 }
                 AssetRef::Prefab(name) => {
                     if desc.prefab == *name {
-                        desc.prefab = to.to_string();
+                        desc.prefab.name = to.to_string();
                         count += 1;
                     }
                 }
@@ -140,7 +141,9 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
             for change in desc.overrides.values_mut() {
                 match from {
                     AssetRef::Model(name) if change.model.as_deref() == Some(name) => {
-                        change.model = Some(to.to_string());
+                        if let Some(model) = change.model.as_mut() {
+                            model.name = to.to_string();
+                        }
                         count += 1;
                     }
                     AssetRef::Material(name)
@@ -269,5 +272,183 @@ mod tests {
             2
         );
         assert_eq!(scene, before, "and back again is where it started");
+    }
+}
+
+/// A link to an asset: its name, for a person reading the line, and its
+/// ID, for finding it (docs/refs.md).
+///
+/// In a file it is `(name: "rock", id: "fc5513a0…")`, or a bare `"rock"`
+/// as a person or an agent writes it by hand — found by name, and given
+/// its ID the first time it is saved. Following a link tries the ID first
+/// and the name second, so a link survives its file being renamed or moved
+/// anywhere: the ID travels in the sidecar, and a file renamed outside the
+/// editor is found by the name the link keeps. Whoever follows it brings
+/// the name up to date with the file, so the name read in a diff is the
+/// file's name now.
+///
+/// It reads as its name (`Deref<Target = str>`): `link.is_empty()`,
+/// `builtin::by_name(&link)`, `format!("{link}")`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct AssetLink {
+    pub name: String,
+    pub id: Option<crate::AssetId>,
+}
+
+impl AssetLink {
+    /// A link by name only, to be given its ID when it is followed.
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            id: None,
+        }
+    }
+
+    pub fn to(name: impl Into<String>, id: crate::AssetId) -> Self {
+        Self {
+            name: name.into(),
+            id: Some(id),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+
+    /// Point it at what it was found to be: the ID, and the file's name now.
+    /// `true` when that changed the link.
+    pub fn settle(&mut self, name: &str, id: crate::AssetId) -> bool {
+        let changed = self.id != Some(id) || self.name != name;
+        self.id = Some(id);
+        if self.name != name {
+            self.name = name.to_string();
+        }
+        changed
+    }
+}
+
+impl std::ops::Deref for AssetLink {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Display for AssetLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl From<String> for AssetLink {
+    fn from(name: String) -> Self {
+        Self::named(name)
+    }
+}
+
+impl From<&str> for AssetLink {
+    fn from(name: &str) -> Self {
+        Self::named(name)
+    }
+}
+
+impl PartialEq<str> for AssetLink {
+    fn eq(&self, other: &str) -> bool {
+        self.name == other
+    }
+}
+
+impl PartialEq<&str> for AssetLink {
+    fn eq(&self, other: &&str) -> bool {
+        self.name == *other
+    }
+}
+
+impl PartialEq<String> for AssetLink {
+    fn eq(&self, other: &String) -> bool {
+        &self.name == other
+    }
+}
+
+impl serde::Serialize for AssetLink {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        match self.id {
+            // As it was written: a line a person wrote stays as written
+            // until the engine has found what it names.
+            None => serializer.serialize_str(&self.name),
+            Some(id) => {
+                let mut s = serializer.serialize_struct("AssetLink", 2)?;
+                s.serialize_field("name", &self.name)?;
+                s.serialize_field("id", &id.to_string())?;
+                s.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AssetLink {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Link;
+        impl<'de> serde::de::Visitor<'de> for Link {
+            type Value = AssetLink;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "an asset's name, or (name: \"…\", id: \"…\")")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<AssetLink, E> {
+                Ok(AssetLink::named(name))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, name: String) -> Result<AssetLink, E> {
+                Ok(AssetLink::named(name))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<AssetLink, A::Error> {
+                let mut link = AssetLink::default();
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "name" => link.name = map.next_value()?,
+                        "id" => {
+                            let text: String = map.next_value()?;
+                            link.id = Some(text.parse().map_err(serde::de::Error::custom)?);
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(link)
+            }
+        }
+        deserializer.deserialize_any(Link)
+    }
+}
+
+#[cfg(test)]
+mod link_tests {
+    use super::*;
+
+    #[test]
+    fn a_link_is_a_bare_name_until_found_and_then_a_name_and_an_id() {
+        let id: crate::AssetId = "fc55".parse().unwrap();
+        let bare: AssetLink = ron::from_str(r#""rock""#).unwrap();
+        assert_eq!(bare, AssetLink::named("rock"));
+        assert_eq!(ron::to_string(&bare).unwrap(), r#""rock""#);
+        let full: AssetLink = ron::from_str(r#"(name: "rock", id: "fc55")"#).unwrap();
+        assert_eq!(full, AssetLink::to("rock", id));
+        let back: AssetLink = ron::from_str(&ron::to_string(&full).unwrap()).unwrap();
+        assert_eq!(back, full);
+        assert!(full == "rock" && !full.is_empty());
+
+        let mut moved = full.clone();
+        assert!(moved.settle("boulder", id), "renamed: the name follows");
+        assert_eq!(moved.name, "boulder");
+        assert!(!moved.settle("boulder", id));
     }
 }

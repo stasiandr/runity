@@ -43,9 +43,9 @@ impl Session {
             ..Default::default()
         };
         if self.prefabs.get(what).is_some() {
-            line.prefab = what.to_string();
+            line.prefab = what.into();
         } else if self.bounds_of(what).is_some() {
-            line.model = what.to_string();
+            line.model = what.into();
         } else {
             return Err(crate::EditError::Scene(format!(
                 "no prefab or model named `{what}` to place"

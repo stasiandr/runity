@@ -87,6 +87,7 @@ pub use gpu::{Gpu, GpuError, OffscreenTarget};
 pub use id::{EntityId, EntityRef};
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
+pub use refs::AssetLink;
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use actions::{Actions, Binding};

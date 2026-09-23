@@ -108,7 +108,7 @@ pub struct Unresolved {
 pub fn spawn_scene(
     scene: &Scene,
     world: &mut World,
-    resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
 ) -> Vec<Unresolved> {
     // No palette: named materials fall through to the engine's builtins.
     // That is what the reference scene and every test want, neither of which
@@ -125,7 +125,7 @@ pub fn spawn_scene(
 pub fn spawn_scene_with(
     scene: &Scene,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&str) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut missing = Vec::new();
@@ -153,7 +153,7 @@ fn spawn_subtree(
     parent: Option<hecs::Entity>,
     parent_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
@@ -181,7 +181,7 @@ pub fn spawn_owned<'a>(
     desc: &'a EntityDesc,
     parent: Option<hecs::Entity>,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&str) -> Option<Material>,
 ) -> (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>) {
     fn walk<'a>(
@@ -189,7 +189,7 @@ pub fn spawn_owned<'a>(
         parent: Option<hecs::Entity>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
         palette: &impl Fn(&str) -> Option<Material>,
         out: &mut (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>),
     ) {
@@ -223,7 +223,7 @@ fn spawn_one(
     parent: Option<hecs::Entity>,
     world_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) -> hecs::Entity {
@@ -259,7 +259,7 @@ fn spawn_one(
         );
     }
     if let Some(emitter) = desc.particles {
-        if let Some(mesh) = resolve("builtin:cube") {
+        if let Some(mesh) = resolve(&crate::AssetLink::named("builtin:cube")) {
             let _ = world.insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
         }
     }
@@ -273,7 +273,7 @@ pub(crate) fn dress(
     desc: &EntityDesc,
     entity: hecs::Entity,
     world: &mut World,
-    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
@@ -286,7 +286,7 @@ pub(crate) fn dress(
             let _ = world.remove::<(Model, Surface)>(entity);
             missing.push(Unresolved {
                 entity_name: desc.name.clone(),
-                model: desc.model.clone(),
+                model: desc.model.to_string(),
             });
         }
     }
@@ -336,7 +336,7 @@ pub fn patch_scene(
     before: &Scene,
     after: &Scene,
     world: &mut World,
-    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&str) -> Option<Material>,
 ) -> Patched {
     let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
@@ -419,7 +419,7 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
         palette: &impl Fn(&str) -> Option<Material>,
     ) {
         self.kept.insert(desc.id);
@@ -467,7 +467,7 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         entity: hecs::Entity,
         world: &mut World,
-        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
         palette: &impl Fn(&str) -> Option<Material>,
     ) -> bool {
         let mut changed = false;
@@ -513,7 +513,7 @@ impl Patch<'_> {
                 });
             match (desc.particles, running) {
                 (Some(emitter), None) => {
-                    if let Some(mesh) = resolve("builtin:cube") {
+                    if let Some(mesh) = resolve(&crate::AssetLink::named("builtin:cube")) {
                         let _ = world
                             .insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
                     }
@@ -871,7 +871,7 @@ mod tests {
             id: Default::default(),
             name: String::new(),
             model: "m".into(),
-            prefab: String::new(),
+            prefab: Default::default(),
             transform: Transform::default(),
             material: Default::default(),
             body: Body::None,
@@ -898,7 +898,7 @@ mod tests {
                     id: Default::default(),
                     name: format!("thing {i}"),
                     model: (*model).into(),
-                    prefab: String::new(),
+                    prefab: Default::default(),
                     transform: Transform {
                         position: Vec3::new(i as f32, 0.0, 0.0),
                         ..Default::default()

@@ -97,7 +97,7 @@ impl Session {
             None,
             runity::EntityDesc {
                 name: name.to_string(),
-                model: name.to_string(),
+                model: name.to_string().into(),
                 body: runity::Body::Static,
                 collider: runity::scene::Collider::Model,
                 transform: runity::scene::Transform {

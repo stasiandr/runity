@@ -561,8 +561,8 @@ pub struct EntityDesc {
     /// A model in `assets/` by file stem — `pine_large` for
     /// `assets/models/pine_large.obj` — or a builtin, `builtin:cone`. May be left
     /// out of the file: a group, or a prefab instance, draws nothing itself.
-    #[serde(default)]
-    pub model: String,
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub model: crate::AssetLink,
     /// The prefab this entity is an instance of, by file stem, or empty.
     ///
     /// An instance is one line: what it is, where it stands, and what it is
@@ -575,8 +575,8 @@ pub struct EntityDesc {
     /// [`MaterialRef`] is not one either: RON spells an option out as
     /// `Some(...)`, and a wrapper in every line of every scene earns
     /// nothing.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub prefab: String,
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub prefab: crate::AssetLink,
     #[serde(default)]
     pub transform: Transform,
     /// A material by name — a `.rmat` asset in the library, or one of the
@@ -669,7 +669,7 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
-    pub model: Option<String>,
+    pub model: Option<crate::AssetLink>,
     /// The part's whole transform, relative to its parent in the prefab.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub transform: Option<Transform>,
@@ -1291,7 +1291,7 @@ mod tests {
                 id: Default::default(),
                 name: "crate".into(),
                 model: "builtin:cube".into(),
-                prefab: String::new(),
+                prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 2.0, 3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),
@@ -1316,7 +1316,7 @@ mod tests {
                     id: Default::default(),
                     name: "lid".into(),
                     model: "builtin:cube".into(),
-                    prefab: String::new(),
+                    prefab: Default::default(),
                     material: MaterialRef::Named("stone".into()),
                     body: Body::None,
                     collider: Collider::None,
@@ -1359,7 +1359,7 @@ mod tests {
                 id: Default::default(),
                 name: "pine".into(),
                 model: "models/pine_large.obj".into(),
-                prefab: String::new(),
+                prefab: Default::default(),
                 transform: Transform {
                     position: Vec3::new(1.0, 0.0, -3.0),
                     rotation_deg: Vec3::new(0.0, 45.0, 0.0),

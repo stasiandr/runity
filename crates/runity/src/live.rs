@@ -335,7 +335,7 @@ impl LiveScene {
         let instance = crate::EntityDesc {
             id: crate::EntityId::fresh(),
             name: name.to_string(),
-            prefab: name.to_string(),
+            prefab: name.into(),
             transform,
             ..crate::EntityDesc::default()
         };
@@ -517,13 +517,18 @@ impl LiveScene {
             if builtin::by_name(name).is_some() {
                 continue;
             }
-            let (Some(old), Some(mesh)) = (self.meshes.get(name).copied(), library.mesh(asset.id))
-            else {
+            let Some(mesh) = library.mesh(asset.id) else {
                 continue;
             };
-            let new = renderer.upload_mesh(gpu, mesh);
-            self.meshes.insert(name.to_string(), new);
-            swapped.insert(old, new);
+            // Uploaded under its ID by a link that had one, under its name
+            // by one that did not.
+            for key in [asset.id.to_string(), name.to_string()] {
+                if let Some(old) = self.meshes.get(&key).copied() {
+                    let new = renderer.upload_mesh(gpu, mesh);
+                    self.meshes.insert(key, new);
+                    swapped.insert(old, new);
+                }
+            }
         }
         for model in world.query_mut::<&mut Model>() {
             if let Some(new) = swapped.get(&model.0) {
@@ -543,7 +548,7 @@ impl LiveScene {
                 let desc = self.current.get(id.0)?;
                 let material =
                     matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n));
-                let arrived = model.is_none() && touched.contains(&desc.model);
+                let arrived = model.is_none() && touched.contains(desc.model.as_str());
                 (material || arrived).then(|| (entity, desc.clone()))
             })
             .collect();
@@ -615,16 +620,22 @@ fn resolver<'a>(
     library: Option<&'a Library>,
     gpu: &'a Gpu,
     renderer: &'a mut Renderer,
-) -> impl FnMut(&str) -> Option<MeshHandle> + 'a {
-    move |name| {
-        if let Some(handle) = meshes.get(name) {
+) -> impl FnMut(&crate::AssetLink) -> Option<MeshHandle> + 'a {
+    move |link| {
+        // Kept by the ID when the link has one: two models with one name
+        // are two uploads.
+        let key = link
+            .id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| link.to_string());
+        if let Some(handle) = meshes.get(&key) {
             return Some(*handle);
         }
-        let handle = match builtin::by_name(name) {
+        let handle = match builtin::by_name(link) {
             Some(mesh) => renderer.upload_mesh_owned(gpu, &mesh),
-            None => renderer.upload_mesh(gpu, library?.mesh_by_name(name)?),
+            None => renderer.upload_mesh(gpu, library?.mesh_link(link)?),
         };
-        meshes.insert(name.to_string(), handle);
+        meshes.insert(key, handle);
         Some(handle)
     }
 }

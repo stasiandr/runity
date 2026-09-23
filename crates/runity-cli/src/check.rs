@@ -281,7 +281,7 @@ fn expansion(project: &Project, out: &mut Vec<Finding>) {
         let alone = Scene {
             entities: vec![EntityDesc {
                 name: name.clone(),
-                prefab: name,
+                prefab: name.into(),
                 ..EntityDesc::default()
             }],
             ..Scene::default()
@@ -397,7 +397,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         };
 
         if !entity.prefab.is_empty() {
-            if !names.prefabs.contains(&entity.prefab) {
+            if !names.prefabs.contains(entity.prefab.as_str()) {
                 out.push(error(
                     file,
                     format!(

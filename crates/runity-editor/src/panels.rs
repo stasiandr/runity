@@ -164,7 +164,7 @@ impl Session {
                     has_children: !e.children.is_empty(),
                     open,
                     selected: selection.contains(&e.id),
-                    prefab: prefab.clone(),
+                    prefab: prefab.as_ref().map(ToString::to_string),
                     part,
                     hidden: unseen.contains(&e.id),
                     locked: !session.is_pickable(session.instanced_owner(e.id)),
@@ -243,8 +243,8 @@ impl Session {
         let t = self.live_transform(id).unwrap_or(desc.transform);
         let mut fields: Vec<(String, String)> = vec![
             ("name".into(), desc.name.clone()),
-            ("model".into(), desc.model.clone()),
-            ("prefab".into(), desc.prefab.clone()),
+            ("model".into(), desc.model.to_string()),
+            ("prefab".into(), desc.prefab.to_string()),
             ("position".into(), ron(&t.position)),
             ("rotation".into(), ron(&t.rotation_deg)),
             ("scale".into(), ron(&t.scale)),
@@ -468,7 +468,7 @@ impl Session {
                     has_children: false,
                     open: false,
                     selected: selection.contains(&e.id),
-                    prefab: line.map(|l| l.prefab.clone()).filter(|p| !p.is_empty()),
+                    prefab: line.map(|l| l.prefab.to_string()).filter(|p| !p.is_empty()),
                     part: line.is_none(),
                     hidden: unseen.contains(&e.id),
                     locked: !self.is_pickable(self.instanced_owner(e.id)),
@@ -577,8 +577,8 @@ impl Session {
         let mut next = current.clone();
         match field {
             "name" => next.name = text.to_string(),
-            "model" => next.model = text.to_string(),
-            "prefab" => next.prefab = text.to_string(),
+            "model" => next.model = text.into(),
+            "prefab" => next.prefab = text.into(),
             "layer" => next.layer = text.to_string(),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,

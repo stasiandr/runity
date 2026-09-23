@@ -1345,7 +1345,7 @@ fn add_entity(server: &mut Server, args: &Value) -> Answer {
                     ));
                 }
                 desc.name = prefab.clone();
-                desc.prefab = prefab;
+                desc.prefab = prefab.into();
             }
             apply(&mut desc, args)?;
             desc
@@ -1379,7 +1379,7 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.name = name;
     }
     if let Some(model) = optional_string(args, "model")? {
-        desc.model = model;
+        desc.model = model.into();
     }
     if let Some(material) = optional_string(args, "material")? {
         desc.material = MaterialRef::Named(material);

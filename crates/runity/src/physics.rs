@@ -1261,7 +1261,7 @@ mod tests {
             id: Default::default(),
             name: name.into(),
             model: "m".into(),
-            prefab: String::new(),
+            prefab: Default::default(),
             transform: Transform {
                 position: Vec3::new(0.0, y, 0.0),
                 ..Default::default()
@@ -1347,7 +1347,7 @@ mod tests {
                 id: Default::default(),
                 name: "boulder".into(),
                 model: "m".into(),
-                prefab: String::new(),
+                prefab: Default::default(),
                 transform: crate::Transform {
                     position: Vec3::new(0.0, 4.0, 0.0),
                     scale: Vec3::splat(3.0),
@@ -1769,7 +1769,7 @@ mod tests {
                 center: glam::Vec3::ZERO,
             },
         );
-        zone.model = String::new();
+        zone.model = Default::default();
         let scene = Scene {
             entities: vec![
                 entity(
@@ -1845,7 +1845,7 @@ mod tests {
                 center: glam::Vec3::ZERO,
             },
         );
-        platform.model = String::new();
+        platform.model = Default::default();
         let scene = Scene {
             entities: vec![
                 platform,

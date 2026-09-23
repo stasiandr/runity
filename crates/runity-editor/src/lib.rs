@@ -820,7 +820,7 @@ impl Session {
         runity_import::walk(&project.assets(), &mut |path| {
             let named = path
                 .file_stem()
-                .is_some_and(|s| s.to_string_lossy() == desc.model);
+                .is_some_and(|s| *s.to_string_lossy() == *desc.model);
             if named && path.extension().is_some_and(|e| e == "rterrain") {
                 source = Some(path.to_path_buf());
             }
@@ -919,7 +919,7 @@ impl Session {
             }
         }
         runity::Prefabs::save(&prefab, &path).map_err(EditError::Io)?;
-        self.prefabs.insert(line.prefab.clone(), prefab);
+        self.prefabs.insert(line.prefab.to_string(), prefab);
         self.edit_entity(instance)?.overrides.clear();
         self.respawn();
         Ok(applied)
@@ -959,7 +959,7 @@ impl Session {
         let variant = EntityDesc {
             id: EntityId::fresh(),
             name: name.to_string(),
-            model: String::new(),
+            model: Default::default(),
             prefab: line.prefab.clone(),
             transform: runity::Transform::default(),
             ..line.clone()
@@ -973,7 +973,7 @@ impl Session {
         *entity = EntityDesc {
             id: line.id,
             name: line.name,
-            prefab: name.to_string(),
+            prefab: name.into(),
             transform: line.transform,
             ..EntityDesc::default()
         };
@@ -1006,7 +1006,7 @@ impl Session {
             .cloned()
             .ok_or(EditError::NoEntity(instance))?;
         fn settle(desc: &mut EntityDesc) {
-            desc.prefab.clear();
+            desc.prefab = Default::default();
             desc.overrides.clear();
             desc.children.iter_mut().for_each(settle);
         }
@@ -1507,7 +1507,7 @@ impl Session {
                     id: line.id,
                     name: line.name.clone(),
                     transform: line.transform,
-                    prefab: prefab.to_string(),
+                    prefab: prefab.into(),
                     ..EntityDesc::default()
                 };
                 replaced += 1;
@@ -1666,7 +1666,7 @@ impl Session {
     pub fn add(&mut self, parent: Option<EntityId>, model: &str) -> EditResult<EntityId> {
         let desc = EntityDesc {
             name: "entity".into(),
-            model: model.to_string(),
+            model: model.into(),
             ..Default::default()
         };
         self.insert(parent, desc)
@@ -1706,14 +1706,14 @@ impl Session {
             .map(|transform| EntityDesc {
                 name: what.trim_start_matches("builtin:").to_string(),
                 model: if prefab {
-                    String::new()
+                    Default::default()
                 } else {
-                    what.to_string()
+                    what.into()
                 },
                 prefab: if prefab {
-                    what.to_string()
+                    what.into()
                 } else {
-                    String::new()
+                    Default::default()
                 },
                 transform,
                 ..Default::default()
@@ -2128,7 +2128,7 @@ impl Session {
     /// The model an entity draws, when it draws one of its own.
     pub fn entity_model(&self, id: EntityId) -> Option<String> {
         self.line(id)
-            .map(|l| l.model.clone())
+            .map(|l| l.model.to_string())
             .filter(|m| !m.is_empty())
     }
 
@@ -2136,7 +2136,7 @@ impl Session {
         self.history
             .scene()
             .get(id)
-            .map(|desc| desc.prefab.clone())
+            .map(|desc| desc.prefab.to_string())
             .filter(|name| !name.is_empty())
     }
 
@@ -2151,8 +2151,8 @@ impl Session {
         }
         let desc = EntityDesc {
             name: prefab.to_string(),
-            model: String::new(),
-            prefab: prefab.to_string(),
+            model: Default::default(),
+            prefab: prefab.into(),
             ..Default::default()
         };
         self.insert(parent, desc)
@@ -2193,8 +2193,8 @@ impl Session {
         // file, and leaving a copy of them in the scene is how the two start
         // to drift.
         let entity = self.edit_entity(id)?;
-        entity.prefab = name.to_string();
-        entity.model = String::new();
+        entity.prefab = name.into();
+        entity.model = Default::default();
         entity.children.clear();
         self.respawn();
         Ok(())
@@ -3679,7 +3679,7 @@ impl Session {
             &self.instanced.scene,
             &mut self.world,
             |name| {
-                if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
+                if let Some(found) = uploaded.iter().find(|(n, _)| **n == **name) {
                     return Some(found.1);
                 }
                 let handle = if let Some(mesh) = builtin::by_name(name) {

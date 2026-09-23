@@ -280,7 +280,7 @@ fn expand(
             ..desc.clone()
         });
     expanded.id = id;
-    expanded.prefab = String::new();
+    expanded.prefab = Default::default();
     // A joint in a prefab names another part of it, by its id in the file:
     // in the instance, that part has the instance's scope too.
     if let (Some(instance), Some(to)) = (scope, expanded.joint.to()) {
@@ -318,7 +318,7 @@ fn resolve(
     if depth >= MAX_DEPTH {
         problems.push(Problem {
             entity_name: desc.name.clone(),
-            prefab: desc.prefab.clone(),
+            prefab: desc.prefab.to_string(),
             reason: format!("nested more than {MAX_DEPTH} deep — a prefab containing itself?"),
         });
         return None;
@@ -326,7 +326,7 @@ fn resolve(
     let Some(template) = prefabs.get(&desc.prefab) else {
         problems.push(Problem {
             entity_name: desc.name.clone(),
-            prefab: desc.prefab.clone(),
+            prefab: desc.prefab.to_string(),
             reason: "no prefab by that name".into(),
         });
         return None;
@@ -353,7 +353,7 @@ fn resolve(
                     children: Vec::new(),
                     ..template.clone()
                 });
-            root.prefab = String::new();
+            root.prefab = Default::default();
             for child in &template.children {
                 root.children
                     .push(expand(child, Some(id), prefabs, depth + 1, problems, parts));
@@ -394,7 +394,7 @@ fn resolve(
             Some(target) => change.apply(target),
             None => problems.push(Problem {
                 entity_name: desc.name.clone(),
-                prefab: desc.prefab.clone(),
+                prefab: desc.prefab.to_string(),
                 reason: format!(
                     "an override for part {part}, which the prefab does not have (any more?)"
                 ),

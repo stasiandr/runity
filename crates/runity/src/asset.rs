@@ -97,6 +97,27 @@ impl AssetId {
     }
 }
 
+/// The ID a `.rimport` sidecar holds, read without the importer: what a
+/// prefab's or a scene's identity is (docs/refs.md). `None` when the file
+/// is missing, does not parse, or has no ID yet.
+pub fn sidecar_id(sidecar: impl AsRef<std::path::Path>) -> Option<AssetId> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "ImportSettings")]
+    struct Sidecar {
+        #[serde(default)]
+        id: Option<AssetId>,
+    }
+    let text = std::fs::read_to_string(sidecar).ok()?;
+    ron::from_str::<Sidecar>(&text).ok()?.id
+}
+
+/// Where a file's sidecar is: beside it, `<file>.rimport`.
+pub fn sidecar_of(file: &std::path::Path) -> std::path::PathBuf {
+    let mut name = file.as_os_str().to_owned();
+    name.push(".rimport");
+    std::path::PathBuf::from(name)
+}
+
 impl From<&ArchivedAssetId> for AssetId {
     /// The archived form is a distinct type, so reading an id out of a
     /// mapped asset needs one conversion. It is a widening of one integer,
