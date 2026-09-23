@@ -2047,6 +2047,14 @@ impl Session {
         self.pixels = self.target.read_rgba(&self.gpu);
     }
 
+    /// What the game would look through: the camera on an entity of the
+    /// scene (see [`runity::world::camera_of`]), `None` when the scene has
+    /// none and the game uses its view. Unity's Game view, next to the
+    /// Scene view the session's own camera is.
+    pub fn game_camera(&self) -> Option<Camera> {
+        runity::world::camera_of(&self.world)
+    }
+
     /// Show every collider as an outline in the frames that follow — the
     /// shape physics sees, coloured by body: what Unity's collider gizmos
     /// show. A view setting, not an edit.

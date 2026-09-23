@@ -592,9 +592,13 @@ impl shell::Game for Game {
             eprintln!("{line}");
         }
         let scene = self.live.scene();
+        // A camera on an entity — a child of the player follows the player —
+        // or the scene's view when there is none.
+        let camera = runity::world::camera_of(&self.world)
+            .unwrap_or_else(|| runity::scene_camera(&scene.view));
         runity::build_frame(
             &self.world,
-            runity::scene_camera(&scene.view),
+            camera,
             runity::scene_lighting(&scene.sun),
             runity::scene_fog(&scene.fog),
         )

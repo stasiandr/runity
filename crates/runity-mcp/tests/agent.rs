@@ -317,6 +317,17 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         )
         .unwrap_err();
     assert!(err.contains("+x, -x"), "{err}");
+    let err = agent
+        .call("render", json!({ "from_game": true }))
+        .unwrap_err();
+    assert!(err.contains("no entity has a camera"), "{err}");
+    let eye = agent.text(
+        "add_entity",
+        json!({ "name": "eye", "position": [0.0, 2.0, -8.0], "camera": "(fov_deg: 50.0)" }),
+    );
+    let seen = agent.call("render", json!({ "from_game": true })).unwrap();
+    assert_eq!(seen[0]["type"], "image");
+    agent.text("delete_entity", json!({ "id": eye }));
     let size = agent.text("measure", json!({ "id": wall }));
     assert!(size.contains("size (10.00, 3.00, 0.30)"), "{size}");
     let post = agent.text(
@@ -324,7 +335,10 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         json!({ "name": "post", "model": "builtin:cube", "position": [9.0, 3.0, 2.0] }),
     );
     let apart = agent.text("measure", json!({ "id": wall, "to": post }));
-    assert!(apart.contains("gap per axis (2.50, -0.50, 1.35)"), "{apart}");
+    assert!(
+        apart.contains("gap per axis (2.50, -0.50, 1.35)"),
+        "{apart}"
+    );
     assert_eq!(
         agent.text(
             "align",

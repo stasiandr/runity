@@ -246,6 +246,27 @@ fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
 
+/// A camera on an entity: what the game sees through, looking along the
+/// entity's +z with its y up — Unity's Camera component, and like it,
+/// carried by whatever the entity is under: a camera that is a child of
+/// the player follows the player.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Lens {
+    /// Vertical field of view, degrees.
+    #[serde(default = "lens_fov")]
+    pub fov_deg: f32,
+    /// With several cameras, the highest looks.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub priority: i32,
+}
+
+fn lens_fov() -> f32 {
+    60.0
+}
+fn is_zero_i32(v: &i32) -> bool {
+    *v == 0
+}
+
 /// How an entity takes part in the physics world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Body {
@@ -319,6 +340,9 @@ pub struct EntityDesc {
     /// saying so in one place beats guessing a box from the mesh.
     #[serde(default)]
     pub collider: Collider,
+    /// A camera on this entity; see [`Lens`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub camera: Option<Lens>,
     /// The collision layer, by the name `layers.ron` gives it; empty is
     /// `default`. See [`crate::layers`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -921,6 +945,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                camera: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
@@ -941,6 +966,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    camera: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
@@ -980,6 +1006,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                camera: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),

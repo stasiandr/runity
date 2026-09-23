@@ -66,6 +66,10 @@ pub struct Parent(pub hecs::Entity);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physics(pub Body);
 
+/// A camera, kept from the scene.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraLens(pub crate::scene::Lens);
+
 /// The collision layer's name, kept from the scene when not `default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer(pub String);
@@ -237,6 +241,9 @@ fn spawn_one(
     }
     if !desc.layer.is_empty() {
         let _ = world.insert_one(entity, Layer(desc.layer.clone()));
+    }
+    if let Some(lens) = desc.camera {
+        let _ = world.insert_one(entity, CameraLens(lens));
     }
     dress(desc, entity, world, resolve, palette, missing);
     entity
@@ -462,6 +469,17 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, Shape(desc.collider));
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.camera != desc.camera) {
+            match desc.camera {
+                Some(lens) => {
+                    let _ = world.insert_one(entity, CameraLens(lens));
+                }
+                None => {
+                    let _ = world.remove_one::<CameraLens>(entity);
+                }
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.layer != desc.layer) {
             if desc.layer.is_empty() {
                 let _ = world.remove_one::<Layer>(entity);
@@ -593,6 +611,35 @@ pub fn scene_camera(view: &crate::scene::View) -> Camera {
     }
 }
 
+/// What the world's camera sees: the entity with a [`CameraLens`] of the
+/// highest priority (the lowest id among equals, so the answer does not
+/// change between runs), from where it is and along its +z. `None` when no
+/// entity has one — the game falls back to the scene's `view`.
+pub fn camera_of(world: &World) -> Option<Camera> {
+    let mut best: Option<(i32, std::cmp::Reverse<crate::id::EntityId>, Camera)> = None;
+    for (lens, placed, id) in world
+        .query::<(&CameraLens, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+    {
+        let (_, rotation, position) = placed.0.to_scale_rotation_translation();
+        let camera = Camera {
+            position,
+            target: position + rotation * glam::Vec3::Z,
+            up: rotation * glam::Vec3::Y,
+            fov_y_degrees: lens.0.fov_deg,
+            ..Camera::default()
+        };
+        let key = (
+            lens.0.priority,
+            std::cmp::Reverse(id.map(|i| i.0).unwrap_or_default()),
+        );
+        if best.as_ref().is_none_or(|(p, i, _)| key > (*p, *i)) {
+            best = Some((key.0, key.1, camera));
+        }
+    }
+    best.map(|(_, _, camera)| camera)
+}
+
 /// The view to write back into a scene for a camera.
 pub fn captured_view(camera: &Camera) -> crate::scene::View {
     crate::scene::View {
@@ -648,6 +695,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            camera: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -671,6 +719,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    camera: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
@@ -1098,5 +1147,57 @@ mod tests {
         let done = patch(&smaller, &Scene::default(), &mut world);
         assert_eq!(done.despawned, 1);
         entity(&world, "f1");
+    }
+
+    #[test]
+    fn a_camera_on_the_player_sees_from_its_eyes_and_follows_it() {
+        let mut scene: Scene = ron::from_str(
+            r#"(entities: [
+                (id: "00000000000000a1", name: "player", model: "builtin:cube",
+                 transform: (position: (3.0, 0.0, 0.0), rotation_deg: (0.0, 90.0, 0.0)),
+                 children: [(id: "00000000000000a2", name: "eyes", transform: (position: (0.0, 1.6, 0.0)),
+                             camera: (fov_deg: 70.0))]),
+            ])"#,
+        )
+        .unwrap();
+        scene.assign_ids();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let camera = camera_of(&world).expect("a camera");
+        assert!(
+            (camera.position - Vec3::new(3.0, 1.6, 0.0)).length() < 1e-4,
+            "{:?}",
+            camera.position
+        );
+        let looking = (camera.target - camera.position).normalize();
+        assert!(
+            (looking - Vec3::X).length() < 1e-4,
+            "where the player faces: {looking:?}"
+        );
+        assert_eq!(camera.fov_y_degrees, 70.0);
+
+        let player = world
+            .query::<(hecs::Entity, &SceneId)>()
+            .iter()
+            .find(|(_, s)| s.0 == scene.entities[0].id)
+            .map(|(e, _)| e)
+            .unwrap();
+        world.get::<&mut Transform>(player).unwrap().position.z = 10.0;
+        apply_hierarchy(&mut world);
+        assert!(
+            (camera_of(&world).unwrap().position.z - 10.0).abs() < 1e-4,
+            "it follows"
+        );
+
+        // A second camera that asks for it wins.
+        world.spawn((
+            CameraLens(crate::scene::Lens {
+                fov_deg: 40.0,
+                priority: 1,
+            }),
+            WorldTransform(glam::Mat4::IDENTITY),
+        ));
+        assert_eq!(camera_of(&world).unwrap().fov_y_degrees, 40.0);
+        assert!(camera_of(&World::new()).is_none());
     }
 }
