@@ -1,4 +1,4 @@
-//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME]` — the engine's
+//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays]` — the engine's
 //! look, as a video: each shot a scene of the valley example with a camera
 //! moving through it, the clock running and the sun going round, written
 //! frame by frame into ffmpeg as `<out-dir>/NN-name.mp4`, and a subtitle
@@ -31,6 +31,9 @@ struct Shot {
     speed: f32,
     /// Changes to the scene's look, as the `look` tool sets them.
     look: &'static [(&'static str, &'static str)],
+    /// Split down the middle: on the left drawn without rays, on the right
+    /// with the scene's `ray_tracing` — the same world, the same moment.
+    compare: bool,
 }
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
@@ -41,7 +44,7 @@ fn shots() -> Vec<Shot> {
     vec![
         Shot {
             name: "desert-walk",
-            caption: "Пустыня: марево и мираж, физическое небо, отражённый свет от песка. Ходок оставляет следы, из-под ног пыль",
+            caption: "Пустыня: марево и мираж, физическое небо, отражённый свет от песка. Ходок оставляет следы, из-под ног пыль, ветер гонит перекати-поле",
             scene: "desert.ron",
             seconds: 9.0,
             from: (v(6.0, 1.9, 7.0), v(2.0, 0.6, -4.0)),
@@ -49,6 +52,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[("weather", "(drifted: 1.0)")],
         },
         Shot {
@@ -61,6 +65,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -73,49 +78,11 @@ fn shots() -> Vec<Shot> {
             hours: Some((15.5, 15.8)),
             clock: 30.0,
             speed: 1.0,
+            compare: false,
             look: &[
                 ("weather", "(dust_devils: 1.0)"),
                 ("wind", "(direction: (1.0, 0.0, 0.3), strength: 1.8)"),
             ],
-        },
-        Shot {
-            name: "tumbleweed",
-            caption: "Перекати-поле: ветер сцены тащит его по песку, в порывах — прыжки",
-            scene: "desert.ron",
-            seconds: 8.0,
-            from: (v(-4.0, 0.7, 0.0), v(-11.0, 0.6, -8.0)),
-            to: (v(-1.0, 0.8, 0.5), v(5.0, 0.5, -4.0)),
-            hours: None,
-            clock: 0.0,
-            speed: 1.0,
-            look: &[],
-        },
-        Shot {
-            name: "rays",
-            caption: "Тени лучами (аппаратный рейтрейсинг): на закате полутень растёт от камня, тень перекати-поля — кружево веток",
-            scene: "desert.ron",
-            seconds: 8.0,
-            from: (v(-12.5, 1.1, -5.0), v(-10.5, 0.1, -10.5)),
-            to: (v(7.5, 1.1, 0.5), v(9.5, 0.1, -5.0)),
-            hours: Some((17.7, 17.8)),
-            clock: 0.0,
-            speed: 1.0,
-            look: &[(
-                "ray_tracing",
-                "(sun_shadows: true, ambient_occlusion: true, sun_size: 0.6, sun_rays: 8, occlusion_rays: 8, occlusion_radius: 1.5)",
-            )],
-        },
-        Shot {
-            name: "sand-close",
-            caption: "Песок: рябь поперёк ветра, искры песчинок на низком солнце",
-            scene: "desert.ron",
-            seconds: 7.0,
-            from: (v(-3.0, 0.9, 6.0), v(-1.0, 0.0, 2.0)),
-            to: (v(1.0, 0.7, 5.0), v(2.5, 0.0, 1.0)),
-            hours: Some((17.3, 17.6)),
-            clock: 20.0,
-            speed: 1.0,
-            look: &[("post", "None")],
         },
         Shot {
             name: "sandstorm",
@@ -127,6 +94,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[
                 ("sun", "(hour: 14.0, intensity: 0.9, ground: (0.78, 0.6, 0.38))"),
                 ("sky", "(mode: Physical, atmosphere: (mie: 6.0))"),
@@ -140,12 +108,13 @@ fn shots() -> Vec<Shot> {
             name: "haboob",
             caption: "Хабуб: ярусная стена пыли идёт на камеру и поглощает её (время ускорено)",
             scene: "haboob.ron",
-            seconds: 13.0,
+            seconds: 19.0,
             from: (v(0.0, 1.8, 0.0), v(-60.0, 16.0, -8.0)),
             to: (v(3.0, 1.8, 1.0), v(-60.0, 6.0, -14.0)),
             hours: None,
             clock: 4.0,
             speed: 4.6,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -158,6 +127,7 @@ fn shots() -> Vec<Shot> {
             hours: Some((18.0, 22.5)),
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -170,6 +140,7 @@ fn shots() -> Vec<Shot> {
             hours: Some((8.2, 9.2)),
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -182,6 +153,7 @@ fn shots() -> Vec<Shot> {
             hours: Some((16.6, 18.6)),
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.35))"),
                 ("volumetric_fog", "(enabled: true, density: 0.015, anisotropy: 0.75, height_falloff: 0.2)"),
@@ -197,6 +169,7 @@ fn shots() -> Vec<Shot> {
             hours: Some((13.0, 14.0)),
             clock: 0.0,
             speed: 30.0,
+            compare: false,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.55, shadows: 0.8))"),
                 ("wind", "(strength: 1.5)"),
@@ -212,6 +185,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -224,18 +198,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
-            look: &[],
-        },
-        Shot {
-            name: "reflections",
-            caption: "Пробы отражений: хром, шероховатый металл, полированный пол",
-            scene: "reflections.ron",
-            seconds: 6.0,
-            from: (v(-3.0, 2.4, 7.0), v(0.0, 0.9, 0.0)),
-            to: (v(3.0, 1.8, 6.5), v(0.0, 0.8, 0.0)),
-            hours: None,
-            clock: 0.0,
-            speed: 1.0,
+            compare: false,
             look: &[],
         },
         Shot {
@@ -248,6 +211,7 @@ fn shots() -> Vec<Shot> {
             hours: None,
             clock: 0.0,
             speed: 1.0,
+            compare: false,
             look: &[
                 ("sun", "(hour: 21.0, intensity: 0.08)"),
                 ("sky", "(mode: Procedural, zenith: (0.01, 0.015, 0.04), horizon: (0.03, 0.04, 0.07), ground: (0.01, 0.01, 0.015), sun_size: 0.0)"),
@@ -255,6 +219,74 @@ fn shots() -> Vec<Shot> {
                 ("volumetric_fog", "(enabled: true, density: 0.03, ambient: 0.3, lamps: 6.0)"),
                 ("post", "(exposure: 0.8, bloom: (intensity: 0.6), temperature: -20.0)"),
             ],
+        },
+    ]
+}
+
+/// The ray-tracing reel (`--reel rays`): each shot split down the middle,
+/// drawn without rays on the left and with them on the right.
+fn ray_shots() -> Vec<Shot> {
+    vec![
+        Shot {
+            name: "rays-lamp",
+            caption: "Лампа среди колонн. Слева карта теней лампы, справа луч к ней: тень резкая у колонны и точно доходит до стены",
+            scene: "rays.ron",
+            seconds: 9.0,
+            from: (v(-5.5, 2.6, 5.5), v(0.0, 0.8, -0.5)),
+            to: (v(5.5, 2.2, 5.0), v(0.0, 0.8, -0.5)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: true,
+            look: &[],
+        },
+        Shot {
+            name: "rays-desert",
+            caption: "Закат в пустыне. Слева каскады теней, справа лучи: у лучей полутень растёт от основания, тень веток перекати-поля — кружево",
+            scene: "desert.ron",
+            seconds: 8.0,
+            from: (v(-12.5, 1.1, -5.0), v(-10.5, 0.1, -10.5)),
+            to: (v(7.5, 1.1, 0.5), v(9.5, 0.1, -5.0)),
+            hours: Some((17.7, 17.8)),
+            clock: 0.0,
+            speed: 1.0,
+            compare: true,
+            look: &[(
+                "ray_tracing",
+                "(sun_shadows: true, ambient_occlusion: true, sun_size: 0.6, sun_rays: 8, occlusion_rays: 8, occlusion_radius: 1.5)",
+            )],
+        },
+        Shot {
+            name: "rays-dunes",
+            caption: "Дюны на закате. У каскадов есть дальность теней, у лучей — нет: тени дюн тянутся до горизонта",
+            scene: "desert.ron",
+            seconds: 8.0,
+            from: (v(-6.0, 5.0, -60.0), v(-30.0, 2.0, -200.0)),
+            to: (v(6.0, 5.5, -64.0), v(30.0, 2.0, -200.0)),
+            hours: Some((17.2, 17.4)),
+            clock: 0.0,
+            speed: 1.0,
+            compare: true,
+            look: &[(
+                "ray_tracing",
+                "(sun_shadows: true, sun_size: 0.6, sun_rays: 6)",
+            )],
+        },
+        Shot {
+            name: "rays-room",
+            caption: "Комната. Слева SSAO, справа окклюзия лучами: видит то, что за кадром и за углом, углы и щели темнеют верно",
+            scene: "bounce.ron",
+            seconds: 8.0,
+            from: (v(3.0, 2.2, 7.0), v(-0.5, 0.8, 0.0)),
+            to: (v(-2.5, 2.0, 6.5), v(0.5, 0.8, 0.0)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: true,
+            look: &[(
+                "ray_tracing",
+                "(sun_shadows: true, ambient_occlusion: true, sun_rays: 6, occlusion_rays: 8, occlusion_radius: 1.5)",
+            )],
         },
     ]
 }
@@ -269,6 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut width, mut height) = (1280u32, 720u32);
     let mut fps = 30u32;
     let mut only: Option<String> = None;
+    let mut reel: Option<String> = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--size" => {
@@ -279,6 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--fps" => fps = args.next().ok_or("--fps wants a number")?.parse()?,
             "--only" => only = args.next(),
+            "--reel" => reel = args.next(),
             other => out = Some(PathBuf::from(other)),
         }
     }
@@ -290,7 +324,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut subtitles = String::new();
     let mut at = 0.0f32;
-    let list = shots();
+    let list = match reel.as_deref() {
+        None | Some("main") => shots(),
+        Some("rays") => ray_shots(),
+        Some(other) => return Err(format!("no reel `{other}`: main or rays").into()),
+    };
     let total: u32 = list
         .iter()
         .filter(|s| only.as_deref().is_none_or(|o| o == s.name))
@@ -400,6 +438,40 @@ fn render_shot(
         eprintln!("{problem}");
     }
 
+    // For a split shot, a second renderer of the same world: its own TAA
+    // and exposure history, so neither half bleeds into the other. The
+    // world's meshes go in in the same order, so the handles are the same.
+    let mut twin = if shot.compare {
+        let mut twin = Renderer::new(gpu, target);
+        if let Some(project) = &project {
+            let mut shaders =
+                runity::render::MaterialShaders::new(project.root().join(runity::project::SHADERS));
+            let _ = shaders.poll(&mut twin, gpu);
+        }
+        for (name, handle) in &uploaded {
+            let again = if let Some(mesh) = builtin::by_name(name) {
+                twin.upload_mesh_owned(gpu, &mesh)
+            } else {
+                let mesh = library
+                    .as_ref()
+                    .and_then(|l| l.mesh_by_name(name))
+                    .ok_or("a mesh gone from the library")?;
+                twin.upload_mesh(gpu, mesh)
+            };
+            assert_eq!(again, *handle, "the twin's meshes out of step at {name}");
+        }
+        for (relief, model) in world.query_mut::<(&runity::terrain::Relief, &runity::world::Model)>() {
+            let again = twin.upload_mesh_owned(gpu, &relief.terrain.mesh());
+            assert_eq!(again, model.0, "the twin's terrain out of step");
+        }
+        for problem in runity::world::upload_material_maps(&world, library.as_ref(), gpu, &mut twin) {
+            eprintln!("{problem}");
+        }
+        Some(twin)
+    } else {
+        None
+    };
+
     // Physics runs too: what the wind carries rolls across the shot.
     runity::physics::attach_scene_collision_meshes(&mut world, &scene, library.as_ref());
     let step = 1.0 / 60.0;
@@ -465,9 +537,30 @@ fn render_shot(
         };
         let mut frame = runity::world::scene_frame(&world, camera, &scene);
         frame.time = Some(clock.max(0.0));
-        renderer.render(gpu, target, &frame);
+        let pixels = if let Some(twin) = twin.as_mut() {
+            // Left without rays, right with them, and a thin line between.
+            let traced = frame.ray_tracing;
+            frame.ray_tracing = runity::ray::RayTracing::default();
+            renderer.render(gpu, target, &frame);
+            let mut left = target.read_rgba(gpu);
+            frame.ray_tracing = traced;
+            twin.render(gpu, target, &frame);
+            let right = target.read_rgba(gpu);
+            let (w, h) = (target.width as usize, target.height as usize);
+            for y in 0..h {
+                let row = y * w * 4;
+                left[row + w * 2..row + w * 4].copy_from_slice(&right[row + w * 2..row + w * 4]);
+                for x in w / 2 - 1..w / 2 + 1 {
+                    left[row + x * 4..row + x * 4 + 3].copy_from_slice(&[235, 235, 235]);
+                }
+            }
+            left
+        } else {
+            renderer.render(gpu, target, &frame);
+            target.read_rgba(gpu)
+        };
         if i >= warmup {
-            pipe.write_all(&target.read_rgba(gpu))?;
+            pipe.write_all(&pixels)?;
             *done += 1;
             if *done % 30 == 0 {
                 println!("{}/{} {}", done, total, shot.name);
