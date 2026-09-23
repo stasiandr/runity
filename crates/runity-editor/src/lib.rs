@@ -996,6 +996,102 @@ impl Session {
         self.history.scene().find(name).map(|e| e.id)
     }
 
+    /// What is wrong with the open document as it stands, unsaved edits
+    /// included — Unity's console, for the scene: a model or material no
+    /// asset answers to, a prefab that is not there, an override for a part
+    /// the prefab no longer has, a prefab nested into itself. Each names the
+    /// entity and, where one is close, the name that was probably meant.
+    ///
+    /// Computed when asked rather than kept, so it cannot go stale: an agent
+    /// asks after an edit and gets the truth about that edit.
+    pub fn problems(&self) -> Vec<Diagnostic> {
+        use runity::asset::AssetKind;
+        let mut out = Vec::new();
+        let library = self.library.as_ref();
+        let names_of = |kind: AssetKind| -> Vec<String> {
+            library
+                .map(|l| l.names_of(kind).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        let suggest = |wanted: &str, known: &[String], builtins: &[&str]| -> String {
+            runity::spelling::closest(
+                wanted,
+                known
+                    .iter()
+                    .map(String::as_str)
+                    .chain(builtins.iter().copied()),
+            )
+            .map(|name| format!(" — did you mean `{name}`?"))
+            .unwrap_or_default()
+        };
+
+        let prefab_names: Vec<String> = self
+            .prefabs
+            .names()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for problem in &self.instanced.problems {
+            let entity = self
+                .history
+                .scene()
+                .flatten()
+                .iter()
+                .find(|(e, _)| e.name == problem.entity_name && e.prefab == problem.prefab)
+                .map(|(e, _)| e.id);
+            let hint = if problem.reason == "no prefab by that name" {
+                suggest(&problem.prefab, &prefab_names, &[])
+            } else {
+                String::new()
+            };
+            out.push(Diagnostic {
+                entity,
+                message: format!(
+                    "`{}` (an instance of `{}`): {}{hint}",
+                    problem.entity_name, problem.prefab, problem.reason
+                ),
+            });
+        }
+
+        let models = names_of(AssetKind::Mesh);
+        let materials = names_of(AssetKind::Material);
+        for (desc, _) in self.instanced.scene.flatten() {
+            let who = format!("`{}` ({})", desc.name, desc.id);
+            if !desc.model.is_empty()
+                && builtin::by_name(&desc.model).is_none()
+                && library.and_then(|l| l.mesh_by_name(&desc.model)).is_none()
+            {
+                out.push(Diagnostic {
+                    entity: Some(desc.id),
+                    message: format!(
+                        "{who}: no model named `{}`{}",
+                        desc.model,
+                        suggest(&desc.model, &models, &builtin::NAMES)
+                    ),
+                });
+            }
+            if let MaterialRef::Named(name) = &desc.material {
+                let found = match name.strip_prefix("builtin:") {
+                    Some(builtin) => runity::material::builtin::by_name(builtin).is_some(),
+                    None => {
+                        library.and_then(|l| l.material_by_name(name)).is_some()
+                            || runity::material::builtin::by_name(name).is_some()
+                    }
+                };
+                if !found {
+                    out.push(Diagnostic {
+                        entity: Some(desc.id),
+                        message: format!(
+                            "{who}: no material named `{name}` — it draws plain grey{}",
+                            suggest(name, &materials, &runity::material::builtin::NAMES)
+                        ),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// Every entity a hierarchy search matches, in tree order, prefab parts
     /// included: `tree`, `c:door m:bark`, `p:campfire`, `body:dynamic` (see
     /// [`runity::query`]). A query that cannot mean anything says why.
@@ -2472,4 +2568,18 @@ fn save_document(scene: &Scene, path: &Path) -> EditResult<()> {
     scene
         .save(path)
         .map_err(|e| EditError::Scene(format!("{e:#}")))
+}
+
+/// One thing wrong with the open document: see [`Session::problems`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diagnostic {
+    /// The entity it is about, to select; `None` when it cannot be told.
+    pub entity: Option<EntityId>,
+    pub message: String,
+}
+
+impl std::fmt::Display for Diagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }

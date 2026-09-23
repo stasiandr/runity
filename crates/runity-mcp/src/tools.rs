@@ -121,6 +121,7 @@ pub fn list() -> Vec<Value> {
         tool("duplicate_asset", "Copy an asset source under a new name: a new asset with its own id and the original's import settings.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
         tool("usages", "Every scene and prefab line that names an asset file: what a rename would change, and whether it is safe to delete.", json!({ "file": { "type": "string", "description": "relative to the project root, e.g. materials/stone.rmat" } }), &["file"]),
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
+        tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed.", simulate, &["seconds"]),
     ]
@@ -580,6 +581,18 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(if found.is_empty() {
                 format!("nothing names {file}")
+            } else {
+                found
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })])
+        }
+        "problems" => {
+            let found = server.session()?.problems();
+            Ok(vec![text(if found.is_empty() {
+                "no problems".to_string()
             } else {
                 found
                     .iter()

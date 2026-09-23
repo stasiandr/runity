@@ -1941,3 +1941,55 @@ fn a_prefab_opens_edits_and_saves_like_a_scene_and_its_instances_follow() {
     );
     assert!(session.entity_name(one.within(stone)).is_some());
 }
+
+#[test]
+fn problems_are_known_as_soon_as_an_edit_makes_them() {
+    let Some((mut session, _)) = open("problems") else {
+        return;
+    };
+    assert!(session.problems().is_empty(), "{:?}", session.problems());
+    let lid = id(&session, "lid");
+    session.set_material_name(lid, "stnoe").unwrap();
+    session
+        .add_entity(
+            None,
+            runity::EntityDesc {
+                name: "tower".into(),
+                model: "builtin:cub".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    session
+        .add_entity(
+            None,
+            runity::EntityDesc {
+                name: "fire".into(),
+                prefab: "campfire".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let said: Vec<String> = session.problems().iter().map(ToString::to_string).collect();
+    assert_eq!(said.len(), 3, "{said:#?}");
+    assert!(
+        said.iter()
+            .any(|p| p.contains("`fire` (an instance of `campfire`): no prefab by that name")),
+        "{said:#?}"
+    );
+    assert!(
+        said.iter()
+            .any(|p| p.contains("no model named `builtin:cub` — did you mean `builtin:cube`?")),
+        "{said:#?}"
+    );
+    assert!(
+        said.iter().any(|p| p
+            .contains("no material named `stnoe` — it draws plain grey — did you mean `stone`?")),
+        "{said:#?}"
+    );
+    assert!(session.problems().iter().any(|p| p.entity == Some(lid)));
+    session.undo().unwrap();
+    session.undo().unwrap();
+    session.undo().unwrap();
+    assert!(session.problems().is_empty(), "undone, gone");
+}

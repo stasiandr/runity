@@ -109,6 +109,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "duplicate_asset",
         "find",
         "open_prefab",
+        "problems",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -164,6 +165,11 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     agent.text(
         "update_entity",
         json!({ "id": crate_id, "material": "bakr" }),
+    );
+    let now = agent.text("problems", json!({}));
+    assert!(
+        now.contains("no material named `bakr`") && now.contains("did you mean `bark`?"),
+        "known before saving: {now}"
     );
     agent.text("save_scene", json!({}));
     let findings = agent.text("check", json!({}));
