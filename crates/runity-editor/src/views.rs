@@ -25,6 +25,17 @@ pub enum Space {
     Local,
 }
 
+/// Where the handles sit: Unity's Pivot / Center toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pivot {
+    /// On the gizmo's entity; the rest turn and stretch about their own.
+    #[default]
+    Pivot,
+    /// In the middle of everything selected, which turns and stretches
+    /// about it as one.
+    Center,
+}
+
 /// Which side of the world to look from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -162,6 +173,14 @@ impl Session {
 
     pub fn space(&self) -> Space {
         self.space
+    }
+
+    pub fn set_pivot(&mut self, pivot: Pivot) {
+        self.pivot = pivot;
+    }
+
+    pub fn pivot(&self) -> Pivot {
+        self.pivot
     }
 
     /// Which way the handles point now: the selected entity's turn in the

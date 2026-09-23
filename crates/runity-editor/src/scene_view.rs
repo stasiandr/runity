@@ -19,6 +19,7 @@
 //! | wheel | zoom |
 //! | W / E / R | move / rotate / scale tool |
 //! | X | handles along the world's axes or the entity's own |
+//! | Z | handles on the entity's pivot or the selection's middle |
 //! | F | frame the selection |
 //! | End | down onto what is beneath |
 //! | H / Shift H | hide the selection / show it alone (again: all) |
@@ -194,6 +195,13 @@ impl Session {
                     crate::Space::Local => crate::Space::Global,
                 });
                 did.push("space");
+            }
+            if pressed(Key::Z) {
+                self.set_pivot(match self.pivot() {
+                    crate::Pivot::Pivot => crate::Pivot::Center,
+                    crate::Pivot::Center => crate::Pivot::Pivot,
+                });
+                did.push("pivot");
             }
             if pressed(Key::F) && self.focus_selected() {
                 did.push("frame");

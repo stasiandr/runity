@@ -25,7 +25,7 @@ mod surface;
 mod views;
 mod visibility;
 
-pub use views::{Side, Space};
+pub use views::{Pivot, Side, Space};
 
 use std::path::{Path, PathBuf};
 
@@ -105,6 +105,8 @@ pub struct Session {
     drag_orientation: runity::glam::Quat,
     /// World or the entity's own axes for the handles.
     space: Space,
+    /// Where the handles sit: on the entity's pivot or the selection's middle.
+    pivot: Pivot,
     /// A unit cube, uploaded once, that the gizmo's handles are made of.
     gizmo_arm: Option<MeshHandle>,
     /// Whether frames show every collider as an outline.
@@ -250,6 +252,7 @@ impl Session {
             drag_others: Vec::new(),
             drag_orientation: runity::glam::Quat::IDENTITY,
             space: Space::Global,
+            pivot: Pivot::Pivot,
             gizmo_arm: None,
             show_colliders: false,
             play: None,
@@ -2589,6 +2592,7 @@ impl Session {
         let parent = self.parent_matrix(id);
         let started = self.drag_from;
         let snap = self.snap;
+        let center = self.pivot == Pivot::Center;
         let others: Vec<(EntityId, runity::Transform, Mat4)> = self
             .drag_others
             .iter()
@@ -2655,6 +2659,27 @@ impl Session {
                     if let Some(d) = scene.get_mut(*other) {
                         d.transform.scale = gizmo::snap_all(from.scale * factor, snap.scale);
                     }
+                }
+            }
+        }
+        // Center: turned and stretched about the middle of the selection,
+        // so each also goes round or away from it.
+        if let (true, Some(started)) = (center, started) {
+            let about = drag.origin;
+            let place = |from: Vec3, parent: Mat4| -> Option<Vec3> {
+                let at = parent.transform_point3(from) - about;
+                let to = match motion {
+                    Motion::Position(_) => return None,
+                    Motion::Rotation(turn) => turn * at,
+                    Motion::Scale(factor) => orientation * (factor * (orientation.inverse() * at)),
+                };
+                Some(parent.inverse().transform_point3(about + to))
+            };
+            let moves = std::iter::once((id, started.position, parent))
+                .chain(others.iter().map(|(o, t, p)| (*o, t.position, *p)));
+            for (who, from, parent) in moves {
+                if let (Some(to), Some(d)) = (place(from, parent), scene.get_mut(who)) {
+                    d.transform.position = to;
                 }
             }
         }
@@ -2929,6 +2954,19 @@ impl Session {
     fn selected_origin(&self) -> Option<Vec3> {
         let id = self.selected?;
         let (_, world) = self.placed(id)?;
+        if self.pivot == Pivot::Center {
+            // The middle of the box around everything selected.
+            let boxes: Vec<(Vec3, Vec3)> = self
+                .selection_roots()
+                .into_iter()
+                .filter_map(|r| self.world_bounds(r))
+                .collect();
+            if !boxes.is_empty() {
+                let low = boxes.iter().fold(Vec3::splat(f32::MAX), |a, b| a.min(b.0));
+                let high = boxes.iter().fold(Vec3::splat(f32::MIN), |a, b| a.max(b.1));
+                return Some((low + high) * 0.5);
+            }
+        }
         Some(world.w_axis.truncate())
     }
 

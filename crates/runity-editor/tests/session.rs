@@ -2800,3 +2800,44 @@ fn local_handles_slide_a_turned_wall_along_its_own_length() {
         "only along its length: {went}"
     );
 }
+
+#[test]
+fn in_center_mode_the_selection_turns_about_its_middle() {
+    use runity::glam::Vec3;
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"barrel\", model: \"builtin:cube\", transform: (position: (4.0, 0.5, 0.0))),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("center-pivot", &scene) else {
+        return;
+    };
+    let (crate_id, barrel) = (id(&session, "crate"), id(&session, "barrel"));
+    session.select(Some(crate_id)).unwrap();
+    session.add_to_selection(barrel).unwrap();
+    session.set_pivot(runity_editor::Pivot::Center);
+    // The middle of the box around both: x halfway, y halfway up the lid.
+    let middle = Vec3::new(2.0, 0.8, 0.0);
+    session.set_camera(middle + Vec3::new(1.0, 3.0, 9.0), middle);
+    session.set_tool(runity::gizmo::Tool::Rotate);
+    let (w, h) = session.size();
+    let crate_from = session.world_position(crate_id).unwrap();
+    let barrel_from = session.world_position(barrel).unwrap();
+
+    let (_, r) = grab_right_of_centre(&mut session).expect("a ring");
+    session.gizmo_drag(w / 2 + r, h / 2 + 15).unwrap();
+    session.gizmo_end();
+    let crate_to = session.world_position(crate_id).unwrap();
+    let barrel_to = session.world_position(barrel).unwrap();
+    assert!(
+        (crate_to - crate_from).length() > 0.05,
+        "went round: {crate_to}"
+    );
+    for (from, to) in [(crate_from, crate_to), (barrel_from, barrel_to)] {
+        let (before, after) = ((from - middle).length(), (to - middle).length());
+        assert!((before - after).abs() < 1e-3, "{before} vs {after}");
+    }
+    assert_eq!(
+        session.transform(crate_id).unwrap().rotation_deg,
+        session.transform(barrel).unwrap().rotation_deg
+    );
+}
