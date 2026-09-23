@@ -95,6 +95,13 @@ pub enum Kind {
         label: String,
         options: Vec<String>,
     },
+    /// A row of tabs; the chosen one's index is [`Screen::chosen`].
+    Tabs(Vec<String>),
+    /// Rows the game fills ([`Screen::set_items`]) — saves, servers — one
+    /// picked, [`Screen::picked`]. Rows `row` reference pixels tall.
+    List {
+        row: f32,
+    },
 }
 
 /// One element of a screen.
@@ -186,6 +193,7 @@ pub struct Screen {
     texts: HashMap<String, String>,
     values: HashMap<String, f32>,
     toggles: HashMap<String, bool>,
+    items: HashMap<String, Vec<String>>,
 }
 
 impl Screen {
@@ -204,6 +212,7 @@ impl Screen {
             texts: HashMap::new(),
             values: HashMap::new(),
             toggles: HashMap::new(),
+            items: HashMap::new(),
         })
     }
 
@@ -215,6 +224,7 @@ impl Screen {
             texts: HashMap::new(),
             values: HashMap::new(),
             toggles: HashMap::new(),
+            items: HashMap::new(),
         }
     }
 
@@ -238,6 +248,19 @@ impl Screen {
     /// Which option of a choice is chosen: its index, the first before any.
     pub fn chosen(&self, id: &str) -> usize {
         self.values.get(id).map_or(0, |v| v.max(0.0) as usize)
+    }
+
+    /// The rows of a list.
+    pub fn set_items(&mut self, id: &str, items: Vec<String>) {
+        self.items.insert(id.to_string(), items);
+    }
+
+    /// Which row of a list is picked; `None` before any.
+    pub fn picked(&self, id: &str) -> Option<usize> {
+        self.values
+            .get(id)
+            .filter(|v| **v >= 0.0)
+            .map(|v| *v as usize)
     }
 
     /// Choose an option of a choice from code: the setting as saved.
@@ -300,7 +323,8 @@ impl Screen {
                 Kind::Choice { label, options } => std::iter::once(label.as_str())
                     .chain(options.iter().map(String::as_str))
                     .collect(),
-                Kind::Panel | Kind::Bar => Vec::new(),
+                Kind::Tabs(names) => names.iter().map(String::as_str).collect(),
+                Kind::Panel | Kind::Bar | Kind::List { .. } => Vec::new(),
             })
             .filter_map(|t| t.strip_prefix('@').map(str::to_string))
             .collect()
@@ -375,6 +399,24 @@ impl Screen {
                     let mut chosen = self.chosen(&e.id);
                     if widgets.dropdown(ui, input, rect, &label(text), &options, &mut chosen) {
                         self.values.insert(e.id.clone(), chosen as f32);
+                        done.changed.push(e.id.clone());
+                    }
+                }
+                Kind::Tabs(names) => {
+                    let names: Vec<String> = names.iter().map(|n| label(n)).collect();
+                    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                    let mut chosen = self.chosen(&e.id);
+                    if widgets.tabs(ui, input, rect, &names, &mut chosen) {
+                        self.values.insert(e.id.clone(), chosen as f32);
+                        done.changed.push(e.id.clone());
+                    }
+                }
+                Kind::List { row } => {
+                    let items = self.items.get(&e.id).cloned().unwrap_or_default();
+                    let mut picked = self.picked(&e.id);
+                    if widgets.list(ui, input, rect, row * scale, &items, &mut picked) {
+                        self.values
+                            .insert(e.id.clone(), picked.map_or(-1.0, |p| p as f32));
                         done.changed.push(e.id.clone());
                     }
                 }
@@ -497,6 +539,42 @@ mod tests {
             .quads
             .iter()
             .any(|q| q.width == health.width * 0.25 && q.y == health.y));
+    }
+
+    #[test]
+    fn tabs_and_a_list_the_game_fills_are_chosen_on_a_screen() {
+        let layout: Layout = ron::from_str(
+            r#"(elements: [
+                (id: "pages", anchor: TopLeft, at: (0, 0), size: (300, 30), kind: Tabs(["Video", "Sound"])),
+                (id: "saves", anchor: TopLeft, at: (0, 40), size: (300, 100), kind: List(row: 25)),
+            ])"#,
+        )
+        .unwrap();
+        let mut screen = Screen::from_layout(layout);
+        screen.set_items("saves", vec!["Autumn".into(), "Spring".into()]);
+        let size = Vec2::new(1280.0, 720.0);
+        let scale = 720.0 / REFERENCE_HEIGHT;
+        let mut widgets = Widgets::new();
+        let mut ui = Ui::new();
+        let mut click = |screen: &mut Screen, x: f32, y: f32| {
+            let mut input = Input::new();
+            input.begin_frame();
+            input.handle(&InputEvent::MouseMoved {
+                x: x * scale,
+                y: y * scale,
+            });
+            input.handle(&InputEvent::MouseDown(MouseButton::Left));
+            screen.draw(&mut widgets, &mut ui, &input, size);
+            input.begin_frame();
+            input.handle(&InputEvent::MouseUp(MouseButton::Left));
+            screen.draw(&mut widgets, &mut ui, &input, size)
+        };
+        assert_eq!(screen.picked("saves"), None);
+        assert!(click(&mut screen, 200.0, 15.0).changed("pages"));
+        assert_eq!(screen.chosen("pages"), 1);
+        assert!(click(&mut screen, 50.0, 75.0).changed("saves"));
+        assert_eq!(screen.picked("saves"), Some(1), "Spring");
+        assert!(ui.texts.iter().any(|t| t.text == "Spring"));
     }
 
     #[test]

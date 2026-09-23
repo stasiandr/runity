@@ -233,6 +233,9 @@ impl<G: Game> Shell<G> {
         match state.surface.begin_frame() {
             Ok(acquired) => {
                 state
+                    .overlay
+                    .draw_pictures(&state.gpu, &mut state.renderer, &frame);
+                state
                     .renderer
                     .render_to_frame(&state.gpu, &acquired, &frame);
                 state

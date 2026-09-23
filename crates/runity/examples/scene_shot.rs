@@ -77,6 +77,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let target = OffscreenTarget::new(&gpu, width, height);
     let mut renderer = Renderer::new(&gpu, &target);
+    // The project's materials' own shaders.
+    if let Some(project) = &project {
+        let mut shaders =
+            runity::render::MaterialShaders::new(project.root().join(runity::project::SHADERS));
+        for (name, result) in shaders.poll(&mut renderer, &gpu) {
+            if let Err(problem) = result {
+                eprintln!("shader {name}: {problem}");
+            }
+        }
+    }
 
     // Models resolve from the builtins first, then from a library: the one
     // given, or else the project's own if it has been built. Builtins first

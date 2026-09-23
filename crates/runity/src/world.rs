@@ -90,30 +90,135 @@ pub struct BendsGrass(pub f32);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A screen on a thing in the world — a shop terminal, a radio's dial —
+/// that the player works by aiming at it: widgets drawn into [`Self::ui`]
+/// with [`Self::pointer`] as their input, as on the screen; the thing's
+/// model (a flat `builtin:plane`, its top the screen) shows the picture.
+/// Each frame: [`WorldUi::aim`] with the crosshair's ray and whether
+/// "use" went down or up, then clear [`Self::ui`] and draw the widgets.
+#[derive(Debug, Clone)]
+pub struct WorldUi {
+    /// The picture's name: a material elsewhere can show it too, as
+    /// `render:<name>`.
+    pub name: String,
+    /// Pixels across and down.
+    pub size: (u32, u32),
+    pub background: glam::Vec4,
+    pub ui: crate::ui::Ui,
+    /// The crosshair, as a mouse on the picture.
+    pub pointer: crate::input::Input,
+}
+
+impl WorldUi {
+    pub fn new(name: &str, size: (u32, u32)) -> Self {
+        Self {
+            name: name.to_string(),
+            size,
+            background: glam::Vec4::new(0.05, 0.06, 0.07, 1.0),
+            ui: Default::default(),
+            pointer: Default::default(),
+        }
+    }
+
+    /// Where a ray from `origin` along `direction` meets this screen,
+    /// placed at `placed` (a `builtin:plane`: a metre square, facing up),
+    /// in its pixels from the top left; `None` when it misses or comes
+    /// from behind.
+    pub fn hit(
+        &self,
+        placed: glam::Mat4,
+        origin: glam::Vec3,
+        direction: glam::Vec3,
+    ) -> Option<glam::Vec2> {
+        let inverse = placed.inverse();
+        let o = inverse.transform_point3(origin);
+        let d = inverse.transform_vector3(direction);
+        if d.y >= -1e-6 || o.y <= 0.0 {
+            return None;
+        }
+        let t = -o.y / d.y;
+        let at = o + d * t;
+        let (u, v) = (at.x + 0.5, at.z + 0.5);
+        ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v))
+            .then(|| glam::Vec2::new(u * self.size.0 as f32, v * self.size.1 as f32))
+    }
+
+    /// This frame's pointer: at `at` (from [`Self::hit`]) or off the
+    /// screen, the button going `down` or `up` — "use" pressed and
+    /// released while aiming.
+    pub fn aim(&mut self, at: Option<glam::Vec2>, down: bool, up: bool) {
+        use crate::input::{InputEvent, MouseButton};
+        self.pointer.begin_frame();
+        let at = at.unwrap_or(glam::Vec2::splat(-1e4));
+        self.pointer
+            .handle(&InputEvent::MouseMoved { x: at.x, y: at.y });
+        if down {
+            self.pointer
+                .handle(&InputEvent::MouseDown(MouseButton::Left));
+        }
+        if up {
+            self.pointer.handle(&InputEvent::MouseUp(MouseButton::Left));
+        }
+    }
+}
+
 /// A camera drawing into a picture, from its line's `render_texture`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
+
+/// A camera drawing into a picture: where it looks from, which picture,
+/// and the mirror's plane (a point on it and the way it faces) if it is one.
+type PictureCamera = (
+    Camera,
+    crate::scene::RenderTexture,
+    Option<(glam::Vec3, glam::Vec3)>,
+);
 
 /// Every camera that draws into a picture, as a frame of its own: what
 /// [`scene_frame`] puts on a frame for materials to show.
 pub fn texture_views(
     world: &World,
     scene: &crate::scene::Scene,
+    main: Camera,
 ) -> Vec<crate::render::TextureView> {
-    let cameras: Vec<(Camera, crate::scene::RenderTexture)> = world
-        .query::<(&CameraLens, &WorldTransform, &ToTexture)>()
+    // A mirror's camera is the screen's, reflected in its plane; anything
+    // else's is its own lens.
+    let cameras: Vec<PictureCamera> = world
+        .query::<(Option<&CameraLens>, &WorldTransform, &ToTexture)>()
         .iter()
-        .map(|(lens, placed, picture)| (lens_camera(lens.0, placed.0), picture.0.clone()))
+        .filter_map(|(lens, placed, picture)| {
+            if picture.0.mirror {
+                let (_, turn, at) = placed.0.to_scale_rotation_translation();
+                let normal = (turn * glam::Vec3::Y).normalize();
+                Some((
+                    reflected(main, at, normal),
+                    picture.0.clone(),
+                    Some((at, normal)),
+                ))
+            } else {
+                lens.map(|l| (lens_camera(l.0, placed.0), picture.0.clone(), None))
+            }
+        })
         .collect();
     cameras
         .into_iter()
-        .map(|(camera, picture)| {
-            let hidden: std::collections::HashSet<crate::id::EntityId> = world
+        .map(|(camera, picture, plane)| {
+            let mut hidden: std::collections::HashSet<crate::id::EntityId> = world
                 .query::<(&Layer, &SceneId)>()
                 .iter()
                 .filter(|(layer, _)| picture.hide.contains(&layer.0))
                 .map(|(_, id)| id.0)
                 .collect();
+            // What is behind a mirror is not in it.
+            if let Some((at, normal)) = plane {
+                hidden.extend(
+                    world
+                        .query::<(&WorldTransform, &SceneId)>()
+                        .iter()
+                        .filter(|(p, _)| (p.0.w_axis.truncate() - at).dot(normal) < -0.05)
+                        .map(|(_, id)| id.0),
+                );
+            }
             let mut frame = build_frame_where(
                 world,
                 camera,
@@ -1067,7 +1172,7 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
     );
     scene_look(&mut frame, scene);
     post_volumes(&mut frame, world);
-    frame.texture_views = texture_views(world, scene);
+    frame.texture_views = texture_views(world, scene, camera);
     frame
 }
 
@@ -1187,6 +1292,20 @@ pub fn camera_of(world: &World) -> Option<Camera> {
     best.map(|(_, _, camera)| camera)
 }
 
+/// A camera reflected in the plane through `at` facing `normal`: what a
+/// mirror there shows, left and right swapped (the mirror's material
+/// swaps them back, [`crate::material::ScreenMap::Mirror`]).
+pub fn reflected(camera: Camera, at: glam::Vec3, normal: glam::Vec3) -> Camera {
+    let point = |p: glam::Vec3| p - 2.0 * (p - at).dot(normal) * normal;
+    let direction = |d: glam::Vec3| d - 2.0 * d.dot(normal) * normal;
+    Camera {
+        position: point(camera.position),
+        target: point(camera.target),
+        up: direction(camera.up),
+        ..camera
+    }
+}
+
 /// What a camera on an entity sees: from where it is, along its +z.
 fn lens_camera(lens: crate::scene::Lens, placed: glam::Mat4) -> Camera {
     let (_, rotation, position) = placed.to_scale_rotation_translation();
@@ -1251,6 +1370,34 @@ pub fn build_frame_where(
             material: surface.0,
             pose,
         });
+    }
+    // Screens in the world: their pictures, and the things showing them.
+    let mut ui_pictures = Vec::new();
+    for (entity, screen, line) in world
+        .query::<(hecs::Entity, &WorldUi, Option<&SceneId>)>()
+        .iter()
+    {
+        if !keep(line.map(|l| l.0)) {
+            continue;
+        }
+        let id = crate::asset::AssetId::render_target(&screen.name);
+        ui_pictures.push(crate::render::UiPicture {
+            id,
+            size: screen.size,
+            background: screen.background,
+            ui: screen.ui.clone(),
+        });
+        if let (Ok(model), Ok(placed)) = (
+            world.get::<&Model>(entity),
+            world.get::<&WorldTransform>(entity),
+        ) {
+            if let Some(draw) = draws
+                .iter_mut()
+                .find(|d| d.mesh == model.0 && d.transform == placed.0)
+            {
+                draw.material.base_map = Some(id);
+            }
+        }
     }
     for (emitting, line) in world
         .query::<(&crate::particles::Emitting, Option<&SceneId>)>()
@@ -1386,6 +1533,7 @@ pub fn build_frame_where(
         flares,
         live_meshes,
         texture_views: Vec::new(),
+        ui_pictures,
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),

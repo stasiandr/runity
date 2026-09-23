@@ -879,6 +879,18 @@ pub struct MaterialSource {
     pub mask_map: String,
     #[serde(default)]
     pub emission_map: String,
+    /// Its own shader: `shaders/<name>.wgsl` in the project, a `surface`
+    /// function over the standard one. Empty is the standard one.
+    #[serde(default)]
+    pub shader: String,
+    /// Up to eight numbers for its shader (`in.params`), in the order its
+    /// `// runity:params` line names them.
+    #[serde(default)]
+    pub params: Vec<f32>,
+    /// The base map on the screen, not the mesh: `Screen`, or `Mirror` for
+    /// a mirror's picture.
+    #[serde(default)]
+    pub screen_map: runity::material::ScreenMap,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1229,6 +1241,9 @@ pub fn material_from_ron(
             normal_map: texture_id(path, &source.normal_map, true)?,
             mask_map: texture_id(path, &source.mask_map, true)?,
             emission_map: texture_id(path, &source.emission_map, false)?,
+            shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
+            params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
+            screen_map: source.screen_map,
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,

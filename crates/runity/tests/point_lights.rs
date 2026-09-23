@@ -29,6 +29,7 @@ fn shoot(
         flares: Vec::new(),
         live_meshes: Vec::new(),
         texture_views: Vec::new(),
+        ui_pictures: Vec::new(),
         camera: Camera {
             position: Vec3::new(0.0, 10.0, 0.01),
             target: Vec3::ZERO,

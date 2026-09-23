@@ -72,10 +72,95 @@ pub struct Owned;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Replica;
 
+/// Just taken over from another peer: the speed it had there, for the
+/// physics to give the body as it becomes ours. The pose is already on
+/// its transform — the newest the old owner sent, carried forward — not
+/// the picture a moment behind that it was being shown at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Takeover {
+    pub velocity: glam::Vec3,
+    /// Radians a second about each axis.
+    pub spin: glam::Vec3,
+}
+
 /// "I want to drive this": put it on an entity, and the next frame takes
 /// it — optimistically, at once — and asks the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequestOwnership;
+
+/// Claims what comes near: every loose body (a dynamic one) within
+/// `radius` metres of this entity, when it is nearer this than any other
+/// peer's claimer by half a metre — the dacha simulator's claim on
+/// approach, so what a player reaches for is theirs before the hand
+/// arrives, and two players side by side do not pull it back and forth.
+/// Put it on the player.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClaimNear {
+    pub radius: f32,
+}
+
+/// How much nearer a claimer must be than any other to take a body.
+pub const CLAIM_MARGIN: f32 = 0.5;
+
+/// Ask for every loose body a claimer of `me` has come nearest: see
+/// [`ClaimNear`].
+pub fn claim_nearby(world: &mut hecs::World, me: PeerId) {
+    use crate::world::WorldTransform;
+    let claimers: Vec<(PeerId, glam::Vec3, f32, Option<NetGroup>)> = world
+        .query::<(hecs::Entity, &ClaimNear, &WorldTransform)>()
+        .iter()
+        .map(|(e, near, placed)| {
+            (
+                owner_of(world, e),
+                placed.0.w_axis.truncate(),
+                near.radius,
+                world.get::<&NetGroup>(e).ok().map(|g| *g),
+            )
+        })
+        .collect();
+    if !claimers.iter().any(|(owner, ..)| *owner == me) {
+        return;
+    }
+    let mut wanted = Vec::new();
+    for (entity, physics, placed) in world
+        .query::<(hecs::Entity, &crate::world::Physics, &WorldTransform)>()
+        .without::<(&ClaimNear, &OwnershipPending, &RequestOwnership)>()
+        .iter()
+    {
+        if physics.0 != crate::scene::Body::Dynamic || owner_of(world, entity) == me {
+            continue;
+        }
+        // A claimer's own parts (a hand) are its group's business.
+        let group = world.get::<&NetGroup>(entity).ok().map(|g| *g);
+        if group.is_some() && claimers.iter().any(|c| c.3 == group) {
+            continue;
+        }
+        let at = placed.0.w_axis.truncate();
+        let nearest = |mine: bool| {
+            claimers
+                .iter()
+                .filter(|(owner, ..)| (*owner == me) == mine)
+                .filter(|(_, p, r, _)| !mine || p.distance(at) <= *r)
+                .map(|(_, p, ..)| p.distance(at))
+                .min_by(f32::total_cmp)
+        };
+        let Some(mine) = nearest(true) else {
+            continue;
+        };
+        if nearest(false).is_none_or(|theirs| mine + CLAIM_MARGIN < theirs) {
+            wanted.push(entity);
+        }
+    }
+    for entity in wanted {
+        let _ = world.insert_one(entity, RequestOwnership);
+    }
+}
+
+/// Owned together: a claim on one of a group's entities is a claim on
+/// every one — the player and both hands, never one hand on another
+/// machine. See [`crate::party::Party::group`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NetGroup(pub EntityId);
 
 /// Driven on an assumption: asked for, not yet granted. Work that can be
 /// taken back reads [`Owned`]; work that cannot — despawning, spending —

@@ -388,6 +388,11 @@ impl PhysicsWorld {
             if switch {
                 switched.push((entity, handle.0, body));
                 live.insert(handle.0);
+                // Moved in the same breath (taken over from another peer,
+                // from further along): put there as well.
+                if built.local != *local {
+                    teleport.push((entity, handle.0, placed.0, *local, body));
+                }
                 continue;
             }
             if built.body != body
@@ -555,6 +560,25 @@ impl PhysicsWorld {
             if trigger && world.get::<&Contacts>(entity).is_err() {
                 let _ = world.insert_one(entity, Contacts::default());
             }
+        }
+        // Last, so a body rebuilt above has it too.
+        // Taken over from another peer: on at the speed it had there.
+        let taken: Vec<(hecs::Entity, crate::net::Takeover)> = world
+            .query::<(hecs::Entity, &crate::net::Takeover)>()
+            .iter()
+            .map(|(e, t)| (e, *t))
+            .collect();
+        for (entity, t) in taken {
+            if let Some(body) = world
+                .get::<&BodyHandle>(entity)
+                .ok()
+                .and_then(|h| self.bodies.get_mut(h.0))
+            {
+                let (v, w) = (t.velocity, t.spin);
+                body.set_linvel(vector![v.x, v.y, v.z], true);
+                body.set_angvel(vector![w.x, w.y, w.z], true);
+            }
+            let _ = world.remove_one::<crate::net::Takeover>(entity);
         }
         self.sync_joints(world);
     }
@@ -1096,6 +1120,50 @@ impl PhysicsWorld {
             return false;
         };
         body.set_linvel(vector![velocity.x, velocity.y, velocity.z], true);
+        true
+    }
+
+    /// Set how fast a body turns, radians a second about each axis: a
+    /// thrown plank's tumble. Unity's `angularVelocity`.
+    pub fn set_spin(&mut self, world: &World, entity: hecs::Entity, spin: Vec3) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        body.set_angvel(vector![spin.x, spin.y, spin.z], true);
+        true
+    }
+
+    /// Put a body somewhere at once, still: a cannon reloading its
+    /// muzzle. Its transform follows.
+    pub fn teleport(
+        &mut self,
+        world: &mut World,
+        entity: hecs::Entity,
+        position: Vec3,
+        rotation: Quat,
+    ) -> bool {
+        let Some(handle) = self.body_of(world, entity) else {
+            return false;
+        };
+        let Some(body) = self.bodies.get_mut(handle) else {
+            return false;
+        };
+        let pose = Isometry::from_parts(
+            Translation::new(position.x, position.y, position.z),
+            nalgebra::UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(
+                rotation.w, rotation.x, rotation.y, rotation.z,
+            )),
+        );
+        body.set_position(pose, true);
+        body.set_linvel(vector![0.0, 0.0, 0.0], true);
+        body.set_angvel(vector![0.0, 0.0, 0.0], true);
+        if let Ok(mut transform) = world.get::<&mut Transform>(entity) {
+            transform.position = position;
+            transform.set_rotation(rotation);
+        }
         true
     }
 
@@ -2024,6 +2092,52 @@ mod tests {
             world.get::<&Transform>(ball).unwrap().position.y < 2.9,
             "falls once it is ours"
         );
+    }
+
+    #[test]
+    fn a_body_handed_over_in_flight_keeps_its_speed() {
+        // Its owner throws it along x at 6 m/s, high above the floor; the
+        // poses come in each step. Then it is handed to this peer.
+        let (mut physics, mut world, ball) = dropped(10.0);
+        let _ = world.insert_one(ball, crate::net::Replica);
+        physics.run(&mut world);
+        for step in 1..=20 {
+            world.get::<&mut Transform>(ball).unwrap().position.x = 0.1 * step as f32;
+            crate::world::apply_hierarchy(&mut world);
+            physics.run(&mut world);
+        }
+        let _ = world.remove_one::<crate::net::Replica>(ball);
+        physics.run(&mut world);
+        let speed = physics.velocity(&world, ball).unwrap();
+        assert!(
+            (speed.x - 6.0).abs() < 0.5,
+            "as fast as its owner threw it: {speed}"
+        );
+    }
+
+    #[test]
+    fn a_body_taken_over_goes_on_from_the_pose_and_speed_it_was_handed() {
+        let (mut physics, mut world, ball) = dropped(10.0);
+        let _ = world.insert_one(ball, crate::net::Replica);
+        physics.run(&mut world);
+        physics.run(&mut world);
+        // Ours now, from further along than the picture had it.
+        let _ = world.remove_one::<crate::net::Replica>(ball);
+        world.get::<&mut Transform>(ball).unwrap().position = Vec3::new(3.0, 10.0, 0.0);
+        let _ = world.insert_one(
+            ball,
+            crate::net::Takeover {
+                velocity: Vec3::new(12.0, 0.0, 0.0),
+                spin: Vec3::ZERO,
+            },
+        );
+        crate::world::apply_hierarchy(&mut world);
+        physics.run(&mut world);
+        physics.run(&mut world);
+        let speed = physics.velocity(&world, ball).unwrap();
+        assert!((speed.x - 12.0).abs() < 0.5, "{speed}");
+        let at = world.get::<&Transform>(ball).unwrap().position;
+        assert!(at.x > 3.3, "on from where it was handed: {at}");
     }
 
     /// The one entity with this kind of body.

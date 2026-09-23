@@ -490,6 +490,12 @@ pub struct RenderTexture {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
+    /// A planar mirror instead: the entity's plane (its up the way it
+    /// faces) reflects what the screen's camera sees, no `camera` of its
+    /// own needed; its material shows the picture with `screen_map:
+    /// Mirror`. What is behind the plane is left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mirror: bool,
 }
 
 /// A place that looks different — the cellar darker and greener, the
@@ -1141,6 +1147,9 @@ impl EntityDesc {
 /// Not an `Option`: RON wants `Some(...)` spelled out around an optional
 /// field, and `material: Some("grass")` is noise in every line of every
 /// scene. A default variant costs nothing and reads better.
+// A line of a scene, not a frame's data: the inline material's size does
+// not matter, and a box around it would be in every match on it.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaterialRef {

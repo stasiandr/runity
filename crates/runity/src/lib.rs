@@ -27,15 +27,21 @@ pub mod asset;
 pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "physics")]
+pub mod bench;
 pub mod builtin;
 pub mod clouds;
 pub mod components;
+pub mod crash;
 pub mod decals;
+#[cfg(feature = "discord")]
+pub mod discord;
 pub mod edit;
 pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
 pub mod gpu;
+pub mod graph_text;
 pub mod id;
 pub mod input;
 pub mod lan;
@@ -65,6 +71,8 @@ pub mod reflections;
 pub mod refs;
 pub mod relay;
 pub mod render;
+#[cfg(feature = "reports")]
+pub mod reports;
 pub mod ron_edit;
 mod ron_text;
 pub mod routes;

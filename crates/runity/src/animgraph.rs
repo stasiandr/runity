@@ -330,6 +330,91 @@ impl Graph {
 
     /// What cannot work, in words: a start or a transition naming a state
     /// that is not there, a state naming a clip the model does not have.
+    /// What is wrong with the graph's shape, whatever the model: a state
+    /// nothing leads to, a state nothing leaves that is not meant to hold
+    /// (one playing once), and a transition that can never be taken
+    /// because one before it from the same state always is.
+    pub fn shape_problems(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        // Reachable from the start, by any transition (Any State's from
+        // every state).
+        let mut reached: std::collections::BTreeSet<&str> = Default::default();
+        let mut next = vec![self.start.as_str()];
+        while let Some(state) = next.pop() {
+            if !reached.insert(state) {
+                continue;
+            }
+            for t in &self.transitions {
+                if t.from == state || t.from == ANY {
+                    next.push(t.to.as_str());
+                }
+            }
+        }
+        for (name, state) in &self.states {
+            if !reached.contains(name.as_str()) {
+                out.push(format!(
+                    "state `{name}` is never reached: no transition from `{}` leads there",
+                    self.start
+                ));
+            }
+            let leaves = self
+                .transitions
+                .iter()
+                .any(|t| (t.from == *name || t.from == ANY) && t.to != *name);
+            if !leaves && !state.looping && self.states.len() > 1 {
+                out.push(format!(
+                    "state `{name}` plays once and nothing leaves it: the character stops there"
+                ));
+            }
+        }
+        // First match wins: after an unconditional exit from a state, the
+        // rest from it are never looked at.
+        let mut open: std::collections::BTreeMap<&str, &str> = Default::default();
+        for t in &self.transitions {
+            if let Some(first) = open.get(t.from.as_str()) {
+                out.push(format!(
+                    "the transition `{}` → `{}` is never taken: `{}` → `{first}` before it always is",
+                    t.from, t.to, t.from
+                ));
+                continue;
+            }
+            if t.when.is_empty() {
+                open.insert(t.from.as_str(), t.to.as_str());
+            }
+        }
+        out
+    }
+
+    /// Every parameter the graph reads: in conditions, blends and speeds.
+    pub fn parameters(&self) -> std::collections::BTreeSet<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for t in &self.transitions {
+            for c in &t.when {
+                match c {
+                    Condition::Above(p, _)
+                    | Condition::Below(p, _)
+                    | Condition::Is(p)
+                    | Condition::Not(p)
+                    | Condition::Trigger(p) => {
+                        out.insert(p.clone());
+                    }
+                    Condition::Finished => {}
+                }
+            }
+        }
+        for state in self.states.values() {
+            for p in [&state.blend_by, &state.blend_by_y] {
+                if !p.is_empty() {
+                    out.insert(p.clone());
+                }
+            }
+            for p in [&state.speed_from, &state.time_from].into_iter().flatten() {
+                out.insert(p.clone());
+            }
+        }
+        out
+    }
+
     pub fn problems(&self, clips: &[&str]) -> Vec<String> {
         let mut out = Vec::new();
         let states: Vec<&str> = self.states.keys().map(String::as_str).collect();
@@ -420,7 +505,59 @@ pub struct Controller {
     /// Where in its cycle the state was at the last update.
     phase: Option<f32>,
     fired: Vec<String>,
+    /// Updates so far: the clock the trail is told by.
+    updates: u64,
+    /// The last few transitions taken, oldest first.
+    trail: std::collections::VecDeque<Passage>,
 }
+
+/// A transition taken: when (the controller's update count), from which
+/// state to which, and what made it — for an agent reading a running game
+/// to see why a character is where it is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Passage {
+    pub update: u64,
+    /// Empty for the start.
+    pub from: String,
+    pub to: String,
+    /// The conditions that held, in words; `start` for the first state.
+    pub when: String,
+}
+
+impl std::fmt::Display for Passage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.from.is_empty() {
+            write!(f, "#{} → {} ({})", self.update, self.to, self.when)
+        } else {
+            write!(
+                f,
+                "#{} {} → {} ({})",
+                self.update, self.from, self.to, self.when
+            )
+        }
+    }
+}
+
+/// Conditions in words: `speed > 0.1, jump pulled`.
+pub fn describe(when: &[Condition]) -> String {
+    if when.is_empty() {
+        return "always".into();
+    }
+    when.iter()
+        .map(|c| match c {
+            Condition::Above(p, v) => format!("{p} > {v}"),
+            Condition::Below(p, v) => format!("{p} < {v}"),
+            Condition::Is(p) => p.clone(),
+            Condition::Not(p) => format!("not {p}"),
+            Condition::Trigger(p) => format!("{p} pulled"),
+            Condition::Finished => "clip finished".into(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// How many transitions a controller remembers.
+pub const TRAIL: usize = 16;
 
 impl Controller {
     pub fn new(graph: Graph) -> Self {
@@ -431,7 +568,14 @@ impl Controller {
             triggers: HashSet::new(),
             phase: None,
             fired: Vec::new(),
+            updates: 0,
+            trail: Default::default(),
         }
+    }
+
+    /// The last transitions taken, oldest first.
+    pub fn trail(&self) -> impl Iterator<Item = &Passage> {
+        self.trail.iter()
     }
 
     /// The state it is in; `None` before the first update.
@@ -550,6 +694,8 @@ impl Controller {
     /// Take the first transition whose conditions hold, if any, and play
     /// what the state says on `animator`. Returns the state entered.
     pub fn update(&mut self, animator: &mut Animator) -> Option<String> {
+        self.updates += 1;
+        let mut because = String::from("start");
         let entered = match &self.state {
             None => Some((self.graph.start.clone(), 0.0)),
             Some(now) => {
@@ -568,9 +714,23 @@ impl Controller {
                             Condition::Finished => finished,
                         })
                     })
-                    .map(|t| (t.to.clone(), t.fade))
+                    .map(|t| {
+                        because = describe(&t.when);
+                        (t.to.clone(), t.fade)
+                    })
             }
         };
+        if let Some((to, _)) = &entered {
+            self.trail.push_back(Passage {
+                update: self.updates,
+                from: self.state.clone().unwrap_or_default(),
+                to: to.clone(),
+                when: because,
+            });
+            while self.trail.len() > TRAIL {
+                self.trail.pop_front();
+            }
+        }
         self.triggers.clear();
         if let Some((name, fade)) = &entered {
             if let Some(state) = self
@@ -671,6 +831,110 @@ impl Controller {
                 .filter(|(at, _)| passed(*at))
                 .map(|(_, name)| name.clone()),
         );
+    }
+}
+
+/// A graph's cases: what it should do, played without the game — as
+/// `animators/<name>.cases.ron` beside it, which `runity check` plays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Cases {
+    /// How long each clip is, seconds; any not named is a second.
+    #[serde(default)]
+    pub clips: BTreeMap<String, f32>,
+    pub cases: Vec<Case>,
+}
+
+/// One case: steps from the start state.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Case {
+    pub name: String,
+    pub steps: Vec<Step>,
+}
+
+/// Parameters set, triggers pulled, time let pass — then where the graph
+/// should stand.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    #[serde(default)]
+    pub set: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub trigger: Vec<String>,
+    /// Seconds, a thirtieth at a time.
+    #[serde(default)]
+    pub wait: f32,
+    pub expect: String,
+}
+
+impl Cases {
+    /// Play every case on `graph`: what went otherwise, in words.
+    pub fn run(&self, graph: &Graph) -> Vec<String> {
+        use crate::animation::{Channel, Clip, Joint, Path, PoseTransform, Skeleton};
+        use std::sync::Arc;
+        let skeleton = Arc::new(Skeleton {
+            joints: vec![Joint {
+                name: "root".into(),
+                parent: None,
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest: PoseTransform::default(),
+            }],
+        });
+        let mut names: HashSet<String> = HashSet::new();
+        for state in graph.states.values() {
+            names.insert(state.clip.clone());
+            names.extend(state.blend.iter().map(|(_, c)| c.clone()));
+            names.extend(state.directional.iter().map(|(_, _, c)| c.clone()));
+        }
+        let clips: Vec<Clip> = names
+            .into_iter()
+            .filter(|n| !n.is_empty())
+            .map(|name| {
+                let duration = self.clips.get(&name).copied().unwrap_or(1.0);
+                Clip {
+                    name,
+                    duration,
+                    channels: vec![Channel {
+                        joint: 0,
+                        path: Path::Translation,
+                        times: vec![0.0, duration],
+                        values: vec![0.0; 6],
+                    }],
+                }
+            })
+            .collect();
+        let clips = Arc::new(clips);
+        let mut out = Vec::new();
+        for case in &self.cases {
+            let mut animator = Animator::new(skeleton.clone(), clips.clone());
+            let mut controller = Controller::new(graph.clone());
+            controller.update(&mut animator);
+            for (i, step) in case.steps.iter().enumerate() {
+                for (name, value) in &step.set {
+                    controller.set(name, *value);
+                }
+                for name in &step.trigger {
+                    controller.trigger(name);
+                }
+                controller.update(&mut animator);
+                let mut left = step.wait;
+                while left > 1e-6 {
+                    let dt = left.min(1.0 / 30.0);
+                    animator.advance(dt);
+                    controller.update(&mut animator);
+                    left -= dt;
+                }
+                let now = controller.state().unwrap_or("");
+                if now != step.expect {
+                    out.push(format!(
+                        "case `{}`, step {}: in `{now}`, expected `{}`",
+                        case.name,
+                        i + 1,
+                        step.expect
+                    ));
+                    break;
+                }
+            }
+        }
+        out
     }
 }
 
@@ -966,6 +1230,77 @@ mod tests {
         }
         // Two seconds of a one-second walk: each foot twice, in order.
         assert_eq!(heard, ["left", "right", "left", "right"]);
+    }
+
+    #[test]
+    fn a_graph_says_what_is_never_reached_never_left_or_never_taken() {
+        let graph: Graph = ron::from_str(
+            r#"(start: "idle", states: {
+                "idle": (clip: "idle", transitions: [
+                    (to: "walk"),
+                    (to: "jump", when: [Trigger("jump")]),
+                ]),
+                "walk": (clip: "walk", speed_from: "speed"),
+                "jump": (clip: "jump", looping: false),
+                "swim": (clip: "idle"),
+            })"#,
+        )
+        .unwrap();
+        let found = graph.shape_problems();
+        assert!(
+            found.iter().any(|p| p.contains("`swim` is never reached")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("`idle` → `jump` is never taken")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|p| p.contains("`jump` plays once and nothing leaves")),
+            "{found:?}"
+        );
+        let wanted: Vec<String> = graph.parameters().into_iter().collect();
+        assert_eq!(wanted, ["jump", "speed"]);
+    }
+
+    #[test]
+    fn a_controller_remembers_which_way_it_went_and_why() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.update(&mut animator);
+        controller.set("speed", 2.0);
+        controller.update(&mut animator);
+        let trail: Vec<String> = controller.trail().map(|p| p.to_string()).collect();
+        assert_eq!(trail, ["#1 → idle (start)", "#2 idle → walk (speed > 0.1)"]);
+    }
+
+    #[test]
+    fn cases_play_the_graph_without_the_game() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        let cases: Cases = ron::from_str(
+            r#"(clips: {"jump": 0.5}, cases: [
+                (name: "walks when fast, jumps, lands running", steps: [
+                    (expect: "idle"),
+                    (set: {"speed": 2.0}, expect: "walk"),
+                    (trigger: ["jump"], expect: "jump"),
+                    (wait: 0.6, expect: "walk"),
+                    (set: {"speed": 0.0}, expect: "idle"),
+                ]),
+                (name: "a wrong one", steps: [(set: {"speed": 2.0}, expect: "idle")]),
+            ])"#,
+        )
+        .unwrap();
+        let failed = cases.run(&graph);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(
+            failed[0].contains("`a wrong one`, step 1: in `walk`"),
+            "{failed:?}"
+        );
     }
 
     #[test]

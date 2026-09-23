@@ -20,7 +20,7 @@ use crate::id::EntityId;
 
 /// Bumped whenever a message changes shape. A client of another version
 /// is turned away at the door rather than misread.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// The blob name the transform travels under.
 pub const TRANSFORM: &str = "transform";
@@ -92,6 +92,9 @@ pub enum ToServer {
     SetScene { scene: String },
     /// Leaving on purpose.
     Leave,
+    /// What time is it on the server? `sent`: my clock, seconds, for
+    /// the answer to bring back.
+    Clock { sent: f64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +167,12 @@ pub enum ToClient {
     },
     /// The host is leaving on purpose; the session ends with it.
     SessionEnding,
+    /// The server's clock, seconds since the session began, answering a
+    /// [`ToServer::Clock`] sent at `sent` on the asker's.
+    Clock {
+        sent: f64,
+        server: f64,
+    },
 }
 
 /// Several messages in one datagram.

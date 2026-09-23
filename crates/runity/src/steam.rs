@@ -135,6 +135,80 @@ impl Steam {
             .collect();
         Some((members, matchmaking.lobby_owner(lobby).raw()))
     }
+
+    /// Unlock an achievement by its API name, as set on Steamworks, and
+    /// send it: the pop-up shows at once. `false` when Steam refused (an
+    /// unknown name, stats not yet received).
+    pub fn unlock(&self, achievement: &str) -> bool {
+        let stats = self.client.user_stats();
+        stats.achievement(achievement).set().is_ok() && stats.store_stats().is_ok()
+    }
+
+    /// Whether an achievement is unlocked; `None` when Steam does not know
+    /// it.
+    pub fn unlocked(&self, achievement: &str) -> Option<bool> {
+        self.client.user_stats().achievement(achievement).get().ok()
+    }
+
+    /// Lock an achievement again — for testing a game's unlocks.
+    pub fn relock(&self, achievement: &str) -> bool {
+        let stats = self.client.user_stats();
+        stats.achievement(achievement).clear().is_ok() && stats.store_stats().is_ok()
+    }
+
+    /// A whole-number stat by its API name — crates carried, days survived
+    /// — set and sent. Steam unlocks the achievements that hang on it.
+    pub fn set_stat(&self, name: &str, value: i32) -> bool {
+        let stats = self.client.user_stats();
+        stats.set_stat_i32(name, value).is_ok() && stats.store_stats().is_ok()
+    }
+
+    pub fn stat(&self, name: &str) -> Option<i32> {
+        self.client.user_stats().get_stat_i32(name).ok()
+    }
+
+    /// What friends see this player doing, by key: `steam_display` with a
+    /// localisation token, or any key of the game's own; `None` clears it.
+    /// Steam's Rich Presence.
+    pub fn set_presence(&self, key: &str, value: Option<&str>) -> bool {
+        self.client.friends().set_rich_presence(key, value)
+    }
+
+    /// Clear everything this player shows friends.
+    pub fn clear_presence(&self) {
+        self.client.friends().clear_rich_presence();
+    }
+
+    /// A player's picture, 64 pixels square, RGBA: for a name tag over a
+    /// friend's head or the lobby's list. `None` until Steam has it.
+    pub fn avatar(&self, steam_id: u64) -> Option<(u32, u32, Vec<u8>)> {
+        self.client
+            .friends()
+            .get_friend(SteamId::from_raw(steam_id))
+            .medium_avatar()
+            .map(|pixels| (64, 64, pixels))
+    }
+
+    /// A player's name on Steam.
+    pub fn name_of(&self, steam_id: u64) -> String {
+        self.client
+            .friends()
+            .get_friend(SteamId::from_raw(steam_id))
+            .name()
+    }
+}
+
+/// Where Steam Auto-Cloud should look for a game's saves, as the
+/// Steamworks page asks for them (Root Overrides): the same folders
+/// [`crate::player_prefs::user_dir`] keeps the player's files in, `saves/`
+/// under the game's name. One line an OS, `root / subdirectory`.
+pub fn auto_cloud_roots(game: &str) -> String {
+    format!(
+        "Windows: WinAppDataRoaming / {game}/saves\n\
+         macOS:   MacAppSupport / {game}/saves\n\
+         Linux:   LinuxXdgDataHome / {game}/saves\n\
+         Pattern: *.ron"
+    )
 }
 
 impl Transport for Steam {

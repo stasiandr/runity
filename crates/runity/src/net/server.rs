@@ -87,6 +87,8 @@ pub struct Server {
     outboxes: BTreeMap<PeerId, Outbox>,
     /// What it did that someone may want to read: joins, refusals.
     pub log: Vec<String>,
+    /// When the session began: the clock everyone agrees on.
+    began: std::time::Instant,
 }
 
 impl Server {
@@ -107,6 +109,7 @@ impl Server {
             fingerprint,
             outboxes: BTreeMap::new(),
             log: Vec::new(),
+            began: std::time::Instant::now(),
         }
     }
 
@@ -214,6 +217,14 @@ impl Server {
             ToServer::JoinRequest { .. } => {}
             ToServer::Ready { epoch } => self.ready(peer, epoch),
             ToServer::Leave => self.leave(peer, true),
+            ToServer::Clock { sent } => {
+                let server = self.began.elapsed().as_secs_f64();
+                self.outboxes
+                    .entry(peer)
+                    .or_default()
+                    .unreliable
+                    .push(ToClient::Clock { sent, server });
+            }
             ToServer::SetScene { scene } => {
                 if peer == PeerId::HOST {
                     self.set_scene(scene);

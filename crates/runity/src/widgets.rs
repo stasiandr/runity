@@ -9,6 +9,14 @@
 //! The [`Ui`] list stays a list; the one thing a widget has to remember
 //! between frames — which of them the mouse went down on — lives here, so
 //! that a press that starts on "Quit" and ends on "Play" is neither.
+//!
+//! A gamepad works them too, as Unity's automatic navigation: call
+//! [`Widgets::begin_frame`] before drawing them, and the d-pad or the left
+//! stick moves a highlight to the nearest widget that way (by last
+//! frame's places), South presses what is highlighted, East closes an open
+//! list or lets go of a text field. Left and right move a highlighted
+//! slider; up and down, an open list's choice. The mouse moving hides the
+//! highlight again.
 
 use glam::Vec4;
 
@@ -93,7 +101,26 @@ pub struct Widgets {
     focused: Option<u64>,
     /// The dropdown whose options are showing.
     open: Option<u64>,
+    /// What the pad has highlighted, and whether the pad is in use.
+    selected: Option<u64>,
+    pad: bool,
+    /// Widgets drawn this frame and last: where the pad can go.
+    seen: Vec<(u64, Rect, Nav)>,
+    last: Vec<(u64, Rect, Nav)>,
+    /// South this frame, on what is highlighted.
+    press: bool,
+    /// A highlighted slider's or open list's step this frame: −1, 0 or 1.
+    nudge: f32,
+    stick_was: glam::Vec2,
     pub style: Style,
+}
+
+/// How the pad treats a widget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Nav {
+    Press,
+    Slider,
+    List,
 }
 
 fn key(rect: Rect, label: &str) -> u64 {
@@ -109,6 +136,134 @@ fn key(rect: Rect, label: &str) -> u64 {
 impl Widgets {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Take the pad's moves for this frame: call once before drawing the
+    /// widgets. Without it they answer the mouse only.
+    pub fn begin_frame(&mut self, input: &Input) {
+        use crate::input::{PadAxis, PadButton};
+        self.last = std::mem::take(&mut self.seen);
+        self.press = false;
+        self.nudge = 0.0;
+        if input.mouse_motion() != glam::Vec2::ZERO || input.mouse_pressed(MouseButton::Left) {
+            self.pad = false;
+        }
+        // Screen directions, y down.
+        let stick = glam::Vec2::new(
+            input.pad_axis(PadAxis::LeftX),
+            -input.pad_axis(PadAxis::LeftY),
+        );
+        let pushed = stick.length() > 0.5 && self.stick_was.length() <= 0.5;
+        self.stick_was = stick;
+        let direction = if input.pad_pressed(PadButton::DPadUp) {
+            Some(glam::Vec2::NEG_Y)
+        } else if input.pad_pressed(PadButton::DPadDown) {
+            Some(glam::Vec2::Y)
+        } else if input.pad_pressed(PadButton::DPadLeft) {
+            Some(glam::Vec2::NEG_X)
+        } else if input.pad_pressed(PadButton::DPadRight) {
+            Some(glam::Vec2::X)
+        } else if pushed {
+            Some(if stick.x.abs() > stick.y.abs() {
+                glam::Vec2::new(stick.x.signum(), 0.0)
+            } else {
+                glam::Vec2::new(0.0, stick.y.signum())
+            })
+        } else {
+            None
+        };
+        let south = input.pad_pressed(PadButton::South);
+        if input.pad_pressed(PadButton::East) {
+            self.open = None;
+            self.focused = None;
+        }
+        if self.last.is_empty() || (direction.is_none() && !south) {
+            return;
+        }
+        let current = self
+            .selected
+            .and_then(|id| self.last.iter().find(|(i, _, _)| *i == id).copied());
+        let woke = !self.pad;
+        self.pad = true;
+        let Some((id, rect, nav)) = current else {
+            // Nothing highlighted yet: the top-left one.
+            self.selected = self
+                .last
+                .iter()
+                .min_by(|a, b| (a.1.y, a.1.x).partial_cmp(&(b.1.y, b.1.x)).unwrap())
+                .map(|(id, _, _)| *id);
+            return;
+        };
+        if south {
+            self.press = !woke;
+        }
+        let Some(direction) = direction.filter(|_| !woke) else {
+            return;
+        };
+        if nav == Nav::Slider && direction.x != 0.0 {
+            self.nudge = direction.x;
+            return;
+        }
+        if nav == Nav::List && self.open == Some(id) && direction.y != 0.0 {
+            self.nudge = direction.y;
+            return;
+        }
+        // The nearest one that way, what is off to the side counting
+        // double.
+        let centre = |r: &Rect| glam::Vec2::new(r.x + r.width * 0.5, r.y + r.height * 0.5);
+        let from = centre(&rect);
+        let next = self
+            .last
+            .iter()
+            .filter(|(i, _, _)| *i != id)
+            .filter_map(|(i, r, _)| {
+                let d = centre(r) - from;
+                let along = d.dot(direction);
+                (along > 1.0).then(|| (*i, along + 2.0 * (d - direction * along).length()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((next, _)) = next {
+            self.selected = Some(next);
+            self.focused = None;
+        }
+    }
+
+    /// Whether the pad has this widget highlighted.
+    fn highlighted(&self, id: u64) -> bool {
+        self.pad && self.selected == Some(id)
+    }
+
+    /// [`Self::track`] for a widget the pad can reach: highlighted counts
+    /// as over, South on it as a click.
+    fn reach(&mut self, input: &Input, rect: Rect, id: u64, nav: Nav) -> (bool, bool, bool) {
+        self.seen.push((id, rect, nav));
+        let (over, held, clicked) = self.track(input, rect, id);
+        let lit = self.highlighted(id);
+        (over || lit, held, clicked || (lit && self.press))
+    }
+
+    /// The pad's highlight round a widget, drawn over it.
+    fn ring(&self, ui: &mut Ui, rect: Rect, id: u64) {
+        if !self.highlighted(id) {
+            return;
+        }
+        let (c, t) = (self.style.accent, 2.0);
+        ui.quad(Quad::new(
+            rect.x - t,
+            rect.y - t,
+            rect.width + 2.0 * t,
+            t,
+            c,
+        ));
+        ui.quad(Quad::new(
+            rect.x - t,
+            rect.y + rect.height,
+            rect.width + 2.0 * t,
+            t,
+            c,
+        ));
+        ui.quad(Quad::new(rect.x - t, rect.y, t, rect.height, c));
+        ui.quad(Quad::new(rect.x + rect.width, rect.y, t, rect.height, c));
     }
 
     /// Where the mouse is relative to a widget this frame: whether it is
@@ -143,7 +298,8 @@ impl Widgets {
     /// A button. `true` on the frame it is clicked — released over it,
     /// having been pressed on it.
     pub fn button(&mut self, ui: &mut Ui, input: &Input, rect: Rect, label: &str) -> bool {
-        let (over, held, clicked) = self.track(input, rect, key(rect, label));
+        let id = key(rect, label);
+        let (over, held, clicked) = self.reach(input, rect, id, Nav::Press);
         let color = match (held, over) {
             (true, _) => self.style.pressed,
             (false, true) => self.style.hover,
@@ -151,6 +307,7 @@ impl Widgets {
         };
         ui.quad(Quad::new(rect.x, rect.y, rect.width, rect.height, color));
         self.label(ui, rect, label);
+        self.ring(ui, rect, id);
         clicked
     }
 
@@ -163,7 +320,8 @@ impl Widgets {
         label: &str,
         value: &mut bool,
     ) -> bool {
-        let (over, _, clicked) = self.track(input, rect, key(rect, label));
+        let id = key(rect, label);
+        let (over, _, clicked) = self.reach(input, rect, id, Nav::Press);
         if clicked {
             *value = !*value;
         }
@@ -193,6 +351,7 @@ impl Widgets {
             self.style.text,
             label,
         ));
+        self.ring(ui, rect, id);
         clicked
     }
 
@@ -209,7 +368,10 @@ impl Widgets {
         value: &mut String,
     ) -> Typed {
         let id = key(rect, placeholder);
-        let (over, _, _) = self.track(input, rect, id);
+        let (over, _, pressed) = self.reach(input, rect, id, Nav::Press);
+        if pressed && self.highlighted(id) {
+            self.focused = Some(id);
+        }
         if input.mouse_pressed(MouseButton::Left) {
             self.focused = if over {
                 Some(id)
@@ -257,6 +419,7 @@ impl Widgets {
             color,
             shown,
         ));
+        self.ring(ui, rect, id);
         typed
     }
 
@@ -274,9 +437,16 @@ impl Widgets {
         chosen: &mut usize,
     ) -> bool {
         let id = key(rect, label);
-        let (over, _, clicked) = self.track(input, rect, id);
+        let (over, _, clicked) = self.reach(input, rect, id, Nav::List);
         let mut changed = false;
         let was_open = self.open == Some(id);
+        if was_open && self.highlighted(id) && self.nudge != 0.0 && !options.is_empty() {
+            let at = (*chosen as i64 + self.nudge as i64).clamp(0, options.len() as i64 - 1);
+            if at as usize != *chosen {
+                *chosen = at as usize;
+                changed = true;
+            }
+        }
         if was_open {
             // The options, below, one row each.
             for (i, option) in options.iter().enumerate() {
@@ -330,6 +500,7 @@ impl Widgets {
             format!("{label}: {shown} ▾")
         };
         self.label(ui, rect, &text);
+        self.ring(ui, rect, id);
         changed
     }
 
@@ -421,6 +592,109 @@ impl Widgets {
         self.focused.is_some()
     }
 
+    /// A row of tabs across `rect` — a settings screen's Video, Sound,
+    /// Controls: the chosen one lit. `true` on the frame another is
+    /// chosen. Each tab is a widget of its own to the mouse and the pad.
+    pub fn tabs(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        names: &[&str],
+        chosen: &mut usize,
+    ) -> bool {
+        let mut changed = false;
+        let width = rect.width / names.len().max(1) as f32;
+        for (i, name) in names.iter().enumerate() {
+            let tab = Rect::new(rect.x + width * i as f32, rect.y, width, rect.height);
+            let id = key(tab, name);
+            let (over, _, clicked) = self.reach(input, tab, id, Nav::Press);
+            if clicked && *chosen != i {
+                *chosen = i;
+                changed = true;
+            }
+            let color = if i == *chosen {
+                self.style.hover
+            } else if over {
+                self.style.pressed
+            } else {
+                self.style.idle
+            };
+            ui.quad(Quad::new(tab.x, tab.y, tab.width, tab.height, color));
+            if i == *chosen {
+                ui.quad(Quad::new(
+                    tab.x,
+                    tab.y + tab.height - 3.0,
+                    tab.width,
+                    3.0,
+                    self.style.accent,
+                ));
+            }
+            self.label(ui, tab, name);
+            self.ring(ui, tab, id);
+        }
+        changed
+    }
+
+    /// Rows to pick one of — saves, servers, recipes: a row `row_height`
+    /// tall for each item from `rect`'s top, the picked one lit, what does
+    /// not fit cut off (put it in a [`Self::scroll`] for more). `true` on
+    /// the frame the pick changes; `picked` is `None` for no pick yet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn list(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        row_height: f32,
+        items: &[String],
+        picked: &mut Option<usize>,
+    ) -> bool {
+        let mut changed = false;
+        ui.quad(Quad::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            self.style.pressed,
+        ));
+        for (i, item) in items.iter().enumerate() {
+            let row = Rect::new(
+                rect.x,
+                rect.y + row_height * i as f32,
+                rect.width,
+                row_height,
+            );
+            if row.y + row.height > rect.y + rect.height + 0.5 {
+                break;
+            }
+            let id = key(row, item);
+            let (over, _, clicked) = self.reach(input, row, id, Nav::Press);
+            if clicked && *picked != Some(i) {
+                *picked = Some(i);
+                changed = true;
+            }
+            let color = if *picked == Some(i) {
+                self.style.hover
+            } else if over {
+                self.style.idle
+            } else {
+                self.style.pressed
+            };
+            ui.quad(Quad::new(row.x, row.y, row.width, row.height, color));
+            let size = self.style.text_size;
+            ui.text(TextRun::new(
+                row.x + size * 0.5,
+                row.y + (row.height - size) * 0.5,
+                size,
+                self.style.text,
+                item,
+            ));
+            self.ring(ui, row, id);
+        }
+        changed
+    }
+
     /// A value between `min` and `max`, set by dragging along the bar.
     /// `true` on frames it changes. The range is `min..=max`.
     pub fn slider(
@@ -433,8 +707,12 @@ impl Widgets {
         range: std::ops::RangeInclusive<f32>,
     ) -> bool {
         let (min, max) = (*range.start(), *range.end());
-        let (_, held, _) = self.track(input, rect, key(rect, label));
+        let id = key(rect, label);
+        let (_, held, _) = self.reach(input, rect, id, Nav::Slider);
         let before = *value;
+        if self.highlighted(id) && self.nudge != 0.0 {
+            *value = (*value + self.nudge * (max - min) * 0.05).clamp(min.min(max), max.max(min));
+        }
         if held && rect.width > 0.0 {
             let t = ((input.mouse_position().x - rect.x) / rect.width).clamp(0.0, 1.0);
             *value = min + (max - min) * t;
@@ -459,6 +737,7 @@ impl Widgets {
             self.style.accent,
         ));
         self.label(ui, rect, &format!("{label}: {:.2}", *value));
+        self.ring(ui, rect, id);
         *value != before
     }
 }
@@ -489,6 +768,103 @@ mod tests {
         width: 100.0,
         height: 30.0,
     };
+
+    #[test]
+    fn a_pad_moves_the_highlight_between_widgets_and_presses_one() {
+        use crate::input::PadButton;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let mut volume = 0.5;
+        let slider = Rect::new(150.0, 10.0, 100.0, 30.0);
+        let draw = |widgets: &mut Widgets, input: &Input, volume: &mut f32| {
+            widgets.begin_frame(input);
+            let mut ui = Ui::new();
+            let play = widgets.button(&mut ui, input, PLAY, "Play");
+            let quit = widgets.button(&mut ui, input, QUIT, "Quit");
+            widgets.slider(&mut ui, input, slider, "Volume", volume, 0.0..=1.0);
+            (play, quit)
+        };
+        let pad = |input: &mut Input, button| {
+            input.begin_frame();
+            input.handle(&InputEvent::PadUp(button));
+            input.begin_frame();
+            input.handle(&InputEvent::PadDown(button));
+        };
+        let idle = |input: &mut Input| input.begin_frame();
+        idle(&mut input);
+        draw(&mut widgets, &input, &mut volume);
+        // The first press only wakes the highlight, on the top-left one.
+        pad(&mut input, PadButton::DPadDown);
+        draw(&mut widgets, &input, &mut volume);
+        pad(&mut input, PadButton::South);
+        assert_eq!(
+            draw(&mut widgets, &input, &mut volume),
+            (true, false),
+            "Play"
+        );
+        // Down to Quit, and press it.
+        pad(&mut input, PadButton::DPadDown);
+        draw(&mut widgets, &input, &mut volume);
+        pad(&mut input, PadButton::South);
+        assert_eq!(
+            draw(&mut widgets, &input, &mut volume),
+            (false, true),
+            "Quit"
+        );
+        // Right, to the slider (up and across), and right again moves it.
+        pad(&mut input, PadButton::DPadRight);
+        draw(&mut widgets, &input, &mut volume);
+        pad(&mut input, PadButton::DPadRight);
+        draw(&mut widgets, &input, &mut volume);
+        assert!((volume - 0.55).abs() < 1e-5, "{volume}");
+        // The mouse moving hides the highlight: South does nothing.
+        frame(&mut input, (400.0, 400.0), &[]);
+        draw(&mut widgets, &input, &mut volume);
+        pad(&mut input, PadButton::South);
+        let pressed = draw(&mut widgets, &input, &mut volume);
+        assert_eq!(pressed, (false, false));
+    }
+
+    #[test]
+    fn a_tab_and_a_row_are_chosen_by_a_click() {
+        use crate::input::MouseButton as M;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let (mut tab, mut row) = (0, None);
+        let items: Vec<String> = ["Autumn save", "Spring save"].map(String::from).to_vec();
+        let mut draw = |widgets: &mut Widgets, input: &Input| {
+            let mut ui = Ui::new();
+            let tabs = widgets.tabs(
+                &mut ui,
+                input,
+                Rect::new(0.0, 0.0, 300.0, 30.0),
+                &["Video", "Sound", "Controls"],
+                &mut tab,
+            );
+            let list = widgets.list(
+                &mut ui,
+                input,
+                Rect::new(0.0, 40.0, 300.0, 100.0),
+                25.0,
+                &items,
+                &mut row,
+            );
+            (tabs, list, tab, row)
+        };
+        let click = |input: &mut Input, at: (f32, f32)| {
+            frame(input, at, &[InputEvent::MouseDown(M::Left)]);
+        };
+        click(&mut input, (150.0, 15.0));
+        draw(&mut widgets, &input);
+        frame(&mut input, (150.0, 15.0), &[InputEvent::MouseUp(M::Left)]);
+        assert_eq!(draw(&mut widgets, &input), (true, false, 1, None), "Sound");
+        click(&mut input, (50.0, 75.0));
+        draw(&mut widgets, &input);
+        frame(&mut input, (50.0, 75.0), &[InputEvent::MouseUp(M::Left)]);
+        assert_eq!(
+            draw(&mut widgets, &input),
+            (false, true, 1, Some(1)),
+            "the second row"
+        );
+    }
 
     #[test]
     fn a_dropdown_opens_on_a_click_and_a_click_on_an_option_chooses_it() {

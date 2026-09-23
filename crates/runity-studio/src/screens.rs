@@ -622,6 +622,8 @@ fn kind_icon(kind: &Kind) -> &'static str {
         Kind::Bar => "minus",
         Kind::Field(_) => "pencil",
         Kind::Choice { .. } => "chevron-down",
+        Kind::Tabs(_) => "layout-dashboard",
+        Kind::List { .. } => "list-tree",
     }
 }
 

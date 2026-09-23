@@ -65,11 +65,19 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
             continue;
         };
         for doc in yaml::documents(&text) {
+            let mut base = false;
             for (slot, field) in MAPS {
                 if let Some((guid, _)) = texture(&doc.body, slot) {
                     if matches!(field, "base_map" | "emission_map") {
                         colour.insert(guid.clone());
                     }
+                    base |= field == "base_map";
+                    used.insert(guid);
+                }
+            }
+            if !base && own_shader(unity, &doc.body).is_some() {
+                if let Some(guid) = own_texture(unity, &doc.body) {
+                    colour.insert(guid.clone());
                     used.insert(guid);
                 }
             }
@@ -84,9 +92,232 @@ fn hex(c: [f32; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]))
 }
 
+/// The first texture a custom shader's material sets that is not a normal
+/// map: what its surface function reads as the base map.
+fn own_texture(unity: &Unity, m: &Yaml) -> Option<String> {
+    m["m_SavedProperties"]
+        .list("m_TexEnvs")
+        .iter()
+        .find_map(|item| {
+            let Yaml::Hash(h) = item else { return None };
+            let (k, v) = h.iter().next()?;
+            let slot = k.as_str()?.to_lowercase();
+            if slot.contains("normal") || slot.contains("bump") {
+                return None;
+            }
+            let guid = v.reference("m_Texture")?.guid?;
+            matches!(unity.named(&guid), Some(("texture", _))).then_some(guid)
+        })
+}
+
+/// A colour property a custom shader named its own way (`_Main_Color`,
+/// `_Tint`): the first whose name says colour and not emission.
+fn any_colour(m: &Yaml) -> Option<[f32; 4]> {
+    m["m_SavedProperties"]
+        .list("m_Colors")
+        .iter()
+        .find_map(|item| {
+            let Yaml::Hash(h) = item else { return None };
+            let (k, _) = h.iter().next()?;
+            let name = k.as_str()?.to_lowercase();
+            (name.contains("color") || name.contains("colour") || name.contains("tint"))
+                .then_some(())
+                .filter(|_| !name.contains("emission") && !name.contains("fresnel"))
+                .and_then(|_| color(m, k.as_str()?))
+        })
+}
+
+/// How a custom shader draws, as it says itself: see-through, which faces,
+/// cut out by alpha.
+#[derive(Debug, Default, PartialEq)]
+pub struct ShaderLook {
+    pub transparent: bool,
+    pub face: Option<&'static str>,
+    pub clip: bool,
+    /// Not lit: URP's Unlit and Sprite Unlit targets.
+    pub unlit: bool,
+}
+
+/// A Shader Graph's URP target (`m_SurfaceType`, `m_RenderFace`,
+/// `m_AlphaClip`; sprite targets are always blended), or a `.shader`'s
+/// tags and states (`Queue`, `Blend`, `Cull`).
+pub fn shader_look(path: &Path) -> ShaderLook {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let number = |key: &str| {
+        text.split(&format!("\"{key}\": "))
+            .nth(1)
+            .and_then(|r| r.split([',', '\n']).next())
+            .map(|v| v.trim().to_string())
+    };
+    if path.extension().is_some_and(|e| e == "shadergraph") {
+        let sprite = text.contains("UniversalSpriteUnlitSubTarget")
+            || text.contains("UniversalSpriteLitSubTarget");
+        ShaderLook {
+            transparent: sprite || number("m_SurfaceType").as_deref() == Some("1"),
+            // URP: 0 both, 1 back, 2 front.
+            face: match number("m_RenderFace").as_deref() {
+                Some("0") => Some("Both"),
+                Some("1") => Some("Back"),
+                _ => None,
+            },
+            clip: number("m_AlphaClip").as_deref() == Some("true"),
+            unlit: text.contains("UniversalUnlitSubTarget")
+                || text.contains("UniversalSpriteUnlitSubTarget"),
+        }
+    } else {
+        let lower = text.to_lowercase();
+        ShaderLook {
+            transparent: lower.contains("\"queue\"=\"transparent")
+                || lower.contains("blend srcalpha"),
+            face: lower.contains("cull off").then_some("Both"),
+            clip: false,
+            unlit: !lower.contains("lightmode\"=\"universalforward"),
+        }
+    }
+}
+
+/// The material's own shader — a Shader Graph or a `.shader` in the
+/// project, not one of URP's — as the name a `.rmat` gives it and where
+/// it was.
+pub fn own_shader(unity: &Unity, m: &Yaml) -> Option<(String, std::path::PathBuf)> {
+    let path = m
+        .reference("m_Shader")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))?;
+    Some((super::snake(&super::stem(path)), path.clone()))
+}
+
+/// What a stub says of itself: a file that still says it is written over.
+pub const STUB_MARK: &str = "to be written again from";
+
+/// A starting point for a shader to write again: where it was, what it
+/// exposed, what it was made of, and a `surface` that leaves the standard
+/// shader's work as it is — so the material shows in its colours until
+/// someone writes it.
+pub fn shader_stub(unity: &Unity, name: &str, path: &Path) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut properties: Vec<String> = Vec::new();
+    let mut nodes: std::collections::BTreeSet<String> = Default::default();
+    // A Shader Graph is JSON objects one after another: each object's type
+    // and its first name.
+    for object in text.split("\n\n{") {
+        let kind = object
+            .split("\"m_Type\": \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("");
+        let first_name = object
+            .split("\"m_Name\": \"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .unwrap_or("");
+        if let Some(property) = kind
+            .strip_prefix("UnityEditor.ShaderGraph.Internal.")
+            .and_then(|k| k.strip_suffix("ShaderProperty"))
+        {
+            properties.push(format!("//   {first_name} ({property})"));
+        } else if let Some(node) = kind
+            .strip_prefix("UnityEditor.ShaderGraph.")
+            .and_then(|k| k.strip_suffix("Node"))
+        {
+            nodes.insert(node.to_string());
+        }
+    }
+    // A hand-written `.shader`: its Properties block says as much.
+    if properties.is_empty() {
+        for line in text.lines() {
+            let line = line.trim();
+            if line.starts_with('_') && line.contains('(') && line.contains('"') {
+                properties.push(format!("//   {line}"));
+            }
+        }
+    }
+    let nodes: Vec<String> = nodes.into_iter().collect();
+    format!(
+        "// {name}: {STUB_MARK} {}.\n\
+         //\n\
+         // What it exposed:\n{}\n\
+         //{}\n\
+         //\n\
+         // Until then the standard shader draws it, in its material's colours.\n\n\
+         fn surface(in: SurfaceIn, out: Surface) -> Surface {{\n    return out;\n}}\n",
+        path.strip_prefix(&unity.root).unwrap_or(path).display(),
+        if properties.is_empty() {
+            "//   (nothing)".to_string()
+        } else {
+            properties.join("\n")
+        },
+        if nodes.is_empty() {
+            String::new()
+        } else {
+            format!(" What it was made of: {}.", nodes.join(", "))
+        }
+    )
+}
+
 /// A `.mat` as the text of a `.rmat`: what URP Lit says, with the rest of
 /// a custom shader's colour carried as far as it goes.
+/// What a shader's `// runity:params` line says its eight numbers are:
+/// Unity property names, `_Speed`, or a colour's channel, `_Tint.r`.
+pub fn declared_params(shader: &str) -> Vec<String> {
+    shader
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("// runity:params"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .take(8)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A `.mat`'s values for those names: floats as they are, colour channels
+/// as written (sRGB for a colour property); 0 for one it does not set.
+fn param_values(m: &Yaml, names: &[String]) -> Vec<f32> {
+    names
+        .iter()
+        .map(|name| match name.rsplit_once('.') {
+            Some((property, channel)) if matches!(channel, "r" | "g" | "b" | "a") => {
+                color(m, property)
+                    .map(|c| {
+                        c[match channel {
+                            "r" => 0,
+                            "g" => 1,
+                            "b" => 2,
+                            _ => 3,
+                        }]
+                    })
+                    .unwrap_or(0.0)
+            }
+            _ => float(m, name).unwrap_or(0.0),
+        })
+        .collect()
+}
+
+/// A line a shader written again says of itself: `// runity:<key> value`.
+pub fn declared(shader: &str, key: &str) -> Option<String> {
+    let mark = format!("// runity:{key} ");
+    shader
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(&mark).map(|v| v.trim().to_string()))
+}
+
+/// [`convert_with`] for a shader not written again yet.
+#[cfg(test)]
 pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
+    convert_with(unity, path, &|_| None)
+}
+
+/// A `.mat` as the text of a `.rmat`. `shader_text` finds, by name, the
+/// shader written again for it, which may say what its material needs: its
+/// eight numbers (`// runity:params`), a base map (`// runity:base_map
+/// render:mirror`), how that is laid (`// runity:screen_map Mirror`).
+pub fn convert_with(
+    unity: &Unity,
+    path: &Path,
+    shader_text: &dyn Fn(&str) -> Option<String>,
+) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let doc = yaml::documents(&text)
         .into_iter()
@@ -97,6 +328,7 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
     let base = color(m, "_BaseColor")
         .or_else(|| color(m, "_Color"))
         .or_else(|| color(m, "_FaceColor"))
+        .or_else(|| any_colour(m))
         .unwrap_or([1.0; 4]);
     fields.push(format!("color: {:?}", hex(base)));
     if let Some(metallic) = float(m, "_Metallic").filter(|v| *v != 0.0) {
@@ -179,14 +411,60 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
             fields.push(format!("normal_scale: {scale}"));
         }
     }
-    let shader = m
-        .reference("m_Shader")
-        .and_then(|r| r.guid)
-        .and_then(|g| unity.guids.get(&g))
-        .map(|p| {
+    let own = own_shader(unity, m);
+    // A custom shader's picture, in a slot of its own naming: the base
+    // map, for its surface function to read (there is no other).
+    if own.is_some() && !fields.iter().any(|f| f.starts_with("base_map")) {
+        if let Some((_, name)) = own_texture(unity, m).and_then(|g| unity.named(&g)) {
+            fields.push(format!("base_map: {name:?}"));
+        }
+    }
+    if let Some((name, path)) = &own {
+        fields.push(format!("shader: {name:?}"));
+        let written = shader_text(name).unwrap_or_default();
+        let names = declared_params(&written);
+        if let Some(map) = declared(&written, "base_map") {
+            fields.retain(|f| !f.starts_with("base_map"));
+            fields.push(format!("base_map: {map:?}"));
+        }
+        if let Some(how) = declared(&written, "screen_map") {
+            fields.push(format!("screen_map: {how}"));
+        }
+        if !names.is_empty() {
+            let values: Vec<String> = param_values(m, &names)
+                .into_iter()
+                .map(|v| format!("{v}"))
+                .collect();
+            fields.push(format!("params: [{}]", values.join(", ")));
+        }
+        // What the shader itself says about how it is drawn, where the
+        // material's own settings are silent (a graph forces them).
+        let look = shader_look(path);
+        let has = |fields: &[String], field: &str| fields.iter().any(|f| f.starts_with(field));
+        if look.transparent && !has(&fields, "surface") {
+            fields.push("surface: Transparent".into());
+            if base[3] < 1.0 && !has(&fields, "alpha") {
+                fields.push(format!("alpha: {}", base[3]));
+            }
+        }
+        if let Some(face) = look.face.filter(|_| !has(&fields, "render_face")) {
+            fields.push(format!("render_face: {face}"));
+        }
+        if look.clip && !has(&fields, "alpha_clip") {
+            fields.push(format!(
+                "alpha_clip: {}",
+                float(m, "_Cutoff").unwrap_or(0.5)
+            ));
+        }
+        if look.unlit {
+            fields.push("shading: Unlit".into());
+        }
+    }
+    let shader = own
+        .map(|(name, p)| {
             format!(
-                "// Its shader was {}: only its colours came over.\n",
-                super::stem(p)
+                "// Its shader was {}: shaders/{name}.wgsl is where it is written again.\n",
+                p.strip_prefix(&unity.root).unwrap_or(&p).display()
             )
         })
         .unwrap_or_default();
@@ -221,6 +499,57 @@ Material:
     - _BaseColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
     - _EmissionColor: {r: 2, g: 1, b: 0, a: 1}
 ";
+
+    #[test]
+    fn a_shaders_declared_params_are_filled_from_the_material() {
+        assert_eq!(
+            declared_params(
+                "// Light.\n// runity:params _Metallic _BaseColor.r _Nothing\nfn surface() {}"
+            ),
+            ["_Metallic", "_BaseColor.r", "_Nothing"]
+        );
+        let doc = yaml::documents(MAT)
+            .into_iter()
+            .find(|d| d.kind == "Material")
+            .unwrap();
+        let names: Vec<String> = ["_Metallic", "_EmissionColor.g", "_Nothing"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(param_values(&doc.body, &names), [0.1, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_custom_shader_says_how_it_is_drawn() {
+        let dir = std::env::temp_dir().join(format!("runity-unity-look-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let graph = dir.join("Hologram.shadergraph");
+        std::fs::write(
+            &graph,
+            "{\n    \"m_Type\": \"UnityEditor.Rendering.Universal.ShaderGraph.UniversalUnlitSubTarget\"\n}\n\n{\n    \"m_SurfaceType\": 1,\n    \"m_RenderFace\": 0,\n    \"m_AlphaClip\": true,\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            shader_look(&graph),
+            ShaderLook {
+                transparent: true,
+                face: Some("Both"),
+                clip: true,
+                unlit: true,
+            }
+        );
+        let hlsl = dir.join("Water.shader");
+        std::fs::write(
+            &hlsl,
+            "Shader \"Water\" { SubShader { Tags { \"Queue\"=\"Transparent\" \"LightMode\"=\"UniversalForward\" } Cull Off Blend SrcAlpha OneMinusSrcAlpha } }",
+        )
+        .unwrap();
+        let look = shader_look(&hlsl);
+        assert!(
+            look.transparent && look.face == Some("Both") && !look.unlit,
+            "{look:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_urp_lit_material_becomes_an_rmat_that_builds() {

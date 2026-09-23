@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 10;
+pub const FORMAT_VERSION: u32 = 12;
 
 /// What kind of asset a file holds.
 ///
@@ -449,6 +449,27 @@ where
     out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&body);
     Ok(out)
+}
+
+/// Whether the `.rasset` at `path` was written by another format version
+/// — and so has to be built again. `false` for one that cannot be read at
+/// all: that is somebody else's problem, not a version's.
+pub fn stale_format(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 12];
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if file.read_exact(&mut header).is_err() || header[..8] != MAGIC {
+        return false;
+    }
+    u32::from_le_bytes([header[8], header[9], header[10], header[11]]) != FORMAT_VERSION
+}
+
+/// The id a material's own shader goes by: `shader: "water"` in a
+/// material is `shaders/water.wgsl` in the project.
+pub fn shader_id(name: &str) -> AssetId {
+    AssetId::from_source(&format!("shader:{name}"), 0)
 }
 
 /// What kind of asset these bytes hold, from the header alone.

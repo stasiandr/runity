@@ -15,6 +15,12 @@ hecs = "0.11.0"
 kira = { version = "0.12.4", optional = true }
 pollster = "1.0.1"
 steamworks = { version = "0.13", optional = true }
+ureq = { version = "2", optional = true, features = ["json"] }
+serde_json = { version = "1", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+discord-rich-presence = { version = "0.2", optional = true }
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 rapier3d = { version = "0.26.1", optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
@@ -45,6 +51,13 @@ audio = ["dep:kira"]
 # transport. Off by default: it links Valve's SDK and does nothing without
 # the Steam client running.
 steam = ["dep:steamworks"]
+# Crash reports sent to Sentry and play reported to GameAnalytics. Off by
+# default: it is the network, TLS and a player's consent, none of which a
+# game gets without asking for them.
+reports = ["dep:ureq", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:base64"]
+# What a player is doing, shown on their Discord profile, through the
+# Discord client running beside the game.
+discord = ["dep:discord-rich-presence"]
 # A plain desktop window, for running the game without the editor. The
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the

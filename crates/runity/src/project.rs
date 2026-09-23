@@ -71,6 +71,10 @@ pub const UI: &str = "ui";
 /// Which animation plays when — Animator Controllers — one RON file each:
 /// see [`crate::animgraph`].
 pub const ANIMATORS: &str = "animators";
+
+/// Materials' own shaders, one `surface` function a file: `shaders/water.wgsl`
+/// is `shader: "water"` in a material.
+pub const SHADERS: &str = "shaders";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
@@ -654,6 +658,8 @@ struct Game {
     profile: runity::perf::Profiler,
     show_profile: bool,
     widgets: Widgets,
+    /// Materials' own shaders, put in and reloaded as they are saved.
+    shaders: runity::render::MaterialShaders,
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
@@ -747,6 +753,8 @@ impl shell::Game for Game {
         if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
             eprintln!("{problem}");
         }
+        // The pad's moves between the screen's widgets, before they draw.
+        self.widgets.begin_frame(ctx.input);
         let done = self.hud.draw_localized(&mut self.widgets, &mut self.ui, ctx.input, size, &self.strings);
         if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
@@ -754,6 +762,12 @@ impl shell::Game for Game {
         let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in reload.lines() {
             eprintln!("{line}");
+        }
+        for (name, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
+            match result {
+                Ok(()) => eprintln!("shader {name}: in"),
+                Err(problem) => eprintln!("{problem}"),
+            }
         }
         // Played together: what the others own comes in, what this player
         // owns goes out, and whatever they spawn is spawned here too.
@@ -837,6 +851,9 @@ fn main() -> anyhow::Result<()> {
     // runity.ron's `game`: window, clock, first scene, language.
     let (project_name, settings) =
         runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
+    // A panic is written down in the player's folder: runity::crash::pending
+    // finds it on the next start.
+    runity::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
     // `runity run --scene cave` plays scenes/cave.ron.
     let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it
@@ -892,6 +909,7 @@ fn main() -> anyhow::Result<()> {
         profile: runity::perf::Profiler::new(600),
         show_profile: false,
         widgets: Widgets::new(),
+        shaders: runity::render::MaterialShaders::new(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),

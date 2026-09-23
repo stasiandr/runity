@@ -69,6 +69,9 @@ pub struct Options {
     pub models: bool,
     /// Blender to use; found on the PATH when not given.
     pub blender: Option<PathBuf>,
+    /// Shaders already written again, one `<name>.wgsl` a shader: put in
+    /// place of the stubs (never over one written in the project itself).
+    pub shaders: Option<PathBuf>,
 }
 
 /// A Unity project, indexed: every asset by GUID, and the name each gets in
@@ -286,14 +289,63 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         }
     }
 
+    let mut shaders: std::collections::BTreeMap<String, PathBuf> = Default::default();
     for (guid, path) in unity.of_kind("material") {
-        match material::convert(&unity, path) {
+        // A shader's parameters, from the one written again if there is
+        // one, else the project's own.
+        let declared = |name: &str| {
+            let file = format!("{name}.wgsl");
+            options
+                .shaders
+                .iter()
+                .map(|d| d.join(&file))
+                .chain(std::iter::once(
+                    project.root().join(runity::project::SHADERS).join(&file),
+                ))
+                .find_map(|p| std::fs::read_to_string(p).ok())
+        };
+        match material::convert_with(&unity, path, &declared) {
             Ok(text) => {
                 let name = &unity.names[guid];
                 write(&project.materials().join(format!("{name}.rmat")), &text)?;
                 report.materials += 1;
+                if let Some(own) = std::fs::read_to_string(path).ok().and_then(|t| {
+                    yaml::documents(&t)
+                        .into_iter()
+                        .find(|d| d.kind == "Material")
+                        .and_then(|d| material::own_shader(&unity, &d.body))
+                }) {
+                    shaders.insert(own.0, own.1);
+                }
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
+    // The shaders those materials had: a stub each to write again, never
+    // over one already written.
+    let dir = project.root().join(runity::project::SHADERS);
+    for (name, path) in &shaders {
+        let file = dir.join(format!("{name}.wgsl"));
+        let stub =
+            |f: &Path| std::fs::read_to_string(f).is_ok_and(|t| t.contains(material::STUB_MARK));
+        let written = options
+            .shaders
+            .as_ref()
+            .map(|d| d.join(format!("{name}.wgsl")))
+            .filter(|f| f.is_file());
+        match written {
+            Some(from) if !file.exists() || stub(&file) => {
+                std::fs::create_dir_all(&dir)?;
+                std::fs::copy(&from, &file)?;
+            }
+            _ if !file.exists() => {
+                write(&file, &material::shader_stub(&unity, name, path))?;
+                report.skip(format!("a shader to write again (shaders/{name}.wgsl)"));
+            }
+            _ if stub(&file) => {
+                report.skip(format!("a shader to write again (shaders/{name}.wgsl)"))
+            }
+            _ => {}
         }
     }
 

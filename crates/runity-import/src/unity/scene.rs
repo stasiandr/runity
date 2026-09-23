@@ -551,6 +551,16 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 report.skip("a MonoBehaviour whose script is not in Assets/ (a package's)");
                 return;
             };
+            // Dacha's planar mirror: runity's own, a camera reflected in
+            // the plane the mirror's material shows.
+            if super::stem(path) == "PlanarReflectionMirror" {
+                desc.render_texture = Some(runity::scene::RenderTexture {
+                    name: "mirror".into(),
+                    hide: Vec::new(),
+                    mirror: true,
+                });
+                return;
+            }
             let name = snake(&super::stem(path));
             let value = mono_behaviour(b, refs);
             match runity::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) {

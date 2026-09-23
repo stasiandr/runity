@@ -1,0 +1,2 @@
+// The pond: its own shader, shaders/water.wgsl.
+(color: "#1a4a55", smoothness: 0.9, shader: "water")

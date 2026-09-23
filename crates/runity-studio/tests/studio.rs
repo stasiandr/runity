@@ -2264,6 +2264,7 @@ fn the_play_tools_show_systems_saves_the_network_and_the_diff() {
             tick: Some((42, 16.0)),
         }],
         systems: Vec::new(),
+        animators: Vec::new(),
     });
     report.write(&state).unwrap();
     click(&mut s, "tab network");

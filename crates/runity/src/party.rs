@@ -193,6 +193,52 @@ pub struct Party {
     silent: std::collections::HashSet<EntityId>,
     outbox: Vec<ToServer>,
     local: Vec<Event>,
+    /// This process's clock, and what it has learned of the server's.
+    clock: Clock,
+}
+
+/// The server's clock as seen from here: each answer to a question sent
+/// at `sent` and heard at `now` says the server read `server` about half
+/// way between, give or take half the round trip. Of the last few, the
+/// quickest round trip is trusted — a slow one was held up somewhere, one
+/// way or the other, and says less.
+#[derive(Debug)]
+struct Clock {
+    began: Instant,
+    since_ask: f32,
+    /// (round trip, offset to add to ours), newest last.
+    samples: std::collections::VecDeque<(f64, f64)>,
+}
+
+impl Clock {
+    fn new() -> Self {
+        Self {
+            began: Instant::now(),
+            // Asks as soon as it can.
+            since_ask: f32::MAX,
+            samples: Default::default(),
+        }
+    }
+
+    fn now(&self) -> f64 {
+        self.began.elapsed().as_secs_f64()
+    }
+
+    fn heard(&mut self, sent: f64, server: f64) {
+        let now = self.now();
+        let trip = (now - sent).max(0.0);
+        self.samples.push_back((trip, server + trip * 0.5 - now));
+        while self.samples.len() > 8 {
+            self.samples.pop_front();
+        }
+    }
+
+    fn best(&self) -> Option<(f64, f64)> {
+        self.samples
+            .iter()
+            .copied()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+    }
 }
 
 /// The server's end of a client's link.
@@ -225,6 +271,7 @@ impl Party {
             silent: Default::default(),
             outbox: Vec::new(),
             local: Vec::new(),
+            clock: Clock::new(),
         }
     }
 
@@ -340,6 +387,20 @@ impl Party {
         }
     }
 
+    /// The session's clock, seconds since it began, the same on every
+    /// machine give or take a few milliseconds: when a timed thing
+    /// started, a countdown everyone sees end together. Our own clock
+    /// until the server has answered (and alone).
+    pub fn server_time(&self) -> f64 {
+        self.clock.now() + self.clock.best().map_or(0.0, |(_, offset)| offset)
+    }
+
+    /// How long a message takes there and back, seconds, at best of the
+    /// last few; `None` before the first answer, or alone.
+    pub fn round_trip(&self) -> Option<f64> {
+        self.clock.best().map(|(trip, _)| trip)
+    }
+
     /// Which peer this is, as the server numbered it (the host is 0).
     pub fn me(&self) -> PeerId {
         self.sync.me
@@ -379,6 +440,15 @@ impl Party {
 
     /// Ask to drive `entity`: this peer's at once, the server's ruling to
     /// follow.
+    /// Make these one thing for ownership — a player and both hands: a
+    /// claim on any of them is a claim on all, so one peer drives the lot.
+    pub fn group(&self, world: &mut hecs::World, members: &[hecs::Entity]) {
+        let group = crate::net::NetGroup(EntityId::fresh());
+        for &entity in members {
+            let _ = world.insert_one(entity, group);
+        }
+    }
+
     pub fn claim(&self, world: &mut hecs::World, entity: hecs::Entity) {
         let _ = world.insert_one(entity, RequestOwnership);
     }
@@ -527,13 +597,26 @@ impl Party {
         }
         let playing = self.stage == Stage::Playing && self.welcomed;
         if playing {
+            crate::net::claim_nearby(world, self.me());
             // Taken before marking, so what was asked for is driven this
             // very frame.
             let mut claims = std::mem::take(&mut self.outbox);
             self.sync.claims(world, &mut claims);
             self.send(claims, Mode::Reliable);
         }
+        self.sync.one_way_ticks = self
+            .round_trip()
+            .map_or(0.0, |trip| trip * 0.5 * crate::net::sync::NET_HZ as f64);
         self.sync.mark(world);
+        if matches!(self.stage, Stage::Loading | Stage::Playing) {
+            // What time the server says, once a second.
+            self.clock.since_ask += delta;
+            if self.clock.since_ask >= 1.0 {
+                self.clock.since_ask = 0.0;
+                let sent = self.clock.now();
+                self.send(vec![ToServer::Clock { sent }], Mode::Unreliable);
+            }
+        }
         if playing {
             self.since_send += delta;
             let period = 1.0 / NET_HZ;
@@ -635,6 +718,7 @@ impl Party {
                 events.push(Event::SceneRequired { scene });
             }
             ToClient::SessionEnding => self.lose(true, events),
+            ToClient::Clock { sent, server } => self.clock.heard(sent, server),
             ToClient::Rpc { from, kind, body } => events.push(Event::Message { from, kind, body }),
             other => {
                 for noticed in self.sync.apply(world, components, other, spawn) {
@@ -921,6 +1005,79 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_on_one_of_a_group_takes_the_whole_group() {
+        let mut game = Game::new(1, Conditions::GOOD);
+        let (crate_, door) = (find(&game.worlds[1], 1), find(&game.worlds[1], 2));
+        game.parties[1].group(&mut game.worlds[1], &[crate_, door]);
+        game.parties[1].claim(&mut game.worlds[1], crate_);
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(owner_of(world, find(world, 1)), PeerId(1));
+            assert_eq!(
+                owner_of(world, find(world, 2)),
+                PeerId(1),
+                "the other one too"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claim_on_one_half_of_a_joint_takes_the_other() {
+        let mut game = Game::new(1, Conditions::GOOD);
+        for world in &mut game.worlds {
+            let (crate_, door) = (find(world, 1), find(world, 2));
+            let to = world.get::<&SceneId>(door).unwrap().0;
+            let _ = world.insert_one(
+                crate_,
+                crate::world::Jointed(crate::scene::Joint::Fixed { to }),
+            );
+        }
+        let door = find(&game.worlds[1], 2);
+        game.parties[1].claim(&mut game.worlds[1], door);
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(owner_of(world, find(world, 2)), PeerId(1));
+            assert_eq!(
+                owner_of(world, find(world, 1)),
+                PeerId(1),
+                "held by the joint"
+            );
+        }
+    }
+
+    #[test]
+    fn a_player_coming_near_a_loose_body_claims_it() {
+        use crate::world::{Physics, WorldTransform};
+        let mut game = Game::new(1, Conditions::GOOD);
+        let at = |x: f32| WorldTransform(glam::Mat4::from_translation(Vec3::new(x, 0.0, 0.0)));
+        for world in &mut game.worlds {
+            let crate_ = find(world, 1);
+            let _ = world.insert(crate_, (Physics(crate::scene::Body::Dynamic), at(5.0)));
+            put(world, 1, Vec3::new(5.0, 0.0, 0.0));
+        }
+        let player = game.worlds[1].spawn((
+            at(0.0),
+            crate::net::Owner(PeerId(1)),
+            crate::net::ClaimNear { radius: 2.0 },
+        ));
+        game.frames(10);
+        assert_eq!(
+            owner_of(&game.worlds[1], find(&game.worlds[1], 1)),
+            PeerId::HOST,
+            "too far"
+        );
+        let _ = game.worlds[1].insert_one(player, at(4.0));
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(
+                owner_of(world, find(world, 1)),
+                PeerId(1),
+                "came near: the guest's"
+            );
+        }
+    }
+
+    #[test]
     fn two_grabbing_one_thing_get_one_answer_and_the_loser_is_told() {
         let mut game = Game::new(2, Conditions::GOOD);
         for i in [1, 2] {
@@ -1083,6 +1240,23 @@ mod tests {
         }
         game.frames(10);
         assert!(game.parties.iter().all(|p| p.welcomed()));
+    }
+
+    #[test]
+    fn everyone_reads_the_same_session_clock_over_a_slow_link() {
+        let slow = Conditions {
+            latency: Duration::from_millis(30),
+            ..Conditions::GOOD
+        };
+        let mut game = Game::new(1, slow);
+        game.until(3000, |g| g.parties.iter().all(|p| p.round_trip().is_some()));
+        let trip = game.parties[1].round_trip().unwrap();
+        assert!(trip >= 0.025, "the delay shows in the round trip: {trip}");
+        let apart = (game.parties[0].server_time() - game.parties[1].server_time()).abs();
+        assert!(
+            apart < 0.03,
+            "the host's and the guest's clocks: {apart} s apart"
+        );
     }
 
     #[test]
