@@ -672,6 +672,8 @@ impl Game {
     fn start_physics(&mut self, ctx: &mut Context) {
         self.physics = PhysicsWorld::new(ctx.time.settings().fixed_delta);
         self.physics.set_layers((*self.layers).clone(), &self.world);
+        // The scene's wind carries what it says is `blown`.
+        self.physics.wind = self.live.scene().wind.unwrap_or_default();
     }
 }
 

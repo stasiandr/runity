@@ -278,6 +278,11 @@ pub struct BodyProps {
     /// twice as hard.
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub gravity: f32,
+    /// How much the scene's wind carries it: 0 not at all, 1 a tumbleweed
+    /// bounding over the sand. Dragged toward the wind's speed, now and
+    /// then a hop.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blown: f32,
     /// Checked between steps as well as at them, so something fast and
     /// small — a thrown stone, a bullet — cannot pass through a wall between
     /// one step and the next. Costs more; Unity's continuous collision
@@ -349,6 +354,7 @@ impl Default for BodyProps {
             drag: 0.0,
             spin_drag: 0.0,
             gravity: 1.0,
+            blown: 0.0,
             fast: false,
             freeze_move: Axes::default(),
             freeze_turn: Axes::default(),

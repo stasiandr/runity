@@ -5,8 +5,8 @@
 //! file naming each shot. Needs `ffmpeg` on the path.
 //!
 //! Headless like `scene_shot`: the same loading, the same frame, only many
-//! of them — routes, footprints and particles run between frames as a
-//! game's loop runs them.
+//! of them — routes, physics, footprints and particles run between frames
+//! as a game's loop runs them.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,18 @@ fn shots() -> Vec<Shot> {
             seconds: 9.0,
             from: (v(6.0, 1.9, 7.0), v(2.0, 0.6, -4.0)),
             to: (v(5.0, 1.8, -2.0), v(1.5, 0.4, -12.0)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            look: &[],
+        },
+        Shot {
+            name: "tumbleweed",
+            caption: "Перекати-поле: ветер сцены тащит его по песку, в порывах — прыжки",
+            scene: "desert.ron",
+            seconds: 8.0,
+            from: (v(-4.0, 0.7, 0.0), v(-11.0, 0.6, -8.0)),
+            to: (v(-1.0, 0.8, 0.5), v(5.0, 0.5, -4.0)),
             hours: None,
             clock: 0.0,
             speed: 1.0,
@@ -334,6 +346,13 @@ fn render_shot(
         eprintln!("{problem}");
     }
 
+    // Physics runs too: what the wind carries rolls across the shot.
+    runity::physics::attach_scene_collision_meshes(&mut world, &scene, library.as_ref());
+    let step = 1.0 / 60.0;
+    let mut physics = runity::PhysicsWorld::new(step);
+    physics.wind = scene.wind.unwrap_or_default();
+    let mut owed = 0.0f32;
+
     let (w, h) = (target.width, target.height);
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
@@ -373,6 +392,12 @@ fn render_shot(
         let t = smooth(i.saturating_sub(warmup) as f32 / frames.max(1) as f32);
         let clock = shot.clock + (i as f32 - warmup as f32) * dt * shot.speed;
         runity::routes::run_routes(&mut world, dt * shot.speed);
+        runity::world::apply_hierarchy(&mut world);
+        owed += dt * shot.speed;
+        while owed >= step {
+            physics.run(&mut world);
+            owed -= step;
+        }
         runity::world::apply_hierarchy(&mut world);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
         runity::particles::run_particles(&mut world, dt * shot.speed);
