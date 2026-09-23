@@ -228,6 +228,34 @@ pub struct PhysicsWorld {
     /// Made the first time one asks.
     ground: Option<RigidBodyHandle>,
     layers: crate::layers::Layers,
+    /// Pairs of entities told to pass through each other, by their bits,
+    /// smaller first.
+    ignored: std::collections::HashSet<(u64, u64)>,
+}
+
+/// Rapier's say on each pair of colliders: no contact for a pair told to
+/// ignore each other.
+struct Ignoring<'a>(&'a std::collections::HashSet<(u64, u64)>);
+
+impl Ignoring<'_> {
+    fn ignores(&self, context: &PairFilterContext) -> bool {
+        if self.0.is_empty() {
+            return false;
+        }
+        let bits = |h: ColliderHandle| context.colliders.get(h).map_or(0, |c| c.user_data as u64);
+        let (a, b) = (bits(context.collider1), bits(context.collider2));
+        self.0.contains(&(a.min(b), a.max(b)))
+    }
+}
+
+impl PhysicsHooks for Ignoring<'_> {
+    fn filter_contact_pair(&self, context: &PairFilterContext) -> Option<SolverFlags> {
+        (!self.ignores(context)).then_some(SolverFlags::COMPUTE_IMPULSES)
+    }
+
+    fn filter_intersection_pair(&self, context: &PairFilterContext) -> bool {
+        !self.ignores(context)
+    }
 }
 
 /// The joint a body was given, and what it was built between, so a change
@@ -266,6 +294,7 @@ impl PhysicsWorld {
             queries: QueryPipeline::new(),
             ground: None,
             layers: crate::layers::Layers::default(),
+            ignored: Default::default(),
         }
     }
 
@@ -405,6 +434,10 @@ impl PhysicsWorld {
             // Which entity a collider is, for contacts to be told in
             // entities rather than rapier handles.
             collider.user_data = entity.to_bits().get() as u128;
+            // Asked about each pair, so two told to ignore each other can.
+            collider.set_active_hooks(
+                ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::FILTER_INTERSECTION_PAIR,
+            );
             collider.set_friction(props.friction.max(0.0));
             collider.set_restitution(props.bounce.clamp(0.0, 1.0));
             // The bouncier of the two decides, so a ball bounces off any
@@ -615,9 +648,23 @@ impl PhysicsWorld {
             &mut self.multibody_joints,
             &mut self.ccd,
             Some(&mut self.queries),
-            &(),
+            &Ignoring(&self.ignored),
             &(),
         );
+    }
+
+    /// Let two entities' bodies pass through each other — or collide again
+    /// with `false` — whatever their layers say: Unity's
+    /// `Physics.IgnoreCollision`. A sword and the hand that holds it, a
+    /// thrown thing and whoever threw it.
+    pub fn ignore_collision(&mut self, a: hecs::Entity, b: hecs::Entity, ignore: bool) {
+        let (a, b) = (a.to_bits().get(), b.to_bits().get());
+        let pair = (a.min(b), a.max(b));
+        if ignore {
+            self.ignored.insert(pair);
+        } else {
+            self.ignored.remove(&pair);
+        }
     }
 
     /// Copy every dynamic body's position back onto its entity.
@@ -2041,6 +2088,35 @@ mod tests {
         })
         .unwrap();
         assert!(!text.contains("center"), "left out when zero: {text}");
+    }
+
+    #[test]
+    fn two_told_to_ignore_each_other_pass_through_and_the_rest_still_collide() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000e1", name: "floor", model: "m", body: Static, collider: Box(half: (5.0, 0.1, 5.0))),
+                (id: "00000000000000e2", name: "ghost", model: "m", body: Dynamic, collider: Sphere(radius: 0.25),
+                 transform: (position: (0.0, 2.0, 0.0))),
+                (id: "00000000000000e3", name: "ball", model: "m", body: Dynamic, collider: Sphere(radius: 0.25),
+                 transform: (position: (2.0, 2.0, 0.0))),
+            ])"#,
+        );
+        let floor = by_id(&world, "00000000000000e1".parse().unwrap());
+        let ghost = by_id(&world, "00000000000000e2".parse().unwrap());
+        let ball = by_id(&world, "00000000000000e3".parse().unwrap());
+        physics.ignore_collision(ghost, floor, true);
+        run_for(&mut physics, &mut world, 120);
+        let y = |world: &World, e| world.get::<&Transform>(e).unwrap().position.y;
+        assert!(
+            y(&world, ghost) < -1.0,
+            "through the floor: {}",
+            y(&world, ghost)
+        );
+        assert!(
+            (y(&world, ball) - 0.35).abs() < 0.05,
+            "the other lands: {}",
+            y(&world, ball)
+        );
     }
 
     #[test]

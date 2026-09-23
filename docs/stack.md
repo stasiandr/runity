@@ -1084,7 +1084,10 @@ MCP; `runity::edit::push_face`): грань сдвигается на N метр
 двигатель) — как velocity и AddForce у Rigidbody. `freeze_turn: "xz"` в
 `physics` держит тело прямым, что бы в него ни врезалось, `freeze_move:
 "y"` — на своей высоте (Constraints у Rigidbody: Freeze Rotation и Freeze
-Position) — оси буквами.
+Position) — оси буквами. Пара, которой слои не описать, —
+`ignore_collision(a, b, true)`: меч и тот, кто его держит, брошенный
+камень и бросивший (Physics.IgnoreCollision); остальные столкновения обоих
+не трогаются, `false` возвращает как было.
 
 **Слои столкновений.** Один файл проекта, `layers.ron`, называет слои и
 пары, которые проходят друг сквозь друга: `(layers: ["default", "player",
