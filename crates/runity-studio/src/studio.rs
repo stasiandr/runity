@@ -30,6 +30,7 @@ use runity_ui::Clipboard as _;
 
 use crate::bottom::{Asset, Bottom};
 use crate::clipboard::SystemClipboard;
+use crate::dock::{Docked, Docks, Panel};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
@@ -156,6 +157,7 @@ pub struct Studio {
     snap: NodeId,
     colliders_button: NodeId,
     sculpt_button: NodeId,
+    docks: Docks,
     /// When the last event came in: the window draws at full rate for a
     /// while after one.
     last_input: Instant,
@@ -350,6 +352,23 @@ impl Studio {
         );
         let inspector = Inspector::new(&mut ui, right);
         let (status, fps) = build_status(&mut ui, root);
+        // The panels are content; the docks at the three edges hold them,
+        // as tabs, where the layout says.
+        let mut roots = std::collections::HashMap::new();
+        roots.insert(Panel::Hierarchy, hierarchy.card);
+        roots.insert(Panel::Inspector, inspector.root);
+        for (panel, root) in [Panel::Project, Panel::Console, Panel::History, Panel::Git]
+            .into_iter()
+            .zip(bottom.roots)
+        {
+            roots.insert(panel, root);
+        }
+        let docks = Docks::new(
+            &mut ui,
+            [left, right, lower],
+            roots,
+            Docks::default_layout(),
+        );
 
         session.set_readback(false);
         let mut studio = Self {
@@ -367,6 +386,7 @@ impl Studio {
             sculpt: false,
             panels: [true; 3],
             last_input: Instant::now(),
+            docks,
             maximized: false,
             stroke: None,
             tooltip: None,
@@ -403,6 +423,7 @@ impl Studio {
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
         studio.ui.focus(Some(viewport));
         studio.restore_layout();
+        studio.sync_visible();
         studio.refresh();
         studio
     }
@@ -623,7 +644,8 @@ impl Studio {
         if self.seen.as_ref() != Some(&stamp) || moving {
             let errors_before = self.seen.as_ref().map_or(0, |s| s.console.2);
             if stamp.console.2 > errors_before {
-                self.bottom.show_console(&mut self.ui);
+                self.docks.activate(&mut self.ui, Panel::Console);
+                self.sync_visible();
             }
             if self
                 .seen
@@ -736,12 +758,12 @@ impl Studio {
     /// The panels' sizes and the bottom tab, as RON.
     fn layout_text(&self) -> String {
         let w = |n: NodeId| self.ui.rect(n).width.round();
+        let (docks, active) = self.docks.layout();
         format!(
-            "(left: {:.0}, right: {:.0}, lower: {:.0}, tab: {:?})\n",
+            "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
             w(self.left),
             w(self.right),
             self.ui.rect(self.lower).height.round(),
-            self.bottom.tab_name()
         )
     }
 
@@ -769,12 +791,38 @@ impl Studio {
             self.ui
                 .restyle(self.lower, |s| s.height(v.clamp(60.0, 900.0)));
         }
-        if let Some(at) = text.find("tab:") {
-            let tab = text[at + 4..].trim().trim_start_matches('"');
-            let tab = tab.split('"').next().unwrap_or("project");
-            self.bottom.set_tab_name(&mut self.ui, tab);
+        let quoted = |key: &str| -> Option<String> {
+            let at = text.find(&format!("{key}:"))? + key.len() + 1;
+            let rest = text[at..].trim().strip_prefix('"')?;
+            Some(rest.split('"').next()?.to_string())
+        };
+        if let Some(layout) = quoted("docks").as_deref().and_then(Docks::parse) {
+            for (i, panels) in layout.iter().enumerate() {
+                for panel in panels {
+                    self.docks.move_panel(&mut self.ui, *panel, i);
+                }
+            }
         }
+        if let Some(active) = quoted("active") {
+            for name in active.split('|') {
+                if let Some(panel) = Panel::from_name(name) {
+                    self.docks.activate(&mut self.ui, panel);
+                }
+            }
+        }
+        self.sync_visible();
         self.saved_layout = self.layout_text_after_paint();
+    }
+
+    /// Tell the lower panels which of them are on top.
+    fn sync_visible(&mut self) {
+        let on = |p| self.docks.is_active(p);
+        self.bottom.set_visible([
+            on(Panel::Project),
+            on(Panel::Console),
+            on(Panel::History),
+            on(Panel::Git),
+        ]);
     }
 
     fn layout_text_after_paint(&mut self) -> String {
@@ -1108,6 +1156,13 @@ impl Studio {
                     return;
                 }
             }
+        }
+        if let Some(Docked::Handled) = self.docks.event(&mut self.ui, node, event) {
+            self.sync_visible();
+            if !matches!(event, Event::Drag { .. }) {
+                requests.refresh = true;
+            }
+            return;
         }
         if let Some(i) = self.splits.iter().position(|s| *s == node) {
             if let Event::Drag { dx, dy, .. } = event {

@@ -19,6 +19,7 @@
 
 mod bottom;
 mod clipboard;
+mod dock;
 mod hierarchy;
 mod inspector;
 pub mod menu;

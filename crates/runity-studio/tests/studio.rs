@@ -696,7 +696,7 @@ fn panels_hide_and_the_view_takes_the_window() {
     };
     s.ui.paint();
     let small = s.ui.rect(s.ui.find("scene view").unwrap()).width;
-    menu(&mut s, "Window", "Inspector");
+    menu(&mut s, "Window", "Right Dock");
     assert!(
         s.ui.find("inspector")
             .is_some_and(|n| s.ui.rect(n).width == 0.0)
@@ -823,4 +823,60 @@ fn edit_undo_names_the_step_and_an_asset_drops_into_the_hierarchy() {
         )
     });
     assert_eq!(sphere.depth, 1, "under the campfire");
+}
+
+/// Drag the tab named `tab` and let go over the node named `onto`.
+fn drag_tab(s: &mut Studio, tab: &str, onto: &str) {
+    s.ui.paint();
+    let a = s.ui.rect(s.ui.find(tab).unwrap());
+    let b = s.ui.rect(s.ui.find(onto).unwrap());
+    let (ax, ay) = a.center();
+    let (bx, by) = b.center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 10.0,
+        y: ay + 10.0,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+}
+
+#[test]
+fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
+    let Some((mut s, dir)) = studio() else { return };
+    drag_tab(&mut s, "tab console", "dock 0");
+    s.ui.paint();
+    let dock0 = s.ui.rect(s.ui.find("dock 0").unwrap());
+    let console = s.ui.rect(s.ui.find("console lines").unwrap());
+    assert!(
+        dock0.contains(console.x + 1.0, console.y + 1.0),
+        "the Console is on the left: {console:?} in {dock0:?}"
+    );
+    let tab = s.ui.rect(s.ui.find("tab hierarchy").unwrap());
+    assert!(
+        dock0.contains(tab.x + 1.0, tab.y + 1.0),
+        "beside the Hierarchy's tab"
+    );
+    // The Hierarchy is a tab away.
+    click(&mut s, "tab hierarchy");
+    assert!(s.ui.rect(s.ui.find("hierarchy list").unwrap()).width > 0.0);
+    click(&mut s, "tab console");
+    // Written down, and read back next run.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    drop(s);
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
+    again.frame();
+    again.ui.paint();
+    let dock0 = again.ui.rect(again.ui.find("dock 0").unwrap());
+    let console = again.ui.rect(again.ui.find("console lines").unwrap());
+    assert!(
+        dock0.contains(console.x + 1.0, console.y + 1.0),
+        "still on the left, on top"
+    );
 }

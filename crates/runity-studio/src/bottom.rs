@@ -54,19 +54,11 @@ impl Asset {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Tab {
-    Project,
-    Console,
-    History,
-    Git,
-}
-
 pub struct Bottom {
-    pub card: NodeId,
-    tab: Tab,
-    /// Each tab: its button and its body.
-    tabs: Vec<(Tab, NodeId, NodeId)>,
+    /// Project, Console, History and Git: each panel's content.
+    pub roots: [NodeId; 4],
+    /// Which of them is on top in its dock, and so worth updating.
+    visible: [bool; 4],
     // Project
     search: NodeId,
     grid: NodeId,
@@ -95,62 +87,31 @@ pub struct Bottom {
     git_stale: bool,
 }
 
-fn tab_style(on: bool) -> Style {
-    let s = Style::row()
-        .height(24.0)
-        .padding_x(SPACE_3)
-        .center()
-        .radius(6.0)
-        .clickable();
-    if on {
-        s.background(ACCENT_900).hover(ACCENT_900)
-    } else {
-        s.hover(HOVER)
-    }
-}
-
 impl Bottom {
+    /// The four panels' content, in `parent` — for docks to take.
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let card = ui.add(
-            parent,
-            Style::column()
-                .full()
-                .background(SURFACE)
-                .radius(RADIUS_MD)
-                .clip(),
-        );
-        ui.set_name(card, "bottom");
-        let header = ui.add(
-            card,
+        let root = |ui: &mut Ui, name: &str| {
+            let r = ui.add(parent, Style::column().fill().full_width());
+            ui.set_name(r, name.to_string());
+            r
+        };
+        let project = root(ui, "project");
+        let console = root(ui, "console");
+        let history = root(ui, "history");
+        let git = root(ui, "git");
+
+        // Console's tools: a bar at its top.
+        let tools = ui.add(
+            console,
             Style::row()
-                .height(32.0)
-                .fixed()
                 .full_width()
+                .height(28.0)
+                .fixed()
                 .padding_x(SPACE_2)
                 .gap(SPACE_1)
                 .center_items(),
         );
-        let mut buttons = Vec::new();
-        for (tab, glyph, label) in [
-            (Tab::Project, "folder", "Project"),
-            (Tab::Console, "terminal", "Console"),
-            (Tab::History, "undo-2", "History"),
-            (Tab::Git, "list-tree", "Git"),
-        ] {
-            let b = ui.add(header, tab_style(tab == Tab::Project));
-            ui.set_name(b, format!("tab {}", label.to_lowercase()));
-            icon(
-                ui,
-                b,
-                glyph,
-                if tab == Tab::Project { ACCENT } else { LABEL },
-            );
-            ui.add_text(b, text().padding_left(6.0), label);
-            buttons.push((tab, b));
-        }
-        spacer(ui, header);
-        // Console's tools live in the header, shown on its tab.
-        let tools = ui.add(header, Style::row().gap(SPACE_1).center_items());
+        spacer(ui, tools);
         let mut counts = [tools; 3];
         let mut filters = [tools; 3];
         for (i, (glyph, ink, name)) in [
@@ -184,7 +145,6 @@ impl Bottom {
         let clear = crate::theme::icon_button(ui, tools, "console clear", "x", false);
 
         // Project
-        let project = ui.add(card, Style::column().fill().full_width());
         let bar = ui.add(
             project,
             Style::row()
@@ -210,7 +170,6 @@ impl Bottom {
         ui.set_name(grid, "project grid");
 
         // Console
-        let console = ui.add(card, Style::column().fill().full_width().hidden());
         let lines = ui.add(
             console,
             Style::column()
@@ -220,10 +179,8 @@ impl Bottom {
                 .clip(),
         );
         ui.set_name(lines, "console lines");
-        ui.restyle(tools, |s| s.hidden());
 
         // History
-        let history = ui.add(card, Style::column().fill().full_width().hidden());
         let history_list = ui.add(
             history,
             Style::column()
@@ -235,7 +192,6 @@ impl Bottom {
         ui.set_name(history_list, "history lines");
 
         // Git
-        let git = ui.add(card, Style::column().fill().full_width().hidden());
         let git_bar = ui.add(
             git,
             Style::row()
@@ -266,21 +222,9 @@ impl Bottom {
         );
         ui.set_name(git_list, "git lines");
 
-        let bodies = [
-            (Tab::Project, project),
-            (Tab::Console, console),
-            (Tab::History, history),
-            (Tab::Git, git),
-        ];
-        let tabs = buttons
-            .into_iter()
-            .map(|(t, b)| (t, b, bodies.iter().find(|(bt, _)| *bt == t).unwrap().1))
-            .collect();
-
         Self {
-            card,
-            tab: Tab::Project,
-            tabs,
+            roots: [project, console, history, git],
+            visible: [true, false, false, false],
             search,
             grid,
             entries: HashMap::new(),
@@ -302,57 +246,19 @@ impl Bottom {
         }
     }
 
-    fn set_tab(&mut self, ui: &mut Ui, tab: Tab) {
-        self.tab = tab;
-        for (t, button, body) in self.tabs.clone() {
-            let on = t == tab;
-            ui.set_style(button, tab_style(on));
-            let glyph = ui.children(button)[0];
-            ui.restyle(glyph, |s| s.text_color(if on { ACCENT } else { LABEL }));
-            ui.restyle(body, |s| if on { s.shown() } else { s.hidden() });
-        }
-        let tools = ui.parent(self.clear).expect("the tools row");
-        ui.restyle(tools, |s| {
-            if tab == Tab::Console {
-                s.shown()
-            } else {
-                s.hidden()
-            }
-        });
-        if tab == Tab::Git {
+    /// Say which of the four panels are on top in their docks: hidden ones
+    /// skip their updates. Git is asked again when it comes on top.
+    pub fn set_visible(&mut self, visible: [bool; 4]) {
+        if visible[3] && !self.visible[3] {
             self.git_stale = true;
         }
-    }
-
-    /// The tab on show, by name: what a studio remembers between runs.
-    pub fn tab_name(&self) -> &'static str {
-        match self.tab {
-            Tab::Project => "project",
-            Tab::Console => "console",
-            Tab::History => "history",
-            Tab::Git => "git",
-        }
-    }
-
-    pub fn set_tab_name(&mut self, ui: &mut Ui, name: &str) {
-        let tab = match name {
-            "console" => Tab::Console,
-            "history" => Tab::History,
-            "git" => Tab::Git,
-            _ => Tab::Project,
-        };
-        self.set_tab(ui, tab);
-    }
-
-    /// Show the Console: an error just happened.
-    pub fn show_console(&mut self, ui: &mut Ui) {
-        self.set_tab(ui, Tab::Console);
+        self.visible = visible;
     }
 
     pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
         let mut at = Some(node);
         while let Some(n) = at {
-            if n == self.card {
+            if self.roots.contains(&n) {
                 return true;
             }
             at = ui.parent(n);
@@ -587,7 +493,7 @@ impl Bottom {
         }
         self.seen_lines = lines.len();
 
-        if self.tab == Tab::History {
+        if self.visible[2] {
             self.update_history(ui, session);
         }
     }
@@ -655,7 +561,7 @@ impl Bottom {
 
     /// The scene's revisions in git and, mid-merge, its conflicts.
     pub fn update_git(&mut self, ui: &mut Ui, session: &mut Session) {
-        if self.tab != Tab::Git || !self.git_stale {
+        if !self.visible[3] || !self.git_stale {
             return;
         }
         self.git_stale = false;
@@ -744,18 +650,13 @@ impl Bottom {
 
     pub fn event(
         &mut self,
-        ui: &mut Ui,
+        _ui: &mut Ui,
         session: &mut Session,
         node: NodeId,
         event: &Event,
         requests: &mut Requests,
     ) {
         match event {
-            Event::Click { .. } if self.tabs.iter().any(|(_, b, _)| *b == node) => {
-                let tab = self.tabs.iter().find(|(_, b, _)| *b == node).unwrap().0;
-                self.set_tab(ui, tab);
-                requests.refresh = true;
-            }
             Event::Click { .. } if node == self.git_refresh => {
                 self.git_stale = true;
             }

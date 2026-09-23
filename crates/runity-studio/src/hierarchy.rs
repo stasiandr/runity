@@ -67,14 +67,16 @@ enum Drop {
 
 impl Hierarchy {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let (card, header, body) = panel(ui, parent, "Hierarchy");
+        // The panel's own content: a dock puts it in a card with a tab.
+        let card = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(card, "hierarchy");
-        let count = ui.add_text(header, caption(), "");
+        let body = card;
         let bar = ui.add(
             body,
             Style::row()
                 .full_width()
                 .padding_x(SPACE_2)
+                .gap(SPACE_2)
                 .height(28.0)
                 .fixed()
                 .center_items(),
@@ -82,6 +84,7 @@ impl Hierarchy {
         let search = ui.add_field(bar, field_style().fill().height(24.0), "");
         ui.set_name(search, "hierarchy search");
         ui.set_placeholder(search, "Search  (c:door  m:bark)");
+        let count = ui.add_text(bar, caption(), "");
         let list = ui.add(
             body,
             Style::column()

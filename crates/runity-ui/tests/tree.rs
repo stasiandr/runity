@@ -391,3 +391,19 @@ fn text_sits_in_the_middle_of_a_taller_box() {
         text.y
     );
 }
+
+#[test]
+fn a_node_moves_to_another_parent_whole() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let a = ui.add(root, Style::column().size(100.0, 100.0));
+    let b = ui.add(root, Style::column().size(100.0, 100.0));
+    let panel = ui.add(a, Style::column());
+    let label = ui.add_text(panel, Style::default(), "inside");
+    ui.move_to(panel, b);
+    assert_eq!(ui.parent(panel), Some(b));
+    assert_eq!(ui.children(a), vec![]);
+    assert_eq!(ui.text(label), Some("inside"));
+    ui.paint();
+    assert_eq!(ui.rect(label).y, ui.rect(b).y);
+}

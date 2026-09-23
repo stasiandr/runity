@@ -555,6 +555,23 @@ impl Ui {
         self.layout_dirty = true;
     }
 
+    /// Move a node, with everything under it, to the end of another
+    /// parent's children: a panel docked elsewhere keeps its nodes, its
+    /// scroll and its focus.
+    pub fn move_to(&mut self, id: NodeId, parent: NodeId) {
+        if id.0 == self.root || !self.exists(id) || !self.exists(parent) {
+            return;
+        }
+        if let Some(old) = self.tree.parent(id.0) {
+            let _ = self.tree.remove_child(old, id.0);
+            if let Some(p) = self.tree.get_node_context_mut(old) {
+                p.keyed.retain(|_, child| *child != id);
+            }
+        }
+        let _ = self.tree.add_child(parent.0, id.0);
+        self.layout_dirty = true;
+    }
+
     /// Remove every child of `id`.
     pub fn clear(&mut self, id: NodeId) {
         for child in self.children(id) {

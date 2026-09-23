@@ -199,6 +199,8 @@ fn parse_hex(text: &str) -> Option<[u8; 3]> {
 }
 
 pub struct Inspector {
+    /// The panel's content, for a dock to hold.
+    pub root: NodeId,
     body: NodeId,
     /// Whose fields are shown, and the shape they were laid out in.
     showing: Vec<EntityId>,
@@ -230,11 +232,11 @@ pub struct Inspector {
 
 impl Inspector {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
-        let (card, _header, body) = panel(ui, parent, "Inspector");
+        let card = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(card, "inspector");
-        let body = ui.add(body, Style::column().fill().full_width().clip());
-        let _ = card;
+        let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
+            root: card,
             body,
             showing: Vec::new(),
             shape: Vec::new(),

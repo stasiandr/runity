@@ -269,7 +269,10 @@ Localization из Unity). Экран пишет `Text("@menu.play")` и пока
 `runity build` везёт `strings/`.
 
 **Окно редактора** — `runity-studio`: winit и свой `runity-ui` ([ui.md](ui.md)),
-на всех ПК. Раскладка Unity: строка меню (File, Edit, GameObject, View,
+на всех ПК. Панели — Hierarchy, Inspector, Project, Console, History, Git —
+вкладки в трёх доках (слева, справа, под вьюпортом); вкладку тащат в другой
+док, и панель переезжает туда целиком (`Ui::move_to`), раскладка помнится.
+По умолчанию раскладка Unity: строка меню (File, Edit, GameObject, View,
 Tools, Play), тулбар (инструменты, оси, пивот, сетка, Play/Pause/Step,
 undo/redo, Save), Hierarchy (поиск, раскрытие, глаз и замок, перетаскивание
 между строками и внутрь, Shift — диапазон, Cmd — переключение, стрелки,
