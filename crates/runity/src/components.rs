@@ -102,6 +102,53 @@ impl Components {
         self.by_name.contains_key(name)
     }
 
+    /// Put the components one line carries on one entity: for entities the
+    /// game spawns itself, which no scene reload will patch.
+    pub fn insert_all(
+        &self,
+        desc: &EntityDesc,
+        entity: hecs::Entity,
+        world: &mut World,
+    ) -> Vec<ComponentProblem> {
+        let mut problems = Vec::new();
+        for (name, value) in &desc.components {
+            self.insert_one(desc, name, value, entity, world, &mut problems);
+        }
+        problems
+    }
+
+    fn insert_one(
+        &self,
+        desc: &EntityDesc,
+        name: &str,
+        value: &RawValue,
+        entity: hecs::Entity,
+        world: &mut World,
+        problems: &mut Vec<ComponentProblem>,
+    ) {
+        let problem = |reason: String| ComponentProblem {
+            entity: desc.id,
+            entity_name: desc.name.clone(),
+            component: name.to_string(),
+            reason,
+        };
+        match self.by_name.get(name) {
+            Some((insert, _)) => {
+                if let Err(e) = insert(value, world, entity) {
+                    problems.push(problem(format!("{e}; the entity keeps what it had")));
+                }
+            }
+            None => {
+                let hint = crate::spelling::closest(name, self.names())
+                    .map(|n| format!(" — did you mean `{n}`?"))
+                    .unwrap_or_default();
+                problems.push(problem(format!(
+                    "the game registers no component by this name{hint}"
+                )));
+            }
+        }
+    }
+
     /// Put every component of every line of `scene` on the entity spawned
     /// from it. Call it after [`crate::spawn_scene_with`] on the same scene.
     pub fn apply(&self, scene: &Scene, world: &mut World) -> Vec<ComponentProblem> {
@@ -133,27 +180,7 @@ impl Components {
                 if was.and_then(|w| w.get(name)) == Some(value) {
                     continue;
                 }
-                let problem = |reason: String| ComponentProblem {
-                    entity: desc.id,
-                    entity_name: desc.name.clone(),
-                    component: name.clone(),
-                    reason,
-                };
-                match self.by_name.get(name) {
-                    Some((insert, _)) => {
-                        if let Err(e) = insert(value, world, entity) {
-                            problems.push(problem(format!("{e}; the entity keeps what it had")));
-                        }
-                    }
-                    None => {
-                        let hint = crate::spelling::closest(name, self.names())
-                            .map(|n| format!(" — did you mean `{n}`?"))
-                            .unwrap_or_default();
-                        problems.push(problem(format!(
-                            "the game registers no component by this name{hint}"
-                        )));
-                    }
-                }
+                self.insert_one(desc, name, value, entity, world, &mut problems);
             }
             if let Some(was) = was {
                 for name in was.keys().filter(|n| !desc.components.contains_key(*n)) {

@@ -66,7 +66,7 @@ pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use components::{ComponentProblem, Components};
-pub use live::{LiveScene, Reload, Spawned};
+pub use live::{Instance, LiveScene, Reload, Spawned};
 pub use material::{Material, Shading};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};

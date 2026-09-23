@@ -151,3 +151,64 @@ fn an_asset_imported_while_the_game_runs_is_picked_up_and_replaced() {
         .max[0];
     assert_eq!(bounds.to_native(), 1.5);
 }
+
+/// A component a prefab part carries.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Warmth(f32);
+
+#[test]
+fn a_prefab_spawned_at_run_time_is_whole_and_outlives_a_reload() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, 8, 8);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let project = project("spawn");
+    write(
+        &project.prefabs().join("campfire.prefab"),
+        r#"(id: "c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "c2", name: "ember", model: "builtin:sphere",
+                        transform: (position: (0.0, 1.0, 0.0)),
+                        components: { "warmth": (3.5) })])"#,
+    );
+    let mut components = runity::Components::new();
+    components.register::<Warmth>("warmth");
+    let path = project.scenes().join("main.ron");
+    let (live, _) = LiveScene::open(&path).unwrap();
+    let mut live = live.with_components(components);
+    let mut world = hecs::World::new();
+    live.spawn(&mut world, &gpu, &mut renderer);
+
+    let at = runity::Transform {
+        position: runity::glam::Vec3::new(10.0, 0.0, 0.0),
+        ..runity::Transform::default()
+    };
+    let fire = live
+        .spawn_prefab("campfire", at, None, &mut world, &gpu, &mut renderer)
+        .unwrap();
+    assert!(fire.problems.is_empty(), "{:?}", fire.problems);
+    assert!(
+        world.get::<&SceneId>(fire.root).is_err(),
+        "the game's, not the file's"
+    );
+    let ember = world
+        .query::<(hecs::Entity, &Warmth, &runity::world::WorldTransform)>()
+        .iter()
+        .map(|(e, w, t)| (e, w.0, t.0.w_axis))
+        .next()
+        .expect("the ember, with its component");
+    assert_eq!(ember.1, 3.5);
+    assert_eq!((ember.2.x, ember.2.y), (10.0, 1.0), "placed under the root");
+
+    // Someone edits the scene; the fire the game lit stays lit.
+    write(&path, SCENE.replace("\"stone\"", "\"moss\""));
+    let done = live.reload(&mut world, &gpu, &mut renderer);
+    assert!(done.patched.is_some());
+    assert!(world.contains(fire.root) && world.contains(ember.0));
+
+    let err = live
+        .spawn_prefab("campfir", at, None, &mut world, &gpu, &mut renderer)
+        .unwrap_err();
+    assert!(err.contains("did you mean `campfire`?"), "{err}");
+}

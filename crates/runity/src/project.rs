@@ -382,6 +382,7 @@ const GAME: &str = r#"//! {name}.
 //! takes effect without closing the window.
 
 use runity::hecs::World;
+use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
 use runity::{Components, Key, LiveScene, Transform};
@@ -407,10 +408,12 @@ fn spin(world: &mut World, seconds: f32) {
 struct Game {
     live: LiveScene,
     world: World,
+    physics: PhysicsWorld,
 }
 
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
+        self.physics = PhysicsWorld::new(ctx.time.settings().fixed_delta);
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
             eprintln!("{line}");
         }
@@ -420,6 +423,9 @@ impl shell::Game for Game {
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
         spin(&mut self.world, seconds);
+        // Physics is a system too: bodies from the scene, a fixed step, and
+        // where the dynamic ones went written back.
+        self.physics.run(&mut self.world);
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
@@ -453,7 +459,12 @@ fn main() -> anyhow::Result<()> {
         title: "{name}".into(),
         ..Default::default()
     };
-    run(config, Game { live, world: World::new() })
+    let game = Game {
+        live,
+        world: World::new(),
+        physics: PhysicsWorld::default(),
+    };
+    run(config, game)
 }
 "#;
 
@@ -541,12 +552,17 @@ Cargo.toml   the game crate; src/main.rs is the game
 /// The scene a new project opens to: ground to stand on and one thing on
 /// it, so the first frame shows that everything works.
 fn starter_scene() -> String {
-    let (ground, cube) = (crate::EntityId::fresh(), crate::EntityId::fresh());
+    let (ground, cube, crate_) = (
+        crate::EntityId::fresh(),
+        crate::EntityId::fresh(),
+        crate::EntityId::fresh(),
+    );
     format!(
         "(
     entities: [
-        (id: \"{ground}\", name: \"ground\", model: \"builtin:plane\", transform: (scale: (40.0, 1.0, 40.0)), material: \"grass\"),
+        (id: \"{ground}\", name: \"ground\", model: \"builtin:plane\", transform: (scale: (40.0, 1.0, 40.0)), material: \"grass\", body: Static, collider: Box(half: (0.5, 0.05, 0.5))),
         (id: \"{cube}\", name: \"cube\", model: \"builtin:cube\", transform: (position: (0.0, 0.5, 0.0)), material: \"earth\", components: {{ \"spin\": (degrees_per_second: 45.0) }}),
+        (id: \"{crate_}\", name: \"crate\", model: \"builtin:cube\", transform: (position: (1.5, 4.0, 0.0), scale: (0.6, 0.6, 0.6)), material: \"bark\", body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
     ],
 )
 "
@@ -589,11 +605,11 @@ mod tests {
 
         // And the scene it starts with opens, with every entity named.
         let scene = crate::Scene::load(root.join("scenes/main.ron")).unwrap();
-        assert_eq!(scene.entities.len(), 2);
+        assert_eq!(scene.entities.len(), 3);
         let text = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();
         assert_eq!(
             text.matches("id: ").count(),
-            2,
+            3,
             "ids written, not minted on load"
         );
 

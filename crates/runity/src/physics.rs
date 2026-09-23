@@ -12,6 +12,13 @@
 //!   rapier's to own, and writing to it from the scene fights the solver. A
 //!   static body's is the scene's, and rapier only reads it.
 //!
+//! * **The file and the solver share a body without fighting.** A body
+//!   remembers what it was built from. A different shape or body kind in the
+//!   entity — a live reload, a game changing it — rebuilds it; a different
+//!   transform — someone moved it in the scene, or the game teleported it —
+//!   moves it there. An entity that is gone takes its body with it. So a
+//!   reload patches a running simulation instead of fighting it.
+//!
 //! What is deliberately *not* here: a character controller. How a person
 //! walks — what counts as a step, when they are allowed to jump, how fast
 //! they slide — is a game's design, not an engine's, and the version that
@@ -23,8 +30,8 @@ use glam::{Quat, Vec3};
 use hecs::World;
 use rapier3d::prelude::*;
 
-use crate::scene::{Body, Collider as ColliderShape};
-use crate::world::{Physics, Shape, WorldTransform};
+use crate::scene::{Body, Collider as ColliderShape, Transform};
+use crate::world::{Parent, Physics, Shape, WorldTransform};
 
 /// What a ray met.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,6 +48,15 @@ pub struct ColliderRef(pub ColliderHandle);
 /// The handle rapier knows an entity by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BodyHandle(pub RigidBodyHandle);
+
+/// What a body was built from, and the transform it last agreed with: how
+/// a change from outside the solver is told from the solver's own motion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Built {
+    body: Body,
+    collider: ColliderShape,
+    local: Transform,
+}
 
 /// Everything rapier needs to take a step.
 pub struct PhysicsWorld {
@@ -91,19 +107,76 @@ impl PhysicsWorld {
         self.bodies.len()
     }
 
-    /// Build a rapier body for every entity that asks for one.
+    /// Bring rapier in line with the world: build a body for every entity
+    /// that asks for one, rebuild the ones whose body kind or shape changed,
+    /// move the ones whose transform was changed from outside the solver,
+    /// and remove the ones whose entity is gone or no longer asks.
     ///
-    /// Idempotent in the sense that entities already carrying a
-    /// [`BodyHandle`] are skipped, so it can run again after more of a scene
-    /// is spawned.
+    /// Cheap when nothing changed, so it runs every step.
     pub fn sync_from_world(&mut self, world: &mut World) {
-        let mut added: Vec<(hecs::Entity, BodyHandle)> = Vec::new();
-        for (entity, placed, physics, shape, existing) in world
+        // Gone, or changed into something else: the old body goes.
+        let mut stale: Vec<hecs::Entity> = Vec::new();
+        let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform)> = Vec::new();
+        let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
+        for (entity, handle, built, physics, shape, local, placed) in world
+            .query::<(
+                hecs::Entity,
+                &BodyHandle,
+                &Built,
+                &Physics,
+                &Shape,
+                &Transform,
+                &WorldTransform,
+            )>()
+            .iter()
+        {
+            if built.body != physics.0 || built.collider != shape.0 {
+                stale.push(entity);
+            } else {
+                live.insert(handle.0);
+                if built.local != *local {
+                    teleport.push((entity, handle.0, placed.0, *local));
+                }
+            }
+        }
+        for entity in stale {
+            let _ = world.remove::<(BodyHandle, Built)>(entity);
+        }
+        let orphans: Vec<RigidBodyHandle> = self
+            .bodies
+            .iter()
+            .map(|(handle, _)| handle)
+            .filter(|handle| !live.contains(handle))
+            .collect();
+        for handle in orphans {
+            self.bodies.remove(
+                handle,
+                &mut self.islands,
+                &mut self.colliders,
+                &mut self.impulse_joints,
+                &mut self.multibody_joints,
+                true,
+            );
+        }
+        for (entity, handle, placed, local) in teleport {
+            if let Some(body) = self.bodies.get_mut(handle) {
+                body.set_position(isometry(placed), true);
+                body.set_linvel(vector![0.0, 0.0, 0.0], true);
+                body.set_angvel(vector![0.0, 0.0, 0.0], true);
+            }
+            if let Ok(mut built) = world.get::<&mut Built>(entity) {
+                built.local = local;
+            }
+        }
+
+        let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
+        for (entity, placed, physics, shape, local, existing) in world
             .query::<(
                 hecs::Entity,
                 &WorldTransform,
                 &Physics,
                 &Shape,
+                &Transform,
                 Option<&BodyHandle>,
             )>()
             .iter()
@@ -117,30 +190,37 @@ impl PhysicsWorld {
                 // bounds is the kind of default that is wrong quietly.
                 continue;
             };
-
-            let (scale, rotation, translation) = placed.0.to_scale_rotation_translation();
-            let _ = scale;
-            let position = Isometry::from_parts(
-                nalgebra::Translation3::new(translation.x, translation.y, translation.z),
-                nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(
-                    rotation.w, rotation.x, rotation.y, rotation.z,
-                )),
-            );
             let body = match physics.0 {
                 Body::Dynamic => RigidBodyBuilder::dynamic(),
                 _ => RigidBodyBuilder::fixed(),
             }
-            .position(position)
+            .position(isometry(placed.0))
             .build();
-
             let handle = self.bodies.insert(body);
             self.colliders
                 .insert_with_parent(collider, handle, &mut self.bodies);
-            added.push((entity, BodyHandle(handle)));
+            added.push((
+                entity,
+                BodyHandle(handle),
+                Built {
+                    body: physics.0,
+                    collider: shape.0,
+                    local: *local,
+                },
+            ));
         }
-        for (entity, handle) in added {
-            let _ = world.insert_one(entity, handle);
+        for (entity, handle, built) in added {
+            let _ = world.insert(entity, (handle, built));
         }
+    }
+
+    /// One fixed step of physics as a system: bring rapier in line with the
+    /// world, step, and write where the dynamic bodies went back. Call it
+    /// once per simulation step.
+    pub fn run(&mut self, world: &mut World) {
+        self.sync_from_world(world);
+        self.step();
+        self.sync_to_world(world);
     }
 
     /// Take one step. Call it once per simulation step, never per frame.
@@ -169,9 +249,15 @@ impl PhysicsWorld {
     /// writing rapier's copy back over it would let rounding walk the world
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
-        let mut moved: Vec<(hecs::Entity, glam::Mat4)> = Vec::new();
-        for (entity, handle, physics, placed) in world
-            .query::<(hecs::Entity, &BodyHandle, &Physics, &WorldTransform)>()
+        let mut moved: Vec<(hecs::Entity, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
+        for (entity, handle, physics, placed, parent) in world
+            .query::<(
+                hecs::Entity,
+                &BodyHandle,
+                &Physics,
+                &WorldTransform,
+                Option<&Parent>,
+            )>()
             .iter()
         {
             if physics.0 != Body::Dynamic {
@@ -201,10 +287,30 @@ impl PhysicsWorld {
             moved.push((
                 entity,
                 glam::Mat4::from_scale_rotation_translation(scale, rotation, translation),
+                parent.map(|p| p.0),
             ));
         }
-        for (entity, matrix) in moved {
+        for (entity, matrix, parent) in moved {
+            // The local transform too, relative to the parent: it is what
+            // the hierarchy is recomputed from, and what a reload compares
+            // with the file. Writing only the world one would let the next
+            // hierarchy pass put the body back where the scene had it.
+            let parent_matrix = parent
+                .and_then(|p| world.get::<&WorldTransform>(p).ok().map(|w| w.0))
+                .unwrap_or(glam::Mat4::IDENTITY);
+            let local_matrix = parent_matrix.inverse() * matrix;
+            let (scale, rotation, translation) = local_matrix.to_scale_rotation_translation();
+            let mut local = Transform {
+                position: translation,
+                scale,
+                ..Transform::default()
+            };
+            local.set_rotation(rotation);
             let _ = world.insert_one(entity, WorldTransform(matrix));
+            let _ = world.insert_one(entity, local);
+            if let Ok(mut built) = world.get::<&mut Built>(entity) {
+                built.local = local;
+            }
         }
     }
 
@@ -250,6 +356,18 @@ impl PhysicsWorld {
             body.position().translation.z,
         ))
     }
+}
+
+/// Where a world matrix puts a body: its translation and rotation. Scale
+/// lives in the collider's shape.
+fn isometry(placed: glam::Mat4) -> Isometry<Real> {
+    let (_, rotation, translation) = placed.to_scale_rotation_translation();
+    Isometry::from_parts(
+        nalgebra::Translation3::new(translation.x, translation.y, translation.z),
+        nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(
+            rotation.w, rotation.x, rotation.y, rotation.z,
+        )),
+    )
 }
 
 /// Turn a scene's shape into a rapier collider, scaled by the transform.
@@ -550,6 +668,84 @@ mod tests {
         assert_eq!(
             world_a.get::<&WorldTransform>(ball_a).unwrap().0,
             world_b.get::<&WorldTransform>(ball_b).unwrap().0
+        );
+    }
+
+    // --- physics as a system, under live reload -----------------------------
+
+    /// Physics and the hierarchy pass, the way a game's step runs them.
+    fn run_for(physics: &mut PhysicsWorld, world: &mut World, steps: usize) {
+        for _ in 0..steps {
+            physics.run(world);
+            crate::world::apply_hierarchy(world);
+        }
+    }
+
+    #[test]
+    fn a_falling_body_is_not_put_back_by_the_hierarchy_pass() {
+        // The hierarchy is recomputed from local transforms; if physics wrote
+        // only the world one, the ball would snap back up every step.
+        let (mut physics, mut world, ball) = dropped(5.0);
+        run_for(&mut physics, &mut world, 30);
+        let local = world.get::<&Transform>(ball).unwrap().position.y;
+        assert!(
+            local < 4.5,
+            "it fell, and its local transform says so: {local}"
+        );
+    }
+
+    #[test]
+    fn a_body_moved_in_the_file_is_moved_in_the_simulation() {
+        let (mut physics, mut world, ball) = dropped(5.0);
+        run_for(&mut physics, &mut world, 5);
+        // A reload wrote a new place for it.
+        world
+            .insert_one(
+                ball,
+                Transform {
+                    position: Vec3::new(8.0, 3.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        crate::world::apply_hierarchy(&mut world);
+        run_for(&mut physics, &mut world, 1);
+        let at = world.get::<&WorldTransform>(ball).unwrap().0.w_axis;
+        assert!((at.x - 8.0).abs() < 0.01, "moved across: {at:?}");
+        assert!(at.y < 3.0 && at.y > 2.5, "and falling from there: {at:?}");
+    }
+
+    #[test]
+    fn a_despawned_body_leaves_no_ghost_collider() {
+        let (mut physics, mut world, ball) = dropped(5.0);
+        assert_eq!(physics.body_count(), 2);
+        let floor = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Static)
+            .map(|(e, _)| e)
+            .unwrap();
+        world.despawn(floor).unwrap();
+        run_for(&mut physics, &mut world, 120);
+        assert_eq!(physics.body_count(), 1, "the floor's body went with it");
+        let y = world.get::<&Transform>(ball).unwrap().position.y;
+        assert!(y < 0.0, "and the ball falls through where it was: {y}");
+    }
+
+    #[test]
+    fn a_changed_shape_rebuilds_the_body() {
+        let (mut physics, mut world, ball) = dropped(0.6);
+        let before = *world.get::<&BodyHandle>(ball).unwrap();
+        world
+            .insert_one(ball, Shape(ColliderShape::Sphere { radius: 2.0 }))
+            .unwrap();
+        run_for(&mut physics, &mut world, 1);
+        let after = *world.get::<&BodyHandle>(ball).unwrap();
+        assert_ne!(before, after, "a new body for the new shape");
+        assert_eq!(
+            physics.body_count(),
+            2,
+            "and not a second one beside the old"
         );
     }
 }

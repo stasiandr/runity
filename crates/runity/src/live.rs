@@ -46,10 +46,20 @@ pub struct LiveScene {
     /// What the world was last brought to: the file with its prefab
     /// instances expanded.
     current: Scene,
+    /// The project's prefabs, for the scene and for spawning at run time.
+    prefabs: Prefabs,
     stamps: Stamps,
     meshes: HashMap<String, MeshHandle>,
     since_poll: f32,
     components: Components,
+}
+
+/// A prefab spawned at run time.
+#[derive(Debug)]
+pub struct Instance {
+    pub root: hecs::Entity,
+    /// What could not be resolved: models, components.
+    pub problems: Vec<String>,
 }
 
 /// What [`LiveScene::spawn`] could not do.
@@ -128,7 +138,7 @@ impl LiveScene {
     pub fn open(path: impl AsRef<Path>) -> anyhow::Result<(Self, Vec<String>)> {
         let path = path.as_ref().to_path_buf();
         let project = Project::find(&path).ok();
-        let (current, mut problems) = read(&path, project.as_ref())?;
+        let (current, prefabs, mut problems) = read(&path, project.as_ref())?;
         let library = match project.as_ref().map(Project::library) {
             Some(directory) if directory.is_dir() => {
                 let (library, skipped) = Library::open(&directory)?;
@@ -148,6 +158,7 @@ impl LiveScene {
                 project,
                 library,
                 current,
+                prefabs,
                 stamps,
                 meshes: HashMap::new(),
                 since_poll: 0.0,
@@ -198,6 +209,70 @@ impl LiveScene {
         }
     }
 
+    /// Spawn a prefab at run time — Unity's `Instantiate` — at `transform`,
+    /// optionally under `parent`. Returns its root entity.
+    ///
+    /// The entities are the game's, not the file's: they carry no
+    /// [`crate::SceneId`], so a reload of the scene neither patches nor
+    /// removes them. The prefab's parts, its models and the game's
+    /// components on it are all there; what could not be resolved comes back
+    /// with the root, in words.
+    pub fn spawn_prefab(
+        &mut self,
+        name: &str,
+        transform: crate::Transform,
+        parent: Option<hecs::Entity>,
+        world: &mut World,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> Result<Instance, String> {
+        if self.prefabs.get(name).is_none() {
+            let names = self.prefabs.names();
+            let hint = crate::spelling::closest(name, names.iter().copied())
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            return Err(format!("no prefab named `{name}` in prefabs/{hint}"));
+        }
+        let instance = crate::EntityDesc {
+            id: crate::EntityId::fresh(),
+            name: name.to_string(),
+            prefab: name.to_string(),
+            transform,
+            ..crate::EntityDesc::default()
+        };
+        let expanded = crate::instantiate(
+            &Scene {
+                entities: vec![instance],
+                ..Scene::default()
+            },
+            &self.prefabs,
+        );
+        let library = self.library.as_ref();
+        let (spawned, missing) = crate::world::spawn_owned(
+            &expanded.scene.entities[0],
+            parent,
+            world,
+            resolver(&mut self.meshes, library, gpu, renderer),
+            |name| library?.material_by_name(name),
+        );
+        let mut problems: Vec<String> = missing
+            .iter()
+            .map(|m| format!("{}: no model named {}", m.entity_name, m.model))
+            .collect();
+        for (entity, desc) in &spawned {
+            problems.extend(
+                self.components
+                    .insert_all(desc, *entity, world)
+                    .iter()
+                    .map(ToString::to_string),
+            );
+        }
+        Ok(Instance {
+            root: spawned[0].0,
+            problems,
+        })
+    }
+
     /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
     /// frame with the frame's delta.
     pub fn poll(
@@ -224,7 +299,8 @@ impl LiveScene {
         if now != self.stamps {
             self.stamps = now;
             match read(&self.path, self.project.as_ref()) {
-                Ok((scene, problems)) => {
+                Ok((scene, prefabs, problems)) => {
+                    self.prefabs = prefabs;
                     let library = self.library.as_ref();
                     out.patched = Some(crate::patch_scene(
                         &self.current,
@@ -330,7 +406,7 @@ impl LiveScene {
 }
 
 /// Read a scene and expand its prefab instances.
-fn read(path: &Path, project: Option<&Project>) -> anyhow::Result<(Scene, Vec<String>)> {
+fn read(path: &Path, project: Option<&Project>) -> anyhow::Result<(Scene, Prefabs, Vec<String>)> {
     let document = Scene::load(path)?;
     let (prefabs, skipped) = project.map(Prefabs::of).unwrap_or_default();
     let mut problems: Vec<String> = skipped
@@ -344,7 +420,7 @@ fn read(path: &Path, project: Option<&Project>) -> anyhow::Result<(Scene, Vec<St
             .iter()
             .map(|p| format!("{}: prefab {} — {}", p.entity_name, p.prefab, p.reason)),
     );
-    Ok((instanced.scene, problems))
+    Ok((instanced.scene, prefabs, problems))
 }
 
 /// When each file a scene is read from last changed.

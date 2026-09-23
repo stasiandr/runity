@@ -152,6 +152,51 @@ fn spawn_subtree(
     }
 }
 
+/// Spawn an entity and everything under it as the game's own rather than
+/// the file's: without [`SceneId`], so a reload of the scene never touches
+/// it — the file does not know it exists. What a game spawning a prefab at
+/// run time builds on. Returns every entity spawned with the line it came
+/// from, root first, and the models nothing answered to.
+pub fn spawn_owned<'a>(
+    desc: &'a EntityDesc,
+    parent: Option<hecs::Entity>,
+    world: &mut World,
+    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    palette: impl Fn(&str) -> Option<Material>,
+) -> (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>) {
+    fn walk<'a>(
+        desc: &'a EntityDesc,
+        parent: Option<hecs::Entity>,
+        parent_matrix: glam::Mat4,
+        world: &mut World,
+        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        palette: &impl Fn(&str) -> Option<Material>,
+        out: &mut (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>),
+    ) {
+        let matrix = parent_matrix * desc.transform.matrix();
+        let entity = spawn_one(desc, parent, matrix, world, resolve, palette, &mut out.1);
+        let _ = world.remove_one::<SceneId>(entity);
+        out.0.push((entity, desc));
+        for child in &desc.children {
+            walk(child, Some(entity), matrix, world, resolve, palette, out);
+        }
+    }
+    let parent_matrix = parent
+        .and_then(|p| world.get::<&WorldTransform>(p).ok().map(|w| w.0))
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let mut out = (Vec::new(), Vec::new());
+    walk(
+        desc,
+        parent,
+        parent_matrix,
+        world,
+        &mut resolve,
+        &palette,
+        &mut out,
+    );
+    out
+}
+
 /// Spawn one entity from its line in the file, without its children.
 fn spawn_one(
     desc: &EntityDesc,

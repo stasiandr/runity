@@ -227,7 +227,14 @@ fn open_scene(server: &mut Server, path: &str) -> Answer {
     match session.project() {
         Some(project) => {
             let _ = write!(out, " in project {}", project.name());
-            if !project.library().is_dir() {
+            let has_sources = std::fs::read_dir(project.assets())
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .any(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                })
+                .unwrap_or(false);
+            if has_sources && !project.library().is_dir() {
                 out.push_str("; its library is not built yet, so models from assets/ draw nothing until `reload` or `runity sync`");
             }
         }
@@ -468,7 +475,16 @@ fn simulate(server: &mut Server, args: &Value) -> Answer {
         .map(|(desc, _)| (desc.id, desc.name.clone()))
         .collect();
     session.play();
-    let steps = session.step(seconds);
+    // In frame-sized slices: the clock caps how many steps one call may
+    // catch up, so a single call for three seconds would simulate a few
+    // steps of them and call it done.
+    let mut steps = 0;
+    let slice: f32 = 1.0 / 60.0;
+    let mut left = seconds;
+    while left > 0.0 {
+        steps += session.step(slice.min(left));
+        left -= slice;
+    }
     let mut report = format!("{steps} steps, {seconds}s:");
     for (id, name) in &bodies {
         if let Some(at) = session.world_position(*id) {

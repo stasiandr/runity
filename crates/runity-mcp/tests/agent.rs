@@ -129,7 +129,7 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     let crate_id = agent.text(
         "add_entity",
         json!({
-            "name": "crate",
+            "name": "tower",
             "model": "builtin:cube",
             "position": [0.0, 4.0, 0.0],
             "material": "bark",
@@ -139,7 +139,7 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     );
     assert_eq!(crate_id.len(), 16, "an id: {crate_id}");
     let tree = agent.text("scene_tree", json!({}));
-    let line = tree.lines().find(|l| l.contains("\"crate\"")).unwrap();
+    let line = tree.lines().find(|l| l.contains("\"tower\"")).unwrap();
     assert!(line.starts_with(&crate_id), "{line}");
     assert!(
         line.contains("material=bark") && line.contains("(0.00, 4.00, 0.00)"),
@@ -148,7 +148,7 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
 
     // One step, so one undo takes all of it back, and redo returns it.
     assert_eq!(agent.text("undo", json!({})), "undone");
-    assert!(!agent.text("scene_tree", json!({})).contains("\"crate\""));
+    assert!(!agent.text("scene_tree", json!({})).contains("\"tower\""));
     assert_eq!(agent.text("redo", json!({})), "redone");
 
     // A material name nothing answers to is legal — it draws grey — and
@@ -206,7 +206,7 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     let report = agent.text("simulate", json!({ "seconds": 2.0 }));
     let fell = report
         .lines()
-        .find(|l| l.contains("\"crate\""))
+        .find(|l| l.contains("\"tower\""))
         .unwrap_or_else(|| panic!("{report}"));
     assert!(!fell.contains("4.00, 0.00)"), "it moved: {fell}");
     assert!(agent
