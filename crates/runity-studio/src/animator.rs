@@ -79,6 +79,10 @@ pub struct Animator {
     edge_nodes: Vec<NodeId>,
     /// Fields asked for on a state that has none of them yet.
     more: Vec<(String, &'static str)>,
+    /// The state the running game says the selected entity is in, and
+    /// when that was last asked.
+    live: Option<String>,
+    asked: std::time::Instant,
 }
 
 impl Animator {
@@ -150,6 +154,8 @@ impl Animator {
             boxes: HashMap::new(),
             edge_nodes: Vec::new(),
             more: Vec::new(),
+            live: None,
+            asked: std::time::Instant::now(),
         }
     }
 
@@ -177,6 +183,7 @@ impl Animator {
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        self.follow_game(ui, session);
         if self.listed {
             return;
         }
@@ -296,7 +303,8 @@ impl Animator {
             let on = self.chosen == Some(Chosen::State(name.clone()));
             let start = name == graph.start;
             let any = name == ANY;
-            let b = ui.add(boxes, box_style(&graph, &name, on, (x, y)));
+            let live = self.live.as_deref() == Some(name.as_str());
+            let b = ui.add(boxes, box_style(&graph, &name, on, live, (x, y)));
             ui.set_name(b, format!("state {name}"));
             let label = if any { "Any State" } else { name.as_str() };
             let glyph = if any {
@@ -314,6 +322,33 @@ impl Animator {
         self.show_side(ui, session, &graph);
     }
 
+    /// Light up the state the running game's selected entity is in, as
+    /// Unity's Animator does in play mode. The game says it in its report
+    /// a few times a second; asking is reading that file, so not more
+    /// often than four times a second.
+    fn follow_game(&mut self, ui: &mut Ui, session: &Session) {
+        if self.asked.elapsed().as_secs_f32() < 0.25 {
+            return;
+        }
+        self.asked = std::time::Instant::now();
+        let live = session.selected().and_then(|id| session.game_animator(id));
+        if live != self.live {
+            self.live = live;
+            self.restyle_boxes(ui);
+        }
+    }
+
+    fn restyle_boxes(&mut self, ui: &mut Ui) {
+        let Some(graph) = self.graph().cloned() else {
+            return;
+        };
+        for (name, node) in &self.boxes {
+            let on = self.chosen == Some(Chosen::State(name.clone()));
+            let live = self.live.as_deref() == Some(name.as_str());
+            ui.set_style(*node, box_style(&graph, name, on, live, self.place(name)));
+        }
+    }
+
     /// Choose a box or an arrow without building the canvas again: the
     /// node being pressed stays, so a drag that follows still has it.
     fn choose(&mut self, ui: &mut Ui, session: &Session, chosen: Option<Chosen>) {
@@ -324,10 +359,7 @@ impl Animator {
         let Some(graph) = self.graph().cloned() else {
             return;
         };
-        for (name, node) in &self.boxes {
-            let on = self.chosen == Some(Chosen::State(name.clone()));
-            ui.set_style(*node, box_style(&graph, name, on, self.place(name)));
-        }
+        self.restyle_boxes(ui);
         self.draw_edges(ui);
         self.parts.retain(|n, p| {
             !matches!(
@@ -997,7 +1029,9 @@ fn layered(graph: &Graph, name: &str) -> (usize, usize) {
     (column, row)
 }
 
-fn box_style(graph: &Graph, name: &str, on: bool, (x, y): (f32, f32)) -> Style {
+/// A state's box: the start filled with the accent, the chosen one ringed
+/// in it, and the one the running game is in ringed in warm light.
+fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)) -> Style {
     let start = name == graph.start;
     Style::row()
         .absolute(x, y)
@@ -1014,8 +1048,14 @@ fn box_style(graph: &Graph, name: &str, on: bool, (x, y): (f32, f32)) -> Style {
             SURFACE
         })
         .border(
-            if on { 2.0 } else { 1.0 },
-            if on { ACCENT } else { NEUTRAL_800 },
+            if on || live { 2.0 } else { 1.0 },
+            if live {
+                WARNING
+            } else if on {
+                ACCENT
+            } else {
+                NEUTRAL_800
+            },
         )
         .clickable()
         .draggable()

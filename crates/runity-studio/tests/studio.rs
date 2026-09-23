@@ -1647,3 +1647,55 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     assert!(text.starts_with("// The hero."), "{text}");
     assert!(text.contains("// standing"));
 }
+
+#[test]
+fn the_animator_lights_up_the_state_the_running_game_is_in() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    std::fs::create_dir_all(dir.join("animators")).unwrap();
+    std::fs::write(
+        dir.join("animators/hero.ron"),
+        r#"(start: "idle", states: {"idle": (clip: "idle"), "walk": (clip: "walk")}, transitions: [])"#,
+    )
+    .unwrap();
+    // A game that says the boulder walks: its report, from a stand-in.
+    let state = dir.join(".runity/state.ron");
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30").env("RUNITY_STATE_FILE", &state);
+    s.session.run_in_console(game).unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    let mut report = runity::save::capture(
+        &runity::hecs::World::new(),
+        &runity::Components::new(),
+        &runity::Scene::default(),
+    );
+    report.entities.push(runity::save::Saved {
+        id: boulder,
+        transform: Default::default(),
+        components: Vec::new(),
+        prefab: String::new(),
+        animator: "walk".into(),
+    });
+    report.write(&state).unwrap();
+
+    click(&mut s, "line boulder");
+    click(&mut s, "tab animator");
+    click(&mut s, "animator hero");
+    let border = |s: &mut Studio, name: &str| {
+        let node = s.ui.find(name).unwrap();
+        s.ui.style(node).look.border
+    };
+    let mut lit = false;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        s.frame();
+        if border(&mut s, "state walk") == runity_studio::theme::WARNING {
+            lit = true;
+            break;
+        }
+    }
+    assert!(lit, "walk lit while the game is in it");
+    assert_ne!(border(&mut s, "state idle"), runity_studio::theme::WARNING);
+    s.session.stop_game();
+}

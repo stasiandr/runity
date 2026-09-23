@@ -278,6 +278,18 @@ impl Session {
         runity::save::SaveGame::read(path).ok()
     }
 
+    /// The animator state the running game says an entity is in: what
+    /// the Animator window lights up. `None` without a game, or for an
+    /// entity with no animation controller.
+    pub fn game_animator(&self, id: runity::EntityId) -> Option<String> {
+        self.game_state()?
+            .entities
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.animator)
+            .filter(|a| !a.is_empty())
+    }
+
     /// Whether a game started from here is still running.
     pub fn game_running(&mut self) -> bool {
         self.poll_game();

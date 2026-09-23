@@ -285,6 +285,9 @@ impl Session {
                 for (name, value) in &saved.components {
                     fields.push((format!("game.components.{name}"), value.clone()));
                 }
+                if !saved.animator.is_empty() {
+                    fields.push(("game.animator".into(), saved.animator.clone()));
+                }
             } else if state.gone.contains(&id) {
                 fields.push(("game".into(), "gone".into()));
             }

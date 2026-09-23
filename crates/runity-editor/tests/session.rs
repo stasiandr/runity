@@ -3712,6 +3712,7 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
             },
             components: vec![("door".into(), "(open: true)".into())],
             prefab: String::new(),
+            animator: "walk".into(),
         }],
         gone: vec![],
     }
@@ -3729,6 +3730,8 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
         value("game.components.door").as_deref(),
         Some("(open: true)")
     );
+    assert_eq!(value("game.animator").as_deref(), Some("walk"));
+    assert_eq!(session.game_animator(box_id).as_deref(), Some("walk"));
     assert_ne!(
         value("position"),
         value("game.position"),
