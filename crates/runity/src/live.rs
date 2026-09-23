@@ -246,6 +246,31 @@ impl LiveScene {
         restored
     }
 
+    /// [`LiveScene::spawn`] without a GPU: every model stands for itself
+    /// with a placeholder mesh, and one nothing answers to is still
+    /// reported. For play-mode tests and servers — the world, components,
+    /// colliders and all, with nothing to draw it.
+    pub fn spawn_headless(&mut self, world: &mut World) -> Spawned {
+        let library = self.library.as_ref();
+        let missing = crate::spawn_scene_with(
+            &self.current,
+            world,
+            |name| {
+                let known = builtin::by_name(name).is_some()
+                    || library.is_some_and(|l| l.mesh_by_name(name).is_some());
+                known.then_some(MeshHandle::TEST)
+            },
+            |name| library?.material_by_name(name),
+        );
+        let components = self.components.apply(&self.current, world);
+        #[cfg(feature = "physics")]
+        crate::physics::attach_scene_collision_meshes(world, &self.current, self.library.as_ref());
+        Spawned {
+            missing,
+            components,
+        }
+    }
+
     /// Spawn a prefab at run time — Unity's `Instantiate` — at `transform`,
     /// optionally under `parent`. Returns its root entity.
     ///

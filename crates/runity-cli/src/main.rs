@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! runity new <folder> [--name NAME] [--engine-path PATH]
+//! runity test  [PROJECT]  the game's tests, headless
 //! runity run   [PROJECT] [--hot] [--release] [--scene NAME]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
@@ -37,6 +38,9 @@ runity run [PROJECT] [--hot] [--release] [--scene NAME]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and tuning reload while it runs; with --hot, so does its
     own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
+runity test [PROJECT]
+    The game's tests: a new project's plays its start scene for two seconds
+    without a window — systems, physics — and fails if anything breaks.
 runity sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -72,7 +76,7 @@ runity add component NAME [PROJECT]
     Write src/components/NAME.rs. Scenes then give it by NAME:
     `components: { \"NAME\": (...) }`; build.rs registers it.
 runity add system NAME [PROJECT]
-    Write src/systems/NAME.rs and run it last in `step` in src/main.rs.
+    Write src/systems/NAME.rs and run it last in `tick` in src/main.rs.
 runity add scene NAME [PROJECT]
     Write scenes/NAME.ron: a ground with the metre grid, to build on.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
@@ -127,6 +131,23 @@ fn run() -> Result<ExitCode> {
             })
         }
         "check" => check(&find(&rest)?),
+        "test" => {
+            // Play mode without a window: the game's own tests, which a new
+            // project starts with one of — its start scene played headless.
+            let project = find(&rest)?;
+            if !project.root().join("Cargo.toml").is_file() {
+                bail!("{} has no game crate to test", project.root().display());
+            }
+            let status = std::process::Command::new("cargo")
+                .arg("test")
+                .current_dir(project.root())
+                .status()?;
+            Ok(if status.success() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            })
+        }
         "rebuild-time" => rebuild_time(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),
@@ -376,10 +397,10 @@ fn add(rest: &[String]) -> Result<ExitCode> {
                 project.relative(&added.file).unwrap_or_default()
             );
             if added.called {
-                println!("  and step in src/main.rs runs it last");
+                println!("  and tick in src/main.rs runs it last");
             } else {
                 println!(
-                    "  src/main.rs has no `// systems, in order` list; call it from step:\n    {}",
+                    "  src/main.rs has no `// systems, in order` list; call it from the step:\n    {}",
                     runity_cli::add::system_call(name)
                 );
             }

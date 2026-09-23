@@ -651,6 +651,20 @@ impl Game {
     }
 }
 
+/// One fixed step of the game: the systems in order, then physics. The
+/// window runs it, and so does the play-mode test below — the same step
+/// with nothing drawn.
+fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::perf::Profiler, seconds: f32) {
+    let started = std::time::Instant::now();
+    // systems, in order
+    systems::spin::run(world, seconds);
+    runity::world::apply_hierarchy(world);
+    profile.record("systems", started.elapsed());
+    // Physics is a system too: bodies from the scene, a fixed step, and
+    // where the dynamic ones went written back.
+    profile.time("physics", || physics.run(world));
+}
+
 /// Every component the game has, by name.
 fn game_components() -> Components {
     let mut components = Components::new();
@@ -677,18 +691,11 @@ impl shell::Game for Game {
         self.start_physics(ctx);
     }
 
-    /// Fixed-step game logic: the systems, in order.
+    /// Fixed-step game logic: [`tick`].
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
-        let started = std::time::Instant::now();
-        // systems, in order
-        systems::spin::run(&mut self.world, seconds);
-        runity::world::apply_hierarchy(&mut self.world);
-        self.profile.record("systems", started.elapsed());
         self.physics.gravity.y = self.tuning.gravity;
-        // Physics is a system too: bodies from the scene, a fixed step, and
-        // where the dynamic ones went written back.
-        self.profile.time("physics", || self.physics.run(&mut self.world));
+        tick(&mut self.world, &mut self.physics, &mut self.profile, seconds);
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
@@ -802,6 +809,40 @@ fn main() -> anyhow::Result<()> {
         physics: PhysicsWorld::default(),
     };
     run(config, game)
+}
+
+/// Play mode without a window: `runity test` (or `cargo test`).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The start scene opens with nothing unresolved and plays two seconds
+    /// of the game's own steps — systems and physics — with everything
+    /// still somewhere real at the end.
+    #[test]
+    fn the_start_scene_plays() {
+        let (_, settings) = runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let scene = runity::project::data_file(
+            env!("CARGO_MANIFEST_DIR"),
+            &format!("scenes/{}.ron", settings.start_scene),
+        );
+        let (live, problems) = LiveScene::open(&scene).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        let mut live = live.with_components(game_components());
+        let mut world = World::new();
+        let spawned = live.spawn_headless(&mut world);
+        assert!(spawned.lines().is_empty(), "{:?}", spawned.lines());
+
+        let seconds = settings.fixed_delta();
+        let mut physics = PhysicsWorld::new(seconds);
+        let mut profile = runity::perf::Profiler::new(8);
+        for _ in 0..(2.0 / seconds) as usize {
+            tick(&mut world, &mut physics, &mut profile, seconds);
+        }
+        for (_, transform) in world.query::<(runity::hecs::Entity, &runity::Transform)>().iter() {
+            assert!(transform.position.is_finite(), "something flew off: {transform:?}");
+        }
+    }
 }
 "#;
 
@@ -1282,7 +1323,7 @@ mod tests {
         assert!(root.join(SYSTEMS).join("spin.rs").is_file());
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(main.contains("components::register(&mut components);"));
-        assert!(main.contains("// systems, in order\n        systems::spin::run("));
+        assert!(main.contains("// systems, in order\n    systems::spin::run("), "{main}");
         // The build script is compiled only in the game; a stray escape in
         // this template is a game that does not build.
         let build = std::fs::read_to_string(root.join("build.rs")).unwrap();

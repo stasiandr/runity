@@ -14,7 +14,7 @@ use runity::project::{self, Project};
 
 /// The line `step` runs a system with.
 pub fn system_call(name: &str) -> String {
-    format!("systems::{name}::run(&mut self.world, seconds);")
+    format!("systems::{name}::run(world, seconds);")
 }
 
 /// Where `step`'s list of systems is marked in `src/main.rs`.
@@ -48,7 +48,7 @@ pub struct AddedSystem {
     pub called: bool,
 }
 
-/// Write `src/systems/NAME.rs` and run it last in `step`.
+/// Write `src/systems/NAME.rs` and run it last in the game's step (`tick`).
 pub fn system(project: &Project, name: &str) -> Result<AddedSystem> {
     project::valid_name(name).map_err(anyhow::Error::msg)?;
     let file = project
@@ -91,8 +91,14 @@ fn insert_call(text: &str, name: &str) -> Option<String> {
     {
         last += 1;
     }
+    // Called the way the one before it is: `run(world, seconds)` in a
+    // project made now, `run(&mut self.world, seconds)` in an older one.
+    let call = match lines[last].trim_start().split_once("::run(") {
+        Some((_, args)) if last > marker => format!("systems::{name}::run({args}"),
+        _ => system_call(name),
+    };
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
-    out.insert(last + 1, format!("{indent}{}", system_call(name)));
+    out.insert(last + 1, format!("{indent}{call}"));
     let mut joined = out.join("\n");
     if text.ends_with('\n') {
         joined.push('\n');
@@ -112,5 +118,10 @@ mod tests {
             "fn step() {\n    // systems, in order\n    systems::spin::run(&mut self.world, seconds);\n    systems::patrol::run(&mut self.world, seconds);\n    physics();\n}\n"
         );
         assert!(insert_call("fn step() {}\n", "patrol").is_none());
+        // A list with nothing in it yet takes the current form.
+        assert_eq!(
+            insert_call("fn tick() {\n    // systems, in order\n}\n", "patrol").unwrap(),
+            "fn tick() {\n    // systems, in order\n    systems::patrol::run(world, seconds);\n}\n"
+        );
     }
 }
