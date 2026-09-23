@@ -91,6 +91,17 @@ pub struct Handover {
     pub to: PeerId,
 }
 
+/// What a peer joining mid-game needs besides the scene it loads itself:
+/// everything spawned at run time, and who owns what now. Sent by the host,
+/// who hears every spawn and handover, and taken only from the host.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Welcome {
+    pub from: PeerId,
+    pub spawns: Vec<Spawn>,
+    /// Every entity whose owner is not the host, the default.
+    pub owners: Vec<(EntityId, PeerId)>,
+}
+
 /// What goes over the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
@@ -98,7 +109,13 @@ pub enum Message {
     Handover(Handover),
     Spawn(Spawn),
     Despawn(Despawn),
+    Welcome(Welcome),
 }
+
+/// Which prefab a run-time entity was spawned from, so a peer joining later
+/// can be told to spawn the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetPrefab(pub String);
 
 impl Message {
     /// RON: readable in a log, and the same text an agent reads in a test.
@@ -227,7 +244,10 @@ pub fn announce(
         .get::<&Transform>(entity)
         .map(|t| *t)
         .unwrap_or_default();
-    let _ = world.insert(entity, (NetId(id), Owner(me)));
+    let _ = world.insert(
+        entity,
+        (NetId(id), Owner(me), NetPrefab(prefab.to_string())),
+    );
     Message::Spawn(Spawn {
         from: me,
         id,
@@ -343,13 +363,61 @@ pub fn apply_with(
             } else {
                 match spawn(world, &announced.prefab, announced.transform) {
                     Some(entity) => {
-                        let _ = world.insert(entity, (NetId(announced.id), Owner(announced.from)));
+                        let _ = world.insert(
+                            entity,
+                            (
+                                NetId(announced.id),
+                                Owner(announced.from),
+                                NetPrefab(announced.prefab.clone()),
+                            ),
+                        );
                         out.updated += 1;
                     }
                     None => out.refused.push(format!(
                         "{}: no prefab `{}` to spawn here",
                         announced.id, announced.prefab
                     )),
+                }
+            }
+        }
+        Message::Welcome(welcome) => {
+            if welcome.from != PeerId::HOST {
+                out.refused.push(format!(
+                    "a welcome from peer {}: only the host knows the whole game",
+                    welcome.from.0
+                ));
+                return out;
+            }
+            for announced in &welcome.spawns {
+                if by_id.contains_key(&announced.id) {
+                    continue;
+                }
+                match spawn(world, &announced.prefab, announced.transform) {
+                    Some(entity) => {
+                        let _ = world.insert(
+                            entity,
+                            (
+                                NetId(announced.id),
+                                Owner(announced.from),
+                                NetPrefab(announced.prefab.clone()),
+                            ),
+                        );
+                        out.updated += 1;
+                    }
+                    None => out.refused.push(format!(
+                        "{}: no prefab `{}` to spawn here",
+                        announced.id, announced.prefab
+                    )),
+                }
+            }
+            let by_id = addressable(world);
+            for (id, owner) in &welcome.owners {
+                match by_id.get(id) {
+                    Some(&entity) => {
+                        let _ = world.insert_one(entity, Owner(*owner));
+                        out.updated += 1;
+                    }
+                    None => out.refused.push(format!("{id}: no such entity here")),
                 }
             }
         }
@@ -374,6 +442,59 @@ pub fn apply_with(
         },
     }
     out
+}
+
+/// Everything a peer joining now needs, from the host's world: a [`Spawn`]
+/// for each run-time entity, as its owner, and who owns what where it is
+/// not the host. Send it to the newcomer, who loads the scene itself and
+/// then takes this with [`apply_with`]; from there, each owner's snapshots
+/// reach it like anyone else's.
+pub fn welcome(world: &hecs::World) -> Message {
+    let mut spawns: Vec<Spawn> = world
+        .query::<(hecs::Entity, &NetId, &NetPrefab, &Transform)>()
+        .iter()
+        .map(|(entity, id, prefab, transform)| Spawn {
+            from: owner_of(world, entity),
+            id: id.0,
+            prefab: prefab.0.clone(),
+            transform: *transform,
+        })
+        .collect();
+    spawns.sort_by_key(|s| s.id);
+    let mut owners: Vec<(EntityId, PeerId)> = addressable(world)
+        .into_iter()
+        .map(|(id, entity)| (id, owner_of(world, entity)))
+        .filter(|(_, owner)| *owner != PeerId::HOST)
+        .collect();
+    owners.sort();
+    Message::Welcome(Welcome {
+        from: PeerId::HOST,
+        spawns,
+        owners,
+    })
+}
+
+/// A peer has left: what it owned passes to one who stayed, so the game
+/// goes on with its crates and its torches rather than freezing them where
+/// they were. Every remaining peer calls this with the same arguments and
+/// gets the same answer without a message: the new owner is the lowest
+/// peer still here — the host, while the host is. When the host is the one
+/// who left, what nobody owned explicitly (the host's by default) goes the
+/// same way. Returns what changed hands.
+pub fn peer_left(world: &mut hecs::World, gone: PeerId, remaining: &[PeerId]) -> Vec<EntityId> {
+    let Some(&heir) = remaining.iter().filter(|p| **p != gone).min() else {
+        return Vec::new();
+    };
+    let orphans: Vec<(EntityId, hecs::Entity)> = addressable(world)
+        .into_iter()
+        .filter(|(_, entity)| owner_of(world, *entity) == gone)
+        .collect();
+    let mut moved: Vec<EntityId> = orphans.iter().map(|(id, _)| *id).collect();
+    for (_, entity) in orphans {
+        let _ = world.insert_one(entity, Owner(heir));
+    }
+    moved.sort();
+    moved
 }
 
 /// An entity and everything parented to it.
@@ -934,6 +1055,100 @@ mod tests {
                 .len(),
             2,
             "keyframe"
+        );
+    }
+
+    #[test]
+    fn a_peer_that_leaves_leaves_its_things_to_the_lowest_one_left() {
+        // Peer 2 had taken the crate and spawned a torch.
+        let mut worlds: Vec<hecs::World> = (0..3).map(|_| peer().0).collect();
+        let torch_id = {
+            let world = &mut worlds[2];
+            let torch = world.spawn((Transform::default(),));
+            let Message::Spawn(spawn) = announce(world, torch, PeerId(2), "torch") else {
+                unreachable!()
+            };
+            spawn.id
+        };
+        for world in &mut worlds {
+            let crate_ = entity(world, "b2");
+            world.insert_one(crate_, Owner(PeerId(2))).unwrap();
+        }
+        let torch_at_1 = worlds[1].spawn((Transform::default(), NetId(torch_id), Owner(PeerId(2))));
+
+        // Peer 2 is gone: 0 and 1 each work out the same heir, the host.
+        for world in &mut worlds[..2] {
+            let moved = peer_left(world, PeerId(2), &[PeerId(0), PeerId(1)]);
+            assert_eq!(moved.len(), 1 + usize::from(world.contains(torch_at_1)));
+            assert_eq!(owner_of(world, entity(world, "b2")), PeerId::HOST);
+        }
+        assert_eq!(owner_of(&worlds[1], torch_at_1), PeerId::HOST);
+
+        // Then the host goes: everything the host held — explicitly or by
+        // default — passes to peer 1, the lowest left.
+        let moved = peer_left(&mut worlds[1], PeerId::HOST, &[PeerId(1)]);
+        assert_eq!(moved.len(), 3, "fire, crate and torch");
+        assert_eq!(owner_of(&worlds[1], entity(&worlds[1], "a1")), PeerId(1));
+        assert!(
+            peer_left(&mut worlds[1], PeerId(1), &[PeerId(1)]).is_empty(),
+            "nobody left to inherit"
+        );
+    }
+
+    #[test]
+    fn a_peer_joining_mid_game_is_told_what_was_spawned_and_who_owns_what() {
+        let (mut host, components) = peer();
+        // Peer 1 took the crate, and the host spawned a torch.
+        let crate_ = entity(&host, "b2");
+        host.insert_one(crate_, Owner(PeerId(1))).unwrap();
+        let torch = host.spawn((Transform {
+            position: glam::Vec3::new(3.0, 0.0, 0.0),
+            ..Transform::default()
+        },));
+        announce(&mut host, torch, PeerId::HOST, "torch");
+
+        let (mut late, _) = peer();
+        let hello = Message::decode(&welcome(&host).encode()).unwrap();
+        let spawn = |world: &mut hecs::World, prefab: &str, t: Transform| {
+            (prefab == "torch").then(|| world.spawn((t,)))
+        };
+        let done = apply_with(&mut late, &components, &hello, spawn);
+        assert!(done.refused.is_empty(), "{:?}", done.refused);
+        let torch_here = late
+            .query::<(hecs::Entity, &NetPrefab)>()
+            .iter()
+            .map(|(e, _)| e)
+            .next()
+            .expect("the torch was spawned here too");
+        assert_eq!(late.get::<&Transform>(torch_here).unwrap().position.x, 3.0);
+        assert_eq!(owner_of(&late, entity(&late, "b2")), PeerId(1));
+
+        // So peer 1's word about the crate counts here now.
+        let (mut one, _) = peer();
+        let crate_at_one = entity(&one, "b2");
+        one.insert_one(crate_at_one, Owner(PeerId(1))).unwrap();
+        one.get::<&mut Transform>(crate_at_one).unwrap().position.z = 6.0;
+        let moved = Message::Snapshot(snapshot(&one, &components, PeerId(1)));
+        assert_eq!(apply(&mut late, &components, &moved).updated, 1);
+        assert_eq!(
+            late.get::<&Transform>(entity(&late, "b2"))
+                .unwrap()
+                .position
+                .z,
+            6.0
+        );
+
+        // A welcome from anyone but the host is refused.
+        let Message::Welcome(mut forged) = welcome(&host) else {
+            unreachable!()
+        };
+        forged.from = PeerId(1);
+        let done = apply(&mut late, &components, &Message::Welcome(forged));
+        assert_eq!(done.updated, 0);
+        assert!(
+            done.refused[0].contains("only the host"),
+            "{:?}",
+            done.refused
         );
     }
 }
