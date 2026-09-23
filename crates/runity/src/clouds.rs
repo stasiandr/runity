@@ -423,7 +423,7 @@ impl CloudRenderer {
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("runity::clouds"),
-            timestamp_writes: None,
+            timestamp_writes: crate::gpu_timer::compute("clouds"),
         });
         pass.set_bind_group(0, &group, &[]);
         // The dust wall's volume first, when there is a wall.

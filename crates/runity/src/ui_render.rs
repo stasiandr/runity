@@ -333,7 +333,7 @@ impl UiRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("ui"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });

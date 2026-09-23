@@ -277,7 +277,7 @@ impl Volumes {
     ) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("runity::fog"),
-            timestamp_writes: None,
+            timestamp_writes: crate::gpu_timer::compute("fog"),
         });
         pass.set_pipeline(inject);
         pass.set_bind_group(0, frame_group, &[]);

@@ -168,6 +168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.render(&gpu, &target, &frame);
     let pixels = target.read_rgba(&gpu);
     if timed > 0 {
+        renderer.profile_gpu(true);
         let start = std::time::Instant::now();
         for _ in 0..timed {
             renderer.render(&gpu, &target, &frame);
@@ -176,6 +177,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         target.read_rgba(&gpu);
         let ms = start.elapsed().as_secs_f64() * 1000.0 / timed as f64;
         eprintln!("{ms:.2} ms a frame over {timed}");
+        // A few frames more, each waited for, so the passes' times come
+        // back: the timer reads them a frame or two late.
+        for _ in 0..4 {
+            renderer.render(&gpu, &target, &frame);
+            target.read_rgba(&gpu);
+        }
+        let passes = renderer.gpu_times();
+        if !passes.is_empty() {
+            let total: f32 = passes.iter().map(|(_, t)| t).sum();
+            eprintln!("on the GPU, {total:.2} ms in passes:");
+            for (name, ms) in passes {
+                eprintln!("  {name:<14} {ms:6.2} ms");
+            }
+        }
     }
 
     write_png(&out, &pixels, width, height)?;

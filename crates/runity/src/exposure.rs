@@ -369,7 +369,7 @@ impl Metering {
         });
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("runity::exposure"),
-            timestamp_writes: None,
+            timestamp_writes: crate::gpu_timer::compute("exposure"),
         });
         pass.set_bind_group(0, &group, &[]);
         pass.set_pipeline(&self.histogram_pass);

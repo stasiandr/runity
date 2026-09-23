@@ -47,6 +47,7 @@ pub mod heap;
 pub mod rope;
 pub mod gizmo;
 pub mod gpu;
+pub(crate) mod gpu_timer;
 pub mod graph_text;
 pub mod id;
 pub mod input;

@@ -374,7 +374,7 @@ impl AtmosphereRenderer {
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(uniform));
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("runity::atmosphere"),
-            timestamp_writes: None,
+            timestamp_writes: crate::gpu_timer::compute("atmosphere"),
         });
         pass.set_bind_group(0, &self.group, &[]);
         pass.set_pipeline(&self.sky_view_pass);
