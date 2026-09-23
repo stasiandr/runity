@@ -33,6 +33,77 @@ VERSION = 1
 MAGIC = b"RUNITYBL"
 PROP = "runity.id"
 COMPONENT = "runity."
+# An object's runity settings that are not the game's components.
+COLLIDER = "runity.collider"
+MATERIAL = "runity.material"
+RESERVED = {PROP, COLLIDER, MATERIAL}
+
+
+def hints():
+    """What the editor wrote for this project: its materials and the
+    game's components with their shapes (library/blender.json). Empty when
+    the file is in no project, or no editor has written it yet."""
+    root = project_root(bpy.data.filepath) if bpy.data.filepath else None
+    if root is None:
+        return {}
+    try:
+        with open(os.path.join(root, "library", "blender.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def ron_value(value, shape):
+    """A field's value as RON, by what the game says it holds: a text is
+    quoted, an enum's variant is bare, a number keeps its kind."""
+    if isinstance(value, bool) or shape == "Bool":
+        return "true" if value else "false"
+    if shape == "Int":
+        return str(int(value))
+    if shape == "Float" or isinstance(value, float):
+        text = repr(float(value))
+        return text if ("." in text or "e" in text or "inf" in text or "nan" in text) else text + ".0"
+    if isinstance(value, int):
+        return str(value)
+    if shape == "Text" or (shape is None and isinstance(value, str)):
+        return json.dumps(str(value))
+    # An enum's variant, a list, a nested struct: written as RON already.
+    return str(value)
+
+
+def struct_fields(shape):
+    """A struct shape's fields as {name: shape}, else None."""
+    if isinstance(shape, dict) and "Struct" in shape:
+        return {name: field for name, field in shape["Struct"]}
+    return None
+
+
+def components_of(obj, shapes):
+    """The game's components on an object, as {name: RON}. A component is
+    either one property holding its whole value (runity.door =
+    "(open_angle: 90.0)") or a property per field (runity.door.open_angle
+    = 90.0), which is what the runity panel writes: Blender draws each with
+    the widget its type wants."""
+    out = {}
+    fields = {}
+    for key in obj.keys():
+        if not key.startswith(COMPONENT) or key in RESERVED:
+            continue
+        rest = key[len(COMPONENT):]
+        if "." in rest:
+            name, field = rest.split(".", 1)
+            fields.setdefault(name, {})[field] = obj[key]
+        else:
+            value = obj[key]
+            out[rest] = value if isinstance(value, str) else ron_value(value, None)
+    for name, values in fields.items():
+        shape = struct_fields((shapes.get(name) or {}).get("shape")) or {}
+        body = ", ".join(
+            "%s: %s" % (field, ron_value(values[field], shape.get(field)))
+            for field in sorted(values)
+        )
+        out[name] = "(%s)" % body
+    return out
 
 
 def stamp():
@@ -73,6 +144,7 @@ class Exporter:
         self.material_index = {}
         self.meshes = []
         self.mesh_index = {}
+        self.shapes = hints().get("components", {})
 
     # --- images and materials -----------------------------------------
 
@@ -249,12 +321,11 @@ class Exporter:
             "mesh": self.mesh(obj),
             "prefab": None,
             "components": {},
-            "collider": obj.name.endswith("-col"),
+            "collider": obj.name.endswith("-col") or bool(obj.get(COLLIDER, False)),
+            "material": obj.get(MATERIAL) or None,
             "children": [],
         }
-        for key in obj.keys():
-            if key.startswith(COMPONENT) and key != PROP:
-                out["components"][key[len(COMPONENT):]] = str(obj[key])
+        out["components"] = components_of(obj, self.shapes)
         collection = obj.instance_collection if obj.instance_type == "COLLECTION" else None
         if collection is not None:
             if collection.asset_data is not None or collection.library is not None:

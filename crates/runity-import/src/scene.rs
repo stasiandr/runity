@@ -116,6 +116,8 @@ pub struct NodeData {
     pub components: BTreeMap<String, String>,
     /// Collides as its own shape: a static body with a `Model` collider.
     pub collider: bool,
+    /// Draws with this material of the project's, whatever the file's is.
+    pub material: Option<String>,
     pub children: Vec<NodeData>,
 }
 
@@ -416,7 +418,10 @@ struct Tree<'a> {
 }
 
 impl Tree<'_> {
-    fn material(&self, index: Option<usize>) -> MaterialRef {
+    fn material(&self, index: Option<usize>, own: Option<&str>) -> MaterialRef {
+        if let Some(name) = own {
+            return MaterialRef::Named(name.to_string());
+        }
         match index.and_then(|i| self.materials.get(i)) {
             Some(name) => MaterialRef::Named(name.clone()),
             None => MaterialRef::default(),
@@ -452,7 +457,7 @@ impl Tree<'_> {
             for (j, (model, material)) in mesh.iter().enumerate() {
                 if j == 0 {
                     desc.model = model.clone();
-                    desc.material = self.material(*material);
+                    desc.material = self.material(*material, node.material.as_deref());
                 } else {
                     // The mesh's other materials: drawn by children in
                     // the same place, since an entity draws with one.
@@ -460,7 +465,7 @@ impl Tree<'_> {
                         id: desc.id.within(EntityId::from_raw(j as u64)),
                         name: format!("{} {}", desc.name, j + 1),
                         model: model.clone(),
-                        material: self.material(*material),
+                        material: self.material(*material, node.material.as_deref()),
                         ..Default::default()
                     });
                 }

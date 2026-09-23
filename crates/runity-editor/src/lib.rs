@@ -2613,6 +2613,7 @@ impl Session {
         };
         if self.blender.as_ref().is_none_or(|l| l.project != project) {
             self.blender = blender_link::Link::start(project).ok();
+            self.write_blender_hints();
         }
         let Some(link) = &self.blender else { return 0 };
         let messages = link.drain();
@@ -2698,8 +2699,39 @@ impl Session {
             // New and moved assets are files the open library has never
             // seen, so it is read again rather than refreshed.
             let _ = self.reopen_library();
+            self.write_blender_hints();
         }
         changed
+    }
+
+    /// What the runity panel in Blender offers, written where it reads it,
+    /// `library/blender.json`: the materials a part can draw with, and the
+    /// game's components with their fields — so a component is added in
+    /// Blender with a field per value, as in the Inspector. Derived, like
+    /// the rest of the library.
+    pub fn write_blender_hints(&self) {
+        let Some(project) = &self.project else { return };
+        let components: serde_json::Map<String, serde_json::Value> = self
+            .component_shapes()
+            .into_iter()
+            .map(|(name, shape)| {
+                let value = serde_json::json!({
+                    "shape": serde_json::to_value(&shape).unwrap_or_default(),
+                    "example": shape.example(),
+                });
+                (name, value)
+            })
+            .collect();
+        let hints = serde_json::json!({
+            "materials": self.palette().into_iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            "components": components,
+        });
+        let library = project.library();
+        let _ = std::fs::create_dir_all(&library);
+        let _ = std::fs::write(
+            library.join("blender.json"),
+            serde_json::to_string_pretty(&hints).unwrap_or_default(),
+        );
     }
 
     pub fn reload_assets(&mut self) -> usize {

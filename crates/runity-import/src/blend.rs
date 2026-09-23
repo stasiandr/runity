@@ -242,6 +242,8 @@ struct NodeHeader {
     components: BTreeMap<String, String>,
     #[serde(default)]
     collider: bool,
+    /// A material of the project's to draw with instead of the file's.
+    material: Option<String>,
     #[serde(default)]
     children: Vec<NodeHeader>,
 }
@@ -464,6 +466,7 @@ pub fn parse(bytes: &[u8]) -> Result<SceneData> {
             prefab: n.prefab,
             components: n.components,
             collider: n.collider,
+            material: n.material,
             children: n.children.into_iter().map(node).collect(),
         }
     }

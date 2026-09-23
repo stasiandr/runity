@@ -191,3 +191,96 @@ fn a_blend_imports_as_a_level_and_a_kit_through_blender() {
         .iter()
         .any(|(d, _)| d.name == "crate" && d.model.id.is_some()));
 }
+
+/// The runity tab's buttons, driven as a person would: a component added
+/// from the game's list becomes a property per field, the collider and
+/// the game material are settings of the object, and the engine reads all
+/// three back.
+#[test]
+fn the_runity_panel_adds_components_a_field_at_a_time() {
+    let Some(blender) = runity_import::blend::blender() else {
+        eprintln!("no Blender on this machine: skipped");
+        return;
+    };
+    let root = std::env::temp_dir().join("runity-blend-panel");
+    let _ = std::fs::remove_dir_all(&root);
+    let project = Project::create(&root, "panel").unwrap();
+    // What the editor writes for the plugin.
+    std::fs::create_dir_all(project.library()).unwrap();
+    std::fs::write(
+        project.library().join("blender.json"),
+        r#"{
+  "materials": ["stone", "moss"],
+  "components": {
+    "door": {
+      "shape": {"Struct": [["open_angle", "Float"], ["locked", "Bool"], ["table", "Text"], ["mode", {"Enum": ["Open", "Shut"]}]]},
+      "example": "(open_angle: 0.0, locked: false, table: \"\", mode: Open)"
+    },
+    "tag": {"shape": "Text", "example": "\"\""}
+  }
+}"#,
+    )
+    .unwrap();
+    let source = project.assets().join("room.blend");
+    let script = format!(
+        r#"
+import sys, bpy
+sys.path.insert(0, {tools:?})
+import runity
+runity.register()
+for o in list(bpy.data.objects):
+    bpy.data.objects.remove(o)
+bpy.ops.wm.save_as_mainfile(filepath={out:?})
+bpy.ops.mesh.primitive_cube_add()
+door = bpy.context.object
+door.name = "door"
+bpy.context.view_layer.objects.active = door
+assert bpy.ops.runity.add_component(name="door") == {{"FINISHED"}}
+assert bpy.ops.runity.add_component(name="tag") == {{"FINISHED"}}
+assert isinstance(door["runity.door.open_angle"], float)
+assert door["runity.door.locked"] is False or door["runity.door.locked"] == 0
+door["runity.door.open_angle"] = 90.0
+door["runity.door.table"] = "chest"
+bpy.ops.runity.toggle_collider()
+bpy.ops.runity.set_material(material="stone")
+bpy.ops.wm.save_mainfile()
+"#,
+        tools = plugin().parent().unwrap().to_string_lossy(),
+        out = source.to_string_lossy(),
+    );
+    let ran = Command::new(&blender)
+        .args([
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python-expr",
+        ])
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+
+    let synced = sync(&project);
+    assert!(
+        synced
+            .iter()
+            .filter(|r| r.source == source)
+            .all(|r| r.result.is_ok()),
+        "{synced:?}"
+    );
+    let (prefabs, _) = Prefabs::of(&project);
+    let door = find(prefabs.get("room").unwrap(), "door").unwrap();
+    assert_eq!(
+        door.components["door"].get_ron(),
+        r#"(locked: false, mode: Open, open_angle: 90.0, table: "chest")"#
+    );
+    assert_eq!(door.components["tag"].get_ron(), r#""""#);
+    assert_eq!(door.collider, Collider::Model);
+    assert_eq!(door.material, MaterialRef::Named("stone".into()));
+}
