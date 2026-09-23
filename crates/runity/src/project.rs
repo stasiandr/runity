@@ -17,9 +17,21 @@
 //!   tuning/         the game's numbers, RON, reloaded while it runs
 //!   library/        built .rasset — derived, never committed
 //!   Cargo.toml      the game crate, its own workspace
+//!   build.rs        finds the components and systems below; not edited
 //!   src/main.rs     the game: a window on scenes/main.ron, reloading live
+//!   src/components/ one file per component, registered by its file name
+//!   src/systems/    one file per system; `step` in main.rs runs them in order
 //!   CLAUDE.md       what an agent needs to work here
 //! ```
+//!
+//! A component is a file rather than a line in a list, because two people
+//! each adding one should not both edit the same line: git merges two new
+//! files cleanly and two lines appended at one place as a conflict. The
+//! file's name is the name a scene uses (`components/door.rs` is `"door"`,
+//! struct `Door`), and `build.rs` writes the registration — so there is no
+//! list to forget either. Systems are files for the same reason, but the
+//! order they run in is one place on purpose: two people changing it should
+//! see each other's change.
 //!
 //! Not configurable, on purpose. A layout with settings is a layout every
 //! tool has to read the settings of, and a project that moved `scenes/`
@@ -48,6 +60,10 @@ pub const ASSETS: &str = "assets";
 pub const LIBRARY: &str = "library";
 /// Where the game's code lives.
 pub const SRC: &str = "src";
+/// Where the game's components live, one per file, under [`SRC`].
+pub const COMPONENTS: &str = "src/components";
+/// Where the game's systems live, one per file, under [`SRC`].
+pub const SYSTEMS: &str = "src/systems";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
@@ -231,9 +247,13 @@ impl Project {
         std::fs::write(root.join(INPUT), INPUT_RON)?;
         std::fs::create_dir_all(root.join(TUNING))?;
         std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
-        std::fs::create_dir_all(root.join(SRC))?;
+        std::fs::create_dir_all(root.join(COMPONENTS))?;
+        std::fs::create_dir_all(root.join(SYSTEMS))?;
         std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine))?;
+        std::fs::write(root.join("build.rs"), BUILD_RS)?;
         std::fs::write(root.join(SRC).join("main.rs"), GAME.replace("{name}", name))?;
+        std::fs::write(root.join(COMPONENTS).join("spin.rs"), SPIN_COMPONENT)?;
+        std::fs::write(root.join(SYSTEMS).join("spin.rs"), SPIN_SYSTEM)?;
 
         Self::open(root)
     }
@@ -287,6 +307,21 @@ impl Project {
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
         Some(parts.join("/"))
+    }
+
+    /// The game's components, by the name scenes use — the file names in
+    /// `src/components/`, sorted. `None` for a project laid out before
+    /// components had a folder, whose names only its code knows.
+    pub fn component_names(&self) -> Option<Vec<String>> {
+        let entries = std::fs::read_dir(self.root.join(COMPONENTS)).ok()?;
+        let mut names: Vec<String> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+            .collect();
+        names.sort();
+        Some(names)
     }
 
     /// The file a project-relative path names.
@@ -430,38 +465,35 @@ const GAME: &str = r#"//! {name}.
 //!
 //! `cargo run` opens a window on `scenes/main.ron`. Save the scene, a
 //! prefab, or re-import an asset while it runs, and the change is in the
-//! next frames without the game losing its state. Game logic goes in
-//! `step`; run under `dx serve --hotpatch` and a rebuilt `step` or `frame`
-//! takes effect without closing the window.
+//! next frames without the game losing its state. Run under
+//! `dx serve --hotpatch` and a rebuilt system, `step` or `frame` takes
+//! effect without closing the window.
+//!
+//! Components are files in `src/components/`, systems files in
+//! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
+//! `build.rs` finds them, and `step` below runs the systems in order.
 
 use runity::hecs::World;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
-use runity::{Actions, Components, LiveScene, Transform, Tuned};
+use runity::{Actions, Components, LiveScene, Tuned};
 use serde::Deserialize;
+
+/// Every file in src/components/, registered by its file name.
+mod components {
+    include!(concat!(env!("OUT_DIR"), "/components.rs"));
+}
+
+/// Every file in src/systems/.
+mod systems {
+    include!(concat!(env!("OUT_DIR"), "/systems.rs"));
+}
 
 /// Numbers from `tuning/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
-}
-
-/// A component: a plain struct. A scene line gives it by the name it is
-/// registered under in `main` —
-/// `components: { "spin": (degrees_per_second: 45.0) }` — and changing
-/// the number in the file while the game runs changes the speed.
-#[derive(Deserialize)]
-struct Spin {
-    degrees_per_second: f32,
-}
-
-/// A system: a function over the world.
-fn spin(world: &mut World, seconds: f32) {
-    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>() {
-        transform.rotation_deg.y += spin.degrees_per_second * seconds;
-    }
-    runity::world::apply_hierarchy(world);
 }
 
 struct Game {
@@ -483,7 +515,9 @@ impl shell::Game for Game {
     /// Fixed-step game logic: the systems, in order.
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
-        spin(&mut self.world, seconds);
+        // systems, in order
+        systems::spin::run(&mut self.world, seconds);
+        runity::world::apply_hierarchy(&mut self.world);
         self.physics.gravity.y = self.tuning.gravity;
         // Physics is a system too: bodies from the scene, a fixed step, and
         // where the dynamic ones went written back.
@@ -518,7 +552,7 @@ fn main() -> anyhow::Result<()> {
     // `data/` beside the executable in a build, the project in development.
     let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "scenes/main.ron");
     let mut components = Components::new();
-    components.register::<Spin>("spin");
+    components::register(&mut components);
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(components);
     for problem in &problems {
@@ -544,6 +578,174 @@ fn main() -> anyhow::Result<()> {
     run(config, game)
 }
 "#;
+
+/// The component a new project starts with.
+const SPIN_COMPONENT: &str = r#"//! Turning in place. A scene line gives it as
+//! `components: { "spin": (degrees_per_second: 45.0) }` — the file's name is
+//! the name — and changing the number while the game runs changes the speed.
+
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub struct Spin {
+    pub degrees_per_second: f32,
+}
+"#;
+
+/// The system a new project starts with.
+const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin`.
+
+use runity::hecs::World;
+use runity::Transform;
+
+use crate::components::Spin;
+
+pub fn run(world: &mut World, seconds: f32) {
+    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>() {
+        transform.rotation_deg.y += spin.degrees_per_second * seconds;
+    }
+}
+"#;
+
+/// A new component's file: `runity add component NAME`.
+pub fn component_file(name: &str) -> String {
+    format!(
+        "//! `{name}`: what it means for an entity to have one. A scene line gives it\n\
+         //! as `components: {{ \"{name}\": (…) }}`.\n\
+         \n\
+         use serde::Deserialize;\n\
+         \n\
+         #[derive(Deserialize)]\n\
+         pub struct {ty} {{}}\n",
+        ty = type_name(name)
+    )
+}
+
+/// A new system's file: `runity add system NAME`.
+pub fn system_file(name: &str) -> String {
+    format!(
+        "//! `{name}`.\n\
+         \n\
+         use runity::hecs::World;\n\
+         \n\
+         pub fn run(world: &mut World, seconds: f32) {{\n\
+         \x20   let _ = (world, seconds);\n\
+         }}\n"
+    )
+}
+
+/// The Rust type a component file declares: `front_door` is `FrontDoor`.
+pub fn type_name(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+/// Whether a name can be a component's or system's file: a Rust module
+/// name, snake_case, not a keyword.
+pub fn valid_name(name: &str) -> Result<(), String> {
+    let ok = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !ok {
+        return Err(format!(
+            "`{name}` cannot be a file here: snake_case, starting with a letter, like `front_door`"
+        ));
+    }
+    if [
+        "mod", "self", "super", "crate", "type", "fn", "struct", "use", "match", "loop", "move",
+        "ref", "static", "trait", "impl", "where", "async", "await", "dyn", "box", "yield", "let",
+        "if", "else", "for", "in", "while", "return", "break", "continue", "const", "enum",
+        "extern", "pub", "mut", "true", "false", "as", "unsafe", "register",
+    ]
+    .contains(&name)
+    {
+        return Err(format!("`{name}` is a Rust keyword or taken; pick another"));
+    }
+    Ok(())
+}
+
+/// The game's `build.rs`: the module list and the registration, written
+/// from what files there are.
+const BUILD_RS: &str = r##"//! Finds the game's components and systems. Written by `runity new`; not
+//! edited. Adding a component is adding a file to src/components/, and the
+//! file's name is the name scenes use for it.
+
+use std::fmt::Write;
+use std::path::Path;
+
+fn main() {
+    let out = std::env::var("OUT_DIR").unwrap();
+    let root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let components = files(&Path::new(&root).join("src/components"));
+    let systems = files(&Path::new(&root).join("src/systems"));
+
+    let mut text = String::new();
+    for (name, path) in &components {
+        let _ = writeln!(text, "#[path = {path:?}]
+pub mod {name};
+pub use {name}::{};", type_name(name));
+    }
+    text.push_str("
+/// Every component above, by its file name.
+pub fn register(components: &mut runity::Components) {
+    let _ = &components;
+");
+    for (name, _) in &components {
+        let _ = writeln!(text, "    components.register::<{}>({name:?});", type_name(name));
+    }
+    text.push_str("}
+");
+    std::fs::write(Path::new(&out).join("components.rs"), text).unwrap();
+
+    let mut text = String::new();
+    for (name, path) in &systems {
+        let _ = writeln!(text, "#[path = {path:?}]
+pub mod {name};");
+    }
+    std::fs::write(Path::new(&out).join("systems.rs"), text).unwrap();
+}
+
+/// `(module name, absolute path)` for every .rs file in a folder, sorted.
+fn files(dir: &Path) -> Vec<(String, String)> {
+    println!("cargo::rerun-if-changed={}", dir.display());
+    let mut found: Vec<(String, String)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+        .map(|path| {
+            let name = path.file_stem().unwrap().to_string_lossy().into_owned();
+            if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+                panic!("{}: a component or system file is named in snake_case, like front_door.rs", path.display());
+            }
+            (name, path.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// `front_door` is `FrontDoor`.
+fn type_name(name: &str) -> String {
+    name.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map(|c| c.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+        })
+        .collect()
+}
+"##;
 
 /// Binary sources go to LFS and are lockable from the first commit
 /// (DNA, postulate 2). Two people editing the same texture cannot merge it,
@@ -594,7 +796,10 @@ prefabs/     one entity subtree per file; a scene places it with `prefab: \"name
 materials/   .rmat sources: `(color: \"#rrggbb\")`, sRGB hex
 assets/      models, textures, sounds; each source gets a .rimport beside it
 library/     built assets — derived, never committed
-Cargo.toml   the game crate; src/main.rs is the game
+Cargo.toml   the game crate; build.rs finds its components and systems
+src/main.rs  the game: the window, and `step`, which runs the systems in order
+src/components/  one component per file; the file name is the scene's name for it
+src/systems/     one system per file: `pub fn run(world, seconds)`
 ```
 
 * `cargo run` plays `scenes/main.ron`. It keeps running while you edit:
@@ -626,12 +831,17 @@ Cargo.toml   the game crate; src/main.rs is the game
   (`cargo install --path crates/runity-mcp` in the engine),
   `claude mcp add runity -- runity-mcp` gives every editor operation as a
   tool — open, add, move, undo, render a frame to look at, check, simulate.
-* Game logic is Rust in `src/`, on the ECS (`runity::hecs`): components are
-  plain structs, systems are functions over the world, and an entity
-  spawned from a scene carries `SceneId`. A scene line gives an entity the
-  game's components by the name `main` registers them under:
-  `components: { \"spin\": (degrees_per_second: 45.0) }`. Editing a value
-  while the game runs changes that component and nothing else.
+* Game logic is Rust on the ECS (`runity::hecs`): components are plain
+  structs, systems are functions over the world, and an entity spawned from
+  a scene carries `SceneId`. `runity add component door` writes
+  `src/components/door.rs` (struct `Door`), and build.rs registers it as
+  `\"door\"` — a scene line then gives it:
+  `components: { \"door\": (locked: true) }`. `runity add system patrol`
+  writes `src/systems/patrol.rs` and adds its call last in `step`; move the
+  line to change the order. Never register components by hand or keep a
+  list of them: the folder is the list. `runity check` reports a component
+  name no file answers to. Editing a value while the game runs changes that
+  component and nothing else.
 * Everything a person makes is text and is committed; `library/` and
   `target/` are not.
 * Binary sources are in Git LFS and lockable — lock before editing one.
@@ -785,5 +995,32 @@ mod tests {
         std::fs::write(root.join(FILE), "(name: ").unwrap();
         let err = Project::open(&root).unwrap_err();
         assert!(err.to_string().contains(FILE), "{err}");
+    }
+
+    #[test]
+    fn a_new_project_lays_its_code_out_one_file_per_component_and_system() {
+        let root = std::env::temp_dir().join("runity-project-code-layout");
+        let _ = std::fs::remove_dir_all(&root);
+        let project = Project::create(&root, "layout").unwrap();
+        assert_eq!(project.component_names(), Some(vec!["spin".to_string()]));
+        assert!(root.join(SYSTEMS).join("spin.rs").is_file());
+        let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        assert!(main.contains("components::register(&mut components);"));
+        assert!(main.contains("// systems, in order\n        systems::spin::run("));
+        // The build script is compiled only in the game; a stray escape in
+        // this template is a game that does not build.
+        let build = std::fs::read_to_string(root.join("build.rs")).unwrap();
+        assert!(build.contains(r#".replace('\\', "/")"#), "{build}");
+    }
+
+    #[test]
+    fn a_component_file_name_is_its_scene_name_and_its_type() {
+        assert_eq!(type_name("front_door"), "FrontDoor");
+        assert_eq!(type_name("spin"), "Spin");
+        assert!(valid_name("front_door").is_ok());
+        assert!(valid_name("Front Door").unwrap_err().contains("snake_case"));
+        assert!(valid_name("mod").is_err());
+        assert!(component_file("front_door").contains("pub struct FrontDoor {}"));
+        assert!(system_file("patrol").contains("pub fn run(world: &mut World, seconds: f32)"));
     }
 }

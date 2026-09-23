@@ -1055,8 +1055,20 @@ impl Session {
 
         let models = names_of(AssetKind::Mesh);
         let materials = names_of(AssetKind::Material);
+        let components = self.project.as_ref().and_then(|p| p.component_names());
         for (desc, _) in self.instanced.scene.flatten() {
             let who = format!("`{}` ({})", desc.name, desc.id);
+            if let Some(known) = &components {
+                for name in desc.components.keys().filter(|n| !known.contains(n)) {
+                    out.push(Diagnostic {
+                        entity: Some(desc.id),
+                        message: format!(
+                            "{who}: no component `{name}` in src/components/{}",
+                            suggest(name, known, &[])
+                        ),
+                    });
+                }
+            }
             if !desc.model.is_empty()
                 && builtin::by_name(&desc.model).is_none()
                 && library.and_then(|l| l.mesh_by_name(&desc.model)).is_none()

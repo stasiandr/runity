@@ -132,3 +132,38 @@ fn a_rename_is_a_move_and_one_line_per_use_in_the_diff() {
         String::from_utf8_lossy(&check.stdout)
     );
 }
+
+#[test]
+fn add_writes_a_component_and_a_system_where_they_go() {
+    let root = std::env::temp_dir().join("runity-cli-add");
+    let _ = std::fs::remove_dir_all(&root);
+    Project::create(&root, "add").unwrap();
+    let out = runity(&root, &["add", "component", "front_door"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(root.join("src/components/front_door.rs")).unwrap();
+    assert!(text.contains("pub struct FrontDoor {}"), "{text}");
+
+    let out = runity(&root, &["add", "system", "patrol"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(root.join("src/systems/patrol.rs").is_file());
+    let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+    let spin = main.find("systems::spin::run(").unwrap();
+    let patrol = main
+        .find("systems::patrol::run(&mut self.world, seconds);")
+        .unwrap();
+    assert!(spin < patrol, "last in the order:\n{main}");
+
+    let refused = runity(&root, &["add", "component", "Front Door"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("snake_case"));
+    let refused = runity(&root, &["add", "system", "patrol"]);
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("already there"));
+}

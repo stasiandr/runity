@@ -182,3 +182,31 @@ fn a_stale_override_and_a_variant_of_itself_are_found_once_each() {
     let looped = one_containing(&errors, "a prefab containing itself?");
     assert!(looped.contains("prefabs/loop.prefab:"), "{looped}");
 }
+
+#[test]
+fn a_component_scenes_name_is_a_file_in_src_components() {
+    let project = project("components");
+    let root = project.root();
+    write(
+        &root.join("scenes/doors.ron"),
+        r#"(entities: [
+            (id: "a1", name: "gate", model: "builtin:cube", components: { "spn": (degrees_per_second: 10.0) }),
+            (id: "a2", name: "wheel", model: "builtin:cube", components: { "spin": (degrees_per_second: 10.0) }),
+        ])"#,
+    );
+    let errors = errors(&check(&project));
+    let line = one_containing(&errors, "no component `spn`");
+    assert!(line.contains("did you mean `spin`?"), "{line}");
+    assert!(line.contains("`gate`"), "{line}");
+
+    runity_cli::add::component(&project, "door").unwrap();
+    write(
+        &root.join("scenes/doors.ron"),
+        r#"(entities: [(id: "a1", name: "gate", model: "builtin:cube", components: { "door": () })])"#,
+    );
+    assert!(errors_of(&project).is_empty(), "{:#?}", errors_of(&project));
+}
+
+fn errors_of(project: &Project) -> Vec<String> {
+    errors(&check(project))
+}

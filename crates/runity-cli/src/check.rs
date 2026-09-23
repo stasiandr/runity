@@ -53,6 +53,9 @@ struct Names {
     models: HashMap<String, Vec<String>>,
     materials: HashMap<String, Vec<String>>,
     prefabs: HashSet<String>,
+    /// The game's components, from `src/components/`; `None` when the
+    /// project has no such folder and only its code knows.
+    components: Option<Vec<String>>,
 }
 
 const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "rterrain"];
@@ -196,6 +199,7 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         models,
         materials,
         prefabs,
+        components: project.component_names(),
     }
 }
 
@@ -237,6 +241,23 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         }
         if let MaterialRef::Named(name) = &entity.material {
             check_material(name, &who, file, names, out);
+        }
+        if let Some(known) = &names.components {
+            let used = entity
+                .components
+                .keys()
+                .chain(entity.overrides.values().flat_map(|o| o.components.keys()));
+            for component in used {
+                if !known.contains(component) {
+                    out.push(error(
+                        file,
+                        format!(
+                            "{who}: no component `{component}` — a component is a file in src/components/ named what scenes call it{}",
+                            suggest(component, known.iter().map(String::as_str))
+                        ),
+                    ));
+                }
+            }
         }
     }
     if unnamed > 0 {

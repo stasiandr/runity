@@ -248,6 +248,14 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     let saved = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();
     assert!(saved.contains(&format!("id: \"{crate_id}\"")), "{saved}");
     assert!(saved.contains("Dynamic"), "{saved}");
+    // A component is a file of the game's: until there is one, check says so.
+    let findings = agent.text("check", json!({}));
+    assert!(findings.contains("no component `loot`"), "{findings}");
+    std::fs::write(
+        root.join("src/components/loot.rs"),
+        "#[derive(serde::Deserialize)]\npub struct Loot { pub table: String }\n",
+    )
+    .unwrap();
     assert_eq!(agent.text("check", json!({})), "clean");
 }
 

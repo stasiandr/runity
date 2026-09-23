@@ -13,6 +13,7 @@
 //! runity assets [PROJECT]                 every asset, and how much it is used
 //! runity delete FILE                      remove an asset nothing uses
 //! runity duplicate FROM TO                copy an asset as a new one
+//! runity add component|system NAME [PROJECT]  a new file where it goes
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -62,6 +63,11 @@ runity delete FILE
     the lines, while anything names it.
 runity duplicate FROM TO
     Copy an asset source as a new asset with the same import settings.
+runity add component NAME [PROJECT]
+    Write src/components/NAME.rs. Scenes then give it by NAME:
+    `components: { \"NAME\": (...) }`; build.rs registers it.
+runity add system NAME [PROJECT]
+    Write src/systems/NAME.rs and run it last in `step` in src/main.rs.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -91,6 +97,7 @@ fn run() -> Result<ExitCode> {
         "build" => build(&rest),
         "rename" => rename(&rest),
         "uses" => uses(&rest),
+        "add" => add(&rest),
         "assets" => {
             let project = find(&rest)?;
             let entries = runity_import::assets::list(&project)?;
@@ -311,6 +318,39 @@ fn merge(rest: &[String]) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn add(rest: &[String]) -> Result<ExitCode> {
+    let [what, name, at @ ..] = rest else {
+        bail!("runity add component|system NAME [PROJECT]");
+    };
+    let project = find(at)?;
+    match what.as_str() {
+        "component" => {
+            let file = runity_cli::add::component(&project, name)?;
+            println!(
+                "wrote {}\n  a scene gives it as components: {{ \"{name}\": () }}",
+                project.relative(&file).unwrap_or_default()
+            );
+        }
+        "system" => {
+            let added = runity_cli::add::system(&project, name)?;
+            println!(
+                "wrote {}",
+                project.relative(&added.file).unwrap_or_default()
+            );
+            if added.called {
+                println!("  and step in src/main.rs runs it last");
+            } else {
+                println!(
+                    "  src/main.rs has no `// systems, in order` list; call it from step:\n    {}",
+                    runity_cli::add::system_call(name)
+                );
+            }
+        }
+        other => bail!("runity add component|system NAME — not `{other}`"),
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn rename(rest: &[String]) -> Result<ExitCode> {
