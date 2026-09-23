@@ -1113,13 +1113,40 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
     );
     let sky = day.sky_color * share;
     let sun_light = sun.color() * sun.intensity * (-sun.direction().y).max(0.0);
+    let night = sun.night();
+    if night <= 0.0 {
+        return Lighting {
+            sun_direction: sun.direction(),
+            sun_color: sun.color(),
+            sun_intensity: sun.intensity,
+            sky_color: sky,
+            ground_color: albedo * (sun_light + sky * 0.5),
+            ground_albedo: albedo,
+            sky_sun: None,
+            night: 0.0,
+        };
+    }
+    // Night: the moon is the light above — cold, an eighth of the sun, and
+    // casting shadows; the sky is lit by the sun where it really is, under
+    // the horizon, and the stars come out. At dusk the two cross over.
+    let moon = glam::Vec3::new(0.62, 0.72, 1.0);
+    let night_sky = glam::Vec3::new(0.012, 0.017, 0.035) * share.max(0.5);
+    let (direction, color, intensity) = if night < 0.5 {
+        (sun.direction(), sun.color(), sun.intensity * (1.0 - 2.0 * night))
+    } else {
+        (sun.moon_direction(), moon, sun.intensity * 0.07 * (2.0 * night - 1.0))
+    };
+    let sky = sky.lerp(night_sky, night);
+    let key = color * intensity * (-direction.y).max(0.0);
     Lighting {
-        sun_direction: sun.direction(),
-        sun_color: sun.color(),
-        sun_intensity: sun.intensity,
+        sun_direction: direction,
+        sun_color: color,
+        sun_intensity: intensity,
         sky_color: sky,
-        ground_color: albedo * (sun_light + sky * 0.5),
+        ground_color: albedo * (key + sky * 0.5),
         ground_albedo: albedo,
+        sky_sun: Some((sun.true_direction(), sun.intensity)),
+        night,
     }
 }
 
@@ -1594,6 +1621,27 @@ pub fn build_frame_where(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn at_night_the_moon_lights_from_above_and_the_sky_from_under_the_horizon() {
+        let day = scene_lighting(&crate::scene::Sun {
+            hour: 13.0,
+            ..crate::scene::Sun::default()
+        });
+        assert_eq!(day.night, 0.0);
+        assert!(day.sky_sun.is_none());
+        let night = scene_lighting(&crate::scene::Sun {
+            hour: 23.0,
+            intensity: 1.2,
+            ..crate::scene::Sun::default()
+        });
+        assert_eq!(night.night, 1.0);
+        assert!(night.sun_direction.y < -0.1, "the moon is up: {}", night.sun_direction);
+        assert!(night.sun_color.z > night.sun_color.x, "and cold: {}", night.sun_color);
+        assert!(night.sun_intensity < day.sun_intensity * 0.15, "and dim");
+        let (sun, _) = night.sky_sun.expect("the sky lit by the sun where it is");
+        assert!(sun.y > 0.0, "under the horizon, its light travels up: {sun}");
+    }
 
     #[test]
     fn sand_underfoot_lights_what_faces_down_warm_and_bright() {

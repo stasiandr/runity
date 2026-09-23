@@ -56,6 +56,8 @@ struct Post {
     lamp_count: vec4<f32>,
     lamps: array<vec4<f32>, 8>,
     lamp_colors: array<vec4<f32>, 8>,
+    // how much it is night: the eye sees grey and blue
+    night: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -371,6 +373,12 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     color += lamp_flares(uv);
 
     color *= post.a.x;
+    // Night: the eye's cones give up to its rods, which see no colour and
+    // most in blue-green — moonlit sand is grey-blue, not orange.
+    if post.night.x > 0.0 {
+        let seen = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+        color = mix(color, seen * vec3<f32>(0.62, 0.8, 1.12), post.night.x * 0.7);
+    }
     color = white_balance(color);
     color *= post.filter_contrast.rgb;
     // Contrast about middle grey, in log space where it is even-handed.
