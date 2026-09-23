@@ -266,6 +266,105 @@ impl Default for LensFlare {
     }
 }
 
+/// Two looks mixed, `t` of the way from `a` to `b`: every number between
+/// the two, and what is not a number — a switch, a tonemapper — as `b`
+/// from halfway. What a post volume does to a camera walking into it.
+///
+/// By the text of each, so a setting added later mixes with no code here:
+/// the two write out the same shape, and the numbers in it are mixed.
+pub fn blend(a: &PostProcess, b: &PostProcess, t: f32) -> PostProcess {
+    let t = t.clamp(0.0, 1.0);
+    let step = if t < 0.5 { *a } else { *b };
+    if t <= 0.0 || t >= 1.0 {
+        return step;
+    }
+    let (Ok(ta), Ok(tb)) = (ron::to_string(a), ron::to_string(b)) else {
+        return step;
+    };
+    let (pa, pb) = (pieces(&ta), pieces(&tb));
+    if pa.len() != pb.len() {
+        return step;
+    }
+    let mut out = String::with_capacity(ta.len());
+    for (x, y) in pa.iter().zip(&pb) {
+        match (x, y) {
+            (Piece::Number(x), Piece::Number(y)) => {
+                let (fx, fy): (f64, f64) = (x.parse().unwrap_or(0.0), y.parse().unwrap_or(0.0));
+                if x == y {
+                    out.push_str(x);
+                } else if x.contains(['.', 'e']) || y.contains(['.', 'e']) {
+                    out.push_str(&format!("{:?}", fx + (fy - fx) * t as f64));
+                } else {
+                    // A whole number stays whole: a count, not a measure.
+                    out.push_str(&format!("{}", (fx + (fy - fx) * t as f64).round() as i64));
+                }
+            }
+            (Piece::Text(x), Piece::Text(y)) if x == y => out.push_str(x),
+            // The shapes differ (a switch between two variants): the step.
+            _ => out.push_str(if t < 0.5 {
+                piece_text(x)
+            } else {
+                piece_text(y)
+            }),
+        }
+    }
+    ron::from_str(&out).unwrap_or(step)
+}
+
+enum Piece<'a> {
+    Number(&'a str),
+    Text(&'a str),
+}
+
+fn piece_text<'a>(p: &Piece<'a>) -> &'a str {
+    match p {
+        Piece::Number(s) | Piece::Text(s) => s,
+    }
+}
+
+/// RON text as numbers and what is between them.
+fn pieces(text: &str) -> Vec<Piece<'_>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    let mut quoted = false;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'"' {
+            quoted = !quoted;
+        }
+        let after_word = i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let starts = !quoted
+            && !after_word
+            && (c.is_ascii_digit()
+                || (c == b'-' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)));
+        if starts {
+            if start < i {
+                out.push(Piece::Text(&text[start..i]));
+            }
+            let from = i;
+            i += 1;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_digit()
+                    || bytes[i] == b'.'
+                    || bytes[i] == b'e'
+                    || bytes[i] == b'E'
+                    || (bytes[i] == b'-' && matches!(bytes[i - 1], b'e' | b'E')))
+            {
+                i += 1;
+            }
+            out.push(Piece::Number(&text[from..i]));
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < text.len() {
+        out.push(Piece::Text(&text[start..]));
+    }
+    out
+}
+
 /// Everything done to a frame after it is drawn, with URP's names and
 /// ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -1131,6 +1230,38 @@ impl PostRenderer {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn two_looks_mix_their_numbers_and_step_their_switches() {
+        let a = PostProcess::default();
+        let b = PostProcess {
+            exposure: a.exposure + 2.0,
+            saturation: -40.0,
+            tonemapping: Tonemapping::Aces,
+            color_filter: [0.5, 1.0, 0.5],
+            fxaa: !a.fxaa,
+            ..a
+        };
+        let quarter = blend(&a, &b, 0.25);
+        assert!((quarter.exposure - (a.exposure + 0.5)).abs() < 1e-5);
+        assert!((quarter.saturation - (a.saturation + (-40.0 - a.saturation) * 0.25)).abs() < 1e-4);
+        assert!(
+            (quarter.color_filter[0] - (a.color_filter[0] + (0.5 - a.color_filter[0]) * 0.25))
+                .abs()
+                < 1e-5
+        );
+        assert_eq!(
+            quarter.tonemapping, a.tonemapping,
+            "a switch steps at halfway"
+        );
+        assert_eq!(quarter.fxaa, a.fxaa);
+        let most = blend(&a, &b, 0.75);
+        assert_eq!(most.tonemapping, Tonemapping::Aces);
+        assert_eq!(most.fxaa, b.fxaa);
+        assert_eq!(blend(&a, &b, 1.0), b);
+        assert_eq!(blend(&a, &b, 0.0), a);
+    }
+
     use super::*;
 
     #[test]

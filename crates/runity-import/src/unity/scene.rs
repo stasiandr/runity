@@ -654,7 +654,10 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
             let count = min_max(&burst["countCurve"])
                 .or_else(|| burst.f32("maxCount"))
                 .unwrap_or(0.0);
-            (burst.f32("time").unwrap_or(0.0), count.round().max(0.0) as u32)
+            (
+                burst.f32("time").unwrap_or(0.0),
+                count.round().max(0.0) as u32,
+            )
         })
         .collect();
     if emission

@@ -42,14 +42,21 @@ fn clip_name(
         let mut named: Option<String> = None;
         for line in text.lines() {
             let line = line.trim();
-            if let Some(name) = line.strip_prefix("name:").filter(|_| line.starts_with("name:")) {
+            if let Some(name) = line
+                .strip_prefix("name:")
+                .filter(|_| line.starts_with("name:"))
+            {
                 named = Some(name.trim().to_string());
             } else if let Some(id) = line
                 .strip_prefix("internalID:")
                 .and_then(|n| n.trim().parse::<i64>().ok())
             {
                 if let Some(name) = named.take() {
-                    let name = if name == "mixamo.com" { model.clone() } else { name };
+                    let name = if name == "mixamo.com" {
+                        model.clone()
+                    } else {
+                        name
+                    };
                     out.entry(id).or_insert(name);
                 }
             } else if let Some(rest) = line.strip_prefix("- first:") {
@@ -324,7 +331,9 @@ AnimatorStateTransition:
         let unity = Unity {
             layers: Default::default(),
             root: dir.clone(),
-            guids: [("run".to_string(), dir.join("A_Run.fbx"))].into_iter().collect(),
+            guids: [("run".to_string(), dir.join("A_Run.fbx"))]
+                .into_iter()
+                .collect(),
             names: Default::default(),
         };
         let mut cache = HashMap::new();
@@ -337,7 +346,10 @@ AnimatorStateTransition:
             Some("A_Run"),
             "Mixamo's name for every clip: the model's instead"
         );
-        assert_eq!(clip_name(&unity, &clip(7), &mut cache).as_deref(), Some("Wave"));
+        assert_eq!(
+            clip_name(&unity, &clip(7), &mut cache).as_deref(),
+            Some("Wave")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

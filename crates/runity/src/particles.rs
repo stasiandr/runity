@@ -104,7 +104,11 @@ impl Emitting {
         // Gravity pulls down the world, whichever way a local emitter is
         // turned.
         let (_, turn, _) = placed.to_scale_rotation_translation();
-        let down = if local { turn.inverse() * Vec3::Y } else { Vec3::Y };
+        let down = if local {
+            turn.inverse() * Vec3::Y
+        } else {
+            Vec3::Y
+        };
         for p in &mut self.particles {
             p.velocity += down * gravity * dt;
             p.at += p.velocity * dt;
@@ -341,7 +345,9 @@ mod tests {
         assert_eq!(emitting.count(), 20);
         emitting.advance(Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0)), 0.1);
         // Moved with the emitter: all near x = 10, not left at 0.
-        assert!(emitting.draws().all(|d| (d.transform.w_axis.x - 10.0).abs() < 1.0));
+        assert!(emitting
+            .draws()
+            .all(|d| (d.transform.w_axis.x - 10.0).abs() < 1.0));
         // Stretched along their way: taller than wide.
         let d = emitting.draws().next().unwrap();
         let (scale, _, _) = d.transform.to_scale_rotation_translation();

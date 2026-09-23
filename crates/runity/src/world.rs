@@ -85,6 +85,41 @@ pub struct LightSource(pub crate::scene::Light);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A local look at an entity, from its line's `post_volume`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PostVolumeBox(pub crate::scene::PostVolume);
+
+/// Lay the world's post volumes over a frame's post-processing, by where
+/// its camera is: all of one inside its box, fading out over its
+/// `blend_distance` outside, lower priorities first.
+pub fn post_volumes(frame: &mut Frame, world: &World) {
+    let eye = frame.camera.position;
+    let mut found: Vec<(i32, f32, crate::post::PostProcess)> = world
+        .query::<(&PostVolumeBox, &WorldTransform)>()
+        .iter()
+        .filter_map(|(volume, placed)| {
+            let v = volume.0;
+            // Into the box's own axes, where it is a unit-scaled box.
+            let local = placed.0.inverse().transform_point3(eye);
+            let (scale, _, _) = placed.0.to_scale_rotation_translation();
+            let outside = ((local.abs() - v.size * 0.5).max(glam::Vec3::ZERO)) * scale;
+            let distance = outside.length();
+            let weight = if distance <= 0.0 {
+                1.0
+            } else if v.blend_distance <= 0.0 {
+                0.0
+            } else {
+                (1.0 - distance / v.blend_distance).max(0.0)
+            };
+            (weight > 0.0).then_some((v.priority, weight, v.post))
+        })
+        .collect();
+    found.sort_by_key(|(priority, _, _)| *priority);
+    for (_, weight, post) in found {
+        frame.post = crate::post::blend(&frame.post, &post, weight);
+    }
+}
+
 /// A reflection probe at an entity, from its line's `reflection_probe`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbeBox(pub crate::scene::Probe);
@@ -284,6 +319,9 @@ fn spawn_one(
     }
     if let Some(probe) = desc.reflection_probe {
         let _ = world.insert_one(entity, ProbeBox(probe));
+    }
+    if let Some(volume) = desc.post_volume {
+        let _ = world.insert_one(entity, PostVolumeBox(volume));
     }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
@@ -611,6 +649,17 @@ impl Patch<'_> {
             }
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.post_volume != desc.post_volume) {
+            match desc.post_volume {
+                Some(volume) => {
+                    let _ = world.insert_one(entity, PostVolumeBox(volume));
+                }
+                None => {
+                    let _ = world.remove_one::<PostVolumeBox>(entity);
+                }
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.reflection_probe != desc.reflection_probe) {
             match desc.reflection_probe {
                 Some(probe) => {
@@ -854,6 +903,7 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
         scene_fog(&scene.fog),
     );
     scene_look(&mut frame, scene);
+    post_volumes(&mut frame, world);
     frame
 }
 
@@ -1117,6 +1167,7 @@ mod tests {
             joint: Default::default(),
             joint_break: None,
             bone: String::new(),
+            post_volume: None,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1150,6 +1201,7 @@ mod tests {
                     joint: Default::default(),
                     joint_break: None,
                     bone: String::new(),
+                    post_volume: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1696,13 +1748,52 @@ mod tests {
             position: glam::Vec3::new(x, y, z),
             ..Transform::default()
         };
-        let body = world.spawn((at(10.0, 0.0, 0.0), animator, Posed(vec![hand * bind.inverse()])));
+        let body = world.spawn((
+            at(10.0, 0.0, 0.0),
+            animator,
+            Posed(vec![hand * bind.inverse()]),
+        ));
         let spade = world.spawn((at(0.0, 0.0, 0.5), Parent(body), OnBone("hand".into())));
         let beside = world.spawn((at(0.0, 0.0, 0.5), Parent(body)));
         apply_hierarchy(&mut world);
         let place = |e| world.get::<&WorldTransform>(e).unwrap().0.w_axis.truncate();
         assert_eq!(place(spade), glam::Vec3::new(11.0, 2.0, 0.5));
-        assert_eq!(place(beside), glam::Vec3::new(10.0, 0.0, 0.5), "not on a bone: the body");
+        assert_eq!(
+            place(beside),
+            glam::Vec3::new(10.0, 0.0, 0.5),
+            "not on a bone: the body"
+        );
     }
 
+    #[test]
+    fn a_post_volume_is_all_there_inside_and_fades_out_over_its_blend() {
+        let dark = crate::post::PostProcess {
+            exposure: -2.0,
+            ..Default::default()
+        };
+        let mut world = World::new();
+        world.spawn((
+            WorldTransform(glam::Mat4::IDENTITY),
+            PostVolumeBox(crate::scene::PostVolume {
+                size: glam::Vec3::splat(4.0),
+                blend_distance: 2.0,
+                priority: 0,
+                post: dark,
+            }),
+        ));
+        let exposure_at = |x: f32| {
+            let mut frame = Frame::default();
+            frame.camera.position = glam::Vec3::new(x, 0.0, 0.0);
+            let outside = frame.post.exposure;
+            post_volumes(&mut frame, &world);
+            (frame.post.exposure, outside)
+        };
+        assert_eq!(exposure_at(1.0).0, -2.0, "inside");
+        let (half, outside) = exposure_at(3.0);
+        assert!(
+            (half - (outside + (-2.0 - outside) * 0.5)).abs() < 1e-4,
+            "{half}"
+        );
+        assert_eq!(exposure_at(10.0).0, outside, "far away: the scene's");
+    }
 }

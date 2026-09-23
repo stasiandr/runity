@@ -3185,6 +3185,7 @@ impl Session {
         };
         // The scene's own sky and post-processing, as the game draws it.
         runity::world::scene_look(&mut frame, scene);
+        runity::world::post_volumes(&mut frame, &self.world);
         frame
     }
 

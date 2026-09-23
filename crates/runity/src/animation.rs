@@ -417,13 +417,23 @@ mod tests {
             ],
         };
         let moved = clip.retarget(&from, &to);
-        assert_eq!(moved.channels.len(), 2, "the tail and the elbow's stretch go");
+        assert_eq!(
+            moved.channels.len(),
+            2,
+            "the tail and the elbow's stretch go"
+        );
         let root = &moved.channels[0];
         assert_eq!((root.joint, root.path), (0, Path::Translation));
-        assert!((root.values[1] - 1.1).abs() < 1e-5, "half as tall: half the lift");
+        assert!(
+            (root.values[1] - 1.1).abs() < 1e-5,
+            "half as tall: half the lift"
+        );
         let elbow = &moved.channels[1];
         let q = Quat::from_slice(&elbow.values);
-        assert!(q.angle_between(bent * wave) < 1e-4, "its own rest, the same turn");
+        assert!(
+            q.angle_between(bent * wave) < 1e-4,
+            "its own rest, the same turn"
+        );
     }
 
     #[test]

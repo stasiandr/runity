@@ -494,7 +494,10 @@ impl Controller {
             .iter()
             .filter_map(|(x, y, clip)| Some((glam::Vec2::new(*x, *y), index(clip)?)))
             .collect();
-        let middle = points.iter().find(|(p, _)| p.length() < 1e-4).map(|(_, c)| *c);
+        let middle = points
+            .iter()
+            .find(|(p, _)| p.length() < 1e-4)
+            .map(|(_, c)| *c);
         let ring: Vec<(f32, f32, usize)> = points
             .iter()
             .filter(|(p, _)| p.length() >= 1e-4)
@@ -520,9 +523,11 @@ impl Controller {
                 .map(|r| (turn(r.0), r))
                 .filter(|(d, _)| if before { *d <= 0.0 } else { *d > 0.0 })
                 .min_by(|(d1, r1), (d2, r2)| {
-                    d1.abs()
-                        .total_cmp(&d2.abs())
-                        .then((r1.1 - q.length()).abs().total_cmp(&(r2.1 - q.length()).abs()))
+                    d1.abs().total_cmp(&d2.abs()).then(
+                        (r1.1 - q.length())
+                            .abs()
+                            .total_cmp(&(r2.1 - q.length()).abs()),
+                    )
                 })
                 .map(|(d, r)| (d, *r))
         };
@@ -577,8 +582,7 @@ impl Controller {
                 if let Some((a, b, w, third)) = self.mix_2d(state, animator) {
                     animator.blend_three(a, b, w, third, *fade);
                 }
-            } else if let Some(state) =
-                self.graph.states.get(name).filter(|s| !s.blend.is_empty())
+            } else if let Some(state) = self.graph.states.get(name).filter(|s| !s.blend.is_empty())
             {
                 if let Some((a, b, w)) = self.mix(state, animator) {
                     // From a plain clip: fade in. Between blend states:

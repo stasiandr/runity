@@ -81,12 +81,7 @@ impl Animator {
     /// [`Clip::retarget`]): Mixamo's, one clip to a file. A clip Mixamo
     /// named as it names all of them (`mixamo.com`) takes `model`, the
     /// name of the file it came from — as the Unity import names it.
-    pub fn take_clips(
-        &mut self,
-        model: &str,
-        from: &crate::animation::Skeleton,
-        clips: &[Clip],
-    ) {
+    pub fn take_clips(&mut self, model: &str, from: &crate::animation::Skeleton, clips: &[Clip]) {
         let taken: Vec<Clip> = clips
             .iter()
             .map(|clip| {

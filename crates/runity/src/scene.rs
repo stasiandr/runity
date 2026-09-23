@@ -473,6 +473,33 @@ pub struct Probe {
     pub blend_distance: f32,
 }
 
+/// A place that looks different — the cellar darker and greener, the
+/// sauna hazy — URP's local Volume. `post_volume: (size: (6.0, 3.0, 6.0),
+/// post: (exposure: -0.5, saturation: 0.6))`: inside the box (metres,
+/// centred on the entity, turned and scaled with it) the camera sees
+/// `post`; `blend_distance` (2 m) outside it, the scene's own; between,
+/// the two mixed. Settings `post` does not say are the defaults, not the
+/// scene's. Where volumes overlap, the higher `priority` is laid last.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PostVolume {
+    #[serde(default = "probe_size")]
+    pub size: Vec3,
+    #[serde(default = "two", skip_serializing_if = "is_two")]
+    pub blend_distance: f32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub priority: i32,
+    #[serde(default)]
+    pub post: crate::post::PostProcess,
+}
+
+fn two() -> f32 {
+    2.0
+}
+
+fn is_two(v: &f32) -> bool {
+    *v == 2.0
+}
+
 /// A picture pressed onto what lies in a box — URP's Decal Projector.
 /// `decal: (size: (2.0, 1.0, 2.0))`: the box, metres, centred on the
 /// entity and turned with it, pressed down its −y (a decal on the ground
@@ -744,6 +771,9 @@ pub struct EntityDesc {
     /// A reflection probe at this entity; see [`Probe`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
+    /// A place that looks different; see [`PostVolume`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub post_volume: Option<PostVolume>,
     /// A decal pressed from this entity; see [`Decal`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
@@ -1604,6 +1634,7 @@ mod tests {
                 joint: Default::default(),
                 joint_break: None,
                 bone: String::new(),
+                post_volume: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1635,6 +1666,7 @@ mod tests {
                     joint: Default::default(),
                     joint_break: None,
                     bone: String::new(),
+                    post_volume: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1692,6 +1724,7 @@ mod tests {
                 joint: Default::default(),
                 joint_break: None,
                 bone: String::new(),
+                post_volume: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
