@@ -1197,11 +1197,25 @@ pub struct Sun {
     /// by the game, so a scene stores the hour, not a vector.
     pub hour: f32,
     pub intensity: f32,
+    /// What the ground under the sun is, as a colour picker says it (sRGB):
+    /// the light it throws back up onto everything from below. Sand throws
+    /// a lot, and warm; dark earth little.
+    #[serde(default = "default_ground", skip_serializing_if = "is_default_ground")]
+    pub ground: [f32; 3],
+}
+
+fn default_ground() -> [f32; 3] {
+    [0.36, 0.33, 0.29]
+}
+
+fn is_default_ground(g: &[f32; 3]) -> bool {
+    *g == default_ground()
 }
 
 impl Default for Sun {
     fn default() -> Self {
         Self {
+            ground: default_ground(),
             hour: 9.0,
             intensity: 1.15,
         }
@@ -1825,6 +1839,7 @@ mod tests {
             sun: Sun {
                 hour: 17.5,
                 intensity: 0.8,
+                ..Sun::default()
             },
             fog: Fog::default(),
             sky: None,
@@ -2063,6 +2078,7 @@ mod tests {
         let at = |hour| Sun {
             hour,
             intensity: 1.0,
+            ..Sun::default()
         };
 
         // Noon is overhead; morning and evening are low and on opposite

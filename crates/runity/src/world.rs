@@ -968,12 +968,23 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
     // night, and a sky as bright as noon's would light it like day.
     let day = Lighting::default();
     let share = (sun.intensity / day.sun_intensity).clamp(0.05, 1.3);
+    // What faces down sees the ground: lit by the sun and the sky, and
+    // sending back its own colour — a lot, and warm, off sand.
+    let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+    let albedo = glam::Vec3::new(
+        linear(sun.ground[0]),
+        linear(sun.ground[1]),
+        linear(sun.ground[2]),
+    );
+    let sky = day.sky_color * share;
+    let sun_light = sun.color() * sun.intensity * (-sun.direction().y).max(0.0);
     Lighting {
         sun_direction: sun.direction(),
         sun_color: sun.color(),
         sun_intensity: sun.intensity,
-        sky_color: day.sky_color * share,
-        ground_color: day.ground_color * share,
+        sky_color: sky,
+        ground_color: albedo * (sun_light + sky * 0.5),
+        ground_albedo: albedo,
     }
 }
 
@@ -1351,6 +1362,37 @@ pub fn build_frame_where(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sand_underfoot_lights_what_faces_down_warm_and_bright() {
+        let grass = scene_lighting(&crate::scene::Sun::default());
+        let sand = scene_lighting(&crate::scene::Sun {
+            ground: [0.78, 0.6, 0.38],
+            ..crate::scene::Sun::default()
+        });
+        assert!(
+            sand.ground_color.x > grass.ground_color.x * 3.0,
+            "{} vs {}",
+            sand.ground_color,
+            grass.ground_color
+        );
+        assert!(
+            sand.ground_color.x > sand.ground_color.z * 1.5,
+            "warm: {}",
+            sand.ground_color
+        );
+        // With the sun down to a glimmer the ground has little to send back.
+        let night = scene_lighting(&crate::scene::Sun {
+            intensity: 0.05,
+            ground: [0.78, 0.6, 0.38],
+            ..crate::scene::Sun::default()
+        });
+        assert!(
+            night.ground_color.x < sand.ground_color.x * 0.2,
+            "{}",
+            night.ground_color
+        );
+    }
     use super::*;
     use glam::Vec3;
 

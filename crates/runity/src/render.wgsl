@@ -1045,6 +1045,42 @@ fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f3
     return mix(around, near.rgb, near.a);
 }
 
+/// The light from all round a surface facing `normal`: inside a reflection
+/// probe's box, its most blurred picture that way — the room as it is lit,
+/// its coloured walls tinting what faces them, even off the screen — and
+/// outside, the sky and the ground's `hemisphere`.
+fn around(position: vec3<f32>, normal: vec3<f32>, hemisphere: vec3<f32>) -> vec3<f32> {
+    let count = u32(frame.probe_params.x);
+    if count == 0u {
+        return hemisphere;
+    }
+    let blurred = frame.probe_params.y;
+    var sum = vec3<f32>(0.0);
+    var covered = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let centre = frame.probes[i * 2u];
+        let extents = frame.probes[i * 2u + 1u];
+        let inside = extents.xyz - abs(position - centre.xyz);
+        let edge = min(inside.x, min(inside.y, inside.z));
+        if edge <= 0.0 {
+            continue;
+        }
+        let weight = clamp(edge / max(centre.w, 1e-3), 0.0, 1.0) * (1.0 - covered);
+        // The last mip is a few texels a face: already the average of what
+        // a face sees; three taps round the normal smooth its seams.
+        let t = basis_of(normal);
+        let seen = probe_picture(i, normal, blurred) * 0.5
+            + probe_picture(i, normalize(normal + t.t * 0.6), blurred) * 0.25
+            + probe_picture(i, normalize(normal - t.t * 0.6), blurred) * 0.25;
+        sum = sum + seen * weight;
+        covered = covered + weight;
+        if covered > 0.999 {
+            break;
+        }
+    }
+    return sum + hemisphere * (1.0 - covered);
+}
+
 /// What the probes and the sky give a reflection, without the screen.
 fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let sky = environment(direction, perceptual_roughness);
@@ -1251,7 +1287,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Hemisphere ambient: a face turned up sees sky, one turned down sees
     // bounce off the ground. A single constant here is what makes every
     // shaded surface in a scene the same dead colour.
-    let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5);
+    let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5));
     color = color + b.diffuse * ambient * ao * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);

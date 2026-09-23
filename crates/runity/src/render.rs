@@ -235,6 +235,9 @@ pub struct Lighting {
     /// Ambient seen by a surface facing straight down — bounce off the
     /// ground, standing in for the global illumination we do not compute.
     pub ground_color: Vec3,
+    /// The ground's colour, linear: with a physical sky, what the light
+    /// from below is worked out from.
+    pub ground_albedo: Vec3,
 }
 
 impl Default for Lighting {
@@ -245,6 +248,7 @@ impl Default for Lighting {
             sun_intensity: 1.15,
             sky_color: Vec3::new(0.24, 0.28, 0.34),
             ground_color: Vec3::new(0.10, 0.09, 0.07),
+            ground_albedo: Vec3::new(0.107, 0.089, 0.069),
         }
     }
 }
@@ -3206,10 +3210,14 @@ impl Renderer {
         let to_sun = -frame.lighting.sun_direction.normalize_or(Vec3::NEG_Y);
         let altitude = frame.camera.position.y.max(1.0);
         let (sun_light, sky_light, ground_light) = if physical {
-            frame
-                .sky
-                .atmosphere
-                .lighting(altitude, to_sun, frame.lighting.sun_intensity)
+            let (sun, sky, _) =
+                frame
+                    .sky
+                    .atmosphere
+                    .lighting(altitude, to_sun, frame.lighting.sun_intensity);
+            // The ground lit by them, sending its colour back up.
+            let ground = frame.lighting.ground_albedo * (sun * to_sun.y.max(0.0) + sky * 0.5);
+            (sun, sky, ground)
         } else {
             (
                 frame.lighting.sun_color * frame.lighting.sun_intensity,

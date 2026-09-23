@@ -69,6 +69,7 @@ pub fn sun(text: &str) -> Option<runity::scene::Sun> {
     Some(runity::scene::Sun {
         hour: 6.0 + angle / std::f32::consts::PI * 12.0,
         intensity: light.body.f32("m_Intensity").unwrap_or(1.0),
+        ..runity::scene::Sun::default()
     })
 }
 
