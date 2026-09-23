@@ -139,7 +139,7 @@ impl Components {
     }
 
     /// Say that `name` means `T`, and that it is networked: its value on
-    /// an entity goes to the other peers in a [`crate::net::Snapshot`]
+    /// an entity goes to the other peers in a snapshot
     /// from whoever owns the entity. The mark is the design decision — a
     /// component is local unless it says otherwise — made while there are
     /// still few components to make it for (DNA, postulate 4).
@@ -207,6 +207,19 @@ impl Components {
             .ok_or_else(|| format!("no component `{name}` registered"))?;
         let value = RawValue::from_ron(text).map_err(|e| e.to_string())?;
         insert(value, world, entity)
+    }
+
+    /// Take one component off an entity, by name. Nothing for a name
+    /// nobody registered.
+    pub(crate) fn remove_by_name(&self, name: &str, world: &mut World, entity: hecs::Entity) {
+        if let Some((_, remove)) = self.by_name.get(name) {
+            remove(world, entity);
+        }
+    }
+
+    /// The networked components' names, sorted.
+    pub fn networked_names(&self) -> impl Iterator<Item = &str> {
+        self.networked.keys().map(String::as_str)
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {

@@ -32,6 +32,10 @@ pub(crate) struct Prefs {
     /// How many play when the game is started: Unity's Multiplayer Play
     /// Mode players. Zero — a file from before — is one.
     players: u32,
+    /// How bad the other players' link is made (`poor`, `awful`, or
+    /// `latency=80,loss=3`): the dacha simulator's Bad Link window, kept
+    /// per person, never in the project. Empty is a perfect one.
+    link: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -100,6 +104,26 @@ impl Session {
         prefs.players = count.clamp(1, crate::MAX_PLAYERS);
         write_prefs(&path, &prefs);
         prefs.players
+    }
+
+    /// How bad a link the other players play over — `poor`, `awful`,
+    /// `latency=80,jitter=10,loss=3,dup=1` — or empty for a perfect one.
+    pub fn link(&self) -> String {
+        self.read_prefs().link
+    }
+
+    /// Play the other players over a link this bad from the next start,
+    /// or a perfect one with `""`. Refuses what `RUNITY_LINK` would not
+    /// read.
+    pub fn set_link(&mut self, link: &str) -> crate::EditResult<()> {
+        runity::net::Conditions::parse(link).map_err(crate::EditError::Scene)?;
+        let Some(path) = self.prefs_path() else {
+            return Err(crate::EditError::NotInProject);
+        };
+        let mut prefs = self.read_prefs();
+        prefs.link = link.trim().to_string();
+        write_prefs(&path, &prefs);
+        Ok(())
     }
 
     /// Put the view back where this person left it in the open scene, and

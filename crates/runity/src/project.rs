@@ -762,11 +762,33 @@ impl shell::Game for Game {
         });
         for event in events {
             match event {
-                Event::Joined(peer) => eprintln!("player {} joined", peer.0 + 1),
-                Event::Left { peer, .. } => eprintln!("player {} left", peer.0 + 1),
+                // The session plays another scene: go there, then say so.
+                Event::SceneRequired { scene } => {
+                    match self.live.switch(&scene, &mut self.world, ctx.gpu, ctx.renderer) {
+                        Ok((spawned, problems)) => {
+                            for line in spawned.lines().into_iter().chain(problems) {
+                                eprintln!("{line}");
+                            }
+                            self.start_physics(ctx);
+                        }
+                        Err(e) => eprintln!("{e}"),
+                    }
+                    self.party.ready_in(&scene);
+                }
                 Event::Welcomed => eprintln!("in the game as {}", self.party.name()),
-                Event::HostLost => eprintln!("the host is gone, and the game with them"),
-                Event::Refused(why) => eprintln!("{why}"),
+                Event::Joined { name, .. } => eprintln!("{} joined", name),
+                Event::Left { name, clean, .. } => {
+                    eprintln!("{} {}", name, if clean { "left" } else { "went quiet, and is gone" })
+                }
+                Event::HostLost { quit } => eprintln!(
+                    "the host {}; waiting for them to come back",
+                    if quit { "left" } else { "is not answering" }
+                ),
+                Event::HostBack => eprintln!("the host is back"),
+                Event::Rejected(why) => eprintln!("could not join: {why}"),
+                Event::ClaimLost { .. } | Event::Message { .. } => {}
+                Event::Silent { id, owner } => eprintln!("{id}: player {} stopped saying where it is", owner.0 + 1),
+                Event::Problem(why) => eprintln!("{why}"),
             }
         }
         // Started from the editor: tell it where things are.
@@ -828,8 +850,9 @@ fn main() -> anyhow::Result<()> {
     for problem in &problems {
         eprintln!("{problem}");
     }
-    // RUNITY_NET: host or join a game — alone without it.
-    let party = Party::from_env().map_err(anyhow::Error::msg)?;
+    // RUNITY_NET: host or join a game — alone without it, which is the
+    // same thing with nobody else in it.
+    let party = Party::from_env(&playing, &game_components()).map_err(anyhow::Error::msg)?;
     let mut title = if settings.title.is_empty() { project_name } else { settings.title.clone() };
     if !party.is_alone() {
         title = format!("{title} — {}", party.name());
@@ -927,15 +950,18 @@ pub struct Spin {
 "#;
 
 /// The system a new project starts with.
-const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin`.
+const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin` and this player drives: what someone
+//! else drives turns on their machine and is shown turning here. Every
+//! system that simulates asks for `Owned`; alone, everything is.
 
 use runity::hecs::World;
+use runity::net::Owned;
 use runity::Transform;
 
 use crate::components::Spin;
 
 pub fn run(world: &mut World, seconds: f32) {
-    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>() {
+    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>().with::<&Owned>() {
         transform.rotation_deg.y += spin.degrees_per_second * seconds;
     }
 }
@@ -959,7 +985,9 @@ pub fn component_file(name: &str) -> String {
 /// A new system's file: `runity add system NAME`.
 pub fn system_file(name: &str) -> String {
     format!(
-        "//! `{name}`.\n\
+        "//! `{name}`. What it changes, it changes only on what this player\n\
+         //! drives: query with `.with::<&runity::net::Owned>()` — alone,\n\
+         //! that is everything; together, the rest is someone else's to run.\n\
          \n\
          use runity::hecs::World;\n\
          \n\

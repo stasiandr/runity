@@ -24,7 +24,9 @@
 //! build with `join:…`, so nothing is compiled twice and nobody knocks
 //! before the door is there. Each has its own window, laid out side by
 //! side, its own player folder (`.runity/players/N/`: its own prefs and
-//! saves), and its lines in the Console under its name. All of them watch
+//! saves), and its lines in the Console under its name. The others can be
+//! made to play over a bad link ([`Session::set_link`]) — the dacha
+//! simulator's Bad Link window. All of them watch
 //! the editor's document; the Inspector shows the host's world. Stop ends
 //! every one.
 
@@ -341,9 +343,12 @@ impl Session {
             .map(|(_, s)| (s.width, s.height))
             .unwrap_or((1280, 720));
         let address = format!("127.0.0.1:{}", free_port()?);
+        // The others play over the link this person chose; the host's own
+        // game is in the server's process and has no link to spoil.
+        let link = self.link();
         command
             .env(runity::party::NET_VAR, format!("host:{address}"))
-            .env(runity::party::PEER_VAR, "0")
+            .env(runity::party::PLAYER_VAR, "Player 1")
             .env(runity::party::WINDOW_VAR, runity::party::tile(0, count, size));
         // What every player shares with the host: the scene, the file it
         // watches. What is each one's own: its window, its state, its folder.
@@ -364,7 +369,10 @@ impl Session {
                 let mut envs = shared.clone();
                 let mut set = |k: &str, v: String| envs.push((k.into(), v.into()));
                 set(runity::party::NET_VAR, format!("join:{address}"));
-                set(runity::party::PEER_VAR, peer.to_string());
+                set(runity::party::PLAYER_VAR, format!("Player {number}"));
+                if !link.is_empty() {
+                    set(runity::party::LINK_VAR, link.clone());
+                }
                 set(runity::party::WINDOW_VAR, runity::party::tile(peer, count, size));
                 set(
                     runity::live::STATE_VAR,

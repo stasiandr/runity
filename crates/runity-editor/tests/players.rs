@@ -39,10 +39,13 @@ fn how_many_play_is_this_persons_choice_and_kept() {
     assert_eq!(session.set_players(9), runity_editor::MAX_PLAYERS);
     assert_eq!(session.set_players(0), 1);
     session.set_players(2);
+    assert!(session.set_link("sluggish").is_err());
+    session.set_link("poor").unwrap();
 
     let mut again = Session::offscreen(64, 64).unwrap();
     again.open_scene(project.scenes().join("main.ron")).unwrap();
     assert_eq!(again.players(), 2, "kept in .runity/, with the view");
+    assert_eq!(again.link(), "poor");
 }
 
 /// The whole thing: the editor builds the project's game, starts it as the
@@ -59,11 +62,13 @@ fn two_players_play_together_from_the_editor() {
     let target: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/players-game");
     std::env::set_var("CARGO_TARGET_DIR", std::path::absolute(target).unwrap());
     session.set_players(2);
+    // Player 2 over a poor link: loss and jitter on real UDP.
+    session.set_link("poor").unwrap();
     session.start_game().unwrap();
 
     let said = |session: &Session, text: &str| session.console().iter().any(|l| l.text.contains(text));
     let deadline = Instant::now() + Duration::from_secs(900);
-    while !(said(&session, "player 1: player 2 joined")
+    while !(said(&session, "player 1: Player 2 joined")
         && said(&session, "player 2: in the game as Player 2"))
     {
         assert!(session.game_running(), "{:#?}", session.console());

@@ -70,10 +70,11 @@ pub fn command(project: &Project, hot: bool, release: bool, dx: Option<&Path>) -
 /// in its own window laid out beside the others, with its own player
 /// folder, and its lines marked with whose they are. Unity's Multiplayer
 /// Play Mode, from a terminal. Ends when the host does; ending it ends all.
-pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>) -> Result<bool> {
+pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>, link: &str) -> Result<bool> {
     if !(2..=4).contains(&count) {
         bail!("--players wants 2 to 4; one player is plain `runity run`");
     }
+    runity::net::Conditions::parse(link).map_err(|e| anyhow::anyhow!("--link: {e}"))?;
     let mut build = Command::new("cargo");
     build.arg("build").current_dir(project.root());
     if release {
@@ -93,6 +94,9 @@ pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>
         let mut command = player_command(&exe, project, peer, count, &address, size);
         if let Some(scene) = scene {
             command.env(SCENE_VAR, scene);
+        }
+        if peer > 0 && !link.is_empty() {
+            command.env(runity::party::LINK_VAR, link);
         }
         let mut child = command
             .stdout(std::process::Stdio::piped())
@@ -138,7 +142,7 @@ pub fn player_command(
     let mut command = Command::new(exe);
     command
         .current_dir(project.root())
-        .env(party::PEER_VAR, peer.to_string())
+        .env(party::PLAYER_VAR, format!("Player {}", peer + 1))
         .env(party::WINDOW_VAR, party::tile(peer, count, size));
     if peer == 0 {
         command.env(party::NET_VAR, format!("host:{address}"));
@@ -213,9 +217,10 @@ mod tests {
         assert_eq!(env(&host, "RUNITY_USER_DIR"), None, "the host is the person's own");
         let third = player_command(exe, &project, 2, 3, "127.0.0.1:4000", (1280, 720));
         assert_eq!(env(&third, "RUNITY_NET").as_deref(), Some("join:127.0.0.1:4000"));
-        assert_eq!(env(&third, "RUNITY_PEER").as_deref(), Some("2"));
+        assert_eq!(env(&third, "RUNITY_PLAYER").as_deref(), Some("Player 3"));
         assert!(env(&third, "RUNITY_USER_DIR").unwrap().ends_with(".runity/players/3"));
-        assert!(players(&project, 7, false, None).is_err());
+        assert!(players(&project, 7, false, None, "").is_err());
+        assert!(players(&project, 2, false, None, "ping=3").is_err());
     }
 
     #[test]
