@@ -1250,16 +1250,7 @@ fn patched(old: &str, graph: &Graph) -> Option<String> {
         let span = patch::value_span(&text, at)?;
         text.replace_range(span, &quote(&graph.start));
     }
-    let check: Graph = match runity::ron::from_str(&text) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("DBG parse {e}\n{text}");
-            return None;
-        }
-    };
-    if check != *graph {
-        eprintln!("DBG differ\n{text}\n{check:?}\n{graph:?}");
-    }
+    let check: Graph = runity::ron::from_str(&text).ok()?;
     (check == *graph).then_some(text)
 }
 

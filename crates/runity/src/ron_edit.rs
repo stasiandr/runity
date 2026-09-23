@@ -132,7 +132,7 @@ pub fn items(text: &str, open: usize) -> Option<Items> {
             i += 1;
             continue;
         }
-        if depth == 0 && current.is_none() && !matches!(c, b',' | b']' | b'}') {
+        if depth == 0 && current.is_none() && !matches!(c, b',' | b']' | b'}' | b')') {
             current = Some((i, i));
         }
         match c {
@@ -379,6 +379,17 @@ mod tests {
     }
 
     #[test]
+    fn a_field_is_added_after_a_trailing_comma_on_its_own_line() {
+        let text =
+            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n)\n";
+        let out = set_field(text, "any", Some("[]")).unwrap();
+        assert_eq!(
+            out,
+            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n    any: [],\n)\n"
+        );
+    }
+
+    #[test]
     fn one_line_lists_grow_on_their_line() {
         let text = "(list: [1, 2])";
         let open = value_start(text, "list").unwrap();
@@ -396,20 +407,5 @@ mod tests {
             apply(empty, open, &[Change::Append("1".into())]).unwrap(),
             "(list: [1])"
         );
-    }
-}
-#[cfg(test)]
-mod dbg_tmp {
-    #[test]
-    fn dbg() {
-        let t =
-            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n)\n";
-        let out = super::set_field(t, "any", Some("[\n        (to: \"a\"),\n    ]")).unwrap();
-        eprintln!("OUT<<{out}>>");
-        let found = super::items(t, super::outer_open(t).unwrap()).unwrap();
-        for r in &found.items {
-            eprintln!("ITEM<<{}>>", &t[r.clone()]);
-        }
-        panic!();
     }
 }
