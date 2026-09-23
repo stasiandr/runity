@@ -174,6 +174,42 @@ impl NavGrid {
         Vec3::new(c.x, self.ground[k].unwrap_or(0.0), c.y)
     }
 
+    /// The walkable ground as strips along x — runs of cells side by side
+    /// at about one height — each as (its middle, its length); a strip is
+    /// one cell deep. What an editor draws to show where a walker can go,
+    /// in hundreds of pieces rather than a piece per cell.
+    pub fn strips(&self) -> Vec<(Vec3, f32)> {
+        let mut out = Vec::new();
+        for z in 0..self.depth {
+            let mut x = 0;
+            while x < self.width {
+                let k = z * self.width + x;
+                let Some(h) = self.ground[k] else {
+                    x += 1;
+                    continue;
+                };
+                let mut end = x + 1;
+                while end < self.width
+                    && self.ground[z * self.width + end].is_some_and(|g| (g - h).abs() < 0.05)
+                {
+                    end += 1;
+                }
+                let (first, last) = (self.centre(k), self.centre(z * self.width + end - 1));
+                out.push((
+                    Vec3::new((first.x + last.x) * 0.5, h, first.z),
+                    (end - x) as f32 * self.cell,
+                ));
+                x = end;
+            }
+        }
+        out
+    }
+
+    /// The side of a cell, in metres.
+    pub fn cell(&self) -> f32 {
+        self.cell
+    }
+
     /// Whether something can stand here.
     pub fn is_walkable(&self, at: Vec3) -> bool {
         self.cell_of(at).is_some_and(|k| self.ground[k].is_some())
@@ -509,6 +545,32 @@ mod tests {
             Vec3::new(10.0, 0.1, 10.0),
             None,
         )
+    }
+
+    #[test]
+    fn walkable_ground_comes_out_as_strips_of_one_height() {
+        let grid = NavGrid {
+            origin: Vec2::ZERO,
+            cell: 0.5,
+            width: 4,
+            depth: 2,
+            ground: vec![
+                Some(0.0),
+                Some(0.0),
+                None,
+                Some(1.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+                Some(0.0),
+            ],
+            max_step: 0.3,
+        };
+        let strips = grid.strips();
+        assert_eq!(strips.len(), 3, "{strips:?}");
+        assert_eq!(strips[0], (Vec3::new(0.5, 0.0, 0.25), 1.0));
+        assert_eq!(strips[1], (Vec3::new(1.75, 1.0, 0.25), 0.5));
+        assert_eq!(strips[2], (Vec3::new(1.0, 0.0, 0.75), 2.0));
     }
 
     #[test]

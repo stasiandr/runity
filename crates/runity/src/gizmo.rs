@@ -301,6 +301,11 @@ pub fn collider_color(body: crate::scene::Body) -> Material {
     Material::new(r, g, b).unlit()
 }
 
+/// Walkable ground: Unity's navmesh blue.
+pub fn navigation_color() -> Material {
+    Material::new(0.25, 0.6, 1.0).unlit()
+}
+
 /// A camera's frustum: a quiet white, like Unity's.
 pub fn camera_color() -> Material {
     Material::new(0.9, 0.9, 0.9).unlit()

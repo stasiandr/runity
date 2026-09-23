@@ -3311,3 +3311,33 @@ fn ctrl_while_dragging_moves_in_quarter_metres() {
         "the grid setting is untouched"
     );
 }
+
+#[test]
+fn the_view_shows_where_a_walker_can_go_and_keeps_up_with_edits() {
+    let scene = r#"(
+    entities: [
+        (name: "ground", model: "builtin:plane", transform: (scale: (10.0, 1.0, 10.0)), body: Static, collider: Box(half: (0.5, 0.05, 0.5))),
+        (name: "wall", model: "builtin:cube", transform: (position: (0.0, 1.0, 0.0), scale: (6.0, 2.0, 0.3)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+    ],
+)"#;
+    let Some((mut session, _)) = open_with("nav-view", scene) else {
+        return;
+    };
+    let wall = id(&session, "wall");
+    session.set_show_navigation(Some(runity::navigation::NavSettings::default()));
+    assert_eq!(session.walkable_cells(), None, "baked when drawn");
+    session.render();
+    let with_wall = session.walkable_cells().expect("baked");
+    assert!(with_wall > 100, "{with_wall}");
+
+    session.delete(wall).unwrap();
+    assert_eq!(session.walkable_cells(), None, "stale after an edit");
+    session.render();
+    assert!(
+        session.walkable_cells().unwrap() > with_wall,
+        "the wall's ground is walkable now"
+    );
+    session.set_show_navigation(None);
+    session.render();
+    assert_eq!(session.walkable_cells(), None);
+}

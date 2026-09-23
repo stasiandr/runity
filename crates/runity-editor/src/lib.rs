@@ -156,6 +156,13 @@ pub struct Session {
     surface: Option<runity::PhysicsWorld>,
     /// A vertex snap in progress.
     vertex_grab: Option<surface::VertexGrab>,
+    /// Showing where a walker can go: with what walker, and the grid baked
+    /// for the scene as it is (dropped on every change, baked again when
+    /// next drawn).
+    nav_shown: Option<(
+        runity::navigation::NavSettings,
+        Option<runity::navigation::NavGrid>,
+    )>,
     console: console::Console,
 }
 
@@ -288,6 +295,7 @@ impl Session {
             fly_speed: 6.0,
             surface: None,
             vertex_grab: None,
+            nav_shown: None,
             console: Default::default(),
         })
     }
@@ -927,6 +935,23 @@ impl Session {
         to: Vec3,
         settings: runity::navigation::NavSettings,
     ) -> Option<Vec<Vec3>> {
+        let grid = self.bake_navigation(settings, &[from, to]);
+        grid.path(from, to)
+    }
+
+    /// The scene's walkable grid, baked from its static colliders in a
+    /// world of its own over everything solid (and `also`, with room to go
+    /// round) — what a path is found on and what the view shows.
+    pub(crate) fn bake_navigation(
+        &self,
+        settings: runity::navigation::NavSettings,
+        also: &[Vec3],
+    ) -> runity::navigation::NavGrid {
+        let (from, to) = match also {
+            [a, b, ..] => (*a, *b),
+            [a] => (*a, *a),
+            [] => (Vec3::ZERO, Vec3::ZERO),
+        };
         let scene = &self.instanced.scene;
         let mut world = hecs::World::new();
         runity::spawn_scene(scene, &mut world, |_| Some(MeshHandle::TEST));
@@ -956,13 +981,12 @@ impl Session {
             ceiling: max.y + 10.0,
             ..settings
         };
-        let grid = runity::navigation::NavGrid::bake(
+        runity::navigation::NavGrid::bake(
             &physics,
             runity::glam::Vec2::new(min.x, min.z),
             runity::glam::Vec2::new(max.x, max.z),
             settings,
-        );
-        grid.path(from, to)
+        )
     }
 
     /// Who holds which Git LFS lock in the open project's repository —
@@ -2249,6 +2273,35 @@ impl Session {
                 ));
             }
         }
+        // Where a walker can go, as blue strips on the ground: depth-tested,
+        // so a wall hides what is behind it.
+        if let Some((settings, grid)) = &self.nav_shown {
+            let grid = match grid {
+                Some(grid) => grid.clone(),
+                None => {
+                    let baked = self.bake_navigation(*settings, &[]);
+                    if let Some((_, slot)) = &mut self.nav_shown {
+                        *slot = Some(baked.clone());
+                    }
+                    baked
+                }
+            };
+            let arm = self.gizmo_arm_mesh();
+            let depth = grid.cell() * 0.9;
+            frame
+                .draws
+                .extend(grid.strips().into_iter().map(|(at, length)| runity::Draw {
+                    mesh: arm,
+                    transform: Mat4::from_scale_rotation_translation(
+                        Vec3::new(length - grid.cell() * 0.1, 0.02, depth),
+                        runity::glam::Quat::IDENTITY,
+                        at + Vec3::Y * 0.03,
+                    ),
+                    texture: runity::TextureHandle::WHITE,
+                    material: gizmo::navigation_color(),
+                    pose: None,
+                }));
+        }
         // Every camera the game can look through, as its frustum.
         {
             let arm = self.gizmo_arm_mesh();
@@ -2336,6 +2389,22 @@ impl Session {
     /// Scene view the session's own camera is.
     pub fn game_camera(&self) -> Option<Camera> {
         runity::world::camera_of(&self.world)
+    }
+
+    /// Show where a walker with these settings can go, as blue on the
+    /// ground — Unity's navmesh display — or `None` to stop. Baked again
+    /// after every change, when next drawn. A view setting.
+    pub fn set_show_navigation(&mut self, walker: Option<runity::navigation::NavSettings>) {
+        self.nav_shown = walker.map(|settings| (settings, None));
+    }
+
+    /// How much ground the navigation display shows as walkable, in cells;
+    /// `None` when it is off or not drawn yet.
+    pub fn walkable_cells(&self) -> Option<usize> {
+        self.nav_shown
+            .as_ref()
+            .and_then(|(_, grid)| grid.as_ref())
+            .map(|g| g.walkable_cells())
     }
 
     /// Show every collider as an outline in the frames that follow — the
@@ -2995,6 +3064,9 @@ impl Session {
 
     /// Rebuild the world from the scene.
     fn respawn(&mut self) {
+        if let Some((_, grid)) = &mut self.nav_shown {
+            *grid = None;
+        }
         self.world.clear();
         // Instances expanded first, so everything past this point — the
         // world, the frame, a click — sees a plain tree and knows nothing
