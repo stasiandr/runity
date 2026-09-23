@@ -170,6 +170,7 @@ impl Bottom {
         );
         let search = ui.add_field(bar, field_style().width(240.0).height(24.0), "");
         ui.set_name(search, "project search");
+        ui.set_placeholder(search, "Search assets");
         let grid = ui.add(
             project,
             Style::row()

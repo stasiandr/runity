@@ -98,6 +98,9 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Draw what the game would show instead of the Scene view: Unity's
+    /// Game view (see [`Session::set_game_view`]).
+    game_view: bool,
     /// Whether [`Session::render`] reads the frame back into `pixels`. A
     /// window on the same device shows the texture itself and turns this off.
     readback: bool,
@@ -287,6 +290,7 @@ impl Session {
             camera: Camera::default(),
             pixels: Vec::new(),
             readback: true,
+            game_view: false,
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -2388,8 +2392,13 @@ impl Session {
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
         let scene = self.history.scene();
+        let camera = if self.game_view {
+            self.game_camera().unwrap_or(self.camera)
+        } else {
+            self.camera
+        };
         let mut frame = Frame {
-            camera: self.camera,
+            camera,
             // From the scene's hour, like every other tool: an editor
             // lighting a scene differently from the render is an editor you
             // cannot trust about anything you are looking at.
@@ -2404,13 +2413,21 @@ impl Session {
                 let unseen = self.unseen();
                 runity::build_frame_where(
                     &self.world,
-                    self.camera,
+                    camera,
                     Lighting::default(),
                     FogSettings::default(),
                     |line| line.is_none_or(|id| !unseen.contains(&id)),
                 )
             }
         };
+        if self.game_view {
+            // What the player sees: no grid, no handles, no outlines.
+            self.renderer.render(&self.gpu, &self.target, &frame);
+            if self.readback {
+                self.pixels = self.target.read_rgba(&self.gpu);
+            }
+            return;
+        }
         if self.show_colliders {
             let arm = self.gizmo_arm_mesh();
             let unseen = self.unseen();
@@ -2640,6 +2657,17 @@ impl Session {
         if self.readback {
             self.pixels = self.target.read_rgba(&self.gpu);
         }
+    }
+
+    /// Show the game's view — through the scene's camera, or the Scene
+    /// view's own when it has none — with none of the editor's overlays.
+    /// Unity's Game view. A view setting, not an edit.
+    pub fn set_game_view(&mut self, game: bool) {
+        self.game_view = game;
+    }
+
+    pub fn is_game_view(&self) -> bool {
+        self.game_view
     }
 
     /// Stop (or start) reading each frame back into memory. A window that

@@ -52,6 +52,8 @@ pub enum Action {
     ToggleSpace,
     TogglePivot,
     Play,
+    /// The Game view (`true`) or the Scene view.
+    GameView(bool),
     Pause,
     Step,
     SetField(String, String),
@@ -148,6 +150,9 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
         (
             "View",
             vec![
+                item("Scene View", Action::GameView(false)),
+                item("Game View", Action::GameView(true)),
+                MenuItem::separator(),
                 item("Perspective", Action::Perspective),
                 item("Top", Action::View(Side::Top)),
                 item("Front", Action::View(Side::Front)),

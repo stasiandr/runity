@@ -8,6 +8,7 @@
 //! in logical ones.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use runity::input::InputEvent;
 use runity::surface::{Surface, SurfaceError};
@@ -15,7 +16,7 @@ use runity_ui::render::UiRenderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::studio::Studio;
@@ -33,9 +34,28 @@ struct App {
     running: Option<Running>,
     /// Closing over unsaved work asks once, in the Console.
     close_asked: bool,
+    /// When the next frame is due. Vsync paces a visible window; this
+    /// paces one that is hidden or on a display that does not, which
+    /// would otherwise draw as fast as the GPU goes for nobody.
+    next: Instant,
 }
 
+/// The most frames a second the editor draws.
+const FRAME: Duration = Duration::from_micros(1_000_000 / 120);
+
 impl ApplicationHandler for App {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(run) = self.running.as_ref() else {
+            return;
+        };
+        if Instant::now() >= self.next {
+            run.window.request_redraw();
+            event_loop.set_control_flow(ControlFlow::Wait);
+        } else {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next));
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.running.is_some() {
             return;
@@ -127,7 +147,7 @@ impl ApplicationHandler for App {
                     }
                     Err(_) => {}
                 }
-                run.window.request_redraw();
+                self.next = Instant::now() + FRAME;
                 return;
             }
             _ => {}
@@ -159,6 +179,7 @@ pub fn run(session: runity_editor::Session, title: String) {
         pending: Some((session, title)),
         running: None,
         close_asked: false,
+        next: Instant::now(),
     };
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("{e}");

@@ -61,6 +61,7 @@ impl Hierarchy {
         );
         let search = ui.add_field(bar, field_style().fill().height(24.0), "");
         ui.set_name(search, "hierarchy search");
+        ui.set_placeholder(search, "Search  (c:door  m:bark)");
         let list = ui.add(
             body,
             Style::column()

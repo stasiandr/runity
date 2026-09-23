@@ -229,3 +229,18 @@ fn save_writes_the_file_and_clears_the_mark() {
         "the crate is gone from the file"
     );
 }
+
+#[test]
+fn play_looks_through_the_game_and_the_tabs_switch_views() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "view game");
+    assert!(s.session.is_game_view());
+    click(&mut s, "view scene");
+    assert!(!s.session.is_game_view());
+    click(&mut s, "play");
+    assert!(s.session.is_game_view(), "Play brings up the Game view");
+    click(&mut s, "play");
+    assert!(!s.session.is_game_view(), "and Stop takes it away");
+}

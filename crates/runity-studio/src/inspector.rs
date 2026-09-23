@@ -340,6 +340,7 @@ impl Inspector {
         }
         let add = ui.add_field(foot, field_style().full_width(), "");
         ui.set_name(add, "add component");
+        ui.set_placeholder(add, "Add component by name, Enter");
         self.parts.insert(add, Part::AddComponent);
         let _ = session;
     }

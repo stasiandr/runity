@@ -183,6 +183,8 @@ struct Node {
     /// What makes it a text field: the caret, the selection, what it said
     /// when it got the keyboard.
     field: Option<field::FieldState>,
+    /// A field's hint, shown while it is empty: a node of its own.
+    placeholder: Option<NodeId>,
 }
 
 impl Node {
@@ -199,6 +201,7 @@ impl Node {
             layer: false,
             icon: None,
             field: None,
+            placeholder: None,
         }
     }
 }
@@ -418,6 +421,51 @@ impl Ui {
         id
     }
 
+    /// What an empty field shows until something is typed: «Search».
+    pub fn set_placeholder(&mut self, field: NodeId, hint: &str) {
+        let hint_node = match self.node(field).placeholder {
+            Some(n) => n,
+            None => {
+                let s = self.style(field).text.clone();
+                // A box over the field, the hint centred in it as the
+                // field's own text is.
+                let over = self.add(
+                    field,
+                    Style::row()
+                        .absolute(0.0, 0.0)
+                        .full()
+                        .padding_left(6.0)
+                        .center_items(),
+                );
+                let n = self.add(
+                    over,
+                    Style::default()
+                        .text_size(s.size)
+                        .text_color(s.color.alpha(40))
+                        .nowrap(),
+                );
+                self.node_mut(field).placeholder = Some(n);
+                n
+            }
+        };
+        self.set_text(hint_node, hint);
+        self.sync_placeholder(field);
+    }
+
+    fn sync_placeholder(&mut self, field: NodeId) {
+        let Some(hint) = self.node(field).placeholder.and_then(|h| self.parent(h)) else {
+            return;
+        };
+        let empty = self.text(field).is_none_or(str::is_empty);
+        let shown = self
+            .tree
+            .style(hint.0)
+            .is_ok_and(|s| s.display != taffy::Display::None);
+        if empty != shown {
+            self.restyle(hint, |s| if empty { s.shown() } else { s.hidden() });
+        }
+    }
+
     /// Whether `id` is a text field: a window routes keys to it rather than
     /// to its own shortcuts while it has the keyboard.
     pub fn is_field(&self, id: NodeId) -> bool {
@@ -632,6 +680,7 @@ impl Ui {
         // Its size depends on its text.
         let _ = self.tree.mark_dirty(id.0);
         self.layout_dirty = true;
+        self.sync_placeholder(id);
     }
 
     pub fn set_image(&mut self, id: NodeId, image: Option<ImageId>) {

@@ -4230,3 +4230,22 @@ fn snapping_the_selection_puts_a_greybox_dragged_by_eye_on_the_grid() {
     assert_eq!(t.rotation_deg.y, 45.0);
     assert_eq!(session.snap_selection().unwrap(), 0, "already on it");
 }
+
+#[test]
+fn the_game_view_draws_through_the_game_camera_without_the_editors_marks() {
+    let Some((mut session, _path)) = open("gameview") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.render();
+    let scene_view = session.frame_pixels().to_vec();
+    session.set_game_view(true);
+    assert!(session.is_game_view());
+    session.render();
+    let game_view = session.frame_pixels().to_vec();
+    assert_ne!(scene_view, game_view, "the gizmo and grid are gone");
+    session.set_game_view(false);
+    session.render();
+    assert_eq!(session.frame_pixels(), &scene_view[..], "and come back");
+}

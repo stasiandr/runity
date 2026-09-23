@@ -108,6 +108,7 @@ struct Stamp {
     space: Space,
     pivot: Pivot,
     path: Option<std::path::PathBuf>,
+    game_view: bool,
 }
 
 impl Stamp {
@@ -128,6 +129,7 @@ impl Stamp {
             space: session.space(),
             pivot: session.pivot(),
             path: session.scene_path().map(Path::to_path_buf),
+            game_view: session.is_game_view(),
         }
     }
 }
@@ -138,6 +140,8 @@ pub struct Studio {
     scene_input: Input,
     viewport: NodeId,
     view_frame: NodeId,
+    tab_scene: NodeId,
+    tab_game: NodeId,
     toolbar: Toolbar,
     hierarchy: Hierarchy,
     inspector: Inspector,
@@ -186,7 +190,21 @@ impl Studio {
         let hierarchy = Hierarchy::new(&mut ui, left);
         let split_left = splitter(&mut ui, main, true, "split left");
         let center = ui.add(main, Style::column().fill().full_height());
-        let view_slot = ui.add(center, Style::column().fill().full_width().padding(3.0));
+        let view_slot = ui.add(
+            center,
+            Style::column().fill().full_width().padding(3.0).gap(3.0),
+        );
+        // Scene | Game, as Unity's tabs over the view.
+        let view_tabs = ui.add(
+            view_slot,
+            Style::row()
+                .height(26.0)
+                .fixed()
+                .gap(SPACE_1)
+                .center_items(),
+        );
+        let tab_scene = view_tab(&mut ui, view_tabs, "view scene", "hand", "Scene", true);
+        let tab_game = view_tab(&mut ui, view_tabs, "view game", "camera", "Game", false);
         let view_frame = ui.add(
             view_slot,
             Style::column()
@@ -236,6 +254,8 @@ impl Studio {
             scene_input: Input::new(),
             viewport,
             view_frame,
+            tab_scene,
+            tab_game,
             toolbar,
             hierarchy,
             inspector,
@@ -288,7 +308,7 @@ impl Studio {
                 let (x, y) = to_view(*x, *y);
                 self.scene_input.handle(&InputEvent::MouseMoved { x, y });
             }
-            InputEvent::MouseDown(button) if over_view => {
+            InputEvent::MouseDown(button) if over_view && !self.session.is_game_view() => {
                 self.scene_buttons.insert(*button);
                 self.scene_input.handle(event);
             }
@@ -486,6 +506,9 @@ impl Studio {
         set_icon_button(ui, t.undo, "undo-2", false, s.can_undo());
         set_icon_button(ui, t.redo, "redo-2", false, s.can_redo());
         set_button_primary(ui, t.save, modified);
+        let game = s.is_game_view();
+        set_view_tab(ui, self.tab_scene, !game);
+        set_view_tab(ui, self.tab_game, game);
         ui.restyle(self.view_frame, |st| {
             st.border(
                 1.0,
@@ -590,6 +613,11 @@ impl Studio {
         let Event::Click { .. } = event else {
             return false;
         };
+        if node == self.tab_scene || node == self.tab_game {
+            requests.action = Some(Action::GameView(node == self.tab_game));
+            requests.keyboard_to_scene = true;
+            return true;
+        }
         let t = &self.toolbar;
         if let Some((_, items)) = t.menus.iter().find(|(n, _)| *n == node) {
             let r = self.ui.rect(node);
@@ -857,12 +885,17 @@ impl Studio {
                     s.set_pivot(next);
                 }
                 Action::Play => {
+                    // Play looks through the game's eyes, as Unity's Play
+                    // brings up the Game view; stop goes back.
                     if s.is_playing() {
                         s.stop();
+                        s.set_game_view(false);
                     } else {
                         s.play();
+                        s.set_game_view(true);
                     }
                 }
+                Action::GameView(game) => s.set_game_view(game),
                 Action::Pause => {
                     if !s.is_playing() {
                         s.play();
@@ -1194,4 +1227,34 @@ fn build_status(ui: &mut Ui, root: NodeId) -> (Status, NodeId) {
         },
         fps,
     )
+}
+
+fn view_tab_style(on: bool) -> Style {
+    let s = Style::row()
+        .height(24.0)
+        .padding_x(SPACE_3)
+        .gap(6.0)
+        .center_items()
+        .radius(6.0)
+        .clickable();
+    if on {
+        s.background(SURFACE).hover(SURFACE)
+    } else {
+        s.hover(HOVER)
+    }
+}
+
+fn view_tab(ui: &mut Ui, parent: NodeId, name: &str, glyph: &str, label: &str, on: bool) -> NodeId {
+    let t = ui.add(parent, view_tab_style(on));
+    ui.set_name(t, name);
+    icon(ui, t, glyph, if on { ACCENT } else { LABEL });
+    ui.add_text(t, text().text_color(if on { TEXT } else { LABEL }), label);
+    t
+}
+
+fn set_view_tab(ui: &mut Ui, tab: NodeId, on: bool) {
+    ui.set_style(tab, view_tab_style(on));
+    let kids = ui.children(tab);
+    ui.restyle(kids[0], |s| s.text_color(if on { ACCENT } else { LABEL }));
+    ui.restyle(kids[1], |s| s.text_color(if on { TEXT } else { LABEL }));
 }
