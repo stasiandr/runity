@@ -222,6 +222,8 @@ pub struct Screen {
     values: HashMap<String, f32>,
     toggles: HashMap<String, bool>,
     items: HashMap<String, Vec<String>>,
+    /// Elements not drawn now, by id: a button only the host may press.
+    hidden: std::collections::HashSet<String>,
 }
 
 impl Screen {
@@ -241,6 +243,7 @@ impl Screen {
             values: HashMap::new(),
             toggles: HashMap::new(),
             items: HashMap::new(),
+            hidden: Default::default(),
         })
     }
 
@@ -253,6 +256,17 @@ impl Screen {
             values: HashMap::new(),
             toggles: HashMap::new(),
             items: HashMap::new(),
+            hidden: Default::default(),
+        }
+    }
+
+    /// Hide an element, or show it again: a hidden one is not drawn and
+    /// cannot be pressed.
+    pub fn set_hidden(&mut self, id: &str, hidden: bool) {
+        if hidden {
+            self.hidden.insert(id.to_string());
+        } else {
+            self.hidden.remove(id);
         }
     }
 
@@ -370,7 +384,7 @@ impl Screen {
         let style = widgets.style;
         let scale = size.y / REFERENCE_HEIGHT;
         let elements = self.layout.elements.clone();
-        for e in &elements {
+        for e in elements.iter().filter(|e| !self.hidden.contains(&e.id)) {
             let rect = place(e, size);
             let label = |own: &str| {
                 let text = self
@@ -495,6 +509,24 @@ impl Screen {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hidden_element_is_not_drawn_until_shown_again() {
+        let layout: Layout = ron::from_str(
+            r#"(elements: [(id: "start", anchor: Center, at: (0, 0), size: (200, 40), kind: Button("Start"))])"#,
+        )
+        .unwrap();
+        let mut screen = Screen::from_layout(layout);
+        let drawn = |screen: &mut Screen| {
+            let mut ui = Ui::new();
+            screen.draw(&mut Widgets::new(), &mut ui, &Input::default(), Vec2::new(1280.0, 720.0));
+            ui.texts.len()
+        };
+        screen.set_hidden("start", true);
+        assert_eq!(drawn(&mut screen), 0);
+        screen.set_hidden("start", false);
+        assert_eq!(drawn(&mut screen), 1);
+    }
 
     #[test]
     fn words_sit_left_in_the_middle_or_right_of_their_box() {

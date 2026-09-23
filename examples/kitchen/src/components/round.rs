@@ -23,6 +23,11 @@ pub struct Round {
     pub served: u32,
     pub time_left: f32,
     pub over: bool,
+    /// The doors are open: the host started the round. Until then the
+    /// kitchen is the lobby — cooks walk about, nothing is ordered and
+    /// the clock waits.
+    #[serde(default)]
+    pub open: bool,
     /// A word for the screen, and how long it stays.
     pub note: Option<(String, f32)>,
 }

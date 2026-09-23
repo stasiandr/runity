@@ -1,5 +1,6 @@
-//! Kitchen Rush: a little Overcooked. Two cooks, one kitchen, orders for
-//! soup coming in faster than is comfortable. Chop tomatoes or onions on a
+//! Kitchen Rush: a little Overcooked, played together over Steam. Up to
+//! four cooks, one kitchen, orders for soup coming in faster than is
+//! comfortable. Chop tomatoes or onions on a
 //! board, three of one kind into a pot, the soup onto a plate, the plate
 //! out of the window before the order walks out. The kitchen is the scene,
 //! greyboxed from the engine's shapes; the rules are `src/systems/`.
@@ -15,9 +16,11 @@
 //! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
 //! `build.rs` finds them, and `step` below runs the systems in order.
 //!
-//! The game is played together by default: `party` is who else is in it.
-//! Alone it is a party of one. Started with several players — from the
-//! editor, or `runity run --players 4` — each window is one of them, and
+//! The game is played together: `party` is who else is in it. The host
+//! makes a Steam lobby (`lobby.rs`), friends join it from an invite or the
+//! friends list, and the host opens the doors. Alone it is a party of one.
+//! Started with several players — from the editor, or
+//! `runity run --players 4` — each window is one of them over UDP, and
 //! what each owns moves in the others' windows too.
 
 use runity::hecs::World;
@@ -48,6 +51,9 @@ mod front;
 
 /// A frame's work around the party: acts, seats, spawns.
 mod session;
+
+/// Steam: the lobby, invites, and the session over Steam's networking.
+mod lobby;
 
 /// The kitchen's sounds, from what changes in it.
 mod noise;
@@ -81,6 +87,8 @@ struct Game {
     world: World,
     physics: PhysicsWorld,
     party: Party,
+    /// Steam, when it runs: lobbies and invites.
+    lobby: lobby::Lobby,
     components: Components,
     /// The mixer; `None` on a machine with no sound device.
     audio: Option<runity::audio::Audio>,
@@ -99,6 +107,7 @@ impl Game {
     /// it goes.
     /// Out of any session, and the kitchen as the scene has it.
     fn leave(&mut self, ctx: &mut Context) {
+        self.lobby.leave();
         self.party = Party::alone(&self.scene, &self.components);
         match self.live.switch(&self.scene, &mut self.world, ctx.gpu, ctx.renderer) {
             Ok((_, problems)) => problems.iter().for_each(|p| eprintln!("{p}")),
@@ -123,34 +132,31 @@ impl Game {
         }
     }
 
-    /// A fresh round, when this peer runs the kitchen.
-    fn fresh_round(&mut self) {
-        if let Some((kitchen, true)) = state::kitchen(&self.world) {
-            let _ = self.world.insert_one(kitchen, state::Restart);
-        }
-    }
-
     /// What a player pressed on a screen.
     fn wish(&mut self, wish: front::Wish, ctx: &mut Context) {
         use front::{Phase, Wish};
         match wish {
-            Wish::Local => {
-                self.front.phase = Phase::Kitchen;
-                self.fresh_round();
-                self.front.brief();
-            }
+            // A Steam lobby, or by address without Steam: either way the
+            // kitchen opens shut, and the host opens the doors.
             Wish::Host(name) => {
+                let name = self.lobby.name().unwrap_or(name);
+                if let Some(party) = self.lobby.host(&self.scene, &name, &self.components) {
+                    self.party = party;
+                    self.front.phase = Phase::Kitchen;
+                    return;
+                }
                 let address = format!("host:0.0.0.0:{}", front::PORT);
                 match Party::from_words(&address, &name, "", &self.scene, &self.components) {
                     Ok(party) => {
                         self.party = party;
                         self.front.phase = Phase::Kitchen;
-                        self.fresh_round();
-                        self.front.brief();
                     }
                     Err(e) => self.front.status = e,
                 }
             }
+            Wish::Friends => self.lobby.friends(),
+            Wish::Invite => self.lobby.invite(),
+            Wish::Start => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Join(address, name) => {
                 let words = format!("join:{address}");
                 match Party::from_words(&words, &name, "", &self.scene, &self.components) {
@@ -336,6 +342,13 @@ impl shell::Game for Game {
                 front::Phase::Kitchen => self.front.paused = !self.front.paused,
             }
         }
+        // Into a friend's lobby — an invite accepted, a game joined from
+        // the friends list: out of whatever this was, into their session.
+        let name = self.lobby.name().unwrap_or_else(|| "Cook".into());
+        if let Some(party) = self.lobby.poll(&self.scene, &name, &self.components) {
+            self.party = party;
+            self.front.phase = front::Phase::Joining;
+        }
         let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in reload.lines() {
             eprintln!("{line}");
@@ -403,6 +416,7 @@ impl shell::Game for Game {
                 Event::Rejected(why) => {
                     self.front.status = format!("Could not join: {why}");
                     self.front.phase = front::Phase::Menu;
+                    self.lobby.leave();
                     self.party = Party::alone(&self.scene, &self.components);
                 }
                 // What someone's hands did: the host acts on it.
@@ -524,6 +538,18 @@ fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
     let mut front = front::Front::load(&runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui"))
         .map_err(anyhow::Error::msg)?;
+    // Steam as Spacewar; a session from the command line is UDP, and needs
+    // no Steam.
+    let lobby = if party.is_alone() { lobby::Lobby::start() } else { lobby::Lobby::off("a session by address") };
+    front.steam = lobby.on();
+    match (lobby.name(), &lobby.why) {
+        (Some(name), _) => front.menu.set_text("who", format!("Steam: {name}")),
+        (None, Some(why)) => {
+            eprintln!("no Steam ({why}): hosting and joining by address");
+            front.status = "No Steam: host and join by address".into();
+        }
+        _ => {}
+    }
     // Started into a session (`runity run --players 2`): straight in.
     if !party.is_alone() {
         front.phase = if party.is_host() { front::Phase::Kitchen } else { front::Phase::Joining };
@@ -568,6 +594,7 @@ fn main() -> anyhow::Result<()> {
         world: World::new(),
         physics: PhysicsWorld::default(),
         party,
+        lobby,
         components: game_components(),
         audio,
         sounds: runity::audio::Sources::new(),

@@ -1,11 +1,12 @@
-//! What the players see and press around the kitchen: the menu (cook here,
-//! host, join), the HUD over the round (the clock, the score, the orders,
-//! who is in), the results at the end — the screens in `ui/`, filled from
-//! the round as the host sends it — and the keys, turned into walking for
-//! a player's own cook and [`Act`]s for what their hands do.
+//! What the players see and press around the kitchen: the menu (host, join
+//! a friend), the lobby while the doors are shut (who is in, the host's
+//! start), the HUD over the round (the clock, the score, the orders, who is
+//! in), the results at the end — the screens in `ui/`, filled from the
+//! round as the host sends it — and the keys, turned into walking for a
+//! player's own cook and [`Act`]s for what their hands do.
 //!
 //! Who plays which cook is the host's to say ([`seat`]); each player then
-//! drives their own ([`claim`]). Alone, two cooks share the keyboard.
+//! drives their own ([`claim`]): one cook a player.
 
 use std::collections::HashMap;
 
@@ -23,7 +24,7 @@ use crate::components::item::Food;
 use crate::components::Player;
 use crate::state::{Act, Controls, Round, Seat, ACT};
 
-/// The port a hosted kitchen listens on.
+/// The port a kitchen hosted without Steam listens on.
 pub const PORT: u16 = 47800;
 
 /// Where the game is.
@@ -38,12 +39,16 @@ pub enum Phase {
 /// What a player asked for on a screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Wish {
-    /// Two cooks at this keyboard.
-    Local,
-    /// Host, as this name.
+    /// Host, as this name: a Steam lobby, or by address without Steam.
     Host(String),
     /// Join the kitchen at this address, as this name.
     Join(String, String),
+    /// The Steam friends list, to join a friend's kitchen from.
+    Friends,
+    /// The host opens the doors: the round starts for everyone.
+    Start,
+    /// Steam's invite dialog, for the lobby.
+    Invite,
     Again,
     /// Back to the menu, out of any session.
     Leave,
@@ -63,6 +68,12 @@ pub struct Front {
     pub hud: Screen,
     pub results: Screen,
     pub pause: Screen,
+    /// Who is in, and the host's start, while the doors are shut.
+    pub lobby: Screen,
+    /// Steam is running: lobbies and invites, not addresses.
+    pub steam: bool,
+    /// The doors were open last frame: the chef talks as they open.
+    was_open: bool,
     /// Escape was pressed in the kitchen: the pause card is up.
     pub paused: bool,
     /// A card for each order, laid out for how many there are.
@@ -101,6 +112,9 @@ impl Front {
             hud: screen("hud")?,
             results: screen("results")?,
             pause: screen("pause")?,
+            lobby: screen("lobby")?,
+            steam: false,
+            was_open: false,
             paused: false,
             orders: Screen::from_layout(Layout::default()),
             cards: usize::MAX,
@@ -116,7 +130,7 @@ impl Front {
 
     /// The screens saved since, reloaded; what did not parse, said.
     pub fn poll(&mut self, delta: f32) -> Vec<String> {
-        [&mut self.menu, &mut self.hud, &mut self.results, &mut self.speech, &mut self.pause]
+        [&mut self.menu, &mut self.hud, &mut self.results, &mut self.speech, &mut self.pause, &mut self.lobby]
             .into_iter()
             .filter_map(|s| s.poll(delta))
             .filter_map(Result::err)
@@ -150,9 +164,16 @@ impl Front {
                 if self.menu.entered("address").is_empty() {
                     self.menu.set_text("address", format!("127.0.0.1:{PORT}"));
                 }
+                // With Steam a friend's kitchen is joined from the friends
+                // list; without it, by address.
+                self.menu.set_hidden("friends", !self.steam);
+                self.menu.set_hidden("who", !self.steam);
+                for id in ["name", "address", "join"] {
+                    self.menu.set_hidden(id, self.steam);
+                }
                 let done = self.menu.draw_localized(widgets, ui, input, size, strings);
-                if done.clicked("local") {
-                    return Some(Wish::Local);
+                if done.clicked("friends") {
+                    return Some(Wish::Friends);
                 }
                 let name = match self.menu.entered("name").trim() {
                     "" => "Cook".to_string(),
@@ -180,14 +201,40 @@ impl Front {
             }
             Phase::Kitchen => {
                 let round = round_of(world);
-                self.fill_hud(round.as_ref(), party, world);
+                let over = round.as_ref().is_some_and(|r| r.over);
+                let open = round.as_ref().is_some_and(|r| r.open);
+                self.fill_hud(round.as_ref(), party);
+                // The lobby has its own way out.
+                self.hud.set_hidden("leave", !open);
                 let mut wish = None;
                 let done = self.hud.draw_localized(widgets, ui, input, size, strings);
                 if done.clicked("leave") {
                     wish = Some(Wish::Leave);
                 }
-                let over = round.as_ref().is_some_and(|r| r.over);
-                if over {
+                if open && !self.was_open {
+                    self.brief();
+                }
+                self.was_open = open;
+                if !open {
+                    // The lobby: who is in, and the host's start.
+                    self.talk = None;
+                    let host = party.is_host();
+                    self.lobby
+                        .set_items("players", party.roster().into_iter().map(|(_, name)| name).collect());
+                    self.lobby.set_hidden("start", !host);
+                    self.lobby.set_hidden("wait", host);
+                    self.lobby.set_hidden("invite", !self.steam);
+                    let done = self.lobby.draw_localized(widgets, ui, input, size, strings);
+                    if done.clicked("start") && host {
+                        wish = Some(Wish::Start);
+                    }
+                    if done.clicked("invite") {
+                        wish = Some(Wish::Invite);
+                    }
+                    if done.clicked("leave") {
+                        wish = Some(Wish::Leave);
+                    }
+                } else if over {
                     // The round is done: no orders, and the chef is quiet.
                     self.talk = None;
                 } else {
@@ -241,10 +288,12 @@ impl Front {
         }
     }
 
-    fn fill_hud(&mut self, round: Option<&Round>, party: &Party, world: &World) {
-        let Some(round) = round else {
+    fn fill_hud(&mut self, round: Option<&Round>, party: &Party) {
+        let Some(round) = round.filter(|r| r.open) else {
             self.hud.set_text("clock", "");
             self.hud.set_text("score", "");
+            self.hud.set_text("players", "");
+            self.hud.set_text("keys", "@hud.keys");
             return;
         };
         let seconds = round.time_left.ceil() as u32;
@@ -255,25 +304,14 @@ impl Front {
             "note",
             round.note.as_ref().map(|(w, _)| w.clone()).unwrap_or_default(),
         );
-        let who = if party.is_alone() {
-            "Two cooks, one keyboard".to_string()
-        } else {
-            let names: Vec<String> = party.roster().into_iter().map(|(_, n)| n).collect();
-            let ping = party
-                .round_trip()
-                .map(|rtt| format!(" · {:.0} ms", rtt * 1000.0))
-                .unwrap_or_default();
-            format!("{} in the kitchen: {}{ping}", names.len(), names.join(", "))
-        };
-        self.hud.set_text("players", who);
-        let mine = local_cooks(world, party);
-        self.hud.set_text(
-            "keys",
-            match mine.len() {
-                2 => "@hud.keys_two",
-                _ => "@hud.keys_one",
-            },
-        );
+        let names: Vec<String> = party.roster().into_iter().map(|(_, n)| n).collect();
+        let ping = party
+            .round_trip()
+            .filter(|_| !party.is_host())
+            .map(|rtt| format!(" · {:.0} ms", rtt * 1000.0))
+            .unwrap_or_default();
+        self.hud.set_text("players", format!("{}{ping}", names.join(", ")));
+        self.hud.set_text("keys", "@hud.keys");
     }
 
     /// The head chef starts talking: the dialogue from its start.
@@ -322,25 +360,24 @@ impl Front {
         }
     }
 
-    /// The keys, for the cooks this player drives: walking straight onto
+    /// The keys, for the cook this player drives: walking straight onto
     /// the cook, what the hands do to the host as an act.
     pub fn drive(&mut self, world: &mut World, party: &mut Party, actions: &Actions, input: &Input) {
-        for (slot, (cook, index)) in local_cooks(world, party).into_iter().enumerate() {
-            let keys = format!("p{}", slot + 1);
-            let x = actions.axis(input, &format!("{keys}_right"));
+        for (cook, index) in local_cooks(world, party) {
+            let x = actions.axis(input, "right");
             // Forward is away from the camera, which looks down -z.
-            let z = -actions.axis(input, &format!("{keys}_forward"));
+            let z = -actions.axis(input, "forward");
             let mut controls = world.get::<&Controls>(cook).map(|c| *c).unwrap_or_default();
             controls.x = x;
             controls.z = z;
             let _ = world.insert_one(cook, controls);
-            if actions.pressed(input, &format!("{keys}_grab")) {
+            if actions.pressed(input, "grab") {
                 party.publish(ACT, &Act::Grab { cook: index });
             }
-            if actions.pressed(input, &format!("{keys}_throw")) {
+            if actions.pressed(input, "throw") {
                 party.publish(ACT, &Act::Throw { cook: index });
             }
-            let on = actions.held(input, &format!("{keys}_work"));
+            let on = actions.held(input, "work");
             if self.working.get(&index).copied().unwrap_or(false) != on {
                 self.working.insert(index, on);
                 party.publish(ACT, &Act::Work { cook: index, on });
@@ -393,8 +430,7 @@ pub fn halt(world: &mut World, party: &Party) {
     }
 }
 
-/// The cooks this player drives, by index: alone both of the first two,
-/// in a session the one seated for them.
+/// The cook this player drives, by index: the one seated for them.
 pub fn local_cooks(world: &World, party: &Party) -> Vec<(Entity, u32)> {
     let me = party.me().0;
     let mut out: Vec<(Entity, u32)> = world
@@ -404,19 +440,19 @@ pub fn local_cooks(world: &World, party: &Party) -> Vec<(Entity, u32)> {
         .map(|(e, p, _)| (e, p.index))
         .collect();
     out.sort_by_key(|(_, i)| *i);
-    out.truncate(if party.is_alone() { 2 } else { 1 });
+    out.truncate(1);
     out
 }
 
-/// The host seats the players: alone, itself at the first two cooks; in a
-/// session, each player in the roster at one, in order. A cook nobody is
-/// seated at is out of the kitchen.
+/// The host seats the players: each player in the roster at a cook, in
+/// order — alone, itself at the first. A cook nobody is seated at is out of
+/// the kitchen.
 pub fn seat(world: &mut World, party: &Party) {
     if !party.is_host() {
         return;
     }
     let players: Vec<u32> = if party.is_alone() {
-        vec![party.me().0; 2]
+        vec![party.me().0]
     } else {
         party.roster().into_iter().map(|(p, _)| p.0).collect()
     };

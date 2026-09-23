@@ -1,6 +1,7 @@
-//! The round, on the host: orders come in and wait, the clock runs down,
-//! and at the end the kitchen stops until someone asks to start again —
-//! which clears it.
+//! The round, on the host: shut until the host opens the doors, then
+//! orders come in and wait, the clock runs down, and at the end the kitchen
+//! stops until the host asks to start again. Opening and starting again are
+//! the same act, `Restart`: it clears the kitchen and opens it.
 
 use runity::hecs::{Entity, World};
 
@@ -19,11 +20,11 @@ pub fn run(world: &mut World, seconds: f32) {
         return;
     };
     if world.get::<&Round>(kitchen).is_err() {
-        start(world, kitchen, &rules);
+        start(world, kitchen, &rules, false);
     }
     if world.remove_one::<Restart>(kitchen).is_ok() {
         clear(world);
-        start(world, kitchen, &rules);
+        start(world, kitchen, &rules, true);
         return;
     }
     let Ok((round, service)) = world.query_one_mut::<(&mut Round, &mut Service)>(kitchen) else {
@@ -35,7 +36,7 @@ pub fn run(world: &mut World, seconds: f32) {
             round.note = None;
         }
     }
-    if round.over {
+    if round.over || !round.open {
         return;
     }
     round.time_left -= seconds;
@@ -70,12 +71,13 @@ pub fn run(world: &mut World, seconds: f32) {
     }
 }
 
-fn start(world: &mut World, kitchen: Entity, rules: &Kitchen) {
+fn start(world: &mut World, kitchen: Entity, rules: &Kitchen, open: bool) {
     let _ = world.insert(
         kitchen,
         (
             Round {
                 time_left: rules.round_seconds,
+                open,
                 ..Default::default()
             },
             Service {

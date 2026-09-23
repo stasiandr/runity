@@ -1,13 +1,14 @@
-// The menu, over a still of the kitchen: cook here (two at one keyboard),
-// host a kitchen for others to join, or join one by its address; the
-// volumes and the language, kept for next time.
+// The menu, over a still of the kitchen: host a kitchen (a Steam lobby your
+// friends can join), join a friend's from the Steam friends list — or,
+// without Steam, by address; the volumes and the language, kept.
 (
     elements: [
         (id: "card", anchor: Center, at: (0, 10), size: (520, 540), kind: Panel),
         (id: "title", anchor: Center, at: (0, -224), size: (420, 56), kind: Text("Kitchen Rush"), text_size: 44, align: Center),
         (id: "tagline", anchor: Center, at: (0, -176), size: (420, 26), kind: Text("@menu.tagline"), text_size: 15, align: Center),
-        (id: "local", anchor: Center, at: (0, -122), size: (320, 46), kind: Button("@menu.local")),
-        (id: "host", anchor: Center, at: (0, -66), size: (320, 46), kind: Button("@menu.host")),
+        (id: "host", anchor: Center, at: (0, -122), size: (320, 46), kind: Button("@menu.host")),
+        (id: "friends", anchor: Center, at: (0, -66), size: (320, 46), kind: Button("@menu.friends")),
+        (id: "who", anchor: Center, at: (0, 16), size: (420, 24), kind: Text(""), text_size: 15, align: Center),
         (id: "name", anchor: Center, at: (-58, -8), size: (204, 40), kind: Field("@menu.name")),
         (id: "address", anchor: Center, at: (-58, 40), size: (204, 40), kind: Field("@menu.address")),
         (id: "join", anchor: Center, at: (106, 40), size: (108, 40), kind: Button("@menu.join")),

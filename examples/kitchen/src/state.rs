@@ -163,7 +163,8 @@ pub fn apply(world: &mut World, act: Act) {
         }
         Act::Restart => {
             if let Some((k, true)) = kitchen(world) {
-                if world.get::<&Round>(k).is_ok_and(|r| r.over) {
+                // Over, or not yet open: the lobby's start is this too.
+                if world.get::<&Round>(k).is_ok_and(|r| r.over || !r.open) {
                     let _ = world.insert_one(k, Restart);
                 }
             }

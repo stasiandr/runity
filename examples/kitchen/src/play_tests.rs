@@ -78,8 +78,18 @@ impl Peer {
         }
     }
 
+    /// A kitchen of one, the doors open.
     fn alone() -> Self {
-        Self::new(Party::alone("main", &game_components()))
+        let mut k = Self::new(Party::alone("main", &game_components()));
+        k.open();
+        k
+    }
+
+    /// The host opens the doors: the round starts.
+    fn open(&mut self) {
+        self.seconds(0.1);
+        self.act(Act::Restart);
+        assert!(self.round().open, "the doors are open");
     }
 
     /// A frame of a thirtieth of a second: the party, the kitchen's work
@@ -213,17 +223,38 @@ fn station_at(world: &World, tile: (f32, f32)) -> Entity {
 }
 
 #[test]
-fn alone_one_keyboard_plays_the_first_two_cooks() {
+fn alone_a_player_plays_one_cook() {
     let mut k = Peer::alone();
     k.seconds(0.5);
     let me = k.party.me().0;
     let seats: Vec<Option<u32>> = (0..4)
         .map(|i| k.world.get::<&Seat>(k.cook(i)).ok().map(|s| s.0))
         .collect();
-    assert_eq!(seats, [Some(me), Some(me), None, None]);
+    assert_eq!(seats, [Some(me), None, None, None]);
     let off = |k: &Peer, i| k.world.get::<&runity::world::Inactive>(k.cook(i)).is_ok();
-    assert!(!off(&k, 0) && !off(&k, 1) && off(&k, 2) && off(&k, 3), "the two nobody plays are out");
-    assert_eq!(crate::front::local_cooks(&k.world, &k.party).len(), 2);
+    assert!(!off(&k, 0) && off(&k, 1) && off(&k, 2) && off(&k, 3), "the three nobody plays are out");
+    assert_eq!(crate::front::local_cooks(&k.world, &k.party).len(), 1);
+}
+
+#[test]
+fn the_kitchen_is_shut_until_the_host_opens_the_doors_for_everyone() {
+    let (mut host, mut guest) = together_shut();
+    host.seconds(3.0);
+    guest.seconds(0.2);
+    let round = host.round();
+    assert!(!round.open && round.orders.is_empty(), "nothing is ordered in the lobby");
+    let full = round.time_left;
+    // A guest cannot open them.
+    guest.act(Act::Restart);
+    host.seconds(0.3);
+    assert!(!host.round().open);
+    assert_eq!(host.round().time_left, full, "and the clock waits");
+    // Cooks walk about meanwhile: the guest's is theirs.
+    until(&mut host, &mut guest, |_, g| owns(g, 1));
+    host.act(Act::Restart);
+    until(&mut host, &mut guest, |h, g| h.round().open && g.round().open);
+    host.seconds(2.0);
+    assert!(host.round().time_left < full, "open, the clock runs");
 }
 
 #[test]
@@ -277,14 +308,14 @@ fn raw_food_does_not_go_in_the_pot_and_mixed_soup_is_nobodys() {
     assert_eq!(k.held(0), None);
 
     k.chop_into_pot(0, Food::Tomato);
-    k.chop_into_pot(1, Food::Onion);
+    k.chop_into_pot(0, Food::Onion);
     k.chop_into_pot(0, Food::Tomato);
     assert_eq!(k.pot().soup(), Some(Soup::Mixed));
     k.seconds(COOK_SECONDS + 0.5);
-    k.plate_up(1);
+    k.plate_up(0);
     let before = k.round().score;
-    k.stand(1, WINDOW, -Vec3::Z);
-    k.grab(1);
+    k.stand(0, WINDOW, -Vec3::Z);
+    k.grab(0);
     assert_eq!(k.round().score, before - 5, "nobody ordered that");
 }
 
@@ -298,8 +329,10 @@ fn a_pot_left_too_long_burns_and_is_scraped() {
     k.seconds(BURN_SECONDS + 0.5);
     assert!(k.pot().burnt());
     assert!(k.mark_on(STOVE, "smoke") && k.mark_on(STOVE, "soup burnt"), "a burnt pot smokes");
-    k.plate_up(1);
+    k.plate_up(0);
     assert!(k.pot().burnt(), "a burnt pot fills no plate");
+    k.stand(0, BIN, -Vec3::X);
+    k.grab(0);
     k.stand(0, STOVE, Vec3::Z);
     k.work(0, 0.2);
     assert!(k.pot().foods.is_empty(), "scraped clean");
@@ -322,8 +355,9 @@ fn orders_come_in_walk_out_and_the_round_ends_and_starts_again() {
     k.world.get::<&mut Round>(kitchen).unwrap().time_left = 0.05;
     k.seconds(0.2);
     assert!(k.round().over);
-    k.grab(1);
-    assert_eq!(k.held(1), None, "nothing is done once time is up");
+    k.stand(0, BIN, -Vec3::X);
+    k.grab(0);
+    assert_eq!(k.held(0), Some(Thing::Food(Food::Tomato)), "nothing is done once time is up");
     k.act(Act::Restart);
     let round = k.round();
     assert!(!round.over && round.score == 0 && round.time_left > 100.0);
@@ -332,7 +366,16 @@ fn orders_come_in_walk_out_and_the_round_ends_and_starts_again() {
 }
 
 /// A host and a guest over a loopback.
+/// A host and a guest in the kitchen, the doors open.
 fn together() -> (Peer, Peer) {
+    let (mut host, mut guest) = together_shut();
+    host.open();
+    until(&mut host, &mut guest, |_, g| g.world.query::<&Round>().iter().next().is_some_and(|r| r.open));
+    (host, guest)
+}
+
+/// A host and a guest in the kitchen before the doors open.
+fn together_shut() -> (Peer, Peer) {
     let components = game_components();
     let mut ends = Loopback::network(2).into_iter();
     let listener: Box<dyn Transport + Send> = Box::new(ends.next().unwrap());
@@ -432,7 +475,7 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     let ids = |screen: &runity::screen::Screen| -> Vec<String> {
         screen.layout().elements.iter().map(|e| e.id.clone()).collect()
     };
-    for id in ["local", "host", "join", "address", "music", "sfx", "language", "quit", "status", "best"] {
+    for id in ["host", "friends", "who", "name", "join", "address", "music", "sfx", "language", "quit", "status", "best"] {
         assert!(ids(&front.menu).contains(&id.to_string()), "menu has no `{id}`");
     }
     for id in ["clock", "score", "players", "note", "keys", "leave"] {
@@ -441,9 +484,12 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     for id in ["score", "served", "best", "again", "menu", "wait"] {
         assert!(ids(&front.results).contains(&id.to_string()), "results have no `{id}`");
     }
+    for id in ["players", "start", "wait", "invite", "leave"] {
+        assert!(ids(&front.lobby).contains(&id.to_string()), "the lobby has no `{id}`");
+    }
     // Every @key the screens, the code and the chef use, in English and
     // Russian.
-    let mut keys: Vec<String> = [&front.menu, &front.hud, &front.results]
+    let mut keys: Vec<String> = [&front.menu, &front.hud, &front.results, &front.lobby, &front.pause]
         .iter()
         .flat_map(|s| runity::screen::Screen::keys(s.layout()))
         .collect();
@@ -604,19 +650,16 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     let menu = k.shot(&mut front, "menu");
     assert!(spread(&menu) > 20, "the menu over the kitchen");
 
-    // A round going: soup done and steaming, a plate of it in hand, an
-    // onion half chopped, a tomato carried, the chef talking.
+    // The kitchen before the doors open: the lobby card over it.
     front.phase = crate::front::Phase::Kitchen;
-    front.brief();
+    let lobby = k.shot(&mut front, "lobby");
+    assert!(spread(&lobby) > 20);
+
+    // A round going: soup done and steaming, an onion half chopped, the
+    // chef talking.
+    k.open();
     k.want(Food::Tomato);
     k.want(Food::Onion);
-    for _ in 0..3 {
-        k.chop_into_pot(0, Food::Tomato);
-    }
-    k.seconds(COOK_SECONDS + 0.5);
-    k.plate_up(1);
-    k.stand(1, (3.0, 0.0), Vec3::ZERO);
-    k.chop_into_pot(0, Food::Tomato);
     k.stand(0, ONIONS, Vec3::X);
     k.grab(0);
     k.stand(0, BOARD, Vec3::X);

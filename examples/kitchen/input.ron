@@ -1,22 +1,16 @@
-// What the cooks do, by name. Two at one keyboard: WASD with E to grab and
-// F to chop, the arrows with Enter and Right Shift. A pad drives the first. Q (and Right Ctrl) throws food.
-// Rebind here, and a running game picks it up.
+// What a cook does, by name: WASD (or the stick) walks, E grabs, F chops,
+// Q throws food. Rebind here, and a running game picks it up.
 (
     actions: {
         "quit": [Key(Escape)],
         "profile": [Key(F3)],
         "restart": [Key(R), Pad(Start)],
-        "p1_grab": [Key(E), Key(Space), Pad(South)],
-        "p1_work": [Key(F), Pad(West)],
-        "p1_throw": [Key(Q), Pad(East)],
-        "p2_grab": [Key(Enter)],
-        "p2_work": [Key(RightShift)],
-        "p2_throw": [Key(RightControl)],
+        "grab": [Key(E), Key(Space), Pad(South)],
+        "work": [Key(F), Pad(West)],
+        "throw": [Key(Q), Pad(East)],
     },
     axes: {
-        "p1_forward": (negative: [Key(S)], positive: [Key(W)], analog: [LeftY]),
-        "p1_right": (negative: [Key(A)], positive: [Key(D)], analog: [LeftX]),
-        "p2_forward": (negative: [Key(Down)], positive: [Key(Up)]),
-        "p2_right": (negative: [Key(Left)], positive: [Key(Right)]),
+        "forward": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)], analog: [LeftY]),
+        "right": (negative: [Key(A), Key(Left)], positive: [Key(D), Key(Right)], analog: [LeftX]),
     },
 )

@@ -12,9 +12,14 @@
 //! transport a [`PeerId`] names an endpoint; which client that is in the
 //! game is the server's to say ([`crate::net::server`]).
 //!
+//! A game keeps the [`Steam`] — the lobby, the overlay, the callbacks run
+//! once a frame — and hands the session a [`SteamWire`] from
+//! [`Steam::wire`]: the same client, carrying frames, and safe on the
+//! server's thread.
+//!
 //! Built and type-checked with the SDK; it needs the Steam client running
-//! and an app id (`steam_appid.txt`, 480 for testing) to do anything, so
-//! no automated test exercises it.
+//! and an app id ([`Steam::init_app`], 480 — Spacewar — for testing) to do
+//! anything, so no automated test exercises it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,7 +33,8 @@ use crate::net::{PeerId, Transport};
 pub struct Steam {
     client: Client,
     me: PeerId,
-    peers: HashMap<PeerId, SteamId>,
+    /// The frames, when this is itself the transport.
+    wire: SteamWire,
     /// The lobby this peer is in, once Steam says so.
     lobby: Arc<Mutex<Option<LobbyId>>>,
     /// Kept alive: an invite accepted through the overlay joins.
@@ -39,7 +45,17 @@ impl Steam {
     /// Start Steam for this game as peer `me`. Fails, in words, when the
     /// Steam client is not running or the app id is unknown.
     pub fn init(me: PeerId) -> Result<Self, String> {
-        let client = Client::init().map_err(|e| format!("steam: {e}"))?;
+        Self::start(Client::init(), me)
+    }
+
+    /// [`Steam::init`] as app `app_id`, without a `steam_appid.txt`: 480
+    /// is Valve's Spacewar, which every Steam account may run for testing.
+    pub fn init_app(app_id: u32, me: PeerId) -> Result<Self, String> {
+        Self::start(Client::init_app(app_id), me)
+    }
+
+    fn start(client: steamworks::SIResult<Client>, me: PeerId) -> Result<Self, String> {
+        let client = client.map_err(|e| format!("steam: {e}"))?;
         // Messages from whoever opens a session are accepted; what they may
         // change is still decided by the server, which drops anything from
         // a peer about what it does not own.
@@ -63,9 +79,9 @@ impl Steam {
                     });
             });
         Ok(Self {
+            wire: SteamWire::new(client.clone(), me),
             client,
             me,
-            peers: HashMap::new(),
             lobby,
             _join_requests: join_requests,
         })
@@ -76,9 +92,40 @@ impl Steam {
         self.client.user().steam_id().raw()
     }
 
-    /// Who a peer is on Steam.
+    /// Who a peer is on Steam, when this is itself the transport.
     pub fn connect(&mut self, peer: PeerId, steam_id: u64) {
-        self.peers.insert(peer, SteamId::from_raw(steam_id));
+        self.wire.connect(peer, steam_id);
+    }
+
+    /// A transport over this Steam for the session, as peer `me`: the
+    /// server's end is [`PeerId::HOST`]; a guest's, anything else, with
+    /// the host connected to the lobby's owner. It never runs Steam's
+    /// callbacks — the game does, with [`Steam::run_callbacks`].
+    pub fn wire(&self, me: PeerId) -> SteamWire {
+        SteamWire::new(self.client.clone(), me)
+    }
+
+    /// What Steam has to say — a lobby made or joined, an invite
+    /// accepted, someone asking to talk: call it once a frame.
+    pub fn run_callbacks(&self) {
+        self.client.run_callbacks();
+    }
+
+    /// This peer on the wire [`Steam`] itself is.
+    pub fn me(&self) -> PeerId {
+        self.me
+    }
+
+    /// Out of the lobby: it goes when its last member leaves.
+    pub fn leave_lobby(&self) {
+        if let Some(lobby) = self.lobby.lock().unwrap().take() {
+            self.client.matchmaking().leave_lobby(lobby);
+        }
+    }
+
+    /// The overlay's friends list, where a friend's game is joined.
+    pub fn open_friends(&self) {
+        self.client.friends().activate_game_overlay("friends");
     }
 
     /// Make a lobby of at most `max` that friends can see and join, named
@@ -211,7 +258,31 @@ pub fn auto_cloud_roots(game: &str) -> String {
     )
 }
 
-impl Transport for Steam {
+/// Steam's networking messages as a [`Transport`], for the session: made by
+/// [`Steam::wire`], sharing its client.
+pub struct SteamWire {
+    client: Client,
+    me: PeerId,
+    peers: HashMap<PeerId, SteamId>,
+}
+
+impl SteamWire {
+    fn new(client: Client, me: PeerId) -> Self {
+        Self {
+            client,
+            me,
+            peers: HashMap::new(),
+        }
+    }
+
+    /// Who a peer is on Steam: a guest connects [`PeerId::HOST`] to the
+    /// lobby's owner. The host learns its guests from what they send.
+    pub fn connect(&mut self, peer: PeerId, steam_id: u64) {
+        self.peers.insert(peer, SteamId::from_raw(steam_id));
+    }
+}
+
+impl Transport for SteamWire {
     fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
         let Some(steam_id) = self.peers.get(&to) else {
             return;
@@ -227,7 +298,6 @@ impl Transport for Steam {
     }
 
     fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)> {
-        self.client.run_callbacks();
         let mut out = Vec::new();
         for message in self
             .client
@@ -246,5 +316,16 @@ impl Transport for Steam {
             out.push((from, data[4..].to_vec()));
         }
         out
+    }
+}
+
+impl Transport for Steam {
+    fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
+        self.wire.send(to, bytes);
+    }
+
+    fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)> {
+        self.client.run_callbacks();
+        self.wire.receive()
     }
 }
