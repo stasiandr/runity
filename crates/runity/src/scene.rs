@@ -354,6 +354,9 @@ fn is_one(v: &f32) -> bool {
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
 }
+fn is_true(v: &bool) -> bool {
+    *v
+}
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -409,7 +412,7 @@ fn yes_look() -> bool {
 
 /// A light at an entity, shining every way and fading to nothing at
 /// `range` metres — a campfire, a lamp, a torch in a greybox corridor:
-/// Unity's Point Light, without shadows. `light: (color: (1.0, 0.6, 0.3),
+/// Unity's Point Light, casting shadows. `light: (color: (1.0, 0.6, 0.3),
 /// intensity: 2.0, range: 6.0)`; the colour is as a colour picker says it
 /// (sRGB, 0 to 1).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -425,6 +428,46 @@ pub struct Light {
     /// Spot Light.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub cone_deg: Option<f32>,
+    /// Casts shadows — on unless `shadows: false`, as a lamp in URP; the
+    /// nearest lamps the camera sees get them first.
+    #[serde(default = "yes_look", skip_serializing_if = "is_true")]
+    pub shadows: bool,
+}
+
+/// A box whose surroundings polished things in it reflect — URP's baked
+/// Reflection Probe, at the entity. `reflection_probe: (size: (8.0, 4.0,
+/// 8.0))`: the box, metres, centred on the entity and not turned with it;
+/// `box_projection: false` reflects as if the room were infinitely far;
+/// `blend_distance` (1 m) fades it out inside its edge. See
+/// [`crate::reflections`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Probe {
+    #[serde(default = "probe_size")]
+    pub size: Vec3,
+    #[serde(default = "yes_look", skip_serializing_if = "is_true")]
+    pub box_projection: bool,
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub blend_distance: f32,
+}
+
+/// A picture pressed onto what lies in a box — URP's Decal Projector.
+/// `decal: (size: (2.0, 1.0, 2.0))`: the box, metres, centred on the
+/// entity and turned with it, pressed down its −y (a decal on the ground
+/// needs no turning). The entity's `material` is the picture: its base
+/// colour and map (alpha is how much), normal map and smoothness. See
+/// [`crate::decals`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Decal {
+    #[serde(default = "decal_size")]
+    pub size: Vec3,
+}
+
+fn decal_size() -> Vec3 {
+    Vec3::ONE
+}
+
+fn probe_size() -> Vec3 {
+    Vec3::new(10.0, 10.0, 10.0)
 }
 
 /// A way an entity travels by itself — a moving platform, a lift, a boat
@@ -614,6 +657,12 @@ pub struct EntityDesc {
     /// Particles given off from this entity; see [`Emitter`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub particles: Option<Emitter>,
+    /// A reflection probe at this entity; see [`Probe`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub reflection_probe: Option<Probe>,
+    /// A decal pressed from this entity; see [`Decal`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub decal: Option<Decal>,
     /// Moving along points by itself; see [`Route`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -703,6 +752,10 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub particles: Option<Emitter>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub reflection_probe: Option<Probe>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub decal: Option<Decal>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
@@ -749,6 +802,12 @@ impl Override {
         if self.particles.is_some() {
             part.particles = self.particles;
         }
+        if self.reflection_probe.is_some() {
+            part.reflection_probe = self.reflection_probe;
+        }
+        if self.decal.is_some() {
+            part.decal = self.decal;
+        }
         if self.route.is_some() {
             part.route = self.route.clone();
         }
@@ -773,6 +832,9 @@ impl Override {
             camera: differs(prefab.camera != edited.camera).and(edited.camera),
             light: differs(prefab.light != edited.light).and(edited.light),
             particles: differs(prefab.particles != edited.particles).and(edited.particles),
+            reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
+                .and(edited.reflection_probe),
+            decal: differs(prefab.decal != edited.decal).and(edited.decal),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
@@ -801,6 +863,8 @@ impl Override {
             camera,
             light,
             particles,
+            reflection_probe,
+            decal,
             route,
             components,
         } = later;
@@ -815,6 +879,8 @@ impl Override {
         self.camera = camera.or(self.camera);
         self.light = light.or(self.light);
         self.particles = particles.or(self.particles);
+        self.reflection_probe = reflection_probe.or(self.reflection_probe);
+        self.decal = decal.or(self.decal);
         self.route = route.or(self.route.take());
         self.components.extend(components);
     }
@@ -1010,6 +1076,24 @@ pub struct Fog {
     pub color: [f32; 3],
     pub start: f32,
     pub end: f32,
+    /// Linear between `start` and `end`, or thickening by `density` —
+    /// URP's three. Written only when not linear.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub mode: crate::render::FogMode,
+    #[serde(default = "fog_density", skip_serializing_if = "is_fog_density")]
+    pub density: f32,
+}
+
+fn is_linear(mode: &crate::render::FogMode) -> bool {
+    *mode == crate::render::FogMode::Linear
+}
+
+fn fog_density() -> f32 {
+    0.01
+}
+
+fn is_fog_density(density: &f32) -> bool {
+    *density == fog_density()
 }
 
 impl Default for Fog {
@@ -1018,6 +1102,8 @@ impl Default for Fog {
             color: [0.62, 0.68, 0.74],
             start: 30.0,
             end: 180.0,
+            mode: crate::render::FogMode::Linear,
+            density: fog_density(),
         }
     }
 }
@@ -1128,6 +1214,27 @@ pub struct Scene {
     pub sun: Sun,
     #[serde(default)]
     pub fog: Fog,
+    /// The sky behind everything; the engine's procedural one, its horizon
+    /// the fog's colour, when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub sky: Option<crate::render::Sky>,
+    /// What is done to the finished frame — URP's Volume: bloom, grading,
+    /// tonemapping. The engine's defaults when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub post: Option<crate::post::PostProcess>,
+    /// Crevices darkened — URP's SSAO. The engine's defaults when the file
+    /// does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub ambient_occlusion: Option<crate::ssao::AmbientOcclusion>,
+    /// Hardware rays, an experiment: `ray_tracing: (sun_shadows: true,
+    /// light_shadows: true, ambient_occlusion: true)`. Nothing where the
+    /// device does not trace.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub ray_tracing: Option<crate::ray::RayTracing>,
+    /// Light seen in the air: `volumetric_fog: (enabled: true, density:
+    /// 0.05)`. See [`crate::volume`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub volumetric_fog: Option<crate::volume::VolumetricFog>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1391,6 +1498,8 @@ mod tests {
                 along: None,
                 light: None,
                 particles: None,
+                reflection_probe: None,
+                decal: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1418,6 +1527,8 @@ mod tests {
                     along: None,
                     light: None,
                     particles: None,
+                    reflection_probe: None,
+                    decal: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -1457,12 +1568,22 @@ mod tests {
                 intensity: 0.8,
             },
             fog: Fog::default(),
+            sky: None,
+            ambient_occlusion: None,
+            ray_tracing: None,
+            volumetric_fog: None,
+            post: Some(crate::post::PostProcess {
+                saturation: -30.0,
+                ..Default::default()
+            }),
             entities: vec![EntityDesc {
                 camera: None,
                 spline: None,
                 along: None,
                 light: None,
                 particles: None,
+                reflection_probe: None,
+                decal: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),

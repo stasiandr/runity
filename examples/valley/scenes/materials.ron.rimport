@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/materials.ron",
+    id: Some("3e0a4959253f8394b3e541457338cc48"),
+)

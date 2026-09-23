@@ -22,6 +22,7 @@ mod blockout;
 pub mod console;
 mod error;
 mod game;
+pub use game::MAX_PLAYERS;
 mod grouping;
 mod import_settings;
 pub use import_settings::IMPORT_FIELDS;
@@ -2668,6 +2669,14 @@ impl Session {
             self.camera
         };
         let mut frame = self.base_frame(camera);
+        // The maps its materials draw with, uploaded the first time they
+        // are seen — an import that brought a new one shows at once.
+        let _ = runity::world::upload_material_maps(
+            &self.world,
+            self.library.as_ref(),
+            &self.gpu,
+            &mut self.renderer,
+        );
         if self.game_view {
             // What the player sees: no grid, no handles, no outlines.
             self.renderer.render(&self.gpu, &self.target, &frame);
@@ -2718,7 +2727,19 @@ impl Session {
                 None => self.camera.apparent_distance(self.camera.target) * 1.5,
             };
             let cells = ((reach / spacing).ceil() as i32).clamp(10, 200);
-            let thickness = (self.camera.apparent_distance(self.camera.target) * 0.0012).max(0.003);
+            // A pixel wide wherever it is seen from: the frame is
+            // multisampled, and a line much thinner than a pixel comes out
+            // as a faint smear rather than a line.
+            let (_, height) = self.size();
+            let view_height = match self.camera.ortho {
+                Some(half) => half * 2.0,
+                None => {
+                    self.camera.apparent_distance(self.camera.target)
+                        * 2.0
+                        * (self.camera.fov_y_degrees.to_radians() * 0.5).tan()
+                }
+            };
+            let thickness = (view_height / height.max(1) as f32).max(0.003);
             frame.draws.extend(gizmo::grid_draws(
                 arm,
                 self.camera.target,
@@ -2911,18 +2932,18 @@ impl Session {
     /// nothing of the editor's drawn over it.
     fn base_frame(&self, camera: Camera) -> Frame {
         let scene = self.history.scene();
-        Frame {
+        let mut frame = Frame {
             camera,
             // From the scene's hour, like every other tool: an editor
             // lighting a scene differently from the render is an editor you
             // cannot trust about anything you are looking at.
             lighting: runity::scene_lighting(&scene.sun),
-            fog: FogSettings {
-                color: Vec3::from_array(scene.fog.color),
-                start: scene.fog.start,
-                end: scene.fog.end,
-            },
+            fog: runity::scene_fog(&scene.fog),
             clear_color: Vec3::from_array(scene.fog.color),
+            sky: runity::render::Sky {
+                horizon: scene.fog.color,
+                ..Default::default()
+            },
             ..{
                 let unseen = self.unseen();
                 runity::build_frame_where(
@@ -2933,7 +2954,10 @@ impl Session {
                     |line| line.is_none_or(|id| !unseen.contains(&id)),
                 )
             }
-        }
+        };
+        // The scene's own sky and post-processing, as the game draws it.
+        runity::world::scene_look(&mut frame, scene);
+        frame
     }
 
     /// A sound asset by the name scenes use, from the library: what the

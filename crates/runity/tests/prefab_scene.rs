@@ -154,6 +154,7 @@ fn every_instance_reaches_the_frame() {
             color: runity::glam::Vec3::from_array(scene.fog.color),
             start: scene.fog.start,
             end: scene.fog.end,
+            ..Default::default()
         },
     );
     assert_eq!(

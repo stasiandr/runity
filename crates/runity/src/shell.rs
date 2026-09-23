@@ -59,6 +59,18 @@ impl Default for WindowConfig {
     }
 }
 
+pub use crate::party::WINDOW_VAR;
+
+/// `x,y,width,height`, or `None` when it is not four numbers.
+pub fn placement(text: &str) -> Option<(i32, i32, u32, u32)> {
+    let mut parts = text.split(',').map(str::trim);
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let width = parts.next()?.parse().ok()?;
+    let height = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((x, y, width, height))
+}
+
 /// What a game is handed each time it is called.
 pub struct Context<'a> {
     pub time: &'a Time,
@@ -255,12 +267,21 @@ impl<G: Game> ApplicationHandler for Shell<G> {
         if self.state.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title(self.config.title.clone())
             .with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.width,
                 self.config.height,
             ));
+        if let Some((x, y, width, height)) = std::env::var(WINDOW_VAR)
+            .ok()
+            .as_deref()
+            .and_then(placement)
+        {
+            attributes = attributes
+                .with_position(winit::dpi::LogicalPosition::new(x, y))
+                .with_inner_size(winit::dpi::LogicalSize::new(width, height));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(e) => {
@@ -555,5 +576,19 @@ mod pad_tests {
         assert_eq!(pad_stick(Axis::LeftStickY), Some(PadAxis::LeftY));
         assert_eq!(pad_stick(Axis::LeftZ), None);
         assert_eq!(translate_pad(EventType::Connected), None);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::placement;
+
+    #[test]
+    fn a_window_is_placed_by_four_numbers() {
+        assert_eq!(placement("40, 60,640,360"), Some((40, 60, 640, 360)));
+        assert_eq!(placement("-700,0,640,360"), Some((-700, 0, 640, 360)));
+        assert_eq!(placement("40,60,640"), None);
+        assert_eq!(placement("40,60,640,360,1"), None);
+        assert_eq!(placement("left,top,640,360"), None);
     }
 }

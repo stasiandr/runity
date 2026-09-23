@@ -27,12 +27,23 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
         gpu,
         &target,
         &Frame {
+            // Counted in exact colours: no sky, no post-processing.
+            sky: runity::render::Sky {
+                mode: runity::render::SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            ray_tracing: Default::default(),
             camera: Camera::default(),
             lighting: Lighting::default(),
             fog: FogSettings::default(),
             shadows: ShadowSettings::OFF,
             clear_color: Vec3::new(0.5, 0.0, 0.0),
             lights: Vec::new(),
+            reflection_probes: Vec::new(),
+            decals: Vec::new(),
+            volumetric_fog: Default::default(),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             poses: Vec::new(),
@@ -150,13 +161,18 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         mesh,
         transform: runity::glam::Mat4::from_translation(Vec3::new(0.0, 0.0, -4.0)),
         texture: runity::TextureHandle::WHITE,
-        material: runity::Material {
-            base_color: [1.0, 0.3, 0.0],
-            shading: runity::Shading::Unlit,
-        },
+        material: runity::Material::new(1.0, 0.3, 0.0).unlit(),
         pose: None,
     };
     let base = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 6.0),
             target: Vec3::ZERO,
@@ -171,12 +187,23 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
+        decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![wall],
         overlay_draws: Vec::new(),
         poses: Vec::new(),
     };
 
     let hidden = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         draws: vec![wall, behind],
         ..base.clone()
     };
@@ -184,6 +211,14 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
     let occluded = target.read_rgba(&gpu);
 
     let shown = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         overlay_draws: vec![behind],
         ..base
     };

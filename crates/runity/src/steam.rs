@@ -8,7 +8,9 @@
 //! lobby is Steam's: [`Steam::host_lobby`] makes one friends can see,
 //! [`Steam::invite`] opens the overlay's invite dialog, and a friend who
 //! accepts — or [`Steam::join_lobby`] with its id — is joined, the lobby's
-//! owner becoming [`PeerId::HOST`] to them.
+//! owner being endpoint [`PeerId::HOST`] — the server — to them. On a
+//! transport a [`PeerId`] names an endpoint; which client that is in the
+//! game is the server's to say ([`crate::net::server`]).
 //!
 //! Built and type-checked with the SDK; it needs the Steam client running
 //! and an app id (`steam_appid.txt`, 480 for testing) to do anything, so
@@ -39,7 +41,8 @@ impl Steam {
     pub fn init(me: PeerId) -> Result<Self, String> {
         let client = Client::init().map_err(|e| format!("steam: {e}"))?;
         // Messages from whoever opens a session are accepted; what they may
-        // change is still decided by ownership in `net::apply`.
+        // change is still decided by the server, which drops anything from
+        // a peer about what it does not own.
         client
             .networking_messages()
             .session_request_callback(|request| {

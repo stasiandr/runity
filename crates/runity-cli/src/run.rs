@@ -65,6 +65,111 @@ pub fn command(project: &Project, hot: bool, release: bool, dx: Option<&Path>) -
     Ok(command)
 }
 
+/// `--players N`: the game built once, then started N times on this
+/// machine, playing together — the host first, the others joining it, each
+/// in its own window laid out beside the others, with its own player
+/// folder, and its lines marked with whose they are. Unity's Multiplayer
+/// Play Mode, from a terminal. Ends when the host does; ending it ends all.
+pub fn players(
+    project: &Project,
+    count: u32,
+    release: bool,
+    scene: Option<&str>,
+    link: &str,
+) -> Result<bool> {
+    if !(2..=4).contains(&count) {
+        bail!("--players wants 2 to 4; one player is plain `runity run`");
+    }
+    runity::net::Conditions::parse(link).map_err(|e| anyhow::anyhow!("--link: {e}"))?;
+    let mut build = Command::new("cargo");
+    build.arg("build").current_dir(project.root());
+    if release {
+        build.arg("--release");
+    }
+    if !build.status()?.success() {
+        return Ok(false);
+    }
+    let exe = crate::build::find_executable(project, release)?;
+    let size = runity::project::GameSettings::load(&project.root().to_string_lossy())
+        .map(|(_, s)| (s.width, s.height))
+        .unwrap_or((1280, 720));
+    let address = format!("127.0.0.1:{}", runity::party::free_port()?);
+    println!("{count} players: player 1 hosts on {address}");
+    let mut children = Vec::new();
+    for peer in 0..count {
+        let mut command = player_command(&exe, project, peer, count, &address, size);
+        if let Some(scene) = scene {
+            command.env(SCENE_VAR, scene);
+        }
+        if peer > 0 && !link.is_empty() {
+            command.env(runity::party::LINK_VAR, link);
+        }
+        let mut child = command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let label = format!("player {}", peer + 1);
+        for stream in [
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let label = label.clone();
+            std::thread::spawn(move || {
+                use std::io::BufRead;
+                for line in std::io::BufReader::new(stream)
+                    .lines()
+                    .map_while(Result::ok)
+                {
+                    println!("{label}: {line}");
+                }
+            });
+        }
+        children.push(child);
+    }
+    // The host's end is the game's.
+    let host = children[0].wait()?;
+    for child in &mut children[1..] {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(host.success())
+}
+
+/// Player `peer` (0 hosts) of `count`, from the built game at `exe`.
+pub fn player_command(
+    exe: &Path,
+    project: &Project,
+    peer: u32,
+    count: u32,
+    address: &str,
+    size: (u32, u32),
+) -> Command {
+    use runity::party;
+    let mut command = Command::new(exe);
+    command
+        .current_dir(project.root())
+        .env(party::PLAYER_VAR, format!("Player {}", peer + 1))
+        .env(party::WINDOW_VAR, party::tile(peer, count, size));
+    if peer == 0 {
+        command.env(party::NET_VAR, format!("host:{address}"));
+    } else {
+        command.env(party::NET_VAR, format!("join:{address}")).env(
+            runity::player_prefs::USER_DIR_VAR,
+            project.root().join(format!(".runity/players/{}", peer + 1)),
+        );
+    }
+    command
+}
+
 /// What the game reads to know which scene to open: `main` without it.
 pub const SCENE_VAR: &str = "RUNITY_SCENE";
 
@@ -107,6 +212,43 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn each_player_is_told_who_it_is_and_where_the_host_is() {
+        let project = project("players");
+        let exe = Path::new("/game/bin");
+        let env = |c: &Command, k: &str| {
+            c.get_envs()
+                .find(|(key, _)| *key == k)
+                .and_then(|(_, v)| v)
+                .map(|v| v.to_string_lossy().into_owned())
+        };
+        let host = player_command(exe, &project, 0, 3, "127.0.0.1:4000", (1280, 720));
+        assert_eq!(
+            env(&host, "RUNITY_NET").as_deref(),
+            Some("host:127.0.0.1:4000")
+        );
+        assert_eq!(
+            env(&host, "RUNITY_WINDOW").as_deref(),
+            Some("40,60,640,360")
+        );
+        assert_eq!(
+            env(&host, "RUNITY_USER_DIR"),
+            None,
+            "the host is the person's own"
+        );
+        let third = player_command(exe, &project, 2, 3, "127.0.0.1:4000", (1280, 720));
+        assert_eq!(
+            env(&third, "RUNITY_NET").as_deref(),
+            Some("join:127.0.0.1:4000")
+        );
+        assert_eq!(env(&third, "RUNITY_PLAYER").as_deref(), Some("Player 3"));
+        assert!(env(&third, "RUNITY_USER_DIR")
+            .unwrap()
+            .ends_with(".runity/players/3"));
+        assert!(players(&project, 7, false, None, "").is_err());
+        assert!(players(&project, 2, false, None, "ping=3").is_err());
     }
 
     #[test]

@@ -81,10 +81,6 @@ pub struct ImportSettings {
     pub origin_to_base: bool,
 }
 
-fn one() -> f32 {
-    1.0
-}
-
 impl Default for ImportSettings {
     fn default() -> Self {
         Self {
@@ -100,9 +96,21 @@ impl Default for ImportSettings {
 }
 
 impl ImportSettings {
+    /// The defaults for a source. An image named as a normal map or a mask
+    /// (`bark_normal`, `bark_n`, `bark_mask`) is data, not colour, and is
+    /// read linear from the start — the convention every kit follows.
     pub fn for_source(source: impl Into<String>) -> Self {
+        let source = source.into();
+        let stem = Path::new(&source)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        let data = ["_normal", "_n", "_mask", "_nrm"]
+            .iter()
+            .any(|end| stem.ends_with(end));
         Self {
-            source: source.into(),
+            source,
+            srgb: !data,
             ..Self::default()
         }
     }
@@ -821,6 +829,149 @@ pub struct MaterialSource {
     /// The metre grid on it: a greybox surface. Lit, so not with `unlit`.
     #[serde(default)]
     pub grid: bool,
+    /// URP Lit's properties, with its names; what is not said is a matte
+    /// opaque surface (see [`Material`]).
+    #[serde(default)]
+    pub metallic: f32,
+    #[serde(default)]
+    pub smoothness: f32,
+    /// What it gives off, as a colour like `color`, times
+    /// `emission_intensity`: past white it blooms.
+    #[serde(default = "black")]
+    pub emission: Color,
+    #[serde(default = "one")]
+    pub emission_intensity: f32,
+    #[serde(default = "one")]
+    pub alpha: f32,
+    #[serde(default)]
+    pub surface: runity::material::SurfaceType,
+    #[serde(default)]
+    pub blend: runity::material::Blend,
+    #[serde(default)]
+    pub alpha_clip: f32,
+    #[serde(default)]
+    pub render_face: runity::material::RenderFace,
+    #[serde(default = "yes")]
+    pub specular_highlights: bool,
+    #[serde(default = "yes")]
+    pub environment_reflections: bool,
+    #[serde(default = "yes")]
+    pub receive_shadows: bool,
+    /// Texture assets by file stem, URP's maps: the colour, the normal
+    /// map, the mask (red metallic, green occlusion, alpha smoothness), the
+    /// emission. Empty is none.
+    #[serde(default)]
+    pub base_map: String,
+    #[serde(default)]
+    pub normal_map: String,
+    #[serde(default)]
+    pub mask_map: String,
+    #[serde(default)]
+    pub emission_map: String,
+    #[serde(default = "one")]
+    pub normal_scale: f32,
+    #[serde(default = "one")]
+    pub occlusion_strength: f32,
+    #[serde(default = "no_tiling")]
+    pub tiling: [f32; 2],
+    #[serde(default)]
+    pub offset: [f32; 2],
+}
+
+fn no_tiling() -> [f32; 2] {
+    [1.0, 1.0]
+}
+
+/// The texture a material names, as the asset id it has or will have: from
+/// its sidecar once imported, or the id its first import will mint. `data`
+/// maps (normal, mask) must be imported linear, and it says so if not.
+fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::asset::AssetId>> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let project = runity::Project::find(material).map_err(|e| {
+        anyhow::anyhow!(
+            "{}: `{name}` is a texture, and a material that uses one has to be in a project: {e}",
+            material.display()
+        )
+    })?;
+    let mut found = Vec::new();
+    let mut names = Vec::new();
+    let mut stack = vec![project.assets()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let image = path
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .is_some_and(|e| ["png", "jpg", "jpeg", "tga", "bmp"].contains(&e.as_str()));
+            if !image {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if stem == name {
+                found.push(path);
+            } else {
+                names.push(stem);
+            }
+        }
+    }
+    match found.len() {
+        0 => {
+            let near = runity::spelling::closest(name, names.iter().map(String::as_str))
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "{}: no texture `{name}` under assets/{near}",
+                material.display()
+            )
+        }
+        1 => {}
+        _ => anyhow::bail!(
+            "{}: more than one texture is called `{name}`: {}",
+            material.display(),
+            found
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+    let texture = &found[0];
+    let settings = match ImportSettings::load(sidecar_for(texture)) {
+        Ok(settings) => settings,
+        Err(_) => ImportSettings::for_source(
+            project
+                .relative(texture)
+                .unwrap_or_else(|| texture.to_string_lossy().into_owned()),
+        ),
+    };
+    if data && settings.srgb {
+        anyhow::bail!(
+            "{}: `{name}` is a normal map or a mask, but it is imported as colour — set `srgb: false` in {}; read as colour, every value in it bends",
+            material.display(),
+            sidecar_for(texture).display()
+        );
+    }
+    Ok(Some(settings.asset_id()))
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn black() -> Color {
+    Color::Linear([0.0; 3])
 }
 
 /// Read a `.rmat` and build a material asset from it.
@@ -849,6 +1000,28 @@ pub fn material_from_ron(
                 (false, true) => Shading::Grid,
                 (false, false) => Shading::Lit,
             },
+            metallic: source.metallic,
+            smoothness: source.smoothness,
+            emission: source
+                .emission
+                .linear()?
+                .map(|c| c * source.emission_intensity.max(0.0)),
+            alpha: source.alpha,
+            surface: source.surface,
+            blend: source.blend,
+            alpha_clip: source.alpha_clip,
+            render_face: source.render_face,
+            specular_highlights: source.specular_highlights,
+            environment_reflections: source.environment_reflections,
+            receive_shadows: source.receive_shadows,
+            base_map: texture_id(path, &source.base_map, false)?,
+            normal_map: texture_id(path, &source.normal_map, true)?,
+            mask_map: texture_id(path, &source.mask_map, true)?,
+            emission_map: texture_id(path, &source.emission_map, false)?,
+            normal_scale: source.normal_scale,
+            occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
+            tiling: source.tiling,
+            offset: source.offset,
         },
     })
 }
