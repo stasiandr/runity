@@ -245,6 +245,7 @@ impl Project {
         std::fs::write(root.join("CLAUDE.md"), CLAUDE_MD.replace("{name}", name))?;
         std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
         std::fs::write(root.join(INPUT), INPUT_RON)?;
+        std::fs::write(root.join(crate::layers::FILE), LAYERS_RON)?;
         std::fs::create_dir_all(root.join(TUNING))?;
         std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
@@ -444,6 +445,16 @@ const WORLD_RON: &str = "\
 ";
 
 /// The bindings a new project starts with.
+const LAYERS_RON: &str = "\
+// Collision layers. A scene line puts a body on one with `layer: \"debris\"`;
+// a line without one is on \"default\". Pairs in `ignore` pass through each
+// other. Up to 32. A running game picks up a change here.
+(
+    layers: [\"default\", \"player\", \"debris\"],
+    ignore: [(\"debris\", \"player\")],
+)
+";
+
 const INPUT_RON: &str = "\
 // What the player does, by name. The game asks for \"jump\", not Space;
 // rebind here, and a running game picks it up.
@@ -500,6 +511,7 @@ struct Game {
     live: LiveScene,
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
+    layers: Tuned<runity::layers::Layers>,
     world: World,
     physics: PhysicsWorld,
 }
@@ -507,6 +519,7 @@ struct Game {
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
         self.physics = PhysicsWorld::new(ctx.time.settings().fixed_delta);
+        self.physics.set_layers((*self.layers).clone(), &self.world);
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
             eprintln!("{line}");
         }
@@ -530,6 +543,11 @@ impl shell::Game for Game {
         }
         if let Some(Err(problem)) = self.tuning.poll(ctx.time.delta()) {
             eprintln!("{problem}");
+        }
+        match self.layers.poll(ctx.time.delta()) {
+            Some(Ok(())) => self.physics.set_layers((*self.layers).clone(), &self.world),
+            Some(Err(problem)) => eprintln!("{problem}"),
+            None => {}
         }
         if self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
@@ -568,10 +586,13 @@ fn main() -> anyhow::Result<()> {
     }
     let tuning = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/world.ron"))
         .map_err(anyhow::Error::msg)?;
+    let layers = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
+        .map_err(anyhow::Error::msg)?;
     let game = Game {
         live,
         actions,
         tuning,
+        layers,
         world: World::new(),
         physics: PhysicsWorld::default(),
     };

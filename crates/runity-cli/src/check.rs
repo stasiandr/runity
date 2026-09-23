@@ -56,6 +56,8 @@ struct Names {
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
+    /// The collision layers, from `layers.ron`.
+    layers: runity::layers::Layers,
 }
 
 const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "rterrain"];
@@ -200,6 +202,13 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         materials,
         prefabs,
         components: project.component_names(),
+        layers: match runity::layers::Layers::of(project) {
+            Ok(layers) => layers,
+            Err(e) => {
+                out.push(error(runity::layers::FILE, e));
+                runity::layers::Layers::default()
+            }
+        },
     }
 }
 
@@ -249,6 +258,19 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         }
         if let MaterialRef::Named(name) = &entity.material {
             check_material(name, &who, file, names, out);
+        }
+        let layers = std::iter::once(&entity.layer)
+            .chain(entity.overrides.values().filter_map(|o| o.layer.as_ref()));
+        for layer in layers.filter(|l| !l.is_empty()) {
+            if names.layers.index(layer).is_none() {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: no layer `{layer}` in layers.ron{}",
+                        suggest(layer, names.layers.layers.iter().map(String::as_str))
+                    ),
+                ));
+            }
         }
         if let Some(to) = entity.joint.to().filter(|to| !to.is_unassigned()) {
             if !all.contains(&to) {

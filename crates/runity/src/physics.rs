@@ -31,7 +31,7 @@ use hecs::World;
 use rapier3d::prelude::*;
 
 use crate::scene::{Body, Collider as ColliderShape, Transform};
-use crate::world::{Jointed, Parent, Physics, Props, SceneId, Shape, WorldTransform};
+use crate::world::{Jointed, Layer, Parent, Physics, Props, SceneId, Shape, WorldTransform};
 
 /// Who is touching an entity's body: for a [`Body::Trigger`], what is
 /// inside it; for a solid body, what it is in contact with.
@@ -74,7 +74,7 @@ pub struct BodyHandle(pub RigidBodyHandle);
 
 /// What a body was built from, and the transform it last agreed with: how
 /// a change from outside the solver is told from the solver's own motion.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Built {
     body: Body,
     collider: ColliderShape,
@@ -82,6 +82,7 @@ struct Built {
     /// Which [`CollisionMesh`] a `Model` collider was built from.
     mesh: usize,
     props: crate::scene::BodyProps,
+    layer: String,
 }
 
 /// A model's geometry, for a [`ColliderShape::Model`]. Attached to the
@@ -208,6 +209,7 @@ pub struct PhysicsWorld {
     /// A fixed body with no shape, for joints to the world to hang from.
     /// Made the first time one asks.
     ground: Option<RigidBodyHandle>,
+    layers: crate::layers::Layers,
 }
 
 /// The joint a body was given, and what it was built between, so a change
@@ -245,6 +247,26 @@ impl PhysicsWorld {
             ccd: CCDSolver::new(),
             queries: QueryPipeline::new(),
             ground: None,
+            layers: crate::layers::Layers::default(),
+        }
+    }
+
+    /// Use a project's collision layers ([`crate::layers`]): bodies already
+    /// built are moved onto them at once, so a changed `layers.ron` takes
+    /// effect in a running game.
+    pub fn set_layers(&mut self, layers: crate::layers::Layers, world: &World) {
+        self.layers = layers;
+        for (_, collider) in self.colliders.iter_mut() {
+            let Some(entity) = hecs::Entity::from_bits(collider.user_data as u64) else {
+                continue;
+            };
+            let name = world
+                .get::<&Layer>(entity)
+                .map(|l| l.0.clone())
+                .unwrap_or_default();
+            let groups = groups(&self.layers, &name);
+            collider.set_collision_groups(groups);
+            collider.set_solver_groups(groups);
         }
     }
 
@@ -264,7 +286,7 @@ impl PhysicsWorld {
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
-        for (entity, handle, built, physics, shape, local, placed, mesh, props) in world
+        for (entity, handle, built, physics, shape, local, placed, mesh, props, layer) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
@@ -275,15 +297,18 @@ impl PhysicsWorld {
                 &WorldTransform,
                 Option<&CollisionMesh>,
                 Option<&Props>,
+                Option<&Layer>,
             )>()
             .iter()
         {
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
+            let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
             if built.body != physics.0
                 || built.collider != shape.0
                 || built.mesh != mesh
                 || built.props != props
+                || built.layer != layer
             {
                 stale.push(entity);
             } else {
@@ -333,7 +358,7 @@ impl PhysicsWorld {
         }
 
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
-        for (entity, placed, physics, shape, local, existing, mesh, props) in world
+        for (entity, placed, physics, shape, local, existing, mesh, props, layer) in world
             .query::<(
                 hecs::Entity,
                 &WorldTransform,
@@ -343,10 +368,12 @@ impl PhysicsWorld {
                 Option<&BodyHandle>,
                 Option<&CollisionMesh>,
                 Option<&Props>,
+                Option<&Layer>,
             )>()
             .iter()
         {
             let props = props.map(|p| p.0).unwrap_or_default();
+            let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
             if existing.is_some() || physics.0 == Body::None {
                 continue;
             }
@@ -365,6 +392,9 @@ impl PhysicsWorld {
             // The bouncier of the two decides, so a ball bounces off any
             // floor; grip stays the average of both, as everywhere.
             collider.set_restitution_combine_rule(CoefficientCombineRule::Max);
+            let layered = groups(&self.layers, &layer);
+            collider.set_collision_groups(layered);
+            collider.set_solver_groups(layered);
             collider.set_density(props.density.max(1e-3));
             if physics.0 == Body::Trigger {
                 collider.set_sensor(true);
@@ -391,6 +421,7 @@ impl PhysicsWorld {
                     local: *local,
                     mesh: mesh.map_or(0, CollisionMesh::key),
                     props,
+                    layer,
                 },
             ));
         }
@@ -711,6 +742,43 @@ impl PhysicsWorld {
         ))
     }
 
+    /// [`PhysicsWorld::cast_ray`], seeing only bodies on the named layers:
+    /// the ground under a player's feet without the debris at them.
+    pub fn cast_ray_among(
+        &self,
+        from: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+        layers: &[&str],
+    ) -> Option<RayHit> {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return None;
+        }
+        let ray = Ray::new(
+            point![from.x, from.y, from.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let only = InteractionGroups::new(
+            Group::ALL,
+            Group::from_bits_truncate(self.layers.mask(layers)),
+        );
+        let (collider, distance) = self.queries.cast_ray(
+            &self.bodies,
+            &self.colliders,
+            &ray,
+            max_distance,
+            true,
+            QueryFilter::default().exclude_sensors().groups(only),
+        )?;
+        Some(RayHit {
+            point: from + direction * distance,
+            distance,
+            collider: ColliderRef(collider),
+            entity: self.entity_of(collider),
+        })
+    }
+
     /// Which entity a collider belongs to.
     fn entity_of(&self, collider: ColliderHandle) -> Option<hecs::Entity> {
         self.colliders
@@ -758,6 +826,15 @@ impl PhysicsWorld {
             body.position().translation.z,
         ))
     }
+}
+
+/// A layer's rapier groups.
+fn groups(layers: &crate::layers::Layers, name: &str) -> InteractionGroups {
+    let (member, filter) = layers.groups(name);
+    InteractionGroups::new(
+        Group::from_bits_truncate(member),
+        Group::from_bits_truncate(filter),
+    )
 }
 
 /// A scene joint as rapier's, between a body at `one` and the jointed body
@@ -940,6 +1017,7 @@ mod tests {
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
+            layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
             overrides: Default::default(),
@@ -1020,6 +1098,7 @@ mod tests {
         // the first step, which reads as the physics being wrong.
         let scene = Scene {
             entities: vec![crate::EntityDesc {
+                layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),
@@ -1733,5 +1812,62 @@ mod tests {
         run_for(&mut physics, &mut world, 1);
         let heavy = mass(&physics, &world, sandbag);
         assert!((heavy / light - 8.0).abs() < 0.01, "{light} -> {heavy}");
+    }
+
+    #[test]
+    fn debris_falls_through_the_player_and_a_ray_can_look_past_it() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (name: "floor", model: "m", body: Static, collider: Box(half: (20.0, 0.1, 20.0))),
+                (name: "player", model: "m", body: Static, layer: "player",
+                 collider: Box(half: (1.0, 0.5, 1.0)), transform: (position: (0.0, 1.0, 0.0))),
+                (name: "shard", model: "m", body: Dynamic, layer: "debris",
+                 collider: Sphere(radius: 0.2), transform: (position: (0.0, 4.0, 0.0))),
+            ])"#,
+        );
+        let layers = crate::layers::Layers {
+            layers: vec!["default".into(), "player".into(), "debris".into()],
+            ignore: vec![("debris".into(), "player".into())],
+        };
+        physics.set_layers(layers.clone(), &world);
+        let shard = by_id(&world, scene.entities[2].id);
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&WorldTransform>(shard).unwrap().0.w_axis.y;
+        assert!(
+            (y - 0.3).abs() < 0.05,
+            "through the player onto the floor: {y}"
+        );
+
+        physics.refresh_queries();
+        let floor = by_id(&world, scene.entities[0].id);
+        let down = Vec3::new(0.0, 5.0, 0.0);
+        let any = physics.cast_ray(down, Vec3::NEG_Y, 10.0).unwrap();
+        assert_ne!(any.entity, Some(floor), "the player is in the way");
+        let ground = physics
+            .cast_ray_among(down, Vec3::NEG_Y, 10.0, &["default"])
+            .unwrap();
+        assert_eq!(ground.entity, Some(floor));
+
+        // The ignore taken out of layers.ron while running: they collide.
+        world
+            .insert_one(
+                shard,
+                Transform {
+                    position: Vec3::new(0.0, 4.0, 0.0),
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        crate::world::apply_hierarchy(&mut world);
+        physics.set_layers(
+            crate::layers::Layers {
+                ignore: Vec::new(),
+                ..layers
+            },
+            &world,
+        );
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&WorldTransform>(shard).unwrap().0.w_axis.y;
+        assert!(y > 1.6, "now it lands on the player: {y}");
     }
 }

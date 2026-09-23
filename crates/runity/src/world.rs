@@ -66,6 +66,10 @@ pub struct Parent(pub hecs::Entity);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Physics(pub Body);
 
+/// The collision layer's name, kept from the scene when not `default`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layer(pub String);
+
 /// Friction, bounce and density, kept from the scene when not the default.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Props(pub crate::scene::BodyProps);
@@ -230,6 +234,9 @@ fn spawn_one(
     }
     if !desc.physics.is_default() {
         let _ = world.insert_one(entity, Props(desc.physics));
+    }
+    if !desc.layer.is_empty() {
+        let _ = world.insert_one(entity, Layer(desc.layer.clone()));
     }
     dress(desc, entity, world, resolve, palette, missing);
     entity
@@ -455,6 +462,14 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, Shape(desc.collider));
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.layer != desc.layer) {
+            if desc.layer.is_empty() {
+                let _ = world.remove_one::<Layer>(entity);
+            } else {
+                let _ = world.insert_one(entity, Layer(desc.layer.clone()));
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.physics != desc.physics) {
             if desc.physics.is_default() {
                 let _ = world.remove_one::<Props>(entity);
@@ -633,6 +648,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
             overrides: Default::default(),
@@ -655,6 +671,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
                     overrides: Default::default(),

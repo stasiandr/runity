@@ -106,8 +106,10 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
     let data = out.join(DATA);
     std::fs::create_dir_all(&data)?;
     std::fs::copy(project.root().join(FILE), data.join(FILE))?;
-    if project.root().join(INPUT).is_file() {
-        std::fs::copy(project.root().join(INPUT), data.join(INPUT))?;
+    for file in [INPUT, runity::layers::FILE] {
+        if project.root().join(file).is_file() {
+            std::fs::copy(project.root().join(file), data.join(file))?;
+        }
     }
     for dir in [SCENES, PREFABS, LIBRARY, TUNING] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;

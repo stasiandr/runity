@@ -319,6 +319,10 @@ pub struct EntityDesc {
     /// saying so in one place beats guessing a box from the mesh.
     #[serde(default)]
     pub collider: Collider,
+    /// The collision layer, by the name `layers.ron` gives it; empty is
+    /// `default`. See [`crate::layers`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub layer: String,
     /// Friction, bounce and density; see [`BodyProps`].
     #[serde(default, skip_serializing_if = "BodyProps::is_default")]
     pub physics: BodyProps,
@@ -389,6 +393,8 @@ pub struct Override {
     pub collider: Option<Collider>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub physics: Option<BodyProps>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub layer: Option<String>,
     /// Components set on the part, one by one.
     #[serde(
         default,
@@ -422,6 +428,9 @@ impl Override {
         if let Some(physics) = self.physics {
             part.physics = physics;
         }
+        if let Some(layer) = &self.layer {
+            part.layer = layer.clone();
+        }
         for (name, value) in &self.components {
             part.components.insert(name.clone(), value.clone());
         }
@@ -439,6 +448,7 @@ impl Override {
             body: differs(prefab.body != edited.body).map(|_| edited.body),
             collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
             physics: differs(prefab.physics != edited.physics).map(|_| edited.physics),
+            layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
             components: edited
                 .components
                 .iter()
@@ -462,6 +472,7 @@ impl Override {
             body,
             collider,
             physics,
+            layer,
             components,
         } = later;
         self.name = name.or(self.name.take());
@@ -471,6 +482,7 @@ impl Override {
         self.body = body.or(self.body);
         self.collider = collider.or(self.collider);
         self.physics = physics.or(self.physics);
+        self.layer = layer.or(self.layer.take());
         self.components.extend(components);
     }
 }
@@ -909,6 +921,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),
@@ -928,6 +941,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
                     overrides: Default::default(),
@@ -966,6 +980,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
                 overrides: Default::default(),

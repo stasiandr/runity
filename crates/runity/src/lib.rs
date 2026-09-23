@@ -32,6 +32,7 @@ pub mod gizmo;
 pub mod gpu;
 pub mod id;
 pub mod input;
+pub mod layers;
 pub mod library;
 pub mod live;
 pub mod material;

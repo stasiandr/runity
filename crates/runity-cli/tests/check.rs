@@ -229,3 +229,32 @@ fn a_joint_to_nothing_is_named() {
         "{line}"
     );
 }
+
+#[test]
+fn a_layer_no_file_names_is_found() {
+    let project = project("layers");
+    write(
+        &project.root().join("scenes/shards.ron"),
+        r#"(entities: [
+            (id: "a1", name: "shard", model: "builtin:cube", body: Dynamic, layer: "debris"),
+            (id: "a2", name: "hero", model: "builtin:cube", body: Dynamic, layer: "playr"),
+        ])"#,
+    );
+    let errors = errors(&check(&project));
+    let line = one_containing(&errors, "no layer");
+    assert!(
+        line.contains("`playr`") && line.contains("did you mean `player`?"),
+        "{line}"
+    );
+    write(
+        &project.root().join("layers.ron"),
+        r#"(layers: ["x", "x"])"#,
+    );
+    let errors = errors_of(&project);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("layers.ron") && e.contains("named twice")),
+        "{errors:#?}"
+    );
+}
