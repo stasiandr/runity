@@ -202,6 +202,8 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
         view: scene.view,
         sun: scene.sun,
         fog: scene.fog,
+        sky: scene.sky,
+        post: scene.post,
         entities,
     };
 

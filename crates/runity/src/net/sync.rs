@@ -155,21 +155,33 @@ impl Sync {
             .collect();
         for entity in asked {
             let _ = world.remove_one::<RequestOwnership>(entity);
-            let Some(id) = super::network_id(world, entity) else { continue };
-            if owner_of(world, entity) == self.me && world.get::<&OwnershipPending>(entity).is_err() {
+            let Some(id) = super::network_id(world, entity) else {
+                continue;
+            };
+            if owner_of(world, entity) == self.me && world.get::<&OwnershipPending>(entity).is_err()
+            {
                 continue;
             }
             let _ = world.insert(entity, (Owner(self.me), OwnershipPending));
             // Sent whole as soon as the grant makes it ours.
             self.baselines.remove(&id);
-            out.push(ToServer::OwnershipRequest { epoch: self.epoch, id });
+            out.push(ToServer::OwnershipRequest {
+                epoch: self.epoch,
+                id,
+            });
         }
     }
 
     /// What this peer owns, as blobs.
     fn stage(world: &hecs::World, components: &Components, entity: hecs::Entity) -> Vec<Blob> {
-        let transform = world.get::<&Transform>(entity).map(|t| *t).unwrap_or_default();
-        let mut blobs = vec![(TRANSFORM.to_string(), postcard::to_stdvec(&transform).unwrap_or_default())];
+        let transform = world
+            .get::<&Transform>(entity)
+            .map(|t| *t)
+            .unwrap_or_default();
+        let mut blobs = vec![(
+            TRANSFORM.to_string(),
+            postcard::to_stdvec(&transform).unwrap_or_default(),
+        )];
         for (name, text) in components.write_networked(world, entity) {
             blobs.push((name, text.into_bytes()));
         }
@@ -210,7 +222,14 @@ impl Sync {
                         blobs,
                     });
                     self.announced.insert(id);
-                    self.baselines.insert(id, Baseline { bytes, quiet: 0, settled: false });
+                    self.baselines.insert(
+                        id,
+                        Baseline {
+                            bytes,
+                            quiet: 0,
+                            settled: false,
+                        },
+                    );
                     continue;
                 }
             }
@@ -223,23 +242,48 @@ impl Sync {
                     }
                 }
                 _ => {
-                    self.baselines.insert(id, Baseline { bytes, quiet: 0, settled: false });
+                    self.baselines.insert(
+                        id,
+                        Baseline {
+                            bytes,
+                            quiet: 0,
+                            settled: false,
+                        },
+                    );
                     changed.push(Entry { id, blobs });
                 }
             }
         }
         for entries in chunks(changed) {
-            unreliable.push(ToServer::Snapshot { epoch: self.epoch, tick: self.tick, settle: false, entries });
+            unreliable.push(ToServer::Snapshot {
+                epoch: self.epoch,
+                tick: self.tick,
+                settle: false,
+                entries,
+            });
         }
         for entries in chunks(settling) {
-            reliable.push(ToServer::Snapshot { epoch: self.epoch, tick: self.tick, settle: true, entries });
+            reliable.push(ToServer::Snapshot {
+                epoch: self.epoch,
+                tick: self.tick,
+                settle: true,
+                entries,
+            });
         }
         // Found, not reported: ours, announced, and no longer in the world.
-        let gone: Vec<EntityId> = self.announced.iter().filter(|id| !here.contains_key(id)).copied().collect();
+        let gone: Vec<EntityId> = self
+            .announced
+            .iter()
+            .filter(|id| !here.contains_key(id))
+            .copied()
+            .collect();
         for id in gone {
             self.announced.remove(&id);
             self.baselines.remove(&id);
-            reliable.push(ToServer::Despawn { epoch: self.epoch, id });
+            reliable.push(ToServer::Despawn {
+                epoch: self.epoch,
+                id,
+            });
         }
     }
 
@@ -250,8 +294,16 @@ impl Sync {
             if owner_of(world, entity) != self.me || world.get::<&NetPrefab>(entity).is_ok() {
                 continue;
             }
-            let bytes = postcard::to_stdvec(&Self::stage(world, components, entity)).unwrap_or_default();
-            self.baselines.insert(id, Baseline { bytes, quiet: SETTLE_TICKS, settled: true });
+            let bytes =
+                postcard::to_stdvec(&Self::stage(world, components, entity)).unwrap_or_default();
+            self.baselines.insert(
+                id,
+                Baseline {
+                    bytes,
+                    quiet: SETTLE_TICKS,
+                    settled: true,
+                },
+            );
         }
     }
 
@@ -266,8 +318,15 @@ impl Sync {
     ) -> Vec<Noticed> {
         let mut noticed = Vec::new();
         match message {
-            ToClient::Spawn { owner, id, prefab, blobs } => {
-                if let Some(problem) = self.spawn_one(world, components, id, owner, &prefab, &blobs, spawn) {
+            ToClient::Spawn {
+                owner,
+                id,
+                prefab,
+                blobs,
+            } => {
+                if let Some(problem) =
+                    self.spawn_one(world, components, id, owner, &prefab, &blobs, spawn)
+                {
                     noticed.push(Noticed::Problem(problem));
                 }
             }
@@ -279,7 +338,9 @@ impl Sync {
                 }
             }
             ToClient::OwnershipChanged { id, owner } => {
-                let Some(&entity) = addressable(world).get(&id) else { return noticed };
+                let Some(&entity) = addressable(world).get(&id) else {
+                    return noticed;
+                };
                 let was_pending = world.get::<&OwnershipPending>(entity).is_ok();
                 let _ = world.remove_one::<OwnershipPending>(entity);
                 let _ = world.insert_one(entity, Owner(owner));
@@ -296,7 +357,10 @@ impl Sync {
                     // Where we last had it is where the picture starts, so
                     // the new owner's stream is joined, not jumped to.
                     if world.get::<&Presented>(entity).is_err() {
-                        let here = world.get::<&Transform>(entity).map(|t| *t).unwrap_or_default();
+                        let here = world
+                            .get::<&Transform>(entity)
+                            .map(|t| *t)
+                            .unwrap_or_default();
                         let mut presented = Presented::default();
                         presented.push(self.me, self.tick.saturating_sub(1), here);
                         presented.push(self.me, self.tick, here);
@@ -310,7 +374,9 @@ impl Sync {
                 self.mark(world);
             }
             ToClient::ComponentsRemoved { id, tick, names } => {
-                let Some(&entity) = addressable(world).get(&id) else { return noticed };
+                let Some(&entity) = addressable(world).get(&id) else {
+                    return noticed;
+                };
                 if owner_of(world, entity) == self.me {
                     return noticed;
                 }
@@ -321,7 +387,12 @@ impl Sync {
                     components.remove_by_name(&name, world, entity);
                 }
             }
-            ToClient::Snapshot { owner, tick, settle, entries } => {
+            ToClient::Snapshot {
+                owner,
+                tick,
+                settle,
+                entries,
+            } => {
                 for entry in entries {
                     self.take_entry(world, components, owner, tick, settle, entry);
                 }
@@ -375,7 +446,10 @@ impl Sync {
         let Some(entity) = spawn(world, prefab, transform) else {
             return Some(format!("{id}: no prefab `{prefab}` to spawn here"));
         };
-        let _ = world.insert(entity, (NetId(id), NetPrefab(prefab.to_string()), Owner(owner)));
+        let _ = world.insert(
+            entity,
+            (NetId(id), NetPrefab(prefab.to_string()), Owner(owner)),
+        );
         let _ = world.insert_one(entity, transform);
         write_components(world, components, entity, blobs);
         if owner == self.me {
@@ -401,12 +475,20 @@ impl Sync {
             return None;
         }
         match here.get(&record.id) {
-            None => match &record.prefab {
-                Some(prefab) => {
-                    return self.spawn_one(world, components, record.id, record.owner, prefab, &record.blobs, spawn)
-                }
-                None => return None,
-            },
+            None => {
+                // A scene entity this peer does not have is one it has not
+                // loaded; only a spawned one can be made from the record.
+                let prefab = record.prefab.as_ref()?;
+                return self.spawn_one(
+                    world,
+                    components,
+                    record.id,
+                    record.owner,
+                    prefab,
+                    &record.blobs,
+                    spawn,
+                );
+            }
             Some(&entity) => {
                 let _ = world.insert_one(entity, Owner(record.owner));
                 if record.owner != self.me {
@@ -467,7 +549,12 @@ impl Sync {
         write_components(world, components, entity, &entry.blobs);
         let _ = world.insert_one(
             entity,
-            NetTick { sender, tick, settled: settle, at: Instant::now() },
+            NetTick {
+                sender,
+                tick,
+                settled: settle,
+                at: Instant::now(),
+            },
         );
     }
 }
@@ -479,7 +566,12 @@ fn transform_of(blobs: &[Blob]) -> Option<Transform> {
         .and_then(|(_, bytes)| postcard::from_bytes(bytes).ok())
 }
 
-fn write_components(world: &mut hecs::World, components: &Components, entity: hecs::Entity, blobs: &[Blob]) {
+fn write_components(
+    world: &mut hecs::World,
+    components: &Components,
+    entity: hecs::Entity,
+    blobs: &[Blob],
+) {
     for (name, bytes) in blobs {
         if name == TRANSFORM || !components.is_networked(name) {
             continue;
@@ -495,7 +587,12 @@ fn chunks(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
     let mut out: Vec<Vec<Entry>> = Vec::new();
     let mut size = 0;
     for entry in entries {
-        let one = entry.blobs.iter().map(|(n, b)| n.len() + b.len() + 4).sum::<usize>() + 12;
+        let one = entry
+            .blobs
+            .iter()
+            .map(|(n, b)| n.len() + b.len() + 4)
+            .sum::<usize>()
+            + 12;
         if out.is_empty() || size + one > ENTRY_BUDGET {
             out.push(Vec::new());
             size = 0;
@@ -640,7 +737,10 @@ impl Presented {
 /// Show every replica where its buffer says, this frame. Call it every
 /// frame with the frame's time.
 pub fn present(world: &mut hecs::World, seconds: f32) {
-    for (transform, presented) in world.query_mut::<(&mut Transform, &mut Presented)>().with::<&Replica>() {
+    for (transform, presented) in world
+        .query_mut::<(&mut Transform, &mut Presented)>()
+        .with::<&Replica>()
+    {
         if let Some(pose) = presented.advance(seconds) {
             *transform = pose;
         }
@@ -653,11 +753,19 @@ mod tests {
     use super::*;
 
     fn at(x: f32) -> Transform {
-        Transform { position: Vec3::new(x, 0.0, 0.0), ..Default::default() }
+        Transform {
+            position: Vec3::new(x, 0.0, 0.0),
+            ..Default::default()
+        }
     }
 
     /// Poses arriving one a tick, as they do, and the clock run between.
-    fn stream(p: &mut Presented, sender: u32, ticks: std::ops::RangeInclusive<u64>, x: impl Fn(u64) -> f32) -> f32 {
+    fn stream(
+        p: &mut Presented,
+        sender: u32,
+        ticks: std::ops::RangeInclusive<u64>,
+        x: impl Fn(u64) -> f32,
+    ) -> f32 {
         let mut shown = 0.0;
         for tick in ticks {
             p.push(PeerId(sender), tick, at(x(tick)));
@@ -689,7 +797,10 @@ mod tests {
         assert!(first > before - 0.5, "no jump back: {before} then {first}");
         let settled = stream(&mut p, 2, 901..=960, |t| 28.0 + (t - 900) as f32);
         let truth = 28.0 + 60.0 - DELAY as f32;
-        assert!((settled - truth).abs() < 0.3, "on the new owner's truth: {settled} vs {truth}");
+        assert!(
+            (settled - truth).abs() < 0.3,
+            "on the new owner's truth: {settled} vs {truth}"
+        );
     }
 
     #[test]

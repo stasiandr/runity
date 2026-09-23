@@ -1,0 +1,278 @@
+// Post-processing: what URP's Volume does to a frame after it is drawn.
+//
+// The scene is drawn into a high-dynamic-range buffer, in linear light and
+// with no ceiling: the sun off a white wall is brighter than 1.0, and an
+// ember is brighter still. Everything here turns that into a picture —
+// bloom from what is brighter than the threshold, then exposure, white
+// balance and grading, then the tonemapper that brings it into range, and
+// last what a lens adds: vignette, chromatic fringes and grain.
+
+struct Post {
+    // exposure multiplier, bloom intensity, tonemapper (0 none, 1 neutral,
+    // 2 ACES), encode to sRGB by hand (1) or leave it to the target (0)
+    a: vec4<f32>,
+    // bloom tint rgb, film grain
+    bloom_tint: vec4<f32>,
+    // colour filter rgb, contrast multiplier
+    filter_contrast: vec4<f32>,
+    // saturation multiplier, hue shift (turns), chromatic aberration, time
+    b: vec4<f32>,
+    // white balance as LMS scales, xyz; w unused
+    white_balance: vec4<f32>,
+    // vignette colour rgb, intensity
+    vignette_color: vec4<f32>,
+    // vignette centre xy, smoothness, aspect
+    vignette: vec4<f32>,
+    // one texel of the source, and of the target
+    texel: vec4<f32>,
+    // bloom: threshold, knee, scatter, clamp
+    bloom: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> post: Post;
+@group(0) @binding(1) var source: texture_2d<f32>;
+@group(0) @binding(2) var linear_clamp: sampler;
+@group(0) @binding(3) var bloom_texture: texture_2d<f32>;
+
+struct Varyings {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+// One triangle that covers the screen: cheaper than two, and no seam down
+// the diagonal where two triangles' derivatives disagree.
+@vertex
+fn vs_fullscreen(@builtin(vertex_index) i: u32) -> Varyings {
+    let x = f32((i << 1u) & 2u);
+    let y = f32(i & 2u);
+    var out: Varyings;
+    out.position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(x, y);
+    return out;
+}
+
+fn luma(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// Thirteen taps in the pattern of Jimenez's "Next Generation Post
+// Processing in Call of Duty": four overlapping 2x2 boxes and a centre one,
+// weighted so a single bright pixel does not flicker as it crosses texels.
+fn downsample13(uv: vec2<f32>, texel: vec2<f32>) -> vec3<f32> {
+    let a = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(-2.0, -2.0), 0.0).rgb;
+    let b = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(0.0, -2.0), 0.0).rgb;
+    let c = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(2.0, -2.0), 0.0).rgb;
+    let d = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(-2.0, 0.0), 0.0).rgb;
+    let e = textureSampleLevel(source, linear_clamp, uv, 0.0).rgb;
+    let f = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(2.0, 0.0), 0.0).rgb;
+    let g = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(-2.0, 2.0), 0.0).rgb;
+    let h = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(0.0, 2.0), 0.0).rgb;
+    let i = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(2.0, 2.0), 0.0).rgb;
+    let j = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(-1.0, -1.0), 0.0).rgb;
+    let k = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(1.0, -1.0), 0.0).rgb;
+    let l = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(-1.0, 1.0), 0.0).rgb;
+    let m = textureSampleLevel(source, linear_clamp, uv + texel * vec2<f32>(1.0, 1.0), 0.0).rgb;
+    return e * 0.125 + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + (j + k + l + m) * 0.125;
+}
+
+// The first step down: only what is brighter than the threshold, with a
+// soft knee so the edge of what glows is not a hard line.
+@fragment
+fn fs_prefilter(in: Varyings) -> @location(0) vec4<f32> {
+    let c = min(downsample13(in.uv, post.texel.xy), vec3<f32>(post.bloom.w));
+    let brightness = max(c.r, max(c.g, c.b));
+    let knee = max(post.bloom.y, 1e-4);
+    var soft = clamp(brightness - post.bloom.x + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee);
+    let contribution = max(soft, brightness - post.bloom.x) / max(brightness, 1e-4);
+    return vec4<f32>(c * contribution, 1.0);
+}
+
+@fragment
+fn fs_downsample(in: Varyings) -> @location(0) vec4<f32> {
+    return vec4<f32>(downsample13(in.uv, post.texel.xy), 1.0);
+}
+
+// Up one step: a 3x3 tent over the smaller level, added onto the larger
+// one by the blend state, scaled by how far the glow is to spread.
+@fragment
+fn fs_upsample(in: Varyings) -> @location(0) vec4<f32> {
+    let t = post.texel.xy;
+    var sum = textureSampleLevel(source, linear_clamp, in.uv, 0.0).rgb * 4.0;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, 0.0), 0.0).rgb * 2.0;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, 0.0), 0.0).rgb * 2.0;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(0.0, -t.y), 0.0).rgb * 2.0;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(0.0, t.y), 0.0).rgb * 2.0;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, -t.y), 0.0).rgb;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, -t.y), 0.0).rgb;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, t.y), 0.0).rgb;
+    sum += textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, t.y), 0.0).rgb;
+    return vec4<f32>(sum / 16.0 * post.bloom.z, 1.0);
+}
+
+// Unity's neutral tonemapper (John Hable's curve with URP's constants):
+// compresses highlights and leaves hue and mid-tones nearly alone.
+fn neutral_curve(x: vec3<f32>) -> vec3<f32> {
+    let a = 0.2;
+    let b = 0.29;
+    let c = 0.24;
+    let d = 0.272;
+    let e = 0.02;
+    let f = 0.3;
+    return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;
+}
+
+fn tonemap_neutral(x: vec3<f32>) -> vec3<f32> {
+    let white = 1.0 / neutral_curve(vec3<f32>(5.3)).x;
+    return clamp(neutral_curve(x * white) * white, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// ACES, Stephen Hill's fit of the reference and output transforms: the
+// filmic look, highlights desaturating on their way to white.
+fn tonemap_aces(color: vec3<f32>) -> vec3<f32> {
+    let input = mat3x3<f32>(
+        vec3<f32>(0.59719, 0.07600, 0.02840),
+        vec3<f32>(0.35458, 0.90834, 0.13383),
+        vec3<f32>(0.04823, 0.01566, 0.83777),
+    );
+    let output = mat3x3<f32>(
+        vec3<f32>(1.60475, -0.10208, -0.00327),
+        vec3<f32>(-0.53108, 1.10813, -0.07276),
+        vec3<f32>(-0.07367, -0.00605, 1.07602),
+    );
+    let v = input * color;
+    let a = v * (v + 0.0245786) - 0.000090537;
+    let b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return clamp(output * (a / b), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn rgb_to_hsv(c: vec3<f32>) -> vec3<f32> {
+    let k = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    let p = mix(vec4<f32>(c.bg, k.wz), vec4<f32>(c.gb, k.xy), step(c.b, c.g));
+    let q = mix(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), step(p.x, c.r));
+    let d = q.x - min(q.w, q.y);
+    let e = 1e-4;
+    return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+fn hsv_to_rgb(c: vec3<f32>) -> vec3<f32> {
+    let k = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    let p = abs(fract(c.xxx + k.xyz) * 6.0 - k.www);
+    return c.z * mix(k.xxx, clamp(p - k.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+}
+
+fn white_balance(c: vec3<f32>) -> vec3<f32> {
+    let to_lms = mat3x3<f32>(
+        vec3<f32>(3.90405e-1, 7.08416e-2, 2.31082e-2),
+        vec3<f32>(5.49941e-1, 9.63172e-1, 1.28021e-1),
+        vec3<f32>(8.92632e-3, 1.35775e-3, 9.36245e-1),
+    );
+    let from_lms = mat3x3<f32>(
+        vec3<f32>(2.85847e+0, -2.10182e-1, -4.18120e-2),
+        vec3<f32>(-1.62879e+0, 1.15820e+0, -1.18169e-1),
+        vec3<f32>(-2.48910e-2, 3.24281e-4, 1.06867e+0),
+    );
+    return from_lms * ((to_lms * c) * post.white_balance.xyz);
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let low = c * 12.92;
+    let high = 1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(high, low, c <= vec3<f32>(0.0031308));
+}
+
+fn hash(p: vec2<f32>) -> f32 {
+    let q = fract(p * vec2<f32>(443.897, 441.423));
+    let r = q + dot(q, q.yx + 19.19);
+    return fract((r.x + r.y) * r.x);
+}
+
+// Everything after bloom, in the order URP's uber pass does it.
+@fragment
+fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
+    // Chromatic aberration: red and blue sampled a little apart along the
+    // line from the centre, as a cheap lens fails to focus them together.
+    let from_centre = in.uv - vec2<f32>(0.5);
+    let fringe = from_centre * dot(from_centre, from_centre) * post.b.z * 0.1;
+    var color = vec3<f32>(
+        textureSampleLevel(source, linear_clamp, in.uv - fringe, 0.0).r,
+        textureSampleLevel(source, linear_clamp, in.uv, 0.0).g,
+        textureSampleLevel(source, linear_clamp, in.uv + fringe, 0.0).b,
+    );
+    color += textureSampleLevel(bloom_texture, linear_clamp, in.uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
+
+    color *= post.a.x;
+    color = white_balance(color);
+    color *= post.filter_contrast.rgb;
+    // Contrast about middle grey, in log space where it is even-handed.
+    let log_color = log2(max(color, vec3<f32>(1e-6)) / 0.18);
+    color = 0.18 * exp2(log_color * post.filter_contrast.w);
+    if abs(post.b.y) > 1e-5 {
+        var hsv = rgb_to_hsv(color);
+        hsv.x = fract(hsv.x + post.b.y);
+        color = hsv_to_rgb(hsv);
+    }
+    color = max(mix(vec3<f32>(luma(color)), color, post.b.x), vec3<f32>(0.0));
+
+    let mode = u32(post.a.z + 0.5);
+    if mode == 1u {
+        color = tonemap_neutral(color);
+    } else if mode == 2u {
+        color = tonemap_aces(color);
+    } else {
+        color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+
+    // Vignette: darkened towards the corners, round whatever the aspect.
+    let d = (in.uv - post.vignette.xy) * vec2<f32>(post.vignette.w, 1.0);
+    let falloff = smoothstep(0.0, 1.0, dot(d, d) * post.vignette_color.w * 2.0);
+    let edge = pow(falloff, max(1.0 - post.vignette.z, 0.05));
+    color = mix(color, post.vignette_color.rgb, edge * step(1e-4, post.vignette_color.w));
+
+    // Grain, stronger in the darks, as film is.
+    let grain = hash(in.position.xy + post.b.w * 61.0) - 0.5;
+    color += grain * post.bloom_tint.w * 0.25 * (1.0 - sqrt(luma(color)));
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+
+    if post.a.w > 0.5 {
+        color = linear_to_srgb(color);
+    }
+    return vec4<f32>(color, 1.0);
+}
+
+// FXAA, the console version's idea in a few lines: find the edge by luma
+// contrast, and blend across it along its direction. Runs on the
+// tonemapped picture, in perceptual luma.
+@fragment
+fn fs_fxaa(in: Varyings) -> @location(0) vec4<f32> {
+    let t = post.texel.xy;
+    let c = textureSampleLevel(source, linear_clamp, in.uv, 0.0).rgb;
+    let l = sqrt(luma(c));
+    let ln = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(0.0, -t.y), 0.0).rgb));
+    let ls = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(0.0, t.y), 0.0).rgb));
+    let le = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, 0.0), 0.0).rgb));
+    let lw = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, 0.0), 0.0).rgb));
+    let lo = min(l, min(min(ln, ls), min(le, lw)));
+    let hi = max(l, max(max(ln, ls), max(le, lw)));
+    var out = c;
+    if hi - lo >= max(0.0312, hi * 0.125) {
+        let lnw = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, -t.y), 0.0).rgb));
+        let lne = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, -t.y), 0.0).rgb));
+        let lsw = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(-t.x, t.y), 0.0).rgb));
+        let lse = sqrt(luma(textureSampleLevel(source, linear_clamp, in.uv + vec2<f32>(t.x, t.y), 0.0).rgb));
+        var dir = vec2<f32>(-((lnw + lne) - (lsw + lse)), (lnw + lsw) - (lne + lse));
+        let reduce = max((lnw + lne + lsw + lse) * 0.03125, 1.0 / 128.0);
+        let scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+        dir = clamp(dir * scale, vec2<f32>(-8.0), vec2<f32>(8.0)) * t;
+        let a = 0.5 * (textureSampleLevel(source, linear_clamp, in.uv + dir * (1.0 / 3.0 - 0.5), 0.0).rgb
+            + textureSampleLevel(source, linear_clamp, in.uv + dir * (2.0 / 3.0 - 0.5), 0.0).rgb);
+        let b = a * 0.5 + 0.25 * (textureSampleLevel(source, linear_clamp, in.uv + dir * -0.5, 0.0).rgb
+            + textureSampleLevel(source, linear_clamp, in.uv + dir * 0.5, 0.0).rgb);
+        let lb = sqrt(luma(b));
+        out = select(b, a, lb < lo || lb > hi);
+    }
+    if post.a.w > 0.5 {
+        out = linear_to_srgb(out);
+    }
+    return vec4<f32>(out, 1.0);
+}

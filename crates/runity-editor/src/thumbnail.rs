@@ -102,9 +102,14 @@ impl Session {
                 color: backdrop,
                 start: 1.0e6,
                 end: 2.0e6,
+                ..Default::default()
             },
         );
         frame.clear_color = backdrop;
+        frame.sky.mode = runity::render::SkyMode::Color;
+        // A preview, as Unity draws one: tonemapped like the game, but no
+        // glow bleeding from the asset onto its backdrop.
+        frame.post.bloom.intensity = 0.0;
         let target = OffscreenTarget::new(&self.gpu, size, size);
         self.renderer.render(&self.gpu, &target, &frame);
         Ok(target.read_rgba(&self.gpu))

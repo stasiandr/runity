@@ -48,6 +48,7 @@ pub mod perf;
 #[cfg(feature = "physics")]
 pub mod physics;
 pub mod player_prefs;
+pub mod post;
 pub mod prefab;
 pub mod project;
 pub mod query;

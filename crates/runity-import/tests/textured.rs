@@ -29,6 +29,12 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
     let plane = builtin::plane(2.0, 1);
     let mesh = renderer.upload_mesh_owned(gpu, &plane);
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 3.0, 0.0),
             target: Vec3::ZERO,

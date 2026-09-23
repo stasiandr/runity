@@ -661,6 +661,32 @@ pub fn scene_fog(fog: &crate::scene::Fog) -> FogSettings {
         color: glam::Vec3::from_array(fog.color),
         start: fog.start,
         end: fog.end,
+        mode: fog.mode,
+        density: fog.density,
+    }
+}
+
+/// Everything a scene says about how its frame looks — sun, fog, sky and
+/// post-processing — around what is in the world. What a game and the
+/// editor draw a scene with, so both show the same picture.
+pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -> Frame {
+    let mut frame = build_frame(
+        world,
+        camera,
+        scene_lighting(&scene.sun),
+        scene_fog(&scene.fog),
+    );
+    scene_look(&mut frame, scene);
+    frame
+}
+
+/// Put a scene's sky and post-processing on a frame built some other way.
+pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
+    if let Some(sky) = scene.sky {
+        frame.sky = sky;
+    }
+    if let Some(post) = scene.post {
+        frame.post = post;
     }
 }
 
@@ -842,12 +868,19 @@ pub fn build_frame_where(
         camera,
         lighting,
         clear_color: fog.color,
+        // The horizon is the fog's colour, so the far hills fade into the
+        // sky rather than against it.
+        sky: crate::render::Sky {
+            horizon: fog.color.to_array(),
+            ..Default::default()
+        },
         fog,
         shadows: crate::render::ShadowSettings::default(),
         draws,
         overlay_draws: Vec::new(),
         lights,
         poses,
+        post: Default::default(),
     }
 }
 

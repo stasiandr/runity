@@ -18,7 +18,12 @@
 //! * **Distance fog, on by default.** Without it a near trunk and a far one
 //!   are the same value, and a forest reads as a flat wall of brown.
 //!
-//! Shadows are not here yet, and they are the next thing that matters.
+//! The frame is drawn the way URP draws one: into a high-dynamic-range,
+//! multisampled buffer — sky, opaque things, lights with no ceiling on
+//! how bright — and then turned into a picture by post-processing
+//! ([`crate::post`]): bloom, grading, tonemapping. Tools drawn over the
+//! scene (gizmos, outlines) go on after that, onto the finished picture,
+//! so no tonemapper or bloom touches a handle's colour.
 
 use glam::{Mat4, Vec3};
 
@@ -237,12 +242,27 @@ impl Default for Lighting {
     }
 }
 
-/// Linear distance fog.
+/// How fog thickens with distance — URP's three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum FogMode {
+    /// None at `start`, all at `end`.
+    #[default]
+    Linear,
+    /// `1 - e^(-density·d)`: thin near, never quite whole.
+    Exponential,
+    /// `1 - e^(-(density·d)²)`: clear near, closing in fast.
+    ExponentialSquared,
+}
+
+/// Distance fog.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FogSettings {
     pub color: Vec3,
     pub start: f32,
     pub end: f32,
+    pub mode: FogMode,
+    /// For the exponential modes: how thick, per metre.
+    pub density: f32,
 }
 
 impl Default for FogSettings {
@@ -251,6 +271,51 @@ impl Default for FogSettings {
             color: Vec3::new(0.62, 0.68, 0.74),
             start: 30.0,
             end: 180.0,
+            mode: FogMode::Linear,
+            density: 0.01,
+        }
+    }
+}
+
+/// What is behind everything: URP's skybox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SkyMode {
+    /// A gradient from the horizon to the zenith, the ground below, and
+    /// the sun's disc where the sun is: URP's Procedural skybox.
+    #[default]
+    Procedural,
+    /// A flat colour: the frame's `clear_color`. URP's Solid Color.
+    Color,
+}
+
+/// The sky, in linear light: HDR, so the sun's disc is far past white and
+/// blooms.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Sky {
+    pub mode: SkyMode,
+    /// Straight up.
+    pub zenith: [f32; 3],
+    /// At the horizon — best the fog's colour, so the far hills fade into
+    /// the sky rather than against it.
+    pub horizon: [f32; 3],
+    /// Below the horizon.
+    pub ground: [f32; 3],
+    /// The sun's disc, degrees across; 0 hides it.
+    pub sun_size: f32,
+    /// How bright the whole sky is.
+    pub exposure: f32,
+}
+
+impl Default for Sky {
+    fn default() -> Self {
+        Self {
+            mode: SkyMode::Procedural,
+            zenith: [0.22, 0.38, 0.66],
+            horizon: [0.62, 0.68, 0.74],
+            ground: [0.30, 0.28, 0.25],
+            sun_size: 1.5,
+            exposure: 1.0,
         }
     }
 }
@@ -361,7 +426,11 @@ pub struct Frame {
     pub lighting: Lighting,
     pub fog: FogSettings,
     pub shadows: ShadowSettings,
+    /// What is behind everything; with [`SkyMode::Color`], `clear_color`.
+    pub sky: Sky,
     pub clear_color: Vec3,
+    /// What is done to the finished frame: bloom, grading, tonemapping.
+    pub post: crate::post::PostProcess,
     pub draws: Vec<Draw>,
     /// Drawn after everything else with the depth test off, so they are
     /// never hidden by the scene.
@@ -386,7 +455,9 @@ impl Default for Frame {
             lighting: Lighting::default(),
             fog: FogSettings::default(),
             shadows: ShadowSettings::default(),
+            sky: Sky::default(),
             clear_color: Vec3::new(0.62, 0.68, 0.74),
+            post: crate::post::PostProcess::default(),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
@@ -404,9 +475,8 @@ struct FrameUniform {
     sky_color: [f32; 4],
     ground_color: [f32; 4],
     fog_color: [f32; 4],
-    /// `start`, `end`, and two words of padding: a uniform buffer's members
-    /// are 16-byte aligned, and naming the padding is cheaper than debugging
-    /// a silently shifted field.
+    /// `start`, `end`, the mode (0 linear, 1 exponential, 2 squared) and
+    /// the density.
     fog_range: [f32; 4],
     camera_position: [f32; 4],
     /// World space to the shadow map's clip space.
@@ -421,6 +491,15 @@ struct FrameUniform {
     lights: [[f32; 4]; MAX_LIGHTS * 3],
     /// How many of those are on, in `x`.
     light_count: [f32; 4],
+    /// Clip space back to the world: the sky is drawn by asking, for each
+    /// pixel, which way it looks.
+    inverse_view_projection: [[f32; 4]; 4],
+    /// Zenith colour; `w` is 1 for a procedural sky.
+    sky_zenith: [f32; 4],
+    /// Horizon colour; `w` is the cosine of the sun disc's radius.
+    sky_horizon: [f32; 4],
+    /// Ground colour; `w` is the sky's exposure.
+    sky_ground: [f32; 4],
 }
 
 /// The most point lights a frame lights with; the nearest to the camera
@@ -474,8 +553,7 @@ struct GpuMesh {
 
 /// Holds the pipeline, the uploaded meshes and the buffers a frame needs.
 pub struct Renderer {
-    pipeline: wgpu::RenderPipeline,
-    shadow_pipeline: wgpu::RenderPipeline,
+    pipelines: Pipelines,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -492,8 +570,11 @@ pub struct Renderer {
     shadow_sampler: wgpu::Sampler,
     shadow_resolution: u32,
     format: wgpu::TextureFormat,
-    skinned_pipeline: wgpu::RenderPipeline,
-    overlay_pipeline: wgpu::RenderPipeline,
+    /// Samples per pixel the scene is drawn with: 4 where the device can.
+    samples: u32,
+    /// The scene, in high dynamic range: multisampled, and resolved.
+    scene: SceneTargets,
+    post: crate::post::PostRenderer,
     pose_layout: wgpu::BindGroupLayout,
     pose_bind_group: wgpu::BindGroup,
     poses: wgpu::Buffer,
@@ -509,6 +590,67 @@ pub struct Renderer {
     pipeline_layout: wgpu::PipelineLayout,
     shadow_pipeline_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
+    sky_layout: wgpu::PipelineLayout,
+}
+
+/// Where the scene is drawn before post-processing turns it into a picture.
+struct SceneTargets {
+    /// Drawn into, `samples` per pixel; `None` when there is one sample.
+    multisampled: Option<wgpu::TextureView>,
+    /// Resolved into: what post-processing reads.
+    resolved: wgpu::TextureView,
+}
+
+fn scene_targets(gpu: &Gpu, width: u32, height: u32, samples: u32) -> SceneTargets {
+    let make = |label, samples, usage| {
+        gpu.device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format: crate::post::HDR_FORMAT,
+                usage,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    SceneTargets {
+        multisampled: (samples > 1).then(|| {
+            make(
+                "scene (multisampled)",
+                samples,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        }),
+        resolved: make(
+            "scene",
+            1,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        ),
+    }
+}
+
+/// Four samples per pixel where the device can draw the HDR format and
+/// depth that way, one where it cannot. DNA, postulate 7: antialiasing is
+/// on without anyone asking.
+fn sample_count(gpu: &Gpu) -> u32 {
+    let can = |format| {
+        gpu.adapter
+            .get_texture_format_features(format)
+            .flags
+            .sample_count_supported(4)
+    };
+    if can(crate::post::HDR_FORMAT) && can(DEPTH_FORMAT) {
+        4
+    } else {
+        1
+    }
 }
 
 /// The engine's shader, as compiled in.
@@ -555,21 +697,42 @@ impl ShaderFile {
     }
 }
 
+/// Every pipeline the renderer draws with.
+struct Pipelines {
+    main: wgpu::RenderPipeline,
+    shadow: wgpu::RenderPipeline,
+    skinned: wgpu::RenderPipeline,
+    overlay: wgpu::RenderPipeline,
+    sky: wgpu::RenderPipeline,
+}
+
+/// The layouts the pipelines are built against, kept to rebuild them when
+/// the shader is reloaded.
+struct Layouts<'a> {
+    main: &'a wgpu::PipelineLayout,
+    shadow: &'a wgpu::PipelineLayout,
+    skinned: &'a wgpu::PipelineLayout,
+    sky: &'a wgpu::PipelineLayout,
+}
+
 /// Every pipeline the renderer draws with, from one shader module: at
-/// start, and again when the shader is reloaded.
+/// start, and again when the shader is reloaded. The scene draws into the
+/// HDR format, multisampled `samples` times; overlays onto `output`, after
+/// post-processing.
 fn build_pipelines(
     gpu: &Gpu,
     shader: &wgpu::ShaderModule,
-    format: wgpu::TextureFormat,
-    pipeline_layout: &wgpu::PipelineLayout,
-    shadow_pipeline_layout: &wgpu::PipelineLayout,
-    skinned_layout: &wgpu::PipelineLayout,
-) -> (
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-    wgpu::RenderPipeline,
-) {
+    output: wgpu::TextureFormat,
+    samples: u32,
+    layouts: &Layouts,
+) -> Pipelines {
+    let format = crate::post::HDR_FORMAT;
+    let (pipeline_layout, shadow_pipeline_layout, skinned_layout) =
+        (layouts.main, layouts.shadow, layouts.skinned);
+    let multisample = wgpu::MultisampleState {
+        count: samples,
+        ..Default::default()
+    };
     let pipeline = gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -616,7 +779,7 @@ fn build_pipelines(
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -725,7 +888,7 @@ fn build_pipelines(
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample,
             multiview_mask: None,
             cache: None,
         });
@@ -764,30 +927,57 @@ fn build_pipelines(
                 module: shader,
                 entry_point: Some("fs"),
                 compilation_options: Default::default(),
-                targets: &[Some(format.into())],
+                targets: &[Some(output.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::Always),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
+            depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
-    (
-        pipeline,
-        shadow_pipeline,
-        skinned_pipeline,
-        overlay_pipeline,
-    )
+    // The sky: one triangle over the screen at the far plane, drawn after
+    // the opaque things so only what they left uncovered is shaded.
+    let sky = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::sky"),
+            layout: Some(layouts.sky),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            multiview_mask: None,
+            cache: None,
+        });
+
+    Pipelines {
+        main: pipeline,
+        shadow: shadow_pipeline,
+        skinned: skinned_pipeline,
+        overlay: overlay_pipeline,
+        sky,
+    }
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -800,7 +990,7 @@ impl Renderer {
 
     /// Draw with another shader from now on: `source` is WGSL with the
     /// entry points and bindings of [`SHADER`] — `vs`, `fs`, `vs_shadow`,
-    /// `vs_skinned`.
+    /// `vs_skinned`, `vs_sky`, `fs_sky`.
     ///
     /// Checked before anything changes: parsed and validated, with the line
     /// and column of what is wrong, and then built under an error scope, so
@@ -824,21 +1014,22 @@ impl Renderer {
                 label: Some("runity::render (reloaded)"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-        let (pipeline, shadow_pipeline, skinned_pipeline, overlay_pipeline) = build_pipelines(
+        let pipelines = build_pipelines(
             gpu,
             &shader,
             self.format,
-            &self.pipeline_layout,
-            &self.shadow_pipeline_layout,
-            &self.skinned_layout,
+            self.samples,
+            &Layouts {
+                main: &self.pipeline_layout,
+                shadow: &self.shadow_pipeline_layout,
+                skinned: &self.skinned_layout,
+                sky: &self.sky_layout,
+            },
         );
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
-        self.pipeline = pipeline;
-        self.shadow_pipeline = shadow_pipeline;
-        self.skinned_pipeline = skinned_pipeline;
-        self.overlay_pipeline = overlay_pipeline;
+        self.pipelines = pipelines;
         Ok(())
     }
 
@@ -1036,13 +1227,25 @@ impl Renderer {
                 immediate_size: 0,
             });
 
-        let (pipeline, shadow_pipeline, skinned_pipeline, overlay_pipeline) = build_pipelines(
+        let sky_layout = gpu
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("runity::sky"),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let samples = sample_count(gpu);
+        let pipelines = build_pipelines(
             gpu,
             &shader,
             format,
-            &pipeline_layout,
-            &shadow_pipeline_layout,
-            &skinned_layout,
+            samples,
+            &Layouts {
+                main: &pipeline_layout,
+                shadow: &shadow_pipeline_layout,
+                skinned: &skinned_layout,
+                sky: &sky_layout,
+            },
         );
 
         let instance_capacity = 256;
@@ -1054,22 +1257,22 @@ impl Renderer {
         });
 
         let mut renderer = Self {
-            pipeline,
-            shadow_pipeline,
+            pipelines,
             layout,
             bind_group,
             shadow_bind_group,
             frame_buffer,
             instances,
             instance_capacity,
-            depth: depth_view(gpu, width, height),
+            depth: depth_view(gpu, width, height, samples),
             depth_size: (width, height),
+            samples,
+            scene: scene_targets(gpu, width, height, samples),
+            post: crate::post::PostRenderer::new(gpu, format),
             shadow_map,
             shadow_sampler,
             shadow_resolution,
             format,
-            skinned_pipeline,
-            overlay_pipeline,
             pose_layout,
             pose_bind_group,
             poses,
@@ -1083,6 +1286,7 @@ impl Renderer {
             pipeline_layout,
             shadow_pipeline_layout,
             skinned_layout,
+            sky_layout,
         };
 
         // Handle 0 is always the white pixel, so `TextureHandle::WHITE` is a
@@ -1466,11 +1670,6 @@ impl Renderer {
                 surface.format()
             )));
         }
-        let (width, height) = (surface.width(), surface.height());
-        if self.depth_size != (width, height) {
-            self.depth = depth_view(gpu, width, height);
-            self.depth_size = (width, height);
-        }
         let acquired = surface.begin_frame()?;
         self.render_to_frame(gpu, &acquired, frame);
         acquired.present(gpu);
@@ -1493,10 +1692,6 @@ impl Renderer {
         frame: &Frame,
     ) {
         let (width, height) = (acquired.width, acquired.height);
-        if self.depth_size != (width, height) {
-            self.depth = depth_view(gpu, width, height);
-            self.depth_size = (width, height);
-        }
         self.render_into(gpu, &acquired.view, width, height, frame);
     }
 
@@ -1510,10 +1705,6 @@ impl Renderer {
 
     /// Draw one frame into an offscreen target.
     pub fn render(&mut self, gpu: &Gpu, target: &OffscreenTarget, frame: &Frame) {
-        if self.depth_size != (target.width, target.height) {
-            self.depth = depth_view(gpu, target.width, target.height);
-            self.depth_size = (target.width, target.height);
-        }
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
@@ -1526,6 +1717,11 @@ impl Renderer {
         frame: &Frame,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
+        if self.depth_size != (width, height) {
+            self.depth = depth_view(gpu, width, height, self.samples);
+            self.scene = scene_targets(gpu, width, height, self.samples);
+            self.depth_size = (width, height);
+        }
 
         if frame.shadows.enabled && self.shadow_resolution != frame.shadows.resolution {
             self.shadow_resolution = frame.shadows.resolution.max(1);
@@ -1556,7 +1752,16 @@ impl Renderer {
             sky_color: extend(frame.lighting.sky_color, 0.0),
             ground_color: extend(frame.lighting.ground_color, 0.0),
             fog_color: extend(frame.fog.color, 0.0),
-            fog_range: [frame.fog.start, frame.fog.end, 0.0, 0.0],
+            fog_range: [
+                frame.fog.start,
+                frame.fog.end,
+                match frame.fog.mode {
+                    FogMode::Linear => 0.0,
+                    FogMode::Exponential => 1.0,
+                    FogMode::ExponentialSquared => 2.0,
+                },
+                frame.fog.density.max(0.0),
+            ],
             camera_position: extend(frame.camera.apparent_eye(), 1.0),
             light_view_projection: light_view_projection.to_cols_array_2d(),
             shadow_params: [
@@ -1588,6 +1793,33 @@ impl Renderer {
                 out
             },
             light_count: [frame.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            inverse_view_projection: frame
+                .camera
+                .view_projection(aspect)
+                .inverse()
+                .to_cols_array_2d(),
+            sky_zenith: [
+                frame.sky.zenith[0],
+                frame.sky.zenith[1],
+                frame.sky.zenith[2],
+                if frame.sky.mode == SkyMode::Procedural {
+                    1.0
+                } else {
+                    0.0
+                },
+            ],
+            sky_horizon: [
+                frame.sky.horizon[0],
+                frame.sky.horizon[1],
+                frame.sky.horizon[2],
+                (frame.sky.sun_size.max(0.0).to_radians() * 0.5).cos(),
+            ],
+            sky_ground: [
+                frame.sky.ground[0],
+                frame.sky.ground[1],
+                frame.sky.ground[2],
+                frame.sky.exposure.max(0.0),
+            ],
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -1754,7 +1986,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.shadow_pipeline);
+            pass.set_pipeline(&self.pipelines.shadow);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_batches(&mut pass, &shadow_batches, 0, false);
         }
@@ -1763,9 +1995,17 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("runity::render"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: self
+                        .scene
+                        .multisampled
+                        .as_ref()
+                        .unwrap_or(&self.scene.resolved),
                     depth_slice: None,
-                    resolve_target: None,
+                    resolve_target: self
+                        .scene
+                        .multisampled
+                        .as_ref()
+                        .map(|_| &self.scene.resolved),
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: frame.clear_color.x as f64,
@@ -1788,12 +2028,12 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&self.pipelines.main);
             pass.set_bind_group(0, &self.bind_group, &[]);
             self.draw_batches(&mut pass, &batches, shadow_total as u32, true);
 
             if !skinned_draws.is_empty() {
-                pass.set_pipeline(&self.skinned_pipeline);
+                pass.set_pipeline(&self.pipelines.skinned);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 let mut instance = shadow_total as u32 + flat_colour_count;
                 for (mesh_handle, texture, pose, _) in &skinned_draws {
@@ -1824,12 +2064,47 @@ impl Renderer {
                 }
             }
 
-            if !overlay_batches.is_empty() {
-                pass.set_pipeline(&self.overlay_pipeline);
+            // The sky last among what is solid: only where nothing was
+            // drawn is it shaded at all.
+            if frame.sky.mode == SkyMode::Procedural {
+                pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
-                let base = shadow_total as u32 + flat_colour_count + skinned_draws.len() as u32;
-                self.draw_batches(&mut pass, &overlay_batches, base, true);
+                pass.draw(0..3, 0..1);
             }
+        }
+
+        self.post.run(
+            gpu,
+            &mut encoder,
+            &self.scene.resolved,
+            view,
+            (width, height),
+            &frame.post,
+        );
+
+        // Tools go on the finished picture: no tonemapper, bloom or
+        // vignette touches a handle's colour.
+        if !overlay_batches.is_empty() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("runity::overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipelines.overlay);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            let base = shadow_total as u32 + flat_colour_count + skinned_draws.len() as u32;
+            self.draw_batches(&mut pass, &overlay_batches, base, true);
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
@@ -2000,7 +2275,7 @@ fn shadow_view(gpu: &Gpu, resolution: u32) -> wgpu::TextureView {
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-fn depth_view(gpu: &Gpu, width: u32, height: u32) -> wgpu::TextureView {
+fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::TextureView {
     let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth"),
         size: wgpu::Extent3d {
@@ -2009,7 +2284,7 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32) -> wgpu::TextureView {
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

@@ -103,6 +103,12 @@ fn a_source_model_becomes_a_frame() {
         ..FogSettings::default()
     };
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         camera: Camera {
             position: runity::glam::Vec3::new(0.0, height * 0.55, height * 1.5),
             target: runity::glam::Vec3::new(0.0, height * 0.5, 0.0),

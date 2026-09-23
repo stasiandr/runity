@@ -30,6 +30,12 @@ fn shoot(
 ) -> Vec<u8> {
     let target = OffscreenTarget::new(gpu, SIZE, SIZE);
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 1.0, 5.0),
             target: Vec3::new(0.0, 1.0, 0.0),

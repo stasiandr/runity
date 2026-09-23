@@ -70,7 +70,13 @@ pub fn command(project: &Project, hot: bool, release: bool, dx: Option<&Path>) -
 /// in its own window laid out beside the others, with its own player
 /// folder, and its lines marked with whose they are. Unity's Multiplayer
 /// Play Mode, from a terminal. Ends when the host does; ending it ends all.
-pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>, link: &str) -> Result<bool> {
+pub fn players(
+    project: &Project,
+    count: u32,
+    release: bool,
+    scene: Option<&str>,
+    link: &str,
+) -> Result<bool> {
     if !(2..=4).contains(&count) {
         bail!("--players wants 2 to 4; one player is plain `runity run`");
     }
@@ -104,8 +110,14 @@ pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>
             .spawn()?;
         let label = format!("player {}", peer + 1);
         for stream in [
-            child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
-            child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
         ]
         .into_iter()
         .flatten()
@@ -113,7 +125,10 @@ pub fn players(project: &Project, count: u32, release: bool, scene: Option<&str>
             let label = label.clone();
             std::thread::spawn(move || {
                 use std::io::BufRead;
-                for line in std::io::BufReader::new(stream).lines().map_while(Result::ok) {
+                for line in std::io::BufReader::new(stream)
+                    .lines()
+                    .map_while(Result::ok)
+                {
                     println!("{label}: {line}");
                 }
             });
@@ -147,12 +162,10 @@ pub fn player_command(
     if peer == 0 {
         command.env(party::NET_VAR, format!("host:{address}"));
     } else {
-        command
-            .env(party::NET_VAR, format!("join:{address}"))
-            .env(
-                runity::player_prefs::USER_DIR_VAR,
-                project.root().join(format!(".runity/players/{}", peer + 1)),
-            );
+        command.env(party::NET_VAR, format!("join:{address}")).env(
+            runity::player_prefs::USER_DIR_VAR,
+            project.root().join(format!(".runity/players/{}", peer + 1)),
+        );
     }
     command
 }
@@ -212,13 +225,28 @@ mod tests {
                 .map(|v| v.to_string_lossy().into_owned())
         };
         let host = player_command(exe, &project, 0, 3, "127.0.0.1:4000", (1280, 720));
-        assert_eq!(env(&host, "RUNITY_NET").as_deref(), Some("host:127.0.0.1:4000"));
-        assert_eq!(env(&host, "RUNITY_WINDOW").as_deref(), Some("40,60,640,360"));
-        assert_eq!(env(&host, "RUNITY_USER_DIR"), None, "the host is the person's own");
+        assert_eq!(
+            env(&host, "RUNITY_NET").as_deref(),
+            Some("host:127.0.0.1:4000")
+        );
+        assert_eq!(
+            env(&host, "RUNITY_WINDOW").as_deref(),
+            Some("40,60,640,360")
+        );
+        assert_eq!(
+            env(&host, "RUNITY_USER_DIR"),
+            None,
+            "the host is the person's own"
+        );
         let third = player_command(exe, &project, 2, 3, "127.0.0.1:4000", (1280, 720));
-        assert_eq!(env(&third, "RUNITY_NET").as_deref(), Some("join:127.0.0.1:4000"));
+        assert_eq!(
+            env(&third, "RUNITY_NET").as_deref(),
+            Some("join:127.0.0.1:4000")
+        );
         assert_eq!(env(&third, "RUNITY_PLAYER").as_deref(), Some("Player 3"));
-        assert!(env(&third, "RUNITY_USER_DIR").unwrap().ends_with(".runity/players/3"));
+        assert!(env(&third, "RUNITY_USER_DIR")
+            .unwrap()
+            .ends_with(".runity/players/3"));
         assert!(players(&project, 7, false, None, "").is_err());
         assert!(players(&project, 2, false, None, "ping=3").is_err());
     }

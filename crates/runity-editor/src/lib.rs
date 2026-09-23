@@ -2404,12 +2404,12 @@ impl Session {
             // lighting a scene differently from the render is an editor you
             // cannot trust about anything you are looking at.
             lighting: runity::scene_lighting(&scene.sun),
-            fog: FogSettings {
-                color: Vec3::from_array(scene.fog.color),
-                start: scene.fog.start,
-                end: scene.fog.end,
-            },
+            fog: runity::scene_fog(&scene.fog),
             clear_color: Vec3::from_array(scene.fog.color),
+            sky: runity::render::Sky {
+                horizon: scene.fog.color,
+                ..Default::default()
+            },
             ..{
                 let unseen = self.unseen();
                 runity::build_frame_where(
@@ -2421,6 +2421,8 @@ impl Session {
                 )
             }
         };
+        // The scene's own sky and post-processing, as the game draws it.
+        runity::world::scene_look(&mut frame, scene);
         if self.game_view {
             // What the player sees: no grid, no handles, no outlines.
             self.renderer.render(&self.gpu, &self.target, &frame);
@@ -2471,7 +2473,19 @@ impl Session {
                 None => self.camera.apparent_distance(self.camera.target) * 1.5,
             };
             let cells = ((reach / spacing).ceil() as i32).clamp(10, 200);
-            let thickness = (self.camera.apparent_distance(self.camera.target) * 0.0012).max(0.003);
+            // A pixel wide wherever it is seen from: the frame is
+            // multisampled, and a line much thinner than a pixel comes out
+            // as a faint smear rather than a line.
+            let (_, height) = self.size();
+            let view_height = match self.camera.ortho {
+                Some(half) => half * 2.0,
+                None => {
+                    self.camera.apparent_distance(self.camera.target)
+                        * 2.0
+                        * (self.camera.fov_y_degrees.to_radians() * 0.5).tan()
+                }
+            };
+            let thickness = (view_height / height.max(1) as f32).max(0.003);
             frame.draws.extend(gizmo::grid_draws(
                 arm,
                 self.camera.target,

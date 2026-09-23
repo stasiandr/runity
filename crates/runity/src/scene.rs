@@ -1000,6 +1000,24 @@ pub struct Fog {
     pub color: [f32; 3],
     pub start: f32,
     pub end: f32,
+    /// Linear between `start` and `end`, or thickening by `density` —
+    /// URP's three. Written only when not linear.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub mode: crate::render::FogMode,
+    #[serde(default = "fog_density", skip_serializing_if = "is_fog_density")]
+    pub density: f32,
+}
+
+fn is_linear(mode: &crate::render::FogMode) -> bool {
+    *mode == crate::render::FogMode::Linear
+}
+
+fn fog_density() -> f32 {
+    0.01
+}
+
+fn is_fog_density(density: &f32) -> bool {
+    *density == fog_density()
 }
 
 impl Default for Fog {
@@ -1008,6 +1026,8 @@ impl Default for Fog {
             color: [0.62, 0.68, 0.74],
             start: 30.0,
             end: 180.0,
+            mode: crate::render::FogMode::Linear,
+            density: fog_density(),
         }
     }
 }
@@ -1118,6 +1138,14 @@ pub struct Scene {
     pub sun: Sun,
     #[serde(default)]
     pub fog: Fog,
+    /// The sky behind everything; the engine's procedural one, its horizon
+    /// the fog's colour, when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub sky: Option<crate::render::Sky>,
+    /// What is done to the finished frame — URP's Volume: bloom, grading,
+    /// tonemapping. The engine's defaults when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub post: Option<crate::post::PostProcess>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1311,6 +1339,11 @@ mod tests {
                 intensity: 0.8,
             },
             fog: Fog::default(),
+            sky: None,
+            post: Some(crate::post::PostProcess {
+                saturation: -30.0,
+                ..Default::default()
+            }),
             entities: vec![EntityDesc {
                 camera: None,
                 light: None,

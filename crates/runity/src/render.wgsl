@@ -1,6 +1,6 @@
-// The valley's whole lighting model: one sun, hemisphere ambient, distance
-// fog. See `docs/design/07-look.md` — flat shading, no specular, colour
-// instead of material.
+// The scene's lighting: one sun, hemisphere ambient, point and spot lights,
+// distance fog, and the sky behind everything. Drawn in linear light into a
+// high-dynamic-range buffer; post.wgsl turns that into a picture.
 
 struct Frame {
     view_projection: mat4x4<f32>,
@@ -11,7 +11,8 @@ struct Frame {
     sky_color: vec4<f32>,
     ground_color: vec4<f32>,
     fog_color: vec4<f32>,
-    // start, end, unused, unused
+    // start, end, mode (0 linear, 1 exponential, 2 exponential squared),
+    // density
     fog_range: vec4<f32>,
     camera_position: vec4<f32>,
     light_view_projection: mat4x4<f32>,
@@ -22,6 +23,13 @@ struct Frame {
     lights: array<vec4<f32>, 24>,
     // How many are on, in x.
     light_count: vec4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    // Zenith colour; w is 1 for a procedural sky.
+    sky_zenith: vec4<f32>,
+    // Horizon colour; w is the cosine of the sun disc's radius.
+    sky_horizon: vec4<f32>,
+    // Below the horizon; w is the sky's exposure.
+    sky_ground: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -210,9 +218,7 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     var color = albedo * light;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
-    let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
-    let fog = clamp((distance - frame.fog_range.x) / span, 0.0, 1.0);
-    color = mix(color, frame.fog_color.rgb, fog);
+    color = mix(color, frame.fog_color.rgb, fog_amount(distance));
 
     // An unlit surface takes neither the light nor the fog: it is not a
     // surface the sun falls on, it is something that emits. Selecting with a
@@ -241,4 +247,59 @@ fn metre_grid(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     let cell = floor(plane);
     let checker = abs(cell.x + cell.y) % 2.0;
     return mix(1.0, 0.88, checker) * mix(1.0, 0.45, line);
+}
+
+/// How much fog stands between the eye and a point this far away.
+fn fog_amount(distance: f32) -> f32 {
+    let mode = u32(frame.fog_range.z + 0.5);
+    let density = frame.fog_range.w;
+    if mode == 1u {
+        return 1.0 - exp(-density * distance);
+    }
+    if mode == 2u {
+        let d = density * distance;
+        return 1.0 - exp(-d * d);
+    }
+    let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
+    return clamp((distance - frame.fog_range.x) / span, 0.0, 1.0);
+}
+
+struct SkyOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+/// One triangle over the screen, on the far plane.
+@vertex
+fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
+    let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(i & 2u) * 2.0 - 1.0;
+    var out: SkyOut;
+    out.position = vec4<f32>(x, y, 1.0, 1.0);
+    out.ndc = vec2<f32>(x, y);
+    return out;
+}
+
+/// URP's procedural skybox, simply: the horizon's colour rising into the
+/// zenith's, the ground below, and the sun — a disc far brighter than white,
+/// with a glow around it — where the light comes from.
+@fragment
+fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
+    let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
+    let direction = normalize(far.xyz / far.w - near.xyz / near.w);
+    let up = direction.y;
+    var color: vec3<f32>;
+    if up >= 0.0 {
+        color = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(up, 0.45));
+    } else {
+        color = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-up, 0.3));
+    }
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    let facing = dot(direction, to_sun);
+    let radius = frame.sky_horizon.w;
+    let disc = smoothstep(radius, radius + (1.0 - radius) * 0.15, facing);
+    let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
+    let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
+    return vec4<f32>((color + sun) * frame.sky_ground.w, 1.0);
 }

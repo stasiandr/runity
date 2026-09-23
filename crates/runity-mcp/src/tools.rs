@@ -648,7 +648,11 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             session.start_game().map_err(|e| e.to_string())?;
             let players = session.players();
             let link = session.link();
-            let over = if link.is_empty() { String::new() } else { format!(", the others over a `{link}` link") };
+            let over = if link.is_empty() {
+                String::new()
+            } else {
+                format!(", the others over a `{link}` link")
+            };
             Ok(vec![text(if players > 1 {
                 format!("started with {players} players{over}; their output goes to the console as it comes")
             } else {

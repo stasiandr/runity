@@ -273,8 +273,10 @@ impl<G: Game> ApplicationHandler for Shell<G> {
                 self.config.width,
                 self.config.height,
             ));
-        if let Some((x, y, width, height)) =
-            std::env::var(WINDOW_VAR).ok().as_deref().and_then(placement)
+        if let Some((x, y, width, height)) = std::env::var(WINDOW_VAR)
+            .ok()
+            .as_deref()
+            .and_then(placement)
         {
             attributes = attributes
                 .with_position(winit::dpi::LogicalPosition::new(x, y))

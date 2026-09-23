@@ -16,6 +16,12 @@ const SIZE: u32 = 32;
 fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 4] {
     let mesh = renderer.upload_mesh_owned(gpu, &builtin::cube(2.0));
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 4.0),
             target: Vec3::ZERO,

@@ -348,6 +348,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         near.receive();
         let got = far.receive().len();
-        assert!((120..180).contains(&got), "{got} of 200 through a quarter's loss");
+        assert!(
+            (120..180).contains(&got),
+            "{got} of 200 through a quarter's loss"
+        );
     }
 }

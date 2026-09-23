@@ -218,7 +218,9 @@ impl Link {
                 events.push(LinkEvent::Connected(from));
             }
             match kind {
-                UNRELIABLE => events.push(LinkEvent::Data(from, frame[1..].to_vec(), Mode::Unreliable)),
+                UNRELIABLE => {
+                    events.push(LinkEvent::Data(from, frame[1..].to_vec(), Mode::Unreliable))
+                }
                 RELIABLE if frame.len() >= 9 => {
                     let seq = u64::from_le_bytes(frame[1..9].try_into().expect("eight bytes"));
                     let mut ack = vec![ACK];
@@ -247,7 +249,11 @@ impl Link {
             .connections
             .iter()
             .filter(|(_, c)| {
-                let patience = if c.up { self.timeout } else { self.dial_timeout };
+                let patience = if c.up {
+                    self.timeout
+                } else {
+                    self.dial_timeout
+                };
                 now.duration_since(c.heard) > patience
             })
             .map(|(p, _)| *p)
@@ -308,7 +314,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut sent = 0u32;
         while got.len() < 200 {
-            assert!(Instant::now() < deadline, "only {} of 200 in order", got.len());
+            assert!(
+                Instant::now() < deadline,
+                "only {} of 200 in order",
+                got.len()
+            );
             if sent < 200 {
                 client.send(PeerId(0), sent.to_le_bytes().to_vec(), Mode::Reliable);
                 client.send(PeerId(0), vec![9], Mode::Unreliable);
@@ -331,7 +341,10 @@ mod tests {
         server.poll();
         client.poll();
         client.close(PeerId(0));
-        assert_eq!(server.poll(), [LinkEvent::Disconnected(PeerId(1), Ended::Clean)]);
+        assert_eq!(
+            server.poll(),
+            [LinkEvent::Disconnected(PeerId(1), Ended::Clean)]
+        );
 
         let (mut server, mut client) = pair(Conditions::GOOD);
         server.timeout = Duration::from_millis(50);
@@ -339,7 +352,10 @@ mod tests {
         client.poll();
         std::mem::forget(client);
         std::thread::sleep(Duration::from_millis(80));
-        assert_eq!(server.poll(), [LinkEvent::Disconnected(PeerId(1), Ended::Silent)]);
+        assert_eq!(
+            server.poll(),
+            [LinkEvent::Disconnected(PeerId(1), Ended::Silent)]
+        );
     }
 
     #[test]
@@ -350,6 +366,9 @@ mod tests {
         client.dial(PeerId(0));
         assert!(client.poll().is_empty());
         std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(client.poll(), [LinkEvent::Disconnected(PeerId(0), Ended::Silent)]);
+        assert_eq!(
+            client.poll(),
+            [LinkEvent::Disconnected(PeerId(0), Ended::Silent)]
+        );
     }
 }

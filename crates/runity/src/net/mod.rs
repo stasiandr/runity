@@ -144,7 +144,12 @@ pub fn network_id(world: &hecs::World, entity: hecs::Entity) -> Option<EntityId>
 /// Mark an entity the game just spawned as networked and `me`'s: a fresh
 /// [`NetId`], the prefab it came from, and the owner. The next frame
 /// announces it. Returns its id.
-pub fn announce(world: &mut hecs::World, entity: hecs::Entity, me: PeerId, prefab: &str) -> EntityId {
+pub fn announce(
+    world: &mut hecs::World,
+    entity: hecs::Entity,
+    me: PeerId,
+    prefab: &str,
+) -> EntityId {
     let id = EntityId::fresh();
     let _ = world.insert(
         entity,

@@ -13,9 +13,12 @@ fn project(name: &str) -> Option<(Session, Project)> {
     let root = std::env::temp_dir().join(format!("runity-players-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../runity");
-    let project =
-        Project::create_with(&root, name, &Engine::Path(std::path::absolute(engine).unwrap()))
-            .unwrap();
+    let project = Project::create_with(
+        &root,
+        name,
+        &Engine::Path(std::path::absolute(engine).unwrap()),
+    )
+    .unwrap();
     let mut session = match Session::offscreen(64, 64) {
         Ok(session) => session,
         Err(e) => {
@@ -66,7 +69,8 @@ fn two_players_play_together_from_the_editor() {
     session.set_link("poor").unwrap();
     session.start_game().unwrap();
 
-    let said = |session: &Session, text: &str| session.console().iter().any(|l| l.text.contains(text));
+    let said =
+        |session: &Session, text: &str| session.console().iter().any(|l| l.text.contains(text));
     let deadline = Instant::now() + Duration::from_secs(900);
     while !(said(&session, "player 1: Player 2 joined")
         && said(&session, "player 2: in the game as Player 2"))
@@ -79,7 +83,10 @@ fn two_players_play_together_from_the_editor() {
     let reports = project.root().join(".runity/live/main.state.player2.ron");
     let deadline = Instant::now() + Duration::from_secs(10);
     while !reports.is_file() {
-        assert!(Instant::now() < deadline, "player 2 never said where things are");
+        assert!(
+            Instant::now() < deadline,
+            "player 2 never said where things are"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(session.stop_game());

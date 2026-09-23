@@ -105,23 +105,39 @@ pub enum ToClient {
         epoch: u32,
         session: u64,
     },
-    JoinRejected { reason: String },
+    JoinRejected {
+        reason: String,
+    },
     /// Someone is in the game — replayed for everyone, yourself included,
     /// when you are ready.
-    ClientJoined { peer: PeerId, name: String },
-    ClientLeft { peer: PeerId, clean: bool },
+    ClientJoined {
+        peer: PeerId,
+        name: String,
+    },
+    ClientLeft {
+        peer: PeerId,
+        clean: bool,
+    },
     /// What the server holds, in chunks; the last says `last`.
-    WorldState { records: Vec<Record>, last: bool },
+    WorldState {
+        records: Vec<Record>,
+        last: bool,
+    },
     Spawn {
         owner: PeerId,
         id: EntityId,
         prefab: String,
         blobs: Vec<Blob>,
     },
-    Despawn { id: EntityId },
+    Despawn {
+        id: EntityId,
+    },
     /// Who drives this now — told to everyone, the asker included, so
     /// nobody assumes a grant.
-    OwnershipChanged { id: EntityId, owner: PeerId },
+    OwnershipChanged {
+        id: EntityId,
+        owner: PeerId,
+    },
     /// An owner's entry stopped naming these: they are gone. Carries the
     /// owner's tick, so a snapshot sent before it cannot put them back.
     ComponentsRemoved {
@@ -142,7 +158,10 @@ pub enum ToClient {
         body: Vec<u8>,
     },
     /// Everyone to another scene: purge, load, say ready again.
-    SceneChanged { scene: String, epoch: u32 },
+    SceneChanged {
+        scene: String,
+        epoch: u32,
+    },
     /// The host is leaving on purpose; the session ends with it.
     SessionEnding,
 }

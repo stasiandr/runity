@@ -30,9 +30,9 @@
 //! the editor's document; the Inspector shows the host's world. Stop ends
 //! every one.
 
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::ffi::OsString;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -349,7 +349,10 @@ impl Session {
         command
             .env(runity::party::NET_VAR, format!("host:{address}"))
             .env(runity::party::PLAYER_VAR, "Player 1")
-            .env(runity::party::WINDOW_VAR, runity::party::tile(0, count, size));
+            .env(
+                runity::party::WINDOW_VAR,
+                runity::party::tile(0, count, size),
+            );
         // What every player shares with the host: the scene, the file it
         // watches. What is each one's own: its window, its state, its folder.
         let shared: Vec<(OsString, OsString)> = command
@@ -373,7 +376,10 @@ impl Session {
                 if !link.is_empty() {
                     set(runity::party::LINK_VAR, link.clone());
                 }
-                set(runity::party::WINDOW_VAR, runity::party::tile(peer, count, size));
+                set(
+                    runity::party::WINDOW_VAR,
+                    runity::party::tile(peer, count, size),
+                );
                 set(
                     runity::live::STATE_VAR,
                     state
@@ -436,13 +442,19 @@ impl Session {
             said.extend(entries.into_iter().map(|t| guest.entry(t)));
             match ended {
                 Some(status) if status.success() => {
-                    said.push((Level::Info, format!("{} ended", guest.label.as_deref().unwrap_or("a player"))));
+                    said.push((
+                        Level::Info,
+                        format!("{} ended", guest.label.as_deref().unwrap_or("a player")),
+                    ));
                     false
                 }
                 Some(status) => {
                     said.push((
                         Level::Error,
-                        format!("{} ended with {status}", guest.label.as_deref().unwrap_or("a player")),
+                        format!(
+                            "{} ended with {status}",
+                            guest.label.as_deref().unwrap_or("a player")
+                        ),
                     ));
                     false
                 }

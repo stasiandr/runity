@@ -346,21 +346,22 @@ impl PhysicsWorld {
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
-        for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in world
-            .query::<(
-                hecs::Entity,
-                &BodyHandle,
-                &Built,
-                &Physics,
-                &Shape,
-                &Transform,
-                &WorldTransform,
-                Option<&CollisionMesh>,
-                Option<&Props>,
-                Option<&Layer>,
-                Option<&crate::net::Replica>,
-            )>()
-            .iter()
+        for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
+            world
+                .query::<(
+                    hecs::Entity,
+                    &BodyHandle,
+                    &Built,
+                    &Physics,
+                    &Shape,
+                    &Transform,
+                    &WorldTransform,
+                    Option<&CollisionMesh>,
+                    Option<&Props>,
+                    Option<&Layer>,
+                    Option<&crate::net::Replica>,
+                )>()
+                .iter()
         {
             let body = solved(physics.0, replica.is_some());
             let mesh = mesh.map_or(0, CollisionMesh::key);
@@ -1773,19 +1774,33 @@ mod tests {
             physics.run(&mut world);
         }
         let y = world.get::<&Transform>(ball).unwrap().position.y;
-        assert!((y - 3.0).abs() < 1e-4, "a replica hangs where its owner last put it: {y}");
+        assert!(
+            (y - 3.0).abs() < 1e-4,
+            "a replica hangs where its owner last put it: {y}"
+        );
         // Its owner moved it: here it goes where they say.
         world.get::<&mut Transform>(ball).unwrap().position.x = 2.0;
         crate::world::apply_hierarchy(&mut world);
         physics.run(&mut world);
         physics.run(&mut world);
-        assert!((physics.position(*world.get::<&BodyHandle>(ball).unwrap()).unwrap().x - 2.0).abs() < 1e-3);
+        assert!(
+            (physics
+                .position(*world.get::<&BodyHandle>(ball).unwrap())
+                .unwrap()
+                .x
+                - 2.0)
+                .abs()
+                < 1e-3
+        );
         // Handed to this peer: it is ours to drop.
         let _ = world.remove_one::<crate::net::Replica>(ball);
         for _ in 0..30 {
             physics.run(&mut world);
         }
-        assert!(world.get::<&Transform>(ball).unwrap().position.y < 2.9, "falls once it is ours");
+        assert!(
+            world.get::<&Transform>(ball).unwrap().position.y < 2.9,
+            "falls once it is ours"
+        );
     }
 
     /// The one entity with this kind of body.

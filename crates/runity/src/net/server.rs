@@ -130,14 +130,16 @@ impl Server {
             for event in self.links[index].poll() {
                 match event {
                     LinkEvent::Connected(_) => {}
-                    LinkEvent::Data(endpoint, bytes, _) => match protocol::decode::<ToServer>(&bytes) {
-                        Ok(messages) => {
-                            for message in messages {
-                                self.dispatch((index, endpoint), message);
+                    LinkEvent::Data(endpoint, bytes, _) => {
+                        match protocol::decode::<ToServer>(&bytes) {
+                            Ok(messages) => {
+                                for message in messages {
+                                    self.dispatch((index, endpoint), message);
+                                }
                             }
+                            Err(e) => self.log.push(format!("from {endpoint:?}: {e}")),
                         }
-                        Err(e) => self.log.push(format!("from {endpoint:?}: {e}")),
-                    },
+                    }
                     LinkEvent::Disconnected(endpoint, ended) => {
                         if let Some(peer) = self.by_key.get(&(index, endpoint)).copied() {
                             self.leave(peer, ended == Ended::Clean);
@@ -162,7 +164,7 @@ impl Server {
         self.outboxes.entry(to).or_default().reliable.push(message);
     }
 
-    fn to_ready(&mut self, message: ToClient, except: Option<PeerId>, mode: Mode) {
+    fn broadcast(&mut self, message: ToClient, except: Option<PeerId>, mode: Mode) {
         let ready: Vec<PeerId> = self
             .clients
             .iter()
@@ -184,7 +186,10 @@ impl Server {
                 continue;
             };
             let (index, endpoint) = client.key;
-            for (messages, mode) in [(outbox.reliable, Mode::Reliable), (outbox.unreliable, Mode::Unreliable)] {
+            for (messages, mode) in [
+                (outbox.reliable, Mode::Reliable),
+                (outbox.unreliable, Mode::Unreliable),
+            ] {
                 for datagram in protocol::pack(messages, DATAGRAM_BUDGET) {
                     self.links[index].send(endpoint, datagram, mode);
                 }
@@ -194,7 +199,12 @@ impl Server {
 
     fn dispatch(&mut self, key: Key, message: ToServer) {
         let Some(peer) = self.by_key.get(&key).copied() else {
-            if let ToServer::JoinRequest { protocol, fingerprint, name } = message {
+            if let ToServer::JoinRequest {
+                protocol,
+                fingerprint,
+                name,
+            } = message
+            {
                 self.join(key, protocol, fingerprint, name);
             }
             return;
@@ -208,15 +218,22 @@ impl Server {
                 if peer == PeerId::HOST {
                     self.set_scene(scene);
                 } else {
-                    self.log.push(format!("peer {} may not change the scene", peer.0));
+                    self.log
+                        .push(format!("peer {} may not change the scene", peer.0));
                 }
             }
             ToServer::Rpc { to, kind, body } => {
-                let message = ToClient::Rpc { from: peer, kind, body };
+                let message = ToClient::Rpc {
+                    from: peer,
+                    kind,
+                    body,
+                };
                 match to {
-                    Some(target) if self.clients.contains_key(&target) => self.reliable(target, message),
+                    Some(target) if self.clients.contains_key(&target) => {
+                        self.reliable(target, message)
+                    }
                     Some(_) => {}
-                    None => self.to_ready(message, Some(peer), Mode::Reliable),
+                    None => self.broadcast(message, Some(peer), Mode::Reliable),
                 }
             }
             // Everything else is about entities, and waits for the gate:
@@ -228,9 +245,16 @@ impl Server {
             | ToServer::OwnershipRequest { epoch, .. }
             | ToServer::Snapshot { epoch, .. }
                 if epoch != self.epoch => {}
-            ToServer::Spawn { id, prefab, despawn_with_owner, blobs, .. } => {
+            ToServer::Spawn {
+                id,
+                prefab,
+                despawn_with_owner,
+                blobs,
+                ..
+            } => {
                 if self.entities.contains_key(&id) {
-                    self.log.push(format!("{id}: spawned twice; the second is dropped"));
+                    self.log
+                        .push(format!("{id}: spawned twice; the second is dropped"));
                     return;
                 }
                 self.entities.insert(
@@ -244,12 +268,24 @@ impl Server {
                         tick: None,
                     },
                 );
-                self.to_ready(ToClient::Spawn { owner: peer, id, prefab, blobs }, Some(peer), Mode::Reliable);
+                self.broadcast(
+                    ToClient::Spawn {
+                        owner: peer,
+                        id,
+                        prefab,
+                        blobs,
+                    },
+                    Some(peer),
+                    Mode::Reliable,
+                );
             }
             ToServer::Despawn { id, .. } => {
                 let Some(held) = self.held(id) else { return };
                 if held.owner != peer {
-                    self.log.push(format!("{id}: peer {} despawned it, but does not own it", peer.0));
+                    self.log.push(format!(
+                        "{id}: peer {} despawned it, but does not own it",
+                        peer.0
+                    ));
                     return;
                 }
                 if held.prefab.is_some() {
@@ -260,7 +296,7 @@ impl Server {
                     held.gone = true;
                     held.blobs.clear();
                 }
-                self.to_ready(ToClient::Despawn { id }, Some(peer), Mode::Reliable);
+                self.broadcast(ToClient::Despawn { id }, Some(peer), Mode::Reliable);
             }
             ToServer::OwnershipRequest { id, .. } => {
                 let Some(held) = self.held(id) else { return };
@@ -274,9 +310,18 @@ impl Server {
                 }
                 held.owner = peer;
                 held.tick = None;
-                self.to_ready(ToClient::OwnershipChanged { id, owner: peer }, None, Mode::Reliable);
+                self.broadcast(
+                    ToClient::OwnershipChanged { id, owner: peer },
+                    None,
+                    Mode::Reliable,
+                );
             }
-            ToServer::Snapshot { tick, settle, entries, .. } => self.snapshot(peer, tick, settle, entries),
+            ToServer::Snapshot {
+                tick,
+                settle,
+                entries,
+                ..
+            } => self.snapshot(peer, tick, settle, entries),
         }
     }
 
@@ -297,7 +342,9 @@ impl Server {
     fn join(&mut self, key: Key, version: u32, fingerprint: u64, name: String) {
         let refuse = |reason: String| ToClient::JoinRejected { reason };
         let refusal = if version != PROTOCOL {
-            Some(format!("protocol {version}, but this game speaks {PROTOCOL}"))
+            Some(format!(
+                "protocol {version}, but this game speaks {PROTOCOL}"
+            ))
         } else if fingerprint != self.fingerprint {
             Some("a different build: its networked components differ from the host's".to_string())
         } else {
@@ -317,9 +364,20 @@ impl Server {
             peer
         };
         self.by_key.insert(key, peer);
-        let name = if name.is_empty() { format!("Player {}", peer.0 + 1) } else { name };
+        let name = if name.is_empty() {
+            format!("Player {}", peer.0 + 1)
+        } else {
+            name
+        };
         self.log.push(format!("peer {} ({name}) joined", peer.0));
-        self.clients.insert(peer, Client { key, name, ready: false });
+        self.clients.insert(
+            peer,
+            Client {
+                key,
+                name,
+                ready: false,
+            },
+        );
         let accepted = ToClient::JoinAccepted {
             you: peer,
             host: PeerId::HOST,
@@ -336,7 +394,9 @@ impl Server {
         if epoch != self.epoch {
             return;
         }
-        let Some(client) = self.clients.get_mut(&peer) else { return };
+        let Some(client) = self.clients.get_mut(&peer) else {
+            return;
+        };
         if client.ready {
             return;
         }
@@ -346,12 +406,19 @@ impl Server {
             .clients
             .iter()
             .filter(|(_, c)| c.ready)
-            .map(|(p, c)| ToClient::ClientJoined { peer: *p, name: c.name.clone() })
+            .map(|(p, c)| ToClient::ClientJoined {
+                peer: *p,
+                name: c.name.clone(),
+            })
             .collect();
         for message in roster {
             self.reliable(peer, message);
         }
-        self.to_ready(ToClient::ClientJoined { peer, name }, Some(peer), Mode::Reliable);
+        self.broadcast(
+            ToClient::ClientJoined { peer, name },
+            Some(peer),
+            Mode::Reliable,
+        );
         let mut records: Vec<Record> = self
             .entities
             .iter()
@@ -360,7 +427,11 @@ impl Server {
                 owner: held.owner,
                 prefab: held.prefab.clone(),
                 gone: held.gone,
-                blobs: held.blobs.iter().map(|(n, b)| (n.clone(), b.clone())).collect(),
+                blobs: held
+                    .blobs
+                    .iter()
+                    .map(|(n, b)| (n.clone(), b.clone()))
+                    .collect(),
             })
             .collect();
         records.sort_by_key(|r| r.id);
@@ -382,7 +453,13 @@ impl Server {
         }
         let count = chunks.len();
         for (i, records) in chunks.into_iter().enumerate() {
-            self.reliable(peer, ToClient::WorldState { records, last: i + 1 == count });
+            self.reliable(
+                peer,
+                ToClient::WorldState {
+                    records,
+                    last: i + 1 == count,
+                },
+            );
         }
     }
 
@@ -397,7 +474,9 @@ impl Server {
             if !known && peer != PeerId::HOST {
                 continue;
             }
-            let Some(held) = self.held(entry.id) else { continue };
+            let Some(held) = self.held(entry.id) else {
+                continue;
+            };
             if held.owner != peer || held.gone {
                 continue;
             }
@@ -418,16 +497,33 @@ impl Server {
                 held.blobs.insert(name.clone(), bytes.clone());
             }
             if !names.is_empty() {
-                removed.push(ToClient::ComponentsRemoved { id: entry.id, tick, names });
+                removed.push(ToClient::ComponentsRemoved {
+                    id: entry.id,
+                    tick,
+                    names,
+                });
             }
             forward.push(entry);
         }
         for message in removed {
-            self.to_ready(message, Some(peer), Mode::Reliable);
+            self.broadcast(message, Some(peer), Mode::Reliable);
         }
         if !forward.is_empty() {
-            let mode = if settle { Mode::Reliable } else { Mode::Unreliable };
-            self.to_ready(ToClient::Snapshot { owner: peer, tick, settle, entries: forward }, Some(peer), mode);
+            let mode = if settle {
+                Mode::Reliable
+            } else {
+                Mode::Unreliable
+            };
+            self.broadcast(
+                ToClient::Snapshot {
+                    owner: peer,
+                    tick,
+                    settle,
+                    entries: forward,
+                },
+                Some(peer),
+                mode,
+            );
         }
     }
 
@@ -440,18 +536,30 @@ impl Server {
         }
         let everyone: Vec<PeerId> = self.clients.keys().copied().collect();
         for peer in everyone {
-            self.reliable(peer, ToClient::SceneChanged { scene: scene.clone(), epoch: self.epoch });
+            self.reliable(
+                peer,
+                ToClient::SceneChanged {
+                    scene: scene.clone(),
+                    epoch: self.epoch,
+                },
+            );
         }
     }
 
     /// A client gone: everyone told, its things to whoever owns fewest —
     /// or with it, when they were to die with their owner.
     fn leave(&mut self, peer: PeerId, clean: bool) {
-        let Some(client) = self.clients.remove(&peer) else { return };
+        let Some(client) = self.clients.remove(&peer) else {
+            return;
+        };
         self.by_key.remove(&client.key);
         self.outboxes.remove(&peer);
-        self.log.push(format!("peer {} left{}", peer.0, if clean { "" } else { ", silent" }));
-        self.to_ready(ToClient::ClientLeft { peer, clean }, None, Mode::Reliable);
+        self.log.push(format!(
+            "peer {} left{}",
+            peer.0,
+            if clean { "" } else { ", silent" }
+        ));
+        self.broadcast(ToClient::ClientLeft { peer, clean }, None, Mode::Reliable);
         let orphans: Vec<EntityId> = {
             let mut ids: Vec<EntityId> = self
                 .entities
@@ -466,7 +574,7 @@ impl Server {
             let dies = self.entities.get(&id).is_some_and(|h| h.despawn_with_owner);
             if dies {
                 self.entities.remove(&id);
-                self.to_ready(ToClient::Despawn { id }, None, Mode::Reliable);
+                self.broadcast(ToClient::Despawn { id }, None, Mode::Reliable);
                 continue;
             }
             let Some(heir) = self.heir() else {
@@ -482,7 +590,11 @@ impl Server {
                 held.owner = heir;
                 held.tick = None;
             }
-            self.to_ready(ToClient::OwnershipChanged { id, owner: heir }, None, Mode::Reliable);
+            self.broadcast(
+                ToClient::OwnershipChanged { id, owner: heir },
+                None,
+                Mode::Reliable,
+            );
         }
     }
 
@@ -532,7 +644,10 @@ impl ServerThread {
                 server.end();
             })
             .expect("a thread for the server");
-        Self { stop, thread: Some(thread) }
+        Self {
+            stop,
+            thread: Some(thread),
+        }
     }
 }
 
@@ -585,7 +700,9 @@ mod tests {
                     link.poll()
                         .into_iter()
                         .filter_map(|e| match e {
-                            LinkEvent::Data(_, bytes, _) => protocol::decode::<ToClient>(&bytes).ok(),
+                            LinkEvent::Data(_, bytes, _) => {
+                                protocol::decode::<ToClient>(&bytes).ok()
+                            }
                             _ => None,
                         })
                         .flatten()
@@ -610,7 +727,11 @@ mod tests {
     }
 
     fn join(name: &str) -> ToServer {
-        ToServer::JoinRequest { protocol: PROTOCOL, fingerprint: 7, name: name.into() }
+        ToServer::JoinRequest {
+            protocol: PROTOCOL,
+            fingerprint: 7,
+            name: name.into(),
+        }
     }
 
     fn id(n: u64) -> EntityId {
@@ -622,7 +743,10 @@ mod tests {
             epoch: 1,
             tick,
             settle: false,
-            entries: vec![Entry { id: id(n), blobs: vec![("hp".into(), vec![value])] }],
+            entries: vec![Entry {
+                id: id(n),
+                blobs: vec![("hp".into(), vec![value])],
+            }],
         }
     }
 
@@ -632,8 +756,18 @@ mod tests {
         rig.say(1, vec![join("guest")]);
         rig.say(0, vec![join("host")]);
         let heard = rig.run();
-        assert!(matches!(heard[0][0], ToClient::JoinAccepted { you: PeerId(0), epoch: 1, .. }));
-        assert!(matches!(heard[1][0], ToClient::JoinAccepted { you: PeerId(1), .. }));
+        assert!(matches!(
+            heard[0][0],
+            ToClient::JoinAccepted {
+                you: PeerId(0),
+                epoch: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            heard[1][0],
+            ToClient::JoinAccepted { you: PeerId(1), .. }
+        ));
         // The host plays before the guest is ready: the guest hears
         // nothing of it until then.
         rig.say(0, vec![ToServer::Ready { epoch: 1 }, snapshot(1, 5, 1)]);
@@ -650,7 +784,10 @@ mod tests {
             .collect();
         assert_eq!(names, ["host", "guest"], "the roster, itself included");
         let world = heard[1].iter().find_map(|m| match m {
-            ToClient::WorldState { records, last: true } => Some(records.clone()),
+            ToClient::WorldState {
+                records,
+                last: true,
+            } => Some(records.clone()),
             _ => None,
         });
         let world = world.expect("the world after the roster");
@@ -661,19 +798,40 @@ mod tests {
     #[test]
     fn another_build_is_turned_away() {
         let mut rig = Rig::new(1);
-        rig.say(0, vec![ToServer::JoinRequest { protocol: PROTOCOL, fingerprint: 8, name: "x".into() }]);
+        rig.say(
+            0,
+            vec![ToServer::JoinRequest {
+                protocol: PROTOCOL,
+                fingerprint: 8,
+                name: "x".into(),
+            }],
+        );
         let heard = rig.run();
-        assert!(matches!(&heard[0][0], ToClient::JoinRejected { reason } if reason.contains("different build")));
+        assert!(
+            matches!(&heard[0][0], ToClient::JoinRejected { reason } if reason.contains("different build"))
+        );
         assert!(rig.server.members().is_empty());
     }
 
     #[test]
     fn a_claim_is_granted_and_told_to_everyone_and_the_old_owner_is_no_longer_heard() {
         let mut rig = Rig::all_in(3);
-        rig.say(2, vec![ToServer::OwnershipRequest { epoch: 1, id: id(9) }]);
+        rig.say(
+            2,
+            vec![ToServer::OwnershipRequest {
+                epoch: 1,
+                id: id(9),
+            }],
+        );
         let heard = rig.run();
         for client in &heard {
-            assert!(client.contains(&ToClient::OwnershipChanged { id: id(9), owner: PeerId(2) }), "{client:?}");
+            assert!(
+                client.contains(&ToClient::OwnershipChanged {
+                    id: id(9),
+                    owner: PeerId(2)
+                }),
+                "{client:?}"
+            );
         }
         // The host still talking about it is dropped; the new owner's word
         // goes through, even at a lower tick — a new owner is a new clock.
@@ -699,10 +857,22 @@ mod tests {
         assert!(rig.run()[1].is_empty(), "older than what is held");
         rig.say(
             0,
-            vec![ToServer::Snapshot { epoch: 1, tick: 6, settle: true, entries: vec![Entry { id: id(4), blobs: vec![] }] }],
+            vec![ToServer::Snapshot {
+                epoch: 1,
+                tick: 6,
+                settle: true,
+                entries: vec![Entry {
+                    id: id(4),
+                    blobs: vec![],
+                }],
+            }],
         );
         let heard = rig.run();
-        assert!(heard[1].contains(&ToClient::ComponentsRemoved { id: id(4), tick: 6, names: vec!["hp".into()] }));
+        assert!(heard[1].contains(&ToClient::ComponentsRemoved {
+            id: id(4),
+            tick: 6,
+            names: vec!["hp".into()]
+        }));
     }
 
     #[test]
@@ -711,8 +881,20 @@ mod tests {
         rig.say(
             2,
             vec![
-                ToServer::Spawn { epoch: 1, id: id(20), prefab: "crate".into(), despawn_with_owner: false, blobs: vec![] },
-                ToServer::Spawn { epoch: 1, id: id(21), prefab: "pawn".into(), despawn_with_owner: true, blobs: vec![] },
+                ToServer::Spawn {
+                    epoch: 1,
+                    id: id(20),
+                    prefab: "crate".into(),
+                    despawn_with_owner: false,
+                    blobs: vec![],
+                },
+                ToServer::Spawn {
+                    epoch: 1,
+                    id: id(21),
+                    prefab: "pawn".into(),
+                    despawn_with_owner: true,
+                    blobs: vec![],
+                },
             ],
         );
         // The host already drives two things; peer 1 nothing.
@@ -720,21 +902,44 @@ mod tests {
         rig.run();
         rig.say(2, vec![ToServer::Leave]);
         let heard = rig.run();
-        assert!(heard[0].contains(&ToClient::ClientLeft { peer: PeerId(2), clean: true }));
+        assert!(heard[0].contains(&ToClient::ClientLeft {
+            peer: PeerId(2),
+            clean: true
+        }));
         assert!(heard[0].contains(&ToClient::Despawn { id: id(21) }));
-        assert!(heard[0].contains(&ToClient::OwnershipChanged { id: id(20), owner: PeerId(1) }));
+        assert!(heard[0].contains(&ToClient::OwnershipChanged {
+            id: id(20),
+            owner: PeerId(1)
+        }));
         assert_eq!(rig.server.owner(id(20)), Some(PeerId(1)));
     }
 
     #[test]
     fn only_the_host_moves_everyone_and_the_old_epoch_is_dropped() {
         let mut rig = Rig::all_in(2);
-        rig.say(1, vec![ToServer::SetScene { scene: "cave".into() }]);
+        rig.say(
+            1,
+            vec![ToServer::SetScene {
+                scene: "cave".into(),
+            }],
+        );
         rig.run();
-        assert!(rig.server.log.iter().any(|l| l.contains("may not change the scene")));
-        rig.say(0, vec![ToServer::SetScene { scene: "cave".into() }]);
+        assert!(rig
+            .server
+            .log
+            .iter()
+            .any(|l| l.contains("may not change the scene")));
+        rig.say(
+            0,
+            vec![ToServer::SetScene {
+                scene: "cave".into(),
+            }],
+        );
         let heard = rig.run();
-        assert!(heard[1].contains(&ToClient::SceneChanged { scene: "cave".into(), epoch: 2 }));
+        assert!(heard[1].contains(&ToClient::SceneChanged {
+            scene: "cave".into(),
+            epoch: 2
+        }));
         let mut moved = snapshot(9, 4, 1);
         if let ToServer::Snapshot { epoch, .. } = &mut moved {
             *epoch = 2;
@@ -743,7 +948,13 @@ mod tests {
         rig.say(1, vec![ToServer::Ready { epoch: 2 }]);
         rig.run();
         // A straggler from the old scene names an id the new one reuses.
-        rig.say(1, vec![ToServer::OwnershipRequest { epoch: 1, id: id(4) }]);
+        rig.say(
+            1,
+            vec![ToServer::OwnershipRequest {
+                epoch: 1,
+                id: id(4),
+            }],
+        );
         rig.run();
         assert_eq!(rig.server.owner(id(4)), Some(PeerId::HOST));
     }
@@ -751,9 +962,20 @@ mod tests {
     #[test]
     fn a_message_for_everyone_goes_to_everyone_else() {
         let mut rig = Rig::all_in(3);
-        rig.say(1, vec![ToServer::Rpc { to: None, kind: "bell".into(), body: vec![1] }]);
+        rig.say(
+            1,
+            vec![ToServer::Rpc {
+                to: None,
+                kind: "bell".into(),
+                body: vec![1],
+            }],
+        );
         let heard = rig.run();
-        let bell = ToClient::Rpc { from: PeerId(1), kind: "bell".into(), body: vec![1] };
+        let bell = ToClient::Rpc {
+            from: PeerId(1),
+            kind: "bell".into(),
+            body: vec![1],
+        };
         assert!(heard[0].contains(&bell) && heard[2].contains(&bell));
         assert!(!heard[1].contains(&bell), "not back to the sender");
     }

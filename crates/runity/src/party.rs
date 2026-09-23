@@ -98,7 +98,9 @@ pub fn tile(n: u32, count: u32, (width, height): (u32, u32)) -> String {
 
 /// A UDP port on this machine nobody is using, for a host to listen on.
 pub fn free_port() -> std::io::Result<u16> {
-    Ok(std::net::UdpSocket::bind("127.0.0.1:0")?.local_addr()?.port())
+    Ok(std::net::UdpSocket::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port())
 }
 
 /// What happened in the party, for the game to show or act on.
@@ -113,7 +115,11 @@ pub enum Event {
     /// Someone is in the game.
     Joined { peer: PeerId, name: String },
     /// Someone left — `clean` when they said so, rather than went quiet.
-    Left { peer: PeerId, name: String, clean: bool },
+    Left {
+        peer: PeerId,
+        name: String,
+        clean: bool,
+    },
     /// The host is gone (`quit`: on purpose). The world stays; the party
     /// redials.
     HostLost { quit: bool },
@@ -125,7 +131,11 @@ pub enum Event {
     ClaimLost { id: EntityId, owner: PeerId },
     /// Something that happened once, published by `from` ([`Party::publish`];
     /// decode it with [`Event::decode`]).
-    Message { from: PeerId, kind: String, body: Vec<u8> },
+    Message {
+        from: PeerId,
+        kind: String,
+        body: Vec<u8>,
+    },
     /// Its owner stopped talking about it without saying it came to rest.
     Silent { id: EntityId, owner: PeerId },
     /// What could not be done here, in words.
@@ -156,7 +166,9 @@ enum Stage {
     /// Ready: the world is on its way, or here.
     Playing,
     /// The host is gone; redialling at `retry`.
-    Lost { retry: Instant },
+    Lost {
+        retry: Instant,
+    },
     Rejected,
 }
 
@@ -187,7 +199,13 @@ pub struct Party {
 const SERVER: PeerId = PeerId(0);
 
 impl Party {
-    fn client(mut link: Link, scene: &str, name: &str, components: &Components, hosting: Option<Hosting>) -> Self {
+    fn client(
+        mut link: Link,
+        scene: &str,
+        name: &str,
+        components: &Components,
+        hosting: Option<Hosting>,
+    ) -> Self {
         link.dial(SERVER);
         Self {
             name: name.to_string(),
@@ -233,7 +251,13 @@ impl Party {
         } else {
             Hosting::Inline(Box::new(server))
         };
-        Self::client(Link::dialling(client_end), scene, name, components, Some(hosting))
+        Self::client(
+            Link::dialling(client_end),
+            scene,
+            name,
+            components,
+            Some(hosting),
+        )
     }
 
     /// A game on its own: the host of a session nobody else can reach.
@@ -244,7 +268,12 @@ impl Party {
     }
 
     /// Join the session whose server `transport` reaches at endpoint 0.
-    pub fn join(transport: impl Transport + Send + 'static, scene: &str, name: &str, components: &Components) -> Self {
+    pub fn join(
+        transport: impl Transport + Send + 'static,
+        scene: &str,
+        name: &str,
+        components: &Components,
+    ) -> Self {
         Self::client(Link::dialling(transport), scene, name, components, None)
     }
 
@@ -252,7 +281,13 @@ impl Party {
     /// for a game that has `scene` loaded.
     pub fn from_env(scene: &str, components: &Components) -> Result<Self, String> {
         let var = |name: &str| std::env::var(name).unwrap_or_default();
-        Self::from_words(&var(NET_VAR), &var(PLAYER_VAR), &var(LINK_VAR), scene, components)
+        Self::from_words(
+            &var(NET_VAR),
+            &var(PLAYER_VAR),
+            &var(LINK_VAR),
+            scene,
+            components,
+        )
     }
 
     /// [`Party::from_env`], given the values.
@@ -286,10 +321,14 @@ impl Party {
                 Ok(Self::host(scene, player, components, vec![bad(udp)], true))
             }
             "join" => {
-                let host: std::net::SocketAddr = address
-                    .parse()
-                    .map_err(|e| format!("{NET_VAR}=`{net}`: `{address}` is not an address: {e}"))?;
-                let any = if host.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+                let host: std::net::SocketAddr = address.parse().map_err(|e| {
+                    format!("{NET_VAR}=`{net}`: `{address}` is not an address: {e}")
+                })?;
+                let any = if host.is_ipv4() {
+                    "0.0.0.0:0"
+                } else {
+                    "[::]:0"
+                };
                 // The endpoint this socket introduces itself as: anything
                 // but the server's 0.
                 let me = PeerId((seed as u32) | 1);
@@ -355,15 +394,21 @@ impl Party {
     /// Remove something for everyone. Only what this peer owns for sure —
     /// not on an assumption, since a removal cannot be taken back.
     pub fn despawn(&mut self, world: &mut hecs::World, entity: hecs::Entity) -> bool {
-        let sure = world.get::<&Owned>(entity).is_ok() && world.get::<&OwnershipPending>(entity).is_err();
-        let Some(id) = network_id(world, entity) else { return false };
+        let sure =
+            world.get::<&Owned>(entity).is_ok() && world.get::<&OwnershipPending>(entity).is_err();
+        let Some(id) = network_id(world, entity) else {
+            return false;
+        };
         if !sure {
             return false;
         }
         // A spawned one is found gone by the next gather; a scene one has
         // to be said, since a scene unloading looks the same.
         if world.get::<&NetId>(entity).is_err() {
-            self.outbox.push(ToServer::Despawn { epoch: self.sync.epoch, id });
+            self.outbox.push(ToServer::Despawn {
+                epoch: self.sync.epoch,
+                id,
+            });
         }
         despawn_tree(world, entity);
         true
@@ -374,15 +419,25 @@ impl Party {
     /// peer, this one included.
     pub fn publish<T: Serialize>(&mut self, kind: &str, value: &T) {
         let body = postcard::to_stdvec(value).unwrap_or_default();
-        self.local.push(Event::Message { from: self.me(), kind: kind.to_string(), body: body.clone() });
-        self.outbox.push(ToServer::Rpc { to: None, kind: kind.to_string(), body });
+        self.local.push(Event::Message {
+            from: self.me(),
+            kind: kind.to_string(),
+            body: body.clone(),
+        });
+        self.outbox.push(ToServer::Rpc {
+            to: None,
+            kind: kind.to_string(),
+            body,
+        });
     }
 
     /// Move everyone to another scene (the host only): every peer gets
     /// [`Event::SceneRequired`], this one too.
     pub fn set_scene(&mut self, scene: &str) {
         if self.is_host() {
-            self.outbox.push(ToServer::SetScene { scene: scene.to_string() });
+            self.outbox.push(ToServer::SetScene {
+                scene: scene.to_string(),
+            });
         }
     }
 
@@ -391,7 +446,9 @@ impl Party {
         self.scene = scene.to_string();
         if self.stage == Stage::Loading {
             self.stage = Stage::Playing;
-            self.outbox.push(ToServer::Ready { epoch: self.sync.epoch });
+            self.outbox.push(ToServer::Ready {
+                epoch: self.sync.epoch,
+            });
         }
     }
 
@@ -463,7 +520,9 @@ impl Party {
         if let Stage::Lost { retry } = self.stage {
             if Instant::now() >= retry {
                 self.link.dial(SERVER);
-                self.stage = Stage::Lost { retry: Instant::now() + Duration::from_secs(3) };
+                self.stage = Stage::Lost {
+                    retry: Instant::now() + Duration::from_secs(3),
+                };
             }
         }
         let playing = self.stage == Stage::Playing && self.welcomed;
@@ -481,16 +540,21 @@ impl Party {
             if self.since_send >= period {
                 self.since_send = (self.since_send - period).min(period);
                 let (mut reliable, mut unreliable) = (Vec::new(), Vec::new());
-                self.sync.gather(world, components, &mut reliable, &mut unreliable);
+                self.sync
+                    .gather(world, components, &mut reliable, &mut unreliable);
                 self.send(reliable, Mode::Reliable);
                 self.send(unreliable, Mode::Unreliable);
             }
         } else {
             // Ready, a scene change and messages go out before the gate
             // opens; anything about entities waits.
-            let (early, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.outbox)
-                .into_iter()
-                .partition(|m| matches!(m, ToServer::Ready { .. } | ToServer::SetScene { .. } | ToServer::Rpc { .. }));
+            let (early, later): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.outbox).into_iter().partition(|m| {
+                    matches!(
+                        m,
+                        ToServer::Ready { .. } | ToServer::SetScene { .. } | ToServer::Rpc { .. }
+                    )
+                });
             self.send(early, Mode::Reliable);
             self.outbox = later;
         }
@@ -503,7 +567,9 @@ impl Party {
         if matches!(self.stage, Stage::Lost { .. } | Stage::Rejected) || self.hosting.is_some() {
             return;
         }
-        self.stage = Stage::Lost { retry: Instant::now() + Duration::from_secs(1) };
+        self.stage = Stage::Lost {
+            retry: Instant::now() + Duration::from_secs(1),
+        };
         self.welcomed = false;
         self.was_lost = true;
         events.push(Event::HostLost { quit });
@@ -518,7 +584,13 @@ impl Party {
         events: &mut Vec<Event>,
     ) {
         match message {
-            ToClient::JoinAccepted { you, scene, epoch, session, .. } => {
+            ToClient::JoinAccepted {
+                you,
+                scene,
+                epoch,
+                session,
+                ..
+            } => {
                 let old = self.sync.me;
                 // Another session, or ours come back: what we spawned and
                 // own is ours under our new number, the scene's goes back
@@ -574,7 +646,9 @@ impl Party {
                                 events.push(Event::HostBack);
                             }
                         }
-                        Noticed::ClaimLost(id, owner) => events.push(Event::ClaimLost { id, owner }),
+                        Noticed::ClaimLost(id, owner) => {
+                            events.push(Event::ClaimLost { id, owner })
+                        }
                         Noticed::Problem(p) => events.push(Event::Problem(p)),
                     }
                 }
@@ -591,11 +665,20 @@ impl Party {
         }
         self.since_watch = 0.0;
         let now = Instant::now();
-        for (entity, tick) in world.query::<(hecs::Entity, &NetTick)>().with::<&Replica>().iter() {
-            let Some(id) = network_id(world, entity) else { continue };
+        for (entity, tick) in world
+            .query::<(hecs::Entity, &NetTick)>()
+            .with::<&Replica>()
+            .iter()
+        {
+            let Some(id) = network_id(world, entity) else {
+                continue;
+            };
             let quiet = !tick.settled && now.duration_since(tick.at) > SILENCE;
             if quiet && self.silent.insert(id) {
-                events.push(Event::Silent { id, owner: tick.sender });
+                events.push(Event::Silent {
+                    id,
+                    owner: tick.sender,
+                });
             } else if !quiet {
                 self.silent.remove(&id);
             }
@@ -640,7 +723,11 @@ mod tests {
         for n in [1u64, 2] {
             world.spawn((SceneId(EntityId::from_raw(n)), Transform::default()));
         }
-        world.spawn((SceneId(EntityId::from_raw(3)), Transform::default(), Lit(false)));
+        world.spawn((
+            SceneId(EntityId::from_raw(3)),
+            Transform::default(),
+            Lit(false),
+        ));
         world
     }
 
@@ -670,17 +757,32 @@ mod tests {
             let components = components();
             let mut ends = Loopback::network(guests + 1).into_iter();
             let listener = ends.next().unwrap();
-            let mut parties = vec![Party::host("main", "host", &components, vec![Box::new(listener)], false)];
+            let mut parties = vec![Party::host(
+                "main",
+                "host",
+                &components,
+                vec![Box::new(listener)],
+                false,
+            )];
             for (i, end) in ends.enumerate() {
                 let end: Box<dyn Transport + Send> = if link == Conditions::GOOD {
                     Box::new(end)
                 } else {
                     Box::new(Laggy::new(end, link, 11 + i as u64))
                 };
-                parties.push(Party::join(end, "main", &format!("guest{}", i + 1), &components));
+                parties.push(Party::join(
+                    end,
+                    "main",
+                    &format!("guest{}", i + 1),
+                    &components,
+                ));
             }
             let worlds = (0..=guests).map(|_| scene_world()).collect();
-            let mut game = Self { parties, worlds, components };
+            let mut game = Self {
+                parties,
+                worlds,
+                components,
+            };
             game.frames(10);
             game
         }
@@ -693,7 +795,11 @@ mod tests {
                 .parties
                 .iter_mut()
                 .zip(self.worlds.iter_mut())
-                .map(|(party, world)| party.update(world, components, 1.0 / NET_HZ, |w, _, t| Some(w.spawn((t,)))))
+                .map(|(party, world)| {
+                    party.update(world, components, 1.0 / NET_HZ, |w, _, t| {
+                        Some(w.spawn((t,)))
+                    })
+                })
                 .collect();
             std::thread::sleep(Duration::from_millis(2));
             out
@@ -736,7 +842,10 @@ mod tests {
         }
         assert!(party.is_host() && party.is_alone() && party.welcomed());
         assert_eq!(party.me(), PeerId::HOST);
-        assert!(world.get::<&Owned>(find(&world, 1)).is_ok(), "the host owns the scene");
+        assert!(
+            world.get::<&Owned>(find(&world, 1)).is_ok(),
+            "the host owns the scene"
+        );
     }
 
     #[test]
@@ -748,8 +857,12 @@ mod tests {
             assert_eq!(names, ["host", "guest1", "guest2", "guest3"]);
         }
         assert_eq!(game.parties[2].me(), PeerId(2));
-        assert!(game.worlds[0].get::<&Owned>(find(&game.worlds[0], 1)).is_ok());
-        assert!(game.worlds[1].get::<&Replica>(find(&game.worlds[1], 1)).is_ok());
+        assert!(game.worlds[0]
+            .get::<&Owned>(find(&game.worlds[0], 1))
+            .is_ok());
+        assert!(game.worlds[1]
+            .get::<&Replica>(find(&game.worlds[1], 1))
+            .is_ok());
     }
 
     #[test]
@@ -759,7 +872,11 @@ mod tests {
         // A guest's own system pushes the host's crate; the host's word
         // wins, and the guest's write never leaves the guest.
         put(&mut game.worlds[2], 1, Vec3::new(-9.0, 0.0, 0.0));
-        game.until(60, |g| g.worlds.iter().all(|w| at(w, find(w, 1)).distance(Vec3::X * 4.0) < 1e-3));
+        game.until(60, |g| {
+            g.worlds
+                .iter()
+                .all(|w| at(w, find(w, 1)).distance(Vec3::X * 4.0) < 1e-3)
+        });
     }
 
     #[test]
@@ -767,7 +884,9 @@ mod tests {
         let mut game = Game::new(1, Conditions::GOOD);
         let torch = find(&game.worlds[0], 3);
         *game.worlds[0].get::<&mut Lit>(torch).unwrap() = Lit(true);
-        game.until(30, |g| *g.worlds[1].get::<&Lit>(find(&g.worlds[1], 3)).unwrap() == Lit(true));
+        game.until(30, |g| {
+            *g.worlds[1].get::<&Lit>(find(&g.worlds[1], 3)).unwrap() == Lit(true)
+        });
     }
 
     #[test]
@@ -779,13 +898,26 @@ mod tests {
         // Driven this frame, on an assumption.
         assert!(game.worlds[1].get::<&Owned>(crate_).is_ok());
         game.until(30, |g| {
-            g.worlds.iter().all(|w| owner_of(w, find(w, 1)) == PeerId(1))
-                && g.worlds[1].get::<&OwnershipPending>(find(&g.worlds[1], 1)).is_err()
+            g.worlds
+                .iter()
+                .all(|w| owner_of(w, find(w, 1)) == PeerId(1))
+                && g.worlds[1]
+                    .get::<&OwnershipPending>(find(&g.worlds[1], 1))
+                    .is_err()
         });
-        assert!(game.worlds[0].get::<&Replica>(find(&game.worlds[0], 1)).is_ok(), "the host now shows it");
+        assert!(
+            game.worlds[0]
+                .get::<&Replica>(find(&game.worlds[0], 1))
+                .is_ok(),
+            "the host now shows it"
+        );
         let target = Vec3::new(0.0, 2.0, 3.0);
         put(&mut game.worlds[1], 1, target);
-        game.until(60, |g| g.worlds.iter().all(|w| at(w, find(w, 1)).distance(target) < 1e-3));
+        game.until(60, |g| {
+            g.worlds
+                .iter()
+                .all(|w| at(w, find(w, 1)).distance(target) < 1e-3)
+        });
     }
 
     #[test]
@@ -796,9 +928,19 @@ mod tests {
             game.parties[i].claim(&mut game.worlds[i], crate_);
         }
         let events = game.frames(20);
-        let owners: Vec<PeerId> = game.worlds.iter().map(|w| owner_of(w, find(w, 1))).collect();
-        assert!(owners.iter().all(|o| *o == owners[0]) && owners[0] != PeerId::HOST, "{owners:?}");
-        let lost = events.iter().filter(|e| matches!(e, Event::ClaimLost { .. })).count();
+        let owners: Vec<PeerId> = game
+            .worlds
+            .iter()
+            .map(|w| owner_of(w, find(w, 1)))
+            .collect();
+        assert!(
+            owners.iter().all(|o| *o == owners[0]) && owners[0] != PeerId::HOST,
+            "{owners:?}"
+        );
+        let lost = events
+            .iter()
+            .filter(|e| matches!(e, Event::ClaimLost { .. }))
+            .count();
         assert_eq!(lost, 1, "{events:?}");
     }
 
@@ -828,7 +970,10 @@ mod tests {
         game.worlds.push(scene_world());
         game.frames(10);
         let named = crate::net::addressable(&game.worlds[2]);
-        assert!(named.contains_key(&pawn_id) && named.contains_key(&crate_id), "the late one has both");
+        assert!(
+            named.contains_key(&pawn_id) && named.contains_key(&crate_id),
+            "the late one has both"
+        );
         // The host drives two things by now; the late one nothing.
         put(&mut game.worlds[0], 1, Vec3::X);
         put(&mut game.worlds[0], 2, Vec3::Y);
@@ -839,10 +984,15 @@ mod tests {
         drop(game.parties.remove(1));
         game.worlds.remove(1);
         let events = game.frames(10);
-        assert!(events.iter().any(|e| matches!(e, Event::Left { name, clean: true, .. } if name == "early")));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Left { name, clean: true, .. } if name == "early")));
         for world in &game.worlds {
             let named = crate::net::addressable(world);
-            assert!(!named.contains_key(&pawn_id), "the pawn went with its owner");
+            assert!(
+                !named.contains_key(&pawn_id),
+                "the pawn went with its owner"
+            );
             assert_eq!(owner_of(world, named[&crate_id]), PeerId(2));
         }
     }
@@ -854,7 +1004,13 @@ mod tests {
         let first = game.frame();
         assert_eq!(first[2][0].decode::<u8>("bell"), Some(3), "here at once");
         let later = game.frames(3);
-        assert_eq!(later.iter().filter(|e| e.decode::<u8>("bell") == Some(3)).count(), 2);
+        assert_eq!(
+            later
+                .iter()
+                .filter(|e| e.decode::<u8>("bell") == Some(3))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -865,20 +1021,37 @@ mod tests {
         drop(game.parties.remove(0));
         game.worlds.remove(0);
         let events = game.frames(3);
-        assert!(events.contains(&Event::HostLost { quit: true }), "{events:?}");
-        assert!(at(&game.worlds[0], find(&game.worlds[0], 1)).distance(Vec3::Y) < 1e-3, "still on screen");
+        assert!(
+            events.contains(&Event::HostLost { quit: true }),
+            "{events:?}"
+        );
+        assert!(
+            at(&game.worlds[0], find(&game.worlds[0], 1)).distance(Vec3::Y) < 1e-3,
+            "still on screen"
+        );
         let components = game.components.clone();
         game.parties[0].give_up(&components, &mut game.worlds[0]);
         game.frames(3);
         assert!(game.parties[0].is_host());
-        assert!(game.worlds[0].get::<&Owned>(find(&game.worlds[0], 1)).is_ok(), "ours now");
+        assert!(
+            game.worlds[0]
+                .get::<&Owned>(find(&game.worlds[0], 1))
+                .is_ok(),
+            "ours now"
+        );
     }
 
     #[test]
     fn another_build_is_turned_away() {
         let components = components();
         let mut ends = Loopback::network(2).into_iter();
-        let mut host = Party::host("main", "", &components, vec![Box::new(ends.next().unwrap())], false);
+        let mut host = Party::host(
+            "main",
+            "",
+            &components,
+            vec![Box::new(ends.next().unwrap())],
+            false,
+        );
         let mut other = Components::new();
         other.register_networked::<Lit>("lamp");
         let mut guest = Party::join(ends.next().unwrap(), "main", "", &other);
@@ -888,7 +1061,10 @@ mod tests {
             host.update(&mut hw, &components, 0.03, |_, _, _| None);
             events.extend(guest.update(&mut gw, &other, 0.03, |_, _, _| None));
         }
-        assert!(matches!(&events[..], [Event::Rejected(r)] if r.contains("different build")), "{events:?}");
+        assert!(
+            matches!(&events[..], [Event::Rejected(r)] if r.contains("different build")),
+            "{events:?}"
+        );
     }
 
     #[test]
@@ -930,8 +1106,22 @@ mod tests {
     fn over_real_sockets_too() {
         let components = components();
         let port = free_port().unwrap();
-        let mut host = Party::from_words(&format!("host:127.0.0.1:{port}"), "host", "", "main", &components).unwrap();
-        let mut guest = Party::from_words(&format!("join:127.0.0.1:{port}"), "guest", "", "main", &components).unwrap();
+        let mut host = Party::from_words(
+            &format!("host:127.0.0.1:{port}"),
+            "host",
+            "",
+            "main",
+            &components,
+        )
+        .unwrap();
+        let mut guest = Party::from_words(
+            &format!("join:127.0.0.1:{port}"),
+            "guest",
+            "",
+            "main",
+            &components,
+        )
+        .unwrap();
         let (mut hw, mut gw) = (scene_world(), scene_world());
         for i in 0..300 {
             if i == 20 {

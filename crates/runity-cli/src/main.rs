@@ -121,7 +121,12 @@ fn run() -> Result<ExitCode> {
                     "--hot" => hot = true,
                     "--release" => release = true,
                     "--scene" => scene = Some(args.next().context("--scene wants a name")?.clone()),
-                    "--link" => link = args.next().context("--link wants poor, awful or latency=80,loss=3")?.clone(),
+                    "--link" => {
+                        link = args
+                            .next()
+                            .context("--link wants poor, awful or latency=80,loss=3")?
+                            .clone()
+                    }
                     "--players" => {
                         count = args
                             .next()
@@ -140,8 +145,13 @@ fn run() -> Result<ExitCode> {
                 if hot {
                     bail!("--hot patches one process; play together without it");
                 }
-                let ok = runity_cli::run::players(&project, count, release, scene.as_deref(), &link)?;
-                return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+                let ok =
+                    runity_cli::run::players(&project, count, release, scene.as_deref(), &link)?;
+                return Ok(if ok {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                });
             }
             let dx = runity_cli::run::on_path("dx");
             let mut command = runity_cli::run::command(&project, hot, release, dx.as_deref())?;

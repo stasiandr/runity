@@ -27,6 +27,12 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
         gpu,
         &target,
         &Frame {
+            // Counted in exact colours: no sky, no post-processing.
+            sky: runity::render::Sky {
+                mode: runity::render::SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
             camera: Camera::default(),
             lighting: Lighting::default(),
             fog: FogSettings::default(),
@@ -157,6 +163,12 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         pose: None,
     };
     let base = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 6.0),
             target: Vec3::ZERO,
@@ -177,6 +189,12 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
     };
 
     let hidden = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         draws: vec![wall, behind],
         ..base.clone()
     };
@@ -184,6 +202,12 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
     let occluded = target.read_rgba(&gpu);
 
     let shown = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
         overlay_draws: vec![behind],
         ..base
     };

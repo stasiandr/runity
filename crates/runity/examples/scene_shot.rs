@@ -126,13 +126,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         color: Vec3::from_array(scene.fog.color),
         start: scene.fog.start,
         end: scene.fog.end,
+        ..Default::default()
     };
     // The scene says where it is looked at from, so two renders of the same
     // file are the same picture — and so an agent can frame a shot by
     // editing a line rather than by patching this file.
     let camera = runity::scene_camera(&scene.view);
 
-    let frame = runity::build_frame(&world, camera, lighting, fog);
+    let mut frame = runity::build_frame(&world, camera, lighting, fog);
+    runity::world::scene_look(&mut frame, &scene);
     renderer.render(&gpu, &target, &frame);
     let pixels = target.read_rgba(&gpu);
 

@@ -80,9 +80,14 @@ fn shoot_with(gpu: &Gpu, scene: &Scene, sun_direction: Vec3, shadows: ShadowSett
             color: Vec3::from_array(scene.fog.color),
             start: scene.fog.start,
             end: scene.fog.end,
+            ..Default::default()
         },
     );
     frame.shadows = shadows;
+    // What each object is there to check is its shading: bloom from a lit
+    // neighbour glowing into an unlit one is post-processing doing its job,
+    // and not what these count.
+    frame.post = runity::post::PostProcess::OFF;
     renderer.render(gpu, &target, &frame);
     Shot {
         pixels: target.read_rgba(gpu),
@@ -144,15 +149,23 @@ fn an_unlit_material_ignores_the_sun_while_everything_else_follows_it() {
     let morning = shoot(&gpu, &scene, Vec3::new(-0.6, -0.7, -0.35).normalize());
     let evening = shoot(&gpu, &scene, Vec3::new(0.85, -0.2, 0.3).normalize());
 
-    // Find the ember: the only strongly orange pixel in a scene of greens
-    // and greys.
-    let ember = (0..HEIGHT)
+    // Find the ember: the only strongly orange pixels in a scene of greens
+    // and greys — and take one from the middle of them, since an edge pixel
+    // is antialiased, part ember and part the lit ground around it.
+    let orange: Vec<(u32, u32)> = (0..HEIGHT)
         .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
-        .find(|&(x, y)| {
+        .filter(|&(x, y)| {
             let p = morning.at(x, y);
             p[0] > 180 && p[1] < 170 && p[2] < 110
         })
-        .expect("the ember should be visible");
+        .collect();
+    assert!(!orange.is_empty(), "the ember should be visible");
+    let (sx, sy) = orange.iter().fold((0, 0), |(a, b), (x, y)| (a + x, b + y));
+    let centre = (sx / orange.len() as u32, sy / orange.len() as u32);
+    let ember = *orange
+        .iter()
+        .min_by_key(|(x, y)| x.abs_diff(centre.0).pow(2) + y.abs_diff(centre.1).pow(2))
+        .expect("not empty");
 
     assert_eq!(
         morning.at(ember.0, ember.1),
@@ -297,6 +310,7 @@ fn what_is_behind_the_camera_is_not_drawn_but_still_casts() {
                 color: Vec3::from_array(scene.fog.color),
                 start: scene.fog.start,
                 end: scene.fog.end,
+                ..Default::default()
             },
         )
     };

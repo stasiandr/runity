@@ -816,12 +816,9 @@ impl shell::Game for Game {
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view));
         let started = std::time::Instant::now();
-        let frame = runity::build_frame(
-            &self.world,
-            camera,
-            runity::scene_lighting(&scene.sun),
-            runity::scene_fog(&scene.fog),
-        );
+        // Everything the scene says about how it looks: sun, fog, sky and
+        // post-processing.
+        let frame = runity::world::scene_frame(&self.world, camera, scene);
         self.profile.record("frame", started.elapsed());
         frame
     }
