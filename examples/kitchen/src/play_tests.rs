@@ -770,6 +770,7 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     // Time up: the results over the kitchen.
     let kitchen_e = kitchen(&k.world).unwrap().0;
     k.world.get::<&mut Round>(kitchen_e).unwrap().time_left = 0.05;
+    k.world.get::<&mut Round>(kitchen_e).unwrap().score = 150;
     k.seconds(0.2);
     front.new_best = true;
     let results = k.shot(&mut front, "results");
@@ -1397,4 +1398,14 @@ fn the_host_takes_everyone_to_rush_hour() {
     host.party.set_scene("rush");
     let wanted = Event::SceneRequired { scene: "rush".into() };
     until(&mut host, &mut guest, |h, g| h.events.contains(&wanted) && g.events.contains(&wanted));
+}
+
+#[test]
+fn a_round_earns_up_to_three_stars_by_its_score() {
+    let k = Peer::alone();
+    let rules = k.world.query::<&crate::components::Kitchen>().iter().next().cloned().unwrap();
+    assert_eq!(rules.stars_for(0), 0);
+    assert_eq!(rules.stars_for(rules.stars[0]), 1);
+    assert_eq!(rules.stars_for(rules.stars[2] + 50), 3);
+    assert_eq!(crate::front::stars(2), "★ ★ ☆");
 }

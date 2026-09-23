@@ -18,6 +18,20 @@ pub struct Kitchen {
     /// Clean plates on each rack as a round starts.
     #[serde(default = "plates")]
     pub plates: u32,
+    /// The score for one star, two and three.
+    #[serde(default = "stars")]
+    pub stars: [i32; 3],
+}
+
+impl Kitchen {
+    /// Stars a score earns, 0 to 3.
+    pub fn stars_for(&self, score: i32) -> usize {
+        self.stars.iter().filter(|s| score >= **s).count()
+    }
+}
+
+fn stars() -> [i32; 3] {
+    [60, 140, 220]
 }
 
 fn soups() -> Vec<Dish> {

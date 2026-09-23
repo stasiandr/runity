@@ -57,6 +57,11 @@ pub enum Wish {
     Language(&'static str),
 }
 
+/// Three stars, `won` of them filled.
+pub fn stars(won: usize) -> String {
+    (0..3).map(|i| if i < won { "★" } else { "☆" }).collect::<Vec<_>>().join(" ")
+}
+
 /// The kitchens the host may choose in the lobby, in its order, by scene.
 pub const LEVELS: [&str; 2] = ["main", "rush"];
 
@@ -227,7 +232,8 @@ impl Front {
                     self.brief();
                 }
                 self.was_open = open;
-                self.watch_score(round.as_ref().filter(|r| r.open));
+                // No points rising over the results.
+                self.watch_score(round.as_ref().filter(|r| r.open && !r.over));
                 if !open {
                     // The lobby: who is in, and the host's start.
                     self.talk = None;
@@ -298,12 +304,18 @@ impl Front {
                 if let Some(round) = round.filter(|r| r.over) {
                     self.results
                         .set_text("score", format!("Score {}", round.score));
+                    let won = world
+                        .query::<&crate::components::Kitchen>()
+                        .iter()
+                        .next()
+                        .map_or(0, |k| k.stars_for(round.score));
+                    self.results.set_text("stars", stars(won));
                     self.results.set_text(
                         "served",
                         format!(
-                            "{} soup{} served",
+                            "{} dish{} served",
                             round.served,
-                            if round.served == 1 { "" } else { "s" }
+                            if round.served == 1 { "" } else { "es" }
                         ),
                     );
                     let host = party.is_host();
@@ -330,6 +342,7 @@ impl Front {
     fn watch_score(&mut self, round: Option<&Round>) {
         let Some(score) = round.map(|r| r.score) else {
             self.last_score = None;
+            self.floaters = runity::floaters::Floaters::new();
             return;
         };
         if let Some(was) = self.last_score {

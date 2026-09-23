@@ -1,8 +1,9 @@
 // The end of a round: how it went, and again or back to the menu.
 (
     elements: [
-        (id: "card", anchor: Center, at: (0, 0), size: (440, 300), kind: Panel),
-        (id: "title", anchor: Center, at: (0, -100), size: (400, 56), kind: Text("@results.title"), text_size: 44, align: Center),
+        (id: "card", anchor: Center, at: (0, 10), size: (440, 340), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -126), size: (400, 56), kind: Text("@results.title"), text_size: 44, align: Center),
+        (id: "stars", anchor: Center, at: (0, -80), size: (400, 44), kind: Text(""), text_size: 40, align: Center),
         (id: "score", anchor: Center, at: (0, -40), size: (400, 40), kind: Text(""), text_size: 32, align: Center),
         (id: "served", anchor: Center, at: (0, 4), size: (400, 26), kind: Text(""), text_size: 20, align: Center),
         (id: "best", anchor: Center, at: (0, 32), size: (400, 24), kind: Text(""), text_size: 18, align: Center),
