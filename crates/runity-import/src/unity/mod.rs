@@ -303,8 +303,6 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
                     project.root().join(runity::project::SHADERS).join(&file),
                 ))
                 .find_map(|p| std::fs::read_to_string(p).ok())
-                .map(|t| material::declared_params(&t))
-                .unwrap_or_default()
         };
         match material::convert_with(&unity, path, &declared) {
             Ok(text) => {

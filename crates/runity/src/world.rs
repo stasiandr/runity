@@ -162,25 +162,58 @@ impl WorldUi {
 pub struct ToTexture(pub crate::scene::RenderTexture);
 
 /// Every camera that draws into a picture, as a frame of its own: what
+/// A camera drawing into a picture: where it looks from, which picture,
+/// and the mirror's plane (a point on it and the way it faces) if it is one.
+type PictureCamera = (
+    Camera,
+    crate::scene::RenderTexture,
+    Option<(glam::Vec3, glam::Vec3)>,
+);
+
 /// [`scene_frame`] puts on a frame for materials to show.
 pub fn texture_views(
     world: &World,
     scene: &crate::scene::Scene,
+    main: Camera,
 ) -> Vec<crate::render::TextureView> {
-    let cameras: Vec<(Camera, crate::scene::RenderTexture)> = world
-        .query::<(&CameraLens, &WorldTransform, &ToTexture)>()
+    // A mirror's camera is the screen's, reflected in its plane; anything
+    // else's is its own lens.
+    let cameras: Vec<PictureCamera> = world
+        .query::<(Option<&CameraLens>, &WorldTransform, &ToTexture)>()
         .iter()
-        .map(|(lens, placed, picture)| (lens_camera(lens.0, placed.0), picture.0.clone()))
+        .filter_map(|(lens, placed, picture)| {
+            if picture.0.mirror {
+                let (_, turn, at) = placed.0.to_scale_rotation_translation();
+                let normal = (turn * glam::Vec3::Y).normalize();
+                Some((
+                    reflected(main, at, normal),
+                    picture.0.clone(),
+                    Some((at, normal)),
+                ))
+            } else {
+                lens.map(|l| (lens_camera(l.0, placed.0), picture.0.clone(), None))
+            }
+        })
         .collect();
     cameras
         .into_iter()
-        .map(|(camera, picture)| {
-            let hidden: std::collections::HashSet<crate::id::EntityId> = world
+        .map(|(camera, picture, plane)| {
+            let mut hidden: std::collections::HashSet<crate::id::EntityId> = world
                 .query::<(&Layer, &SceneId)>()
                 .iter()
                 .filter(|(layer, _)| picture.hide.contains(&layer.0))
                 .map(|(_, id)| id.0)
                 .collect();
+            // What is behind a mirror is not in it.
+            if let Some((at, normal)) = plane {
+                hidden.extend(
+                    world
+                        .query::<(&WorldTransform, &SceneId)>()
+                        .iter()
+                        .filter(|(p, _)| (p.0.w_axis.truncate() - at).dot(normal) < -0.05)
+                        .map(|(_, id)| id.0),
+                );
+            }
             let mut frame = build_frame_where(
                 world,
                 camera,
@@ -1091,7 +1124,7 @@ pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -
     );
     scene_look(&mut frame, scene);
     post_volumes(&mut frame, world);
-    frame.texture_views = texture_views(world, scene);
+    frame.texture_views = texture_views(world, scene, camera);
     frame
 }
 
@@ -1200,6 +1233,20 @@ pub fn camera_of(world: &World) -> Option<Camera> {
         }
     }
     best.map(|(_, _, camera)| camera)
+}
+
+/// A camera reflected in the plane through `at` facing `normal`: what a
+/// mirror there shows, left and right swapped (the mirror's material
+/// swaps them back, [`crate::material::ScreenMap::Mirror`]).
+pub fn reflected(camera: Camera, at: glam::Vec3, normal: glam::Vec3) -> Camera {
+    let point = |p: glam::Vec3| p - 2.0 * (p - at).dot(normal) * normal;
+    let direction = |d: glam::Vec3| d - 2.0 * d.dot(normal) * normal;
+    Camera {
+        position: point(camera.position),
+        target: point(camera.target),
+        up: direction(camera.up),
+        ..camera
+    }
 }
 
 /// What a camera on an entity sees: from where it is, along its +z.

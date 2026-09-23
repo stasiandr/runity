@@ -766,7 +766,11 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         detail: [
             material.normal_scale,
             material.occlusion_strength.clamp(0.0, 1.0),
-            0.0,
+            match material.screen_map {
+                crate::material::ScreenMap::Off => 0.0,
+                crate::material::ScreenMap::Screen => 1.0,
+                crate::material::ScreenMap::Mirror => 2.0,
+            },
             0.0,
         ],
         params: [

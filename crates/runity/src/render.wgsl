@@ -781,7 +781,16 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
 
 @fragment
 fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
+    // The base map on the screen instead, for a camera's picture seen
+    // through the surface: a mirror's (flipped) or a portal's.
+    var base_uv = in.uv;
+    if in.detail.z > 0.5 {
+        base_uv = in.clip_position.xy / frame.cluster_depth.zw;
+        if in.detail.z > 1.5 {
+            base_uv.x = 1.0 - base_uv.x;
+        }
+    }
+    let sampled = textureSample(surface_texture, surface_sampler, base_uv);
     let normal_texel = textureSample(normal_map, surface_sampler, in.uv).xyz;
     let mask = textureSample(mask_map, surface_sampler, in.uv);
     let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;

@@ -295,18 +295,28 @@ fn param_values(m: &Yaml, names: &[String]) -> Vec<f32> {
         .collect()
 }
 
-/// [`convert_with`] for a shader that declares no parameters.
-#[cfg(test)]
-pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
-    convert_with(unity, path, &|_| Vec::new())
+/// A line a shader written again says of itself: `// runity:<key> value`.
+pub fn declared(shader: &str, key: &str) -> Option<String> {
+    let mark = format!("// runity:{key} ");
+    shader
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(&mark).map(|v| v.trim().to_string()))
 }
 
-/// A `.mat` as the text of a `.rmat`; `params` says, for a shader name,
-/// which of the material's values its eight numbers are.
+/// [`convert_with`] for a shader not written again yet.
+#[cfg(test)]
+pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
+    convert_with(unity, path, &|_| None)
+}
+
+/// A `.mat` as the text of a `.rmat`. `shader_text` finds, by name, the
+/// shader written again for it, which may say what its material needs: its
+/// eight numbers (`// runity:params`), a base map (`// runity:base_map
+/// render:mirror`), how that is laid (`// runity:screen_map Mirror`).
 pub fn convert_with(
     unity: &Unity,
     path: &Path,
-    params: &dyn Fn(&str) -> Vec<String>,
+    shader_text: &dyn Fn(&str) -> Option<String>,
 ) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let doc = yaml::documents(&text)
@@ -411,7 +421,15 @@ pub fn convert_with(
     }
     if let Some((name, path)) = &own {
         fields.push(format!("shader: {name:?}"));
-        let names = params(name);
+        let written = shader_text(name).unwrap_or_default();
+        let names = declared_params(&written);
+        if let Some(map) = declared(&written, "base_map") {
+            fields.retain(|f| !f.starts_with("base_map"));
+            fields.push(format!("base_map: {map:?}"));
+        }
+        if let Some(how) = declared(&written, "screen_map") {
+            fields.push(format!("screen_map: {how}"));
+        }
         if !names.is_empty() {
             let values: Vec<String> = param_values(m, &names)
                 .into_iter()

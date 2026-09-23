@@ -12,7 +12,12 @@ examples/dacha/shaders` puts these in the project's `shaders/` in place of
 the stubs the importer writes. Check one with `cargo run -p runity --example
 check_surface -- FILE`, look at them all with `--example shader_gallery`.
 
-Not here yet: `mirror` (a camera's picture: `render_texture`), `outline`
+A shader here can say what its materials need, on lines of its own:
+`// runity:params _Speed _Tint.r` (the material's eight numbers, from its
+`.mat`), `// runity:base_map render:mirror` and `// runity:screen_map
+Mirror` — see `mirror.wgsl`, the planar mirror.
+
+Not here yet: `outline`
 (a second pass), the screen and UI ones (`screen_*`, `ui_*`: overlays, not
 surfaces) and TextMesh Pro's.
 

@@ -127,6 +127,33 @@ pub enum RenderFace {
 }
 
 /// A surface.
+/// How a base map is laid on a surface.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub enum ScreenMap {
+    /// On the mesh's UVs, as every map is.
+    #[default]
+    Off,
+    /// By where the pixel is on the screen.
+    Screen,
+    /// By where it is on the screen, left and right swapped: what a camera
+    /// reflected in a plane took, seen in that plane.
+    Mirror,
+}
+
 #[derive(
     Debug,
     Clone,
@@ -204,6 +231,11 @@ pub struct Material {
     /// makes two materials on one shader different — a speed, a tint.
     #[serde(default, skip_serializing_if = "is_zeros")]
     pub params: [f32; 8],
+    /// The base map laid on the screen rather than on the mesh's UVs: a
+    /// camera's picture seen through the surface — a mirror's reflection
+    /// ([`ScreenMap::Mirror`] flips it) or a portal's view.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub screen_map: ScreenMap,
     /// How strongly the normal map bends the surface.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub normal_scale: f32,
@@ -281,6 +313,7 @@ impl Material {
             emission_map: None,
             shader: None,
             params: [0.0; 8],
+            screen_map: ScreenMap::Off,
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             tiling: [1.0, 1.0],
@@ -380,6 +413,11 @@ impl From<&ArchivedMaterial> for Material {
                 .map(crate::asset::AssetId::from),
             shader: archived.shader.as_ref().map(crate::asset::AssetId::from),
             params: std::array::from_fn(|i| archived.params[i].to_native()),
+            screen_map: match archived.screen_map {
+                ArchivedScreenMap::Off => ScreenMap::Off,
+                ArchivedScreenMap::Screen => ScreenMap::Screen,
+                ArchivedScreenMap::Mirror => ScreenMap::Mirror,
+            },
             normal_scale: archived.normal_scale.to_native(),
             occlusion_strength: archived.occlusion_strength.to_native(),
             tiling: [

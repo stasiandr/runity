@@ -490,6 +490,12 @@ pub struct RenderTexture {
     pub name: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hide: Vec<String>,
+    /// A planar mirror instead: the entity's plane (its up the way it
+    /// faces) reflects what the screen's camera sees, no `camera` of its
+    /// own needed; its material shows the picture with `screen_map:
+    /// Mirror`. What is behind the plane is left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mirror: bool,
 }
 
 /// A place that looks different — the cellar darker and greener, the

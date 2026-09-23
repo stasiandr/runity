@@ -874,6 +874,10 @@ pub struct MaterialSource {
     /// `// runity:params` line names them.
     #[serde(default)]
     pub params: Vec<f32>,
+    /// The base map on the screen, not the mesh: `Screen`, or `Mirror` for
+    /// a mirror's picture.
+    #[serde(default)]
+    pub screen_map: runity::material::ScreenMap,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1215,6 +1219,7 @@ pub fn material_from_ron(
             emission_map: texture_id(path, &source.emission_map, false)?,
             shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
             params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
+            screen_map: source.screen_map,
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
