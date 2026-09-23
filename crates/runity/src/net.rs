@@ -113,6 +113,24 @@ impl Message {
     }
 }
 
+/// Ask for an entity's transform to glide between its owner's snapshots
+/// rather than jump to each: what a remote player or a thrown crate wants.
+pub fn smooth_this(world: &mut hecs::World, entity: hecs::Entity) {
+    let now = world
+        .get::<&Transform>(entity)
+        .map(|t| *t)
+        .unwrap_or_default();
+    let _ = world.insert_one(
+        entity,
+        Remote {
+            from: now,
+            to: now,
+            elapsed: 0.0,
+            interval: 0.1,
+        },
+    );
+}
+
 /// Who owns an entity: its [`Owner`], or the host.
 pub fn owner_of(world: &hecs::World, entity: hecs::Entity) -> PeerId {
     world.get::<&Owner>(entity).map_or(PeerId::HOST, |o| o.0)
@@ -215,7 +233,35 @@ pub fn apply_with(
                     ));
                     continue;
                 }
-                let _ = world.insert_one(entity, state.transform);
+                // Smoothed if the game asked for it on this entity: from
+                // where it is now to where its owner says, over the time a
+                // snapshot takes. Otherwise it is simply there.
+                let smoothed = world.get::<&Remote>(entity).ok().map(|r| *r);
+                match smoothed {
+                    Some(remote) => {
+                        let now = world
+                            .get::<&Transform>(entity)
+                            .map(|t| *t)
+                            .unwrap_or_default();
+                        let interval = if remote.elapsed > 0.0 {
+                            remote.elapsed
+                        } else {
+                            remote.interval
+                        };
+                        let _ = world.insert_one(
+                            entity,
+                            Remote {
+                                from: now,
+                                to: state.transform,
+                                elapsed: 0.0,
+                                interval: interval.clamp(1.0 / 120.0, 1.0),
+                            },
+                        );
+                    }
+                    None => {
+                        let _ = world.insert_one(entity, state.transform);
+                    }
+                }
                 for (name, text) in &state.components {
                     if !components.is_networked(name) {
                         out.refused.push(format!(
@@ -371,6 +417,124 @@ impl Transport for Udp {
         }
         out
     }
+}
+
+/// Delivery for what must arrive — handovers, spawns, despawns — over any
+/// transport. Each reliable message carries a sequence number and is sent
+/// again every [`Reliable::RESEND`] until the peer acknowledges it; a
+/// receiver acknowledges everything and passes each sequence on once.
+/// Snapshots go through as they are: a lost one is superseded by the next,
+/// and resending it would only deliver the past.
+pub struct Reliable<T: Transport> {
+    inner: T,
+    next: u64,
+    /// Unacknowledged: to whom, sequence, the framed bytes, and when last sent.
+    waiting: Vec<(PeerId, u64, Vec<u8>, std::time::Instant)>,
+    /// What each peer has already delivered, so a resend is not a repeat.
+    seen: HashMap<PeerId, std::collections::HashSet<u64>>,
+}
+
+impl<T: Transport> Reliable<T> {
+    /// How long before an unacknowledged message is sent again.
+    pub const RESEND: std::time::Duration = std::time::Duration::from_millis(100);
+
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            next: 1,
+            waiting: Vec::new(),
+            seen: HashMap::new(),
+        }
+    }
+
+    /// Send a message the way its kind wants: snapshots as they are,
+    /// everything else until acknowledged.
+    pub fn send_message(&mut self, to: PeerId, message: &Message) {
+        let body = message.encode();
+        if matches!(message, Message::Snapshot(_)) {
+            let mut framed = vec![0u8];
+            framed.extend_from_slice(&body);
+            self.inner.send(to, framed);
+            return;
+        }
+        let sequence = self.next;
+        self.next += 1;
+        let mut framed = vec![1u8];
+        framed.extend_from_slice(&sequence.to_le_bytes());
+        framed.extend_from_slice(&body);
+        self.inner.send(to, framed.clone());
+        self.waiting
+            .push((to, sequence, framed, std::time::Instant::now()));
+    }
+
+    /// Resend what is overdue, take in what arrived, and hand back the
+    /// messages — each reliable one exactly once. Call it every frame.
+    pub fn pump(&mut self) -> Vec<(PeerId, Message)> {
+        let now = std::time::Instant::now();
+        for (to, _, framed, sent) in &mut self.waiting {
+            if now.duration_since(*sent) >= Self::RESEND {
+                self.inner.send(*to, framed.clone());
+                *sent = now;
+            }
+        }
+        let mut out = Vec::new();
+        for (from, bytes) in self.inner.receive() {
+            match bytes.first() {
+                Some(0) => {
+                    if let Ok(message) = Message::decode(&bytes[1..]) {
+                        out.push((from, message));
+                    }
+                }
+                Some(1) if bytes.len() >= 9 => {
+                    let sequence = u64::from_le_bytes(bytes[1..9].try_into().expect("eight bytes"));
+                    let mut ack = vec![2u8];
+                    ack.extend_from_slice(&sequence.to_le_bytes());
+                    self.inner.send(from, ack);
+                    if self.seen.entry(from).or_default().insert(sequence) {
+                        if let Ok(message) = Message::decode(&bytes[9..]) {
+                            out.push((from, message));
+                        }
+                    }
+                }
+                Some(2) if bytes.len() >= 9 => {
+                    let sequence = u64::from_le_bytes(bytes[1..9].try_into().expect("eight bytes"));
+                    self.waiting
+                        .retain(|(to, s, _, _)| !(*to == from && *s == sequence));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// How many reliable messages are still waiting for an acknowledgement.
+    pub fn unacknowledged(&self) -> usize {
+        self.waiting.len()
+    }
+}
+
+/// Where a remote-owned entity is heading, and from where: snapshots arrive
+/// a few times a second, and an entity that jumped to each would stutter.
+/// [`apply`] sets it for entities owned by others; [`smooth`] moves them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Remote {
+    from: Transform,
+    to: Transform,
+    elapsed: f32,
+    interval: f32,
+}
+
+/// Move every [`Remote`] entity along, from where it was to where its
+/// owner last said, over the time between snapshots. Call it every frame.
+pub fn smooth(world: &mut hecs::World, delta: f32) {
+    for (transform, remote) in world.query_mut::<(&mut Transform, &mut Remote)>() {
+        remote.elapsed += delta;
+        let t = (remote.elapsed / remote.interval.max(1e-3)).min(1.0);
+        transform.position = remote.from.position.lerp(remote.to.position, t);
+        transform.rotation_deg = remote.from.rotation_deg.lerp(remote.to.rotation_deg, t);
+        transform.scale = remote.from.scale.lerp(remote.to.scale, t);
+    }
+    crate::world::apply_hierarchy(world);
 }
 
 /// What each peer has waiting: who sent it, and the bytes.
@@ -624,5 +788,74 @@ mod tests {
         // The host learned where the client is from the datagram.
         host.send(PeerId(1), hello.encode());
         assert_eq!(wait(&mut client).len(), 1);
+    }
+
+    /// A loopback that loses every other datagram.
+    struct Lossy {
+        inner: Loopback,
+        drop: bool,
+    }
+
+    impl Transport for Lossy {
+        fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
+            self.drop = !self.drop;
+            if !self.drop {
+                self.inner.send(to, bytes);
+            }
+        }
+        fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)> {
+            self.inner.receive()
+        }
+    }
+
+    #[test]
+    fn a_handover_arrives_once_over_a_line_that_loses_half_of_everything() {
+        let mut ends = Loopback::network(2).into_iter();
+        let mut host = Reliable::new(Lossy {
+            inner: ends.next().unwrap(),
+            drop: false,
+        });
+        let mut client = Reliable::new(Lossy {
+            inner: ends.next().unwrap(),
+            drop: false,
+        });
+        let handover = Message::Handover(Handover {
+            from: PeerId::HOST,
+            id: EntityId::from_raw(5),
+            to: PeerId(1),
+        });
+        host.send_message(PeerId(1), &handover);
+        let mut delivered = Vec::new();
+        for _ in 0..40 {
+            delivered.extend(client.pump());
+            host.pump();
+            std::thread::sleep(Reliable::<Loopback>::RESEND / 4);
+        }
+        assert_eq!(delivered.len(), 1, "exactly once: {delivered:?}");
+        assert_eq!(delivered[0].1, handover);
+        assert_eq!(host.unacknowledged(), 0, "and the host knows it arrived");
+    }
+
+    #[test]
+    fn a_smoothed_remote_entity_glides_to_where_its_owner_says() {
+        let (host, components) = peer();
+        let (mut client, _) = peer();
+        let fire = entity(&client, "a1");
+        smooth_this(&mut client, fire);
+        let mut moved = snapshot(&host, &components, PeerId::HOST);
+        for state in &mut moved.entities {
+            state.transform.position.x = 10.0;
+        }
+        apply(&mut client, &components, &Message::Snapshot(moved));
+        assert_eq!(
+            client.get::<&Transform>(fire).unwrap().position.x,
+            0.0,
+            "not a jump"
+        );
+        smooth(&mut client, 0.05);
+        let halfway = client.get::<&Transform>(fire).unwrap().position.x;
+        assert!((halfway - 5.0).abs() < 0.01, "{halfway}");
+        smooth(&mut client, 0.2);
+        assert_eq!(client.get::<&Transform>(fire).unwrap().position.x, 10.0);
     }
 }
