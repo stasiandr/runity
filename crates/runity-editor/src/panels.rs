@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 14] = [
+pub const FIELDS: [&str; 15] = [
     "name",
     "model",
     "prefab",
@@ -66,6 +66,7 @@ pub const FIELDS: [&str; 14] = [
     "layer",
     "joint",
     "camera",
+    "light",
     "components.<name>",
 ];
 
@@ -237,6 +238,10 @@ impl Session {
             (
                 "camera".into(),
                 desc.camera.map_or("None".to_string(), |c| ron(&c)),
+            ),
+            (
+                "light".into(),
+                desc.light.map_or("None".to_string(), |l| ron(&l)),
             ),
         ];
         for (name, value) in &desc.components {
@@ -459,6 +464,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<Lens>(field, text)?)
+                }
+            }
+            "light" => {
+                next.light = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Light>(field, text)?)
                 }
             }
             other => {

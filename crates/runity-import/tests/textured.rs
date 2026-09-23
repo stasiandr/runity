@@ -47,6 +47,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         },
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::new(0.0, 0.0, 0.0),
+        lights: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

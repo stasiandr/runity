@@ -372,6 +372,28 @@ pub struct Lens {
     pub ortho: Option<f32>,
 }
 
+/// A light at an entity, shining every way and fading to nothing at
+/// `range` metres — a campfire, a lamp, a torch in a greybox corridor:
+/// Unity's Point Light, without shadows. `light: (color: (1.0, 0.6, 0.3),
+/// intensity: 2.0, range: 6.0)`; the colour is as a colour picker says it
+/// (sRGB, 0 to 1).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Light {
+    #[serde(default = "white")]
+    pub color: (f32, f32, f32),
+    #[serde(default = "unit")]
+    pub intensity: f32,
+    #[serde(default = "light_range")]
+    pub range: f32,
+}
+
+fn white() -> (f32, f32, f32) {
+    (1.0, 1.0, 1.0)
+}
+fn light_range() -> f32 {
+    5.0
+}
+
 fn lens_fov() -> f32 {
     60.0
 }
@@ -455,6 +477,9 @@ pub struct EntityDesc {
     /// A camera on this entity; see [`Lens`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub camera: Option<Lens>,
+    /// A light at this entity; see [`Light`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub light: Option<Light>,
     /// The collision layer, by the name `layers.ron` gives it; empty is
     /// `default`. See [`crate::layers`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1058,6 +1083,7 @@ mod tests {
         let mut scene = Scene {
             entities: vec![EntityDesc {
                 camera: None,
+                light: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
@@ -1079,6 +1105,7 @@ mod tests {
                 },
                 children: vec![EntityDesc {
                     camera: None,
+                    light: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
@@ -1119,6 +1146,7 @@ mod tests {
             fog: Fog::default(),
             entities: vec![EntityDesc {
                 camera: None,
+                light: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),

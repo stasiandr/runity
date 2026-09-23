@@ -70,6 +70,10 @@ pub struct Physics(pub Body);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraLens(pub crate::scene::Lens);
 
+/// A light at an entity, from its line's `light`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightSource(pub crate::scene::Light);
+
 /// The collision layer's name, kept from the scene when not `default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer(pub String);
@@ -244,6 +248,9 @@ fn spawn_one(
     }
     if let Some(lens) = desc.camera {
         let _ = world.insert_one(entity, CameraLens(lens));
+    }
+    if let Some(light) = desc.light {
+        let _ = world.insert_one(entity, LightSource(light));
     }
     dress(desc, entity, world, resolve, palette, missing);
     entity
@@ -467,6 +474,17 @@ impl Patch<'_> {
         }
         if was.is_none_or(|(old, _)| old.collider != desc.collider) {
             let _ = world.insert_one(entity, Shape(desc.collider));
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.light != desc.light) {
+            match desc.light {
+                Some(light) => {
+                    let _ = world.insert_one(entity, LightSource(light));
+                }
+                None => {
+                    let _ = world.remove_one::<LightSource>(entity);
+                }
+            }
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.camera != desc.camera) {
@@ -693,6 +711,21 @@ pub fn build_frame_where(
             pose,
         });
     }
+    let lights = world
+        .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(light, placed, _)| {
+            let l = light.0;
+            let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+            crate::render::PointLight {
+                position: placed.0.w_axis.truncate(),
+                color: glam::Vec3::new(linear(l.color.0), linear(l.color.1), linear(l.color.2))
+                    * l.intensity.max(0.0),
+                range: l.range,
+            }
+        })
+        .collect();
     Frame {
         camera,
         lighting,
@@ -701,6 +734,7 @@ pub fn build_frame_where(
         shadows: crate::render::ShadowSettings::default(),
         draws,
         overlay_draws: Vec::new(),
+        lights,
         poses,
     }
 }
@@ -714,6 +748,7 @@ mod tests {
     fn blank() -> EntityDesc {
         EntityDesc {
             camera: None,
+            light: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -738,6 +773,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
                     camera: None,
+                    light: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),

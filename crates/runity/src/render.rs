@@ -371,6 +371,8 @@ pub struct Frame {
     /// reason this exists: you cannot grab what you cannot see, and burying
     /// it is exactly what depth testing does.
     pub overlay_draws: Vec<Draw>,
+    /// Point lights besides the sun.
+    pub lights: Vec<PointLight>,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -387,6 +389,7 @@ impl Default for Frame {
             clear_color: Vec3::new(0.62, 0.68, 0.74),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
+            lights: Vec::new(),
             poses: Vec::new(),
         }
     }
@@ -412,6 +415,25 @@ struct FrameUniform {
     /// shadows are on. The last one is what lets the shader skip the lookup
     /// without a second pipeline.
     shadow_params: [f32; 4],
+    /// Up to [`MAX_LIGHTS`] point lights, two vectors each: where and how
+    /// far it reaches, then its colour times its intensity.
+    lights: [[f32; 4]; MAX_LIGHTS * 2],
+    /// How many of those are on, in `x`.
+    light_count: [f32; 4],
+}
+
+/// The most point lights a frame lights with; the nearest to the camera
+/// win when there are more.
+pub const MAX_LIGHTS: usize = 8;
+
+/// A light at a point, fading to nothing at `range` — a campfire, a lamp,
+/// a torch. Unity's Point Light, without shadows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PointLight {
+    pub position: Vec3,
+    /// Linear, already times its intensity.
+    pub color: Vec3,
+    pub range: f32,
 }
 
 /// One vertex's binding to the skeleton, in its own buffer.
@@ -1539,6 +1561,22 @@ impl Renderer {
                 1.0 / self.shadow_resolution as f32,
                 if frame.shadows.enabled { 1.0 } else { 0.0 },
             ],
+            lights: {
+                let mut near: Vec<&PointLight> = frame.lights.iter().collect();
+                let eye = frame.camera.position;
+                near.sort_by(|a, b| {
+                    (a.position - eye)
+                        .length_squared()
+                        .total_cmp(&(b.position - eye).length_squared())
+                });
+                let mut out = [[0.0; 4]; MAX_LIGHTS * 2];
+                for (i, light) in near.iter().take(MAX_LIGHTS).enumerate() {
+                    out[i * 2] = extend(light.position, light.range.max(0.01));
+                    out[i * 2 + 1] = extend(light.color, 0.0);
+                }
+                out
+            },
+            light_count: [frame.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));

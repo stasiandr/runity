@@ -41,6 +41,7 @@ fn entity_fields() -> Value {
         "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r), Cylinder(half_height: h, radius: r), Ramp(half: (x, y, z)), Stairs(half: (x, y, z), steps: n). builtin:cube/cylinder/ramp/stairs fit Box/Cylinder/Ramp/Stairs with half 0.5 (stairs: steps 4)" },
         "camera": { "type": "string", "description": "RON: a camera on this entity, looking along its +z — (fov_deg: 60.0, priority: 0) — or None. Put it on a child of the player and it follows" },
         "layer": { "type": "string", "description": "collision layer by its name in layers.ron; empty is default" },
+        "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it — or None" },
         "physics": { "type": "string", "description": "RON, only what differs: (friction: 0.5, bounce: 0.0, density: 1.0) — a ball is (bounce: 0.8), iron is (density: 8.0); freeze_turn: \"xz\" keeps it upright, freeze_move: \"y\" at its height" },
         "joint": { "type": "string", "description": "RON, on the body that moves: None, Hinge(to: \"<id>\", anchor: (x, y, z), axis: (x, y, z), limits_deg: (min, max)), Ball(to: \"<id>\", anchor: (x, y, z)), Fixed(to: \"<id>\"), Slider(to: \"<id>\", axis: (x, y, z), limits: (min, max)). Anchor and axis in its own space; leave out `to` to hang from the world" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
@@ -1223,6 +1224,13 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
                 ron::from_str::<runity::scene::Lens>(&camera)
                     .map_err(|e| format!("camera: {e}"))?,
             )
+        };
+    }
+    if let Some(light) = optional_string(args, "light")? {
+        desc.light = if light.trim() == "None" {
+            None
+        } else {
+            Some(ron::from_str::<runity::scene::Light>(&light).map_err(|e| format!("light: {e}"))?)
         };
     }
     if let Some(layer) = optional_string(args, "layer")? {

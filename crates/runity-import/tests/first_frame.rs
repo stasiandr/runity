@@ -115,6 +115,7 @@ fn a_source_model_becomes_a_frame() {
         // lit-versus-shaded comparison mean something else.
         shadows: runity::ShadowSettings::OFF,
         clear_color: fog.color,
+        lights: Vec::new(),
         draws: vec![
             Draw {
                 mesh: handle,

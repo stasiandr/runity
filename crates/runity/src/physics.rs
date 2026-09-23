@@ -1201,6 +1201,7 @@ mod tests {
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
             camera: None,
+            light: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -1283,6 +1284,7 @@ mod tests {
         let scene = Scene {
             entities: vec![crate::EntityDesc {
                 camera: None,
+                light: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),

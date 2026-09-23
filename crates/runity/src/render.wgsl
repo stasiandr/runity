@@ -17,6 +17,10 @@ struct Frame {
     light_view_projection: mat4x4<f32>,
     // depth bias, normal offset in world units, one texel in UV, on/off
     shadow_params: vec4<f32>,
+    // Point lights, two vectors each: position and range, colour.
+    lights: array<vec4<f32>, 16>,
+    // How many are on, in x.
+    light_count: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -184,7 +188,19 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let sampled = textureSample(surface_texture, surface_sampler, in.uv);
     let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
-    var color = albedo * (ambient + frame.sun_color.rgb * lambert);
+    var light = ambient + frame.sun_color.rgb * lambert;
+    // Point lights: facing it, and fading to nothing at its range —
+    // squared, so the edge of the pool is soft rather than a ring.
+    let count = u32(frame.light_count.x);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let at = frame.lights[i * 2u];
+        let to_light = at.xyz - in.world_position;
+        let distance_to = length(to_light);
+        let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
+        let facing = max(dot(normal, to_light / max(distance_to, 1e-4)), 0.0);
+        light = light + frame.lights[i * 2u + 1u].rgb * facing * reach * reach;
+    }
+    var color = albedo * light;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
     let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
