@@ -58,6 +58,7 @@ pub fn list() -> Vec<Value> {
         "focus": { "type": "string", "description": "an entity id to frame instead of eye/target" },
         "width": { "type": "integer" },
         "height": { "type": "integer" },
+        "colliders": { "type": "boolean", "description": "draw every collider as an outline — green static, blue dynamic, orange kinematic, yellow trigger — until turned off" },
     });
     let mut simulate = camera.clone();
     simulate["seconds"] = json!({ "type": "number", "description": "simulated time, fixed steps" });
@@ -917,7 +918,11 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
     let focus = optional_id(args, "focus")?;
     let eye = optional_vec3(args, "eye")?;
     let target = optional_vec3(args, "target")?;
+    let colliders = args.get("colliders").and_then(Value::as_bool);
     let session = server.session()?;
+    if let Some(show) = colliders {
+        session.set_show_colliders(show);
+    }
     if width.is_some() || height.is_some() {
         let (w, h) = session.size();
         session.resize(

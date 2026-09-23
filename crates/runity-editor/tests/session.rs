@@ -2037,3 +2037,45 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
         "a line per metre across the view: {grid_dips}"
     );
 }
+
+#[test]
+fn colliders_can_be_shown_as_outlines_coloured_by_body() {
+    let text = r#"(entities: [
+        (name: "floor", model: "builtin:plane", material: "white", transform: (scale: (12.0, 1.0, 12.0))),
+        (name: "wall", model: "", body: Static, collider: Box(half: (0.5, 0.5, 0.5)),
+         transform: (position: (-1.5, 1.0, 0.0), scale: (1.0, 2.0, 3.0))),
+        (name: "ball", model: "builtin:sphere", body: Dynamic, collider: Sphere(radius: 0.5),
+         transform: (position: (1.5, 1.0, 0.0))),
+        (name: "zone", model: "", body: Trigger, collider: Capsule(half_height: 0.5, radius: 0.5),
+         transform: (position: (0.0, 1.0, 2.5))),
+    ])"#;
+    let Some((mut session, _)) = open_with("colliders", text) else {
+        return;
+    };
+    session.resize(480, 320);
+    session.set_camera(Vec3::new(0.0, 5.0, 8.0), Vec3::new(0.0, 0.8, 0.0));
+    let count = |session: &Session, pick: fn(u8, u8, u8) -> bool| {
+        session
+            .frame_pixels()
+            .chunks(4)
+            .filter(|p| pick(p[0], p[1], p[2]))
+            .count()
+    };
+    let green = |r: u8, g: u8, b: u8| g as i32 > r as i32 + 60 && g as i32 > b as i32 + 60;
+    let yellow = |r: u8, g: u8, b: u8| r > 180 && g > 160 && (b as i32) < r as i32 - 60;
+    session.render();
+    assert_eq!(count(&session, green), 0, "no outlines unless asked");
+    session.set_show_colliders(true);
+    session.render();
+    if let Ok(dir) = std::env::var("RUNITY_SHOT_DIR") {
+        let (w, h) = session.size();
+        let img = image::RgbaImage::from_raw(w, h, session.frame_pixels().to_vec()).unwrap();
+        img.save(std::path::Path::new(&dir).join("colliders.png"))
+            .unwrap();
+    }
+    assert!(
+        count(&session, green) > 30,
+        "the invisible wall's box, in green"
+    );
+    assert!(count(&session, yellow) > 10, "the zone, in yellow");
+}

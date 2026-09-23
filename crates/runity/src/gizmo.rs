@@ -286,6 +286,132 @@ fn ring_plane(handle: Handle) -> (Vec3, Vec3) {
     }
 }
 
+/// The colour a collider's outline is drawn in, by what kind of body it
+/// is: green stays, blue falls, orange is moved by the game, yellow is a
+/// zone.
+pub fn collider_color(body: crate::scene::Body) -> Material {
+    use crate::scene::Body;
+    let [r, g, b] = match body {
+        Body::None => [0.6, 0.6, 0.6],
+        Body::Static => [0.2, 0.85, 0.3],
+        Body::Dynamic => [0.25, 0.5, 1.0],
+        Body::Kinematic => [1.0, 0.55, 0.15],
+        Body::Trigger => [1.0, 0.9, 0.2],
+    };
+    Material::new(r, g, b).unlit()
+}
+
+/// A collider as lines: the shape physics sees, drawn over what the eye
+/// sees, so a crate whose box is half a metre off is visible as that and
+/// not discovered by walking into air. The same sizes the physics world
+/// builds — sphere radius by the largest scale, capsule and cylinder by
+/// the larger of x and z — so what is drawn is what collides. A `Model`
+/// collider draws nothing here; it is the model.
+///
+/// `arm` is a unit cube, as for the handles; `thickness` is a line's width
+/// in metres.
+pub fn collider_draws(
+    arm: MeshHandle,
+    shape: crate::scene::Collider,
+    placed: Mat4,
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
+    use crate::scene::Collider;
+    let (scale, rotation, translation) = placed.to_scale_rotation_translation();
+    // Placed without scale: sizes below are already scaled, as physics
+    // scales them.
+    let frame = Mat4::from_rotation_translation(rotation, translation);
+    let mut segments: Vec<(Vec3, Vec3)> = Vec::new();
+    fn circle(out: &mut Vec<(Vec3, Vec3)>, centre: Vec3, u: Vec3, v: Vec3, radius: f32) {
+        let step = std::f32::consts::TAU / RING_SEGMENTS as f32;
+        for i in 0..RING_SEGMENTS {
+            let (a, b) = (i as f32 * step, (i + 1) as f32 * step);
+            out.push((
+                centre + (u * a.cos() + v * a.sin()) * radius,
+                centre + (u * b.cos() + v * b.sin()) * radius,
+            ));
+        }
+    }
+    let box_edges = |h: Vec3| -> Vec<(Vec3, Vec3)> {
+        let corner = |x: f32, y: f32, z: f32| Vec3::new(x * h.x, y * h.y, z * h.z);
+        let mut edges = Vec::new();
+        for (a, b) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+            edges.push((corner(-1.0, a, b), corner(1.0, a, b)));
+            edges.push((corner(a, -1.0, b), corner(a, 1.0, b)));
+            edges.push((corner(a, b, -1.0), corner(a, b, 1.0)));
+        }
+        edges
+    };
+    // A ramp: high at the back (−z), down to nothing at the front.
+    let ramp_edges = |h: Vec3| -> Vec<(Vec3, Vec3)> {
+        let c = |x: f32, y: f32, z: f32| Vec3::new(x * h.x, y * h.y, z * h.z);
+        vec![
+            (c(-1.0, -1.0, -1.0), c(1.0, -1.0, -1.0)),
+            (c(1.0, -1.0, -1.0), c(1.0, -1.0, 1.0)),
+            (c(1.0, -1.0, 1.0), c(-1.0, -1.0, 1.0)),
+            (c(-1.0, -1.0, 1.0), c(-1.0, -1.0, -1.0)),
+            (c(-1.0, -1.0, -1.0), c(-1.0, 1.0, -1.0)),
+            (c(1.0, -1.0, -1.0), c(1.0, 1.0, -1.0)),
+            (c(-1.0, 1.0, -1.0), c(1.0, 1.0, -1.0)),
+            (c(-1.0, 1.0, -1.0), c(-1.0, -1.0, 1.0)),
+            (c(1.0, 1.0, -1.0), c(1.0, -1.0, 1.0)),
+        ]
+    };
+    match shape {
+        Collider::None | Collider::Model => return Vec::new(),
+        Collider::Box { half } | Collider::Stairs { half, .. } => {
+            segments.extend(box_edges(half * scale));
+        }
+        Collider::Ramp { half } => segments.extend(ramp_edges(half * scale)),
+        Collider::Sphere { radius } => {
+            let r = radius * scale.max_element();
+            circle(&mut segments, Vec3::ZERO, Vec3::X, Vec3::Y, r);
+            circle(&mut segments, Vec3::ZERO, Vec3::Y, Vec3::Z, r);
+            circle(&mut segments, Vec3::ZERO, Vec3::Z, Vec3::X, r);
+        }
+        Collider::Capsule {
+            half_height,
+            radius,
+        }
+        | Collider::Cylinder {
+            half_height,
+            radius,
+        } => {
+            let (h, r) = (half_height * scale.y, radius * scale.x.max(scale.z));
+            circle(&mut segments, Vec3::Y * h, Vec3::X, Vec3::Z, r);
+            circle(&mut segments, -Vec3::Y * h, Vec3::X, Vec3::Z, r);
+            for side in [Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z] {
+                segments.push((side * r - Vec3::Y * h, side * r + Vec3::Y * h));
+            }
+            if matches!(shape, Collider::Capsule { .. }) {
+                // The caps, as half-rings over the top and under the bottom.
+                circle(&mut segments, Vec3::Y * h, Vec3::X, Vec3::Y, r);
+                circle(&mut segments, -Vec3::Y * h, Vec3::Z, Vec3::Y, r);
+            }
+        }
+    }
+    segments
+        .into_iter()
+        .filter_map(|(a, b)| {
+            let (a, b) = (frame.transform_point3(a), frame.transform_point3(b));
+            let along = b - a;
+            let length = along.length();
+            (length > 1e-5).then(|| Draw {
+                mesh: arm,
+                transform: Mat4::from_scale_rotation_translation(
+                    Vec3::new(length + thickness, thickness, thickness),
+                    Quat::from_rotation_arc(Vec3::X, along / length),
+                    (a + b) * 0.5,
+                ),
+                texture: TextureHandle::WHITE,
+                material,
+                pose: None,
+            })
+        })
+        .collect()
+}
+
 /// Which handle a ray passes close enough to, nearest first.
 pub fn hit(
     camera: &Camera,

@@ -93,6 +93,8 @@ pub struct Session {
     drag_from: Option<runity::Transform>,
     /// A unit cube, uploaded once, that the gizmo's handles are made of.
     gizmo_arm: Option<MeshHandle>,
+    /// Whether frames show every collider as an outline.
+    show_colliders: bool,
     /// Set while the scene is being simulated rather than edited.
     play: Option<Play>,
     /// The scene as its file last had it — read or written by this session
@@ -216,6 +218,7 @@ impl Session {
             drag: None,
             drag_from: None,
             gizmo_arm: None,
+            show_colliders: false,
             play: None,
             on_disk: None,
             merge: None,
@@ -1967,20 +1970,28 @@ impl Session {
                 FogSettings::default(),
             )
         };
+        if self.show_colliders {
+            let arm = self.gizmo_arm_mesh();
+            for (desc, placed) in self.instanced.scene.flatten() {
+                if desc.body == runity::Body::None {
+                    continue;
+                }
+                let distance = (placed.w_axis.truncate() - self.camera.position).length();
+                frame.overlay_draws.extend(gizmo::collider_draws(
+                    arm,
+                    desc.collider,
+                    placed,
+                    (distance * 0.002).max(0.005),
+                    gizmo::collider_color(desc.body),
+                ));
+            }
+        }
         // The gizmo goes in after the scene's own draws and before the frame
         // is submitted, so it is part of the same pass and does not need a
         // second one. It is unlit and drawn last, which is what keeps a
         // handle visible against anything.
         if let Some(origin) = self.selected_origin() {
-            let arm = match self.gizmo_arm {
-                Some(arm) => arm,
-                None => {
-                    let cube = builtin::cube(1.0);
-                    let arm = self.renderer.upload_mesh_owned(&self.gpu, &cube);
-                    self.gizmo_arm = Some(arm);
-                    arm
-                }
-            };
+            let arm = self.gizmo_arm_mesh();
             frame.overlay_draws.extend(gizmo::draws_for(
                 self.tool,
                 arm,
@@ -1992,6 +2003,27 @@ impl Session {
         }
         self.renderer.render(&self.gpu, &self.target, &frame);
         self.pixels = self.target.read_rgba(&self.gpu);
+    }
+
+    /// Show every collider as an outline in the frames that follow — the
+    /// shape physics sees, coloured by body: what Unity's collider gizmos
+    /// show. A view setting, not an edit.
+    pub fn set_show_colliders(&mut self, show: bool) {
+        self.show_colliders = show;
+    }
+
+    /// The unit cube handles and outlines are drawn with, uploaded once.
+    fn gizmo_arm_mesh(&mut self) -> MeshHandle {
+        match self.gizmo_arm {
+            Some(arm) => arm,
+            None => {
+                let arm = self
+                    .renderer
+                    .upload_mesh_owned(&self.gpu, &builtin::cube(1.0));
+                self.gizmo_arm = Some(arm);
+                arm
+            }
+        }
     }
 
     /// The last rendered frame, RGBA8, top row first.
