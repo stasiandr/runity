@@ -98,6 +98,9 @@ pub struct Session {
     /// every frame would accumulate its rounding, and a long drag would
     /// drift away from what the cursor says.
     drag_from: Option<runity::Transform>,
+    /// The rest of the selection's roots and their transforms when the drag
+    /// began: they move, turn and stretch with the gizmo's entity.
+    drag_others: Vec<(EntityId, runity::Transform)>,
     /// A unit cube, uploaded once, that the gizmo's handles are made of.
     gizmo_arm: Option<MeshHandle>,
     /// Whether frames show every collider as an outline.
@@ -240,6 +243,7 @@ impl Session {
             snap: Snap::default(),
             drag: None,
             drag_from: None,
+            drag_others: Vec::new(),
             gizmo_arm: None,
             show_colliders: false,
             play: None,
@@ -2132,6 +2136,34 @@ impl Session {
                 ));
             }
         }
+        // What is selected, outlined, parts and children included.
+        let selection = self.selection_roots();
+        if !selection.is_empty() {
+            let arm = self.gizmo_arm_mesh();
+            let unseen = self.unseen();
+            for (desc, placed) in self.instanced.scene.flatten() {
+                if unseen.contains(&desc.id) {
+                    continue;
+                }
+                let chosen = self
+                    .instanced
+                    .owner_of(desc.id)
+                    .is_some_and(|owner| selection.iter().any(|r| self.is_within(owner, *r)));
+                let Some((min, max)) = chosen.then(|| self.bounds_of(&desc.model)).flatten() else {
+                    continue;
+                };
+                let thickness =
+                    (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
+                frame.overlay_draws.extend(gizmo::bounds_draws(
+                    arm,
+                    min,
+                    max,
+                    placed,
+                    thickness,
+                    gizmo::selection_color(),
+                ));
+            }
+        }
         // The gizmo goes in after the scene's own draws and before the frame
         // is submitted, so it is part of the same pass and does not need a
         // second one. It is unlit and drawn last, which is what keeps a
@@ -2439,6 +2471,7 @@ impl Session {
         // longer drawn.
         self.drag = None;
         self.drag_from = None;
+        self.drag_others.clear();
     }
 
     pub fn snap(&self) -> Snap {
@@ -2494,6 +2527,16 @@ impl Session {
         // undoes as a single step, however many frames the drag lasts.
         self.history.snapshot();
         self.drag_from = self.selected.and_then(|id| self.transform(id));
+        self.drag_others = match self.selected {
+            Some(first) => self
+                .selection_roots()
+                .into_iter()
+                // An ancestor of the gizmo's entity would carry it twice.
+                .filter(|r| *r != first && !self.is_within(first, *r))
+                .filter_map(|r| self.transform(r).map(|t| (r, t)))
+                .collect(),
+            None => Vec::new(),
+        };
         self.drag = Some(gizmo::begin_for(self.tool, origin, handle, from, direction));
         Ok(Some(handle))
     }
@@ -2514,13 +2557,15 @@ impl Session {
         let parent = self.parent_matrix(id);
         let started = self.drag_from;
         let snap = self.snap;
+        let others: Vec<(EntityId, runity::Transform, Mat4)> = self
+            .drag_others
+            .iter()
+            .map(|(o, t)| (*o, *t, self.parent_matrix(*o)))
+            .collect();
         // Untracked: the snapshot for this gesture was taken at
         // `gizmo_begin`.
-        let desc = self
-            .history
-            .scene_mut_untracked()
-            .get_mut(id)
-            .ok_or(EditError::NoEntity(id))?;
+        let scene = self.history.scene_mut_untracked();
+        let desc = scene.get_mut(id).ok_or(EditError::NoEntity(id))?;
         match motion {
             Motion::Position(moved) => {
                 // Snapped in local space, which is the space the file holds
@@ -2528,6 +2573,17 @@ impl Session {
                 // space lands on a grid its parent is not on.
                 let local = parent.inverse().transform_point3(moved);
                 desc.transform.position = gizmo::snap_all(local, snap.meters);
+                // The rest go as far, in the world, as the gizmo's went.
+                if let Some(started) = started {
+                    let went = parent.transform_point3(desc.transform.position)
+                        - parent.transform_point3(started.position);
+                    for (other, from, other_parent) in &others {
+                        if let Some(d) = scene.get_mut(*other) {
+                            d.transform.position =
+                                from.position + other_parent.inverse().transform_vector3(went);
+                        }
+                    }
+                }
             }
             Motion::Rotation(delta) => {
                 let Some(started) = started else {
@@ -2543,12 +2599,27 @@ impl Session {
                 // an inspector shows; snapping a quaternion is not a thing.
                 desc.transform.rotation_deg =
                     gizmo::snap_all(desc.transform.rotation_deg, snap.degrees);
+                // Each of the rest turns as much about its own pivot.
+                for (other, from, other_parent) in &others {
+                    let (_, turn, _) = other_parent.to_scale_rotation_translation();
+                    if let Some(d) = scene.get_mut(*other) {
+                        d.transform
+                            .set_rotation(turn.inverse() * delta * turn * from.rotation());
+                        d.transform.rotation_deg =
+                            gizmo::snap_all(d.transform.rotation_deg, snap.degrees);
+                    }
+                }
             }
             Motion::Scale(factor) => {
                 let Some(started) = started else {
                     return Ok(false);
                 };
                 desc.transform.scale = gizmo::snap_all(started.scale * factor, snap.scale);
+                for (other, from, _) in &others {
+                    if let Some(d) = scene.get_mut(*other) {
+                        d.transform.scale = gizmo::snap_all(from.scale * factor, snap.scale);
+                    }
+                }
             }
         }
         self.respawn();
@@ -2564,6 +2635,7 @@ impl Session {
     pub fn gizmo_end(&mut self) {
         self.drag = None;
         self.drag_from = None;
+        self.drag_others.clear();
         self.surface = None;
     }
 
@@ -2595,6 +2667,7 @@ impl Session {
         });
         self.drag = None;
         self.drag_from = None;
+        self.drag_others.clear();
     }
 
     /// Advance the simulation by however long the caller's frame took.
@@ -2719,6 +2792,7 @@ impl Session {
         }
         self.drag = None;
         self.drag_from = None;
+        self.drag_others.clear();
         self.respawn();
     }
 

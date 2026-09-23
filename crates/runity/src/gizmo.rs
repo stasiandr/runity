@@ -301,6 +301,33 @@ pub fn collider_color(body: crate::scene::Body) -> Material {
     Material::new(r, g, b).unlit()
 }
 
+/// What is selected is outlined in this: Unity's orange.
+pub fn selection_color() -> Material {
+    Material::new(1.0, 0.42, 0.0).unlit()
+}
+
+/// A model's box as lines — `min` and `max` in its own space, `placed` its
+/// world matrix, scale and all: the outline around a selected thing.
+pub fn bounds_draws(
+    arm: MeshHandle,
+    min: Vec3,
+    max: Vec3,
+    placed: Mat4,
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
+    // Unscaled: the placing matrix's scale is applied as for a collider.
+    let half = ((max - min) * 0.5).max(Vec3::splat(1e-4));
+    let centre = placed * Mat4::from_translation((min + max) * 0.5);
+    collider_draws(
+        arm,
+        crate::scene::Collider::Box { half },
+        centre,
+        thickness,
+        material,
+    )
+}
+
 /// A collider as lines: the shape physics sees, drawn over what the eye
 /// sees, so a crate whose box is half a metre off is visible as that and
 /// not discovered by walking into air. The same sizes the physics world

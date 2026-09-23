@@ -2671,3 +2671,88 @@ fn ctrl_shift_puts_the_selection_on_whatever_the_cursor_is_over() {
     assert!(did.contains(&"drop to ground"), "{did:?}");
     assert!((session.world_bounds(crate_id).unwrap().0.y - 1.0).abs() < 1e-3);
 }
+
+#[test]
+fn a_handle_moves_turns_and_stretches_everything_selected() {
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"barrel\", model: \"builtin:cube\", transform: (position: (-3.0, 0.5, 1.0))),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("multi-gizmo", &scene) else {
+        return;
+    };
+    let (crate_id, barrel) = (id(&session, "crate"), id(&session, "barrel"));
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    session.add_to_selection(barrel).unwrap();
+    let (w, h) = session.size();
+    let crate_from = session.world_position(crate_id).unwrap();
+    let barrel_from = session.world_position(barrel).unwrap();
+
+    let (handle, r) = grab_right_of_centre(&mut session).expect("a handle");
+    assert_eq!(handle, Handle::X);
+    session.gizmo_drag(w / 2 + r + 15, h / 2).unwrap();
+    session.gizmo_end();
+    let went = session.world_position(crate_id).unwrap() - crate_from;
+    assert!(went.x > 0.01 && went.y.abs() < 1e-4, "{went}");
+    let barrel_went = session.world_position(barrel).unwrap() - barrel_from;
+    assert!(
+        (barrel_went - went).length() < 1e-4,
+        "{barrel_went} vs {went}"
+    );
+    session.undo().unwrap();
+    assert_eq!(
+        session.world_position(barrel).unwrap(),
+        barrel_from,
+        "one step"
+    );
+
+    // Stretched by the same factor, each about itself.
+    session.set_tool(runity::gizmo::Tool::Scale);
+    let (_, r) = grab_right_of_centre(&mut session).expect("a scale handle");
+    session.gizmo_drag(w / 2 + r + 15, h / 2).unwrap();
+    session.gizmo_end();
+    let crate_scale = session.transform(crate_id).unwrap().scale;
+    let barrel_scale = session.transform(barrel).unwrap().scale;
+    assert!(crate_scale.x > 1.01, "{crate_scale}");
+    assert_eq!(crate_scale, barrel_scale);
+    assert_eq!(session.world_position(barrel).unwrap(), barrel_from);
+    session.undo().unwrap();
+
+    // Turned by as much, each about its own pivot.
+    session.set_tool(runity::gizmo::Tool::Rotate);
+    let (_, r) = grab_right_of_centre(&mut session).expect("a ring");
+    session.gizmo_drag(w / 2 + r, h / 2 + 12).unwrap();
+    session.gizmo_end();
+    let crate_turn = session.transform(crate_id).unwrap().rotation_deg;
+    let barrel_turn = session.transform(barrel).unwrap().rotation_deg;
+    assert!(crate_turn.length() > 0.1, "{crate_turn}");
+    assert!((crate_turn - barrel_turn).length() < 1e-3, "{barrel_turn}");
+    assert_eq!(session.world_position(barrel).unwrap(), barrel_from);
+}
+
+#[test]
+fn what_is_selected_is_outlined_in_orange() {
+    let Some((mut session, _)) = open("outline") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let orange = |session: &Session| {
+        session
+            .frame_pixels()
+            .chunks(4)
+            .filter(|p| p[0] > 200 && (60..180).contains(&p[1]) && p[2] < 60)
+            .count()
+    };
+    session.render();
+    assert!(orange(&session) > 20, "{}", orange(&session));
+    session.set_hidden(&[crate_id], true).unwrap();
+    session.render();
+    assert_eq!(orange(&session), 0, "hidden, so not outlined either");
+    session.set_hidden(&[crate_id], false).unwrap();
+    session.select(None).unwrap();
+    session.render();
+    assert_eq!(orange(&session), 0);
+}
