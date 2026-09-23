@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 pub use scene::convert_file;
+use yaml::Get;
 
 /// What an import did, and what it could not.
 #[derive(Debug, Default)]
@@ -78,6 +79,8 @@ pub struct Unity {
     pub guids: HashMap<String, PathBuf>,
     /// GUID → its name in runity: a file stem, made unique within its kind.
     pub names: HashMap<String, String>,
+    /// Unity's layer numbers → runity's layer names (from TagManager).
+    pub layers: HashMap<i64, String>,
 }
 
 /// The kind a Unity file becomes in runity, by its extension.
@@ -140,10 +143,14 @@ impl Unity {
                 names.insert(guid.clone(), clean(&format!("{folder}_{stem}")));
             }
         }
+        let layers = unity_layers(root)
+            .map(|(_, by_number)| by_number)
+            .unwrap_or_default();
         Ok(Self {
             root: root.to_path_buf(),
             guids,
             names,
+            layers,
         })
     }
 
@@ -166,10 +173,75 @@ impl Unity {
     }
 }
 
+/// A layer's name as runity writes it: `Ignore Raycast` → `ignore_raycast`.
+fn layer_name(unity: &str) -> String {
+    snake(&clean(unity)).replace("__", "_")
+}
+
+/// Unity's layers (`ProjectSettings/TagManager.asset`) and which pairs do
+/// not collide (`DynamicsManager.asset`, its collision matrix), as a
+/// `layers.ron`, with Unity's numbers → the names.
+pub fn unity_layers(root: &Path) -> Option<(runity::layers::Layers, HashMap<i64, String>)> {
+    let tags = std::fs::read_to_string(root.join("ProjectSettings/TagManager.asset")).ok()?;
+    let doc = yaml::documents(&tags).into_iter().next()?;
+    let mut by_number = HashMap::new();
+    let mut names = Vec::new();
+    for (i, layer) in doc.body.list("layers").iter().enumerate() {
+        let Some(name) = layer.as_str().map(str::trim).filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        let name = if i == 0 {
+            "default".to_string()
+        } else {
+            layer_name(name)
+        };
+        by_number.insert(i as i64, name.clone());
+        names.push((i, name));
+    }
+    let mut ignore = Vec::new();
+    if let Ok(text) = std::fs::read_to_string(root.join("ProjectSettings/DynamicsManager.asset")) {
+        let matrix = text
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("m_LayerCollisionMatrix:"))
+            .map(|m| m.trim().to_string())
+            .unwrap_or_default();
+        // 32 masks of 8 hex digits, each a little-endian u32: bit j of
+        // mask i, layer i collides with layer j.
+        let mask = |i: usize| -> Option<u32> {
+            let hex = matrix.get(i * 8..i * 8 + 8)?;
+            let bytes = u32::from_str_radix(hex, 16).ok()?;
+            Some(bytes.swap_bytes())
+        };
+        for (a, (i, first)) in names.iter().enumerate() {
+            for (j, second) in names.iter().skip(a) {
+                // Either side saying no is no: the file's two halves need
+                // not agree.
+                let off = |a: usize, b: usize| mask(a).is_some_and(|m| m & (1 << b) == 0);
+                if off(*i, *j) || off(*j, *i) {
+                    ignore.push((first.clone(), second.clone()));
+                }
+            }
+        }
+    }
+    let layers = runity::layers::Layers {
+        layers: names.into_iter().map(|(_, n)| n).collect(),
+        ignore,
+    };
+    Some((layers, by_number))
+}
+
 /// Bring a Unity project's content into a runity project.
 pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) -> Result<Report> {
     let unity = Unity::open(unity)?;
     let mut report = Report::default();
+
+    if let Some((layers, _)) = unity_layers(&unity.root) {
+        let text = ron::ser::to_string_pretty(&layers, ron::ser::PrettyConfig::new())?;
+        write(
+            &project.root().join(runity::layers::FILE),
+            &format!("{text}\n"),
+        )?;
+    }
 
     // Textures first, and only those materials use: a project's Assets/
     // holds many a picture nothing draws.
@@ -249,10 +321,13 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             continue;
         };
         let entities = scene::convert_file(&unity, &text, &mut report);
-        let scene = runity::Scene {
+        let mut scene = runity::Scene {
             entities,
             ..Default::default()
         };
+        if let Some(sun) = scene::sun(&text) {
+            scene.sun = sun;
+        }
         let name = &unity.names[guid];
         scene
             .save(project.scenes().join(format!("{name}.ron")))

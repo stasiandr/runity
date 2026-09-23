@@ -42,6 +42,36 @@ fn axis(v: [f32; 3]) -> Vec3 {
     Vec3::new(-v[0], -v[1], v[2])
 }
 
+/// A scene's directional light as runity's sun: the hour whose sun
+/// shines the way it does, and how bright.
+pub fn sun(text: &str) -> Option<runity::scene::Sun> {
+    let docs = yaml::documents(text);
+    let light = docs
+        .iter()
+        .find(|d| d.kind == "Light" && d.body.i64("m_Type") == Some(1))?;
+    let object = light.body.reference("m_GameObject")?.file_id;
+    let transform = docs.iter().find(|d| {
+        matches!(d.class, TRANSFORM)
+            && d.body
+                .reference("m_GameObject")
+                .is_some_and(|r| r.file_id == object)
+    })?;
+    let turn = transform.body.quat("m_LocalRotation").map(rotation)?;
+    // Unity's light shines along its +z; mirrored, runity's −z.
+    let travel = turn * Vec3::NEG_Z;
+    let up = (-travel.y).clamp(-1.0, 1.0).asin().max(0.05);
+    // Morning when the light travels toward +x, as runity's sun does.
+    let angle = if travel.x > 0.0 {
+        up
+    } else {
+        std::f32::consts::PI - up
+    };
+    Some(runity::scene::Sun {
+        hour: 6.0 + angle / std::f32::consts::PI * 12.0,
+        intensity: light.body.f32("m_Intensity").unwrap_or(1.0),
+    })
+}
+
 /// The roots of a Unity file as entities, children under them.
 pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<EntityDesc> {
     let docs = yaml::documents(text);
@@ -122,6 +152,14 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     name: d.body.str("m_Name").unwrap_or("GameObject").to_string(),
                     ..Default::default()
                 };
+                if let Some(layer) = d
+                    .body
+                    .i64("m_Layer")
+                    .filter(|l| *l != 0)
+                    .and_then(|l| unity.layers.get(&l))
+                {
+                    desc.layer = layer.clone();
+                }
                 if d.body.i64("m_IsActive") == Some(0) {
                     report.skip("an inactive GameObject (brought over active)");
                 }
@@ -715,6 +753,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            layers: Default::default(),
             names: [
                 ("aaa", "crate"),
                 ("mmm", "wood"),

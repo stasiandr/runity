@@ -13,7 +13,7 @@
 //! useful default: a door's `locked` flag belongs in a save, its hinge's
 //! stiffness does not, and a tuning change should reach old saves.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -302,10 +302,92 @@ impl SaveGame {
         std::fs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
+    /// Save as `<name>.ron` in `dir`, keeping the ones before it — Dacha
+    /// Simulator's rotation: the last `keep` saves as `<name>.1.ron`,
+    /// `<name>.2.ron`…, and `<name>.restore.ron`, the newest save before
+    /// this one that read back whole. A save that is cut short (the power
+    /// goes) leaves the ones before it, and [`SaveGame::read_newest`] finds
+    /// the newest that reads.
+    pub fn write_rotating(
+        &self,
+        dir: impl AsRef<Path>,
+        name: &str,
+        keep: usize,
+    ) -> Result<PathBuf, String> {
+        let dir = dir.as_ref();
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let at = |n: usize| {
+            if n == 0 {
+                dir.join(format!("{name}.ron"))
+            } else {
+                dir.join(format!("{name}.{n}.ron"))
+            }
+        };
+        let current = at(0);
+        if SaveGame::read(&current).is_ok() {
+            let _ = std::fs::copy(&current, dir.join(format!("{name}.restore.ron")));
+        }
+        for n in (0..keep).rev() {
+            let from = at(n);
+            if from.is_file() {
+                if n + 1 > keep {
+                    let _ = std::fs::remove_file(&from);
+                } else {
+                    let _ = std::fs::rename(&from, at(n + 1));
+                }
+            }
+        }
+        self.write(&current)?;
+        Ok(current)
+    }
+
+    /// The newest save of a rotation that reads: `<name>.ron`, then
+    /// `<name>.1.ron`…, then the restore copy.
+    pub fn read_newest(dir: impl AsRef<Path>, name: &str) -> Option<(PathBuf, SaveGame)> {
+        let dir = dir.as_ref();
+        let mut candidates = vec![dir.join(format!("{name}.ron"))];
+        candidates.extend((1..=16).map(|n| dir.join(format!("{name}.{n}.ron"))));
+        candidates.push(dir.join(format!("{name}.restore.ron")));
+        candidates
+            .into_iter()
+            .find_map(|p| SaveGame::read(&p).ok().map(|s| (p, s)))
+    }
+
     pub fn read(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))
+    }
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::*;
+
+    #[test]
+    fn saves_rotate_three_deep_and_a_broken_one_falls_back() {
+        let dir = std::env::temp_dir().join(format!("runity-rotation-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let save = |n: u64| SaveGame {
+            gone: vec![EntityId::from_raw(n)],
+            ..Default::default()
+        };
+        for n in 1..=5 {
+            save(n).write_rotating(&dir, "slot", 3).unwrap();
+        }
+        let gone = |p: &str| SaveGame::read(dir.join(p)).unwrap().gone[0].raw();
+        assert_eq!(gone("slot.ron"), 5);
+        assert_eq!(gone("slot.1.ron"), 4);
+        assert_eq!(gone("slot.3.ron"), 2);
+        assert!(!dir.join("slot.4.ron").exists(), "three kept");
+        assert_eq!(gone("slot.restore.ron"), 4, "the last good one before");
+
+        // Cut short: the newest that reads is the one before.
+        std::fs::write(dir.join("slot.ron"), "(entities: [(id: ").unwrap();
+        let (path, newest) = SaveGame::read_newest(&dir, "slot").unwrap();
+        assert!(path.ends_with("slot.1.ron"));
+        assert_eq!(newest.gone[0].raw(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

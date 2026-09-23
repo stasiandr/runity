@@ -608,7 +608,7 @@ impl Session {
                 }
             }
         }
-        out.sort_by(|a, b| b.2.cmp(&a.2));
+        out.sort_by_key(|s| std::cmp::Reverse(s.2));
         out.into_iter().map(|(p, s, _)| (p, s)).collect()
     }
 

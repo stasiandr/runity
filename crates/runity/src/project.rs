@@ -1419,7 +1419,9 @@ mod tests {
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
         assert!(main.contains("components::register(&mut components);"));
         assert!(
-            main.contains("// systems, in order\n    profile.time(\"spin\", || systems::spin::run("),
+            main.contains(
+                "// systems, in order\n    profile.time(\"spin\", || systems::spin::run("
+            ),
             "{main}"
         );
         // The build script is compiled only in the game; a stray escape in

@@ -229,6 +229,7 @@ Material:
         let path = dir.join("Wet Stone.mat");
         std::fs::write(&path, MAT).unwrap();
         let unity = Unity {
+            layers: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]
                 .into_iter()
