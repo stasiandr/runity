@@ -337,6 +337,132 @@ impl NavGrid {
     }
 }
 
+/// Where an agent is in getting where it was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavStatus {
+    /// Nowhere to go.
+    #[default]
+    Idle,
+    Moving,
+    Arrived,
+    /// No walkable way from where it stands to where it was sent.
+    Unreachable,
+}
+
+/// Something that walks itself to where it is sent: Unity's NavMeshAgent,
+/// as a component. The game says `go_to`; [`move_agents`] finds the way on
+/// a [`NavGrid`] and walks it at `speed`, turning to face where it goes,
+/// on the ground the grid found. For entities at the top of the tree —
+/// their transform is the world's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NavAgent {
+    /// Metres per second.
+    pub speed: f32,
+    destination: Option<Vec3>,
+    path: Vec<Vec3>,
+    next: usize,
+    status: NavStatus,
+    needs_path: bool,
+}
+
+impl NavAgent {
+    pub fn new(speed: f32) -> Self {
+        Self {
+            speed,
+            destination: None,
+            path: Vec::new(),
+            next: 0,
+            status: NavStatus::Idle,
+            needs_path: false,
+        }
+    }
+
+    /// Walk there. The way is found on the next [`move_agents`].
+    pub fn go_to(&mut self, destination: Vec3) {
+        self.destination = Some(destination);
+        self.needs_path = true;
+        self.status = NavStatus::Moving;
+    }
+
+    /// Stop where it is.
+    pub fn stop(&mut self) {
+        self.destination = None;
+        self.path.clear();
+        self.status = NavStatus::Idle;
+    }
+
+    pub fn status(&self) -> NavStatus {
+        self.status
+    }
+
+    /// Ask for the way again from where it stands — after the level was
+    /// rebaked, say.
+    pub fn repath(&mut self) {
+        if self.destination.is_some() {
+            self.needs_path = true;
+        }
+    }
+
+    /// The corners still ahead of it.
+    pub fn remaining(&self) -> &[Vec3] {
+        &self.path[self.next.min(self.path.len())..]
+    }
+}
+
+/// Move every [`NavAgent`] one step of `dt` seconds along its way: the
+/// system. Call it in the fixed step.
+pub fn move_agents(world: &mut hecs::World, grid: &NavGrid, dt: f32) {
+    for (transform, agent) in world.query_mut::<(&mut crate::scene::Transform, &mut NavAgent)>() {
+        if agent.needs_path {
+            agent.needs_path = false;
+            let Some(to) = agent.destination else {
+                continue;
+            };
+            match grid.path(transform.position, to) {
+                Some(path) => {
+                    agent.path = path;
+                    agent.next = 1.min(agent.path.len());
+                    agent.status = NavStatus::Moving;
+                }
+                None => {
+                    agent.path.clear();
+                    agent.status = NavStatus::Unreachable;
+                    continue;
+                }
+            }
+        }
+        if agent.status != NavStatus::Moving {
+            continue;
+        }
+        let mut budget = agent.speed.max(0.0) * dt;
+        while budget > 0.0 {
+            let Some(&corner) = agent.path.get(agent.next) else {
+                agent.status = NavStatus::Arrived;
+                break;
+            };
+            let to = corner - transform.position;
+            let flat = Vec2::new(to.x, to.z);
+            if flat.length() > 1e-4 {
+                transform.rotation_deg.y = flat.x.atan2(flat.y).to_degrees();
+            }
+            let distance = to.length();
+            if distance <= budget {
+                transform.position = corner;
+                budget -= distance;
+                agent.next += 1;
+                if agent.next >= agent.path.len() {
+                    agent.status = NavStatus::Arrived;
+                    break;
+                }
+            } else {
+                transform.position += to / distance * budget;
+                budget = 0.0;
+            }
+        }
+    }
+    crate::world::apply_hierarchy(world);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,6 +584,68 @@ mod tests {
         assert!(
             grid.path(Vec3::new(0.0, 0.0, 6.0), top).is_none(),
             "two metres is a wall"
+        );
+    }
+
+    #[test]
+    fn an_agent_walks_round_the_wall_to_where_it_was_sent_and_says_when_it_cannot() {
+        let grid = baked(vec![
+            floor(),
+            solid(
+                "wall",
+                Vec3::new(0.0, 1.0, -2.0),
+                Vec3::new(0.25, 1.0, 8.0),
+                None,
+            ),
+            // A platform a metre up: walkable on top, no step onto it.
+            solid(
+                "platform",
+                Vec3::new(7.0, 0.5, 7.0),
+                Vec3::new(1.5, 0.5, 1.5),
+                None,
+            ),
+        ]);
+        let mut world = hecs::World::new();
+        let walker = world.spawn((
+            Transform {
+                position: Vec3::new(-5.0, 0.0, 0.0),
+                ..Transform::default()
+            },
+            crate::world::WorldTransform(glam::Mat4::IDENTITY),
+            NavAgent::new(3.0),
+        ));
+        world
+            .get::<&mut NavAgent>(walker)
+            .unwrap()
+            .go_to(Vec3::new(5.0, 0.0, 0.0));
+        let mut went_past_the_gap = false;
+        for _ in 0..600 {
+            move_agents(&mut world, &grid, 1.0 / 60.0);
+            let at = world.get::<&Transform>(walker).unwrap().position;
+            went_past_the_gap |= at.z > 6.0;
+            assert!(
+                !(at.x.abs() < 0.25 && at.z < 6.0),
+                "never through the wall: {at:?}"
+            );
+            if world.get::<&NavAgent>(walker).unwrap().status() == NavStatus::Arrived {
+                break;
+            }
+        }
+        let agent = (*world.get::<&NavAgent>(walker).unwrap()).clone();
+        assert_eq!(agent.status(), NavStatus::Arrived);
+        let at = world.get::<&Transform>(walker).unwrap().position;
+        assert!((at - Vec3::new(5.0, 0.0, 0.0)).length() < 0.3, "{at:?}");
+        assert!(went_past_the_gap);
+
+        // Up onto the platform: no way, and it says so rather than walking.
+        world
+            .get::<&mut NavAgent>(walker)
+            .unwrap()
+            .go_to(Vec3::new(7.0, 1.0, 7.0));
+        move_agents(&mut world, &grid, 1.0 / 60.0);
+        assert_eq!(
+            world.get::<&NavAgent>(walker).unwrap().status(),
+            NavStatus::Unreachable
         );
     }
 }
