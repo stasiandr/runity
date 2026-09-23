@@ -1,9 +1,8 @@
 """Write examples/valley/scenes/bazaar.ron: a desert market in the wind.
 
 Awnings bellying over two stalls, flags and banners, a washing line with
-sheets, bunting between the stalls, a mud-brick wall that comes down, and
-sand running from a torn sack into a heap: cloth, ropes, crumbling and
-heaps together (runity::cloth, rope, crumble, heap).
+sheets, bunting between the stalls, and a mud-brick wall that comes down:
+cloth, ropes and crumbling together (runity::cloth, rope, crumble).
 
     python3 tools/example-assets/bazaar.py
 """
@@ -72,18 +71,10 @@ thing("bunting", 'transform: (position: (-2.5, 2.35, -2.0)), material: (base_col
 # A mud-brick wall that comes down four seconds in, toward the camera.
 thing("old wall", 'model: "builtin:cube", transform: (position: (6.0, 1.3, 2.5), rotation_deg: (0.0, -20.0, 0.0), scale: (4.0, 2.6, 0.45)), material: (base_color: %s), body: Static, collider: Box(half: (0.5, 0.5, 0.5), center: (0.0, 0.0, 0.0)), crumble: (at: 4.0, pieces: (8, 6, 2), burst: 3.5, from: (0.0, 0.3, -1.0), lasts: 6.0)' % f(MUD))
 
-# A torn sack on a beam, sand running out of it into a heap.
-post("sack post", (-6.0, 6.5), 2.8)
-thing("sack beam", 'model: "builtin:cube", transform: (position: (-5.4, 2.75, 6.5), scale: (1.3, 0.1, 0.1)), material: (base_color: %s)' % f(WOOD))
-thing("sack", 'model: "builtin:sphere", transform: (position: (-4.9, 2.35, 6.5), scale: (0.45, 0.6, 0.4)), material: (base_color: (0.6, 0.48, 0.3), smoothness: 0.05)')
-thing("running sand", 'transform: (position: (-4.9, 2.02, 6.5)), particles: (rate: 900.0, life: 0.68, speed: 0.1, spread_deg: 4.0, size: 0.03, end_size: 0.026, gravity: -9.8, color: (0.86, 0.7, 0.46), stretch: 0.14)')
-thing("heap", 'transform: (position: (-4.9, 0.0, 6.5)), material: (base_color: (0.7, 0.55, 0.37), smoothness: 0.05), heap: (rate: 0.012, start: 0.01, most: 0.4)')
-
-head = """// Базар в пустыне на ветру (`runity::cloth`, `rope`, `crumble`, `heap`):
-// навесы над двумя лавками, флаги и знамя, бельевая верёвка с простынями,
-// гирлянда между лавками, глинобитная стена, что рушится на четвёртой
-// секунде, и песок из порванного мешка — в растущую кучу. Сгенерирована
-// tools/example-assets/bazaar.py.
+head = """// Базар в пустыне на ветру (`runity::cloth`, `rope`, `crumble`): навесы
+// над двумя лавками, флаги и знамя, бельевая верёвка с простынями,
+// гирлянда между лавками и глинобитная стена, что рушится на четвёртой
+// секунде. Сгенерирована tools/example-assets/bazaar.py.
 (
     view: (position: (0.5, 3.4, 12.0), target: (-0.5, 1.4, -2.0), fov_deg: 60.0),
     sun: (hour: 16.2, intensity: 1.3, ground: (0.78, 0.62, 0.42)),

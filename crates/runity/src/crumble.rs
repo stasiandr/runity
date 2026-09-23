@@ -2,8 +2,8 @@
 //! `crumble: (at: 3.0, pieces: (6, 4, 2))` on a box-shaped entity breaks it
 //! at that second of its life into so many blocks, knocked outward from
 //! where it was struck in a cloud of dust. The blocks fall and tumble as
-//! bodies, and after a while each crumbles in turn into a little heap of
-//! sand where it lay.
+//! bodies, and after a while each slumps and crumbles away into dust
+//! where it lay.
 //!
 //! The wall is a box (a scaled cube) of its material; the blocks are its
 //! cells, each a little smaller and shifted, so the break is ragged.
@@ -18,7 +18,7 @@ use glam::{Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::scene::{Body, Collider, Transform};
-use crate::world::{LiveMesh, Model, Physics, Shape, Surface, WorldTransform};
+use crate::world::{Model, Physics, Shape, Surface, WorldTransform};
 
 /// A thing that comes down, as a scene line writes it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -86,8 +86,6 @@ pub struct CrumbleState {
     blocks: Vec<Block>,
     dust: Vec<Dust>,
     color: [f32; 3],
-    /// The heaps its blocks have gone to: where, and the entity.
-    heaps: Vec<(Vec3, hecs::Entity)>,
 }
 
 impl CrumbleState {
@@ -100,7 +98,6 @@ impl CrumbleState {
             blocks: Vec::new(),
             dust: Vec::new(),
             color: [0.7, 0.55, 0.4],
-            heaps: Vec::new(),
         }
     }
 
@@ -171,7 +168,6 @@ pub fn run_crumble(world: &mut hecs::World, physics: &mut crate::PhysicsWorld, s
         }
         state.dust.retain(|d| d.age < DUST_LIFE);
         let mut gone = Vec::new();
-        let mut heaps = Vec::new();
         for block in &mut state.blocks {
             block.age += seconds;
             if let Some(knock) = block.knock {
@@ -199,11 +195,6 @@ pub fn run_crumble(world: &mut hecs::World, physics: &mut crate::PhysicsWorld, s
                 if let Ok(mut transform) = world.get::<&mut Transform>(block.entity) {
                     // It slumps: down more than across.
                     transform.scale = block.size * Vec3::new(1.0 - t * 0.6, 1.0 - t, 1.0 - t * 0.6);
-                    if t >= 1.0 {
-                        let volume = block.size.x * block.size.y * block.size.z;
-                        let foot = transform.position - Vec3::Y * block.size.y * 0.5;
-                        heaps.push((foot, volume * 0.35));
-                    }
                 }
                 if t >= 1.0 {
                     gone.push(block.entity);
@@ -213,43 +204,6 @@ pub fn run_crumble(world: &mut hecs::World, physics: &mut crate::PhysicsWorld, s
         state.blocks.retain(|b| !gone.contains(&b.entity));
         for entity in gone {
             let _ = world.despawn(entity);
-        }
-        // Each block's sand goes to the heap it fell by, or starts one:
-        // the rubble slumps into a few mounds, not a heap per block.
-        let sand = state.color;
-        for (foot, volume) in heaps {
-            let near = state
-                .heaps
-                .iter()
-                .find(|(at, _)| Vec3::new(at.x - foot.x, 0.0, at.z - foot.z).length() < 1.6)
-                .map(|&(_, e)| e);
-            if let Some(heap) = near.and_then(|e| world.get::<&mut crate::heap::HeapState>(e).ok().map(|_| e)) {
-                if let Ok(mut h) = world.get::<&mut crate::heap::HeapState>(heap) {
-                    h.heap.start += volume;
-                    h.heap.most += volume;
-                }
-                continue;
-            }
-            let heap = crate::heap::Heap {
-                rate: 0.0,
-                start: volume,
-                most: volume,
-                angle_deg: 24.0,
-            };
-            let mut material = crate::Material::new(sand[0], sand[1], sand[2]);
-            material.smoothness = 0.05;
-            let at = Vec3::new(foot.x, foot.y.max(0.0), foot.z);
-            let entity = world.spawn((
-                Transform {
-                    position: at,
-                    ..Transform::default()
-                },
-                WorldTransform(Mat4::from_translation(at)),
-                Surface(material),
-                crate::heap::HeapState::new(heap),
-                LiveMesh::new(Vec::new(), Vec::new()),
-            ));
-            state.heaps.push((at, entity));
         }
         if let Ok(mut live) = world.get::<&mut CrumbleState>(owner) {
             *live = state;
@@ -363,7 +317,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_wall_comes_down_at_its_second_into_blocks_that_fly_fall_and_go_to_sand() {
+    fn a_wall_comes_down_at_its_second_into_blocks_that_fly_fall_and_crumble_away() {
         let mut world = hecs::World::new();
         let wall_at = Transform {
             position: Vec3::new(0.0, 1.5, 0.0),
@@ -437,19 +391,11 @@ mod tests {
         let mean = flown.iter().copied().sum::<Vec3>() / flown.len() as f32;
         assert!(mean.z < -0.3, "knocked from in front, away: {mean}");
         assert!(mean.y < 1.4, "fallen: {mean}");
-        // Then each crumbles to sand, and heaps are left.
+        // Then each crumbles away into dust, and nothing is left.
         for _ in 0..(60 * 5) {
             step(&mut world, &mut physics);
         }
-        assert_eq!(blocks(&world), 0, "all gone to sand");
-        let heaps: Vec<f32> = world
-            .query::<&crate::heap::HeapState>()
-            .iter()
-            .map(|h| h.heap.start)
-            .collect();
-        assert!(!heaps.is_empty() && heaps.len() < 12, "a few mounds, not a heap a block: {}", heaps.len());
-        let sand: f32 = heaps.iter().sum();
-        let wall = 3.0 * 3.0 * 0.4;
-        assert!(sand > wall * 0.15 && sand < wall * 0.4, "its sand: {sand}");
+        assert_eq!(blocks(&world), 0, "all crumbled away");
+        assert_eq!(world.query::<&Model>().iter().count(), 0, "nothing of them left");
     }
 }

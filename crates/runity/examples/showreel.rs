@@ -34,6 +34,9 @@ struct Shot {
     /// Split down the middle: on the left drawn without rays, on the right
     /// with the scene's `ray_tracing` — the same world, the same moment.
     compare: bool,
+    /// How far the ground has dried after rain at the start and the end:
+    /// the weather's `drying`.
+    drying: Option<(f32, f32)>,
 }
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
@@ -53,6 +56,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[("weather", "(drifted: 1.0)")],
         },
         Shot {
@@ -66,6 +70,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -79,6 +84,7 @@ fn shots() -> Vec<Shot> {
             clock: 30.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[
                 ("weather", "(dust_devils: 1.0)"),
                 ("wind", "(direction: (1.0, 0.0, 0.3), strength: 1.8)"),
@@ -95,6 +101,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[
                 ("sun", "(hour: 14.0, intensity: 0.9, ground: (0.78, 0.6, 0.38))"),
                 ("sky", "(mode: Physical, atmosphere: (mie: 6.0))"),
@@ -115,6 +122,7 @@ fn shots() -> Vec<Shot> {
             clock: 4.0,
             speed: 4.6,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -128,6 +136,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -141,6 +150,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -154,6 +164,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.35))"),
                 ("volumetric_fog", "(enabled: true, density: 0.015, anisotropy: 0.75, height_falloff: 0.2)"),
@@ -170,6 +181,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 30.0,
             compare: false,
+            drying: None,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.55, shadows: 0.8))"),
                 ("wind", "(strength: 1.5)"),
@@ -186,6 +198,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -199,6 +212,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -212,6 +226,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[
                 ("sun", "(hour: 21.0, intensity: 0.08)"),
                 ("sky", "(mode: Procedural, zenith: (0.01, 0.015, 0.04), horizon: (0.03, 0.04, 0.07), ground: (0.01, 0.01, 0.015), sun_size: 0.0)"),
@@ -223,7 +238,62 @@ fn shots() -> Vec<Shot> {
     ]
 }
 
-/// Cloth, ropes, crumbling and heaps (`--reel bazaar`): a desert market in
+/// What came after the main reel: the storm, the ground drying after it,
+/// lamplight in the mist.
+fn later_shots() -> Vec<Shot> {
+    vec![
+        Shot {
+            name: "storm",
+            caption: "Гроза: молнии бьют по часам мира, вспышка на миг — главный свет сцены, с тенями от перголы и решёток",
+            scene: "lanterns.ron",
+            seconds: 8.0,
+            from: (v(4.0, 1.7, 3.0), v(-30.0, 14.0, -3.0)),
+            to: (v(3.0, 1.6, 4.0), v(-30.0, 11.0, -1.0)),
+            hours: Some((19.3, 19.4)),
+            clock: 17.0,
+            speed: 1.0,
+            compare: false,
+            drying: None,
+            look: &[
+                ("sun", "(hour: 19.3, intensity: 0.6)"),
+                ("weather", "(rain: 0.8, wetness: 1.0, puddles: 0.4, lightning: 1.0)"),
+            ],
+        },
+        Shot {
+            name: "takyr",
+            caption: "После дождя: земля сохнет пятнами, лужи уходят, глина такыра трескается на плитки (время ускорено)",
+            scene: "desert.ron",
+            seconds: 10.0,
+            from: (v(15.5, 1.8, 9.5), v(24.0, 0.0, 1.0)),
+            to: (v(19.0, 1.5, 8.0), v(25.0, 0.0, 0.0)),
+            hours: None,
+            clock: 0.0,
+            speed: 1.0,
+            compare: false,
+            drying: Some((0.0, 1.0)),
+            look: &[
+                ("post", "(heat_haze: (intensity: 0.0))"),
+                ("weather", "(wetness: 1.0, puddles: 0.35)"),
+            ],
+        },
+        Shot {
+            name: "mist",
+            caption: "Лучи в дымке: фонарь внутри павильона светит сквозь решётку, у каждой лампы свои тени в воздухе",
+            scene: "lanterns.ron",
+            seconds: 8.0,
+            from: (v(-11.8, 1.5, 10.2), v(-7.6, 1.6, 7.3)),
+            to: (v(-10.6, 1.9, 11.4), v(-7.6, 1.5, 7.3)),
+            hours: Some((21.5, 21.5)),
+            clock: 0.0,
+            speed: 1.0,
+            compare: false,
+            drying: None,
+            look: &[("volumetric_fog", "(enabled: true, density: 0.09, anisotropy: 0.6, base_height: 0.0, height_falloff: 0.15, distance: 40.0, ambient: 0.1, lamps: 30.0)")],
+        },
+    ]
+}
+
+/// Cloth, ropes and crumbling (`--reel bazaar`): a desert market in
 /// the wind (bazaar.ron).
 fn bazaar_shots() -> Vec<Shot> {
     vec![
@@ -238,11 +308,12 @@ fn bazaar_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
             name: "bazaar-wall",
-            caption: "Разрушение: глинобитная стена рушится на блоки в облаке пыли, блоки падают и рассыпаются в песок",
+            caption: "Разрушение: глинобитная стена рушится на блоки в облаке пыли, блоки падают и рассыпаются",
             scene: "bazaar.ron",
             seconds: 12.0,
             from: (v(3.0, 2.2, 8.5), v(6.0, 1.2, 2.5)),
@@ -251,19 +322,7 @@ fn bazaar_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
-            look: &[],
-        },
-        Shot {
-            name: "bazaar-sand",
-            caption: "Песок из порванного мешка струится вниз и растёт кучей под углом естественного откоса",
-            scene: "bazaar.ron",
-            seconds: 8.0,
-            from: (v(-2.8, 1.6, 9.0), v(-4.9, 1.1, 6.5)),
-            to: (v(-3.4, 1.3, 8.2), v(-4.9, 0.8, 6.5)),
-            hours: None,
-            clock: 0.0,
-            speed: 1.0,
-            compare: false,
+            drying: None,
             look: &[],
         },
     ]
@@ -285,6 +344,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -298,6 +358,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -311,6 +372,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -324,6 +386,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -337,6 +400,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            drying: None,
             look: &[],
         },
         Shot {
@@ -350,6 +414,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: true,
+            drying: None,
             look: &[("screen_space_reflections", "(enabled: true)")],
         },
     ]
@@ -392,7 +457,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some("main") => shots(),
         Some("rays") => ray_shots(),
         Some("bazaar") => bazaar_shots(),
-        Some(other) => return Err(format!("no reel `{other}`: main, rays or bazaar").into()),
+        Some("all") => shots()
+            .into_iter()
+            .chain(later_shots())
+            .chain(bazaar_shots())
+            .chain(ray_shots())
+            .collect(),
+        Some(other) => return Err(format!("no reel `{other}`: main, rays, bazaar or all").into()),
     };
     let total: u32 = list
         .iter()
@@ -598,6 +669,11 @@ fn render_shot(
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {
             scene.sun.hour = a + (b - a) * t;
+        }
+        if let Some((a, b)) = shot.drying {
+            let mut weather = scene.weather.unwrap_or_default();
+            weather.drying = a + (b - a) * t;
+            scene.weather = Some(weather);
         }
         let camera = Camera {
             position: shot.from.0.lerp(shot.to.0, t),
