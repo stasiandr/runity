@@ -22,6 +22,7 @@ mod error;
 mod grouping;
 pub mod history;
 pub mod panels;
+pub mod prefs;
 mod scene_view;
 mod surface;
 mod thumbnail;
@@ -346,6 +347,8 @@ impl Session {
     /// as its one instance line, so editing a part of it writes an override
     /// into the variant and leaves the base alone.
     pub fn open_scene(&mut self, path: impl AsRef<Path>) -> EditResult<Vec<String>> {
+        // Where the view was in the scene being left.
+        self.remember_view();
         let path = path.as_ref().to_path_buf();
         let scene = load_document(&path)?;
         // The scene says where it is looked at from, and opening it puts the
@@ -403,6 +406,8 @@ impl Session {
                 .display()
         );
         self.say(console::Level::Info, opened);
+        self.restore_view();
+        self.remember_view();
         for line in &skipped {
             self.say(console::Level::Warning, line.clone());
         }
@@ -431,6 +436,7 @@ impl Session {
             .or_else(|| self.scene_path.clone())
             .ok_or(EditError::NoPath)?;
         save_document(self.history.scene(), &target)?;
+        self.remember_view();
         if is_prefab(Some(&target)) {
             // Everything placed from here on — and every instance in the
             // next scene opened — is what was just saved.

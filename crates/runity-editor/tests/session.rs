@@ -3395,3 +3395,34 @@ fn an_asset_dropped_into_the_view_stands_where_it_was_let_go() {
     );
     assert!(session.drop_asset("nothing_by_that_name", 10, 10).is_err());
 }
+
+#[test]
+fn the_view_is_where_this_person_left_it_and_the_scene_file_does_not_know() {
+    use runity::glam::Vec3;
+    let Some((mut session, path)) = open("prefs") else {
+        return;
+    };
+    let text = std::fs::read_to_string(&path).unwrap();
+    session.set_camera(Vec3::new(7.0, 3.0, -4.0), Vec3::new(1.0, 0.0, 1.0));
+    session.set_snap(runity_editor::Snap {
+        meters: 0.5,
+        degrees: 0.0,
+        scale: 0.0,
+    });
+    let cave = session.new_scene("cave").unwrap();
+    assert_ne!(session.camera().position, Vec3::new(7.0, 3.0, -4.0));
+
+    // Back to the first: the view comes back, the file never changed.
+    session.open_scene(&path).unwrap();
+    assert_eq!(session.camera().position, Vec3::new(7.0, 3.0, -4.0));
+    assert_eq!(session.snap().meters, 0.5);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+
+    // A new session starts on the scene open last.
+    session.open_scene(&cave).unwrap();
+    drop(session);
+    let project = runity::Project::find(&path).unwrap();
+    assert_eq!(runity_editor::Session::last_scene(&project), Some(cave));
+    let ignore = std::fs::read_to_string(project.root().join(".gitignore")).unwrap();
+    assert!(ignore.contains("/.runity/"), "one person's, not the team's");
+}

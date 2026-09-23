@@ -429,6 +429,8 @@ const GITIGNORE: &str = "\
 /target/
 # What `runity build` makes.
 /build/
+# The editor's memory for whoever uses it: views, the last scene.
+/.runity/
 ";
 
 /// The `.gitattributes` lines that send scenes and prefabs to `runity
