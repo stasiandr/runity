@@ -74,6 +74,22 @@ impl History {
         !self.past.is_empty()
     }
 
+    /// How many steps undo can take back.
+    pub fn depth(&self) -> usize {
+        self.past.len()
+    }
+
+    /// Make the last `steps` steps one: what an edit of several things at
+    /// once, made of an edit of each, calls afterwards so one undo takes
+    /// it all back.
+    pub fn squash(&mut self, steps: usize) {
+        if steps > 1 {
+            // The state before the first of them stays; the ones between go.
+            let first = self.past.len().saturating_sub(steps);
+            self.past.truncate(first + 1);
+        }
+    }
+
     pub fn can_redo(&self) -> bool {
         !self.future.is_empty()
     }

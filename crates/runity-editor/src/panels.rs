@@ -63,6 +63,9 @@ pub const FIELDS: [&str; 14] = [
     "components.<name>",
 ];
 
+/// What a field of several things shows when they disagree.
+pub const MIXED: &str = "—";
+
 fn ron<T: serde::Serialize>(value: &T) -> String {
     runity::ron::to_string(value).unwrap_or_default()
 }
@@ -226,6 +229,49 @@ impl Session {
                 .cloned()
                 .unwrap_or_default(),
         )
+    }
+
+    /// The Inspector for several things at once: the first one's fields,
+    /// with `—` where the others say something else — Unity's mixed value.
+    pub fn inspect_all(&self, ids: &[EntityId]) -> Option<Vec<Field>> {
+        let (first, rest) = ids.split_first()?;
+        let mut fields = self.inspect(*first)?;
+        for id in rest {
+            let theirs = self.inspect(*id)?;
+            for field in &mut fields {
+                let same = theirs
+                    .iter()
+                    .find(|f| f.name == field.name)
+                    .is_some_and(|f| f.value == field.value);
+                if !same {
+                    field.value = MIXED.to_string();
+                }
+                field.overridden |= theirs.iter().any(|f| f.name == field.name && f.overridden);
+            }
+        }
+        Some(fields)
+    }
+
+    /// Set one field of several things to the same text, as one undo step:
+    /// typing into an Inspector showing all of them. Nothing changes when
+    /// any of them is not there or the text does not parse.
+    pub fn set_field_all(&mut self, ids: &[EntityId], field: &str, text: &str) -> EditResult<()> {
+        for id in ids {
+            self.require(*id)?;
+        }
+        let before = self.history.depth();
+        for id in ids {
+            if let Err(e) = self.set_field(*id, field, text) {
+                // Only the first can fail on the text; take back what went.
+                while self.history.depth() > before {
+                    self.undo()?;
+                }
+                return Err(e);
+            }
+        }
+        self.history
+            .squash(self.history.depth().saturating_sub(before));
+        Ok(())
     }
 
     /// Set one field from its text, as one undo step — what typing into

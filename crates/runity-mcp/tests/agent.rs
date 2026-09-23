@@ -354,6 +354,15 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         "set_field",
         json!({ "id": wall, "field": "layer", "value": "player" }),
     );
+    assert_eq!(
+        agent.text(
+            "set_field",
+            json!({ "ids": [wall], "field": "layer", "value": "player" })
+        ),
+        "1 layer = player"
+    );
+    let both = agent.text("inspect", json!({ "ids": [wall, wall] }));
+    assert!(both.contains("layer: player"), "{both}");
     let fields = agent.text("inspect", json!({ "id": wall }));
     assert!(
         fields.contains("layer: player") && fields.contains("model: builtin:cube"),

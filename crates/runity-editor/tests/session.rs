@@ -2841,3 +2841,45 @@ fn in_center_mode_the_selection_turns_about_its_middle() {
         session.transform(barrel).unwrap().rotation_deg
     );
 }
+
+#[test]
+fn the_inspector_edits_several_things_at_once_in_one_step() {
+    let Some((mut session, _)) = open("multi-edit") else {
+        return;
+    };
+    let (crate_id, lid, ground) = (
+        id(&session, "crate"),
+        id(&session, "lid"),
+        id(&session, "ground"),
+    );
+    let fields = session.inspect_all(&[crate_id, lid]).unwrap();
+    let value = |fields: &[runity_editor::panels::Field], name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .value
+            .clone()
+    };
+    assert_eq!(value(&fields, "model"), "builtin:cube", "they agree");
+    assert_eq!(value(&fields, "name"), runity_editor::panels::MIXED);
+    assert_eq!(value(&fields, "position"), runity_editor::panels::MIXED);
+
+    let steps = session.undo_steps().len();
+    session
+        .set_field_all(&[crate_id, lid, ground], "layer", "debris")
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    let fields = session.inspect_all(&[crate_id, lid, ground]).unwrap();
+    assert_eq!(value(&fields, "layer"), "debris");
+    session.undo().unwrap();
+    for id in [crate_id, lid, ground] {
+        assert_eq!(value(&session.inspect(id).unwrap(), "layer"), "");
+    }
+
+    // Text that does not parse changes none of them.
+    assert!(session
+        .set_field_all(&[crate_id, lid], "scale", "(big)")
+        .is_err());
+    assert_eq!(session.undo_steps().len(), steps);
+}

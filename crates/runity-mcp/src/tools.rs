@@ -73,8 +73,8 @@ pub fn list() -> Vec<Value> {
         tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
         tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
-        tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
-        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, camera, components.<name>. One undo step; on a prefab's part, an override.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "value": { "type": "string" } }), &["id", "field", "value"]),
+        tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides. With `ids`, for several at once: — where they disagree.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } } }), &[]),
+        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("add_entity", "Add an entity, as one undo step. Returns its id.", add, &[]),
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
@@ -186,11 +186,14 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             })])
         }
         "inspect" => {
-            let id = id(args, "id")?;
+            let ids = match args.get("ids") {
+                Some(_) => id_list(args)?,
+                None => vec![id(args, "id")?],
+            };
             let fields = server
                 .session()?
-                .inspect(id)
-                .ok_or(format!("no entity with id {id}"))?;
+                .inspect_all(&ids)
+                .ok_or("no entity with one of those ids".to_string())?;
             Ok(vec![text(
                 fields
                     .iter()
@@ -207,8 +210,16 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             )])
         }
         "set_field" => {
-            let id = id(args, "id")?;
             let (field, value) = (string(args, "field")?, string(args, "value")?);
+            if args.get("ids").is_some() {
+                let ids = id_list(args)?;
+                server
+                    .session()?
+                    .set_field_all(&ids, &field, &value)
+                    .map_err(|e| e.to_string())?;
+                return Ok(vec![text(format!("{} {field} = {value}", ids.len()))]);
+            }
+            let id = id(args, "id")?;
             server
                 .session()?
                 .set_field(id, &field, &value)
