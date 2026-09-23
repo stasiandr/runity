@@ -1067,6 +1067,18 @@ fn joint_data(
         }
         _ => {}
     }
+    let (motor, axis, unit) = match *joint {
+        Joint::Hinge { motor, .. } => (motor, JointAxis::AngX, 1f32.to_radians()),
+        Joint::Slider { motor, .. } => (motor, JointAxis::LinX, 1.0),
+        _ => (None, JointAxis::LinX, 1.0),
+    };
+    if let Some(motor) = motor {
+        let strength = motor.strength.max(0.0);
+        builder = match motor.hold {
+            Some(hold) => builder.motor_position(axis, hold * unit, strength, strength * 0.2),
+            None => builder.motor_velocity(axis, motor.speed * unit, strength),
+        };
+    }
     Some(builder.build())
 }
 
@@ -1952,6 +1964,38 @@ mod tests {
             physics.overlap_box(Vec3::new(3.0, 0.5, 0.0), Vec3::new(0.2, 0.2, 3.0), turned),
             both
         );
+    }
+
+    #[test]
+    fn a_motor_turns_a_hinge_and_a_spring_holds_it_at_an_angle() {
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000d1", name: "wheel", model: "m", body: Dynamic,
+                 collider: Box(half: (1.0, 0.1, 0.2)), transform: (position: (0.0, 2.0, 0.0)),
+                 joint: Hinge(axis: (0.0, 1.0, 0.0), motor: (speed: 90.0, strength: 1000.0))),
+                (id: "00000000000000d2", name: "door", model: "m", body: Dynamic,
+                 collider: Box(half: (0.5, 1.0, 0.05)), transform: (position: (5.0, 2.0, 0.0)),
+                 joint: Hinge(anchor: (-0.5, 0.0, 0.0), axis: (0.0, 1.0, 0.0), motor: (hold: 45.0, strength: 200.0))),
+            ])"#,
+        );
+        let turned = |world: &World, id: &str| {
+            let entity = by_id(world, format!("00000000000000{id}").parse().unwrap());
+            let t = *world.get::<&Transform>(entity).unwrap();
+            let (y, _, _) = t.rotation().to_euler(glam::EulerRot::YXZ);
+            y.to_degrees()
+        };
+        run_for(&mut physics, &mut world, 30);
+        let early = turned(&world, "d1");
+        run_for(&mut physics, &mut world, 30);
+        let later = turned(&world, "d1");
+        // Half a second at 90° a second, near enough.
+        assert!(
+            ((later - early).abs() - 45.0).abs() < 8.0,
+            "{early} → {later}"
+        );
+        run_for(&mut physics, &mut world, 240);
+        let door = turned(&world, "d2").abs();
+        assert!((door - 45.0).abs() < 6.0, "held at 45°: {door}");
     }
 
     #[test]

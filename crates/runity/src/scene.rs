@@ -143,6 +143,10 @@ pub enum Joint {
         axis: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
         limits_deg: Option<(f32, f32)>,
+        /// Driven: turning at a speed (degrees a second), or held at an
+        /// angle like a spring — a door that swings shut.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        motor: Option<Motor>,
     },
     /// Turns any way about the anchor: a chain, a ball-and-socket.
     Ball {
@@ -159,7 +163,31 @@ pub enum Joint {
         axis: Vec3,
         #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
         limits: Option<(f32, f32)>,
+        /// Driven: sliding at a speed (metres a second), or held at a
+        /// position like a spring — a lift, a piston.
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        motor: Option<Motor>,
     },
+}
+
+/// What drives a hinge or a slider — Unity's joint Motor and Spring in one:
+/// `(speed: 90.0)` turns it on and on, `(hold: 0.0, strength: 50.0)` pulls
+/// it back to closed however it is pushed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Motor {
+    /// Degrees (a hinge) or metres (a slider) a second.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub speed: f32,
+    /// An angle or position to pull toward instead, like a spring.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub hold: Option<f32>,
+    /// How hard: the spring's stiffness, or how firmly the speed is kept.
+    #[serde(default = "motor_strength")]
+    pub strength: f32,
+}
+
+fn motor_strength() -> f32 {
+    10.0
 }
 
 fn up() -> Vec3 {
