@@ -101,6 +101,7 @@ impl Conflict {
                     "its material" => e.material = t.material.clone(),
                     "its body" => e.body = t.body,
                     "its collider" => e.collider = t.collider,
+                    "its overrides" => e.overrides = t.overrides.clone(),
                     other => {
                         let Some(name) = other
                             .strip_prefix("its component `")
@@ -412,6 +413,7 @@ fn merge_entity(base: &Flat, ours: &Flat, theirs: &Flat, conflicts: &mut Vec<Con
     desc.material = m.pick("its material", &b.material, &o.material, &t.material);
     desc.body = m.pick("its body", &b.body, &o.body, &t.body);
     desc.collider = m.pick("its collider", &b.collider, &o.collider, &t.collider);
+    desc.overrides = m.pick("its overrides", &b.overrides, &o.overrides, &t.overrides);
 
     // The game's components one by one: one side adding `loot` and the
     // other changing `door` is no conflict.

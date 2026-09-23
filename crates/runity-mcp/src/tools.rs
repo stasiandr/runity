@@ -355,7 +355,7 @@ fn open_scene(server: &mut Server, path: &str) -> Answer {
 }
 
 fn tree(server: &mut Server) -> Result<String, String> {
-    fn line(out: &mut String, desc: &EntityDesc, depth: usize) {
+    fn line(out: &mut String, desc: &EntityDesc, depth: usize, expanded: &runity::Scene) {
         let _ = write!(out, "{}{} {:?}", "  ".repeat(depth), desc.id, desc.name);
         if !desc.prefab.is_empty() {
             let _ = write!(out, " prefab={}", desc.prefab);
@@ -386,15 +386,42 @@ fn tree(server: &mut Server) -> Result<String, String> {
         for (name, value) in &desc.components {
             let _ = write!(out, " {name}={}", value.get_ron());
         }
+        if !desc.overrides.is_empty() {
+            let _ = write!(out, " overrides={}", desc.overrides.len());
+        }
         out.push('\n');
+        // An instance's parts, as the expanded scene has them: addressable
+        // by these ids, and an edit to one is an override on the instance.
+        if !desc.prefab.is_empty() {
+            if let Some(expanded) = expanded.get(desc.id) {
+                for part in &expanded.children {
+                    part_line(out, part, depth + 1);
+                }
+            }
+        }
         for child in &desc.children {
-            line(out, child, depth + 1);
+            line(out, child, depth + 1, expanded);
+        }
+    }
+    fn part_line(out: &mut String, desc: &EntityDesc, depth: usize) {
+        let _ = writeln!(
+            out,
+            "{}{} {:?} (part) model={} at {}",
+            "  ".repeat(depth),
+            desc.id,
+            desc.name,
+            desc.model,
+            triple(desc.transform.position)
+        );
+        for child in &desc.children {
+            part_line(out, child, depth + 1);
         }
     }
     let session = server.session()?;
+    let expanded = session.expanded();
     let mut out = String::new();
     for desc in &session.scene().entities {
-        line(&mut out, desc, 0);
+        line(&mut out, desc, 0, expanded);
     }
     if out.is_empty() {
         out.push_str("(empty scene)");

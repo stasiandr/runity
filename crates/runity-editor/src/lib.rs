@@ -441,12 +441,12 @@ impl Session {
 
     /// One entity's name.
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
-        self.history.scene().get(id).map(|e| e.name.clone())
+        self.line(id).map(|e| e.name.clone())
     }
 
     /// An entity's local transform — the one the file holds.
     pub fn transform(&self, id: EntityId) -> Option<runity::Transform> {
-        self.history.scene().get(id).map(|e| e.transform)
+        self.line(id).map(|e| e.transform)
     }
 
     /// Set an entity's local transform, as one undoable step.
@@ -454,12 +454,7 @@ impl Session {
         // Recorded: a value typed into an inspector is one undoable edit. A
         // drag is not, because `gizmo_begin` already took the snapshot that
         // covers the whole gesture.
-        let desc = self.edit_entity(id)?;
-        desc.transform = transform;
-        // Respawned rather than patched in place: a moved parent moves its
-        // children, and keeping two ways to apply that is how they drift.
-        self.respawn();
-        Ok(())
+        self.modify(id, |desc| desc.transform = transform)
     }
 
     /// Rename an entity, as one undoable step. Names are for people and
@@ -468,8 +463,7 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("an entity"));
         }
-        self.edit_entity(id)?.name = name.to_string();
-        Ok(())
+        self.modify(id, |desc| desc.name = name.to_string())
     }
 
     /// Change any fields of an entity's line, as one undoable step.
@@ -479,11 +473,54 @@ impl Session {
     /// three. Its ID and children are the document's, not the caller's, and
     /// are put back if the closure touched them.
     pub fn update(&mut self, id: EntityId, change: impl FnOnce(&mut EntityDesc)) -> EditResult<()> {
-        let desc = self.edit_entity(id)?;
-        let children = std::mem::take(&mut desc.children);
-        change(desc);
-        desc.id = id;
-        desc.children = children;
+        self.modify(id, change)
+    }
+
+    /// Change an entity, as one undoable step: a line of the document, or —
+    /// for a part a prefab instance brought — an override on that instance,
+    /// so the prefab keeps its values and this instance keeps its change.
+    /// Its ID and children are not the caller's to change, and are put back.
+    fn modify(&mut self, id: EntityId, change: impl FnOnce(&mut EntityDesc)) -> EditResult<()> {
+        if self.history.scene().get(id).is_some() {
+            let desc = self.edit_entity(id)?;
+            let children = std::mem::take(&mut desc.children);
+            change(desc);
+            desc.id = id;
+            desc.children = children;
+            // Respawned rather than patched in place: a moved parent moves
+            // its children, and keeping two ways to apply that is how they
+            // drift.
+            self.respawn();
+            return Ok(());
+        }
+        self.refuse_while_playing()?;
+        let (instance, part) = *self
+            .instanced
+            .parts
+            .get(&id)
+            .ok_or(EditError::NoEntity(id))?;
+        if self.history.scene().get(instance).is_none() {
+            return Err(EditError::Scene(format!(
+                "{id} is part of a prefab inside another prefab; open that prefab to change it"
+            )));
+        }
+        let current = self
+            .instanced
+            .scene
+            .get(id)
+            .cloned()
+            .ok_or(EditError::NoEntity(id))?;
+        let mut edited = current.clone();
+        change(&mut edited);
+        let delta = runity::scene::Override::between(&current, &edited);
+        if delta.is_empty() {
+            return Ok(());
+        }
+        self.edit_entity(instance)?
+            .overrides
+            .entry(part)
+            .or_default()
+            .merge(delta);
         self.respawn();
         Ok(())
     }
@@ -503,16 +540,15 @@ impl Session {
         if let Some(ron) = ron {
             probe.set_component(name, ron).map_err(EditError::Scene)?;
         }
-        let desc = self.edit_entity(id)?;
-        match probe.components.remove(name) {
+        let value = probe.components.remove(name);
+        self.modify(id, |desc| match value {
             Some(value) => {
                 desc.components.insert(name.to_string(), value);
             }
             None => {
                 desc.components.remove(name);
             }
-        }
-        Ok(())
+        })
     }
 
     /// Where an entity actually is, in world space.
@@ -695,15 +731,13 @@ impl Session {
         // One undoable step, like a value typed into an inspector. A drag
         // along a colour slider that wants to be one step takes its own
         // snapshot the way a gizmo drag does.
-        self.edit_entity(id)?.material = MaterialRef::Inline(material);
-        self.respawn();
-        Ok(())
+        self.modify(id, |desc| desc.material = MaterialRef::Inline(material))
     }
 
     /// The name of the material an entity points at, or `None` when it
     /// carries its own colour.
     pub fn material_name(&self, id: EntityId) -> Option<String> {
-        match self.history.scene().get(id).map(|desc| &desc.material) {
+        match self.line(id).map(|desc| &desc.material) {
             Some(MaterialRef::Named(name)) => Some(name.clone()),
             _ => None,
         }
@@ -721,9 +755,9 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
-        self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
-        self.respawn();
-        Ok(())
+        self.modify(id, |desc| {
+            desc.material = MaterialRef::Named(name.to_string())
+        })
     }
 
     /// Every material the editor can offer, in the order to show them: the
@@ -1351,6 +1385,21 @@ impl Session {
             Some(_) => Ok(()),
             None => Err(EditError::NoEntity(id)),
         }
+    }
+
+    /// The scene with its prefab instances expanded: what is drawn, and
+    /// where the parts of instances are found by their IDs.
+    pub fn expanded(&self) -> &Scene {
+        &self.instanced.scene
+    }
+
+    /// An entity's line: the document's, or for a part a prefab instance
+    /// brought, the part as this instance has it.
+    fn line(&self, id: EntityId) -> Option<&EntityDesc> {
+        self.history
+            .scene()
+            .get(id)
+            .or_else(|| self.instanced.scene.get(id))
     }
 
     /// The entity with `id`, for an edit that is one undoable step.

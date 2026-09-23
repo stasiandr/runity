@@ -147,6 +147,10 @@ pub struct Instanced {
     /// editor could tell you a stone was clicked and have nothing to do
     /// about it.
     pub owner: HashMap<EntityId, EntityId>,
+    /// For every entity that came out of a prefab file: the instance its ID
+    /// is scoped to, and its ID in the prefab file. What an override of that
+    /// part is keyed by.
+    pub parts: HashMap<EntityId, (EntityId, EntityId)>,
     /// Instances whose prefab could not be expanded, and why. Reported
     /// rather than logged: the editor wants to show this next to the entity.
     pub problems: Vec<Problem>,
@@ -186,10 +190,11 @@ const MAX_DEPTH: usize = 8;
 /// the instance and the prefab do.
 pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
     let mut problems = Vec::new();
+    let mut parts = HashMap::new();
     let entities = scene
         .entities
         .iter()
-        .map(|desc| expand(desc, None, prefabs, 0, &mut problems))
+        .map(|desc| expand(desc, None, prefabs, 0, &mut problems, &mut parts))
         .collect();
     let expanded = Scene {
         view: scene.view,
@@ -227,8 +232,21 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
     Instanced {
         scene: expanded,
         owner,
+        parts,
         problems,
     }
+}
+
+fn find_mut(entities: &mut [EntityDesc], id: EntityId) -> Option<&mut EntityDesc> {
+    for entity in entities {
+        if entity.id == id {
+            return Some(entity);
+        }
+        if let Some(found) = find_mut(&mut entity.children, id) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 /// Expand one entity and everything under it.
@@ -242,17 +260,23 @@ fn expand(
     prefabs: &Prefabs,
     depth: usize,
     problems: &mut Vec<Problem>,
+    parts: &mut HashMap<EntityId, (EntityId, EntityId)>,
 ) -> EntityDesc {
     let id = match scope {
         None => desc.id,
-        Some(instance) => instance.within(desc.id),
+        Some(instance) => {
+            let id = instance.within(desc.id);
+            parts.insert(id, (instance, desc.id));
+            id
+        }
     };
     // An instance becomes what its prefab holds, children and all; anything
     // else is itself, with its children still to come.
-    let mut expanded = resolve(desc, id, prefabs, depth, problems).unwrap_or_else(|| EntityDesc {
-        children: Vec::new(),
-        ..desc.clone()
-    });
+    let mut expanded =
+        resolve(desc, id, prefabs, depth, problems, parts).unwrap_or_else(|| EntityDesc {
+            children: Vec::new(),
+            ..desc.clone()
+        });
     expanded.id = id;
     expanded.prefab = String::new();
     // Its own children come after whatever the prefab brought, in the same
@@ -261,7 +285,7 @@ fn expand(
     for child in &desc.children {
         expanded
             .children
-            .push(expand(child, scope, prefabs, depth, problems));
+            .push(expand(child, scope, prefabs, depth, problems, parts));
     }
     expanded
 }
@@ -277,6 +301,7 @@ fn resolve(
     prefabs: &Prefabs,
     depth: usize,
     problems: &mut Vec<Problem>,
+    parts: &mut HashMap<EntityId, (EntityId, EntityId)>,
 ) -> Option<EntityDesc> {
     if desc.prefab.is_empty() {
         return None;
@@ -301,7 +326,9 @@ fn resolve(
     // Everything in the prefab is scoped to this instance. A prefab that is
     // itself built out of prefabs is expanded on the way, so a shelter made
     // of walls is one thing to place.
-    let mut root = expand(template, Some(id), prefabs, depth + 1, problems);
+    let mut root = expand(template, Some(id), prefabs, depth + 1, problems, parts);
+    // The root is the instance itself, not a part of it.
+    parts.remove(&id.within(template.id));
 
     // The instance *is* the prefab's root, so it keeps the instance's ID.
     // Its own overrides: name and placement always, because that is what
@@ -323,6 +350,21 @@ fn resolve(
     // true)` changes the door and keeps the prefab's other components.
     for (name, value) in &desc.components {
         root.components.insert(name.clone(), value.clone());
+    }
+    // Overrides of the prefab's parts, each found by its id in the prefab
+    // file — scoped to this instance, as every part is.
+    for (part, change) in &desc.overrides {
+        let scoped = id.within(*part);
+        match find_mut(&mut root.children, scoped) {
+            Some(target) => change.apply(target),
+            None => problems.push(Problem {
+                entity_name: desc.name.clone(),
+                prefab: desc.prefab.clone(),
+                reason: format!(
+                    "an override for part {part}, which the prefab does not have (any more?)"
+                ),
+            }),
+        }
     }
     Some(root)
 }
@@ -635,5 +677,53 @@ mod tests {
         let done = instantiate(&scene, &Prefabs::new());
         assert_eq!(done.scene, scene);
         assert_eq!(owners(&scene, &done), ["rock"]);
+    }
+
+    #[test]
+    fn an_override_changes_one_part_of_one_instance_and_the_prefab_still_reaches_the_rest() {
+        let mut prefabs = Prefabs::new();
+        prefabs.insert(
+            "fire",
+            ron::from_str(
+                r#"(id: "c1", name: "fire", model: "m", children: [
+                    (id: "c2", name: "ember", model: "m", material: "ember"),
+                    (id: "c3", name: "stone", model: "m"),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let scene = parse(
+            r#"(entities: [
+                (id: "a1", name: "one", prefab: "fire",
+                 overrides: { "00000000000000c2": (material: "moss", name: "cold ember") }),
+                (id: "a2", name: "two", prefab: "fire",
+                 overrides: { "00000000000000ff": (name: "ghost") }),
+            ])"#,
+        );
+        let out = instantiate(&scene, &prefabs);
+        let one: EntityId = "a1".parse().unwrap();
+        let ember = out.scene.get(one.within("c2".parse().unwrap())).unwrap();
+        assert_eq!(ember.name, "cold ember");
+        assert_eq!(ember.material, MaterialRef::Named("moss".into()));
+        assert_eq!(
+            ember.model, "m",
+            "what it did not say comes from the prefab"
+        );
+        let two: EntityId = "a2".parse().unwrap();
+        assert_eq!(
+            out.scene
+                .get(two.within("c2".parse().unwrap()))
+                .unwrap()
+                .material,
+            MaterialRef::Named("ember".into()),
+            "the other instance is the prefab's"
+        );
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        assert!(out.problems[0].reason.contains("does not have"));
+        assert_eq!(
+            out.parts.get(&one.within("c3".parse().unwrap())),
+            Some(&(one, "c3".parse().unwrap())),
+            "and every part knows where it came from"
+        );
     }
 }

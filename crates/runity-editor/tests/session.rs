@@ -1335,3 +1335,63 @@ fn a_merge_conflict_is_listed_with_its_values_and_settled_theirs_way() {
     assert!(session.undo().unwrap(), "one step");
     assert_eq!(session.transform(pine).unwrap().position.x, 5.0);
 }
+
+#[test]
+fn editing_a_part_of_an_instance_overrides_it_in_that_instance_only() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "override",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    let prefab = root_of(&path).join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+
+    // The ember of the first fire, as the expanded scene names it.
+    let one: EntityId = "00000000000000a1".parse().unwrap();
+    let ember: EntityId = one.within("00000000000000c2".parse().unwrap());
+    session.set_material_name(ember, "moss").unwrap();
+    session
+        .set_transform(ember, transform([0.0, 2.0, 0.0], [0.0; 3], [1.0; 3]))
+        .unwrap();
+
+    assert_eq!(session.material_name(ember).as_deref(), Some("moss"));
+    assert_eq!(session.transform(ember).unwrap().position.y, 2.0);
+    let two: EntityId = "00000000000000a2".parse().unwrap();
+    let other_ember = two.within("00000000000000c2".parse().unwrap());
+    assert_eq!(
+        session.material_name(other_ember).as_deref(),
+        Some("ember"),
+        "the other instance keeps the prefab's"
+    );
+
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("overrides"), "{saved}");
+    assert!(
+        saved.contains("\"00000000000000c2\""),
+        "keyed by the part's id in the prefab: {saved}"
+    );
+    assert!(
+        std::fs::read_to_string(&prefab)
+            .unwrap()
+            .contains("\"ember\""),
+        "the prefab untouched"
+    );
+
+    // Two edits, two steps; undoing both leaves no override.
+    assert!(session.undo().unwrap());
+    assert!(session.undo().unwrap());
+    assert_eq!(session.material_name(ember).as_deref(), Some("ember"));
+    assert!(session.scene().get(one).unwrap().overrides.is_empty());
+}

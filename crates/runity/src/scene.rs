@@ -189,6 +189,18 @@ pub struct EntityDesc {
         deserialize_with = "trimmed_components"
     )]
     pub components: BTreeMap<String, ComponentValue>,
+    /// For a prefab instance: changes to the prefab's parts in this
+    /// instance only, by the part's `id` in the prefab file —
+    ///
+    /// ```text
+    /// overrides: { "00000000000000c2": (material: "moss") },
+    /// ```
+    ///
+    /// Each names only what differs; the rest still comes from the prefab,
+    /// so a later change to the prefab reaches this instance everywhere it
+    /// did not say otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<EntityId, Override>,
     /// Things attached to this one. A child's transform is relative to its
     /// parent, so moving the parent moves the lot — which is what makes a
     /// cart with wheels, or a settler carrying a log, one thing to place
@@ -200,6 +212,127 @@ pub struct EntityDesc {
     /// against every time it saves.
     #[serde(default)]
     pub children: Vec<EntityDesc>,
+}
+
+/// What one instance changes about one part of its prefab. Every field is
+/// optional in the file and in meaning: absent is "as the prefab has it".
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Override {
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub model: Option<String>,
+    /// The part's whole transform, relative to its parent in the prefab.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub transform: Option<Transform>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub material: Option<MaterialRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub body: Option<Body>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub collider: Option<Collider>,
+    /// Components set on the part, one by one.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "trimmed_components"
+    )]
+    pub components: BTreeMap<String, ComponentValue>,
+}
+
+impl Override {
+    /// Write what this override says onto a part.
+    pub fn apply(&self, part: &mut EntityDesc) {
+        if let Some(name) = &self.name {
+            part.name = name.clone();
+        }
+        if let Some(model) = &self.model {
+            part.model = model.clone();
+        }
+        if let Some(transform) = self.transform {
+            part.transform = transform;
+        }
+        if let Some(material) = &self.material {
+            part.material = material.clone();
+        }
+        if let Some(body) = self.body {
+            part.body = body;
+        }
+        if let Some(collider) = self.collider {
+            part.collider = collider;
+        }
+        for (name, value) in &self.components {
+            part.components.insert(name.clone(), value.clone());
+        }
+    }
+
+    /// What it takes to turn `prefab` — the part as the prefab has it —
+    /// into `edited`: only the fields that differ.
+    pub fn between(prefab: &EntityDesc, edited: &EntityDesc) -> Self {
+        let differs = |a: bool| a.then_some(());
+        Override {
+            name: differs(prefab.name != edited.name).map(|_| edited.name.clone()),
+            model: differs(prefab.model != edited.model).map(|_| edited.model.clone()),
+            transform: differs(prefab.transform != edited.transform).map(|_| edited.transform),
+            material: differs(prefab.material != edited.material).map(|_| edited.material.clone()),
+            body: differs(prefab.body != edited.body).map(|_| edited.body),
+            collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
+            components: edited
+                .components
+                .iter()
+                .filter(|(name, value)| prefab.components.get(*name) != Some(*value))
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == Override::default()
+    }
+
+    /// Add `later` on top: what it says wins, what it does not say stays.
+    pub fn merge(&mut self, later: Override) {
+        let Override {
+            name,
+            model,
+            transform,
+            material,
+            body,
+            collider,
+            components,
+        } = later;
+        self.name = name.or(self.name.take());
+        self.model = model.or(self.model.take());
+        self.transform = transform.or(self.transform);
+        self.material = material.or(self.material.take());
+        self.body = body.or(self.body);
+        self.collider = collider.or(self.collider);
+        self.components.extend(components);
+    }
+}
+
+/// An optional field written as its value, not as `Some(value)`: absent
+/// means `None`, present means `Some`. RON would otherwise want `Some(…)`
+/// spelled out around every override, which is noise to read and a trap to
+/// write.
+mod plain {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        value: &Option<T>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => value.serialize(s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<T>, D::Error> {
+        T::deserialize(d).map(Some)
+    }
 }
 
 /// One component's value, in RON, as written.
@@ -612,6 +745,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "crate".into(),
@@ -628,6 +762,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
                     name: "lid".into(),
@@ -663,6 +798,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
                 name: "pine".into(),

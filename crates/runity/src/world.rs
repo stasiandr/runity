@@ -599,6 +599,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
             name: String::new(),
@@ -618,6 +619,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
                     name: format!("thing {i}"),
