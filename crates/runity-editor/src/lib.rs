@@ -124,6 +124,8 @@ pub struct Session {
     isolated: Vec<EntityId>,
     /// Where a box selection began, while the mouse is held.
     marquee: Option<(runity::glam::Vec2, runity::glam::Vec2)>,
+    /// How fast a flythrough goes, metres a second: the wheel sets it.
+    fly_speed: f32,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -247,6 +249,7 @@ impl Session {
             hidden: Default::default(),
             isolated: Vec::new(),
             marquee: None,
+            fly_speed: 6.0,
         })
     }
 

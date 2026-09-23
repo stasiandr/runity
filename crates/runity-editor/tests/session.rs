@@ -2271,7 +2271,7 @@ fn view_frame(
     for e in events {
         input.handle(e);
     }
-    session.scene_view(input).unwrap()
+    session.scene_view(input, 1.0 / 60.0).unwrap()
 }
 
 #[test]
@@ -2518,4 +2518,68 @@ fn an_axis_view_is_a_plan_that_pans_zooms_and_picks() {
         session.look_from(side);
         session.render();
     }
+}
+
+#[test]
+fn a_right_drag_looks_and_wasd_flies_without_touching_the_tools() {
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let Some((mut session, _)) = open("flythrough") else {
+        return;
+    };
+    let mut input = Input::new();
+    let tool = session.tool();
+    let start = session.camera();
+    let at = (50.0, 50.0);
+
+    // Turning the head keeps the feet where they are.
+    view_frame(&mut session, &mut input, at, &[E::MouseDown(M::Right)]);
+    let did = view_frame(&mut session, &mut input, (80.0, 50.0), &[]);
+    assert!(did.contains(&"look"), "{did:?}");
+    assert_eq!(session.camera().position, start.position);
+    assert_ne!(session.camera().target, start.target);
+
+    // W flies where it looks, a second's worth over sixty frames; the
+    // tool stays what it was.
+    let looking = session.camera();
+    let ahead = (looking.target - looking.position).normalize();
+    view_frame(
+        &mut session,
+        &mut input,
+        (80.0, 50.0),
+        &[E::KeyDown(Key::W)],
+    );
+    for _ in 0..59 {
+        view_frame(&mut session, &mut input, (80.0, 50.0), &[]);
+    }
+    let went = session.camera().position - looking.position;
+    assert!((went.length() - session.fly_speed()).abs() < 0.01, "{went}");
+    assert!(went.normalize().dot(ahead) > 0.999);
+    assert_eq!(
+        session.tool(),
+        tool,
+        "W flew rather than picking the move tool"
+    );
+
+    // The wheel while flying sets the speed rather than zooming.
+    let speed = session.fly_speed();
+    let camera = session.camera();
+    input.begin_frame();
+    input.handle(&E::MouseMoved { x: 80.0, y: 50.0 });
+    input.handle(&E::KeyUp(Key::W));
+    input.handle(&E::Scroll { x: 0.0, y: 1.0 });
+    let did = session.scene_view(&input, 1.0 / 60.0).unwrap();
+    assert!(did.contains(&"fly speed"), "{did:?}");
+    assert!(session.fly_speed() > speed);
+    assert_eq!(session.camera().position, camera.position);
+    view_frame(
+        &mut session,
+        &mut input,
+        (80.0, 50.0),
+        &[E::MouseUp(M::Right)],
+    );
+
+    // From an axis view, looking around goes back to perspective.
+    session.look_from(runity_editor::Side::Top);
+    session.look(10.0, 0.0);
+    assert!(!session.is_orthographic());
 }

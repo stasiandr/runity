@@ -111,6 +111,40 @@ impl Session {
         }
     }
 
+    /// Turn the view's head where it stands, in degrees: right drag.
+    /// Leaves an axis view for perspective, as Unity does.
+    pub fn look(&mut self, yaw: f32, pitch: f32) {
+        self.set_orthographic(false);
+        let offset = self.camera.target - self.camera.position;
+        let distance = offset.length().max(1e-3);
+        let current_pitch = (offset.y / distance).clamp(-1.0, 1.0).asin();
+        let current_yaw = offset.x.atan2(offset.z);
+        let pitch = (current_pitch + pitch.to_radians()).clamp(-1.5, 1.5);
+        let yaw = current_yaw + yaw.to_radians();
+        let direction = Vec3::new(
+            pitch.cos() * yaw.sin(),
+            pitch.sin(),
+            pitch.cos() * yaw.cos(),
+        );
+        self.camera.target = self.camera.position + direction * distance;
+        self.camera.up = Vec3::Y;
+    }
+
+    /// Move the view, what it looks at with it, in metres along where it
+    /// looks, to its right and up the world.
+    pub fn fly(&mut self, forward: f32, right: f32, up: f32) {
+        let ahead = (self.camera.target - self.camera.position).normalize_or_zero();
+        let side = ahead.cross(self.camera.up).normalize_or_zero();
+        let step = ahead * forward + side * right + Vec3::Y * up;
+        self.camera.position += step;
+        self.camera.target += step;
+    }
+
+    /// Metres a second a flythrough goes before shift.
+    pub fn fly_speed(&self) -> f32 {
+        self.fly_speed
+    }
+
     /// Look through another camera exactly — the game's, lens and all.
     pub fn look_through(&mut self, camera: runity::Camera) {
         self.camera = camera;

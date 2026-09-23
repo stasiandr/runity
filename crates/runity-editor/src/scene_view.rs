@@ -12,7 +12,8 @@
 //! | click | select what is under it; shift adds; empty space clears |
 //! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
-//! | alt + drag, right drag | orbit |
+//! | alt + drag | orbit |
+//! | right drag | look around; with W A S D Q E held, fly (shift: faster, wheel: speed) |
 //! | middle drag | pan |
 //! | wheel | zoom |
 //! | W / E / R | move / rotate / scale tool |
@@ -36,7 +37,8 @@ impl Session {
     /// Do what this frame's input asks of the Scene view. Returns what was
     /// done, by name — "select", "drag", "undo", "orbit" — so the window
     /// knows to redraw and a test knows what happened.
-    pub fn scene_view(&mut self, input: &Input) -> EditResult<Vec<&'static str>> {
+    /// `dt` is the seconds since the last call: how far a flythrough goes.
+    pub fn scene_view(&mut self, input: &Input, dt: f32) -> EditResult<Vec<&'static str>> {
         let mut did = Vec::new();
         let ctrl = [
             Key::LeftControl,
@@ -92,11 +94,30 @@ impl Session {
             self.gizmo_end();
             did.push("drop");
         }
-        let orbiting =
-            (alt && input.mouse_held(MouseButton::Left)) || input.mouse_held(MouseButton::Right);
-        if orbiting && motion != runity::glam::Vec2::ZERO {
+        if alt && input.mouse_held(MouseButton::Left) && motion != runity::glam::Vec2::ZERO {
             self.orbit(-motion.x * 0.3, motion.y * 0.3);
             did.push("orbit");
+        }
+        // Flythrough: the right button held turns the head, and WASD, Q
+        // and E move it, as in a game; the wheel sets how fast.
+        let flying = input.mouse_held(MouseButton::Right);
+        if flying {
+            if motion != runity::glam::Vec2::ZERO {
+                self.look(-motion.x * 0.2, -motion.y * 0.2);
+                did.push("look");
+            }
+            let along = |negative: Key, positive: Key| input.axis(negative, positive);
+            let step = runity::glam::Vec3::new(
+                along(Key::A, Key::D),
+                along(Key::Q, Key::E),
+                along(Key::S, Key::W),
+            );
+            if step != runity::glam::Vec3::ZERO {
+                let speed = self.fly_speed * if shift { 4.0 } else { 1.0 };
+                let step = step.normalize() * speed * dt.max(0.0);
+                self.fly(step.z, step.x, step.y);
+                did.push("fly");
+            }
         }
         if input.mouse_held(MouseButton::Middle) && motion != runity::glam::Vec2::ZERO {
             let camera = self.camera();
@@ -105,7 +126,10 @@ impl Session {
             did.push("pan");
         }
         let wheel = input.scroll().y;
-        if wheel != 0.0 {
+        if wheel != 0.0 && flying {
+            self.fly_speed = (self.fly_speed * 1.25f32.powf(wheel)).clamp(0.1, 500.0);
+            did.push("fly speed");
+        } else if wheel != 0.0 {
             self.zoom(0.9f32.powf(wheel));
             did.push("zoom");
         }
@@ -143,7 +167,7 @@ impl Session {
                 self.save_scene(None)?;
                 did.push("save");
             }
-        } else {
+        } else if !flying {
             for (key, tool, name) in [
                 (Key::W, Tool::Move, "move tool"),
                 (Key::E, Tool::Rotate, "rotate tool"),
