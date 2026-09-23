@@ -362,9 +362,8 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
     let (project, root) = project("heightmap");
     let paint = |value: u8| {
         // A ramp from black on the left to `value` on the right.
-        let image = image::GrayImage::from_fn(16, 16, |x, _| {
-            image::Luma([(x as u32 * value as u32 / 15) as u8])
-        });
+        let image =
+            image::GrayImage::from_fn(16, 16, |x, _| image::Luma([(x * value as u32 / 15) as u8]));
         image.save(root.join("assets/ramp.png")).unwrap();
         touch_forward(&root.join("assets/ramp.png"));
     };
@@ -386,7 +385,7 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
         field.bounds.min[1].to_native().abs() < 0.01,
         "black is the ground"
     );
-    let before = asset::read(&runity_import::asset_for(&source, &project.library())).unwrap();
+    let before = asset::read(runity_import::asset_for(&source, &project.library())).unwrap();
 
     // Repaint only the image: the terrain is rebuilt, lower.
     paint(128);
@@ -396,6 +395,6 @@ fn a_painted_heightmap_shapes_the_terrain_and_repainting_it_rebuilds() {
             .any(|r| r.source == source && r.change == Change::Changed),
         "the terrain counts as changed: {done:?}"
     );
-    let after = asset::read(&runity_import::asset_for(&source, &project.library())).unwrap();
+    let after = asset::read(runity_import::asset_for(&source, &project.library())).unwrap();
     assert_ne!(before, after);
 }
