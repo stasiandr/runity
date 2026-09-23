@@ -17,6 +17,7 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+mod animation;
 mod blockout;
 pub mod console;
 mod error;
@@ -98,6 +99,8 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Entities whose clips are playing in the view, for a preview.
+    previewing: Vec<EntityId>,
     /// Draw what the game would show instead of the Scene view: Unity's
     /// Game view (see [`Session::set_game_view`]).
     game_view: bool,
@@ -294,6 +297,7 @@ impl Session {
             pixels: Vec::new(),
             readback: true,
             game_view: false,
+            previewing: Vec::new(),
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -2482,6 +2486,10 @@ impl Session {
         // Emitters play while they are looked at, as Unity previews them:
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
+        // A clip previewed moves the same way: a thirtieth a frame drawn.
+        if !self.previewing.is_empty() && self.play.is_none() {
+            runity::advance_animations(&mut self.world, 1.0 / 30.0);
+        }
         let scene = self.history.scene();
         let camera = if self.game_view {
             self.game_camera().unwrap_or(self.camera)
@@ -3515,6 +3523,8 @@ impl Session {
 
     /// Rebuild the world from the scene.
     fn respawn(&mut self) {
+        // A new world has no previews on it.
+        self.previewing.clear();
         if let Some((_, grid)) = &mut self.nav_shown {
             *grid = None;
         }

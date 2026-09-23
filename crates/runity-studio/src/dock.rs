@@ -26,10 +26,11 @@ pub enum Panel {
     Git,
     Settings,
     Profiler,
+    Animation,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 8] = [
+    pub const ALL: [Panel; 9] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -38,6 +39,7 @@ impl Panel {
         Panel::Git,
         Panel::Settings,
         Panel::Profiler,
+        Panel::Animation,
     ];
 
     pub fn name(self) -> &'static str {
@@ -50,6 +52,7 @@ impl Panel {
             Panel::Git => "git",
             Panel::Settings => "settings",
             Panel::Profiler => "profiler",
+            Panel::Animation => "animation",
         }
     }
 
@@ -63,6 +66,7 @@ impl Panel {
             Panel::Git => "Git",
             Panel::Settings => "Settings",
             Panel::Profiler => "Profiler",
+            Panel::Animation => "Animation",
         }
     }
 
@@ -76,6 +80,7 @@ impl Panel {
             Panel::Git => "layers-2",
             Panel::Settings => "settings",
             Panel::Profiler => "sliders-horizontal",
+            Panel::Animation => "play",
         }
     }
 
@@ -366,6 +371,7 @@ impl Docks {
                 Panel::Console,
                 Panel::History,
                 Panel::Git,
+                Panel::Animation,
                 Panel::Settings,
                 Panel::Profiler,
             ],

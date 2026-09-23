@@ -376,3 +376,145 @@ impl Profiler {
         ancestor(ui, node, self.root)
     }
 }
+
+/// Animation: the selection's clips, to play in the view — Unity's
+/// Animation window with its preview on. The document never changes;
+/// see `Session::preview_clip`.
+pub struct Animation {
+    pub root: NodeId,
+    title: NodeId,
+    list: NodeId,
+    stop: NodeId,
+    speeds: Vec<(NodeId, f32)>,
+    clips: Vec<(NodeId, usize)>,
+    showing: Option<runity::EntityId>,
+    playing: Option<usize>,
+    speed: f32,
+}
+
+impl Animation {
+    pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
+        let root = ui.add(
+            parent,
+            Style::column()
+                .fill()
+                .full_width()
+                .padding(SPACE_2)
+                .gap(SPACE_2),
+        );
+        ui.set_name(root, "animation");
+        let bar = ui.add(root, Style::row().full_width().gap(SPACE_2).center_items());
+        let title = ui.add_text(bar, text().fill().text_color(LABEL), "");
+        let mut speeds = Vec::new();
+        for (label, speed) in [("½×", 0.5), ("1×", 1.0), ("2×", 2.0)] {
+            let b = button(ui, bar, &format!("speed {label}"), label, speed == 1.0);
+            speeds.push((b, speed));
+        }
+        let stop = button(ui, bar, "animation stop", "Stop", false);
+        let list = ui.add(root, Style::column().fill().full_width().gap(2.0).clip());
+        ui.set_name(list, "animation clips");
+        Self {
+            root,
+            title,
+            list,
+            stop,
+            speeds,
+            clips: Vec::new(),
+            showing: None,
+            playing: None,
+            speed: 1.0,
+        }
+    }
+
+    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        let selected = session.selected();
+        if selected == self.showing && !self.clips.is_empty() {
+            return;
+        }
+        self.showing = selected;
+        self.playing = None;
+        ui.clear(self.list);
+        self.clips.clear();
+        let Some(id) = selected else {
+            ui.set_text(self.title, "Select something with a skinned model.");
+            return;
+        };
+        let clips = session.clips(id);
+        let name = session.entity_name(id).unwrap_or_default();
+        if clips.is_empty() {
+            ui.set_text(
+                self.title,
+                &format!("{name}: no clips — its model has no skeleton"),
+            );
+            return;
+        }
+        ui.set_text(self.title, &format!("{name}: {} clips", clips.len()));
+        for (i, (clip, seconds)) in clips.into_iter().enumerate() {
+            let row = ui.add(
+                self.list,
+                Style::row()
+                    .full_width()
+                    .height(26.0)
+                    .fixed()
+                    .padding_x(SPACE_3)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .hover(HOVER),
+            );
+            ui.set_name(row, format!("clip {clip}"));
+            icon(ui, row, "play", ACCENT);
+            ui.add_text(row, text().fill(), &clip);
+            ui.add_text(
+                row,
+                Style::default().text_size(11.0).text_color(MUTED).nowrap(),
+                &format!("{seconds:.2} s"),
+            );
+            self.clips.push((row, i));
+        }
+    }
+
+    fn mark(&self, ui: &mut Ui) {
+        for (row, i) in &self.clips {
+            let on = Some(*i) == self.playing;
+            ui.restyle(*row, |s| {
+                s.background(if on {
+                    ACCENT_900
+                } else {
+                    runity_ui::Color::TRANSPARENT
+                })
+            });
+        }
+        for (b, speed) in &self.speeds {
+            set_button_primary(ui, *b, *speed == self.speed);
+        }
+    }
+
+    pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
+        ancestor(ui, node, self.root)
+    }
+
+    pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
+        let Event::Click { .. } = event else { return };
+        let Some(id) = self.showing else { return };
+        let result = if node == self.stop {
+            self.playing = None;
+            session.preview_clip(id, None, self.speed)
+        } else if let Some((_, speed)) = self.speeds.iter().find(|(b, _)| *b == node) {
+            self.speed = *speed;
+            match self.playing {
+                Some(clip) => session.preview_clip(id, Some(clip), self.speed),
+                None => Ok(()),
+            }
+        } else if let Some((_, clip)) = self.clips.iter().find(|(r, _)| *r == node) {
+            self.playing = Some(*clip);
+            session.preview_clip(id, Some(*clip), self.speed)
+        } else {
+            return;
+        };
+        if let Err(e) = result {
+            session.say(Level::Error, e.to_string());
+        }
+        self.mark(ui);
+    }
+}

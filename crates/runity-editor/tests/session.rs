@@ -4288,3 +4288,45 @@ fn a_new_terrain_is_found_under_the_cursor_and_rises_where_it_is_stroked() {
         "the name is taken"
     );
 }
+
+#[test]
+fn a_skinned_models_clips_play_in_the_view_without_touching_the_document() {
+    let Some((mut session, path)) = open("anim") else {
+        return;
+    };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runity-import/tests/fixtures/skinned_banner.gltf");
+    let assets = root_of(&path).join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    std::fs::copy(&fixture, assets.join("banner.gltf")).unwrap();
+    session.reload_assets();
+    let model = session
+        .assets()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.kind == "model" && a.name.contains("banner"))
+        .expect("the banner imported")
+        .name;
+    let id = session.add(None, &model).unwrap();
+    let clips = session.clips(id);
+    assert_eq!(
+        clips.first().map(|c| c.0.as_str()),
+        Some("furl"),
+        "{clips:?}"
+    );
+
+    session.select(Some(id)).unwrap();
+    session.focus_selected();
+    session.select(None).unwrap();
+    session.render();
+    let rest = session.frame_pixels().to_vec();
+    let revision = session.revision();
+    session.preview_clip(id, Some(0), 1.0).unwrap();
+    for _ in 0..10 {
+        session.render();
+    }
+    assert_ne!(session.frame_pixels(), &rest[..], "the banner moved");
+    assert_eq!(session.revision(), revision, "and the document did not");
+    session.preview_clip(id, None, 1.0).unwrap();
+    assert!(session.previewing().is_empty());
+}

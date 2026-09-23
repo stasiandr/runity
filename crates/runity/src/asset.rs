@@ -310,6 +310,19 @@ pub struct MeshSkin {
     pub clips: Vec<crate::animation::Clip>,
 }
 
+impl ArchivedMeshAsset {
+    /// The skeleton and the clips, as plain values: what an [`Animator`]
+    /// is made from. `None` for a mesh with no skin. A copy, made once when
+    /// something starts animating, not in the frame.
+    ///
+    /// [`Animator`]: crate::Animator
+    pub fn skin_owned(&self) -> Option<MeshSkin> {
+        self.skin
+            .as_ref()
+            .and_then(|skin| rkyv::deserialize::<MeshSkin, rkyv::rancor::Error>(skin).ok())
+    }
+}
+
 /// A mesh, ready to upload.
 #[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
 pub struct MeshAsset {

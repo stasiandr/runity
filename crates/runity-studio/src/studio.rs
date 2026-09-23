@@ -35,7 +35,7 @@ use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
 use crate::theme::*;
-use crate::tools::{FrameCost, Profiler, Settings};
+use crate::tools::{Animation, FrameCost, Profiler, Settings};
 
 /// The engine's reference scene: every builtin, no import step.
 pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
@@ -183,6 +183,7 @@ pub struct Studio {
     docks: Docks,
     settings: Settings,
     profiler: Profiler,
+    animation: Animation,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The Game view's width to height, or free.
@@ -421,6 +422,8 @@ impl Studio {
         let profiler = Profiler::new(&mut ui, lower);
         roots.insert(Panel::Settings, settings.root);
         roots.insert(Panel::Profiler, profiler.root);
+        let animation = Animation::new(&mut ui, lower);
+        roots.insert(Panel::Animation, animation.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -447,6 +450,7 @@ impl Studio {
             docks,
             settings,
             profiler,
+            animation,
             last_draw_ms: 0.0,
             aspect: None,
             aspect_button,
@@ -506,6 +510,7 @@ impl Studio {
             || self.stroke.is_some()
             || self.job.is_some()
             || !self.scene_buttons.is_empty()
+            || !self.session.previewing().is_empty()
     }
 
     /// What the pointer should look like where it is: an I-beam over a
@@ -732,6 +737,9 @@ impl Studio {
             let live = self.wants_frame();
             if live && self.docks.is_active(Panel::Profiler) {
                 self.profiler.update(&mut self.ui);
+            }
+            if self.docks.is_active(Panel::Animation) {
+                self.animation.update(&mut self.ui, &self.session);
             }
             if self.docks.is_active(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
@@ -1374,6 +1382,9 @@ impl Studio {
                 .event(&mut self.ui, &mut self.session, node, event, requests);
         } else if self.settings.owns(&self.ui, node) {
             self.settings
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.animation.owns(&self.ui, node) {
+            self.animation
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.profiler.owns(&self.ui, node) {
         } else if self.bottom.owns(&self.ui, node) {

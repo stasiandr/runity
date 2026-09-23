@@ -1180,3 +1180,20 @@ fn the_game_view_takes_a_shape() {
         "the render follows: {w}x{h}"
     );
 }
+
+#[test]
+fn the_animation_tab_plays_a_clip_in_the_view() {
+    let Some((mut s, dir)) = studio() else { return };
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../runity-import/tests/fixtures/skinned_banner.gltf");
+    std::fs::copy(&fixture, dir.join("assets/banner.gltf")).unwrap();
+    menu(&mut s, "Assets", "Refresh");
+    let banner = s.session.add(None, "banner").unwrap();
+    s.session.select(Some(banner)).unwrap();
+    s.frame();
+    click(&mut s, "tab animation");
+    click(&mut s, "clip furl");
+    assert_eq!(s.session.previewing(), &[banner]);
+    click(&mut s, "animation stop");
+    assert!(s.session.previewing().is_empty());
+}
