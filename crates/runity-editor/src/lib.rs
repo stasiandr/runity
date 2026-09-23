@@ -21,6 +21,7 @@ mod error;
 pub mod history;
 pub mod panels;
 mod scene_view;
+mod visibility;
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +115,12 @@ pub struct Session {
     /// What Ctrl C last copied, for Ctrl V in the Scene view.
     clipboard: String,
     opened: std::collections::HashSet<EntityId>,
+    /// Hidden in the Scene view, and what isolation shows alone: a view
+    /// setting, never written to the scene.
+    hidden: std::collections::HashSet<EntityId>,
+    isolated: Vec<EntityId>,
+    /// Where a box selection began, while the mouse is held.
+    marquee: Option<(runity::glam::Vec2, runity::glam::Vec2)>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -234,6 +241,9 @@ impl Session {
             folded: Default::default(),
             clipboard: String::new(),
             opened: Default::default(),
+            hidden: Default::default(),
+            isolated: Vec::new(),
+            marquee: None,
         })
     }
 
@@ -2067,17 +2077,22 @@ impl Session {
                 end: scene.fog.end,
             },
             clear_color: Vec3::from_array(scene.fog.color),
-            ..runity::build_frame(
-                &self.world,
-                self.camera,
-                Lighting::default(),
-                FogSettings::default(),
-            )
+            ..{
+                let unseen = self.unseen();
+                runity::build_frame_where(
+                    &self.world,
+                    self.camera,
+                    Lighting::default(),
+                    FogSettings::default(),
+                    |line| line.is_none_or(|id| !unseen.contains(&id)),
+                )
+            }
         };
         if self.show_colliders {
             let arm = self.gizmo_arm_mesh();
+            let unseen = self.unseen();
             for (desc, placed) in self.instanced.scene.flatten() {
-                if desc.body == runity::Body::None {
+                if desc.body == runity::Body::None || unseen.contains(&desc.id) {
                     continue;
                 }
                 let distance = (placed.w_axis.truncate() - self.camera.position).length();
@@ -2156,6 +2171,7 @@ impl Session {
     pub fn pick(&self, x: u32, y: u32) -> Option<EntityId> {
         let (near, direction) = self.ray(x, y);
         let mut best: Option<(f32, EntityId)> = None;
+        let unseen = self.unseen();
         for (desc, world) in self.instanced.scene.flatten() {
             let Some(bounds) = self.bounds_of(&desc.model) else {
                 continue;
@@ -2163,6 +2179,9 @@ impl Session {
             let Some(owner) = self.instanced.owner_of(desc.id) else {
                 continue;
             };
+            if unseen.contains(&desc.id) {
+                continue;
+            }
             if let Some(distance) = ray_box(near, direction, bounds, world) {
                 if best.is_none_or(|(closest, _)| distance < closest) {
                     best = Some((distance, owner));

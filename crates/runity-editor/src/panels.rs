@@ -28,6 +28,8 @@ pub struct Row {
     pub prefab: Option<String>,
     /// A part a prefab brought: edited as an override on its instance.
     pub part: bool,
+    /// Not drawn in the Scene view: hidden, or outside what is isolated.
+    pub hidden: bool,
 }
 
 /// One field of the Inspector.
@@ -75,7 +77,7 @@ impl Session {
     /// starts closed and opens onto its parts.
     pub fn hierarchy(&self) -> Vec<Row> {
         let selection = self.selection();
-        let document = self.scene();
+        let unseen = self.unseen();
         let mut out = Vec::new();
         fn walk(
             session: &Session,
@@ -83,9 +85,10 @@ impl Session {
             depth: usize,
             part: bool,
             selection: &[EntityId],
-            document: &runity::Scene,
+            unseen: &std::collections::HashSet<EntityId>,
             out: &mut Vec<Row>,
         ) {
+            let document = session.scene();
             for e in entities {
                 let line = document.get(e.id);
                 let prefab = line.map(|l| l.prefab.clone()).filter(|p| !p.is_empty());
@@ -99,6 +102,7 @@ impl Session {
                     selected: selection.contains(&e.id),
                     prefab: prefab.clone(),
                     part,
+                    hidden: unseen.contains(&e.id),
                 });
                 if open {
                     walk(
@@ -107,7 +111,7 @@ impl Session {
                         depth + 1,
                         part || prefab.is_some(),
                         selection,
-                        document,
+                        unseen,
                         out,
                     );
                 }
@@ -119,7 +123,7 @@ impl Session {
             0,
             false,
             &selection,
-            document,
+            &unseen,
             &mut out,
         );
         out

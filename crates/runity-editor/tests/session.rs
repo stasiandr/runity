@@ -2380,3 +2380,89 @@ fn the_scene_view_does_what_a_mouse_and_keyboard_ask() {
     view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::Escape)]);
     assert!(session.selection().is_empty());
 }
+
+#[test]
+fn hidden_things_are_neither_drawn_nor_picked_and_a_box_takes_what_it_touches() {
+    use runity::glam::Vec2;
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let Some((mut session, path)) = open("visibility") else {
+        return;
+    };
+    let (crate_id, lid, ground) = (
+        id(&session, "crate"),
+        id(&session, "lid"),
+        id(&session, "ground"),
+    );
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    let (w, h) = session.size();
+    let (cx, cy) = (w / 2, h / 2);
+    assert!(matches!(session.pick(cx, cy), Some(i) if i == crate_id || i == lid));
+    let row = |s: &Session, id| s.hierarchy().into_iter().find(|r| r.id == id).unwrap();
+
+    // Hidden with what is under it: not picked, marked in the tree, and
+    // nothing the scene or its history knows about.
+    session.set_hidden(&[crate_id], true).unwrap();
+    assert!(!matches!(session.pick(cx, cy), Some(i) if i == crate_id || i == lid));
+    assert!(row(&session, crate_id).hidden && row(&session, lid).hidden);
+    assert!(!row(&session, ground).hidden);
+    assert!(!session.can_undo(), "a view setting, not an edit");
+    session.render();
+    session.save_scene(None).unwrap();
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("hidden"));
+    session.set_hidden(&[crate_id], false).unwrap();
+
+    // Isolated: only it and what is under it.
+    session.isolate(&[crate_id]).unwrap();
+    assert!(row(&session, ground).hidden && !row(&session, lid).hidden);
+    let taken = session
+        .select_in_rect(Vec2::ZERO, Vec2::new(w as f32, h as f32), false)
+        .unwrap();
+    assert!(!taken.contains(&ground), "{taken:?}");
+    session.show_all();
+
+    // A box over the whole view takes everything drawn in it.
+    let taken = session
+        .select_in_rect(Vec2::ZERO, Vec2::new(w as f32, h as f32), false)
+        .unwrap();
+    for want in [crate_id, lid, ground] {
+        assert!(taken.contains(&want), "{taken:?}");
+    }
+    assert_eq!(session.selection().len(), taken.len());
+
+    // The same by hand: dragged from empty sky, drawn while held.
+    let mut input = Input::new();
+    session.select(None).unwrap();
+    view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::MouseDown(M::Left)],
+    );
+    let far = (w as f32 - 1.0, h as f32 - 1.0);
+    view_frame(&mut session, &mut input, far, &[]);
+    assert_eq!(session.marquee(), Some((Vec2::ONE, Vec2::from(far))));
+    let did = view_frame(&mut session, &mut input, far, &[E::MouseUp(M::Left)]);
+    assert!(did.contains(&"box select"), "{did:?}");
+    assert!(session.marquee().is_none());
+    assert!(session.selection().contains(&crate_id));
+
+    // H hides the selection and shows it again; Shift H isolates.
+    session.select(Some(crate_id)).unwrap();
+    let did = view_frame(&mut session, &mut input, far, &[E::KeyDown(Key::H)]);
+    assert!(did.contains(&"hide"), "{did:?}");
+    assert_eq!(session.hidden(), [crate_id]);
+    view_frame(&mut session, &mut input, far, &[E::KeyUp(Key::H)]);
+    let did = view_frame(&mut session, &mut input, far, &[E::KeyDown(Key::H)]);
+    assert!(did.contains(&"show"), "{did:?}");
+    assert!(session.hidden().is_empty());
+    view_frame(&mut session, &mut input, far, &[E::KeyUp(Key::H)]);
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        far,
+        &[E::KeyDown(Key::LeftShift), E::KeyDown(Key::H)],
+    );
+    assert!(did.contains(&"isolate"), "{did:?}");
+    assert_eq!(session.isolated(), [crate_id]);
+}

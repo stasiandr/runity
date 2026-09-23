@@ -118,6 +118,8 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "replace_with_prefab",
         "inspect",
         "set_field",
+        "hide",
+        "isolate",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -362,6 +364,22 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     assert!(
         post_now.contains("from (8.50, 0.00, 1.50)"),
         "down on the wall's floor: {post_now}"
+    );
+    assert_eq!(
+        agent.text("hide", json!({ "ids": [post] })),
+        "hidden 1; hidden now: 1"
+    );
+    assert_eq!(
+        agent.text("hide", json!({ "ids": [post], "show": true })),
+        "shown 1; hidden now: 0"
+    );
+    assert_eq!(
+        agent.text("isolate", json!({ "ids": [wall] })),
+        "showing 1 alone"
+    );
+    assert_eq!(
+        agent.text("isolate", json!({ "ids": [] })),
+        "everything is shown"
     );
     agent.text("delete_entity", json!({ "id": post }));
     let copies = agent.text(

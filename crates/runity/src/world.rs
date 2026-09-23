@@ -651,18 +651,35 @@ pub fn captured_view(camera: &Camera) -> crate::scene::View {
 
 /// Collect everything drawable in the world into a frame.
 pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSettings) -> Frame {
+    build_frame_where(world, camera, lighting, fog, |_| true)
+}
+
+/// [`build_frame`] with only what `keep` says yes to, by the scene line an
+/// entity came from (`None` for one spawned by code): the editor's hidden
+/// and isolated entities, left out of the frame and nowhere else.
+pub fn build_frame_where(
+    world: &World,
+    camera: Camera,
+    lighting: Lighting,
+    fog: FogSettings,
+    keep: impl Fn(Option<crate::id::EntityId>) -> bool,
+) -> Frame {
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
-    for (placed, model, surface, textured, posed) in world
+    for (placed, model, surface, textured, posed, line) in world
         .query::<(
             &WorldTransform,
             &Model,
             &Surface,
             Option<&Textured>,
             Option<&Posed>,
+            Option<&SceneId>,
         )>()
         .iter()
     {
+        if !keep(line.map(|l| l.0)) {
+            continue;
+        }
         let pose = posed.map(|p| {
             poses.push(crate::render::Pose(p.0.clone()));
             poses.len() as u32 - 1

@@ -110,6 +110,8 @@ pub fn list() -> Vec<Value> {
             "by": { "type": "number", "description": "metres up (or down), or the height to flatten to" },
             "flatten": { "type": "boolean" },
         }), &["id", "at", "radius", "by"]),
+        tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
+        tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
@@ -523,6 +525,28 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(
                 "sculpted; the stroke is a line in the terrain's .rterrain",
             )])
+        }
+        "hide" => {
+            let ids = id_list(args)?;
+            let show = args.get("show").and_then(Value::as_bool).unwrap_or(false);
+            let session = server.session()?;
+            session.set_hidden(&ids, !show).map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{} {}; hidden now: {}",
+                if show { "shown" } else { "hidden" },
+                ids.len(),
+                session.hidden().len()
+            ))])
+        }
+        "isolate" => {
+            let ids = id_list(args)?;
+            let session = server.session()?;
+            if ids.is_empty() {
+                session.show_all();
+                return Ok(vec![text("everything is shown".to_string())]);
+            }
+            session.isolate(&ids).map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("showing {} alone", ids.len()))])
         }
         "drop_to_ground" => {
             let ids = match args.get("ids") {
@@ -1229,5 +1253,20 @@ fn optional_vec3(args: &Value, key: &str) -> Result<Option<Vec3>, String> {
             Ok(Some(Vec3::from_array(out)))
         }
         Some(other) => Err(format!("{key} is [x, y, z], not {other}")),
+    }
+}
+
+/// An `ids` argument: a list of entity ids.
+fn id_list(args: &Value) -> Result<Vec<EntityId>, String> {
+    match args.get("ids") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse::<EntityId>().ok())
+                    .ok_or_else(|| format!("ids are {ID}, not {v}"))
+            })
+            .collect(),
+        _ => Err("ids is a list of entity ids".into()),
     }
 }

@@ -10,12 +10,14 @@
 //! | input | does |
 //! |---|---|
 //! | click | select what is under it; shift adds; empty space clears |
+//! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
 //! | alt + drag, right drag | orbit |
 //! | middle drag | pan |
 //! | wheel | zoom |
 //! | W / E / R | move / rotate / scale tool |
 //! | F | frame the selection |
+//! | H / Shift H | hide the selection / show it alone (again: all) |
 //! | Delete | delete the selection |
 //! | Ctrl D | duplicate |
 //! | Ctrl Z / Ctrl Y, Ctrl Shift Z | undo / redo |
@@ -55,11 +57,16 @@ impl Session {
             if self.gizmo_begin(x, y)?.is_some() {
                 did.push("grab");
             } else {
-                match (self.pick(x, y), shift) {
+                let hit = self.pick(x, y);
+                match (hit, shift) {
                     (Some(id), true) => self.add_to_selection(id)?,
                     (Some(id), false) => self.select(Some(id))?,
                     (None, true) => {}
                     (None, false) => self.select(None)?,
+                }
+                if hit.is_none() {
+                    // Empty space: a click, or the start of a box.
+                    self.marquee = Some((at, at));
                 }
                 did.push("select");
             }
@@ -69,6 +76,17 @@ impl Session {
             && self.gizmo_drag(x, y)?
         {
             did.push("drag");
+        }
+        if let Some((from, _)) = self.marquee {
+            self.marquee = Some((from, at));
+            if !input.mouse_held(MouseButton::Left) {
+                self.marquee = None;
+                // A few pixels of wobble is still a click.
+                if (at - from).abs().max_element() > 3.0 {
+                    self.select_in_rect(from, at, shift)?;
+                    did.push("box select");
+                }
+            }
         }
         if input.mouse_released(MouseButton::Left) && self.is_dragging() {
             self.gizmo_end();
@@ -138,6 +156,22 @@ impl Session {
             }
             if pressed(Key::F) && self.focus_selected() {
                 did.push("frame");
+            }
+            if pressed(Key::H) && shift {
+                if self.isolated().is_empty() {
+                    let selection = self.selection();
+                    self.isolate(&selection)?;
+                    did.push("isolate");
+                } else {
+                    self.isolate(&[])?;
+                    did.push("show all");
+                }
+            } else if pressed(Key::H) {
+                did.push(if self.toggle_hidden()? {
+                    "hide"
+                } else {
+                    "show"
+                });
             }
             if pressed(Key::Escape) {
                 self.select(None)?;

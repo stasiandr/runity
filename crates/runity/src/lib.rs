@@ -100,6 +100,7 @@ pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use widgets::{Rect, Widgets};
 pub use world::{
-    build_frame, captured_view, patch_scene, scene_camera, scene_fog, scene_lighting, spawn_scene,
-    spawn_scene_with, Model, Patched, Posed, SceneId, Shape, Surface, Textured,
+    build_frame, build_frame_where, captured_view, patch_scene, scene_camera, scene_fog,
+    scene_lighting, spawn_scene, spawn_scene_with, Model, Patched, Posed, SceneId, Shape, Surface,
+    Textured,
 };
