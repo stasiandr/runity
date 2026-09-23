@@ -5,6 +5,7 @@
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
+//! runity build [PROJECT] [--out DIR] [--debug]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! runity git-setup [PROJECT]             turn the driver on in this clone
 //! ```
@@ -31,6 +32,10 @@ runity sync [PROJECT]
 runity check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
+runity build [PROJECT] [--out DIR] [--debug]
+    Sync the library, compile the game (release unless --debug), and lay out
+    DIR (build/ in the project by default): the executable and data/ with
+    scenes, prefabs and the built library. Sources stay home.
 runity git-setup [PROJECT]
     Turn on the scene merge driver in this clone: scenes and prefabs merge
     by entity and field, and conflicts are said in words.
@@ -62,6 +67,7 @@ fn run() -> Result<ExitCode> {
         "check" => check(&find(&rest)?),
         "rebuild-time" => rebuild_time(&rest),
         "merge" => merge(&rest),
+        "build" => build(&rest),
         "git-setup" => {
             let project = find(&rest)?;
             for line in runity_cli::merge::git_setup(project.root())? {
@@ -236,4 +242,32 @@ fn merge(rest: &[String]) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn build(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut out: Option<PathBuf> = None;
+    let mut release = true;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
+            "--debug" => release = false,
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let project = find(&at)?;
+    let out = out.unwrap_or_else(|| project.root().join("build"));
+    let built = runity_cli::build::build(&project, &out, release)?;
+    for line in &built.stale {
+        eprintln!("warning: {line}");
+    }
+    println!(
+        "built {} into {}\n  run {}",
+        project.name(),
+        built.folder.display(),
+        built.executable.display()
+    );
+    Ok(ExitCode::SUCCESS)
 }

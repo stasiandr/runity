@@ -1212,7 +1212,11 @@ fn a_scatter_is_one_group_one_step_and_the_same_for_the_same_seed() {
         .collect();
 
     assert!(session.undo().unwrap());
-    assert_eq!(session.entity_count(), before, "one step takes all of it back");
+    assert_eq!(
+        session.entity_count(),
+        before,
+        "one step takes all of it back"
+    );
 
     let again = session
         .scatter(None, "builtin:cone", Vec3::new(5.0, 0.0, 0.0), &layout)

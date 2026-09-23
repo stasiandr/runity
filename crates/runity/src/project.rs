@@ -48,6 +48,24 @@ pub const LIBRARY: &str = "library";
 /// Where the game's code lives.
 pub const SRC: &str = "src";
 
+/// Where a built game keeps its project data, beside the executable.
+pub const DATA: &str = "data";
+
+/// A file of the game's project, found the way a game has to find it: in a
+/// build, in `data/` beside the executable (what `runity build` makes); in
+/// development, in the project the game crate sits in — `dev_root` is the
+/// crate's `env!("CARGO_MANIFEST_DIR")`.
+///
+/// The build is looked for first, so a shipped game never reaches for a
+/// path that only existed on the machine it was compiled on.
+pub fn data_file(dev_root: &str, relative: &str) -> PathBuf {
+    let shipped = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(DATA).join(relative)))
+        .filter(|path| path.exists());
+    shipped.unwrap_or_else(|| Path::new(dev_root).join(relative))
+}
+
 /// Where a new project's game crate gets the engine from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Engine {
@@ -272,6 +290,8 @@ const GITIGNORE: &str = "\
 # Built from the sources and their .rimport sidecars; a clone rebuilds it.
 /library/
 /target/
+# What `runity build` makes.
+/build/
 ";
 
 /// The `.gitattributes` lines that send scenes and prefabs to `runity
@@ -447,10 +467,11 @@ impl shell::Game for Game {
 }
 
 fn main() -> anyhow::Result<()> {
-    let scene = concat!(env!("CARGO_MANIFEST_DIR"), "/scenes/main.ron");
+    // `data/` beside the executable in a build, the project in development.
+    let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "scenes/main.ron");
     let mut components = Components::new();
     components.register::<Spin>("spin");
-    let (live, problems) = LiveScene::open(scene)?;
+    let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(components);
     for problem in &problems {
         eprintln!("{problem}");
@@ -527,6 +548,8 @@ Cargo.toml   the game crate; src/main.rs is the game
   and prefabs then merge by entity and field, and a real conflict is
   reported in words (\"both changed the position of `tree`\") with ours
   kept and the file still loading.
+* `runity build` makes a folder to ship: the game in release, and `data/`
+  beside it with the scenes, prefabs and built library — no sources.
 * `runity sync` builds `library/` from the sources. After adding, changing
   or moving a source, run it and commit the `.rimport` it writes beside the
   source. Never edit a sidecar's `hash` or `id` by hand: the hash is how a
