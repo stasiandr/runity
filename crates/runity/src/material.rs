@@ -180,6 +180,41 @@ pub struct Material {
     /// Shadows fall on it.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub receive_shadows: bool,
+    /// URP's Base Map: the colour, times `base_color`. A texture asset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_map: Option<crate::asset::AssetId>,
+    /// URP's Normal Map, in tangent space; imported linear, not as colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal_map: Option<crate::asset::AssetId>,
+    /// HDRP's mask map, which URP's Lit reads as its metallic and occlusion
+    /// maps: red scales `metallic`, green is occlusion, alpha scales
+    /// `smoothness`. Imported linear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_map: Option<crate::asset::AssetId>,
+    /// URP's Emission Map, times `emission`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emission_map: Option<crate::asset::AssetId>,
+    /// How strongly the normal map bends the surface.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub normal_scale: f32,
+    /// How much the mask's occlusion darkens, 0 to 1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub occlusion_strength: f32,
+    /// URP's Tiling and Offset: the maps repeat this many times, shifted.
+    #[serde(default = "no_tiling", skip_serializing_if = "is_no_tiling")]
+    pub tiling: [f32; 2],
+    #[serde(default, skip_serializing_if = "is_no_offset")]
+    pub offset: [f32; 2],
+}
+
+fn no_tiling() -> [f32; 2] {
+    [1.0, 1.0]
+}
+fn is_no_tiling(t: &[f32; 2]) -> bool {
+    *t == [1.0, 1.0]
+}
+fn is_no_offset(o: &[f32; 2]) -> bool {
+    *o == [0.0, 0.0]
 }
 
 fn is_zero(x: &f32) -> bool {
@@ -226,7 +261,27 @@ impl Material {
             specular_highlights: true,
             environment_reflections: true,
             receive_shadows: true,
+            base_map: None,
+            normal_map: None,
+            mask_map: None,
+            emission_map: None,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+            tiling: [1.0, 1.0],
+            offset: [0.0, 0.0],
         }
+    }
+
+    /// The textures it draws with, besides its numbers.
+    pub fn maps(&self) -> impl Iterator<Item = crate::asset::AssetId> {
+        [
+            self.base_map,
+            self.normal_map,
+            self.mask_map,
+            self.emission_map,
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// Whether it is blended over what is behind it.
@@ -297,6 +352,26 @@ impl From<&ArchivedMaterial> for Material {
             specular_highlights: archived.specular_highlights,
             environment_reflections: archived.environment_reflections,
             receive_shadows: archived.receive_shadows,
+            base_map: archived.base_map.as_ref().map(crate::asset::AssetId::from),
+            normal_map: archived
+                .normal_map
+                .as_ref()
+                .map(crate::asset::AssetId::from),
+            mask_map: archived.mask_map.as_ref().map(crate::asset::AssetId::from),
+            emission_map: archived
+                .emission_map
+                .as_ref()
+                .map(crate::asset::AssetId::from),
+            normal_scale: archived.normal_scale.to_native(),
+            occlusion_strength: archived.occlusion_strength.to_native(),
+            tiling: [
+                archived.tiling[0].to_native(),
+                archived.tiling[1].to_native(),
+            ],
+            offset: [
+                archived.offset[0].to_native(),
+                archived.offset[1].to_native(),
+            ],
         }
     }
 }

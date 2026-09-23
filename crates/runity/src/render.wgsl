@@ -63,6 +63,12 @@ struct Caster {
 // untextured surface is its colour times one.
 @group(1) @binding(0) var surface_texture: texture_2d<f32>;
 @group(1) @binding(1) var surface_sampler: sampler;
+// URP Lit's other maps: normal (tangent space), mask (r metallic, g
+// occlusion, a smoothness) and emission. A surface without one binds a
+// neutral one: a flat normal, white.
+@group(1) @binding(2) var normal_map: texture_2d<f32>;
+@group(1) @binding(3) var mask_map: texture_2d<f32>;
+@group(1) @binding(4) var emission_map: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -78,6 +84,10 @@ struct VertexInput {
     // emission rgb; w packs the switches: 1 highlights, 2 reflections,
     // 4 receives shadows, 8 premultiplied
     @location(11) emission: vec4<f32>,
+    // tiling xy, offset zw
+    @location(12) uv_transform: vec4<f32>,
+    // normal scale, occlusion strength
+    @location(13) detail: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -90,6 +100,7 @@ struct VertexOutput {
     @location(4) uv: vec2<f32>,
     @location(5) surface: vec4<f32>,
     @location(6) emission: vec4<f32>,
+    @location(7) detail: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -141,9 +152,10 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
-    out.uv = in.uv;
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.surface = in.surface;
     out.emission = in.emission;
+    out.detail = in.detail;
     return out;
 }
 
@@ -167,7 +179,7 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
     out.position = caster.view_projection * model * vec4<f32>(in.position, 1.0);
-    out.uv = in.uv;
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
     return out;
 }
@@ -252,9 +264,10 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
-    out.uv = in.uv;
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.surface = in.surface;
     out.emission = in.emission;
+    out.detail = in.detail;
     return out;
 }
 
@@ -316,24 +329,56 @@ fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     return mix(sky * frame.sky_ground.w, hemisphere, perceptual_roughness);
 }
 
+/// A tangent-space normal from the map, turned into the world. The
+/// tangent frame is worked out from how position and UV change across the
+/// pixel (Schüler's cotangent frame), so meshes need no tangents stored.
+fn mapped_normal(geometric: vec3<f32>, world_position: vec3<f32>, uv: vec2<f32>, texel: vec3<f32>, scale: f32) -> vec3<f32> {
+    let dp1 = dpdx(world_position);
+    let dp2 = dpdy(world_position);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, geometric);
+    let dp1perp = cross(geometric, dp1);
+    // Screen y runs down here, where the cotangent frame was worked out
+    // with it up: that turns the frame round, the tangent to its right way
+    // and the bitangent to the image's up — UVs run down the image (its top
+    // row first) while a normal map's green points up it, so the turned
+    // bitangent is the one wanted.
+    let t = -(dp2perp * duv1.x + dp1perp * duv2.x);
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let size = max(dot(t, t), dot(b, b));
+    if size < 1e-12 {
+        return geometric;
+    }
+    let inverse = inverseSqrt(size);
+    var n = texel * 2.0 - 1.0;
+    n = vec3<f32>(n.xy * scale, n.z);
+    return normalize(t * inverse * n.x + b * inverse * n.y + geometric * n.z);
+}
+
 @fragment
 fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let sampled = textureSample(surface_texture, surface_sampler, in.uv);
+    let normal_texel = textureSample(normal_map, surface_sampler, in.uv).xyz;
+    let mask = textureSample(mask_map, surface_sampler, in.uv);
+    let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;
+    // A face seen from behind — a two-sided leaf — is lit from its own side.
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    let normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
     let alpha = in.surface.z * sampled.a;
     // Alpha clipping: what is less opaque than the threshold is not drawn
     // at all.
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }
-    // A face seen from behind — a two-sided leaf — is lit from its own side.
-    let normal = normalize(in.normal) * select(-1.0, 1.0, front);
     let flags = u32(in.emission.w + 0.5);
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
     let grid = f32(in.shading > 1.5);
 
     let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
-    let b = brdf(albedo, in.surface.x, in.surface.y);
+    let b = brdf(albedo, in.surface.x * mask.r, in.surface.y * mask.a);
+    let baked = mix(1.0, mask.g, in.detail.y);
     let highlights = (flags & 1u) != 0u;
 
     let to_sun = -normalize(frame.sun_direction.xyz);
@@ -374,15 +419,16 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // bounce off the ground. A single constant here is what makes every
     // shaded surface in a scene the same dead colour.
     let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5);
-    color = color + b.diffuse * ambient * ao;
+    color = color + b.diffuse * ambient * ao * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
         let fresnel = pow(1.0 - n_v, 4.0);
         let reduction = 1.0 / (b.roughness2 + 1.0);
         let reflected = environment(reflect(-to_eye, normal), b.perceptual_roughness);
-        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao;
+        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
     }
-    color = color + in.emission.rgb;
+    let emission = in.emission.rgb * emitted;
+    color = color + emission;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
     color = mix(color, frame.fog_color.rgb, fog_amount(distance));
@@ -391,7 +437,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
-    var out = mix(color, albedo + in.emission.rgb, unlit);
+    var out = mix(color, albedo + emission, unlit);
     if (flags & 8u) != 0u {
         out = out * alpha;
     }

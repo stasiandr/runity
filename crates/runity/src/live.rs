@@ -242,6 +242,11 @@ impl LiveScene {
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
         crate::physics::attach_scene_collision_meshes(world, &self.current, self.library.as_ref());
+        for problem in
+            crate::world::upload_material_maps(world, self.library.as_ref(), gpu, renderer)
+        {
+            eprintln!("{problem}");
+        }
         Spawned {
             missing,
             components,
@@ -368,6 +373,12 @@ impl LiveScene {
                     .map(ToString::to_string),
             );
         }
+        problems.extend(crate::world::upload_material_maps(
+            world,
+            self.library.as_ref(),
+            gpu,
+            renderer,
+        ));
         Ok(Instance {
             root: spawned[0].0,
             problems,
@@ -478,6 +489,13 @@ impl LiveScene {
                 Err(e) => out.problems.push(format!("{e:#}")),
             }
         }
+        // What a reload brought in may draw with maps not uploaded yet.
+        out.problems.extend(crate::world::upload_material_maps(
+            world,
+            self.library.as_ref(),
+            gpu,
+            renderer,
+        ));
         out
     }
 
@@ -524,6 +542,15 @@ impl LiveScene {
             let new = renderer.upload_mesh(gpu, mesh);
             self.meshes.insert(name.to_string(), new);
             swapped.insert(old, new);
+        }
+        // A texture already on the GPU is uploaded again under a new handle;
+        // the materials that name it find the new one by its id.
+        for asset in out.assets.iter().filter(|a| a.kind == AssetKind::Texture) {
+            if renderer.texture_for(asset.id).is_some() {
+                if let Some(texture) = library.texture(asset.id) {
+                    renderer.upload_texture(gpu, texture);
+                }
+            }
         }
         for model in world.query_mut::<&mut Model>() {
             if let Some(new) = swapped.get(&model.0) {

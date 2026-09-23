@@ -46,7 +46,14 @@ impl TextureHandle {
     /// branch, and so an untextured material is a colour times one rather
     /// than a second pipeline.
     pub const WHITE: TextureHandle = TextureHandle(0);
+
+    /// A normal map that bends nothing: straight up in tangent space. What
+    /// a surface without one samples.
+    pub const FLAT_NORMAL: TextureHandle = TextureHandle(1);
 }
+
+/// A surface's four maps, as bound: base, normal, mask, emission.
+type Maps = [TextureHandle; 4];
 
 impl MeshHandle {
     /// A handle that refers to nothing, for tests that build a draw list
@@ -594,6 +601,10 @@ struct InstanceRaw {
     /// Emission, linear and times its intensity; `w` packs the switches
     /// ([`FLAG_SPECULAR`] and the rest).
     emission: [f32; 4],
+    /// Tiling xy, offset zw.
+    uv: [f32; 4],
+    /// Normal scale, occlusion strength.
+    detail: [f32; 4],
 }
 
 /// Bits of [`InstanceRaw::emission`]'s `w`.
@@ -641,15 +652,27 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
             material.emission[2].max(0.0),
             flags as f32,
         ],
+        uv: [
+            material.tiling[0],
+            material.tiling[1],
+            material.offset[0],
+            material.offset[1],
+        ],
+        detail: [
+            material.normal_scale,
+            material.occlusion_strength.clamp(0.0, 1.0),
+            0.0,
+            0.0,
+        ],
     }
 }
 
 /// A group of draws of one mesh with one texture, and the pipeline they
 /// take — `None` in the shadow and overlay passes, which set their own.
-type BatchKey = (Option<Look>, MeshHandle, TextureHandle);
+type BatchKey = (Option<Look>, MeshHandle, Maps);
 
 struct GpuTexture {
-    bind_group: wgpu::BindGroup,
+    view: wgpu::TextureView,
 }
 
 struct GpuMesh {
@@ -703,6 +726,12 @@ pub struct Renderer {
     stats: FrameStats,
     meshes: Vec<GpuMesh>,
     textures: Vec<GpuTexture>,
+    /// Which handle each texture asset was uploaded as, so a material's
+    /// maps — asset ids — find theirs.
+    by_asset: std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+    /// A bind group per set of four maps in use, made before the frame's
+    /// passes and kept.
+    map_groups: std::collections::HashMap<Maps, wgpu::BindGroup>,
     texture_layout: wgpu::BindGroupLayout,
     texture_sampler: wgpu::Sampler,
     /// Kept to rebuild the pipelines when the shader is reloaded.
@@ -770,6 +799,20 @@ fn sample_count(gpu: &Gpu) -> u32 {
         4
     } else {
         1
+    }
+}
+
+/// One of a surface's maps in its bind group.
+fn map_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
     }
 }
 
@@ -886,9 +929,9 @@ struct Layouts<'a> {
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
     3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
-    7 => Float32x4, 10 => Float32x4, 11 => Float32x4
+    7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
@@ -1388,24 +1431,18 @@ impl Renderer {
         let texture_layout =
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("surface texture"),
+                    label: Some("surface maps"),
                     entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
+                        map_entry(0),
                         wgpu::BindGroupLayoutEntry {
                             binding: 1,
                             visibility: wgpu::ShaderStages::FRAGMENT,
                             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
                         },
+                        map_entry(2),
+                        map_entry(3),
+                        map_entry(4),
                     ],
                 });
         let texture_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1589,6 +1626,8 @@ impl Renderer {
             stats: FrameStats::default(),
             meshes: Vec::new(),
             textures: Vec::new(),
+            by_asset: std::collections::HashMap::new(),
+            map_groups: std::collections::HashMap::new(),
             texture_layout,
             texture_sampler,
             pipeline_layout,
@@ -1601,6 +1640,8 @@ impl Renderer {
         // Handle 0 is always the white pixel, so `TextureHandle::WHITE` is a
         // constant rather than something every caller has to be handed.
         renderer.upload_texture_rgba(gpu, 1, 1, &[255, 255, 255, 255], true);
+        // Handle 1 the flat normal, for the same reason.
+        renderer.upload_texture_rgba(gpu, 1, 1, &[128, 128, 255, 255], false);
         renderer
     }
 
@@ -1700,7 +1741,73 @@ impl Renderer {
                 mip.pixels.as_slice(),
             ));
         }
-        self.upload_texture_levels(gpu, &levels, texture.srgb)
+        let id = crate::asset::AssetId::from(&texture.id);
+        let handle = self.upload_texture_levels(gpu, &levels, texture.srgb);
+        self.by_asset.insert(id, handle);
+        handle
+    }
+
+    /// The handle a texture asset was uploaded as, if it was.
+    pub fn texture_for(&self, id: crate::asset::AssetId) -> Option<TextureHandle> {
+        self.by_asset.get(&id).copied()
+    }
+
+    /// The four maps a draw takes: its material's, where uploaded, else
+    /// the draw's own texture for the colour and neutral ones for the rest
+    /// — a missing map leaves a plain surface, not a hole.
+    fn maps_of(&self, draw: &Draw) -> Maps {
+        let m = &draw.material;
+        let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.texture_for(id));
+        [
+            find(m.base_map).unwrap_or(draw.texture),
+            find(m.normal_map).unwrap_or(TextureHandle::FLAT_NORMAL),
+            find(m.mask_map).unwrap_or(TextureHandle::WHITE),
+            find(m.emission_map).unwrap_or(TextureHandle::WHITE),
+        ]
+    }
+
+    /// Make the bind groups for sets of maps not seen before.
+    fn prepare_maps(&mut self, gpu: &Gpu, sets: impl IntoIterator<Item = Maps>) {
+        for maps in sets {
+            if self.map_groups.contains_key(&maps) {
+                continue;
+            }
+            let view = |handle: TextureHandle| {
+                &self
+                    .textures
+                    .get(handle.0 as usize)
+                    .or_else(|| self.textures.first())
+                    .expect("the white texture is always there")
+                    .view
+            };
+            let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("surface maps"),
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view(maps[0])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(view(maps[1])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(view(maps[2])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(view(maps[3])),
+                    },
+                ],
+            });
+            self.map_groups.insert(maps, group);
+        }
     }
 
     /// Upload raw RGBA8 pixels.
@@ -1772,21 +1879,7 @@ impl Renderer {
             );
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("surface texture"),
-            layout: &self.texture_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
-                },
-            ],
-        });
-        self.textures.push(GpuTexture { bind_group });
+        self.textures.push(GpuTexture { view });
         TextureHandle(self.textures.len() as u32 - 1)
     }
 
@@ -1846,7 +1939,7 @@ impl Renderer {
                 }
             }
             if textured {
-                self.bind_texture(pass, *texture);
+                self.bind_maps(pass, *texture);
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
@@ -1856,19 +1949,10 @@ impl Renderer {
         }
     }
 
-    /// Falls back to white rather than skipping the draw: a missing texture
-    /// should leave a flat-coloured object, not a hole where one used to be.
-    fn bind_texture<'pass>(
-        &'pass self,
-        pass: &mut wgpu::RenderPass<'pass>,
-        texture: TextureHandle,
-    ) {
-        let bound = self
-            .textures
-            .get(texture.0 as usize)
-            .or_else(|| self.textures.first());
-        if let Some(bound) = bound {
-            pass.set_bind_group(1, &bound.bind_group, &[]);
+    /// Bind a surface's maps, made beforehand by [`Renderer::prepare_maps`].
+    fn bind_maps<'pass>(&'pass self, pass: &mut wgpu::RenderPass<'pass>, maps: Maps) {
+        if let Some(group) = self.map_groups.get(&maps) {
+            pass.set_bind_group(1, group, &[]);
         }
     }
 
@@ -1880,7 +1964,7 @@ impl Renderer {
         pass: &mut wgpu::RenderPass<'pass>,
         look: Look,
         mesh: MeshHandle,
-        texture: TextureHandle,
+        texture: Maps,
         pose: u32,
         instance: u32,
         prepass: bool,
@@ -1898,7 +1982,7 @@ impl Renderer {
         };
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        self.bind_texture(pass, texture);
+        self.bind_maps(pass, texture);
         pass.set_vertex_buffer(0, mesh.vertices.slice(..));
         pass.set_vertex_buffer(1, self.instances.slice(..));
         if look.skinned {
@@ -2292,9 +2376,8 @@ impl Renderer {
         let mut shadow_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut clip_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
-        let mut singles: Vec<(Look, MeshHandle, TextureHandle, u32, InstanceRaw)> = Vec::new();
-        let mut transparent: Vec<(f32, Look, MeshHandle, TextureHandle, u32, InstanceRaw)> =
-            Vec::new();
+        let mut singles: Vec<(Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
+        let mut transparent: Vec<(f32, Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
         let mut stats = FrameStats {
             submitted: frame.draws.len() as u32,
             ..Default::default()
@@ -2302,13 +2385,14 @@ impl Renderer {
         let eye = frame.camera.apparent_eye();
         for draw in &frame.draws {
             let raw = instance_of(draw.transform, &draw.material);
+            let maps = self.maps_of(draw);
             if !draw.material.is_transparent() {
                 let casters = if draw.material.alpha_clip > 0.0 {
                     &mut clip_batches
                 } else {
                     &mut shadow_batches
                 };
-                push(casters, (None, draw.mesh, draw.texture), raw);
+                push(casters, (None, draw.mesh, maps), raw);
                 stats.shadow_casters += 1;
             }
 
@@ -2332,13 +2416,13 @@ impl Renderer {
             let pose = draw.pose.unwrap_or(0);
             if draw.material.is_transparent() {
                 let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
-                transparent.push((distance, look, draw.mesh, draw.texture, pose, raw));
+                transparent.push((distance, look, draw.mesh, maps, pose, raw));
             } else if skinned {
                 // Skinned draws are not batched: each one has its own pose,
                 // so two of them cannot share an instanced call anyway.
-                singles.push((look, draw.mesh, draw.texture, pose, raw));
+                singles.push((look, draw.mesh, maps, pose, raw));
             } else {
-                push(&mut batches, (Some(look), draw.mesh, draw.texture), raw);
+                push(&mut batches, (Some(look), draw.mesh, maps), raw);
             }
         }
         self.stats = stats;
@@ -2352,7 +2436,7 @@ impl Renderer {
                 look.face as u8,
                 look.blend.map(|b| b as u8),
                 mesh.0,
-                texture.0,
+                texture.map(|t| t.0),
             )
         });
 
@@ -2362,10 +2446,20 @@ impl Renderer {
         for draw in &frame.overlay_draws {
             push(
                 &mut overlay_batches,
-                (None, draw.mesh, draw.texture),
+                (None, draw.mesh, self.maps_of(draw)),
                 instance_of(draw.transform, &draw.material),
             );
         }
+        let sets: Vec<Maps> = shadow_batches
+            .iter()
+            .chain(clip_batches.iter())
+            .chain(batches.iter())
+            .chain(overlay_batches.iter())
+            .map(|((_, _, maps), _)| *maps)
+            .chain(singles.iter().map(|single| single.2))
+            .chain(transparent.iter().map(|t| t.3))
+            .collect();
+        self.prepare_maps(gpu, sets);
 
         // Every set shares one buffer, one after another: shadow casters,
         // batched colour draws, the single ones, the transparent ones,

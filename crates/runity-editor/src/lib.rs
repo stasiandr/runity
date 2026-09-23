@@ -2423,6 +2423,14 @@ impl Session {
         };
         // The scene's own sky and post-processing, as the game draws it.
         runity::world::scene_look(&mut frame, scene);
+        // The maps its materials draw with, uploaded the first time they
+        // are seen — an import that brought a new one shows at once.
+        let _ = runity::world::upload_material_maps(
+            &self.world,
+            self.library.as_ref(),
+            &self.gpu,
+            &mut self.renderer,
+        );
         if self.game_view {
             // What the player sees: no grid, no handles, no outlines.
             self.renderer.render(&self.gpu, &self.target, &frame);

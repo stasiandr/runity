@@ -666,6 +666,39 @@ pub fn scene_fog(fog: &crate::scene::Fog) -> FogSettings {
     }
 }
 
+/// Put on the GPU every texture the world's materials draw with — their
+/// base, normal, mask and emission maps — that is not there yet. What was
+/// uploaded is known to the renderer by asset id, so a frame's materials
+/// find their maps without anyone keeping handles. Says which maps the
+/// library does not have.
+pub fn upload_material_maps(
+    world: &World,
+    library: Option<&crate::Library>,
+    gpu: &crate::gpu::Gpu,
+    renderer: &mut crate::render::Renderer,
+) -> Vec<String> {
+    let mut wanted: Vec<crate::asset::AssetId> = world
+        .query::<&Surface>()
+        .iter()
+        .flat_map(|surface| surface.0.maps().collect::<Vec<_>>())
+        .filter(|id| renderer.texture_for(*id).is_none())
+        .collect();
+    wanted.sort();
+    wanted.dedup();
+    let mut missing = Vec::new();
+    for id in wanted {
+        match library.and_then(|l| l.texture(id)) {
+            Some(texture) => {
+                renderer.upload_texture(gpu, texture);
+            }
+            None => missing.push(format!(
+                "a material's map {id} is not in the library; re-import it"
+            )),
+        }
+    }
+    missing
+}
+
 /// Everything a scene says about how its frame looks — sun, fog, sky and
 /// post-processing — around what is in the world. What a game and the
 /// editor draw a scene with, so both show the same picture.
