@@ -387,7 +387,6 @@ impl Party {
         }
     }
 
-    /// Which peer this is, as the server numbered it (the host is 0).
     /// The session's clock, seconds since it began, the same on every
     /// machine give or take a few milliseconds: when a timed thing
     /// started, a countdown everyone sees end together. Our own clock
@@ -402,6 +401,7 @@ impl Party {
         self.clock.best().map(|(trip, _)| trip)
     }
 
+    /// Which peer this is, as the server numbered it (the host is 0).
     pub fn me(&self) -> PeerId {
         self.sync.me
     }
@@ -440,6 +440,15 @@ impl Party {
 
     /// Ask to drive `entity`: this peer's at once, the server's ruling to
     /// follow.
+    /// Make these one thing for ownership — a player and both hands: a
+    /// claim on any of them is a claim on all, so one peer drives the lot.
+    pub fn group(&self, world: &mut hecs::World, members: &[hecs::Entity]) {
+        let group = crate::net::NetGroup(EntityId::fresh());
+        for &entity in members {
+            let _ = world.insert_one(entity, group);
+        }
+    }
+
     pub fn claim(&self, world: &mut hecs::World, entity: hecs::Entity) {
         let _ = world.insert_one(entity, RequestOwnership);
     }
@@ -588,6 +597,7 @@ impl Party {
         }
         let playing = self.stage == Stage::Playing && self.welcomed;
         if playing {
+            crate::net::claim_nearby(world, self.me());
             // Taken before marking, so what was asked for is driven this
             // very frame.
             let mut claims = std::mem::take(&mut self.outbox);
@@ -989,6 +999,79 @@ mod tests {
                 .iter()
                 .all(|w| at(w, find(w, 1)).distance(target) < 1e-3)
         });
+    }
+
+    #[test]
+    fn a_claim_on_one_of_a_group_takes_the_whole_group() {
+        let mut game = Game::new(1, Conditions::GOOD);
+        let (crate_, door) = (find(&game.worlds[1], 1), find(&game.worlds[1], 2));
+        game.parties[1].group(&mut game.worlds[1], &[crate_, door]);
+        game.parties[1].claim(&mut game.worlds[1], crate_);
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(owner_of(world, find(world, 1)), PeerId(1));
+            assert_eq!(
+                owner_of(world, find(world, 2)),
+                PeerId(1),
+                "the other one too"
+            );
+        }
+    }
+
+    #[test]
+    fn a_claim_on_one_half_of_a_joint_takes_the_other() {
+        let mut game = Game::new(1, Conditions::GOOD);
+        for world in &mut game.worlds {
+            let (crate_, door) = (find(world, 1), find(world, 2));
+            let to = world.get::<&SceneId>(door).unwrap().0;
+            let _ = world.insert_one(
+                crate_,
+                crate::world::Jointed(crate::scene::Joint::Fixed { to }),
+            );
+        }
+        let door = find(&game.worlds[1], 2);
+        game.parties[1].claim(&mut game.worlds[1], door);
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(owner_of(world, find(world, 2)), PeerId(1));
+            assert_eq!(
+                owner_of(world, find(world, 1)),
+                PeerId(1),
+                "held by the joint"
+            );
+        }
+    }
+
+    #[test]
+    fn a_player_coming_near_a_loose_body_claims_it() {
+        use crate::world::{Physics, WorldTransform};
+        let mut game = Game::new(1, Conditions::GOOD);
+        let at = |x: f32| WorldTransform(glam::Mat4::from_translation(Vec3::new(x, 0.0, 0.0)));
+        for world in &mut game.worlds {
+            let crate_ = find(world, 1);
+            let _ = world.insert(crate_, (Physics(crate::scene::Body::Dynamic), at(5.0)));
+            put(world, 1, Vec3::new(5.0, 0.0, 0.0));
+        }
+        let player = game.worlds[1].spawn((
+            at(0.0),
+            crate::net::Owner(PeerId(1)),
+            crate::net::ClaimNear { radius: 2.0 },
+        ));
+        game.frames(10);
+        assert_eq!(
+            owner_of(&game.worlds[1], find(&game.worlds[1], 1)),
+            PeerId::HOST,
+            "too far"
+        );
+        let _ = game.worlds[1].insert_one(player, at(4.0));
+        game.frames(20);
+        for world in &game.worlds {
+            assert_eq!(
+                owner_of(world, find(world, 1)),
+                PeerId(1),
+                "came near: the guest's"
+            );
+        }
     }
 
     #[test]

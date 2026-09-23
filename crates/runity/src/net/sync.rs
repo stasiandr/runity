@@ -148,11 +148,14 @@ impl Sync {
     /// Take what the game asked to drive: this peer's at once, pending,
     /// and asked for.
     pub fn claims(&mut self, world: &mut hecs::World, out: &mut Vec<ToServer>) {
-        let asked: Vec<hecs::Entity> = world
+        let mut asked: Vec<hecs::Entity> = world
             .query::<(hecs::Entity, &RequestOwnership)>()
             .iter()
             .map(|(e, _)| e)
             .collect();
+        if !asked.is_empty() {
+            asked = Self::together(world, asked);
+        }
         for entity in asked {
             let _ = world.remove_one::<RequestOwnership>(entity);
             let Some(id) = super::network_id(world, entity) else {
@@ -170,6 +173,47 @@ impl Sync {
                 id,
             });
         }
+    }
+
+    /// What has to be driven by one peer with these: the rest of their
+    /// groups, and whatever a joint holds to them, both halves and on
+    /// along a chain — two machines solving one rope pull it apart.
+    fn together(world: &hecs::World, asked: Vec<hecs::Entity>) -> Vec<hecs::Entity> {
+        use std::collections::{HashMap, HashSet};
+        let mut by_id: HashMap<EntityId, hecs::Entity> = HashMap::new();
+        let mut links: HashMap<hecs::Entity, Vec<hecs::Entity>> = HashMap::new();
+        for (entity, id) in world.query::<(hecs::Entity, &SceneId)>().iter() {
+            by_id.insert(id.0, entity);
+        }
+        for (entity, joint) in world
+            .query::<(hecs::Entity, &crate::world::Jointed)>()
+            .iter()
+        {
+            if let Some(other) = joint.0.to().and_then(|to| by_id.get(&to)) {
+                links.entry(entity).or_default().push(*other);
+                links.entry(*other).or_default().push(entity);
+            }
+        }
+        let mut groups: HashMap<super::NetGroup, Vec<hecs::Entity>> = HashMap::new();
+        for (entity, group) in world.query::<(hecs::Entity, &super::NetGroup)>().iter() {
+            groups.entry(*group).or_default().push(entity);
+        }
+        let mut seen: HashSet<hecs::Entity> = asked.iter().copied().collect();
+        let mut out = asked.clone();
+        let mut next = asked;
+        while let Some(entity) = next.pop() {
+            let mut near: Vec<hecs::Entity> = links.get(&entity).cloned().unwrap_or_default();
+            if let Ok(group) = world.get::<&super::NetGroup>(entity) {
+                near.extend(groups.get(&*group).into_iter().flatten().copied());
+            }
+            for other in near {
+                if seen.insert(other) {
+                    out.push(other);
+                    next.push(other);
+                }
+            }
+        }
+        out
     }
 
     /// What this peer owns, as blobs.
