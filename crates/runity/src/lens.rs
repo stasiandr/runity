@@ -131,6 +131,44 @@ impl MotionBlur {
     }
 }
 
+/// Hot air: the view shimmers over hot ground, more with distance and
+/// towards the horizon, and far off at the horizon the ground turns to a
+/// mirror of the sky — the desert's "water" that is not there (an inferior
+/// mirage). Off by default; a desert at noon wants both.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeatHaze {
+    /// How much the air shimmers, 0 to 1.
+    pub intensity: f32,
+    /// How much the far ground mirrors the sky, 0 to 1.
+    pub mirage: f32,
+    /// Where the shimmer and the mirage start, metres from the eye.
+    pub distance: f32,
+}
+
+impl HeatHaze {
+    pub const OFF: HeatHaze = HeatHaze {
+        intensity: 0.0,
+        mirage: 0.0,
+        distance: 40.0,
+    };
+
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        let f = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            intensity: f(self.intensity, other.intensity),
+            mirage: f(self.mirage, other.mirage),
+            distance: f(self.distance, other.distance),
+        }
+    }
+}
+
+impl Default for HeatHaze {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
 pub const SHADER: &str = include_str!("lens.wgsl");
 
 #[repr(C)]
@@ -143,6 +181,11 @@ struct LensUniform {
     blur: [f32; 4],
     size: [f32; 4],
     motion: [f32; 4],
+    view_projection: [[f32; 4]; 4],
+    /// The eye; w time in seconds.
+    eye: [f32; 4],
+    /// Heat haze: shimmer, mirage, where they start (m).
+    heat: [f32; 4],
 }
 
 /// Where the camera is this frame, and where it looked last frame.
@@ -152,6 +195,9 @@ pub(crate) struct View {
     pub near: f32,
     pub far: f32,
     pub orthographic: bool,
+    pub eye: glam::Vec3,
+    /// Seconds, for what moves by itself — the shimmer.
+    pub time: f32,
 }
 
 /// The widest blur, in pixels, and pixels to a metre of the sensor, for a
@@ -173,6 +219,7 @@ pub(crate) struct LensRenderer {
     sampler: wgpu::Sampler,
     depth_of_field: wgpu::RenderPipeline,
     motion_blur: wgpu::RenderPipeline,
+    heat_haze: wgpu::RenderPipeline,
     /// Two targets to go back and forth between.
     targets: Vec<(wgpu::Texture, wgpu::TextureView)>,
     size: (u32, u32),
@@ -288,6 +335,7 @@ impl LensRenderer {
         Self {
             depth_of_field: pipeline("fs_depth_of_field"),
             motion_blur: pipeline("fs_motion_blur"),
+            heat_haze: pipeline("fs_heat_haze"),
             layout,
             uniforms,
             sampler,
@@ -300,7 +348,10 @@ impl LensRenderer {
     /// the prepass's depth.
     pub(crate) fn wanted(post: &crate::post::PostProcess) -> bool {
         post.enabled
-            && (post.depth_of_field.mode != FocusMode::Off || post.motion_blur.intensity > 0.0)
+            && (post.depth_of_field.mode != FocusMode::Off
+                || post.motion_blur.intensity > 0.0
+                || post.heat_haze.intensity > 0.0
+                || post.heat_haze.mirage > 0.0)
     }
 
     fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) {
@@ -388,11 +439,23 @@ impl LensRenderer {
                 motion.samples.clamp(2, 32) as f32,
                 0.0,
             ],
+            view_projection: view.view_projection.to_cols_array_2d(),
+            eye: [view.eye.x, view.eye.y, view.eye.z, view.time],
+            heat: [
+                post.heat_haze.intensity.clamp(0.0, 1.0),
+                post.heat_haze.mirage.clamp(0.0, 1.0),
+                post.heat_haze.distance.max(0.0),
+                0.0,
+            ],
         };
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
 
         let mut passes: Vec<&wgpu::RenderPipeline> = Vec::new();
+        let heat = &post.heat_haze;
+        if heat.intensity > 0.0 || heat.mirage > 0.0 {
+            passes.push(&self.heat_haze);
+        }
         if dof.mode != FocusMode::Off {
             passes.push(&self.depth_of_field);
         }

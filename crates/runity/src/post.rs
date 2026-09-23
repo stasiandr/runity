@@ -313,6 +313,8 @@ pub struct PostProcess {
     pub lens_distortion: LensDistortion,
     pub panini_projection: PaniniProjection,
     pub lens_flare: LensFlare,
+    /// Shimmering hot air and the mirage ([`crate::lens::HeatHaze`]).
+    pub heat_haze: crate::lens::HeatHaze,
 }
 
 impl Default for PostProcess {
@@ -342,6 +344,7 @@ impl Default for PostProcess {
             lens_distortion: LensDistortion::OFF,
             panini_projection: PaniniProjection::OFF,
             lens_flare: LensFlare::OFF,
+            heat_haze: crate::lens::HeatHaze::OFF,
         }
     }
 }
@@ -403,6 +406,7 @@ impl PostProcess {
         lens_distortion: LensDistortion::OFF,
         panini_projection: PaniniProjection::OFF,
         lens_flare: LensFlare::OFF,
+        heat_haze: crate::lens::HeatHaze::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -522,6 +526,7 @@ impl PostProcess {
                     other.panini_projection.crop_to_fit,
                 ),
             },
+            heat_haze: self.heat_haze.lerp(&other.heat_haze, t),
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
                 tint: v3(self.lens_flare.tint, other.lens_flare.tint),

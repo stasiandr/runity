@@ -19,6 +19,11 @@ struct Lens {
     size: vec4<f32>,
     // motion blur: intensity, clamp (share of the screen), samples
     motion: vec4<f32>,
+    view_projection: mat4x4<f32>,
+    // the eye; w time in seconds
+    eye: vec4<f32>,
+    // heat haze: shimmer, mirage, where they start (m)
+    heat: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> lens: Lens;
@@ -149,4 +154,61 @@ fn fs_motion_blur(in: Varyings) -> @location(0) vec4<f32> {
         color = color + textureSampleLevel(source, linear_sampler, in.uv - velocity * t, 0.0).rgb;
     }
     return vec4<f32>(color / f32(count), 1.0);
+}
+
+fn heat_hash(p: vec2<f32>) -> f32 {
+    let q = fract(p * vec2<f32>(123.34, 456.21));
+    let r = q + dot(q, q + 45.32);
+    return fract(r.x * r.y);
+}
+
+fn heat_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(heat_hash(i), heat_hash(i + vec2<f32>(1.0, 0.0)), u.x),
+        mix(heat_hash(i + vec2<f32>(0.0, 1.0)), heat_hash(i + vec2<f32>(1.0, 1.0)), u.x), u.y);
+}
+
+// Hot air. The picture shimmers where the view crosses a lot of it — far
+// off and near the horizon — with ripples rising as heat does. Far off,
+// just below the horizon, the ground gives way to the sky seen mirrored
+// across it: the mirage, shimmering too.
+@fragment
+fn fs_heat_haze(in: Varyings) -> @location(0) vec4<f32> {
+    let t = lens.eye.w;
+    let far_off = distance_at(in.uv);
+    let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    let a = lens.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
+    let b = lens.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
+    let direction = normalize(b.xyz / b.w - a.xyz / a.w);
+    let start = lens.heat.z;
+
+    let through = smoothstep(start, start * 4.0 + 1.0, far_off);
+    let near_horizon = 1.0 - smoothstep(0.0, 0.3, abs(direction.y));
+    let shimmer = lens.heat.x * through * near_horizon;
+    let q = in.uv * vec2<f32>(70.0, 35.0);
+    let wobble = vec2<f32>(
+        heat_noise(q + vec2<f32>(0.0, t * 2.2)),
+        heat_noise(q * 1.3 + vec2<f32>(3.1, t * 2.9)),
+    ) - 0.5;
+    let uv = in.uv + wobble * shimmer * 0.006;
+    var color = textureSampleLevel(source, linear_sampler, uv, 0.0).rgb;
+
+    let below = -direction.y;
+    let ground = f32(textureLoad(depth, clamp(vec2<i32>(in.uv * lens.size.xy), vec2<i32>(0), vec2<i32>(lens.size.xy) - vec2<i32>(1)), 0) < 1.0);
+    if lens.heat.y > 0.0 && below > 0.0 && ground > 0.5 {
+        let mirage = lens.heat.y * smoothstep(start * 2.0, start * 6.0 + 1.0, far_off)
+            * (1.0 - smoothstep(0.0, 0.05, below));
+        if mirage > 0.0 {
+            // The same way, turned up across the horizon.
+            let up = normalize(vec3<f32>(direction.x, below, direction.z));
+            let far = lens.view_projection * vec4<f32>(lens.eye.xyz + up * 1000.0, 1.0);
+            let seen = far.xy / far.w;
+            let mirrored = vec2<f32>(seen.x * 0.5 + 0.5, 0.5 - seen.y * 0.5) + wobble * 0.01;
+            let sky = textureSampleLevel(source, linear_sampler, clamp(mirrored, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).rgb;
+            color = mix(color, sky, mirage);
+        }
+    }
+    return vec4<f32>(color, 1.0);
 }

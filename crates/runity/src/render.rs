@@ -3781,6 +3781,8 @@ impl Renderer {
                 near: frame.camera.near,
                 far: frame.camera.far,
                 orthographic: frame.camera.ortho.is_some(),
+                eye: frame.camera.position,
+                time: foliage.wind[3],
             },
         );
         self.post.fov_y_degrees = match frame.camera.ortho {
