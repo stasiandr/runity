@@ -31,6 +31,23 @@ pub const HEIGHT: u32 = 90;
 /// Cells deep.
 pub const DEPTH: u32 = 64;
 
+/// A ball of dust in the air — kicked up by a foot
+/// ([`crate::footprints`]) — added to the fog's grid: lit by the sun as
+/// the fog is, and soft at its edge. A frame holds up to [`MOST_PUFFS`];
+/// with any, the grid runs even when the scene has no fog.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Puff {
+    pub position: glam::Vec3,
+    pub radius: f32,
+    /// Extinction per metre at its middle.
+    pub density: f32,
+    /// Linear colour.
+    pub color: [f32; 3],
+}
+
+/// The most puffs a frame carries; past it, the nearest the camera win.
+pub const MOST_PUFFS: usize = 16;
+
 /// The fog in the air, as a scene says it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

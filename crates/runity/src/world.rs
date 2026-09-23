@@ -429,6 +429,9 @@ fn spawn_one(
     if desc.bends_grass > 0.0 {
         let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
     }
+    if let Some(prints) = desc.footprints {
+        let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
+    }
     if let Some(volume) = desc.post_volume {
         let _ = world.insert_one(entity, PostVolumeBox(volume));
     }
@@ -757,6 +760,19 @@ impl Patch<'_> {
                 }
                 None => {
                     let _ = world.remove_one::<LightSource>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.footprints != desc.footprints) {
+            // Retuned, it starts a fresh trail: the old prints were made
+            // by the old settings.
+            match desc.footprints {
+                Some(prints) => {
+                    let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
+                }
+                None => {
+                    let _ = world.remove_one::<crate::footprints::Trail>(entity);
                 }
             }
             changed = true;
@@ -1310,20 +1326,37 @@ pub fn build_frame_where(
             blend_distance: probe.0.blend_distance,
         })
         .collect();
-    let decals = world
+    let mut decals: Vec<crate::decals::Decal> = world
         .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
         .iter()
         .filter(|(_, _, line)| keep(line.map(|l| l.0)))
         .map(|(pressing, placed, _)| crate::decals::Decal {
             transform: placed.0 * glam::Mat4::from_scale(pressing.0.size),
             material: pressing.1,
+            shape: crate::decals::DecalShape::Picture,
         })
         .collect();
+    // Walkers' prints, and the dust their steps kick up — the dust the
+    // colour of the ground's top, lighter than the print turned over.
+    let mut puffs = Vec::new();
+    for (trail, line) in world
+        .query::<(&crate::footprints::Trail, Option<&SceneId>)>()
+        .iter()
+    {
+        if !keep(line.map(|l| l.0)) {
+            continue;
+        }
+        decals.extend(trail.decals());
+        let c = trail.settings.color;
+        let linear = |v: f32| crate::material::srgb_to_linear((v * 1.25).clamp(0.0, 1.0));
+        puffs.extend(trail.dust([linear(c[0]), linear(c[1]), linear(c[2])]));
+    }
     Frame {
         camera,
         lighting,
         reflection_probes,
         decals,
+        puffs,
         volumetric_fog: Default::default(),
         wind: Default::default(),
         benders: world
@@ -1406,6 +1439,7 @@ mod tests {
             particles: None,
             reflection_probe: None,
             decal: None,
+            footprints: None,
             bends_grass: 0.0,
             route: None,
             layer: Default::default(),
@@ -1442,6 +1476,7 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    footprints: None,
                     bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
@@ -1829,6 +1864,44 @@ mod tests {
         let (a, b) = (entity(&world, "a"), entity(&world, "b"));
         assert_eq!(world.get::<&Parent>(b).unwrap().0, a);
         assert_eq!(world.get::<&WorldTransform>(b).unwrap().0.w_axis.x, 10.0);
+    }
+
+    #[test]
+    fn a_walker_with_footprints_leaves_them_in_the_frame_and_retuned_starts_afresh() {
+        let text = r#"(entities: [
+            (id: "e7", name: "walker", model: "m", transform: (position: (0.0, 0.9, 0.0)), footprints: (feet: 0.9)),
+        ])"#;
+        let before = scene(text);
+        let mut world = spawned(&before);
+        let walker = entity(&world, "e7");
+        for i in 0..=120 {
+            world.get::<&mut WorldTransform>(walker).unwrap().0 =
+                glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.9, -0.05 * i as f32));
+            crate::footprints::run_footprints(&mut world, 1.0 / 60.0);
+        }
+        let frame = build_frame(
+            &world,
+            Camera::default(),
+            Lighting::default(),
+            FogSettings::default(),
+        );
+        let prints: Vec<_> = frame
+            .decals
+            .iter()
+            .filter(|d| d.shape == crate::decals::DecalShape::Footprint)
+            .collect();
+        assert_eq!(prints.len(), 8, "six metres at 0.75 a stride");
+        assert!(
+            prints.iter().all(|d| d.transform.w_axis.y.abs() < 1e-4),
+            "at its feet, not its middle"
+        );
+        assert!(!frame.puffs.is_empty(), "and dust");
+        // Retuned in the file: a fresh trail.
+        let after = scene(&text.replace("feet: 0.9", "feet: 0.9, stride: 0.5"));
+        patch(&before, &after, &mut world);
+        let trail = world.get::<&crate::footprints::Trail>(walker).unwrap();
+        assert_eq!(trail.prints(), 0);
+        assert_eq!(trail.settings.stride, 0.5);
     }
 
     #[test]

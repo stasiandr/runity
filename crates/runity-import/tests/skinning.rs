@@ -66,6 +66,7 @@ fn shoot(
         time: None,
         weather: Default::default(),
         screen_space_reflections: Default::default(),
+        puffs: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

@@ -31,6 +31,20 @@ pub struct Decal {
     /// entity's placing times the decal's size.
     pub transform: Mat4,
     pub material: Material,
+    pub shape: DecalShape,
+}
+
+/// What a decal presses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DecalShape {
+    /// Its material's picture — or its plain colour over the whole box.
+    #[default]
+    Picture,
+    /// A footprint, drawn by the shader ([`crate::footprints`]): a sole
+    /// and a heel pressed in the material's `normal_scale` metres, a rim
+    /// pushed up round them, the inside the material's colour. Toes to the
+    /// box's −z; a box turned over along x is the other foot.
+    Footprint,
 }
 
 /// The most decals a frame applies; the nearest the camera sees win.
@@ -72,7 +86,10 @@ impl GpuDecal {
                 m.alpha.clamp(0.0, 1.0),
             ],
             maps: [
-                color_layer.map_or(-1.0, |l| l as f32),
+                match decal.shape {
+                    DecalShape::Picture => color_layer.map_or(-1.0, |l| l as f32),
+                    DecalShape::Footprint => FOOTPRINT,
+                },
                 normal_layer.map_or(-1.0, |l| l as f32),
                 m.normal_scale,
                 m.smoothness.clamp(0.0, 1.0),
@@ -82,6 +99,10 @@ impl GpuDecal {
         }
     }
 }
+
+/// What the shader reads, where a picture's layer would be, as "a
+/// footprint".
+const FOOTPRINT: f32 = -2.0;
 
 /// Where a decal's box reaches: its centre and the radius of a sphere
 /// around it — what the light cells take it by.
@@ -404,6 +425,7 @@ mod tests {
             transform: Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0))
                 * Mat4::from_scale(Vec3::new(2.0, 1.0, 2.0)),
             material: Material::default(),
+            shape: DecalShape::Picture,
         };
         let (centre, radius) = bounds(&decal);
         assert_eq!(centre, Vec3::new(1.0, 0.0, 0.0));
@@ -416,6 +438,7 @@ mod tests {
             transform: Mat4::from_translation(Vec3::new(0.0, 2.0, 0.0))
                 * Mat4::from_scale(Vec3::new(4.0, 1.0, 4.0)),
             material: Material::default(),
+            shape: DecalShape::Picture,
         };
         let gpu = GpuDecal::new(&decal, Some(3), None);
         let into = Mat4::from_cols_array_2d(&gpu.world_to_box);

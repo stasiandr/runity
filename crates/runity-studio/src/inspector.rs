@@ -32,12 +32,13 @@ use crate::theme::*;
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "layer", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 8] = [
+const PARTS: [&str; 9] = [
     "camera",
     "light",
     "particles",
     "reflection_probe",
     "decal",
+    "footprints",
     "route",
     "spline",
     "along",

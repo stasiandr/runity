@@ -523,6 +523,8 @@ pub struct Frame {
     pub decals: Vec<crate::decals::Decal>,
     /// Light seen in the air ([`crate::volume`]); off by default.
     pub volumetric_fog: crate::volume::VolumetricFog,
+    /// Balls of dust in the air ([`crate::volume::Puff`]).
+    pub puffs: Vec<crate::volume::Puff>,
     /// What sways foliage, and what bends grass ([`crate::foliage`]).
     pub wind: crate::foliage::Wind,
     pub benders: Vec<crate::foliage::Bender>,
@@ -563,6 +565,7 @@ impl Default for Frame {
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
+            puffs: Vec::new(),
             wind: crate::foliage::Wind::default(),
             benders: Vec::new(),
             time: None,
@@ -664,6 +667,9 @@ struct FrameUniform {
     /// Screen-space reflections: 1 when on and there is a last frame, how
     /// far, how thick, how many steps.
     ssr: [f32; 4],
+    /// Dust in the air, two vectors each: centre and radius; linear colour
+    /// and density. How many is `volume`'s w.
+    puffs: [[f32; 4]; 2 * crate::volume::MOST_PUFFS],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -3202,7 +3208,29 @@ impl Renderer {
             .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
         // The weather where the camera is: inside a dust wall, a storm.
         let weather = frame.weather.at(frame.camera.position, &frame.wind, time);
-        let volumetric = weather.storm_fog(&frame.volumetric_fog);
+        let mut volumetric = weather.storm_fog(&frame.volumetric_fog);
+        // Dust in the air is in the fog's grid: with any, the grid runs,
+        // clear where there is none.
+        let puffs = if probe.is_none() {
+            let mut near: Vec<&crate::volume::Puff> = frame.puffs.iter().collect();
+            let eye = frame.camera.position;
+            near.sort_by(|a, b| {
+                (a.position - eye)
+                    .length_squared()
+                    .total_cmp(&(b.position - eye).length_squared())
+            });
+            near.truncate(crate::volume::MOST_PUFFS);
+            near
+        } else {
+            Vec::new()
+        };
+        if !puffs.is_empty() && !volumetric.enabled {
+            volumetric = crate::volume::VolumetricFog {
+                enabled: true,
+                density: 0.0,
+                ..crate::volume::VolumetricFog::OFF
+            };
+        }
         let fog = weather.storm_distance(&frame.fog);
         // With a physical sky, the sun's colour and the light from all
         // round come from the air, not from the scene's picked colours.
@@ -3389,7 +3417,7 @@ impl Renderer {
                     if v.enabled { 1.0 } else { 0.0 },
                     v.distance.max(near * 2.0),
                     near,
-                    0.0,
+                    puffs.len() as f32,
                 ]
             },
             fog_medium: {
@@ -3418,6 +3446,14 @@ impl Renderer {
                 .previous_view_projection
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
                 .to_cols_array_2d(),
+            puffs: {
+                let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PUFFS];
+                for (i, p) in puffs.iter().enumerate() {
+                    out[2 * i] = [p.position.x, p.position.y, p.position.z, p.radius.max(0.01)];
+                    out[2 * i + 1] = [p.color[0], p.color[1], p.color[2], p.density.max(0.0)];
+                }
+                out
+            },
             ssr: {
                 let s = &frame.screen_space_reflections;
                 [

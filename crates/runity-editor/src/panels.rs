@@ -52,7 +52,9 @@ pub fn default_text(field: &str) -> Option<String> {
         "layer" | "bone" => String::new(),
         "bends_grass" => ron(&blank.bends_grass),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "render_texture" | "route" | "spline" | "along" | "joint_break" => "None".into(),
+        | "footprints" | "render_texture" | "route" | "spline" | "along" | "joint_break" => {
+            "None".into()
+        }
         _ => return None,
     })
 }
@@ -78,7 +80,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 20] = [
+pub const FIELDS: [&str; 21] = [
     "name",
     "model",
     "prefab",
@@ -96,6 +98,7 @@ pub const FIELDS: [&str; 20] = [
     "particles",
     "reflection_probe",
     "decal",
+    "footprints",
     "bends_grass",
     "route",
     "components.<name>",
@@ -125,6 +128,7 @@ fn take_field(
         "particles" => one.particles = from.particles.take(),
         "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
         "decal" => one.decal = from.decal.take(),
+        "footprints" => one.footprints = from.footprints.take(),
         "bends_grass" => one.bends_grass = from.bends_grass.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
@@ -265,6 +269,7 @@ impl Session {
                 "particles" => o.particles.is_some(),
                 "reflection_probe" => o.reflection_probe.is_some(),
                 "decal" => o.decal.is_some(),
+                "footprints" => o.footprints.is_some(),
                 "bends_grass" => o.bends_grass.is_some(),
                 "route" => o.route.is_some(),
                 other => other
@@ -323,6 +328,10 @@ impl Session {
             (
                 "decal".into(),
                 desc.decal.map_or("None".to_string(), |d| ron(&d)),
+            ),
+            (
+                "footprints".into(),
+                desc.footprints.map_or("None".to_string(), |f| ron(&f)),
             ),
             (
                 "route".into(),
@@ -709,6 +718,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Decal>(field, text)?)
+                }
+            }
+            "footprints" => {
+                next.footprints = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::footprints::Footprints>(field, text)?)
                 }
             }
             "render_texture" => {

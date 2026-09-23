@@ -806,6 +806,10 @@ pub struct EntityDesc {
     /// A decal pressed from this entity; see [`Decal`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
+    /// Prints left in the ground as it walks, and dust from each step:
+    /// `footprints: (stride: 0.75)`. See [`crate::footprints`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub footprints: Option<crate::footprints::Footprints>,
     /// Grass and anything else that sways is pushed aside within this many
     /// metres of it — a player walking through a meadow. 0 is none. See
     /// [`crate::foliage`].
@@ -914,6 +918,8 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub footprints: Option<crate::footprints::Footprints>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub bends_grass: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -968,6 +974,9 @@ impl Override {
         if self.decal.is_some() {
             part.decal = self.decal;
         }
+        if self.footprints.is_some() {
+            part.footprints = self.footprints;
+        }
         if let Some(radius) = self.bends_grass {
             part.bends_grass = radius;
         }
@@ -998,6 +1007,7 @@ impl Override {
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
+            footprints: differs(prefab.footprints != edited.footprints).and(edited.footprints),
             bends_grass: differs(prefab.bends_grass != edited.bends_grass)
                 .map(|_| edited.bends_grass),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
@@ -1030,6 +1040,7 @@ impl Override {
             particles,
             reflection_probe,
             decal,
+            footprints,
             bends_grass,
             route,
             components,
@@ -1047,6 +1058,7 @@ impl Override {
         self.particles = particles.or(self.particles.take());
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
+        self.footprints = footprints.or(self.footprints);
         self.bends_grass = bends_grass.or(self.bends_grass);
         self.route = route.or(self.route.take());
         self.components.extend(components);
@@ -1763,6 +1775,7 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                footprints: None,
                 bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
@@ -1797,6 +1810,7 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    footprints: None,
                     bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
@@ -1861,6 +1875,7 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                footprints: None,
                 bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),

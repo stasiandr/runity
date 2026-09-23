@@ -90,6 +90,9 @@ struct Frame {
     previous_view_projection: mat4x4<f32>,
     // screen-space reflections: 1 when on, how far, how thick, how many steps
     ssr: vec4<f32>,
+    // dust in the air (volume.rs): centre and radius; colour and density.
+    // How many is volume.w.
+    puffs: array<vec4<f32>, 32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -737,6 +740,26 @@ fn fog_density(p: vec3<f32>) -> f32 {
     return density;
 }
 
+/// The dust kicked up in the air at a point: its colour times its
+/// density, and its density. Each puff soft to its edge and lumpy inside.
+fn puff_dust(p: vec3<f32>) -> vec4<f32> {
+    var sum = vec4<f32>(0.0);
+    let count = u32(frame.volume.w);
+    for (var i = 0u; i < count; i = i + 1u) {
+        let at = frame.puffs[2u * i];
+        let r = length(p - at.xyz) / at.w;
+        if r >= 1.0 {
+            continue;
+        }
+        let edge = (1.0 - r * r) * (1.0 - r * r);
+        let lumps = 0.45 + 1.1 * cloud_noise(p * 7.0 + at.xyz * 3.1);
+        let look = frame.puffs[2u * i + 1u];
+        let d = look.w * edge * lumps;
+        sum += vec4<f32>(look.rgb * d, d);
+    }
+    return sum;
+}
+
 /// Henyey–Greenstein: how much light turning by an angle of this cosine
 /// the air throws, for an anisotropy `g`.
 fn phase(cos_theta: f32, g: f32) -> f32 {
@@ -777,12 +800,15 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let ray = fog_ray(uv);
     let depth = fog_depth(cell.z / f32(FOG_SIZE.z));
     let p = ray.start + ray.direction * (depth - ray.start_depth) * ray.stretch;
-    let density = fog_density(p);
+    let air = fog_density(p);
+    let dust = puff_dust(p);
+    let density = air + dust.a;
     let to_eye = -ray.direction;
     let g = frame.fog_shape.z;
 
     let to_sun = -normalize(frame.sun_direction.xyz);
-    var light = frame.sun_color.rgb * sunlight(p, vec3<f32>(0.0)) * phase(dot(-to_sun, to_eye), g);
+    let sun_through = frame.sun_color.rgb * sunlight(p, vec3<f32>(0.0));
+    var light = sun_through * phase(dot(-to_sun, to_eye), g);
     // The sky's light, from every way at once.
     light += mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * frame.fog_shape.w;
 
@@ -806,7 +832,11 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         light += lamp.color_shadow.rgb * reach * reach * near_lamp * cone * shadow
             * phase(dot(-toward, to_eye), g) * frame.fog_lamps.x;
     }
-    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * density, density));
+    // Kicked-up dust is thick enough to light as a soft solid would — the
+    // light bouncing about inside it, not the thin air's single turn
+    // towards the eye — and from the ground and sky round it.
+    let dust_light = sun_through * 0.45 + mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * 0.9;
+    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * air + dust_light * dust.rgb, density));
 }
 
 // Each column front to back: what each cell adds, dimmed by what lies
@@ -1186,6 +1216,27 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let uv = vec2<f32>(local.x + 0.5, local.z + 0.5);
         let duv_x = (d.world_to_box * vec4<f32>(across, 0.0)).xz;
         let duv_y = (d.world_to_box * vec4<f32>(down, 0.0)).xz;
+        if d.maps.x < -1.5 {
+            // A footprint (footprints.rs): pressed in, a rim round it.
+            let f = local.xz * 2.0;
+            let e = 0.04;
+            let h = footprint_height(f);
+            let slope = vec2<f32>(
+                footprint_height(f + vec2<f32>(e, 0.0)) - footprint_height(f - vec2<f32>(e, 0.0)),
+                footprint_height(f + vec2<f32>(0.0, e)) - footprint_height(f - vec2<f32>(0.0, e)),
+            ) / (2.0 * e);
+            let pit = clamp(-h, 0.0, 1.0);
+            let rim = clamp(h, 0.0, 1.0);
+            albedo = mix(albedo, d.color.rgb, weight * pit);
+            albedo = albedo * (1.0 + 0.15 * rim * weight);
+            // Metres of height per metre across: the shape's slope through
+            // the box into the world, times how deep it is.
+            let into = mat3x3<f32>(d.world_to_box[0].xyz, d.world_to_box[1].xyz, d.world_to_box[2].xyz);
+            var rise = transpose(into) * vec3<f32>(slope.x * 2.0, 0.0, slope.y * 2.0) * d.maps.z;
+            rise = rise - up * dot(rise, up);
+            normal = normalize(mix(normal, normalize(normal - rise), weight));
+            continue;
+        }
         var paint = d.color.rgb;
         if d.maps.x >= 0.0 {
             let texel = textureSampleGrad(decal_colours, probe_sampler, uv, i32(d.maps.x), duv_x, duv_y);
@@ -1336,6 +1387,22 @@ fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location
         discard;
     }
     return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
+}
+
+/// A footprint's height across it, in its depth: −1 pressed right in, up
+/// to a third of that pushed up in a rim round the edge. `f` is across
+/// and along the foot, −1 to 1, toes at −1: a sole and a heel run
+/// together.
+fn footprint_height(f: vec2<f32>) -> f32 {
+    let sole = length(vec2<f32>((f.x - 0.06) / 0.86, (f.y + 0.3) / 0.6));
+    let heel = length(vec2<f32>(f.x / 0.64, (f.y - 0.5) / 0.42));
+    // A smooth union: the arch between them filled in, narrower.
+    let k = 0.45;
+    let blend = clamp(0.5 + 0.5 * (heel - sole) / k, 0.0, 1.0);
+    let s = mix(heel, sole, blend) - k * blend * (1.0 - blend);
+    let pit = 1.0 - smoothstep(0.6, 1.0, s);
+    let rim = exp(-pow((s - 1.12) / 0.16, 2.0));
+    return -pit + 0.35 * rim;
 }
 
 /// The greybox surface: a line every metre and alternate metres a shade

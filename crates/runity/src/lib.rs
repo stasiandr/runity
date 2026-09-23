@@ -33,6 +33,7 @@ pub mod components;
 pub mod decals;
 pub mod edit;
 pub mod foliage;
+pub mod footprints;
 pub mod gizmo;
 pub mod gpu;
 pub mod id;

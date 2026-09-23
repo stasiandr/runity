@@ -49,6 +49,7 @@ fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 
         time: None,
         weather: Default::default(),
         screen_space_reflections: Default::default(),
+        puffs: Vec::new(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,
