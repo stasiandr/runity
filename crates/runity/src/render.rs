@@ -4090,7 +4090,14 @@ impl Renderer {
                 frame.sky.horizon[0],
                 frame.sky.horizon[1],
                 frame.sky.horizon[2],
-                (frame.sky.sun_size.max(0.0).to_radians() * 0.5).cos(),
+                // No disc in a probe's picture: a probe's texels are coarse,
+                // and the disc would come back from every mirror as a square
+                // — the sun's highlight is the lights' own.
+                if probe.is_some() {
+                    1.0
+                } else {
+                    (frame.sky.sun_size.max(0.0).to_radians() * 0.5).cos()
+                },
             ],
             sky_ground: [
                 frame.sky.ground[0],
