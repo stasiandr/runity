@@ -7,8 +7,7 @@
 //!
 //! The app is Spacewar (480), which any Steam account may run while a game
 //! has no app of its own; with a real app id, only [`APP_ID`] changes.
-//! Without Steam running the game still plays: hosting falls back to UDP
-//! on [`crate::front::PORT`], joined by address.
+//! Without Steam running the game still plays, alone.
 
 use runity::net::PeerId;
 use runity::party::Party;

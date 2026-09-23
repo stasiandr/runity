@@ -4,8 +4,10 @@
     start: "hello",
     lines: {
         "hello": (speaker: "@chef.name", text: "@chef.hello", next: "soup"),
-        "soup": (speaker: "@chef.name", text: "@chef.soup", next: "pots"),
-        "pots": (speaker: "@chef.name", text: "@chef.pots", next: "go"),
+        "soup": (speaker: "@chef.name", text: "@chef.soup", next: "built"),
+        "built": (speaker: "@chef.name", text: "@chef.built", next: "pots"),
+        "pots": (speaker: "@chef.name", text: "@chef.pots", next: "dishes"),
+        "dishes": (speaker: "@chef.name", text: "@chef.dishes", next: "go"),
         "go": (speaker: "@chef.name", text: "@chef.go", event: "doors_open"),
     },
 )

@@ -20,12 +20,8 @@ use runity::ui::Ui;
 use runity::widgets::Widgets;
 use runity::Actions;
 
-use crate::components::item::Food;
 use crate::components::Player;
 use crate::state::{Act, Controls, Round, Seat, ACT};
-
-/// The port a kitchen hosted without Steam listens on.
-pub const PORT: u16 = 47800;
 
 /// Where the game is.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,10 +35,8 @@ pub enum Phase {
 /// What a player asked for on a screen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Wish {
-    /// Host, as this name: a Steam lobby, or by address without Steam.
-    Host(String),
-    /// Join the kitchen at this address, as this name.
-    Join(String, String),
+    /// Host: a Steam lobby friends can join — alone without Steam.
+    Host,
     /// The Steam friends list, to join a friend's kitchen from.
     Friends,
     /// The host opens the doors: the round starts for everyone.
@@ -161,29 +155,14 @@ impl Front {
                     "best",
                     if self.best > 0 { format!("Best: {}", self.best) } else { String::new() },
                 );
-                if self.menu.entered("address").is_empty() {
-                    self.menu.set_text("address", format!("127.0.0.1:{PORT}"));
-                }
-                // With Steam a friend's kitchen is joined from the friends
-                // list; without it, by address.
+                // A friend's kitchen is joined from Steam's friends list.
                 self.menu.set_hidden("friends", !self.steam);
-                self.menu.set_hidden("who", !self.steam);
-                for id in ["name", "address", "join"] {
-                    self.menu.set_hidden(id, self.steam);
-                }
                 let done = self.menu.draw_localized(widgets, ui, input, size, strings);
                 if done.clicked("friends") {
                     return Some(Wish::Friends);
                 }
-                let name = match self.menu.entered("name").trim() {
-                    "" => "Cook".to_string(),
-                    name => name.to_string(),
-                };
                 if done.clicked("host") {
-                    return Some(Wish::Host(name));
-                }
-                if done.clicked("join") || done.submitted("address") {
-                    return Some(Wish::Join(self.menu.entered("address").trim().to_string(), name));
+                    return Some(Wish::Host);
                 }
                 if done.clicked("quit") {
                     return Some(Wish::Quit);
@@ -350,10 +329,7 @@ impl Front {
             self.orders = Screen::from_layout(order_cards(orders.len()));
         }
         for (i, order) in orders.iter().enumerate() {
-            let what = match order.food {
-                Food::Tomato => "@order.tomato",
-                Food::Onion => "@order.onion",
-            };
+            let what = order.dish.key();
             self.orders.set_text(&format!("order {i}"), what);
             self.orders
                 .set_value(&format!("patience {i}"), order.left / order.total);

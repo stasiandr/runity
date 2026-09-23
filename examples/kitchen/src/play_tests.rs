@@ -10,7 +10,7 @@ use runity::party::{Event, Party};
 use runity::physics::PhysicsWorld;
 use runity::{LiveScene, Transform};
 
-use crate::components::item::{Food, Thing};
+use crate::components::item::{Dish, Food, Thing};
 use crate::components::Item;
 use crate::state::*;
 use crate::{game_components, session, tick};
@@ -23,6 +23,13 @@ const STOVE: (f32, f32) = (1.0, -3.0);
 const PLATES: (f32, f32) = (5.0, -1.0);
 const WINDOW: (f32, f32) = (-2.0, 3.0);
 const BIN: (f32, f32) = (5.0, 2.0);
+const CABBAGES: (f32, f32) = (-4.0, -3.0);
+const MEAT: (f32, f32) = (5.0, -2.0);
+const BUNS: (f32, f32) = (-5.0, 0.0);
+const PAN: (f32, f32) = (3.0, -3.0);
+const COUNTER: (f32, f32) = (1.0, 0.0);
+const SINK: (f32, f32) = (0.0, 3.0);
+const RACK: (f32, f32) = (1.0, 3.0);
 
 /// One peer: its world from the scene, its party, and what runs a frame.
 struct Peer {
@@ -55,8 +62,12 @@ impl Peer {
         Self::with(party, None)
     }
 
-    fn with(party: Party, mut render: Option<Render>) -> Self {
-        let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "scenes/main.ron");
+    fn with(party: Party, render: Option<Render>) -> Self {
+        Self::in_scene("main", party, render)
+    }
+
+    fn in_scene(name: &str, party: Party, mut render: Option<Render>) -> Self {
+        let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{name}.ron"));
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());
@@ -172,9 +183,13 @@ impl Peer {
     }
 
     fn want(&mut self, food: Food) {
+        self.order(Dish::Soup(food));
+    }
+
+    fn order(&mut self, dish: Dish) {
         let kitchen = kitchen(&self.world).unwrap().0;
         self.world.get::<&mut Round>(kitchen).unwrap().orders.push(Order {
-            food,
+            dish,
             left: 60.0,
             total: 60.0,
         });
@@ -207,6 +222,39 @@ impl Peer {
     fn boiling(&self) -> f32 {
         let stove = station_at(&self.world, STOVE);
         self.world.get::<&runity::world::Sounding>(stove).map_or(0.0, |s| s.0.volume)
+    }
+
+    /// A food from its crate, chopped, left on the board.
+    fn chop_on_board(&mut self, index: u32, food: Food) {
+        let from = match food {
+            Food::Tomato => (TOMATOES, Vec3::Z),
+            Food::Cabbage => (CABBAGES, Vec3::Z),
+            _ => (ONIONS, Vec3::X),
+        };
+        self.stand(index, from.0, from.1);
+        self.grab(index);
+        self.stand(index, BOARD, Vec3::X);
+        self.grab(index);
+        self.work(index, CHOP_SECONDS + 0.2);
+    }
+
+    /// A clean plate from the rack by the fridge.
+    fn plate(&mut self, index: u32) {
+        self.stand(index, PLATES, -Vec3::X);
+        self.grab(index);
+        assert_eq!(self.held(index), Some(Thing::Plate), "{:?}", self.round().note);
+    }
+
+    /// What is on the plate cook `index` holds.
+    fn load(&self, index: u32) -> Served {
+        let plate = self.world.get::<&Hands>(self.cook(index)).unwrap().0.unwrap();
+        self.world.get::<&Served>(plate).map(|s| (*s).clone()).unwrap_or_default()
+    }
+
+    fn served(&mut self, index: u32) -> u32 {
+        self.stand(index, WINDOW, -Vec3::Z);
+        self.grab(index);
+        self.round().served
     }
 
     /// A plate from the stack, filled at the stove.
@@ -481,7 +529,7 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     let ids = |screen: &runity::screen::Screen| -> Vec<String> {
         screen.layout().elements.iter().map(|e| e.id.clone()).collect()
     };
-    for id in ["host", "friends", "who", "name", "join", "address", "music", "sfx", "language", "quit", "status", "best"] {
+    for id in ["host", "friends", "who", "music", "sfx", "language", "quit", "status", "best"] {
         assert!(ids(&front.menu).contains(&id.to_string()), "menu has no `{id}`");
     }
     for id in ["clock", "score", "players", "note", "keys", "leave"] {
@@ -499,7 +547,9 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
         .iter()
         .flat_map(|s| runity::screen::Screen::keys(s.layout()))
         .collect();
-    let code = std::fs::read_to_string(root.join("src/front.rs")).unwrap();
+    let code = ["src/front.rs", "src/components/item.rs"]
+        .map(|f| std::fs::read_to_string(root.join(f)).unwrap())
+        .join("\n");
     for piece in code.split("\"@").skip(1) {
         keys.push(piece.split('"').next().unwrap().to_string());
     }
@@ -530,7 +580,7 @@ fn the_head_chef_says_every_line_and_stops() {
         }
         front.listen(0.1);
     }
-    assert_eq!(said, ["@chef.hello", "@chef.soup", "@chef.pots", "@chef.go"]);
+    assert_eq!(said, ["@chef.hello", "@chef.soup", "@chef.built", "@chef.pots", "@chef.dishes", "@chef.go"]);
     assert!(front.line().is_none(), "and then the kitchen is theirs");
 }
 
@@ -539,8 +589,8 @@ fn the_board_on_the_wall_shows_the_orders_on_every_peer() {
     let (mut host, mut guest) = together();
     let kitchen_e = kitchen(&host.world).unwrap().0;
     host.world.get::<&mut Round>(kitchen_e).unwrap().orders = vec![
-        Order { food: Food::Tomato, left: 30.0, total: 60.0 },
-        Order { food: Food::Onion, left: 60.0, total: 60.0 },
+        Order { dish: Dish::Soup(Food::Tomato), left: 30.0, total: 60.0 },
+        Order { dish: Dish::Soup(Food::Onion), left: 60.0, total: 60.0 },
     ];
     let words = |peer: &Peer| -> Vec<String> {
         peer.world
@@ -579,6 +629,11 @@ impl Peer {
     /// the board on the wall, and the screens over it — as RGBA, and as a
     /// PNG in target/shots/ to look at.
     fn shot(&mut self, front: &mut crate::front::Front, name: &str) -> Vec<u8> {
+        self.picture(Some(front), name)
+    }
+
+    /// [`Peer::shot`], with the screens over it or without.
+    fn picture(&mut self, front: Option<&mut crate::front::Front>, name: &str) -> Vec<u8> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let r = self.render.as_mut().expect("a peer that draws");
         let mut scene = self.live.scene().clone();
@@ -600,15 +655,17 @@ impl Peer {
         let mut widgets = runity::widgets::Widgets::with_style(crate::front::style());
         let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
         let size = runity::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
-        front.draw(
-            &self.world,
-            &self.party,
-            &mut widgets,
-            &mut ui,
-            &runity::input::Input::default(),
-            size,
-            &strings,
-        );
+        if let Some(front) = front {
+            front.draw(
+                &self.world,
+                &self.party,
+                &mut widgets,
+                &mut ui,
+                &runity::input::Input::default(),
+                size,
+                &strings,
+            );
+        }
         r.overlay.render(&r.gpu, &r.target, &ui);
         let pixels = r.target.read_rgba(&r.gpu);
         let dir = root.join("target/shots");
@@ -1029,5 +1086,157 @@ fn lenses() {
             k.lens = lens;
             k.shot(&mut front, &format!("lens_{name}_{i}"));
         }
+    }
+}
+
+#[test]
+fn a_salad_is_chopped_tomato_and_cabbage_on_a_plate() {
+    let mut k = Peer::alone();
+    k.order(Dish::Salad);
+    // A plate down on the counter, the chopped food onto it.
+    k.plate(0);
+    k.stand(0, COUNTER, Vec3::Z);
+    k.grab(0);
+    k.chop_on_board(0, Food::Tomato);
+    k.grab(0);
+    k.stand(0, COUNTER, Vec3::Z);
+    k.grab(0);
+    assert_eq!(k.held(0), None, "the tomato went onto the plate");
+    // Raw cabbage does not go on; chopped, it does.
+    k.stand(0, CABBAGES, Vec3::Z);
+    k.grab(0);
+    k.stand(0, COUNTER, Vec3::Z);
+    k.grab(0);
+    assert_eq!(k.held(0), Some(Thing::Food(Food::Cabbage)), "raw, it stays in hand");
+    k.stand(0, BIN, -Vec3::X);
+    k.grab(0);
+    k.chop_on_board(0, Food::Cabbage);
+    k.grab(0);
+    k.stand(0, COUNTER, Vec3::Z);
+    k.grab(0);
+    k.grab(0);
+    assert_eq!(k.load(0).dish(), Some(Dish::Salad));
+    let before = k.round().score;
+    assert_eq!(k.served(0), 1, "{:?}", k.round().note);
+    assert!(k.round().score > before);
+}
+
+#[test]
+fn a_burger_is_a_bun_a_fried_patty_and_chopped_cabbage() {
+    let mut k = Peer::alone();
+    k.order(Dish::Burger);
+    // Meat on the pan; it fries while the cabbage is chopped.
+    k.stand(0, MEAT, -Vec3::X);
+    k.grab(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    assert!(k.mark_on(PAN, "sizzle") && k.mark_on(PAN, "bar"), "frying");
+    k.chop_on_board(0, Food::Cabbage);
+    k.seconds(FRY_SECONDS);
+    assert!(k.mark_on(PAN, "warn"), "done, heading for burnt");
+    // A plate, and round with it: the patty, the cabbage, a bun.
+    k.plate(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    k.stand(0, BOARD, Vec3::X);
+    k.grab(0);
+    assert!(k.load(0).dish().is_none(), "no bun yet");
+    k.stand(0, BUNS, Vec3::X);
+    k.grab(0);
+    assert_eq!(k.load(0).dish(), Some(Dish::Burger));
+    assert_eq!(k.served(0), 1, "{:?}", k.round().note);
+}
+
+#[test]
+fn meat_left_on_the_pan_burns_and_is_no_patty() {
+    let mut k = Peer::alone();
+    k.stand(0, MEAT, -Vec3::X);
+    k.grab(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    k.seconds(FRY_BURN + 0.5);
+    assert!(k.mark_on(PAN, "smoke"));
+    k.plate(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    assert!(k.load(0).is_empty(), "a burnt patty goes on no plate");
+}
+
+#[test]
+fn a_served_plate_comes_back_dirty_and_is_washed_onto_the_rack() {
+    let mut k = Peer::alone();
+    let racks = |k: &Peer| -> u32 { [PLATES, RACK].iter().map(|t| k.world.get::<&Stack>(station_at(&k.world, *t)).map_or(0, |s| s.0)).sum() };
+    let full = racks(&k);
+    assert_eq!(full, 6, "three plates a rack");
+    k.want(Food::Tomato);
+    for _ in 0..3 {
+        k.chop_into_pot(0, Food::Tomato);
+    }
+    k.seconds(COOK_SECONDS + 0.5);
+    k.plate_up(0);
+    assert_eq!(racks(&k), full - 1);
+    assert_eq!(k.served(0), 1);
+    let sink = station_at(&k.world, SINK);
+    k.seconds(crate::components::sink::RETURN_SECONDS + 0.3);
+    assert_eq!(k.world.get::<&Sink>(sink).unwrap().dirty, 1, "back, dirty");
+    assert!(k.mark_on(SINK, "dirty 1"));
+    k.stand(0, SINK, -Vec3::Z);
+    k.work(0, crate::components::sink::WASH_SECONDS + 0.3);
+    assert_eq!(k.world.get::<&Sink>(sink).unwrap().dirty, 0);
+    assert_eq!(racks(&k), full, "washed, and on the rack by the sink");
+    assert_eq!(k.world.get::<&Stack>(station_at(&k.world, RACK)).unwrap().0, 4);
+}
+
+#[test]
+fn with_every_plate_out_the_rack_says_to_wash_some() {
+    let mut k = Peer::alone();
+    for tile in [PLATES, RACK] {
+        let rack = station_at(&k.world, tile);
+        k.world.insert_one(rack, Stack(0)).unwrap();
+    }
+    k.stand(0, PLATES, -Vec3::X);
+    k.grab(0);
+    assert_eq!(k.held(0), None);
+    assert!(k.round().note.unwrap().0.contains("wash"));
+}
+
+/// The new stations close up, busy: target/shots/recipes_*.png.
+#[test]
+#[ignore = "pictures to look at"]
+fn recipes_close() {
+    let Some(render) = Render::new(1280, 720) else { return };
+    let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
+    k.open();
+    // Meat frying on one pan, a patty done on a plate on the counter by it,
+    // a salad on the island, three plates in the sink.
+    k.stand(0, MEAT, -Vec3::X);
+    k.grab(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    k.chop_on_board(0, Food::Cabbage);
+    k.plate(0);
+    k.stand(0, BOARD, Vec3::X);
+    k.grab(0);
+    k.stand(0, BUNS, Vec3::X);
+    k.grab(0);
+    k.stand(0, COUNTER, Vec3::Z);
+    k.grab(0);
+    k.chop_on_board(0, Food::Tomato);
+    k.grab(0);
+    k.stand(0, (-1.0, 0.0), Vec3::Z);
+    k.grab(0);
+    let sink = station_at(&k.world, SINK);
+    k.world.insert_one(sink, Sink { dirty: 3, washed: 0.4 }).unwrap();
+    k.stand(0, (5.0, -3.0), Vec3::Z);
+    k.seconds(1.0);
+    for (name, at, look) in [
+        ("recipes_pans", Vec3::new(3.5, 2.4, -1.0), Vec3::new(3.5, 1.0, -3.0)),
+        ("recipes_island", Vec3::new(0.0, 2.4, 2.0), Vec3::new(0.0, 1.0, 0.0)),
+        ("recipes_sink", Vec3::new(0.5, 2.4, 1.0), Vec3::new(0.5, 1.0, 3.0)),
+        ("recipes_left", Vec3::new(-3.0, 2.6, -0.5), Vec3::new(-5.0, 1.0, -1.5)),
+    ] {
+        k.view = Some(runity::scene::View { position: at, target: look, fov_deg: 50.0 });
+        k.lens = Some((50.0, 8.0));
+        k.picture(None, name);
     }
 }

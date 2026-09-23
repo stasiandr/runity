@@ -1,7 +1,7 @@
 //! The round as everyone sees it — the orders, the score, the clock — kept
 //! on the kitchen's line by the host.
 
-use crate::components::item::Food;
+use crate::components::item::Dish;
 use serde::{Deserialize, Serialize};
 
 /// Sent to the other players by the host.
@@ -10,7 +10,7 @@ pub const NETWORKED: bool = true;
 /// A soup someone wants, and how long they will still wait.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Order {
-    pub food: Food,
+    pub dish: Dish,
     pub left: f32,
     pub total: f32,
 }

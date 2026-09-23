@@ -1,7 +1,13 @@
-// A plate (Kenney's), and the soups it can carry, shown by the game.
+// A plate (Kenney's), and what it can carry — a soup, a salad, a burger, or their parts on the way — shown by the game.
 (id: "ccf3a17156dc8907", name: "plate", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Plate) }, children: [
 (id: "a748dbcfac619e63", name: "dish", model: "plate", transform: (position: (0.000, -0.020, 0.000), scale: (0.600, 0.600, 0.600))),
 (id: "a56c0941fbf24050", name: "soup tomato", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_tomato", inactive: true, components: { "mark": (name: "soup tomato") }),
 (id: "0f844fef1931e9ee", name: "soup onion", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_onion", inactive: true, components: { "mark": (name: "soup onion") }),
 (id: "ba6c34ab6712303a", name: "soup mixed", model: "builtin:cylinder", transform: (position: (0.000, 0.040, 0.000), scale: (0.360, 0.100, 0.360)), material: "soup_mixed", inactive: true, components: { "mark": (name: "soup mixed") }),
+(id: "48c69a0ee899b8ee", name: "part tomato", model: "tomato-slice", transform: (position: (-0.080, 0.040, 0.060), scale: (1.200, 1.200, 1.200)), inactive: true, components: { "mark": (name: "part tomato") }),
+(id: "b6993b576045532f", name: "part cabbage", model: "cabbage", transform: (position: (0.080, 0.030, 0.050), scale: (0.550, 0.350, 0.550)), inactive: true, components: { "mark": (name: "part cabbage") }),
+(id: "c6fdb8fb15000724", name: "part bun", model: "loaf-round", transform: (position: (0.000, 0.030, -0.080), scale: (0.450, 0.450, 0.450)), inactive: true, components: { "mark": (name: "part bun") }),
+(id: "ecb149b991863641", name: "part patty", model: "meat-patty", transform: (position: (0.070, 0.030, 0.090), scale: (0.900, 0.900, 0.900)), inactive: true, components: { "mark": (name: "part patty") }),
+(id: "8b6f6186d828fbdc", name: "salad", model: "salad", transform: (position: (0.000, 0.030, 0.000), scale: (0.700, 0.700, 0.700)), inactive: true, components: { "mark": (name: "salad") }),
+(id: "c0bcc34d28ea3b8a", name: "burger", model: "burger", transform: (position: (0.000, 0.030, 0.000), scale: (0.800, 0.800, 0.800)), inactive: true, components: { "mark": (name: "burger") }),
 ])

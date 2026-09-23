@@ -5,8 +5,8 @@
 
 use runity::hecs::{Entity, World};
 
-use crate::components::item::Food;
-use crate::components::Kitchen;
+use crate::components::station::Kind;
+use crate::components::{Kitchen, Station};
 use crate::state::*;
 
 /// Orders waiting at once, at most.
@@ -16,7 +16,7 @@ pub fn run(world: &mut World, seconds: f32) {
     let Some((kitchen, true)) = kitchen(world) else {
         return;
     };
-    let Ok(rules) = world.get::<&Kitchen>(kitchen).map(|k| *k) else {
+    let Ok(rules) = world.get::<&Kitchen>(kitchen).map(|k| (*k).clone()) else {
         return;
     };
     if world.get::<&Round>(kitchen).is_err() {
@@ -27,6 +27,7 @@ pub fn run(world: &mut World, seconds: f32) {
         start(world, kitchen, &rules, true);
         return;
     }
+    plates_back(world, kitchen, seconds);
     let Ok((round, service)) = world.query_one_mut::<(&mut Round, &mut Service)>(kitchen) else {
         return;
     };
@@ -50,9 +51,12 @@ pub fn run(world: &mut World, seconds: f32) {
         service.next_order = rules.order_every;
         // A little generator of its own: every round asks the same.
         service.seed = service.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-        let food = if (service.seed >> 16) % 2 == 0 { Food::Tomato } else { Food::Onion };
+        let menu = &rules.menu;
+        let Some(dish) = menu.get((service.seed >> 16) as usize % menu.len().max(1)).copied() else {
+            return;
+        };
         round.orders.push(Order {
-            food,
+            dish,
             left: rules.order_seconds,
             total: rules.order_seconds,
         });
@@ -71,7 +75,47 @@ pub fn run(world: &mut World, seconds: f32) {
     }
 }
 
+/// The plates that went out of the window, back in the sink dirty when
+/// their time is up.
+fn plates_back(world: &mut World, kitchen: Entity, seconds: f32) {
+    let back = match world.get::<&mut Service>(kitchen) {
+        Ok(mut service) => {
+            service.returning.iter_mut().for_each(|t| *t -= seconds);
+            let before = service.returning.len();
+            service.returning.retain(|t| *t > 0.0);
+            before - service.returning.len()
+        }
+        Err(_) => 0,
+    };
+    if back == 0 {
+        return;
+    }
+    let sink = world
+        .query::<(Entity, &Station)>()
+        .iter()
+        .find(|(_, s)| s.kind == Kind::Sink)
+        .map(|(e, _)| e);
+    if let Some(sink) = sink {
+        let mut now = world.get::<&Sink>(sink).map(|s| *s).unwrap_or_default();
+        now.dirty += back as u32;
+        let _ = world.insert_one(sink, now);
+    }
+}
+
 fn start(world: &mut World, kitchen: Entity, rules: &Kitchen, open: bool) {
+    // Full racks, an empty sink.
+    let stations: Vec<(Entity, Kind)> = world.query::<(Entity, &Station)>().iter().map(|(e, s)| (e, s.kind)).collect();
+    for (station, kind) in stations {
+        match kind {
+            Kind::Plates => {
+                let _ = world.insert_one(station, Stack(rules.plates));
+            }
+            Kind::Sink => {
+                let _ = world.insert_one(station, Sink::default());
+            }
+            _ => {}
+        }
+    }
     let _ = world.insert(
         kitchen,
         (

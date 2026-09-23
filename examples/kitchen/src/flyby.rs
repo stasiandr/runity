@@ -77,6 +77,7 @@ impl Flyby {
     }
 
     /// Whether the tour has any part in the camera.
+    #[cfg(test)]
     pub fn flying(&self) -> bool {
         self.weight > 0.0
     }

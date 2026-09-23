@@ -7,7 +7,7 @@ use runity::hecs::{Entity, World};
 use runity::ui::{Quad, TextRun};
 use runity::world::WorldUi;
 
-use crate::components::item::Food;
+use crate::components::item::{Dish, Food};
 use crate::components::Mark;
 use crate::state::Round;
 
@@ -51,9 +51,11 @@ pub fn draw(ui: &mut runity::ui::Ui, round: Option<&Round>) {
     }
     for (i, order) in round.orders.iter().enumerate() {
         let x = 24.0 + i as f32 * 172.0;
-        let (colour, name) = match order.food {
-            Food::Tomato => (Vec4::new(0.85, 0.26, 0.18, 1.0), "TOMATO"),
-            Food::Onion => (Vec4::new(0.9, 0.8, 0.45, 1.0), "ONION"),
+        let (colour, name) = match order.dish {
+            Dish::Soup(Food::Onion) => (Vec4::new(0.9, 0.8, 0.45, 1.0), "ONION"),
+            Dish::Soup(_) => (Vec4::new(0.85, 0.26, 0.18, 1.0), "TOMATO"),
+            Dish::Salad => (Vec4::new(0.35, 0.72, 0.35, 1.0), "SALAD"),
+            Dish::Burger => (Vec4::new(0.72, 0.45, 0.22, 1.0), "BURGER"),
         };
         ui.quad(Quad::new(x, 70.0, 160.0, 140.0, Vec4::new(1.0, 1.0, 1.0, 0.08)));
         ui.quad(Quad::new(x + 50.0, 84.0, 60.0, 60.0, colour));

@@ -1,17 +1,24 @@
 //! What a cook does with their hands at the station they face: `grab`
-//! takes and puts things, `work` chops on a board and scrapes a burnt pot.
+//! takes and puts things, `work` chops on a board, scrapes a burnt pot and
+//! washes plates at the sink.
 //!
-//! A crate gives its food, the stack a plate. A counter, a board or a crate
-//! holds one thing. Chopped food goes into a pot, three to a pot; a plate
-//! takes a cooked soup; the window takes a plate of soup and an order that
-//! wants it; the bin takes food and empties a plate. The host's: what the
-//! others' hands do comes to it as acts.
+//! A crate gives its food, a rack a clean plate while it has one. A
+//! counter, a board or a crate holds one thing; a pan holds meat, and fries
+//! it. Chopped tomato or onion goes into a pot, three to a pot; a plate
+//! takes a cooked soup, or the parts of a dish one by one — put on it, or
+//! picked up with it; the window takes a plate with a dish on it and the
+//! order that wants it, and the plate comes back to the sink dirty; the bin
+//! takes food and empties a plate. The host's: what the others' hands do
+//! comes to it as acts.
 
 use runity::glam::Vec3;
 use runity::hecs::{Entity, World};
 use runity::Transform;
 
-use crate::components::item::Thing;
+use crate::components::fry::Fry;
+use crate::components::item::{Food, Part, Thing};
+use crate::components::sink::{Sink, RETURN_SECONDS, WASH_SECONDS};
+use crate::components::stack::Stack;
 use crate::components::station::Kind;
 use crate::components::{Item, Player, Station};
 use crate::state::*;
@@ -146,6 +153,29 @@ fn chopped(world: &World, item: Entity) -> bool {
     world.get::<&Chop>(item).is_ok_and(|c| c.0 >= 1.0)
 }
 
+/// What `item` would be on a plate, if anything: chopped food, a bun, a
+/// fried patty.
+fn part_of(world: &World, item: Entity) -> Option<Part> {
+    match thing_of(world, item)? {
+        Thing::Food(Food::Bun) => Some(Part::Bun),
+        Thing::Food(Food::Meat) => world.get::<&Fry>(item).ok().filter(|f| f.done()).map(|_| Part::Patty),
+        Thing::Food(food) if food.chops() && chopped(world, item) => Some(Part::Chopped(food)),
+        _ => None,
+    }
+}
+
+/// Put `part` on `plate` if it goes: said when it does not.
+fn onto(world: &mut World, kitchen: Entity, plate: Entity, part: Part) -> bool {
+    let mut load = world.get::<&Served>(plate).map(|s| (*s).clone()).unwrap_or_default();
+    if !load.takes(part) {
+        say(world, kitchen, "That does not go on this plate");
+        return false;
+    }
+    load.add(part);
+    let _ = world.insert_one(plate, load);
+    true
+}
+
 fn say(world: &World, kitchen: Entity, words: &str) {
     if let Ok(mut r) = world.get::<&mut Round>(kitchen) {
         r.say(words);
@@ -185,7 +215,15 @@ fn grab(world: &mut World, kitchen: Entity, cook: Entity, station: Entity) {
         None => match (kind, top) {
             (_, Some(item)) => take(world, cook, station, item),
             (Kind::Crate(food), None) => spawn(world, kitchen, food.name(), cook),
-            (Kind::Plates, None) => spawn(world, kitchen, "plate", cook),
+            (Kind::Plates, None) => {
+                let left = world.get::<&Stack>(station).map_or(0, |s| s.0);
+                if left == 0 {
+                    say(world, kitchen, "No clean plates: wash some at the sink");
+                } else {
+                    let _ = world.insert_one(station, Stack(left - 1));
+                    spawn(world, kitchen, "plate", cook);
+                }
+            }
             (Kind::Stove, None) => {
                 let done = world.get::<&Pot>(station).is_ok_and(|p| p.done());
                 if done {
@@ -198,14 +236,47 @@ fn grab(world: &mut World, kitchen: Entity, cook: Entity, station: Entity) {
             let Some(thing) = thing_of(world, item) else {
                 return;
             };
+            // A plate held, food on the station: onto the plate with it.
+            if let (Thing::Plate, Some(food)) = (thing, top) {
+                if let Some(part) = part_of(world, food) {
+                    if onto(world, kitchen, item, part) {
+                        let _ = world.insert_one(station, Top(None));
+                        despawn_tree(world, food);
+                    }
+                    return;
+                }
+            }
+            // A bun straight from its crate onto a held plate.
+            if let (Thing::Plate, Kind::Crate(Food::Bun), None) = (thing, kind, top) {
+                onto(world, kitchen, item, Part::Bun);
+                return;
+            }
+            // Food held, a plate on the station: onto it.
+            if let (Thing::Food(_), Some(plate)) = (thing, top) {
+                if thing_of(world, plate) == Some(Thing::Plate) {
+                    match part_of(world, item) {
+                        Some(part) => {
+                            if onto(world, kitchen, plate, part) {
+                                used_up(world, cook, item);
+                            }
+                        }
+                        None => say(world, kitchen, "Chop it or fry it first"),
+                    }
+                    return;
+                }
+            }
             match kind {
                 Kind::Counter | Kind::Board | Kind::Crate(_) if top.is_none() => {
                     put(world, cook, station, item)
                 }
+                Kind::Pan if top.is_none() => match thing {
+                    Thing::Food(Food::Meat) => put(world, cook, station, item),
+                    _ => say(world, kitchen, "The pan is for meat"),
+                },
                 Kind::Bin => match thing {
                     Thing::Food(_) => used_up(world, cook, item),
                     Thing::Plate => {
-                        let _ = world.insert_one(item, Served(None));
+                        let _ = world.insert_one(item, Served::default());
                     }
                 },
                 Kind::Stove => stove(world, kitchen, cook, station, item, thing),
@@ -232,6 +303,7 @@ fn stove(world: &mut World, kitchen: Entity, cook: Entity, stove: Entity, item: 
     }
     let pot = world.get::<&Pot>(stove).map(|p| (*p).clone()).unwrap_or_default();
     match thing {
+        Thing::Food(food) if !food.soups() => say(world, kitchen, "Soup is tomato or onion"),
         Thing::Food(_) if !chopped(world, item) => say(world, kitchen, "Chop it first"),
         Thing::Food(food) if pot.foods.len() < POT_HOLDS && !pot.burnt() => {
             if let Ok(mut p) = world.get::<&mut Pot>(stove) {
@@ -241,31 +313,40 @@ fn stove(world: &mut World, kitchen: Entity, cook: Entity, stove: Entity, item: 
         }
         Thing::Food(_) => say(world, kitchen, "The pot is full"),
         Thing::Plate => {
-            let empty = world.get::<&Served>(item).map_or(true, |s| s.0.is_none());
+            let empty = world.get::<&Served>(item).map_or(true, |s| s.is_empty());
             if pot.burnt() {
                 say(world, kitchen, "Burnt! Scrape the pot (hold F)");
             } else if !pot.done() {
                 say(world, kitchen, "Not cooked yet");
             } else if empty {
-                let _ = world.insert_one(item, Served(pot.soup()));
+                let served = Served {
+                    soup: pot.soup(),
+                    parts: Vec::new(),
+                };
+                let _ = world.insert_one(item, served);
                 let _ = world.insert_one(stove, Pot::default());
             }
         }
     }
 }
 
-/// A plate of soup out of the window, to the order that wants it most.
+/// A plate with a dish out of the window, to the order that wants it most;
+/// the plate is back at the sink, dirty, a little later.
 fn serve(world: &mut World, kitchen: Entity, cook: Entity, item: Entity, thing: Thing) {
-    let soup = world.get::<&Served>(item).ok().and_then(|s| s.0);
-    let Some(soup) = soup.filter(|_| thing == Thing::Plate) else {
-        say(world, kitchen, "The window takes a plate of soup");
+    let load = world.get::<&Served>(item).map(|s| (*s).clone()).unwrap_or_default();
+    if thing != Thing::Plate || load.is_empty() {
+        say(world, kitchen, "The window takes a plate with a dish on it");
         return;
-    };
+    }
+    let dish = load.dish();
     used_up(world, cook, item);
+    if let Ok(mut service) = world.get::<&mut Service>(kitchen) {
+        service.returning.push(RETURN_SECONDS);
+    }
     let Ok(mut s) = world.get::<&mut Round>(kitchen) else {
         return;
     };
-    let wanted = s.orders.iter().position(|o| Soup::Of(o.food) == soup);
+    let wanted = dish.and_then(|dish| s.orders.iter().position(|o| o.dish == dish));
     match wanted {
         Some(i) => {
             let order = s.orders.remove(i);
@@ -288,7 +369,7 @@ fn work(world: &mut World, station: Entity, seconds: f32) {
             let Some(item) = top_of(world, station) else {
                 return;
             };
-            if !matches!(thing_of(world, item), Some(Thing::Food(_))) {
+            if !matches!(thing_of(world, item), Some(Thing::Food(food)) if food.chops()) {
                 return;
             }
             let so_far = world.get::<&Chop>(item).map_or(0.0, |c| c.0);
@@ -300,6 +381,38 @@ fn work(world: &mut World, station: Entity, seconds: f32) {
                 let _ = world.insert_one(station, Pot::default());
             }
         }
+        Some(Kind::Sink) => {
+            let Ok(mut sink) = world.get::<&mut Sink>(station).map(|s| *s) else {
+                return;
+            };
+            if sink.dirty == 0 {
+                return;
+            }
+            sink.washed += seconds / WASH_SECONDS;
+            if sink.washed >= 1.0 {
+                sink.washed = 0.0;
+                sink.dirty -= 1;
+                rack(world, station);
+            }
+            let _ = world.insert_one(station, sink);
+        }
         _ => {}
+    }
+}
+
+/// A washed plate onto the rack nearest the sink.
+fn rack(world: &mut World, sink: Entity) {
+    let Some(at) = world.get::<&Transform>(sink).ok().map(|t| t.position) else {
+        return;
+    };
+    let nearest = world
+        .query::<(Entity, &Transform, &Station)>()
+        .iter()
+        .filter(|(_, _, s)| s.kind == Kind::Plates)
+        .min_by(|a, b| a.1.position.distance(at).total_cmp(&b.1.position.distance(at)))
+        .map(|(e, ..)| e);
+    if let Some(rack) = nearest {
+        let n = world.get::<&Stack>(rack).map_or(0, |s| s.0);
+        let _ = world.insert_one(rack, Stack(n + 1));
     }
 }

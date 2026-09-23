@@ -10,7 +10,8 @@ use runity::hecs::{Entity, World};
 use runity::net::Owned;
 use runity::Transform;
 
-use crate::components::item::{Food, Thing};
+use crate::components::item::{Dish, Food, Part, Thing};
+use crate::components::station::Kind;
 use crate::components::{Item, Player, Station};
 use crate::state::*;
 
@@ -145,12 +146,54 @@ fn marks(world: &mut World) {
         }
         let _ = world.insert_one(item, Cut(chop));
     }
+    // Meat, and how fried: on a pan, it shows there.
+    let meats: Vec<(Entity, Vec3, Fry)> = world
+        .query::<(Entity, &Transform, &Item, Option<&Fry>)>()
+        .iter()
+        .filter(|(_, _, item, _)| item.thing == Thing::Food(Food::Meat))
+        .map(|(e, t, _, f)| (e, t.position, f.copied().unwrap_or_default()))
+        .collect();
     let mut shown: Vec<(Entity, Vec<(String, f32)>)> = Vec::new();
-    for (station, _, at, pot) in world
-        .query::<(Entity, &Station, &Transform, Option<&Pot>)>()
+    let mut sizzling: Vec<(Entity, f32)> = Vec::new();
+    for (station, kind, at, pot, stack, sink) in world
+        .query::<(Entity, &Station, &Transform, Option<&Pot>, Option<&Stack>, Option<&Sink>)>()
         .iter()
     {
         let mut on = Vec::new();
+        if kind.kind == Kind::Pan {
+            let here = at.position;
+            let frying = meats
+                .iter()
+                .find(|(_, p, _)| (p.x - here.x).abs() < 0.3 && (p.z - here.z).abs() < 0.3 && p.y > here.y);
+            sizzling.push((station, if frying.is_some_and(|(_, _, f)| !f.burnt()) { 0.5 } else { 0.0 }));
+            if let Some((_, _, fry)) = frying {
+                if fry.burnt() {
+                    on.push(("smoke".into(), 1.0));
+                } else if fry.done() {
+                    let left = 1.0 - (fry.0 - FRY_SECONDS) / (FRY_BURN - FRY_SECONDS);
+                    on.push(("warn".into(), left));
+                    on.push(("sizzle".into(), 1.0));
+                } else {
+                    on.push(("bar".into(), fry.0 / FRY_SECONDS));
+                    on.push(("sizzle".into(), 1.0));
+                }
+            }
+        }
+        // A plate a mark, as many as the rack has; the dirty ones in the sink.
+        if let Some(stack) = stack {
+            for n in 1..=stack.0 {
+                on.push((format!("stack {n}"), 1.0));
+            }
+        }
+        if let Some(sink) = sink {
+            for n in 1..=sink.dirty {
+                on.push((format!("dirty {n}"), 1.0));
+            }
+            if sink.washed > 0.0 {
+                on.push(("bar".into(), sink.washed));
+                on.push(("suds".into(), 1.0));
+            }
+        }
         if let Some(pot) = pot {
             if !pot.foods.is_empty() {
                 let name = match pot.soup() {
@@ -195,12 +238,44 @@ fn marks(world: &mut World) {
         if item.thing != Thing::Plate {
             continue;
         }
-        let soup = served.and_then(|s| s.0).map(|soup| match soup {
-            Soup::Of(Food::Tomato) => "soup tomato",
-            Soup::Of(Food::Onion) => "soup onion",
-            Soup::Mixed => "soup mixed",
-        });
-        shown.push((plate, soup.map(|s| (s.to_string(), 1.0)).into_iter().collect()));
+        let load = served.cloned().unwrap_or_default();
+        let mut on: Vec<(String, f32)> = Vec::new();
+        match (load.soup, load.dish()) {
+            (Some(Soup::Of(Food::Onion)), _) => on.push(("soup onion".into(), 1.0)),
+            (Some(Soup::Of(_)), _) => on.push(("soup tomato".into(), 1.0)),
+            (Some(Soup::Mixed), _) => on.push(("soup mixed".into(), 1.0)),
+            // A whole dish shows as itself, the parts as they go on.
+            (None, Some(Dish::Salad)) => on.push(("salad".into(), 1.0)),
+            (None, Some(Dish::Burger)) => on.push(("burger".into(), 1.0)),
+            (None, _) => {
+                for part in &load.parts {
+                    let name = match part {
+                        Part::Chopped(food) => format!("part {}", food.name()),
+                        Part::Bun => "part bun".into(),
+                        Part::Patty => "part patty".into(),
+                    };
+                    on.push((name, 1.0));
+                }
+            }
+        }
+        shown.push((plate, on));
+    }
+    // A pan with meat on it sizzles: its own `sound`, turned up.
+    for (pan, volume) in sizzling {
+        if let Ok(mut sound) = world.get::<&mut runity::world::Sounding>(pan) {
+            sound.0.volume = volume;
+        }
+    }
+    // Meat raw, fried or burnt.
+    for (meat, _, fry) in &meats {
+        let look = if fry.burnt() {
+            "burnt"
+        } else if fry.done() {
+            "cooked"
+        } else {
+            "raw"
+        };
+        shown.push((*meat, vec![(look.to_string(), 1.0)]));
     }
     for (owner, on) in shown {
         for (mark, name) in marked(world, owner) {

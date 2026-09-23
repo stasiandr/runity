@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/lineup.ron",
+    id: Some("54a607d5f10b0a724237042fa5a89f93"),
+)

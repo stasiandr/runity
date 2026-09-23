@@ -142,37 +142,18 @@ impl Game {
     fn wish(&mut self, wish: front::Wish, ctx: &mut Context) {
         use front::{Phase, Wish};
         match wish {
-            // A Steam lobby, or by address without Steam: either way the
-            // kitchen opens shut, and the host opens the doors.
-            Wish::Host(name) => {
-                let name = self.lobby.name().unwrap_or(name);
+            // A Steam lobby friends can join; without Steam, the kitchen
+            // alone. Either way it opens shut, and the host opens the doors.
+            Wish::Host => {
+                let name = self.lobby.name().unwrap_or_else(|| "Cook".into());
                 if let Some(party) = self.lobby.host(&self.scene, &name, &self.components) {
                     self.party = party;
-                    self.front.phase = Phase::Kitchen;
-                    return;
                 }
-                let address = format!("host:0.0.0.0:{}", front::PORT);
-                match Party::from_words(&address, &name, "", &self.scene, &self.components) {
-                    Ok(party) => {
-                        self.party = party;
-                        self.front.phase = Phase::Kitchen;
-                    }
-                    Err(e) => self.front.status = e,
-                }
+                self.front.phase = Phase::Kitchen;
             }
             Wish::Friends => self.lobby.friends(),
             Wish::Invite => self.lobby.invite(),
             Wish::Start => self.party.publish(state::ACT, &state::Act::Restart),
-            Wish::Join(address, name) => {
-                let words = format!("join:{address}");
-                match Party::from_words(&words, &name, "", &self.scene, &self.components) {
-                    Ok(party) => {
-                        self.party = party;
-                        self.front.phase = Phase::Joining;
-                    }
-                    Err(e) => self.front.status = e,
-                }
-            }
             Wish::Again => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Leave => self.leave(ctx),
             Wish::Quit => ctx.quit(),
@@ -566,8 +547,8 @@ fn main() -> anyhow::Result<()> {
     match (lobby.name(), &lobby.why) {
         (Some(name), _) => front.menu.set_text("who", format!("Steam: {name}")),
         (None, Some(why)) => {
-            eprintln!("no Steam ({why}): hosting and joining by address");
-            front.status = "No Steam: host and join by address".into();
+            eprintln!("no Steam ({why}): the kitchen alone");
+            front.status = "No Steam: start Steam to cook with friends".into();
         }
         _ => {}
     }

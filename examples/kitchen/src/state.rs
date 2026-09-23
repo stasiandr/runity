@@ -3,8 +3,10 @@
 //! The kitchen is the host's: it keeps who holds what, what is on which
 //! counter, the round's clock and its orders, and runs the rules. What the
 //! others need to see goes to them as networked components — what is in a
-//! pot ([`Pot`]), how far a food is chopped ([`Chop`]), the soup on a plate
-//! ([`Served`]), the round ([`Round`]), who plays which cook ([`Seat`]) —
+//! pot ([`Pot`]), how far a food is chopped ([`Chop`]) or fried ([`Fry`]),
+//! what is on a plate ([`Served`]), the clean plates on a rack ([`Stack`])
+//! and the dirty ones in the sink ([`Sink`]), the round ([`Round`]), who
+//! plays which cook ([`Seat`]) —
 //! and every item's place as its transform. Each player drives their own
 //! cook's walk; what their hands do goes to the host as an [`Act`].
 
@@ -15,7 +17,10 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::components::pot::{BURN_SECONDS, COOK_SECONDS, POT_HOLDS};
 pub use crate::components::round::Order;
+pub use crate::components::fry::{Fry, FRY_BURN, FRY_SECONDS};
 pub use crate::components::served::Soup;
+pub use crate::components::sink::Sink;
+pub use crate::components::stack::Stack;
 pub use crate::components::{Chop, Pot, Round, Seat, Served};
 
 /// Seconds of work to chop one.
@@ -86,6 +91,9 @@ pub struct Service {
     pub spawns: Vec<Spawn>,
     pub next_order: f32,
     pub seed: u32,
+    /// Seconds until each plate that went out of the window is back in
+    /// the sink, dirty.
+    pub returning: Vec<f32>,
 }
 
 /// An entity and everything under it, gone.
