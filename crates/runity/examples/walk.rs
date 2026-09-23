@@ -20,6 +20,8 @@ use runity::{Key, LiveScene, TextRun, Ui};
 
 struct Walk {
     live: LiveScene,
+    /// The last few seconds of frames: the median and the stutters.
+    times: runity::FrameTimes,
     world: hecs::World,
     /// Where the eye is. Moved on the fixed step, so two machines walking the
     /// same input end up in the same place.
@@ -42,6 +44,7 @@ impl Walk {
         let look = (view.target - eye).normalize_or_zero();
         Self {
             live,
+            times: runity::FrameTimes::new(300),
             world: hecs::World::new(),
             eye,
             yaw: look.x.atan2(-look.z),
@@ -117,6 +120,19 @@ impl Game for Walk {
         };
         // The overlay is rebuilt every frame from scratch: there is no
         // retained widget tree to keep in step with anything.
+        self.times
+            .record(std::time::Duration::from_secs_f32(ctx.time.delta()));
+        let times = self
+            .times
+            .summary()
+            .map(|s| {
+                format!(
+                    "медиана {:.1} мс, рывков {}",
+                    s.median.as_secs_f64() * 1e3,
+                    s.hitches
+                )
+            })
+            .unwrap_or_default();
         self.ui.clear();
         self.ui.text(TextRun::new(
             12.0,
@@ -124,7 +140,7 @@ impl Game for Walk {
             18.0,
             runity::glam::Vec4::new(0.9, 0.9, 0.88, 0.85),
             format!(
-                "{:.0} кадр/с   такт {:.0} Гц   {:.1}, {:.1}, {:.1}",
+                "{:.0} кадр/с   {times}   такт {:.0} Гц   {:.1}, {:.1}, {:.1}",
                 1.0 / ctx.time.delta().max(1e-4),
                 1.0 / ctx.time.settings().fixed_delta,
                 self.eye.x,

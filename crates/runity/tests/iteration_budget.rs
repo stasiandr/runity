@@ -105,3 +105,29 @@ fn a_one_field_edit_to_a_big_scene_reaches_the_world_within_budget() {
         60,
     );
 }
+
+#[test]
+fn building_a_frame_of_a_big_level_is_within_budget_and_steady() {
+    // The CPU's share of a frame: the draw list from the world. The GPU's
+    // share depends on the adapter and is measured elsewhere; this one is
+    // ours, and a clone per entity or a sort that went quadratic shows here.
+    let scene = level();
+    let mut world = runity::hecs::World::new();
+    runity::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+    let camera = runity::scene_camera(&scene.view);
+    let mut times = runity::FrameTimes::new(60);
+    for _ in 0..60 {
+        let start = Instant::now();
+        let frame = runity::build_frame(
+            &world,
+            camera,
+            runity::scene_lighting(&scene.sun),
+            runity::scene_fog(&scene.fog),
+        );
+        times.record(start.elapsed());
+        assert_eq!(frame.draws.len(), PROPS * 3);
+    }
+    let summary = times.summary().unwrap();
+    eprintln!("build a frame of {} entities: {summary}", PROPS * 3);
+    within("the median frame build", summary.median, 5);
+}

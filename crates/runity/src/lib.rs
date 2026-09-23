@@ -37,6 +37,7 @@ pub mod material;
 pub mod merge;
 #[cfg(feature = "physics")]
 pub mod navigation;
+pub mod perf;
 #[cfg(feature = "physics")]
 pub mod physics;
 pub mod prefab;
@@ -72,6 +73,7 @@ pub use library::{Library, Reloaded};
 pub use components::{ComponentProblem, Components};
 pub use live::{Instance, LiveScene, Reload, Spawned};
 pub use material::{Material, Shading};
+pub use perf::{FrameSummary, FrameTimes};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};
 pub use prefab::{instantiate, Instanced, Prefabs};
