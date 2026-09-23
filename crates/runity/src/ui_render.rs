@@ -267,11 +267,19 @@ impl UiRenderer {
                 left: run.x,
                 top: run.y,
                 scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: width as i32,
-                    bottom: height as i32,
+                bounds: match run.clip {
+                    Some([left, top, right, bottom]) => TextBounds {
+                        left: left.max(0.0) as i32,
+                        top: top.max(0.0) as i32,
+                        right: (right as i32).min(width as i32),
+                        bottom: (bottom as i32).min(height as i32),
+                    },
+                    None => TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: width as i32,
+                        bottom: height as i32,
+                    },
                 },
                 default_color: glyphon::Color::rgba(
                     (run.color.x * 255.0) as u8,

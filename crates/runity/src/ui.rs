@@ -51,6 +51,9 @@ pub struct TextRun {
     pub size: f32,
     pub color: Vec4,
     pub text: String,
+    /// Glyphs outside this box — left, top, right, bottom — are not drawn:
+    /// text in a scrolled list stops at the list's edge.
+    pub clip: Option<[f32; 4]>,
 }
 
 impl TextRun {
@@ -61,6 +64,7 @@ impl TextRun {
             size,
             color,
             text: text.into(),
+            clip: None,
         }
     }
 }
@@ -74,6 +78,8 @@ impl TextRun {
 pub struct Ui {
     pub quads: Vec<Quad>,
     pub texts: Vec<TextRun>,
+    /// Boxes what is added is cut to, innermost last.
+    clips: Vec<[f32; 4]>,
 }
 
 impl Ui {
@@ -85,6 +91,29 @@ impl Ui {
     pub fn clear(&mut self) {
         self.quads.clear();
         self.texts.clear();
+        self.clips.clear();
+    }
+
+    /// Cut everything added from now on to a box, until [`Ui::pop_clip`] —
+    /// the inside of a scrolled list. Inside another clip, it is cut to
+    /// both.
+    pub fn push_clip(&mut self, x: f32, y: f32, width: f32, height: f32) -> &mut Self {
+        let mut clip = [x, y, x + width, y + height];
+        if let Some(outer) = self.clips.last() {
+            clip = [
+                clip[0].max(outer[0]),
+                clip[1].max(outer[1]),
+                clip[2].min(outer[2]),
+                clip[3].min(outer[3]),
+            ];
+        }
+        self.clips.push(clip);
+        self
+    }
+
+    pub fn pop_clip(&mut self) -> &mut Self {
+        self.clips.pop();
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -92,11 +121,41 @@ impl Ui {
     }
 
     pub fn quad(&mut self, quad: Quad) -> &mut Self {
-        self.quads.push(quad);
+        let Some(&[left, top, right, bottom]) = self.clips.last() else {
+            self.quads.push(quad);
+            return self;
+        };
+        // Rectangles cut to a rectangle stay rectangles: no GPU scissor
+        // needed, and nothing outside is drawn at all.
+        let (x0, y0) = (quad.x.max(left), quad.y.max(top));
+        let (x1, y1) = (
+            (quad.x + quad.width).min(right),
+            (quad.y + quad.height).min(bottom),
+        );
+        if x1 > x0 && y1 > y0 {
+            self.quads.push(Quad {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+                ..quad
+            });
+        }
         self
     }
 
-    pub fn text(&mut self, run: TextRun) -> &mut Self {
+    pub fn text(&mut self, mut run: TextRun) -> &mut Self {
+        if let Some(&clip) = self.clips.last() {
+            run.clip = Some(match run.clip {
+                Some(own) => [
+                    own[0].max(clip[0]),
+                    own[1].max(clip[1]),
+                    own[2].min(clip[2]),
+                    own[3].min(clip[3]),
+                ],
+                None => clip,
+            });
+        }
         self.texts.push(run);
         self
     }

@@ -333,6 +333,53 @@ impl Widgets {
         changed
     }
 
+    /// A scrolled view — Unity's ScrollRect: a box showing part of
+    /// something `content_height` tall, moved by the wheel over it or a
+    /// finger dragged in it. Returns where the content's top is now; draw
+    /// the content from there, then call `ui.pop_clip()` — everything in
+    /// between is cut to the box. A bar on the right shows where it is.
+    pub fn scroll(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        content_height: f32,
+        offset: &mut f32,
+    ) -> f32 {
+        let id = key(rect, "scroll");
+        let over = rect.contains(input.mouse_position());
+        if over {
+            *offset -= input.scroll().y * 40.0;
+        }
+        let (_, held, _) = self.track(input, rect, id);
+        if held {
+            *offset -= input.mouse_motion().y;
+        }
+        let most = (content_height - rect.height).max(0.0);
+        *offset = offset.clamp(0.0, most);
+        ui.quad(Quad::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            self.style.idle,
+        ));
+        if most > 0.0 {
+            let shown = rect.height / content_height;
+            let bar = rect.height * shown;
+            let at = rect.y + (rect.height - bar) * (*offset / most);
+            ui.quad(Quad::new(
+                rect.x + rect.width - 4.0,
+                at,
+                4.0,
+                bar,
+                self.style.accent,
+            ));
+        }
+        ui.push_clip(rect.x, rect.y, rect.width - 6.0, rect.height);
+        rect.y - *offset
+    }
+
     /// A stick drawn on the screen for a thumb — the phone's gamepad: a
     /// finger (or the mouse) that goes down inside `rect` drags the knob,
     /// and what comes back is −1..1 on each axis, y up, zero when let go.
@@ -473,6 +520,56 @@ mod tests {
         frame(&mut input, row, &[InputEvent::MouseUp(M::Left)]);
         assert!(!pick(&mut widgets, &input, &mut chosen));
         assert_eq!(chosen, 1);
+    }
+
+    #[test]
+    fn a_scrolled_list_moves_with_the_wheel_and_draws_nothing_outside_its_box() {
+        let (mut widgets, mut input, mut ui) = (Widgets::new(), Input::new(), Ui::new());
+        let view = Rect::new(0.0, 0.0, 200.0, 100.0);
+        let mut offset = 0.0;
+        frame(
+            &mut input,
+            (50.0, 50.0),
+            &[InputEvent::Scroll { x: 0.0, y: -1.0 }],
+        );
+        let top = widgets.scroll(&mut ui, &input, view, 400.0, &mut offset);
+        assert_eq!(offset, 40.0, "a notch down");
+        assert_eq!(top, -40.0);
+        // Ten rows 40 high: only those in the box are drawn, cut to it.
+        let before = ui.quads.len();
+        for i in 0..10 {
+            ui.quad(Quad::new(
+                0.0,
+                top + i as f32 * 40.0,
+                150.0,
+                30.0,
+                glam::Vec4::ONE,
+            ));
+            ui.text(TextRun::new(
+                4.0,
+                top + i as f32 * 40.0,
+                16.0,
+                glam::Vec4::ONE,
+                "row",
+            ));
+        }
+        ui.pop_clip();
+        let rows = &ui.quads[before..];
+        assert_eq!(rows.len(), 3, "rows 1 to 3 show, the third cut: {rows:?}");
+        assert_eq!(rows[2].height, 20.0);
+        assert!(rows.iter().all(|q| q.y >= 0.0 && q.y + q.height <= 100.0));
+        assert!(ui
+            .texts
+            .iter()
+            .all(|t| t.clip == Some([0.0, 0.0, 194.0, 100.0])));
+        // Past the end it stops.
+        frame(
+            &mut input,
+            (50.0, 50.0),
+            &[InputEvent::Scroll { x: 0.0, y: -100.0 }],
+        );
+        widgets.scroll(&mut Ui::new(), &input, view, 400.0, &mut offset);
+        assert_eq!(offset, 300.0);
     }
 
     #[test]
