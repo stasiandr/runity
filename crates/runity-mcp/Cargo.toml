@@ -1,0 +1,22 @@
+[package]
+name = "runity-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The editor, for an agent: an MCP server over the editor's session. Every
+# operation a person has in the editor, an agent has here, headless — and
+# it sees the frame, because a scene edited blind is a scene edited wrong.
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+ron = "0.12.2"
+runity = { version = "0.1.0", path = "../runity" }
+runity-cli = { version = "0.1.0", path = "../runity-cli" }
+runity-editor = { version = "0.1.0", path = "../runity-editor" }
+serde_json = "1.0.151"
+
+[[bin]]
+name = "runity-mcp"
+path = "src/main.rs"

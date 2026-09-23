@@ -477,6 +477,10 @@ Cargo.toml   the game crate; src/main.rs is the game
 * Every entity has an `id`: sixteen hex digits, unique in its file. When
   writing one by hand, leave it out and the engine assigns one on load;
   never copy an existing one.
+* The editor is also an MCP server: with runity's `runity-mcp` on the PATH
+  (`cargo install --path crates/runity-mcp` in the engine),
+  `claude mcp add runity -- runity-mcp` gives every editor operation as a
+  tool — open, add, move, undo, render a frame to look at, check, simulate.
 * Game logic is Rust in `src/`, on the ECS (`runity::hecs`): components are
   plain structs, and an entity spawned from a scene carries `SceneId`.
 * Everything a person makes is text and is committed; `library/` and

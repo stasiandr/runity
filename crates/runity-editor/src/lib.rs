@@ -372,6 +372,32 @@ impl Session {
         Ok(())
     }
 
+    /// Rename an entity, as one undoable step. Names are for people and
+    /// need not be unique; an empty one is refused.
+    pub fn rename(&mut self, id: EntityId, name: &str) -> EditResult<()> {
+        if name.is_empty() {
+            return Err(EditError::EmptyName("an entity"));
+        }
+        self.edit_entity(id)?.name = name.to_string();
+        Ok(())
+    }
+
+    /// Change any fields of an entity's line, as one undoable step.
+    ///
+    /// For callers that set several things at once — an agent writing a
+    /// name, a place and a material in one go should make one step, not
+    /// three. Its ID and children are the document's, not the caller's, and
+    /// are put back if the closure touched them.
+    pub fn update(&mut self, id: EntityId, change: impl FnOnce(&mut EntityDesc)) -> EditResult<()> {
+        let desc = self.edit_entity(id)?;
+        let children = std::mem::take(&mut desc.children);
+        change(desc);
+        desc.id = id;
+        desc.children = children;
+        self.respawn();
+        Ok(())
+    }
+
     /// Where an entity actually is, in world space.
     ///
     /// Not the same as its transform. The transform is local and belongs to
@@ -400,6 +426,17 @@ impl Session {
             model: model.to_string(),
             ..Default::default()
         };
+        self.insert(parent, desc)
+    }
+
+    /// Add a whole entity — name, model, place, material, children — under
+    /// `parent` or at the top, as one undoable step. Returns its ID. IDs it
+    /// carries that are taken, and missing ones, are minted.
+    pub fn add_entity(
+        &mut self,
+        parent: Option<EntityId>,
+        desc: EntityDesc,
+    ) -> EditResult<EntityId> {
         self.insert(parent, desc)
     }
 

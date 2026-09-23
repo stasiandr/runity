@@ -1,0 +1,152 @@
+//! The editor, for an agent: an MCP server over [`runity_editor::Session`].
+//!
+//! DNA, postulate 5: everything the editor can do, an agent can do, because
+//! the editor's operations are engine functions and this hands them over.
+//! Nothing here edits a scene itself — each tool is a call into the session
+//! the GPUI editor will drive, so an agent's edit and a person's are the
+//! same edit: one undo step, the same file on save, the same errors.
+//!
+//! The protocol is JSON-RPC 2.0, a message per line, over stdio.
+//! [`Server::handle`] takes one message and returns the reply, so tests
+//! drive it without a pipe.
+
+mod tools;
+
+use runity_editor::Session;
+use serde_json::{json, Value};
+
+/// The protocol version answered when the client does not name one.
+pub const PROTOCOL: &str = "2025-06-18";
+
+const INSTRUCTIONS: &str = "\
+Edit runity scenes headlessly. Start with open_scene (or new_project). \
+Entities are addressed by the 16-hex-digit ids that scene_tree shows. \
+Every edit is one undo step and nothing is written until save_scene. \
+render returns a PNG of the view; look at it after changes that matter. \
+Run check after editing: it names every model, material or prefab a scene \
+refers to that does not exist, with the closest real name.";
+
+pub struct Server {
+    session: Option<Session>,
+    size: (u32, u32),
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Server {
+    pub fn new() -> Self {
+        Self {
+            session: None,
+            size: (640, 360),
+        }
+    }
+
+    /// Answer one message. `None` for a notification, which gets no reply.
+    pub fn handle(&mut self, message: &Value) -> Option<Value> {
+        let id = message.get("id")?.clone();
+        let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = message.get("params").cloned().unwrap_or(Value::Null);
+        let result = match method {
+            "initialize" => Ok(json!({
+                "protocolVersion": params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(PROTOCOL),
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "runity", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS,
+            })),
+            "ping" => Ok(json!({})),
+            "tools/list" => Ok(json!({ "tools": tools::list() })),
+            "tools/call" => Ok(self.call(&params)),
+            other => Err((-32601, format!("no method `{other}`"))),
+        };
+        Some(match result {
+            Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+            Err((code, message)) => json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": { "code": code, "message": message },
+            }),
+        })
+    }
+
+    /// Run a tool. A tool that fails is still an answer — `isError` with a
+    /// sentence saying why — because the agent is the one who can fix it.
+    fn call(&mut self, params: &Value) -> Value {
+        let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+        let empty = json!({});
+        let arguments = params.get("arguments").unwrap_or(&empty);
+        match tools::call(self, name, arguments) {
+            Ok(content) => json!({ "content": content, "isError": false }),
+            Err(message) => json!({ "content": [text(message)], "isError": true }),
+        }
+    }
+
+    /// The session, made on first use: a GPU is found only when something
+    /// needs one, so `tools/list` works on a machine without.
+    fn session(&mut self) -> Result<&mut Session, String> {
+        if self.session.is_none() {
+            let (width, height) = self.size;
+            self.session = Some(Session::offscreen(width, height).map_err(|e| e.to_string())?);
+        }
+        Ok(self.session.as_mut().expect("made a line above"))
+    }
+}
+
+fn text(message: impl Into<String>) -> Value {
+    json!({ "type": "text", "text": message.into() })
+}
+
+fn image(png: &[u8]) -> Value {
+    json!({ "type": "image", "data": base64(png), "mimeType": "image/png" })
+}
+
+/// Standard base64 with padding, for image content.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> shift) as usize & 63] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn a_notification_gets_no_reply_and_an_unknown_method_an_error() {
+        let mut server = Server::new();
+        let notification = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+        assert!(server.handle(&notification).is_none());
+        let reply = server
+            .handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "resources/list" }))
+            .unwrap();
+        assert_eq!(reply["error"]["code"], -32601);
+        assert_eq!(reply["id"], 7);
+    }
+}

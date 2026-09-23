@@ -1,0 +1,222 @@
+//! The editor driven the way an agent drives it: JSON in, JSON out.
+//!
+//! A project is made, a scene edited, looked at, checked, simulated and
+//! saved, and the file on disk is what the edits said — all through the
+//! protocol, with nothing but the messages an MCP client would send.
+
+use runity_mcp::Server;
+use serde_json::{json, Value};
+
+struct Agent {
+    server: Server,
+    next: u64,
+}
+
+impl Agent {
+    fn new() -> Self {
+        Self {
+            server: Server::new(),
+            next: 0,
+        }
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Value {
+        self.next += 1;
+        let reply = self
+            .server
+            .handle(
+                &json!({ "jsonrpc": "2.0", "id": self.next, "method": method, "params": params }),
+            )
+            .expect("a request gets a reply");
+        assert_eq!(reply["id"], self.next);
+        reply
+    }
+
+    /// Call a tool; `Err` with its text when it reports an error.
+    fn call(&mut self, name: &str, arguments: Value) -> Result<Vec<Value>, String> {
+        let reply = self.request(
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        );
+        let result = &reply["result"];
+        let content = result["content"].as_array().unwrap().clone();
+        if result["isError"] == true {
+            return Err(content[0]["text"].as_str().unwrap().to_string());
+        }
+        Ok(content)
+    }
+
+    fn text(&mut self, name: &str, arguments: Value) -> String {
+        let content = self
+            .call(name, arguments)
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        content
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn decode_base64(text: &str) -> Vec<u8> {
+    let value = |c: u8| -> u32 {
+        match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a' + 26) as u32,
+            b'0'..=b'9' => (c - b'0' + 52) as u32,
+            b'+' => 62,
+            _ => 63,
+        }
+    };
+    let mut out = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let pad = chunk.iter().filter(|&&c| c == b'=').count();
+        let n = chunk
+            .iter()
+            .map(|&c| if c == b'=' { 0 } else { value(c) })
+            .fold(0u32, |acc, v| (acc << 6) | v);
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..3 - pad]);
+    }
+    out
+}
+
+#[test]
+fn the_handshake_lists_the_tools_without_needing_a_gpu() {
+    let mut agent = Agent::new();
+    let reply = agent.request("initialize", json!({ "protocolVersion": "2025-06-18" }));
+    assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
+    assert!(reply["result"]["capabilities"]["tools"].is_object());
+    let tools = agent.request("tools/list", json!({}));
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "open_scene",
+        "add_entity",
+        "render",
+        "check",
+        "simulate",
+        "undo",
+    ] {
+        assert!(names.contains(&expected), "{expected} in {names:?}");
+    }
+    for tool in tools["result"]["tools"].as_array().unwrap() {
+        assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
+    }
+}
+
+#[test]
+fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("runity-mcp-agent");
+    let _ = std::fs::remove_dir_all(&root);
+
+    let made = match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(content) => content,
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    };
+    assert!(made[0]["text"].as_str().unwrap().contains("made project"));
+
+    // A tower of one crate, placed and coloured in one step.
+    let crate_id = agent.text(
+        "add_entity",
+        json!({
+            "name": "crate",
+            "model": "builtin:cube",
+            "position": [0.0, 4.0, 0.0],
+            "material": "bark",
+            "body": "Dynamic",
+            "collider": "Box(half: (0.5, 0.5, 0.5))",
+        }),
+    );
+    assert_eq!(crate_id.len(), 16, "an id: {crate_id}");
+    let tree = agent.text("scene_tree", json!({}));
+    let line = tree.lines().find(|l| l.contains("\"crate\"")).unwrap();
+    assert!(line.starts_with(&crate_id), "{line}");
+    assert!(
+        line.contains("material=bark") && line.contains("(0.00, 4.00, 0.00)"),
+        "{line}"
+    );
+
+    // One step, so one undo takes all of it back, and redo returns it.
+    assert_eq!(agent.text("undo", json!({})), "undone");
+    assert!(!agent.text("scene_tree", json!({})).contains("\"crate\""));
+    assert_eq!(agent.text("redo", json!({})), "redone");
+
+    // A material name nothing answers to is legal — it draws grey — and
+    // `check` is where it is caught, with the fix.
+    agent.text(
+        "update_entity",
+        json!({ "id": crate_id, "material": "bakr" }),
+    );
+    agent.text("save_scene", json!({}));
+    let findings = agent.text("check", json!({}));
+    assert!(findings.contains("no material named `bakr`"), "{findings}");
+    assert!(findings.contains("did you mean `bark`?"), "{findings}");
+    agent.text(
+        "update_entity",
+        json!({ "id": crate_id, "material": "bark" }),
+    );
+
+    // Bad arguments are answered in words, and leave no step behind.
+    let err = agent
+        .call(
+            "update_entity",
+            json!({ "id": crate_id, "position": [1, 2] }),
+        )
+        .unwrap_err();
+    assert!(err.contains("position is [x, y, z]"), "{err}");
+    let err = agent
+        .call("delete_entity", json!({ "id": "nope" }))
+        .unwrap_err();
+    assert!(err.contains("16 hex digits"), "{err}");
+
+    // It looks at what it made.
+    let content = agent
+        .call(
+            "render",
+            json!({ "focus": crate_id, "width": 160, "height": 90 }),
+        )
+        .unwrap();
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["mimeType"], "image/png");
+    let png = decode_base64(content[0]["data"].as_str().unwrap());
+    let decoded = image::load_from_memory(&png).expect("a PNG");
+    assert_eq!((decoded.width(), decoded.height()), (160, 90));
+
+    // The crate falls when played, and the document does not change.
+    let ground = agent
+        .text("scene_tree", json!({}))
+        .lines()
+        .find(|l| l.contains("\"ground\""))
+        .unwrap()[..16]
+        .to_string();
+    agent.text(
+        "update_entity",
+        json!({ "id": ground, "body": "Static", "collider": "Box(half: (20.0, 0.05, 20.0))" }),
+    );
+    let report = agent.text("simulate", json!({ "seconds": 2.0 }));
+    let fell = report
+        .lines()
+        .find(|l| l.contains("\"crate\""))
+        .unwrap_or_else(|| panic!("{report}"));
+    assert!(!fell.contains("4.00, 0.00)"), "it moved: {fell}");
+    assert!(agent
+        .text("scene_tree", json!({}))
+        .contains("(0.00, 4.00, 0.00)"));
+
+    // And the file says what the edits said.
+    agent.text("save_scene", json!({}));
+    let saved = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();
+    assert!(saved.contains(&format!("id: \"{crate_id}\"")), "{saved}");
+    assert!(saved.contains("Dynamic"), "{saved}");
+    assert_eq!(agent.text("check", json!({})), "clean");
+}

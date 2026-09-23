@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "runity": {
+      "command": "cargo",
+      "args": ["run", "-q", "--release", "-p", "runity-mcp"]
+    }
+  }
+}
