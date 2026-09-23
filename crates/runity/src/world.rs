@@ -599,6 +599,20 @@ pub(crate) fn dress(
             let _ = world.remove_one::<Pressing>(entity);
         }
     }
+    // Ground made from its numbers: its mesh comes when it is first drawn
+    // (`terrain::upload_terrains`), and again only if they changed.
+    if let Some(terrain) = desc.terrain {
+        let same = world
+            .get::<&crate::terrain::Relief>(entity)
+            .is_ok_and(|r| r.terrain == terrain);
+        if !same {
+            let _ = world.remove_one::<Model>(entity);
+            let _ = world.insert_one(entity, crate::terrain::Relief::new(terrain));
+        }
+        let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
+        return;
+    }
+    let _ = world.remove_one::<crate::terrain::Relief>(entity);
     // No model is nothing to draw — a probe, a decal, a light, an empty to
     // hang children on — not a model that could not be found.
     if desc.model.is_empty() {
@@ -1588,6 +1602,7 @@ mod tests {
             reflection_probe: None,
             decal: None,
             footprints: None,
+            terrain: None,
             bends_grass: 0.0,
             route: None,
             layer: Default::default(),
@@ -1625,6 +1640,7 @@ mod tests {
                     reflection_probe: None,
                     decal: None,
                     footprints: None,
+                    terrain: None,
                     bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),

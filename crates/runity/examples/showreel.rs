@@ -328,6 +328,7 @@ fn render_shot(
         },
         |name| library.as_ref()?.material_by_name(name),
     );
+    runity::terrain::upload_terrains(&mut world, gpu, &mut renderer);
     for problem in runity::world::upload_material_maps(&world, library.as_ref(), gpu, &mut renderer)
     {
         eprintln!("{problem}");

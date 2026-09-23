@@ -44,6 +44,7 @@ fn entity_fields() -> Value {
         "route": { "type": "string", "description": "RON: travels by itself — (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends: Back|Loop|Stop, smooth: true, pause: 1.0), points from where it stands; with a Kinematic body it carries what stands on it (a lift, a moving platform); or None" },
         "decal": { "type": "string", "description": "RON: a decal's box, centred here and pressed down its -y — (size: (2.0, 1.0, 2.0)); the entity's material is the picture (base map, alpha, normal map) — or None" },
         "footprints": { "type": "string", "description": "RON: leaves prints in the ground as it walks and kicks up dust at each step — (stride: 0.75, stance: 0.12, size: 0.28, depth: 0.03, lasts: 60.0, dust: 1.0, feet: 0.9, color: (0.62, 0.46, 0.3)); feet is how far below its origin its feet are; or None" },
+        "terrain": { "type": "string", "description": "RON: ground shaped from numbers, centred here, wind along its +x — (size: 400.0, cells: 256, dunes: (height: 8.0, wavelength: 60.0, sinuosity: 0.5, barchans: 0.4, seed: 1)); give it material (shading: Sand) and collider: Model to walk on it; or None" },
         "reflection_probe": { "type": "string", "description": "RON: a reflection probe's box, centred here — (size: (8.0, 4.0, 8.0)); box_projection: false, blend_distance: 1.0 — what polished things in it reflect instead of the sky; or None" },
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
@@ -1629,6 +1630,16 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
             Some(
                 ron::from_str::<runity::footprints::Footprints>(&prints)
                     .map_err(|e| format!("footprints: {e}"))?,
+            )
+        };
+    }
+    if let Some(ground) = optional_string(args, "terrain")? {
+        desc.terrain = if ground.trim() == "None" {
+            None
+        } else {
+            Some(
+                ron::from_str::<runity::terrain::Terrain>(&ground)
+                    .map_err(|e| format!("terrain: {e}"))?,
             )
         };
     }

@@ -38,6 +38,7 @@ pub mod dialogue;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod edit;
+pub mod exposure;
 pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
@@ -90,6 +91,7 @@ pub mod steam;
 pub mod strings;
 pub mod surface;
 pub mod taa;
+pub mod terrain;
 pub mod time;
 pub mod timers;
 pub mod tuned;

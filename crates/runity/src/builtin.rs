@@ -14,7 +14,7 @@
 
 use crate::asset::{AssetId, Bounds, MeshAsset, Submesh, Vertex};
 
-fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset {
+pub(crate) fn finish(name: &str, vertices: Vec<Vertex>, indices: Vec<u32>) -> MeshAsset {
     MeshAsset {
         id: AssetId::from_source(&format!("builtin:{name}"), 0),
         name: name.to_string(),
