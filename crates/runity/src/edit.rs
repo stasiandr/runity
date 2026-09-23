@@ -333,6 +333,7 @@ pub fn duplicate(scene: &mut Scene, id: EntityId) -> Option<EntityId> {
     ) -> Option<EntityId> {
         if let Some(position) = entities.iter().position(|e| e.id == id) {
             let mut copy = entities[position].clone();
+            copy.name = numbered(entities, &copy.name);
             forget_ids(&mut copy);
             crate::scene::assign_ids(std::slice::from_mut(&mut copy), taken);
             let copied = copy.id;
@@ -345,6 +346,30 @@ pub fn duplicate(scene: &mut Scene, id: EntityId) -> Option<EntityId> {
     }
     let mut taken: HashSet<EntityId> = scene.ids().into_iter().collect();
     walk(&mut scene.entities, id, &mut taken)
+}
+
+/// A copy's name among its siblings, as Unity numbers them: `crate` then
+/// `crate (1)`, and a copy of `crate (1)` is the next free number, not
+/// `crate (1) (1)`. Twelve posts in a row are twelve names in the tree.
+fn numbered(siblings: &[EntityDesc], name: &str) -> String {
+    let base_of = |name: &str| -> (String, Option<u32>) {
+        if let Some(open) = name.rfind(" (") {
+            let number = &name[open + 2..];
+            if let Some(n) = number.strip_suffix(')').and_then(|n| n.parse().ok()) {
+                return (name[..open].to_string(), Some(n));
+            }
+        }
+        (name.to_string(), None)
+    };
+    let (base, _) = base_of(name);
+    let highest = siblings
+        .iter()
+        .map(|e| base_of(&e.name))
+        .filter(|(b, _)| *b == base)
+        .map(|(_, n)| n.unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    format!("{base} ({})", highest + 1)
 }
 
 /// `count` more copies of an entity, each `step` further along from the
@@ -654,7 +679,7 @@ mod tests {
                 "root",
                 "child",
                 "grandchild",
-                "root",
+                "root (1)",
                 "child",
                 "grandchild",
                 "other"
@@ -662,6 +687,11 @@ mod tests {
         );
         assert_ne!(copy, root);
         assert_eq!(scene.entities[1].id, copy, "right after the original");
+        // A copy of a copy takes the next free number.
+        duplicate(&mut scene, copy).unwrap();
+        duplicate(&mut scene, root).unwrap();
+        let tops: Vec<&str> = scene.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(tops, ["root", "root (3)", "root (1)", "root (2)", "other"]);
     }
 
     #[test]

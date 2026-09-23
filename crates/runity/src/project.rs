@@ -1082,7 +1082,10 @@ mod tests {
         // The game picks the scene by name at run time, not the project's
         // name baked in by the template.
         let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
-        assert!(main.contains("format!(\"scenes/{}.ron\", playing)"), "{main}");
+        assert!(
+            main.contains("format!(\"scenes/{}.ron\", playing)"),
+            "{main}"
+        );
         let e = project.new_scene("main").unwrap_err();
         assert!(e.contains("already there"), "{e}");
         assert!(project.new_scene("Cave Two").is_err());

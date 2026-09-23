@@ -2197,6 +2197,32 @@ impl Session {
                 ));
             }
         }
+        // Every camera the game can look through, as its frustum.
+        {
+            let arm = self.gizmo_arm_mesh();
+            let unseen = self.unseen();
+            let (w, h) = self.size();
+            let aspect = w as f32 / h.max(1) as f32;
+            for (desc, placed) in self.instanced.scene.flatten() {
+                let Some(lens) = desc.camera else {
+                    continue;
+                };
+                if unseen.contains(&desc.id) {
+                    continue;
+                }
+                let at = placed.w_axis.truncate();
+                let thickness = (self.camera.apparent_distance(at) * 0.0015).max(0.004);
+                frame.overlay_draws.extend(gizmo::camera_draws(
+                    arm,
+                    lens,
+                    placed,
+                    aspect,
+                    2.0,
+                    thickness,
+                    gizmo::camera_color(),
+                ));
+            }
+        }
         // What is selected, outlined, parts and children included.
         let selection = self.selection_roots();
         if !selection.is_empty() {

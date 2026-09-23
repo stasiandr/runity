@@ -301,6 +301,11 @@ pub fn collider_color(body: crate::scene::Body) -> Material {
     Material::new(r, g, b).unlit()
 }
 
+/// A camera's frustum: a quiet white, like Unity's.
+pub fn camera_color() -> Material {
+    Material::new(0.9, 0.9, 0.9).unlit()
+}
+
 /// What is selected is outlined in this: Unity's orange.
 pub fn selection_color() -> Material {
     Material::new(1.0, 0.42, 0.0).unlit()
@@ -418,6 +423,56 @@ pub fn collider_draws(
             }
         }
     }
+    lines(arm, segments, frame, thickness, material)
+}
+
+/// A camera as lines: where it stands and what it sees, `depth` metres out
+/// — Unity's camera gizmo. Along the entity's +z, as the camera looks; a
+/// box for an orthographic one. `aspect` is the view's width over height.
+pub fn camera_draws(
+    arm: MeshHandle,
+    lens: crate::scene::Lens,
+    placed: Mat4,
+    aspect: f32,
+    depth: f32,
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
+    let (_, rotation, translation) = placed.to_scale_rotation_translation();
+    let frame = Mat4::from_rotation_translation(rotation, translation);
+    let (near_half, far_half) = match lens.ortho {
+        Some(half) => (half, half),
+        None => (0.0, (lens.fov_deg.to_radians() * 0.5).tan() * depth),
+    };
+    let corners = |half: f32, z: f32| {
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+            .map(|(x, y)| Vec3::new(x * half * aspect, y * half, z))
+    };
+    let (near, far) = (corners(near_half, 0.0), corners(far_half, depth));
+    let mut segments = Vec::with_capacity(12);
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        segments.push((far[i], far[j]));
+        segments.push((near[i], far[i]));
+        if lens.ortho.is_some() {
+            segments.push((near[i], near[j]));
+        }
+    }
+    // Which way is up in the picture: a mark over the far edge.
+    let top = Vec3::new(0.0, far_half * 1.3, depth);
+    segments.push((far[2], top));
+    segments.push((far[3], top));
+    lines(arm, segments, frame, thickness, material)
+}
+
+/// Line segments in `frame`'s space as thin boxes.
+fn lines(
+    arm: MeshHandle,
+    segments: Vec<(Vec3, Vec3)>,
+    frame: Mat4,
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
     segments
         .into_iter()
         .filter_map(|(a, b)| {
@@ -837,6 +892,53 @@ mod tests {
             x_arm.z < 0.0 && x_arm.x.abs() < 1e-3,
             "drawn where it is grabbed: {x_arm}"
         );
+    }
+
+    #[test]
+    fn a_camera_is_drawn_opening_the_way_it_looks() {
+        let lens = crate::scene::Lens {
+            fov_deg: 90.0,
+            priority: 0,
+            ortho: None,
+        };
+        // Turned round: it looks along the world's −z.
+        let placed = Mat4::from_rotation_translation(
+            Quat::from_rotation_y(std::f32::consts::PI),
+            Vec3::new(0.0, 1.0, 5.0),
+        );
+        let draws = camera_draws(
+            MeshHandle::TEST,
+            lens,
+            placed,
+            2.0,
+            3.0,
+            0.01,
+            camera_color(),
+        );
+        assert_eq!(
+            draws.len(),
+            10,
+            "four far edges, four from the eye, the up mark"
+        );
+        let farthest = draws
+            .iter()
+            .map(|d| d.transform.w_axis.z)
+            .fold(f32::MAX, f32::min);
+        assert!(farthest < 5.0 - 1.4, "out along −z: {farthest}");
+        let ortho = crate::scene::Lens {
+            ortho: Some(4.0),
+            ..lens
+        };
+        let boxed = camera_draws(
+            MeshHandle::TEST,
+            ortho,
+            placed,
+            2.0,
+            3.0,
+            0.01,
+            camera_color(),
+        );
+        assert_eq!(boxed.len(), 14, "a box: the near face too");
     }
 
     #[test]
