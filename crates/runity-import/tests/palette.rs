@@ -145,18 +145,21 @@ fn editing_the_hex_changes_what_the_scene_draws() {
     // This is the loop the whole asset pipeline exists to make short: change
     // a colour in a text file, and a library that is already open picks it up
     // without being reopened and without the scene being touched.
-    let dir = temp("edit");
-    let library_dir = dir.join("library");
-    write_material(&dir, &library_dir, "clay", r##"(color: "#8a5a3c")"##);
-    let (mut library, _) = Library::open(&library_dir).unwrap();
+    let root = temp("edit");
+    std::fs::remove_dir_all(&root).unwrap();
+    let project = runity::Project::create(&root, "edit").unwrap();
+    let source = project.materials().join("clay.rmat");
+    std::fs::write(&source, r##"(color: "#8a5a3c")"##).unwrap();
+    runity_import::import_into(&project, &source, None).unwrap();
+    let (mut library, _) = Library::open(project.library()).unwrap();
     let before = library.material_by_name("clay").unwrap();
 
-    std::fs::write(dir.join("clay.rmat"), r##"(color: "#3c5a8a")"##).unwrap();
-    touch_forward(&dir.join("clay.rmat"));
-    let done = runity_import::reimport_changed(&library_dir, &dir);
+    std::fs::write(&source, r##"(color: "#3c5a8a")"##).unwrap();
+    touch_forward(&source);
+    let done = runity_import::sync(&project);
     assert_eq!(done.len(), 1, "the one changed material");
     assert!(done[0].result.is_ok(), "{:?}", done[0].result);
-    touch_forward(&library_dir.join("clay.rasset"));
+    touch_forward(&runity_import::asset_for(&source, &project.library()));
 
     let changed = library.reload_changed();
     assert_eq!(changed.len(), 1);
@@ -195,7 +198,7 @@ fn a_colour_that_is_not_a_colour_says_so_instead_of_importing_black() {
         "the error should name the problem: {message}"
     );
     assert!(
-        !dir.join("library").join("broken.rasset").exists(),
+        !dir.join("library").join("broken.rmat.rasset").exists(),
         "and nothing should have been written"
     );
 }
@@ -224,9 +227,16 @@ fn the_example_palette_stands_in_for_the_builtins() {
             "examples/valley/materials/{}",
             path.file_name().unwrap().to_string_lossy()
         );
-        runity_import::import_file(
+        // The sidecar goes beside the temporary library, not beside the
+        // committed source: a test must not write into the repository.
+        let sidecar = library_dir.parent().unwrap().join(format!(
+            "{}.rimport",
+            path.file_name().unwrap().to_string_lossy()
+        ));
+        runity_import::import_to(
             &path,
             &library_dir,
+            &sidecar,
             runity_import::ImportSettings::for_source(relative),
         )
         .unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, Draw, FogSettings, Frame, Lighting, ShadowSettings, TextureHandle};
 use runity::{builtin, Gpu, Library, OffscreenTarget, Renderer};
-use runity_import::{import_file, ImportSettings};
+use runity_import::ImportSettings;
 
 const SIZE: u32 = 192;
 
@@ -91,9 +91,12 @@ fn a_texture_from_the_library_reaches_the_pixels() {
     let out_dir = std::env::temp_dir().join("runity-textured");
     let _ = std::fs::remove_dir_all(&out_dir);
     let library_dir = out_dir.join("library");
-    import_file(
+    // Sidecar into the temp dir, not beside the committed image: a test
+    // must not write into the repository it is testing.
+    runity_import::import_to(
         &source,
         &library_dir,
+        &out_dir.join("valley_atlas.png.rimport"),
         ImportSettings::for_source("examples/valley/assets/textures/valley_atlas.png"),
     )
     .expect("importing a committed image");

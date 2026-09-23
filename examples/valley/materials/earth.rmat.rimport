@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/earth.rmat",
+    hash: "5cb273f7b9fa9e449d5ec24207c075d3",
+    id: Some("6d122e020544e9940d569b688d7793fc"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

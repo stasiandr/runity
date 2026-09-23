@@ -18,5 +18,10 @@ with no library at all; keep it that way.
 * Every entity has an `id`: sixteen hex digits, unique in its file. When
   writing one by hand, leave it out and the engine assigns one on load;
   never copy an existing one.
-* Unlike a generated project this one has no `.gitattributes`: it lives
-  inside the engine's repository, which does not use Git LFS.
+* Every source in `assets/` and `materials/` has its `.rimport` beside it,
+  committed. After adding or changing one, run
+  `cargo run -p runity-import -- --sync examples/valley` and commit what it
+  writes; a test fails when a sidecar is missing or stale.
+* Unlike a generated project this one has no `.gitattributes` of its own:
+  it lives inside the engine's repository, which does not use Git LFS, and
+  whose root `.gitattributes` keeps text LF.

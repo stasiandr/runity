@@ -132,11 +132,14 @@ cargo run --release --example scene_shot -- examples/valley/scenes/my-scene.ron
 девятнадцати сценам. `builtin:stone` — если нужен именно встроенный.
 
 ```
-cargo run -p runity-import -- examples/valley/materials/*.rmat --library examples/valley/library
+cargo run -p runity-import -- --sync examples/valley
 ```
 
-Рядом с `.rasset` ложится `.rimport` — из чего и с какими настройками он
-собран, текстом. Без этого импорт был бы дорогой в одну сторону.
+Библиотека (`library/`) производная и не коммитится: `--sync` собирает её из
+исходников. Рядом с каждым исходником лежит `.rimport` — путь относительно
+проекта, хэш содержимого, ID ассета и настройки импорта, текстом. Он
+коммитится, поэтому свежий клон собирает ту же библиотеку с теми же ID, а
+переехавший файл находится по хэшу и сохраняет и настройки, и ID.
 
 ## Лицензия
 

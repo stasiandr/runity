@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, Draw, FogSettings, Frame, Lighting, Pose, ShadowSettings};
 use runity::{Gpu, Library, MeshAsset, OffscreenTarget, Renderer, TextureHandle};
-use runity_import::{import_file, ImportSettings};
+use runity_import::ImportSettings;
 
 const SIZE: u32 = 192;
 
@@ -85,9 +85,11 @@ fn a_pose_moves_the_vertices_the_gpu_draws() {
     let out_dir = std::env::temp_dir().join("runity-skinning");
     let _ = std::fs::remove_dir_all(&out_dir);
     let library_dir = out_dir.join("library");
-    import_file(
-        fixture("skinned_banner.gltf"),
+    // Sidecar into the temp dir: a test must not write into the repository.
+    runity_import::import_to(
+        &fixture("skinned_banner.gltf"),
         &library_dir,
+        &out_dir.join("skinned_banner.gltf.rimport"),
         ImportSettings {
             origin_to_base: false,
             ..ImportSettings::for_source("skinned_banner.gltf")
@@ -148,9 +150,10 @@ fn a_mesh_drawn_without_a_pose_stands_in_its_bind_position() {
     let out_dir = std::env::temp_dir().join("runity-skinning-bind");
     let _ = std::fs::remove_dir_all(&out_dir);
     let library_dir = out_dir.join("library");
-    import_file(
-        fixture("skinned_banner.gltf"),
+    runity_import::import_to(
+        &fixture("skinned_banner.gltf"),
         &library_dir,
+        &out_dir.join("skinned_banner.gltf.rimport"),
         ImportSettings {
             origin_to_base: false,
             ..ImportSettings::for_source("skinned_banner.gltf")

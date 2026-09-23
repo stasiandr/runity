@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/models/logs_bundle.obj",
+    hash: "820fcdcfd5b4c544d8d9fe78a873d098",
+    id: Some("e86face2716a7ecdc7b726d77818cb0f"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

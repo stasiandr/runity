@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/stone.rmat",
+    hash: "fdca9d4c4cfa97c345e9d3f2fadf7eef",
+    id: Some("05fd240e3f2613352b521b3ae685c7cf"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/models/pine_large.obj",
+    hash: "7298d91d07976ff9a180d420024ae635",
+    id: Some("cddfce4e97433574eb861ddd58d4da61"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

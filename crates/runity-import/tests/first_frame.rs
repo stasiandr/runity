@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use runity::render::{Camera, Draw, FogSettings, Frame, Lighting};
 use runity::{Gpu, Library, MeshAsset, OffscreenTarget, Renderer};
-use runity_import::{import_file, ImportSettings};
+use runity_import::ImportSettings;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -67,7 +67,15 @@ fn a_source_model_becomes_a_frame() {
     let library_dir = out_dir.join("library");
     let mut settings = ImportSettings::for_source("tests/fixtures/conifer.obj");
     settings.recompute_normals = true;
-    import_file(&source, &library_dir, settings).expect("importing the fixture");
+    // The sidecar goes to the temp dir with the library: a test must not
+    // write into the repository it is testing.
+    runity_import::import_to(
+        &source,
+        &library_dir,
+        &out_dir.join("conifer.obj.rimport"),
+        settings,
+    )
+    .expect("importing the fixture");
 
     // 2. Open it the way the game will: by library, with no parser in sight.
     let (library, problems) = Library::open(&library_dir).expect("opening the library");

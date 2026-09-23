@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/models/wall_unfinished.obj",
+    hash: "378e8548ba99d2f267d7f028cc682511",
+    id: Some("464af18b77eafc1b4fdbb942fcfe3f8b"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

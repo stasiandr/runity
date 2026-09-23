@@ -112,6 +112,38 @@ impl std::fmt::Display for AssetId {
     }
 }
 
+impl std::str::FromStr for AssetId {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let digits = text.trim();
+        if digits.is_empty() || digits.len() > 32 || !digits.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(format!("asset id {text:?} is not up to 32 hex digits"));
+        }
+        u128::from_str_radix(digits, 16)
+            .map(AssetId)
+            .map_err(|e| e.to_string())
+    }
+}
+
+// Text, for the `.rimport` sidecar: an asset's ID is minted once, written
+// there, and kept when the source moves — which is what lets a scene and a
+// library go on meaning the same asset. Hex rather than a number, because a
+// 128-bit integer is exactly what text tools and models mangle.
+impl serde::Serialize for AssetId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AssetId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 /// One vertex, in the layout the vertex buffer uses.
 ///
 /// `repr(C)` because this is uploaded to the GPU as-is; the archived form and

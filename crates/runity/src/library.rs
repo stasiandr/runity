@@ -39,6 +39,23 @@ fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
     }
 }
 
+/// The name an asset was built with — its source file's stem — read from
+/// the asset itself.
+///
+/// Not from the library file's name: that is the importer's business, and
+/// it is `stone.rmat.rasset` beside `stone.obj.rasset` precisely so that two
+/// sources with one stem do not overwrite each other. The name a scene uses
+/// is the one inside.
+fn name_of(bytes: &[u8], kind: AssetKind) -> Option<String> {
+    let name = match kind {
+        AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok()?.name.as_str(),
+        AssetKind::Texture => asset::view::<TextureAsset>(bytes).ok()?.name.as_str(),
+        AssetKind::Sound => asset::view::<SoundAsset>(bytes).ok()?.name.as_str(),
+        AssetKind::Material => asset::view::<MaterialAsset>(bytes).ok()?.name.as_str(),
+    };
+    Some(name.to_string())
+}
+
 /// One asset's bytes, plus where they came from.
 struct Entry {
     bytes: Vec<u8>,
@@ -51,8 +68,8 @@ struct Entry {
     /// and can ask. Polling a few dozen timestamps costs nothing beside a
     /// frame.
     modified: Option<std::time::SystemTime>,
-    /// The file stem, which is what a hand-written scene uses to name a model
-    /// before an editor exists to write ids.
+    /// The name inside the asset — its source's file stem — which is what a
+    /// hand-written scene uses to name a model.
     name: String,
 }
 
@@ -119,10 +136,7 @@ impl Library {
         // lookup is a cast into bytes already known to be sound.
         let id = id_of(&bytes, kind)
             .ok_or_else(|| AssetError::Corrupt(format!("{kind:?} body did not validate")))?;
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = name_of(&bytes, kind).unwrap_or_default();
 
         let index = self.entries.len();
         self.entries.push(Entry {

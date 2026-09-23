@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/models/pine_medium.obj",
+    hash: "e9846fe6ac681ec82e45cf6a2b22f074",
+    id: Some("674727cf3b60d6f84bd64834a6e0f61f"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

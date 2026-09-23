@@ -477,7 +477,9 @@ impl Scene {
         // struct — so a scene the editor saved would not open again. A
         // round trip that only fails on the way back is the worst kind.
         let pretty = ron::ser::PrettyConfig::new().depth_limit(4);
-        let text = ron::ser::to_string_pretty(self, pretty)?;
+        // A trailing newline, because every text editor adds one: without
+        // it, the first hand edit shows a change on a line nobody touched.
+        let text = ron::ser::to_string_pretty(self, pretty)? + "\n";
         std::fs::write(path.as_ref(), text)?;
         Ok(())
     }

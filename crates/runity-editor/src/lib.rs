@@ -504,10 +504,19 @@ impl Session {
         std::fs::create_dir_all(&source_dir)?;
         let source = source_dir.join(format!("{name}.rmat"));
         std::fs::write(&source, text)?;
-        let settings =
-            runity_import::ImportSettings::for_source(source.to_string_lossy().into_owned());
-        runity_import::import_file(&source, &library_dir, settings)
-            .map_err(|e| EditError::Import(format!("{e:#}")))?;
+        match &self.project {
+            Some(project) => {
+                runity_import::import_into(project, &source, None)
+                    .map_err(|e| EditError::Import(format!("{e:#}")))?;
+            }
+            None => {
+                let settings = runity_import::ImportSettings::for_source(
+                    source.to_string_lossy().into_owned(),
+                );
+                runity_import::import_file(&source, &library_dir, settings)
+                    .map_err(|e| EditError::Import(format!("{e:#}")))?;
+            }
+        }
         self.reopen_library()?;
 
         self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
@@ -619,23 +628,38 @@ impl Session {
 
     // --- the library ----------------------------------------------------
 
-    /// Import a source file into the open library: drag-and-drop.
+    /// Import a source file: drag-and-drop.
     ///
     /// The editor is the one side that links the importer, so a model
     /// dropped on a window becomes an asset without anybody running a
     /// command. The shipped game still links none of it.
-    pub fn import(&mut self, source: impl AsRef<Path>) -> EditResult<()> {
+    ///
+    /// Into the project's library, named relative to the project. A source
+    /// from outside the project is imported by absolute path, and the
+    /// warning that comes back says a clone elsewhere will not find it —
+    /// that is for the editor to show, not to swallow.
+    pub fn import(&mut self, source: impl AsRef<Path>) -> EditResult<Vec<String>> {
         let source = source.as_ref();
-        let library_dir = self.library_dir.clone().ok_or(EditError::NoLibrary)?;
-        // The sidecar records the path as given. An absolute path from here
-        // is a known departure from the DNA's decision on source paths —
-        // relative to the project, plus a content hash — which lands with
-        // the project layout, where "the project" first means something.
-        let settings =
-            runity_import::ImportSettings::for_source(source.to_string_lossy().into_owned());
-        runity_import::import_file(source, &library_dir, settings)
-            .map_err(|e| EditError::Import(format!("{e:#}")))?;
-        self.reopen_library()
+        let warnings = match &self.project {
+            Some(project) => {
+                let report = runity_import::import_into(project, source, None)
+                    .map_err(|e| EditError::Import(format!("{e:#}")))?;
+                report.warning.into_iter().collect()
+            }
+            // A scene in no project, with a library set by hand: imported
+            // there, with its sidecar beside the source as always.
+            None => {
+                let library_dir = self.library_dir.clone().ok_or(EditError::NoLibrary)?;
+                let settings = runity_import::ImportSettings::for_source(
+                    source.to_string_lossy().into_owned(),
+                );
+                runity_import::import_file(source, &library_dir, settings)
+                    .map_err(|e| EditError::Import(format!("{e:#}")))?;
+                Vec::new()
+            }
+        };
+        self.reopen_library()?;
+        Ok(warnings)
     }
 
     /// Rebuild what changed on disk and re-read it: the hot loop.
@@ -645,19 +669,20 @@ impl Session {
     /// library re-reads exactly those, so a colour tweaked in a text file
     /// shows up in the viewport without anything being reopened.
     pub fn reload_assets(&mut self) -> usize {
-        let Some(library_dir) = self.library_dir.clone() else {
-            return 0;
-        };
-        // Sidecars written by this editor hold absolute paths, which ignore
-        // the root; ones written by the command line are relative to the
-        // project.
-        let root = self
-            .project
-            .as_ref()
-            .map(|p| p.root().to_path_buf())
-            .unwrap_or_else(|| library_dir.clone());
-        runity_import::reimport_changed(&library_dir, &root);
-
+        // In a project the sources are the truth: whatever changed, moved
+        // or appeared in `assets/` and `materials/` is rebuilt first, and the
+        // library read again if anything was. Without one there are no
+        // sources to look at, only a library to re-read.
+        if let Some(project) = &self.project {
+            let synced = runity_import::sync(project);
+            let changed = synced.iter().filter(|r| r.result.is_ok()).count();
+            if changed > 0 {
+                // New and moved assets are files the open library has never
+                // seen, so it is read again rather than refreshed.
+                let _ = self.reopen_library();
+            }
+            return changed;
+        }
         let Some(library) = self.library.as_mut() else {
             return 0;
         };

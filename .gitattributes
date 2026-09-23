@@ -1,0 +1,3 @@
+# Text as LF on every machine: a .rimport stores a hash of its source's
+# bytes, and a CRLF checkout would change every one of them.
+* text=auto eol=lf

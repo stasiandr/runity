@@ -7,17 +7,22 @@
 //!
 //! Every import leaves two files behind:
 //!
-//! * `<name>.rasset` — the binary the runtime opens.
-//! * `<name>.rimport` — the settings it was built with, and where it came
-//!   from, in RON.
+//! * `<source>.rasset` in the library — the binary the runtime opens.
+//!   Derived: the library is never committed, and a clone rebuilds it.
+//! * `<source>.rimport` beside the source — the settings it was built with,
+//!   where the source is, a hash of what the source held, and the asset's
+//!   ID, in RON. Authored: committed, and diffed.
 //!
-//! The second one is the part that is easy to skip and expensive to add
-//! later. Without it an import is a one-way trip: you can see that an asset
-//! exists but not what produced it, so nothing can be rebuilt when the
-//! importer improves, and a changed source file cannot be noticed. With it,
-//! re-import is just "read the sidecar, run it again" — and because it is
-//! text, a diff shows when someone changed a scale factor, which a binary
-//! never would.
+//! The sidecar is the part that is easy to skip and expensive to add later.
+//! Without it an import is a one-way trip: you can see that an asset exists
+//! but not what produced it, so nothing can be rebuilt when the importer
+//! improves, and a changed source file cannot be noticed. With it, re-import
+//! is "read the sidecar, run it again" — and because it is text, a diff
+//! shows when someone changed a scale factor, which a binary never would.
+//!
+//! It sits beside its source rather than in the library because the library
+//! is derived and the settings are not (DNA, postulate 2): a sidecar in a
+//! folder nobody commits is settings nobody keeps.
 
 use std::path::{Path, PathBuf};
 
@@ -30,13 +35,28 @@ use runity::asset::{
 use runity::material::{Material, Shading};
 use serde::{Deserialize, Serialize};
 
-/// What the importer was told to do, stored beside its output.
+/// What the importer was told to do: the `.rimport` beside a source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportSettings {
-    /// Where the source sat, relative to the project root. Kept so a
-    /// re-import knows what to read, and so a missing source is a message
-    /// rather than a mystery.
+    /// Where the source is: relative to the project, with forward slashes,
+    /// or an absolute path for a source outside it. Kept so a re-import
+    /// knows what to read, and so a missing source is a message rather than
+    /// a mystery.
     pub source: String,
+    /// A hash of what the source held when it was last imported.
+    ///
+    /// What decides whether a source changed — not its modification time,
+    /// which a checkout, a copy or a sync tool moves without changing a
+    /// byte (DNA, "Принятые решения"). And what finds a source that moved:
+    /// the file that turned up with the same contents is the same file.
+    #[serde(default)]
+    pub hash: String,
+    /// The asset's identity, minted on the first import and kept after.
+    ///
+    /// Stored rather than derived from the path, so moving a source does not
+    /// turn its asset into a different one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<AssetId>,
     /// Uniform scale applied on the way in. Kits disagree about units; the
     /// engine works in meters and the disagreement is settled here, once,
     /// rather than by a scale on every instance in every scene.
@@ -59,6 +79,8 @@ impl Default for ImportSettings {
     fn default() -> Self {
         Self {
             source: String::new(),
+            hash: String::new(),
+            id: None,
             scale: 1.0,
             recompute_normals: false,
             srgb: true,
@@ -83,9 +105,57 @@ impl ImportSettings {
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
         let pretty = ron::ser::PrettyConfig::new().struct_names(true);
-        std::fs::write(path.as_ref(), ron::ser::to_string_pretty(self, pretty)?)?;
+        std::fs::write(
+            path.as_ref(),
+            ron::ser::to_string_pretty(self, pretty)? + "\n",
+        )?;
         Ok(())
     }
+
+    /// The asset's ID: the one stored, or on a first import one derived
+    /// from where the source is — deterministic, so importing the same file
+    /// twice in two fresh clones gives the same ID.
+    pub fn asset_id(&self) -> AssetId {
+        self.id
+            .unwrap_or_else(|| AssetId::from_source(&self.source, 0))
+    }
+}
+
+/// Where a source's sidecar goes: beside it, as `<file>.rimport`.
+pub fn sidecar_for(source: &Path) -> PathBuf {
+    let mut name = source.as_os_str().to_owned();
+    name.push(".rimport");
+    PathBuf::from(name)
+}
+
+/// Where a source's built asset goes in a library: `<file>.rasset`.
+///
+/// The whole file name, extension included, so `stone.rmat` and `stone.obj`
+/// build to two assets rather than one overwriting the other. The library
+/// finds assets by the name inside them, not by this.
+pub fn asset_for(source: &Path, library: &Path) -> PathBuf {
+    let name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "asset".into());
+    library.join(format!("{name}.rasset"))
+}
+
+/// A hash of a file's contents, as the hex a sidecar stores.
+///
+/// FNV-1a, 128 bits: specified, so every machine and every build computes
+/// the same value for the same bytes — which a committed hash needs and
+/// the standard library's hasher does not promise. Not cryptographic, and
+/// it does not need to be: nobody is forging textures.
+pub fn content_hash(path: &Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    for byte in bytes {
+        hash ^= byte as u128;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    Ok(format!("{hash:032x}"))
 }
 
 fn yes() -> bool {
@@ -185,7 +255,7 @@ pub fn mesh_from_obj(path: impl AsRef<Path>, settings: &ImportSettings) -> Resul
         .unwrap_or_else(|| "mesh".into());
 
     Ok(MeshAsset {
-        id: AssetId::from_source(&settings.source, 0),
+        id: settings.asset_id(),
         name,
         bounds: Bounds::of(&vertices),
         vertices,
@@ -382,7 +452,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
 
     Ok(MeshAsset {
-        id: AssetId::from_source(&settings.source, 0),
+        id: settings.asset_id(),
         name: path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -534,7 +604,7 @@ pub fn texture_from_image(
     let pixels = image.into_raw();
     let mips = build_mips(width, height, &pixels, settings.srgb);
     Ok(TextureAsset {
-        id: AssetId::from_source(&settings.source, 0),
+        id: settings.asset_id(),
         name: path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -658,7 +728,7 @@ pub fn sound_from_wav(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     };
 
     Ok(SoundAsset {
-        id: AssetId::from_source(&settings.source, 0),
+        id: settings.asset_id(),
         name: path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -728,7 +798,7 @@ pub fn material_from_ron(
     let source: MaterialSource =
         ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
     Ok(MaterialAsset {
-        id: AssetId::from_source(&settings.source, 0),
+        id: settings.asset_id(),
         name: path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -744,16 +814,29 @@ pub fn material_from_ron(
     })
 }
 
-/// Import one source file into `library`, writing both the asset and its
-/// sidecar.
+/// Import one source file into `library`, with its sidecar beside it.
 pub fn import_file(
     source: impl AsRef<Path>,
     library: impl AsRef<Path>,
     settings: ImportSettings,
 ) -> Result<Imported> {
     let source = source.as_ref();
-    let library = library.as_ref();
+    import_to(source, library.as_ref(), &sidecar_for(source), settings)
+}
+
+/// Import one source file into `library`, writing its sidecar at `sidecar`.
+///
+/// The hash and the ID are filled in on the way: the hash of what was just
+/// read, and the ID the settings already had or the one this import mints.
+pub fn import_to(
+    source: &Path,
+    library: &Path,
+    sidecar: &Path,
+    mut settings: ImportSettings,
+) -> Result<Imported> {
     std::fs::create_dir_all(library)?;
+    settings.hash = content_hash(source).with_context(|| format!("{}", source.display()))?;
+    settings.id = Some(settings.asset_id());
 
     let extension = source
         .extension()
@@ -803,87 +886,307 @@ pub fn import_file(
         other => anyhow::bail!("no importer for .{other} yet"),
     };
 
-    let stem = source
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "asset".into());
-    let asset_path = library.join(format!("{stem}.rasset"));
-    let sidecar_path = library.join(format!("{stem}.rimport"));
-
+    let asset_path = asset_for(source, library);
     std::fs::write(&asset_path, bytes)?;
-    settings.save(&sidecar_path)?;
+    settings.save(sidecar)?;
     let _ = kind;
 
     Ok(Imported {
         id,
         asset: asset_path,
-        sidecar: sidecar_path,
+        sidecar: sidecar.to_path_buf(),
     })
 }
 
-/// Re-import everything in a library whose source has changed since the
-/// asset was built.
-///
-/// This is the drag-and-drop workflow without the dragging: the sidecar
-/// says where each asset came from and with which settings, so a changed
-/// source can be rebuilt without anyone remembering what was done to it.
-/// It is also what makes the importer improvable — a better importer is
-/// worth nothing if every asset has to be re-added by hand.
-///
-/// `root` is what the sidecars' relative source paths are relative to.
-pub fn reimport_changed(library: impl AsRef<Path>, root: impl AsRef<Path>) -> Vec<Reimported> {
-    let (library, root) = (library.as_ref(), root.as_ref());
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(library) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let sidecar = entry.path();
-        if sidecar.extension().and_then(|e| e.to_str()) != Some("rimport") {
-            continue;
-        }
-        let Ok(settings) = ImportSettings::load(&sidecar) else {
-            continue;
-        };
-        let source = root.join(&settings.source);
-        let asset = sidecar.with_extension("rasset");
+/// What importing into a project did, and what the editor should say about
+/// it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportReport {
+    pub imported: Imported,
+    /// Set when the source is outside the project. It is imported, by
+    /// absolute path — and a clone of the project anywhere else will not find
+    /// it, which is worth a sentence before it is worth a surprise.
+    pub warning: Option<String>,
+}
 
-        let newer = match (modified(&source), modified(&asset)) {
-            (Some(source_time), Some(asset_time)) => source_time > asset_time,
-            // A source that has gone is reported rather than rebuilt: the
-            // asset still works, and deleting it because a file moved would
-            // be worse than saying so.
-            (None, _) => {
+/// Import a source into a project's library.
+///
+/// A source inside the project is named by its path relative to the project
+/// and gets its sidecar beside it. A source outside is named by its absolute
+/// path, gets its sidecar in the project's `assets/` under its own file
+/// name, and comes back with a warning (DNA, "Принятые решения": relative
+/// paths, absolute only outside the project, with a warning).
+///
+/// An existing sidecar keeps its asset's ID always, and its settings unless
+/// `options` gives new ones — so a re-import without options rebuilds the
+/// asset the way it was built, not the default way.
+pub fn import_into(
+    project: &runity::Project,
+    source: &Path,
+    options: Option<&ImportSettings>,
+) -> Result<ImportReport> {
+    let (name, sidecar, warning) = match project.relative(source) {
+        Some(relative) => (relative, sidecar_for(source), None),
+        None => {
+            let absolute = std::path::absolute(source)?;
+            let file = source
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "source".into());
+            let warning = format!(
+                "{} is outside the project, so it is referenced by absolute path and a clone \
+                 of the project elsewhere will not find it — copy it into assets/ to keep it",
+                absolute.display()
+            );
+            (
+                absolute.to_string_lossy().into_owned(),
+                project.assets().join(format!("{file}.rimport")),
+                Some(warning),
+            )
+        }
+    };
+    let existing = ImportSettings::load(&sidecar).ok();
+    let mut settings = match (options, &existing) {
+        (Some(options), _) => options.clone(),
+        (None, Some(existing)) => existing.clone(),
+        (None, None) => ImportSettings::default(),
+    };
+    settings.id = existing.and_then(|e| e.id);
+    settings.source = name;
+    let imported = import_to(source, &project.library(), &sidecar, settings)?;
+    Ok(ImportReport { imported, warning })
+}
+
+/// What happened to one source when a project's library was brought up to
+/// date.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
+    /// A source nothing had imported yet: dropped into `assets/`, or a
+    /// fresh clone with an empty library.
+    New,
+    /// Its contents changed since it was built.
+    Changed,
+    /// Its asset was missing from the library and has been built.
+    Built,
+    /// The sidecar's source was gone and the same contents turned up
+    /// elsewhere: the sidecar followed, with its settings and its asset's ID.
+    Moved { from: String },
+    /// The sidecar's source is gone and nothing with its contents is
+    /// anywhere. The asset is left alone — a moved file should not blank a
+    /// model — and this says so.
+    Gone,
+}
+
+/// What one source's sync did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Reimported {
+    pub source: PathBuf,
+    pub change: Change,
+    pub result: std::result::Result<runity::AssetId, String>,
+}
+
+/// Bring a project's library up to date with its sources.
+///
+/// The library is derived (DNA, postulate 2): everything in it comes from a
+/// source in `assets/` or `materials/` and the sidecar beside it, so a fresh
+/// clone with no library at all ends up with a whole one, and a library
+/// deleted by hand is rebuilt. What counts as changed is the content hash;
+/// a modification time only says whether hashing is worth doing, because
+/// polling this every frame must not read every texture every frame.
+pub fn sync(project: &runity::Project) -> Vec<Reimported> {
+    let library = project.library();
+    let mut sidecars = Vec::new();
+    let mut sources = Vec::new();
+    for root in [project.assets(), project.materials()] {
+        walk(&root, &mut |path| {
+            if path.extension().and_then(|e| e.to_str()) == Some("rimport") {
+                sidecars.push(path.to_path_buf());
+            } else if importable(path) {
+                sources.push(path.to_path_buf());
+            }
+        });
+    }
+    sidecars.sort();
+    sources.sort();
+
+    let resolve = |name: &str| -> PathBuf {
+        let path = Path::new(name);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            project.resolve(name)
+        }
+    };
+    let same = |a: &Path, b: &Path| {
+        std::path::absolute(a)
+            .ok()
+            .is_some_and(|a| std::path::absolute(b).ok() == Some(a))
+    };
+
+    let mut out = Vec::new();
+    let mut claimed: Vec<PathBuf> = Vec::new();
+    let mut orphans: Vec<(PathBuf, ImportSettings)> = Vec::new();
+
+    for sidecar in &sidecars {
+        let settings = match ImportSettings::load(sidecar) {
+            Ok(settings) => settings,
+            Err(e) => {
                 out.push(Reimported {
-                    source: source.clone(),
-                    result: Err(format!("{} is gone", settings.source)),
+                    source: sidecar.clone(),
+                    change: Change::Gone,
+                    result: Err(format!("{}: {e:#}", sidecar.display())),
                 });
                 continue;
             }
-            // No asset yet — build it.
-            (Some(_), None) => true,
         };
-        if !newer {
+        let source = resolve(&settings.source);
+        if !source.is_file() {
+            orphans.push((sidecar.clone(), settings));
             continue;
         }
+        claimed.push(source.clone());
 
-        let result = import_file(&source, library, settings)
+        let asset = asset_for(&source, &library);
+        let change = if !asset.is_file() {
+            Some(Change::Built)
+        } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
+            // The clock says maybe; the hash decides.
+            match content_hash(&source) {
+                Ok(hash) if hash == settings.hash => {
+                    // Unchanged after all — a checkout, a copy. Moving the
+                    // sidecar's clock forward stops the next poll from
+                    // hashing the same bytes again, without touching a byte
+                    // of the sidecar.
+                    touch(sidecar);
+                    None
+                }
+                _ => Some(Change::Changed),
+            }
+        } else {
+            None
+        };
+        if let Some(change) = change {
+            let result = import_to(&source, &library, sidecar, settings)
+                .map(|imported| imported.id)
+                .map_err(|e| format!("{e:#}"));
+            out.push(Reimported {
+                source,
+                change,
+                result,
+            });
+        }
+    }
+
+    let mut unclaimed: Vec<PathBuf> = sources
+        .into_iter()
+        .filter(|source| !claimed.iter().any(|c| same(c, source)))
+        .collect();
+
+    // A sidecar whose source is gone, and a source with no sidecar holding
+    // the same bytes: one file that moved. The sidecar follows it, keeping
+    // the settings someone chose and the ID scenes point at.
+    for (old_sidecar, mut settings) in orphans {
+        let moved_to = (!settings.hash.is_empty())
+            .then(|| {
+                unclaimed.iter().position(|candidate| {
+                    content_hash(candidate).is_ok_and(|hash| hash == settings.hash)
+                })
+            })
+            .flatten();
+        let Some(position) = moved_to else {
+            out.push(Reimported {
+                source: resolve(&settings.source),
+                change: Change::Gone,
+                result: Err(format!(
+                    "{} is gone, and nothing in the project has its contents",
+                    settings.source
+                )),
+            });
+            continue;
+        };
+        let source = unclaimed.remove(position);
+        let from = settings.source.clone();
+        settings.source = project
+            .relative(&source)
+            .unwrap_or_else(|| source.to_string_lossy().into_owned());
+        let new_sidecar = sidecar_for(&source);
+        let result = import_to(&source, &library, &new_sidecar, settings)
             .map(|imported| imported.id)
-            .map_err(|e| e.to_string());
-        out.push(Reimported { source, result });
+            .map_err(|e| format!("{e:#}"));
+        if result.is_ok() {
+            let _ = std::fs::remove_file(&old_sidecar);
+            // The asset built under the old name would otherwise sit in the
+            // library as a second copy of the same ID.
+            let old_asset = asset_for(Path::new(&from), &library);
+            if !same(&old_asset, &asset_for(&source, &library)) {
+                let _ = std::fs::remove_file(old_asset);
+            }
+        }
+        out.push(Reimported {
+            source,
+            change: Change::Moved { from },
+            result,
+        });
+    }
+
+    // Whatever is left is new: imported with the defaults, and given a
+    // sidecar so the next person sees the settings it was built with.
+    for source in unclaimed {
+        let name = project
+            .relative(&source)
+            .unwrap_or_else(|| source.to_string_lossy().into_owned());
+        let result = import_file(&source, &library, ImportSettings::for_source(name))
+            .map(|imported| imported.id)
+            .map_err(|e| format!("{e:#}"));
+        out.push(Reimported {
+            source,
+            change: Change::New,
+            result,
+        });
     }
     out
 }
 
-/// What one re-import attempt did.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Reimported {
-    pub source: PathBuf,
-    pub result: std::result::Result<runity::AssetId, String>,
+/// Whether the importer knows what to do with a file.
+pub fn importable(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref(),
+        Some("gltf" | "glb" | "obj" | "wav" | "rmat" | "png" | "jpg" | "jpeg" | "tga" | "bmp")
+    )
+}
+
+/// Every file under `root`, depth first. Hidden files and folders are
+/// skipped: `.gitkeep`, editor droppings, a `.git` someone nested.
+fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        {
+            continue;
+        }
+        if path.is_dir() {
+            walk(&path, visit);
+        } else {
+            visit(&path);
+        }
+    }
 }
 
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
+}
+
+fn touch(path: &Path) {
+    if let Ok(file) = std::fs::File::options().write(true).open(path) {
+        let _ = file.set_modified(std::time::SystemTime::now());
+    }
 }
 
 #[cfg(test)]
@@ -969,8 +1272,34 @@ f 1 4 3
         assert_eq!(archived.vertices.len(), 4);
         assert_eq!(archived.id, out.id);
 
-        // And the sidecar says exactly how to build it again.
-        assert_eq!(ImportSettings::load(&out.sidecar).unwrap(), settings);
+        // And the sidecar, beside the source, says exactly how to build it
+        // again — with what the source held and which asset it became.
+        assert_eq!(out.sidecar, sidecar_for(&source));
+        let written = ImportSettings::load(&out.sidecar).unwrap();
+        assert_eq!(
+            written,
+            ImportSettings {
+                hash: content_hash(&source).unwrap(),
+                id: Some(out.id),
+                ..settings
+            }
+        );
+    }
+
+    #[test]
+    fn a_content_hash_is_the_same_for_the_same_bytes_and_only_them() {
+        let dir = temp("hash");
+        let (a, b, c) = (dir.join("a.obj"), dir.join("b.obj"), dir.join("c.obj"));
+        std::fs::write(&a, SQUARE).unwrap();
+        std::fs::write(&b, SQUARE).unwrap();
+        std::fs::write(&c, "v 0 0 0\n").unwrap();
+        let hash = |p: &Path| content_hash(p).unwrap();
+        assert_eq!(hash(&a), hash(&b), "where it lives does not matter");
+        assert_ne!(hash(&a), hash(&c));
+        // Fixed, because it is committed: every machine must agree on it.
+        let empty = dir.join("empty");
+        std::fs::write(&empty, "").unwrap();
+        assert_eq!(hash(&empty), "6c62272e07bb014262b821756295c58d");
     }
 
     #[test]

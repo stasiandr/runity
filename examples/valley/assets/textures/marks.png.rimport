@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/textures/marks.png",
+    hash: "d0f64945a8c814ef06796ea37873bed0",
+    id: Some("be796123fa4bdfc9ba8627737fea0b31"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

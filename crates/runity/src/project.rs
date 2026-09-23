@@ -242,7 +242,14 @@ const GITIGNORE: &str = "\
 /// Binary sources go to LFS and are lockable from the first commit
 /// (DNA, postulate 2). Two people editing the same texture cannot merge it,
 /// so the second one should find out before they start, not after.
+///
+/// Text is checked out with LF everywhere, because sidecars store a hash of
+/// the source's bytes: a Windows checkout that turned every `.obj` into
+/// CRLF would rebuild the whole library and rewrite every sidecar.
 const GITATTRIBUTES: &str = "\
+# Text as LF on every machine: .rimport stores a hash of the source's bytes.
+* text=auto eol=lf
+
 # Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
 # .rmat, .rimport, .obj, .gltf) stay in git, where a diff means something.
 *.png   filter=lfs diff=lfs merge=lfs -text lockable
@@ -280,6 +287,10 @@ library/     built assets — derived, never committed
   writing one by hand, leave it out and the engine assigns one on load;
   never copy an existing one.
 * Everything a person makes is text and is committed; `library/` is not.
+* After adding, changing or moving a source, run `runity-import --sync` and
+  commit the `.rimport` it writes beside the source. Never edit its `hash`
+  or `id` by hand: the hash is how a moved file is found, the id is what
+  scenes and the library refer to.
 * Binary sources are in Git LFS and lockable — lock before editing one.
 ";
 

@@ -944,7 +944,10 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
         text.contains("color: \"#"),
         "sRGB hex, not a dump of floats: {text}"
     );
-    assert!(library.join("clay.rasset").exists(), "and it was imported");
+    assert!(
+        library.join("clay.rmat.rasset").exists(),
+        "and it was imported"
+    );
 
     // The entity now names it, and still draws the colour — to within the
     // eight bits a hex code has.
@@ -997,7 +1000,7 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     )
     .unwrap();
     session.import(&source).unwrap();
-    assert!(library.join("wedge.rasset").exists());
+    assert!(library.join("wedge.obj.rasset").exists());
 
     // And a scene can use it straight away, by the name the file had.
     let added = session.add(None, "wedge").unwrap();

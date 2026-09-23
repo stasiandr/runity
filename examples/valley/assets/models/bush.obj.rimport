@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/models/bush.obj",
+    hash: "4986ee0e1bb9ed7630c2ee8766b39e60",
+    id: Some("3ddbc6b4751108875d9a28eb2a6d602d"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)
