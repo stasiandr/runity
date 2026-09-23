@@ -6,7 +6,7 @@
 (
     view: (position: (0.0, 3.2, 8.0), target: (0.0, 0.8, 0.0), fov_deg: 55.0),
     sun: (hour: 17.6, intensity: 0.25),
-    post: (bloom: (intensity: 0.5), exposure: 0.5),
+    post: (bloom: (intensity: 0.5), exposure: 0.5, auto_exposure: (max_ev: 0.5)),
     ray_tracing: (sun_shadows: true, light_shadows: true, ambient_occlusion: true, sun_rays: 8, occlusion_rays: 12, occlusion_radius: 1.5),
     entities: [
         (id: "25d6bdfa94ff692a", name: "ground", model: "builtin:plane", transform: (scale: (40.0, 1.0, 40.0)), material: (base_color: (0.19, 0.20, 0.22))),

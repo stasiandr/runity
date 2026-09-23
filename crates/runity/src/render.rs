@@ -4972,9 +4972,13 @@ impl Renderer {
             dt
         });
         // At night the eye does not get used to the dark the whole way:
-        // a moonlit desert stays a night.
+        // a moonlit desert stays a night. The shade of a passage by day it
+        // opens up to by stops; the night it hardly does.
         let mut post = frame.post;
-        post.auto_exposure.compensation -= 1.6 * frame.lighting.night.clamp(0.0, 1.0);
+        let night = frame.lighting.night.clamp(0.0, 1.0);
+        post.auto_exposure.compensation -= 1.6 * night;
+        let most = post.auto_exposure.max_ev;
+        post.auto_exposure.max_ev = most + (most.min(1.0) - most) * night;
         self.post.run(
             gpu,
             &mut encoder,
