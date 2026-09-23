@@ -277,3 +277,13 @@ fn a_screen_with_two_elements_of_one_id_is_found() {
     let line = one_containing(&errors, "is the id of two elements");
     assert!(line.contains("ui/menu.ron"), "{line}");
 }
+
+#[test]
+fn a_word_a_language_lacks_is_listed() {
+    let project = project("strings");
+    assert!(errors_of(&project).is_empty(), "{:#?}", errors_of(&project));
+    write(&project.root().join("strings/ru.ron"), r#"{}"#);
+    let errors = errors_of(&project);
+    let line = one_containing(&errors, "no `hud.quit`");
+    assert!(line.contains("strings/ru.ron"), "{line}");
+}

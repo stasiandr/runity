@@ -111,7 +111,7 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
             std::fs::copy(project.root().join(file), data.join(file))?;
         }
     }
-    for dir in [SCENES, PREFABS, LIBRARY, TUNING, UI] {
+    for dir in [SCENES, PREFABS, LIBRARY, TUNING, UI, runity::strings::DIR] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;
     }
     let shipped = out.join(

@@ -255,6 +255,8 @@ impl Project {
             root.join(UI).join("hud.ron"),
             HUD_RON.replace("{name}", name),
         )?;
+        std::fs::create_dir_all(root.join(crate::strings::DIR))?;
+        std::fs::write(root.join(crate::strings::DIR).join("en.ron"), STRINGS_EN)?;
         std::fs::create_dir_all(root.join(TUNING))?;
         std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
@@ -462,9 +464,19 @@ const HUD_RON: &str = "\
 (
     elements: [
         (id: \"title\", anchor: TopLeft, at: (20, 16), size: (400, 30), kind: Text(\"{name}\"), text_size: 22),
-        (id: \"quit\", anchor: TopRight, at: (-20, 16), size: (120, 36), kind: Button(\"Quit\")),
+        (id: \"quit\", anchor: TopRight, at: (-20, 16), size: (120, 36), kind: Button(\"@hud.quit\")),
     ],
 )
+";
+
+/// A new project's words: one language, to show where a second one goes.
+const STRINGS_EN: &str = "\
+// The game's words in English. A screen shows one with `@hud.quit`; add
+// ru.ron beside this for Russian, with the same keys. runity check lists
+// every key a language lacks.
+{
+    \"hud.quit\": \"Quit\",
+}
 ";
 
 const LAYERS_RON: &str = "\
@@ -539,6 +551,7 @@ struct Game {
     tuning: Tuned<WorldNumbers>,
     layers: Tuned<runity::layers::Layers>,
     hud: Screen,
+    strings: runity::strings::Strings,
     widgets: Widgets,
     ui: Ui,
     world: World,
@@ -583,7 +596,10 @@ impl shell::Game for Game {
         }
         self.ui.clear();
         let size = runity::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
-        let done = self.hud.draw(&mut self.widgets, &mut self.ui, ctx.input, size);
+        if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
+            eprintln!("{problem}");
+        }
+        let done = self.hud.draw_localized(&mut self.widgets, &mut self.ui, ctx.input, size, &self.strings);
         if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
         }
@@ -633,12 +649,18 @@ fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
     let hud = Screen::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui/hud.ron"))
         .map_err(anyhow::Error::msg)?;
+    let strings = runity::strings::Strings::load(
+        runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+        "en",
+    )
+    .map_err(anyhow::Error::msg)?;
     let game = Game {
         live,
         actions,
         tuning,
         layers,
         hud,
+        strings,
         widgets: Widgets::new(),
         ui: Ui::new(),
         world: World::new(),
@@ -861,6 +883,7 @@ runity.ron   the project file
 input.ron    actions by name (\"jump\"), and the keys for each
 tuning/      the game's numbers, RON, typed in code with runity::Tuned
 ui/          the game's screens: elements anchored in a 1280x720 frame (runity::screen)
+strings/     the game's words, one file per language; a screen says `@key`
 layers.ron   collision layers, and which pairs pass through each other
 scenes/      scenes, RON — one entity per block, `id` first
 prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`

@@ -56,6 +56,7 @@ pub mod screen;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
 pub mod spelling;
+pub mod strings;
 pub mod surface;
 pub mod time;
 pub mod tuned;

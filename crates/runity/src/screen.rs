@@ -230,6 +230,44 @@ impl Screen {
     /// Draw every element for a screen of `size` pixels, in file order, and
     /// say what the player did.
     pub fn draw(&mut self, widgets: &mut Widgets, ui: &mut Ui, input: &Input, size: Vec2) -> Done {
+        self.draw_in(widgets, ui, input, size, None)
+    }
+
+    /// [`Screen::draw`], with every `@key` text in the current language of
+    /// `strings` (see [`crate::strings`]).
+    pub fn draw_localized(
+        &mut self,
+        widgets: &mut Widgets,
+        ui: &mut Ui,
+        input: &Input,
+        size: Vec2,
+        strings: &crate::strings::Strings,
+    ) -> Done {
+        self.draw_in(widgets, ui, input, size, Some(strings))
+    }
+
+    /// Every `@key` the screen's texts ask for.
+    pub fn keys(layout: &Layout) -> Vec<String> {
+        layout
+            .elements
+            .iter()
+            .filter_map(|e| match &e.kind {
+                Kind::Text(t) | Kind::Button(t) | Kind::Toggle(t) => Some(t.as_str()),
+                Kind::Slider { label, .. } => Some(label.as_str()),
+                Kind::Panel | Kind::Bar => None,
+            })
+            .filter_map(|t| t.strip_prefix('@').map(str::to_string))
+            .collect()
+    }
+
+    fn draw_in(
+        &mut self,
+        widgets: &mut Widgets,
+        ui: &mut Ui,
+        input: &Input,
+        size: Vec2,
+        strings: Option<&crate::strings::Strings>,
+    ) -> Done {
         let mut done = Done::default();
         let style = widgets.style;
         let scale = size.y / REFERENCE_HEIGHT;
@@ -237,10 +275,15 @@ impl Screen {
         for e in &elements {
             let rect = place(e, size);
             let label = |own: &str| {
-                self.texts
+                let text = self
+                    .texts
                     .get(&e.id)
                     .cloned()
-                    .unwrap_or_else(|| own.to_string())
+                    .unwrap_or_else(|| own.to_string());
+                match strings {
+                    Some(strings) => strings.resolve(&text).to_string(),
+                    None => text,
+                }
             };
             match &e.kind {
                 Kind::Text(text) => {
@@ -428,5 +471,34 @@ mod tests {
         }
         .problems()[0]
             .contains("`play` is the id of two elements"));
+    }
+
+    #[test]
+    fn a_screen_speaks_the_current_language() {
+        let dir = std::env::temp_dir().join("runity-screen-strings");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ru.ron"), r#"{"menu.play": "Играть"}"#).unwrap();
+        let path = dir.join("menu.ron");
+        std::fs::write(
+            &path,
+            r#"(elements: [(id: "play", size: (200, 40), kind: Button("@menu.play"))])"#,
+        )
+        .unwrap();
+        let mut screen = Screen::load(&path).unwrap();
+        assert_eq!(Screen::keys(screen.layout()), ["menu.play"]);
+        let strings = crate::strings::Strings::load(&dir, "ru").unwrap();
+        let mut ui = Ui::new();
+        screen.draw_localized(
+            &mut Widgets::new(),
+            &mut ui,
+            &Input::new(),
+            Vec2::new(1280.0, 720.0),
+            &strings,
+        );
+        assert!(
+            ui.texts.iter().any(|t| t.text == "Играть"),
+            "{:?}",
+            ui.texts
+        );
     }
 }

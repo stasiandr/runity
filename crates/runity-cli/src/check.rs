@@ -98,13 +98,39 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
+    let mut keys: Vec<String> = Vec::new();
     for path in files(&project.root().join(runity::project::UI), "ron") {
         let file = relative(project, &path);
         if let Some(layout) = parse::<runity::screen::Layout>(&path, &file, &mut out) {
             for problem in layout.problems() {
                 out.push(error(&file, problem));
             }
+            keys.extend(runity::screen::Screen::keys(&layout));
         }
+    }
+    let strings = project.root().join(runity::strings::DIR);
+    let mut tables = Vec::new();
+    for (language, path) in runity::strings::tables(&strings) {
+        let file = relative(project, &path);
+        if let Some(table) = parse::<runity::strings::Table>(&path, &file, &mut out) {
+            tables.push((language, table));
+        }
+    }
+    if tables.is_empty() && !keys.is_empty() {
+        out.push(error(
+            runity::strings::DIR,
+            format!(
+                "screens ask for `@{}` and there is no language in strings/ to say it",
+                keys[0]
+            ),
+        ));
+    }
+    for missing in runity::strings::missing(&tables, &keys) {
+        let (language, rest) = missing.split_once(": ").unwrap_or(("", &missing));
+        out.push(error(
+            &format!("{}/{language}.ron", runity::strings::DIR),
+            rest,
+        ));
     }
 
     for path in files(&project.root().join(runity::project::TUNING), "ron") {
