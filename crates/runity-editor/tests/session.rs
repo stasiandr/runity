@@ -3534,6 +3534,7 @@ fn the_view_is_where_this_person_left_it_and_the_scene_file_does_not_know() {
         degrees: 0.0,
         scale: 0.0,
     });
+    session.set_show_grid(false);
     let cave = session.new_scene("cave").unwrap();
     assert_ne!(session.camera().position, Vec3::new(7.0, 3.0, -4.0));
 
@@ -3541,6 +3542,7 @@ fn the_view_is_where_this_person_left_it_and_the_scene_file_does_not_know() {
     session.open_scene(&path).unwrap();
     assert_eq!(session.camera().position, Vec3::new(7.0, 3.0, -4.0));
     assert_eq!(session.snap().meters, 0.5);
+    assert!(!session.show_grid(), "the grid stays off");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 
     // A new session starts on the scene open last.

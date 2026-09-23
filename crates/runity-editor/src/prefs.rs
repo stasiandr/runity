@@ -1,5 +1,6 @@
 //! What the editor remembers for the person using it: where the view was
-//! in each scene, which scene was open last, the snap settings.
+//! in each scene, which scene was open last, the snap settings, whether the
+//! grid shows.
 //!
 //! Unity keeps this in `Library/`; here it is `.runity/editor.ron` in the
 //! project, ignored by git — it is one person's, and a scene whose file
@@ -25,6 +26,9 @@ pub(crate) struct Prefs {
     /// Per scene, relative: where the view stood and looked.
     views: BTreeMap<String, SavedView>,
     snap: (f32, f32, f32),
+    /// The Scene view's grid turned off. Written as what differs from the
+    /// default, so a file from before the grid reads as "on".
+    hide_grid: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -71,6 +75,7 @@ impl Session {
         );
         prefs.last_scene = name;
         prefs.snap = (self.snap.meters, self.snap.degrees, self.snap.scale);
+        prefs.hide_grid = !self.show_grid;
         if let Ok(text) = runity::ron::ser::to_string_pretty(&prefs, Default::default()) {
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
             let _ = std::fs::write(&path, text + "\n");
@@ -87,6 +92,7 @@ impl Session {
             degrees: d,
             scale: s,
         });
+        self.show_grid = !prefs.hide_grid;
         let name = match (self.project.as_ref(), self.scene_path.as_ref()) {
             (Some(project), Some(scene)) => project.relative(scene),
             _ => None,
