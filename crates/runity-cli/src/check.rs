@@ -716,10 +716,23 @@ fn animators(project: &Project, out: &mut Vec<Finding>) {
         }
     }
     for path in graphs {
+        if path.to_string_lossy().ends_with(".cases.ron") {
+            continue;
+        }
         let file = relative(project, &path);
         let Some(graph) = parse::<runity::animgraph::Graph>(&path, &file, out) else {
             continue;
         };
+        // Its cases, played without the game.
+        let cases_path = path.with_extension("cases.ron");
+        if cases_path.is_file() {
+            let cases_file = relative(project, &cases_path);
+            if let Some(cases) = parse::<runity::animgraph::Cases>(&cases_path, &cases_file, out) {
+                for failed in cases.run(&graph) {
+                    out.push(error(&cases_file, failed));
+                }
+            }
+        }
         for problem in graph.shape_problems() {
             out.push(Finding {
                 severity: Severity::Warning,

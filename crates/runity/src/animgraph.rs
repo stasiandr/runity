@@ -759,6 +759,110 @@ impl Controller {
     }
 }
 
+/// A graph's cases: what it should do, played without the game — as
+/// `animators/<name>.cases.ron` beside it, which `runity check` plays.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Cases {
+    /// How long each clip is, seconds; any not named is a second.
+    #[serde(default)]
+    pub clips: BTreeMap<String, f32>,
+    pub cases: Vec<Case>,
+}
+
+/// One case: steps from the start state.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Case {
+    pub name: String,
+    pub steps: Vec<Step>,
+}
+
+/// Parameters set, triggers pulled, time let pass — then where the graph
+/// should stand.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    #[serde(default)]
+    pub set: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub trigger: Vec<String>,
+    /// Seconds, a thirtieth at a time.
+    #[serde(default)]
+    pub wait: f32,
+    pub expect: String,
+}
+
+impl Cases {
+    /// Play every case on `graph`: what went otherwise, in words.
+    pub fn run(&self, graph: &Graph) -> Vec<String> {
+        use crate::animation::{Channel, Clip, Joint, Path, PoseTransform, Skeleton};
+        use std::sync::Arc;
+        let skeleton = Arc::new(Skeleton {
+            joints: vec![Joint {
+                name: "root".into(),
+                parent: None,
+                inverse_bind: glam::Mat4::IDENTITY.to_cols_array_2d(),
+                rest: PoseTransform::default(),
+            }],
+        });
+        let mut names: HashSet<String> = HashSet::new();
+        for state in graph.states.values() {
+            names.insert(state.clip.clone());
+            names.extend(state.blend.iter().map(|(_, c)| c.clone()));
+            names.extend(state.directional.iter().map(|(_, _, c)| c.clone()));
+        }
+        let clips: Vec<Clip> = names
+            .into_iter()
+            .filter(|n| !n.is_empty())
+            .map(|name| {
+                let duration = self.clips.get(&name).copied().unwrap_or(1.0);
+                Clip {
+                    name,
+                    duration,
+                    channels: vec![Channel {
+                        joint: 0,
+                        path: Path::Translation,
+                        times: vec![0.0, duration],
+                        values: vec![0.0; 6],
+                    }],
+                }
+            })
+            .collect();
+        let clips = Arc::new(clips);
+        let mut out = Vec::new();
+        for case in &self.cases {
+            let mut animator = Animator::new(skeleton.clone(), clips.clone());
+            let mut controller = Controller::new(graph.clone());
+            controller.update(&mut animator);
+            for (i, step) in case.steps.iter().enumerate() {
+                for (name, value) in &step.set {
+                    controller.set(name, *value);
+                }
+                for name in &step.trigger {
+                    controller.trigger(name);
+                }
+                controller.update(&mut animator);
+                let mut left = step.wait;
+                while left > 1e-6 {
+                    let dt = left.min(1.0 / 30.0);
+                    animator.advance(dt);
+                    controller.update(&mut animator);
+                    left -= dt;
+                }
+                let now = controller.state().unwrap_or("");
+                if now != step.expect {
+                    out.push(format!(
+                        "case `{}`, step {}: in `{now}`, expected `{}`",
+                        case.name,
+                        i + 1,
+                        step.expect
+                    ));
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Update every entity's [`Controller`] against its [`Animator`]: call it
 /// in the fixed step before [`crate::advance_animations`].
 pub fn run_controllers(world: &mut hecs::World) {
@@ -1086,6 +1190,30 @@ mod tests {
         );
         let wanted: Vec<String> = graph.parameters().into_iter().collect();
         assert_eq!(wanted, ["jump", "speed"]);
+    }
+
+    #[test]
+    fn cases_play_the_graph_without_the_game() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        let cases: Cases = ron::from_str(
+            r#"(clips: {"jump": 0.5}, cases: [
+                (name: "walks when fast, jumps, lands running", steps: [
+                    (expect: "idle"),
+                    (set: {"speed": 2.0}, expect: "walk"),
+                    (trigger: ["jump"], expect: "jump"),
+                    (wait: 0.6, expect: "walk"),
+                    (set: {"speed": 0.0}, expect: "idle"),
+                ]),
+                (name: "a wrong one", steps: [(set: {"speed": 2.0}, expect: "idle")]),
+            ])"#,
+        )
+        .unwrap();
+        let failed = cases.run(&graph);
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert!(
+            failed[0].contains("`a wrong one`, step 1: in `walk`"),
+            "{failed:?}"
+        );
     }
 
     #[test]
