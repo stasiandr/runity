@@ -702,11 +702,16 @@ pub fn apply_hierarchy(world: &mut World) {
 /// entirely and the third had its own curve, and the difference only showed
 /// up when a screenshot was compared with what the editor was showing.
 pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
+    // The light from all round goes with the sun: a dim sun is dusk or
+    // night, and a sky as bright as noon's would light it like day.
+    let day = Lighting::default();
+    let share = (sun.intensity / day.sun_intensity).clamp(0.05, 1.3);
     Lighting {
         sun_direction: sun.direction(),
         sun_color: sun.color(),
         sun_intensity: sun.intensity,
-        ..Lighting::default()
+        sky_color: day.sky_color * share,
+        ground_color: day.ground_color * share,
     }
 }
 

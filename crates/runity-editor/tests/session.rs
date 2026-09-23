@@ -4271,6 +4271,29 @@ fn the_sun_and_the_fog_are_one_undo_step_each() {
 }
 
 #[test]
+fn a_mood_sets_the_look_in_one_undo_step() {
+    let Some((mut session, _path)) = open("mood") else {
+        return;
+    };
+    let before = session.environment();
+    session.apply_mood("storm").unwrap();
+    let look: std::collections::HashMap<_, _> = session.environment().into_iter().collect();
+    assert!(look["weather"].contains("rain"), "{}", look["weather"]);
+    assert!(look["wind"].contains("3.0"), "{}", look["wind"]);
+    assert!(look["sky"].contains("Physical"), "{}", look["sky"]);
+    assert!(session.apply_mood("tuesday").is_err());
+    // Several fields at once, and a field cleared back to the default.
+    session
+        .set_look(&[("weather", "None"), ("wind", "(strength: 0.2)")])
+        .unwrap();
+    let look: std::collections::HashMap<_, _> = session.environment().into_iter().collect();
+    assert_eq!(look["weather"], "None");
+    session.undo().unwrap();
+    session.undo().unwrap();
+    assert_eq!(session.environment(), before);
+}
+
+#[test]
 fn a_new_terrain_is_found_under_the_cursor_and_rises_where_it_is_stroked() {
     let Some((mut session, _path)) = open("terrain") else {
         return;

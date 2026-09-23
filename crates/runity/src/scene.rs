@@ -1364,6 +1364,72 @@ impl Scene {
     }
 }
 
+/// One of the scene's look fields ([`crate::moods::LOOK_FIELDS`]) as the
+/// file writes it; `None` for an optional one the scene does not set.
+pub fn look_field(scene: &Scene, field: &str) -> Result<String, String> {
+    fn text<T: Serialize>(value: &T) -> String {
+        ron::to_string(value).unwrap_or_default()
+    }
+    fn optional<T: Serialize>(value: &Option<T>) -> String {
+        value.as_ref().map_or_else(|| "None".to_string(), text)
+    }
+    Ok(match field {
+        "sun" => text(&scene.sun),
+        "fog" => text(&scene.fog),
+        "sky" => optional(&scene.sky),
+        "post" => optional(&scene.post),
+        "ambient_occlusion" => optional(&scene.ambient_occlusion),
+        "volumetric_fog" => optional(&scene.volumetric_fog),
+        "weather" => optional(&scene.weather),
+        "wind" => optional(&scene.wind),
+        "screen_space_reflections" => optional(&scene.screen_space_reflections),
+        "ray_tracing" => optional(&scene.ray_tracing),
+        other => {
+            return Err(format!(
+                "`{other}` is not part of the scene's look — there are {}",
+                crate::moods::LOOK_FIELDS.join(", ")
+            ))
+        }
+    })
+}
+
+/// Set one of the scene's look fields from RON; `None` clears an optional
+/// one back to the engine's default.
+pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<(), String> {
+    fn parse<T: serde::de::DeserializeOwned>(field: &str, text: &str) -> Result<T, String> {
+        ron::from_str(text).map_err(|e| format!("{field}: {e}"))
+    }
+    fn optional<T: serde::de::DeserializeOwned>(
+        field: &str,
+        text: &str,
+    ) -> Result<Option<T>, String> {
+        if text.trim() == "None" {
+            Ok(None)
+        } else {
+            parse(field, text).map(Some)
+        }
+    }
+    match field {
+        "sun" => scene.sun = parse(field, ron_text)?,
+        "fog" => scene.fog = parse(field, ron_text)?,
+        "sky" => scene.sky = optional(field, ron_text)?,
+        "post" => scene.post = optional(field, ron_text)?,
+        "ambient_occlusion" => scene.ambient_occlusion = optional(field, ron_text)?,
+        "volumetric_fog" => scene.volumetric_fog = optional(field, ron_text)?,
+        "weather" => scene.weather = optional(field, ron_text)?,
+        "wind" => scene.wind = optional(field, ron_text)?,
+        "screen_space_reflections" => scene.screen_space_reflections = optional(field, ron_text)?,
+        "ray_tracing" => scene.ray_tracing = optional(field, ron_text)?,
+        other => {
+            return Err(format!(
+                "`{other}` is not part of the scene's look — there are {}",
+                crate::moods::LOOK_FIELDS.join(", ")
+            ))
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

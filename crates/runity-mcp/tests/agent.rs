@@ -562,3 +562,51 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
         .unwrap_err();
     assert!(err.contains("already there"), "{err}");
 }
+
+#[test]
+fn an_agent_sets_a_mood_and_tunes_the_look() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("runity-mcp-mood");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let moods = agent.text("mood", json!({}));
+    assert!(
+        moods.contains("golden hour") && moods.contains("storm"),
+        "{moods}"
+    );
+
+    let said = agent
+        .call("mood", json!({ "name": "golden hour" }))
+        .unwrap();
+    assert!(
+        said[0]["text"].as_str().unwrap().contains("hour: 17.6"),
+        "{said:?}"
+    );
+    assert_eq!(said[1]["type"], "image", "and a picture of it");
+
+    let look = agent.text(
+        "look",
+        json!({ "weather": "(rain: 1.0, wetness: 1.0)", "volumetric_fog": "None" }),
+    );
+    assert!(look.contains("weather: (rain:1.0"), "{look}");
+    assert!(look.contains("volumetric_fog: None"), "{look}");
+    assert!(
+        look.contains("sun: (hour:17.6"),
+        "the mood's sun stays: {look}"
+    );
+    let err = agent
+        .call("look", json!({ "sky": "(mode: Sepia)" }))
+        .unwrap_err();
+    assert!(err.contains("sky"), "{err}");
+    let err = agent
+        .call("mood", json!({ "name": "tuesday" }))
+        .unwrap_err();
+    assert!(err.contains("golden hour"), "{err}");
+}

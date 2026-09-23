@@ -156,6 +156,19 @@ pub fn list() -> Vec<Value> {
         tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
+        tool("look", "The scene's look — sun, fog, sky (mode: Procedural|Physical, clouds), post (bloom, grading, depth_of_field, lens_flare...), ambient_occlusion, volumetric_fog, weather (rain, wetness, puddles, snow, snowfall), wind, screen_space_reflections, ray_tracing — as the file writes them. Give any of them as RON to set them, all in one undo step; \"None\" clears an optional one back to the engine's default. Returns the look after; render to see it.", json!({
+            "sun": { "type": "string", "description": "(hour: 17.5, intensity: 1.2)" },
+            "fog": { "type": "string", "description": "(color: (0.62, 0.68, 0.74), start: 30.0, end: 180.0)" },
+            "sky": { "type": "string", "description": "(mode: Physical, clouds: (coverage: 0.4)) or None" },
+            "post": { "type": "string", "description": "(bloom: (intensity: 0.4), temperature: 10.0, depth_of_field: (mode: Bokeh, focus_distance: 6.0)) or None" },
+            "ambient_occlusion": { "type": "string" },
+            "volumetric_fog": { "type": "string", "description": "(enabled: true, density: 0.04) or None" },
+            "weather": { "type": "string", "description": "(rain: 1.0, wetness: 1.0, puddles: 0.5) or None" },
+            "wind": { "type": "string", "description": "(direction: (1.0, 0.0, 0.3), strength: 1.5) or None" },
+            "screen_space_reflections": { "type": "string", "description": "(enabled: true) or None" },
+            "ray_tracing": { "type": "string" }
+        }), &[]),
+        tool("mood", "Give the scene a mood in one step — its sun, sky, fog, weather, wind and grading together: clear noon, golden hour, overcast, misty morning, rainy, snowy, night, storm. One undo step; returns what it set and a render of the result. Without `name`, lists the moods and what each is for. Tune further with look.", json!({ "name": { "type": "string" } }), &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
         tool("import", "Import a source file (.gltf .glb .obj .png .jpg .tga .bmp .wav .rmat) into the project.", json!({ "source": { "type": "string" } }), &["source"]),
         tool("rename_asset", "Rename or move an asset source (model, texture, sound in assets/, .rmat in materials/, .prefab in prefabs/), its .rimport with it, and rewrite every scene and prefab line that named it. Paths relative to the project root. Refused, with the reason, when the new name already means something.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
@@ -1083,6 +1096,46 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "render" => {
             camera(server, args)?;
             render(server)
+        }
+        "look" => {
+            let mut changes = Vec::new();
+            for field in runity::moods::LOOK_FIELDS {
+                if let Some(value) = optional_string(args, field)? {
+                    changes.push((field, value));
+                }
+            }
+            let session = server.session()?;
+            if !changes.is_empty() {
+                let borrowed: Vec<(&str, &str)> =
+                    changes.iter().map(|(f, v)| (*f, v.as_str())).collect();
+                session.set_look(&borrowed).map_err(|e| e.to_string())?;
+            }
+            let mut out = String::new();
+            for (field, value) in session.environment() {
+                let _ = writeln!(out, "{field}: {value}");
+            }
+            Ok(vec![text(out)])
+        }
+        "mood" => {
+            let Some(name) = optional_string(args, "name")? else {
+                let mut out = String::new();
+                for mood in runity::moods::MOODS {
+                    let _ = writeln!(out, "{} — {}", mood.name, mood.about);
+                }
+                return Ok(vec![text(out)]);
+            };
+            server
+                .session()?
+                .apply_mood(&name)
+                .map_err(|e| e.to_string())?;
+            let mood = runity::moods::mood(&name).expect("applied above");
+            let mut out = format!("{}: {}\n", mood.name, mood.about);
+            for (field, value) in mood.fields {
+                let _ = writeln!(out, "  {field}: {value}");
+            }
+            let mut result = vec![text(out)];
+            result.extend(render(server)?);
+            Ok(result)
         }
         "pick" => {
             let (x, y) = (integer(args, "x")?, integer(args, "y")?);

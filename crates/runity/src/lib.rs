@@ -45,6 +45,7 @@ pub mod lights;
 pub mod live;
 pub mod material;
 pub mod merge;
+pub mod moods;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
