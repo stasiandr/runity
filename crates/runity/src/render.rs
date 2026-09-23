@@ -1137,6 +1137,9 @@ pub const SHADER: &str = include_str!("render.wgsl");
 /// Terrain's task and mesh stages, appended to the renderer's shader where
 /// the device has mesh shaders.
 const TERRAIN_MESH: &str = include_str!("terrain_mesh.wgsl");
+/// Ray masks, as render.wgsl's RAY_THINGS and RAY_TERRAIN.
+const RAY_THINGS: u8 = 1;
+const RAY_TERRAIN: u8 = 2;
 
 /// Where the engine's shader source was when the engine was built — for
 /// watching it while working on the engine; see [`ShaderFile`].
@@ -4545,7 +4548,10 @@ impl Renderer {
         let traced = self.ray.is_some() && frame.ray_tracing.any();
         if traced {
             let meshes = &self.meshes;
-            let instances: Vec<(&wgpu::Blas, Mat4)> = frame
+            // The terrain apart from the rest (RAY_TERRAIN in render.wgsl):
+            // rays start past its coarse triangles.
+            let terrain = frame.terrain.as_ref().map(|t| t.mesh);
+            let instances: Vec<(&wgpu::Blas, Mat4, u8)> = frame
                 .draws
                 .iter()
                 // Glass lets the light through, and what is unlit is a light
@@ -4553,7 +4559,8 @@ impl Renderer {
                 .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
                 .filter_map(|d| {
                     let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
-                    Some((blas, d.transform))
+                    let mask = if Some(d.mesh) == terrain { RAY_TERRAIN } else { RAY_THINGS };
+                    Some((blas, d.transform, mask))
                 })
                 .collect();
             let remade = self

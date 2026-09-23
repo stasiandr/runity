@@ -573,10 +573,32 @@ fn fs_shadow_clip(in: ClipOut) {
 // ray: stub begin
 // On a device that does not trace, nothing is in the way of any ray; the
 // frame never asks one there. ray.rs puts ray.wgsl in place of this.
-fn ray_visible(origin: vec3<f32>, direction: vec3<f32>, reach: f32) -> f32 {
+fn ray_clear(origin: vec3<f32>, direction: vec3<f32>, start: f32, reach: f32, mask: u32) -> f32 {
     return 1.0;
 }
 // ray: stub end
+
+/// What rays can be asked to see: everything drawn but the terrain, and
+/// the terrain (ray.rs gives each instance one of these).
+const RAY_THINGS: u32 = 1u;
+const RAY_TERRAIN: u32 = 2u;
+/// How far a ray goes before the terrain can stop it. The rays see the
+/// terrain as its heightfield's triangles, a metre and more apart; what is
+/// drawn is finer — folded down to centimetres, rippled — and dips under
+/// them, so a ray from the sand would hit the coarse sand over it and
+/// crack every ripple with shadow. Past this the ray has cleared the
+/// ripples, and a dune still shadows the next.
+const RAY_TERRAIN_GAP: f32 = 1.5;
+
+/// Nothing within `reach` along `direction`: nothing drawn, and no terrain
+/// past the gap.
+fn ray_visible(origin: vec3<f32>, direction: vec3<f32>, reach: f32) -> f32 {
+    let things = ray_clear(origin, direction, 0.0, reach, RAY_THINGS);
+    if things < 0.5 || reach <= RAY_TERRAIN_GAP {
+        return things;
+    }
+    return ray_clear(origin, direction, RAY_TERRAIN_GAP, reach, RAY_TERRAIN);
+}
 
 /// Noise that differs pixel to pixel and hides its pattern well (Jimenez's
 /// interleaved gradient noise): what turns each pixel's handful of rays.
@@ -609,9 +631,12 @@ fn traced_sun(position: vec3<f32>, normal: vec3<f32>, to_sun: vec3<f32>, pixel: 
         let r = sqrt((f32(i) + 0.5) / f32(count)) * spread;
         let a = turn + f32(i) * 2.3999632;
         let d = normalize(to_sun + (frame_of.t * cos(a) + frame_of.b * sin(a)) * r);
-        lit += ray_visible(origin, d, 1.0e4);
+        lit += ray_clear(origin, d, 0.0, 1.0e4, RAY_THINGS);
     }
-    return lit / f32(count);
+    // The terrain by one ray, past the gap: a dune's shadow on the next is
+    // broad, and the frames' jitter softens its edge.
+    let terrain = ray_clear(origin, normalize(to_sun + (frame_of.t * cos(turn) + frame_of.b * sin(turn)) * spread * 0.7), RAY_TERRAIN_GAP, 1.0e4, RAY_TERRAIN);
+    return lit / f32(count) * terrain;
 }
 
 /// Occlusion by rays: short ones over the hemisphere, cosine-weighted; the
@@ -629,7 +654,10 @@ fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) ->
         let phi = fract(f32(i) * 0.618034 + n2) * 6.2831853;
         let r = sqrt(u);
         let d = frame_of.t * (r * cos(phi)) + frame_of.b * (r * sin(phi)) + normal * sqrt(1.0 - u);
-        open += ray_visible(origin, d, reach);
+        // Only what is drawn: the terrain's coarse triangles would shut in
+        // every ripple, and the ground under a thing is too close to it for
+        // the gap.
+        open += ray_clear(origin, d, 0.0, reach, RAY_THINGS);
     }
     return open / f32(count);
 }
