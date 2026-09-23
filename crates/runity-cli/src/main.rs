@@ -3,7 +3,7 @@
 //! ```text
 //! runity new <folder> [--name NAME] [--engine-path PATH]
 //! runity test  [PROJECT]  the game's tests, headless
-//! runity run   [PROJECT] [--hot] [--release] [--scene NAME]  the game
+//! runity run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
@@ -34,10 +34,12 @@ runity new <folder> [--name NAME] [--engine-path PATH]
     Make a project: the standard layout, a scene, and a game crate.
     The game depends on the engine from git, or from a local checkout
     of runity's crates/runity with --engine-path.
-runity run [PROJECT] [--hot] [--release] [--scene NAME]
+runity run [PROJECT] [--hot] [--release] [--scene NAME] [--players N]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and tuning reload while it runs; with --hot, so does its
     own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
+    With --players 2 to 4, that many windows play together on this machine:
+    player 1 hosts, the others join, each line marked with whose it is.
 runity relay [--port N]
     Run a relay (UDP, 47778 by default): players behind NAT in different
     homes play through it, in a room whose code the host reads out.
@@ -109,21 +111,37 @@ fn run() -> Result<ExitCode> {
             let mut at: Vec<String> = Vec::new();
             let (mut hot, mut release) = (false, false);
             let mut scene: Option<String> = None;
+            let mut count = 1u32;
             let mut args = rest.iter();
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--hot" => hot = true,
                     "--release" => release = true,
                     "--scene" => scene = Some(args.next().context("--scene wants a name")?.clone()),
+                    "--players" => {
+                        count = args
+                            .next()
+                            .and_then(|n| n.parse().ok())
+                            .context("--players wants a number, 2 to 4")?;
+                    }
                     other if other.starts_with('-') => bail!("unknown option {other}"),
                     other => at.push(other.to_string()),
                 }
             }
             let project = find(&at)?;
+            let scene = scene
+                .map(|name| runity_cli::run::scene(&project, &name))
+                .transpose()?;
+            if count > 1 {
+                if hot {
+                    bail!("--hot patches one process; play together without it");
+                }
+                let ok = runity_cli::run::players(&project, count, release, scene.as_deref())?;
+                return Ok(if ok { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+            }
             let dx = runity_cli::run::on_path("dx");
             let mut command = runity_cli::run::command(&project, hot, release, dx.as_deref())?;
             if let Some(name) = scene {
-                let name = runity_cli::run::scene(&project, &name)?;
                 command.env(runity_cli::run::SCENE_VAR, name);
             }
             let status = command.status()?;

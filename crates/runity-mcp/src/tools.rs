@@ -121,7 +121,7 @@ pub fn list() -> Vec<Value> {
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
-        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running.", json!({}), &[]),
+        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 } }), &[]),
         tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, and what was spawned at run time. The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
@@ -639,10 +639,16 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         }
         "start_game" => {
             let session = server.session()?;
+            if let Some(count) = args.get("players").and_then(|v| v.as_u64()) {
+                session.set_players(count as u32);
+            }
             session.start_game().map_err(|e| e.to_string())?;
-            Ok(vec![text(
-                "started; its output goes to the console as it comes",
-            )])
+            let players = session.players();
+            Ok(vec![text(if players > 1 {
+                format!("started with {players} players; their output goes to the console as it comes")
+            } else {
+                "started; its output goes to the console as it comes".to_string()
+            })])
         }
         "game_state" => {
             let session = server.session()?;

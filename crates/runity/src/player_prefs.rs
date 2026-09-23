@@ -12,12 +12,22 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Stands in for the player's folder when set: each player a game is
+/// played by from the editor has one of their own (`.runity/players/N/`),
+/// so two windows on one machine do not share one person's saves and
+/// choices — as Unity's virtual players each have their own.
+pub const USER_DIR_VAR: &str = "RUNITY_USER_DIR";
+
 /// Where a game keeps the player's own files, made if missing: the
 /// platform's per-user data folder with the game's name under it.
 /// `$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application
-/// Support` on macOS, `%APPDATA%` on Windows.
+/// Support` on macOS, `%APPDATA%` on Windows — or `RUNITY_USER_DIR`.
 pub fn user_dir(game: &str) -> std::io::Result<PathBuf> {
     let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    if let Some(dir) = env(USER_DIR_VAR).filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(&dir)?;
+        return Ok(dir);
+    }
     let base = if cfg!(windows) {
         env("APPDATA")
     } else if cfg!(target_os = "macos") {

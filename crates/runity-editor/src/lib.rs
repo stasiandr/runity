@@ -21,6 +21,7 @@ mod blockout;
 pub mod console;
 mod error;
 mod game;
+pub use game::MAX_PLAYERS;
 mod grouping;
 mod import_settings;
 pub use import_settings::IMPORT_FIELDS;

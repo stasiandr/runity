@@ -110,6 +110,12 @@ pub enum Message {
     Spawn(Spawn),
     Despawn(Despawn),
     Welcome(Welcome),
+    /// A peer asking the host to be let in. See [`crate::party`].
+    Hello(PeerId),
+    /// Who is in the game, from the host, whenever that changes.
+    Roster(Vec<PeerId>),
+    /// A peer leaving on purpose, rather than going quiet.
+    Bye(PeerId),
 }
 
 /// Which prefab a run-time entity was spawned from, so a peer joining later
@@ -434,6 +440,8 @@ pub fn apply_with(
                 }
             }
         }
+        // Who is in the game is the party's business, not the world's.
+        Message::Hello(_) | Message::Roster(_) | Message::Bye(_) => {}
         Message::Despawn(gone) => match by_id.get(&gone.id) {
             Some(&entity) if world.get::<&NetId>(entity).is_err() => out.refused.push(format!(
                 "{}: the scene's, not something spawned to despawn",
@@ -534,6 +542,17 @@ pub(crate) fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
 pub trait Transport {
     fn send(&mut self, to: PeerId, bytes: Vec<u8>);
     fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)>;
+}
+
+/// A transport chosen at run time — UDP, a relay, Steam — is still one.
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
+        (**self).send(to, bytes);
+    }
+
+    fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)> {
+        (**self).receive()
+    }
 }
 
 /// Peers over UDP: each datagram is the sender's [`PeerId`] and a

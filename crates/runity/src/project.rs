@@ -608,8 +608,14 @@ const GAME: &str = r#"//! {name}.
 //! Components are files in `src/components/`, systems files in
 //! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
 //! `build.rs` finds them, and `step` below runs the systems in order.
+//!
+//! The game is played together by default: `party` is who else is in it.
+//! Alone it is a party of one. Started with several players — from the
+//! editor, or `runity run --players 4` — each window is one of them, and
+//! what each owns moves in the others' windows too.
 
 use runity::hecs::World;
+use runity::party::{Event, Party};
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
@@ -648,6 +654,8 @@ struct Game {
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
+    party: Party,
+    components: Components,
 }
 
 impl Game {
@@ -746,6 +754,21 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
+        // Played together: what the others own comes in, what this player
+        // owns goes out, and whatever they spawn is spawned here too.
+        let (live, gpu, renderer) = (&mut self.live, ctx.gpu, &mut *ctx.renderer);
+        let events = self.party.update(&mut self.world, &self.components, ctx.time.delta(), |world, prefab, at| {
+            live.spawn_prefab(prefab, at, None, world, gpu, renderer).ok().map(|i| i.root)
+        });
+        for event in events {
+            match event {
+                Event::Joined(peer) => eprintln!("player {} joined", peer.0 + 1),
+                Event::Left { peer, .. } => eprintln!("player {} left", peer.0 + 1),
+                Event::Welcomed => eprintln!("in the game as {}", self.party.name()),
+                Event::HostLost => eprintln!("the host is gone, and the game with them"),
+                Event::Refused(why) => eprintln!("{why}"),
+            }
+        }
         // Started from the editor: tell it where things are.
         if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
             eprintln!("{problem}");
@@ -805,8 +828,14 @@ fn main() -> anyhow::Result<()> {
     for problem in &problems {
         eprintln!("{problem}");
     }
+    // RUNITY_NET: host or join a game — alone without it.
+    let party = Party::from_env().map_err(anyhow::Error::msg)?;
+    let mut title = if settings.title.is_empty() { project_name } else { settings.title.clone() };
+    if !party.is_alone() {
+        title = format!("{title} — {}", party.name());
+    }
     let config = WindowConfig {
-        title: if settings.title.is_empty() { project_name } else { settings.title.clone() },
+        title,
         width: settings.width,
         height: settings.height,
         time: runity::TimeSettings {
@@ -842,6 +871,8 @@ fn main() -> anyhow::Result<()> {
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
+        party,
+        components: game_components(),
     };
     run(config, game)
 }

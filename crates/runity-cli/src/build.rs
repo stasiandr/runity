@@ -73,7 +73,7 @@ pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
 
 /// Where cargo put the game: its target folder, which `CARGO_TARGET_DIR`
 /// may have moved.
-fn find_executable(project: &Project, release: bool) -> Result<PathBuf> {
+pub fn find_executable(project: &Project, release: bool) -> Result<PathBuf> {
     let name = crate_name(project)?;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
