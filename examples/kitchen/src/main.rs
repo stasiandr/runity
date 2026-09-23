@@ -473,10 +473,8 @@ impl shell::Game for Game {
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
         let mut frame = runity::world::scene_frame(&self.world, camera, scene);
-        if self.flyby.flying() {
-            // Close up, the lens focuses on what it looks at.
-            frame.post.depth_of_field.focus_distance = camera.target.distance(camera.position);
-        }
+        // Close up, the tour's lens: in focus where it looks, the rest soft.
+        self.flyby.lens(&self.tour, &camera, &mut frame.post.depth_of_field);
         self.profile.record("frame", started.elapsed());
         // The scene's sounds, heard from where the camera is; the
         // kitchen's, from what changed in it.

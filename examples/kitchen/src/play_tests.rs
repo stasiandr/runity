@@ -38,6 +38,8 @@ struct Peer {
     render: Option<Render>,
     /// Where a shot looks from, when not the scene's view.
     view: Option<runity::scene::View>,
+    /// The lens a shot takes, focused where it looks: millimetres, f-number.
+    lens: Option<(f32, f32)>,
 }
 
 /// What draws a peer's frames without a window.
@@ -78,6 +80,7 @@ impl Peer {
             noise: crate::noise::Noise::default(),
             render,
             view: None,
+            lens: None,
         }
     }
 
@@ -584,9 +587,12 @@ impl Peer {
         }
         let camera = runity::scene_camera(&scene.view);
         let mut frame = runity::world::scene_frame(&self.world, camera, &scene);
-        if self.view.is_some() {
-            // As the tour does: in focus where it looks.
-            frame.post.depth_of_field.focus_distance = camera.target.distance(camera.position);
+        if let Some((focal_length, aperture)) = self.lens {
+            // As the tour does: in focus where it looks, the rest soft.
+            let dof = &mut frame.post.depth_of_field;
+            dof.focus_distance = camera.target.distance(camera.position);
+            dof.focal_length = focal_length;
+            dof.aperture = aperture;
         }
         r.overlay.draw_pictures(&r.gpu, &mut r.renderer, &frame);
         r.renderer.render(&r.gpu, &r.target, &frame);
@@ -970,6 +976,7 @@ fn close_ups() {
         let time = (i / 2) as f32 * leg + if i % 2 == 0 { tour.hold * 0.5 } else { tour.hold + tour.travel * 0.5 };
         let (at, look) = tour.at(time).unwrap();
         k.view = Some(runity::scene::View { position: at, target: look, fov_deg: 50.0 });
+        k.lens = Some((tour.focal_length, tour.aperture));
         k.shot(&mut front, &format!("tour_{i:02}"));
     }
 }
@@ -998,6 +1005,29 @@ fn tour_frames() {
         let camera = flyby.camera(&tour, touring, 1.0 / fps, rest);
         k.frame();
         k.view = Some(runity::scene::View { position: camera.position, target: camera.target, fov_deg: camera.fov_y_degrees });
+        let mut dof = k.live.scene().post.clone().unwrap_or_default().depth_of_field;
+        flyby.lens(&tour, &camera, &mut dof);
+        k.lens = Some((dof.focal_length, dof.aperture));
         k.shot(&mut front, &format!("tour/{i:04}"));
+    }
+}
+
+/// The same stops through three lenses, side by side: target/shots/lens_*.png.
+#[test]
+#[ignore = "pictures to look at"]
+fn lenses() {
+    let Some(render) = Render::new(960, 540) else { return };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
+    k.seconds(0.5);
+    for (name, lens) in [("scene", None), ("f2", Some((85.0, 2.0))), ("f1", Some((100.0, 1.2)))] {
+        for (i, shot) in tour.shots.iter().enumerate().skip(1).step_by(2) {
+            k.view = Some(runity::scene::View { position: shot.at, target: shot.look, fov_deg: 50.0 });
+            k.lens = lens;
+            k.shot(&mut front, &format!("lens_{name}_{i}"));
+        }
     }
 }

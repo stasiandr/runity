@@ -22,6 +22,10 @@ pub struct Tour {
     pub travel: f32,
     /// Seconds at each.
     pub hold: f32,
+    /// The lens on the tour: millimetres and the f-number. Focused on what
+    /// it looks at, a long lens wide open leaves the rest soft.
+    pub focal_length: f32,
+    pub aperture: f32,
     pub shots: Vec<Shot>,
 }
 
@@ -57,6 +61,19 @@ impl Flyby {
             target: rest.target.lerp(look, w),
             ..rest
         }
+    }
+
+    /// The tour's lens over the scene's, as much as the tour is the camera:
+    /// in focus where it looks, the rest soft.
+    pub fn lens(&self, tour: &Tour, camera: &Camera, dof: &mut runity::lens::DepthOfField) {
+        if self.weight == 0.0 {
+            return;
+        }
+        let w = smooth(self.weight);
+        let lerp = |a: f32, b: f32| a + (b - a) * w;
+        dof.focus_distance = lerp(dof.focus_distance, camera.target.distance(camera.position));
+        dof.focal_length = lerp(dof.focal_length, tour.focal_length);
+        dof.aperture = lerp(dof.aperture, tour.aperture);
     }
 
     /// Whether the tour has any part in the camera.
@@ -113,6 +130,8 @@ mod tests {
         Tour {
             travel: 2.0,
             hold: 1.0,
+            focal_length: 85.0,
+            aperture: 2.0,
             shots: vec![shot(0.0), shot(10.0), shot(20.0)],
         }
     }

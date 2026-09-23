@@ -5,6 +5,10 @@
 (
     travel: 3.5,
     hold: 2.0,
+    // The lens: focused on what the camera looks at, a long lens wide open
+    // leaves the rest soft.
+    focal_length: 100.0,
+    aperture: 1.4,
     shots: [
         // The whole kitchen, from the front.
         (at: (0.5, 5.4, 6.7), look: (1.9, 0.4, 0.2)),
