@@ -333,3 +333,33 @@ fn every_icon_has_a_name_and_a_node_shows_one() {
         .any(|l| l.icons.iter().any(|i| i.rect.width == 14.0)));
     let _ = play;
 }
+
+#[test]
+fn a_hover_over_a_long_list_repaints_quickly() {
+    let mut ui = Ui::new();
+    ui.set_viewport(800.0, 600.0, 1.0);
+    let root = ui.root();
+    let list = ui.add(root, Style::column().fill().clip());
+    for i in 0..2000 {
+        let line = ui.add(
+            list,
+            Style::row()
+                .height(22.0)
+                .fixed()
+                .hover(Color::hex(0x333333)),
+        );
+        ui.add_text(line, Style::default(), &format!("entity number {i}"));
+    }
+    ui.paint();
+    let t = std::time::Instant::now();
+    for i in 0..10 {
+        ui.handle(&InputEvent::MouseMoved {
+            x: 10.0,
+            y: 11.0 + 22.0 * i as f32,
+        });
+        ui.paint();
+    }
+    let each = t.elapsed() / 10;
+    eprintln!("repaint of 2000 lines on a hover: {each:?}");
+    assert!(each.as_millis() < 40, "{each:?}");
+}

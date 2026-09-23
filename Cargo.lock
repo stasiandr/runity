@@ -2813,6 +2813,7 @@ dependencies = [
  "image",
  "rfd",
  "runity",
+ "runity-cli",
  "runity-editor",
  "runity-ui",
  "wgpu",

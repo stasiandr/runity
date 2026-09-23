@@ -415,3 +415,36 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
         "the prefab was saved without its ember"
     );
 }
+
+#[test]
+fn a_big_scene_stays_quick() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    for i in 0..2000 {
+        let id = s.session.add(None, "builtin:cube").unwrap();
+        let _ = s.session.rename(id, &format!("cube {i}"));
+    }
+    let t = std::time::Instant::now();
+    s.refresh();
+    s.frame();
+    let first = t.elapsed();
+    // Idle: nothing changed.
+    let t = std::time::Instant::now();
+    for _ in 0..10 {
+        s.frame();
+    }
+    let idle = t.elapsed() / 10;
+    // A selection change: every line is looked at again.
+    let ids = s.session.entities();
+    let t = std::time::Instant::now();
+    for id in ids.iter().take(10) {
+        s.session.select(Some(*id)).unwrap();
+        s.frame();
+    }
+    let select = t.elapsed() / 10;
+    eprintln!("2000 entities: first {first:?}, idle frame {idle:?}, selection frame {select:?}");
+    // Debug build, our crates unoptimised: a budget with room, not a target.
+    assert!(select.as_millis() < 80, "a selection took {select:?}");
+    assert!(idle.as_millis() < 20, "an idle frame took {idle:?}");
+}

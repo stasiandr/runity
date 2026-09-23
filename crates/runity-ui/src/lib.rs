@@ -161,6 +161,8 @@ struct TextBox {
     buffer: Buffer,
     /// The style it was shaped with: reshaped only when this changes.
     style: TextStyle,
+    /// The width it was last laid out at for drawing.
+    drawn_at: Option<Option<f32>>,
 }
 
 struct Node {
@@ -673,6 +675,7 @@ impl Ui {
                     string: text.to_string(),
                     buffer: Buffer::new(&mut self.fonts, metrics),
                     style: s.clone(),
+                    drawn_at: None,
                 });
             }
         }
@@ -697,6 +700,7 @@ impl Ui {
         if !self.layout_dirty {
             return;
         }
+        let started = Instant::now();
         let root_style = self.tree.style(self.root).cloned().unwrap_or_default();
         let sized = taffy::Style {
             size: taffy::Size {
@@ -724,6 +728,12 @@ impl Ui {
         );
         self.layout_dirty = false;
         self.paint_dirty = true;
+        if std::env::var_os("RUNITY_UI_TIMING").is_some() {
+            eprintln!(
+                "runity-ui: layout {:.1} ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
     }
 
     /// Whether anything needs doing before the next frame looks right: a
@@ -742,6 +752,7 @@ impl Ui {
     pub fn paint(&mut self) -> &[Layer] {
         self.layout();
         if self.paint_dirty {
+            let started = Instant::now();
             self.layers.clear();
             self.layers.push(Layer::default());
             self.order.clear();
@@ -754,6 +765,12 @@ impl Ui {
             });
             self.paint_dirty = false;
             self.revision += 1;
+            if std::env::var_os("RUNITY_UI_TIMING").is_some() {
+                eprintln!(
+                    "runity-ui: paint {:.1} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+            }
         }
         &self.layers
     }
@@ -784,9 +801,20 @@ impl Ui {
                 } else {
                     Some(layout.content_box_width())
                 };
-                text.buffer.set_size(width, None);
-                text.buffer.shape_until_scroll(&mut self.fonts, false);
+                if text.drawn_at != Some(width) {
+                    text.buffer.set_size(width, None);
+                    text.buffer.shape_until_scroll(&mut self.fonts, false);
+                    text.drawn_at = Some(width);
+                }
             }
+        }
+        // Outside what its ancestors show: nothing of it can be seen or
+        // clicked, so neither it nor what is under it is painted — a list
+        // of thousands costs the lines in view.
+        let visible = clip.intersect(&rect);
+        if (visible.width <= 0.0 || visible.height <= 0.0) && !self.node(id).layer {
+            self.node_mut(id).rect = rect;
+            return;
         }
         let hovered = self.hovered == Some(id);
         let pressed = self.press.is_some_and(|p| p.node == id) && hovered;
@@ -1175,14 +1203,35 @@ impl Ui {
 
     /// Scroll so that `child` (somewhere under `id`) is in view.
     pub fn scroll_to(&mut self, id: NodeId, child: NodeId) {
-        self.paint();
-        let view = self.rect(id);
-        let at = self.rect(child);
+        self.layout();
+        let (Some(view), Some(at)) = (self.layout_rect(id), self.layout_rect(child)) else {
+            return;
+        };
         if at.y < view.y {
             self.scroll_by(id, at.y - view.y);
         } else if at.y + at.height > view.y + view.height {
             self.scroll_by(id, at.y + at.height - view.y - view.height);
         }
+    }
+
+    /// Where a node is by the layout, scrolls included — whether or not
+    /// it was painted.
+    pub fn layout_rect(&self, id: NodeId) -> Option<Rect> {
+        let own = self.tree.layout(id.0).ok()?;
+        let (mut x, mut y) = (own.location.x, own.location.y);
+        let mut at = self.parent(id);
+        while let Some(p) = at {
+            let l = self.tree.layout(p.0).ok()?;
+            x += l.location.x;
+            y += l.location.y - self.node(p).scroll;
+            at = self.parent(p);
+        }
+        Some(Rect {
+            x,
+            y,
+            width: own.size.width,
+            height: own.size.height,
+        })
     }
 
     pub fn scroll(&self, id: NodeId) -> f32 {
@@ -1312,6 +1361,7 @@ fn shape(fonts: &mut FontSystem, node: &mut Node) {
         .set_text(&text.string, &attrs, Shaping::Advanced, None);
     text.buffer.shape_until_scroll(fonts, false);
     text.style = style;
+    text.drawn_at = None;
 }
 
 /// How big a node's content is: its text at the width it is offered.
@@ -1348,6 +1398,7 @@ fn measure(
     });
     text.buffer.set_size(width, None);
     text.buffer.shape_until_scroll(fonts, false);
+    text.drawn_at = None;
     let mut w: f32 = 0.0;
     let mut lines = 0;
     for run in text.buffer.layout_runs() {

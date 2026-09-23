@@ -41,6 +41,15 @@ pub const REFERENCE_SCENE: &str = "examples/valley/scenes/first-light.ron";
 /// The Scene view's picture, as the renderer knows it.
 const SCENE: ImageId = ImageId(0);
 
+/// The pointer's look, as [`Studio::cursor`] asks for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cursor {
+    Default,
+    Text,
+    ResizeColumn,
+    ResizeRow,
+}
+
 /// What a panel asks the studio to do after an event.
 #[derive(Default)]
 pub struct Requests {
@@ -94,9 +103,7 @@ struct Status {
 #[derive(PartialEq)]
 struct Stamp {
     selection: Vec<runity::EntityId>,
-    steps: usize,
-    redo: Option<String>,
-    entities: usize,
+    revision: u64,
     console: (usize, usize, usize),
     lines: usize,
     tool: Tool,
@@ -115,9 +122,7 @@ impl Stamp {
     fn of(session: &Session) -> Self {
         Self {
             selection: session.selection(),
-            steps: session.undo_steps().len(),
-            redo: session.redo_label(),
-            entities: session.entity_count(),
+            revision: session.revision(),
             console: session.console_counts(),
             lines: session.console().iter().map(|l| l.count as usize).sum(),
             tool: session.tool(),
@@ -174,6 +179,8 @@ pub struct Studio {
     discard_asked: Option<std::path::PathBuf>,
     colliders: bool,
     conflict_said: bool,
+    /// A build running in the background: what it says when it is done.
+    job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The scene to go back to from prefab mode.
     scene_before_prefab: Option<std::path::PathBuf>,
     /// The banner over the view in prefab mode, and its Back button.
@@ -355,6 +362,7 @@ impl Studio {
             discard_asked: None,
             colliders: false,
             conflict_said: false,
+            job: None,
             scene_before_prefab: None,
             prefab_bar,
             prefab_name,
@@ -365,6 +373,18 @@ impl Studio {
         studio.ui.focus(Some(viewport));
         studio.refresh();
         studio
+    }
+
+    /// What the pointer should look like where it is: an I-beam over a
+    /// field, a resize arrow over a border between panels.
+    pub fn cursor(&self) -> Cursor {
+        let node = self.ui.dragging().or(self.ui.hovered());
+        match node {
+            Some(n) if self.ui.is_field(n) => Cursor::Text,
+            Some(n) if n == self.splits[1] => Cursor::ResizeRow,
+            Some(n) if self.splits.contains(&n) => Cursor::ResizeColumn,
+            _ => Cursor::Default,
+        }
     }
 
     /// What the window's title says: the document, and a dot when it has
@@ -490,6 +510,8 @@ impl Studio {
         self.drawn = Instant::now();
         self.frame_times.push(dt);
 
+        let timing = std::env::var_os("RUNITY_STUDIO_TIMING").is_some();
+        let t0 = Instant::now();
         let mut requests = Requests::default();
         for (node, event) in self.ui.events() {
             self.dispatch(node, &event, &mut requests);
@@ -506,14 +528,28 @@ impl Studio {
         if self.session.size() != size {
             self.session.resize(size.0, size.1);
         }
+        let t1 = Instant::now();
         let _ = self.session.scene_view(&self.scene_input, dt);
         self.scene_input.begin_frame();
+        let t2 = Instant::now();
         self.session.render();
+        let t3 = Instant::now();
 
         self.poll_disk();
+        if let Some(job) = &self.job {
+            if let Ok(result) = job.try_recv() {
+                self.job = None;
+                match result {
+                    Ok(message) => self.session.say(Level::Info, message),
+                    Err(message) => self.session.say(Level::Error, message),
+                }
+            }
+        }
         self.update_tooltip();
 
+        let t4 = Instant::now();
         let stamp = Stamp::of(&self.session);
+        let t5 = Instant::now();
         let moving = self.session.is_dragging() || self.session.is_playing();
         if self.seen.as_ref() != Some(&stamp) || moving {
             let errors_before = self.seen.as_ref().map_or(0, |s| s.console.2);
@@ -522,6 +558,13 @@ impl Studio {
             }
             self.seen = Some(stamp);
             self.update_panels(moving);
+        }
+        if timing {
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+            eprintln!(
+                "events+layout {:.1} scene_view {:.1} render {:.1} disk+tip {:.1} stamp {:.1} panels {:.1} ms",
+                ms(t0, t1), ms(t1, t2), ms(t2, t3), ms(t3, t4), ms(t4, t5), ms(t5, Instant::now())
+            );
         }
         if self.frame_times.len() >= 30 {
             let mean = self.frame_times.iter().sum::<f32>() / self.frame_times.len() as f32;
@@ -660,13 +703,29 @@ impl Studio {
         let s = &self.session;
         // While a drag or a game runs only what moves is redone: the
         // Inspector's numbers and the status line.
+        let t0 = Instant::now();
         if !moving {
             self.hierarchy.update(&mut self.ui, s);
+        }
+        let t1 = Instant::now();
+        if !moving {
             self.bottom.update(&mut self.ui, s);
         }
+        let t2 = Instant::now();
         self.inspector.update(&mut self.ui, s);
+        let t3 = Instant::now();
         self.update_toolbar();
         self.update_status();
+        if std::env::var_os("RUNITY_STUDIO_TIMING").is_some() {
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1e3;
+            eprintln!(
+                "  hierarchy {:.1} bottom {:.1} inspector {:.1} bars {:.1} ms",
+                ms(t0, t1),
+                ms(t1, t2),
+                ms(t2, t3),
+                ms(t3, Instant::now())
+            );
+        }
     }
 
     fn update_toolbar(&mut self) {
@@ -1074,6 +1133,48 @@ impl Studio {
                 Action::Save => {
                     s.save_scene(None).map_err(e)?;
                     s.say(Level::Info, "saved");
+                }
+                Action::CheckProject => {
+                    let project = s.project().ok_or("no project is open")?;
+                    let findings = runity_cli::check(project);
+                    if findings.is_empty() {
+                        s.say(Level::Info, "check: nothing wrong");
+                    }
+                    for f in findings {
+                        let level = match f.severity {
+                            runity_cli::Severity::Error => Level::Error,
+                            runity_cli::Severity::Warning => Level::Warning,
+                        };
+                        s.say(level, f.to_string());
+                    }
+                }
+                Action::Build(run) => {
+                    if self.job.is_some() {
+                        return Err("a build is already running".into());
+                    }
+                    let project = s.project().ok_or("no project is open")?.clone();
+                    let out = project.root().join("build");
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let result = runity_cli::build::build(&project, &out, true)
+                            .map_err(|e| format!("{e:#}"))
+                            .and_then(|built| {
+                                if !built.stale.is_empty() {
+                                    // Built anyway, with the last good versions.
+                                    eprintln!("stale: {}", built.stale.join("; "));
+                                }
+                                if run {
+                                    std::process::Command::new(&built.executable)
+                                        .current_dir(&built.folder)
+                                        .spawn()
+                                        .map_err(|e| format!("built, but it did not start: {e}"))?;
+                                }
+                                Ok(format!("built {}", built.executable.display()))
+                            });
+                        let _ = tx.send(result);
+                    });
+                    self.job = Some(rx);
+                    s.say(Level::Info, "building (release)…");
                 }
                 Action::ReloadAssets => {
                     let n = s.reload_assets();

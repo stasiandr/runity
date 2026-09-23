@@ -27,6 +27,10 @@ pub enum Action {
     ExitPrefab,
     Save,
     ReloadAssets,
+    /// `runity check`, its findings in the Console.
+    CheckProject,
+    /// `runity build`, in the background; `true` runs what it built.
+    Build(bool),
     StartGame,
     StopGame,
     Undo,
@@ -134,6 +138,10 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 MenuItem::separator(),
                 item("Import…", Action::Import),
                 item("Reload Assets", Action::ReloadAssets),
+                item("Check Project", Action::CheckProject),
+                MenuItem::separator(),
+                item("Build", Action::Build(false)),
+                item("Build and Run", Action::Build(true)),
                 MenuItem::separator(),
                 item("Run Game", Action::StartGame),
                 item("Stop Game", Action::StopGame),

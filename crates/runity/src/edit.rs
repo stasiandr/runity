@@ -22,6 +22,9 @@ pub struct History {
     past: Vec<Scene>,
     future: Vec<Scene>,
     limit: usize,
+    /// Counts every change of any kind: what a window compares to know the
+    /// document moved, without comparing documents.
+    revision: u64,
 }
 
 impl History {
@@ -31,6 +34,7 @@ impl History {
     pub fn new(scene: Scene, limit: usize) -> Self {
         Self {
             scene,
+            revision: 0,
             past: Vec::new(),
             future: Vec::new(),
             limit: limit.max(1),
@@ -47,11 +51,13 @@ impl History {
     /// caller reaching for this outside one is about to make an
     /// unrecoverable edit.
     pub fn scene_mut_untracked(&mut self) -> &mut Scene {
+        self.revision += 1;
         &mut self.scene
     }
 
     /// Record the current state, then hand over the scene to change.
     pub fn edit(&mut self) -> &mut Scene {
+        self.revision += 1;
         self.snapshot();
         &mut self.scene
     }
@@ -61,6 +67,7 @@ impl History {
     /// This is what a drag calls when it starts: everything that follows,
     /// until the next snapshot, undoes as one step.
     pub fn snapshot(&mut self) {
+        self.revision += 1;
         self.past.push(self.scene.clone());
         if self.past.len() > self.limit {
             self.past.remove(0);
@@ -75,6 +82,12 @@ impl History {
     }
 
     /// How many steps undo can take back.
+    /// A number that changes whenever anything about the history does —
+    /// an edit, an undo, a squash. Cheap to ask every frame.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn depth(&self) -> usize {
         self.past.len()
     }
@@ -83,6 +96,7 @@ impl History {
     /// once, made of an edit of each, calls afterwards so one undo takes
     /// it all back.
     pub fn squash(&mut self, steps: usize) {
+        self.revision += 1;
         if steps > 1 {
             // The state before the first of them stays; the ones between go.
             let first = self.past.len().saturating_sub(steps);
@@ -95,6 +109,7 @@ impl History {
     }
 
     pub fn undo(&mut self) -> bool {
+        self.revision += 1;
         let Some(previous) = self.past.pop() else {
             return false;
         };
@@ -104,6 +119,7 @@ impl History {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.revision += 1;
         let Some(next) = self.future.pop() else {
             return false;
         };
@@ -138,6 +154,7 @@ impl History {
     /// bring back the old name: it would restore a reference to a file that
     /// is no longer there.
     pub fn rewrite_all(&mut self, mut change: impl FnMut(&mut Scene)) {
+        self.revision += 1;
         change(&mut self.scene);
         self.past.iter_mut().for_each(&mut change);
         self.future.iter_mut().for_each(&mut change);
@@ -147,6 +164,7 @@ impl History {
     /// stacks: undoing across an open would put a different document's
     /// entities into this one.
     pub fn replace(&mut self, scene: Scene) {
+        self.revision += 1;
         self.scene = scene;
         self.past.clear();
         self.future.clear();

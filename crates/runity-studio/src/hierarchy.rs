@@ -23,9 +23,9 @@ use crate::theme::*;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Part {
     Line(EntityId),
-    Arrow(EntityId, bool),
-    Eye(EntityId, bool),
-    Lock(EntityId, bool),
+    Arrow(EntityId),
+    Eye(EntityId),
+    Lock(EntityId),
     Rename(EntityId),
 }
 
@@ -47,6 +47,8 @@ pub struct Hierarchy {
     shown: Vec<Row>,
     /// The arrow keys move the selection here.
     active: bool,
+    /// Each line's node as last updated.
+    lines: HashMap<EntityId, NodeId>,
     /// Where a Shift click selects from.
     anchor: Option<EntityId>,
     /// The accent line that shows where a dragged line will land.
@@ -103,6 +105,7 @@ impl Hierarchy {
         Self {
             shown: Vec::new(),
             active: false,
+            lines: HashMap::new(),
             anchor: None,
             indicator,
             card,
@@ -131,42 +134,65 @@ impl Hierarchy {
         let keys: Vec<u64> = rows.iter().map(|r| r.id.raw()).collect();
         let by_key: HashMap<u64, &Row> = rows.iter().map(|r| (r.id.raw(), r)).collect();
         let renaming = self.renaming;
-        let mut parts = HashMap::new();
+        // Lines made for new rows say what their nodes stand for once, when
+        // they are made; a line kept keeps its parts.
+        let mut made: Vec<(EntityId, NodeId)> = Vec::new();
         ui.sync_children(
             self.list,
             &keys,
-            |ui, list, key| make_line(ui, list, by_key[key]),
+            |ui, list, key| {
+                let row = by_key[key];
+                let line = make_line(ui, list, row);
+                made.push((row.id, line));
+                line
+            },
             |_, _, _| {},
         );
-        // Every line brought up to date, and what its nodes stand for.
-        for (line, row) in ui.children(self.list).into_iter().zip(&rows) {
-            update_line(ui, line, row, renaming);
+        for (id, line) in made {
             let kids = ui.children(line);
-            parts.insert(line, Part::Line(row.id));
-            parts.insert(kids[0], Part::Arrow(row.id, row.open));
-            let tools = kids[4];
-            let t = ui.children(tools);
-            parts.insert(t[0], Part::Eye(row.id, row.hidden));
-            parts.insert(t[1], Part::Lock(row.id, row.locked));
-            if let Some((id, field)) = renaming {
-                if id == row.id {
-                    parts.insert(field, Part::Rename(id));
-                }
+            let tools = ui.children(kids[4]);
+            self.parts.insert(line, Part::Line(id));
+            self.parts.insert(kids[0], Part::Arrow(id));
+            self.parts.insert(tools[0], Part::Eye(id));
+            self.parts.insert(tools[1], Part::Lock(id));
+            self.lines.insert(id, line);
+        }
+        // Lines whose rows went: forget their parts.
+        let alive: std::collections::HashSet<EntityId> = rows.iter().map(|r| r.id).collect();
+        if self.lines.len() > alive.len() {
+            let gone: Vec<EntityId> = self
+                .lines
+                .keys()
+                .filter(|id| !alive.contains(id))
+                .copied()
+                .collect();
+            for id in gone {
+                self.lines.remove(&id);
+            }
+            self.parts.retain(|node, _| ui.exists(*node));
+        }
+        // Every line brought up to date — only those whose row changed: a
+        // selection change touches two lines, not two thousand.
+        let before: HashMap<EntityId, &Row> = self.shown.iter().map(|r| (r.id, r)).collect();
+        for row in &rows {
+            let Some(&line) = self.lines.get(&row.id) else {
+                continue;
+            };
+            let same = before.get(&row.id).is_some_and(|b| *b == row) && renaming.is_none();
+            if !same {
+                update_line(ui, line, row, renaming);
             }
         }
-        self.parts = parts;
+        if let Some((id, field)) = renaming {
+            self.parts.insert(field, Part::Rename(id));
+        }
         self.shown = rows.clone();
+
         // Follow the selection into view when it changed from elsewhere.
         let selected = session.selected();
         if selected != self.followed {
             self.followed = selected;
-            if let Some(line) = ui
-                .children(self.list)
-                .into_iter()
-                .zip(&rows)
-                .find(|(_, r)| Some(r.id) == selected)
-                .map(|(n, _)| n)
-            {
+            if let Some(line) = selected.and_then(|id| self.lines.get(&id).copied()) {
                 ui.scroll_to(self.list, line);
             }
         }
@@ -194,10 +220,11 @@ impl Hierarchy {
     }
 
     fn line_of(&self, id: EntityId) -> Option<NodeId> {
-        self.parts
-            .iter()
-            .find(|(_, p)| **p == Part::Line(id))
-            .map(|(n, _)| *n)
+        self.lines.get(&id).copied()
+    }
+
+    fn row(&self, id: EntityId) -> Option<&Row> {
+        self.shown.iter().find(|r| r.id == id)
     }
 
     /// Whether `node` is this panel's.
@@ -242,15 +269,18 @@ impl Hierarchy {
                 self.stop_renaming(ui);
                 requests.refresh = true;
             }
-            (Some(Part::Arrow(id, open)), Event::Click { .. }) => {
+            (Some(Part::Arrow(id)), Event::Click { .. }) => {
+                let open = self.row(id).is_some_and(|r| r.open);
                 session.set_open(id, !open);
                 requests.refresh = true;
             }
-            (Some(Part::Eye(id, hidden)), Event::Click { .. }) => {
+            (Some(Part::Eye(id)), Event::Click { .. }) => {
+                let hidden = self.row(id).is_some_and(|r| r.hidden);
                 let _ = session.set_hidden(&[id], !hidden);
                 requests.refresh = true;
             }
-            (Some(Part::Lock(id, locked)), Event::Click { .. }) => {
+            (Some(Part::Lock(id)), Event::Click { .. }) => {
+                let locked = self.row(id).is_some_and(|r| r.locked);
                 let _ = session.set_pickable(&[id], locked);
                 requests.refresh = true;
             }

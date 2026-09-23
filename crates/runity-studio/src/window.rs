@@ -136,6 +136,13 @@ impl ApplicationHandler for App {
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
             WindowEvent::RedrawRequested => {
                 run.studio.frame();
+                let cursor = match run.studio.cursor() {
+                    crate::studio::Cursor::Default => winit::window::CursorIcon::Default,
+                    crate::studio::Cursor::Text => winit::window::CursorIcon::Text,
+                    crate::studio::Cursor::ResizeColumn => winit::window::CursorIcon::ColResize,
+                    crate::studio::Cursor::ResizeRow => winit::window::CursorIcon::RowResize,
+                };
+                run.window.set_cursor(cursor);
                 let title = run.studio.title();
                 if title != run.title {
                     run.window.set_title(&title);

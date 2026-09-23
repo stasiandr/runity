@@ -1860,6 +1860,13 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// A number that changes whenever the document does: an edit, an undo,
+    /// a reload. What a window compares once a frame; asking for the undo
+    /// labels instead compares whole documents.
+    pub fn revision(&self) -> u64 {
+        self.history.revision()
+    }
+
     /// Every step undo can take back, oldest first, in words.
     pub fn undo_steps(&self) -> Vec<String> {
         self.history.steps()
