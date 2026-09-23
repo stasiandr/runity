@@ -323,29 +323,9 @@ fn files(root: &Path, extension: &str) -> Vec<PathBuf> {
 /// ` — did you mean `x`?` for the closest known name, or nothing when none
 /// is close enough to be a typo.
 fn suggest<'a>(wanted: &str, known: impl Iterator<Item = &'a str>) -> String {
-    let limit = (wanted.chars().count() / 3).max(2);
-    known
-        .map(|name| (distance(wanted, name), name))
-        .filter(|(d, _)| *d <= limit)
-        .min()
-        .map(|(_, name)| format!(" — did you mean `{name}`?"))
+    runity::spelling::closest(wanted, known)
+        .map(|name| format!(" — did you mean `{name}`?"))
         .unwrap_or_default()
-}
-
-/// Levenshtein distance, by characters.
-fn distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut previous = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let substitute = previous + usize::from(ca != *cb);
-            previous = row[j + 1];
-            row[j + 1] = substitute.min(row[j] + 1).min(previous + 1);
-        }
-    }
-    row[b.len()]
 }
 
 #[cfg(test)]

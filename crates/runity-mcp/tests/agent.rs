@@ -213,6 +213,22 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
         .text("scene_tree", json!({}))
         .contains("(0.00, 4.00, 0.00)"));
 
+    // The game's own components go on as RON text, and show in the tree.
+    agent.text(
+        "update_entity",
+        json!({ "id": crate_id, "components": { "loot": "(table: \"chest\")" } }),
+    );
+    assert!(agent
+        .text("scene_tree", json!({}))
+        .contains("loot=(table: \"chest\")"));
+    let err = agent
+        .call(
+            "update_entity",
+            json!({ "id": crate_id, "components": { "loot": "(table: " } }),
+        )
+        .unwrap_err();
+    assert!(err.contains("component loot"), "{err}");
+
     // And the file says what the edits said.
     agent.text("save_scene", json!({}));
     let saved = std::fs::read_to_string(root.join("scenes/main.ron")).unwrap();

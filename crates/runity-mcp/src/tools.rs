@@ -39,6 +39,7 @@ fn entity_fields() -> Value {
         "scale": vec3("per axis"),
         "body": { "type": "string", "enum": ["None", "Static", "Dynamic"] },
         "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r)" },
+        "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
 }
 
@@ -267,6 +268,9 @@ fn tree(server: &mut Server) -> Result<String, String> {
         if desc.body != Body::None {
             let _ = write!(out, " body={:?}", desc.body);
         }
+        for (name, value) in &desc.components {
+            let _ = write!(out, " {name}={}", value.get_ron());
+        }
         out.push('\n');
         for child in &desc.children {
             line(out, child, depth + 1);
@@ -363,6 +367,25 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
     if let Some(collider) = optional_string(args, "collider")? {
         desc.collider =
             ron::from_str::<Collider>(&collider).map_err(|e| format!("collider: {e}"))?;
+    }
+    match args.get("components") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(components)) => {
+            for (name, value) in components {
+                match value {
+                    Value::Null => {
+                        desc.components.remove(name);
+                    }
+                    Value::String(ron) => desc.set_component(name, ron)?,
+                    other => {
+                        return Err(format!(
+                            "components.{name} is RON text in a string, or null, not {other}"
+                        ))
+                    }
+                }
+            }
+        }
+        Some(other) => return Err(format!("components is an object, not {other}")),
     }
     Ok(())
 }

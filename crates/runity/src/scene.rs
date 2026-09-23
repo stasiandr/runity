@@ -5,6 +5,7 @@
 //! diff, and `git` can show either one. Nothing here knows about rendering or
 //! physics; it is the description they are both built from.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use glam::{Quat, Vec3};
@@ -150,6 +151,26 @@ pub struct EntityDesc {
     /// saying so in one place beats guessing a box from the mesh.
     #[serde(default)]
     pub collider: Collider,
+    /// The game's own components, by the name the game registered each
+    /// under (see [`crate::components`]), each value in RON:
+    ///
+    /// ```text
+    /// components: { "door": (open_angle: 90.0), "loot": (table: "chest") },
+    /// ```
+    ///
+    /// This is where a designer's numbers live — what Unity keeps in a
+    /// MonoBehaviour's serialized fields — and there is no base class to
+    /// inherit: a component is a plain struct the game registers, and a
+    /// line is simply the set of them it carries. Kept as the text it was
+    /// written as, so the engine never needs the game's types to load,
+    /// save or diff a scene, and a value it did not touch is written back
+    /// byte for byte.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "trimmed_components"
+    )]
+    pub components: BTreeMap<String, ComponentValue>,
     /// Things attached to this one. A child's transform is relative to its
     /// parent, so moving the parent moves the lot — which is what makes a
     /// cart with wheels, or a settler carrying a log, one thing to place
@@ -163,7 +184,32 @@ pub struct EntityDesc {
     pub children: Vec<EntityDesc>,
 }
 
+/// One component's value, in RON, as written.
+pub type ComponentValue = Box<ron::value::RawValue>;
+
+/// Component values without the whitespace around them, so that where a
+/// value sat in the file does not become part of it.
+fn trimmed_components<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, ComponentValue>, D::Error> {
+    let raw = BTreeMap::<String, ComponentValue>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .map(|(name, value)| (name, value.trim_boxed()))
+        .collect())
+}
+
 impl EntityDesc {
+    /// Set a component's value from RON text. The text is checked to be
+    /// RON, not to fit the component: the engine does not know the game's
+    /// types, and the game says so when it reads the scene.
+    pub fn set_component(&mut self, name: &str, ron: &str) -> Result<(), String> {
+        let value = ron::value::RawValue::from_boxed_ron(ron.trim().into())
+            .map_err(|e| format!("component {name}: {e}"))?;
+        self.components.insert(name.to_string(), value);
+        Ok(())
+    }
+
     /// This entity and everything under it, depth first, each with the
     /// transform that stacks its ancestors' on top of its own.
     pub fn flatten(&self) -> Vec<(&EntityDesc, glam::Mat4)> {
@@ -547,6 +593,7 @@ mod tests {
         // reopen.
         let mut scene = Scene {
             entities: vec![EntityDesc {
+                components: Default::default(),
                 id: Default::default(),
                 name: "crate".into(),
                 model: "builtin:cube".into(),
@@ -562,6 +609,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    components: Default::default(),
                     id: Default::default(),
                     name: "lid".into(),
                     model: "builtin:cube".into(),
@@ -596,6 +644,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                components: Default::default(),
                 id: Default::default(),
                 name: "pine".into(),
                 model: "models/pine_large.obj".into(),

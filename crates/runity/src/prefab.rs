@@ -320,6 +320,11 @@ fn resolve(
     if desc.collider != Collider::default() {
         root.collider = desc.collider;
     }
+    // Components one by one: an instance that says `"door": (locked:
+    // true)` changes the door and keeps the prefab's other components.
+    for (name, value) in &desc.components {
+        root.components.insert(name.clone(), value.clone());
+    }
     Some(root)
 }
 

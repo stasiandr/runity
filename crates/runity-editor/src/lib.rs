@@ -398,6 +398,33 @@ impl Session {
         Ok(())
     }
 
+    /// Set one of the game's components on an entity, as RON text, or take
+    /// it off with `None` — one undoable step.
+    ///
+    /// The text is checked to be RON, not to fit the component: the editor
+    /// does not link the game, so whether `(open_angle: "wide")` is a door
+    /// is for the game to say when it reads the scene.
+    pub fn set_component(&mut self, id: EntityId, name: &str, ron: Option<&str>) -> EditResult<()> {
+        if name.is_empty() {
+            return Err(EditError::EmptyName("a component"));
+        }
+        // Parsed before the edit is recorded, so a typo costs no undo step.
+        let mut probe = EntityDesc::default();
+        if let Some(ron) = ron {
+            probe.set_component(name, ron).map_err(EditError::Scene)?;
+        }
+        let desc = self.edit_entity(id)?;
+        match probe.components.remove(name) {
+            Some(value) => {
+                desc.components.insert(name.to_string(), value);
+            }
+            None => {
+                desc.components.remove(name);
+            }
+        }
+        Ok(())
+    }
+
     /// Where an entity actually is, in world space.
     ///
     /// Not the same as its transform. The transform is local and belongs to

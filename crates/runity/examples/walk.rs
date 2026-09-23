@@ -61,9 +61,12 @@ impl Walk {
 
 impl Game for Walk {
     fn start(&mut self, ctx: &mut Context) {
-        let missing = self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer);
-        for m in &missing {
-            eprintln!("{}: no model named {}", m.entity_name, m.model);
+        for line in self
+            .live
+            .spawn(&mut self.world, ctx.gpu, ctx.renderer)
+            .lines()
+        {
+            eprintln!("{line}");
         }
     }
 

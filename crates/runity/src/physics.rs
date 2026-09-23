@@ -287,6 +287,7 @@ mod tests {
 
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
+            components: Default::default(),
             id: Default::default(),
             name: name.into(),
             model: "m".into(),
@@ -363,6 +364,7 @@ mod tests {
         // the first step, which reads as the physics being wrong.
         let scene = Scene {
             entities: vec![crate::EntityDesc {
+                components: Default::default(),
                 id: Default::default(),
                 name: "boulder".into(),
                 model: "m".into(),

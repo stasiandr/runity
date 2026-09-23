@@ -70,7 +70,7 @@ fn a_saved_scene_reaches_the_running_world_and_the_game_keeps_its_state() {
     let (mut live, problems) = LiveScene::open(&path).unwrap();
     assert!(problems.is_empty(), "{problems:?}");
     let mut world = hecs::World::new();
-    let missing = live.spawn(&mut world, &gpu, &mut renderer);
+    let missing = live.spawn(&mut world, &gpu, &mut renderer).missing;
     assert_eq!(missing.len(), 1, "no rock in the library yet: {missing:?}");
     let campfire = entity(&world, "a1");
     world.insert_one(campfire, Lit(true)).unwrap();

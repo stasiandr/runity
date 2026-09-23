@@ -36,7 +36,7 @@ use crate::library::{Library, Reloaded};
 use crate::render::{MeshHandle, Renderer};
 use crate::scene::{MaterialRef, Scene};
 use crate::world::{Model, Patched, SceneId, Unresolved};
-use crate::{builtin, Prefabs, Project};
+use crate::{builtin, ComponentProblem, Components, Prefabs, Project};
 
 /// A scene file, its project, and what has been uploaded for it.
 pub struct LiveScene {
@@ -49,6 +49,27 @@ pub struct LiveScene {
     stamps: Stamps,
     meshes: HashMap<String, MeshHandle>,
     since_poll: f32,
+    components: Components,
+}
+
+/// What [`LiveScene::spawn`] could not do.
+#[derive(Debug, Default)]
+pub struct Spawned {
+    /// Lines whose model nothing answers to.
+    pub missing: Vec<Unresolved>,
+    /// Components the game does not register, or whose values do not fit.
+    pub components: Vec<ComponentProblem>,
+}
+
+impl Spawned {
+    /// What went wrong, a line each.
+    pub fn lines(&self) -> Vec<String> {
+        self.missing
+            .iter()
+            .map(|m| format!("{}: no model named {}", m.entity_name, m.model))
+            .chain(self.components.iter().map(ToString::to_string))
+            .collect()
+    }
 }
 
 /// What one [`LiveScene::reload`] found and did.
@@ -130,6 +151,7 @@ impl LiveScene {
                 stamps,
                 meshes: HashMap::new(),
                 since_poll: 0.0,
+                components: Components::new(),
             },
             problems,
         ))
@@ -152,20 +174,28 @@ impl LiveScene {
         self.library.as_ref()
     }
 
-    /// Put the scene into a world, uploading the meshes it names.
-    pub fn spawn(
-        &mut self,
-        world: &mut World,
-        gpu: &Gpu,
-        renderer: &mut Renderer,
-    ) -> Vec<Unresolved> {
+    /// The game's component types, which scene lines name. Set before
+    /// [`LiveScene::spawn`].
+    pub fn with_components(mut self, components: Components) -> Self {
+        self.components = components;
+        self
+    }
+
+    /// Put the scene into a world, uploading the meshes it names and
+    /// giving each entity the game's components its line carries.
+    pub fn spawn(&mut self, world: &mut World, gpu: &Gpu, renderer: &mut Renderer) -> Spawned {
         let library = self.library.as_ref();
-        crate::spawn_scene_with(
+        let missing = crate::spawn_scene_with(
             &self.current,
             world,
             resolver(&mut self.meshes, library, gpu, renderer),
             |name| library?.material_by_name(name),
-        )
+        );
+        let components = self.components.apply(&self.current, world);
+        Spawned {
+            missing,
+            components,
+        }
     }
 
     /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
@@ -204,6 +234,12 @@ impl LiveScene {
                         |name| library?.material_by_name(name),
                     ));
                     out.problems.extend(problems);
+                    out.problems.extend(
+                        self.components
+                            .patch(&self.current, &scene, world)
+                            .iter()
+                            .map(ToString::to_string),
+                    );
                     self.current = scene;
                 }
                 Err(e) => out.problems.push(format!("{e:#}")),

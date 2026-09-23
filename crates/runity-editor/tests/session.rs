@@ -1159,3 +1159,28 @@ fn a_prefab_changed_on_disk_reaches_its_instances() {
         "the new stone is in the instance"
     );
 }
+
+#[test]
+fn a_game_component_is_set_as_text_saved_as_written_and_undone_in_one_step() {
+    let Some((mut session, path)) = open("component") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session
+        .set_component(crate_id, "loot", Some("(table: \"barrel\", rolls: 2)"))
+        .unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("\"loot\": (table: \"barrel\", rolls: 2)"),
+        "{saved}"
+    );
+
+    // Not RON: refused, in words, with nothing recorded.
+    let err = session
+        .set_component(crate_id, "loot", Some("(table: "))
+        .unwrap_err();
+    assert!(err.to_string().contains("loot"), "{err}");
+    assert!(session.undo().unwrap(), "the one real step");
+    assert!(session.scene().get(crate_id).unwrap().components.is_empty());
+}

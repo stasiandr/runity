@@ -346,6 +346,7 @@ publish = false
 [dependencies]
 anyhow = \"1\"
 runity = {{ {source}, features = [\"desktop-shell\"] }}
+serde = {{ version = \"1\", features = [\"derive\"] }}
 
 # The engine and every other dependency optimised even in a dev build, the
 # game itself not: a frame that runs at speed, a rebuild that takes seconds.
@@ -374,7 +375,25 @@ const GAME: &str = r#"//! {name}.
 use runity::hecs::World;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
-use runity::{Key, LiveScene};
+use runity::{Components, Key, LiveScene, Transform};
+use serde::Deserialize;
+
+/// A component: a plain struct. A scene line gives it by the name it is
+/// registered under in `main` —
+/// `components: { "spin": (degrees_per_second: 45.0) }` — and changing
+/// the number in the file while the game runs changes the speed.
+#[derive(Deserialize)]
+struct Spin {
+    degrees_per_second: f32,
+}
+
+/// A system: a function over the world.
+fn spin(world: &mut World, seconds: f32) {
+    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>() {
+        transform.rotation_deg.y += spin.degrees_per_second * seconds;
+    }
+    runity::world::apply_hierarchy(world);
+}
 
 struct Game {
     live: LiveScene,
@@ -383,14 +402,15 @@ struct Game {
 
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
-        for missing in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer) {
-            eprintln!("{}: no model named {}", missing.entity_name, missing.model);
+        for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
+            eprintln!("{line}");
         }
     }
 
-    fn step(&mut self, _ctx: &mut Context) {
-        // Fixed-step game logic: query `self.world`, move things, spawn
-        // things. Components are plain structs; add your own.
+    /// Fixed-step game logic: the systems, in order.
+    fn step(&mut self, ctx: &mut Context) {
+        let seconds = ctx.time.settings().fixed_delta;
+        spin(&mut self.world, seconds);
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
@@ -413,7 +433,10 @@ impl shell::Game for Game {
 
 fn main() -> anyhow::Result<()> {
     let scene = concat!(env!("CARGO_MANIFEST_DIR"), "/scenes/main.ron");
+    let mut components = Components::new();
+    components.register::<Spin>("spin");
     let (live, problems) = LiveScene::open(scene)?;
+    let live = live.with_components(components);
     for problem in &problems {
         eprintln!("{problem}");
     }
@@ -487,7 +510,11 @@ Cargo.toml   the game crate; src/main.rs is the game
   `claude mcp add runity -- runity-mcp` gives every editor operation as a
   tool — open, add, move, undo, render a frame to look at, check, simulate.
 * Game logic is Rust in `src/`, on the ECS (`runity::hecs`): components are
-  plain structs, and an entity spawned from a scene carries `SceneId`.
+  plain structs, systems are functions over the world, and an entity
+  spawned from a scene carries `SceneId`. A scene line gives an entity the
+  game's components by the name `main` registers them under:
+  `components: { \"spin\": (degrees_per_second: 45.0) }`. Editing a value
+  while the game runs changes that component and nothing else.
 * Everything a person makes is text and is committed; `library/` and
   `target/` are not.
 * Binary sources are in Git LFS and lockable — lock before editing one.
@@ -501,7 +528,7 @@ fn starter_scene() -> String {
         "(
     entities: [
         (id: \"{ground}\", name: \"ground\", model: \"builtin:plane\", transform: (scale: (40.0, 1.0, 40.0)), material: \"grass\"),
-        (id: \"{cube}\", name: \"cube\", model: \"builtin:cube\", transform: (position: (0.0, 0.5, 0.0)), material: \"earth\"),
+        (id: \"{cube}\", name: \"cube\", model: \"builtin:cube\", transform: (position: (0.0, 0.5, 0.0)), material: \"earth\", components: {{ \"spin\": (degrees_per_second: 45.0) }}),
     ],
 )
 "

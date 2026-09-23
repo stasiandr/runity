@@ -24,6 +24,7 @@ pub mod asset;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod builtin;
+pub mod components;
 pub mod edit;
 pub mod gizmo;
 pub mod gpu;
@@ -40,6 +41,7 @@ pub mod render;
 pub mod scene;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
+pub mod spelling;
 pub mod surface;
 pub mod time;
 pub mod ui;
@@ -61,7 +63,8 @@ pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
-pub use live::{LiveScene, Reload};
+pub use components::{ComponentProblem, Components};
+pub use live::{LiveScene, Reload, Spawned};
 pub use material::{Material, Shading};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};
