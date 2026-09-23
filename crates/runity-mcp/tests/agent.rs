@@ -110,6 +110,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "find",
         "open_prefab",
         "problems",
+        "push_face",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -293,6 +294,27 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     );
     let tree = agent.text("scene_tree", json!({}));
     assert!(tree.contains("material=terracotta"), "{tree}");
+    let wall = agent.text(
+        "add_entity",
+        json!({ "name": "wall", "model": "builtin:cube", "position": [0.0, 1.5, 0.0], "scale": [8.0, 3.0, 0.3], "material": "grid" }),
+    );
+    let said = agent.text(
+        "push_face",
+        json!({ "id": wall, "face": "+x", "metres": 2.0 }),
+    );
+    assert!(
+        said.contains("(1.00, 1.50, 0.00) scale (10.00, 3.00, 0.30)"),
+        "{said}"
+    );
+    let err = agent
+        .call(
+            "push_face",
+            json!({ "id": wall, "face": "north", "metres": 1.0 }),
+        )
+        .unwrap_err();
+    assert!(err.contains("+x, -x"), "{err}");
+    agent.text("undo", json!({}));
+    agent.text("delete_entity", json!({ "id": wall }));
     let found = agent.text("find", json!({ "query": "m:terracotta" }));
     assert_eq!(found, format!("{id} \"pot\""));
     let err = agent.call("find", json!({ "query": "t:Pot" })).unwrap_err();

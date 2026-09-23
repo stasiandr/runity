@@ -358,6 +358,39 @@ impl Session {
         Ok(())
     }
 
+    /// Push one face of a thing out by `metres`, or pull it in — the
+    /// opposite face stays put (see [`runity::edit::push_face`]). One undo
+    /// step; on a prefab's part, an override like any other edit of it.
+    pub fn push_face(
+        &mut self,
+        id: EntityId,
+        face: runity::edit::Face,
+        metres: f32,
+    ) -> EditResult<()> {
+        let line = self.line(id).ok_or(EditError::NoEntity(id))?.clone();
+        let model = self
+            .instanced
+            .scene
+            .get(id)
+            .map(|e| e.model.clone())
+            .unwrap_or(line.model);
+        let (min, max) = self.bounds_of(&model).ok_or_else(|| {
+            EditError::Scene(format!(
+                "`{}` has no model to know its faces by — push_face works on things that draw one",
+                line.name
+            ))
+        })?;
+        let pushed =
+            runity::edit::push_face(&line.transform, min, max, face, metres).ok_or_else(|| {
+                EditError::Scene(format!(
+                "`{}` is not that big: pulling {face:?} in by {} m would pass the opposite face",
+                line.name,
+                -metres
+            ))
+            })?;
+        self.set_transform(id, pushed)
+    }
+
     /// Put everything selected down on what is beneath it — Unity's End
     /// key — as one undoable step. Returns how many found ground.
     ///

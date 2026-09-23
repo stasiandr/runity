@@ -745,3 +745,186 @@ mod tests {
         assert_eq!(history.redo_description().as_deref(), Some("delete `hut`"));
     }
 }
+
+/// One face of a thing's box, in its own axes: `+x` is the face its local
+/// X points out of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Face {
+    PosX,
+    NegX,
+    PosY,
+    NegY,
+    PosZ,
+    NegZ,
+}
+
+impl Face {
+    /// The axis, 0 for X, 1 for Y, 2 for Z.
+    pub fn axis(self) -> usize {
+        match self {
+            Face::PosX | Face::NegX => 0,
+            Face::PosY | Face::NegY => 1,
+            Face::PosZ | Face::NegZ => 2,
+        }
+    }
+
+    pub fn positive(self) -> bool {
+        matches!(self, Face::PosX | Face::PosY | Face::PosZ)
+    }
+}
+
+impl std::str::FromStr for Face {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        Ok(match text.trim().to_lowercase().as_str() {
+            "+x" | "x" => Face::PosX,
+            "-x" => Face::NegX,
+            "+y" | "y" | "top" => Face::PosY,
+            "-y" | "bottom" => Face::NegY,
+            "+z" | "z" => Face::PosZ,
+            "-z" => Face::NegZ,
+            other => {
+                return Err(format!(
+                    "no face `{other}`: +x, -x, +y (top), -y (bottom), +z or -z, in the thing's own axes"
+                ))
+            }
+        })
+    }
+}
+
+/// Push one face of a box out by `metres` — or pull it in, negative — with
+/// the opposite face staying exactly where it was: the greybox move, a wall
+/// made two metres longer at one end without walking it back into place.
+///
+/// `min` and `max` are the model's own bounds, before the transform; the
+/// transform is the thing's local one, so the result is too, and a rotated
+/// wall grows along itself. `None` when the face would pass through the one
+/// opposite it, or the model is flat along that axis — there is no size to
+/// change there.
+pub fn push_face(
+    transform: &crate::scene::Transform,
+    min: glam::Vec3,
+    max: glam::Vec3,
+    face: Face,
+    metres: f32,
+) -> Option<crate::scene::Transform> {
+    let axis = face.axis();
+    let extent = (max - min)[axis];
+    if extent <= f32::EPSILON {
+        return None;
+    }
+    let scale = transform.scale[axis];
+    let size = extent * scale.abs();
+    let new_size = size + metres;
+    if new_size <= 1e-3 {
+        return None;
+    }
+    let mut new_scale = transform.scale;
+    new_scale[axis] = new_size / extent * scale.signum();
+    // The opposite face, in the model's own coordinates along the axis.
+    let opposite = if face.positive() == (scale >= 0.0) {
+        min[axis]
+    } else {
+        max[axis]
+    };
+    let mut along = glam::Vec3::ZERO;
+    along[axis] = opposite * (transform.scale[axis] - new_scale[axis]);
+    let mut out = *transform;
+    out.position += transform.rotation() * along;
+    out.scale = new_scale;
+    Some(out)
+}
+
+#[cfg(test)]
+mod face_tests {
+    use super::*;
+    use crate::scene::Transform;
+    use glam::Vec3;
+
+    const CUBE: (Vec3, Vec3) = (Vec3::splat(-0.5), Vec3::splat(0.5));
+
+    fn wall() -> Transform {
+        Transform {
+            position: Vec3::new(0.0, 1.5, 0.0),
+            scale: Vec3::new(8.0, 3.0, 0.3),
+            ..Transform::default()
+        }
+    }
+
+    #[test]
+    fn pushing_a_face_moves_it_and_leaves_the_opposite_one() {
+        let pushed = push_face(&wall(), CUBE.0, CUBE.1, Face::PosX, 2.0).unwrap();
+        assert!((pushed.scale.x - 10.0).abs() < 1e-5);
+        // Was x in [-4, 4]; now [-4, 6].
+        assert!(
+            (pushed.position.x - 1.0).abs() < 1e-5,
+            "{:?}",
+            pushed.position
+        );
+        let pulled = push_face(&wall(), CUBE.0, CUBE.1, Face::NegX, -3.0).unwrap();
+        // [-4, 4] with the -x face pulled in 3: [-1, 4].
+        assert!((pulled.scale.x - 5.0).abs() < 1e-5);
+        assert!(
+            (pulled.position.x - 1.5).abs() < 1e-5,
+            "{:?}",
+            pulled.position
+        );
+        assert!(
+            push_face(&wall(), CUBE.0, CUBE.1, Face::PosZ, -0.3).is_none(),
+            "not through itself"
+        );
+    }
+
+    #[test]
+    fn a_turned_wall_grows_along_itself_and_a_based_model_keeps_its_floor() {
+        let mut turned = wall();
+        turned.rotation_deg = Vec3::new(0.0, 90.0, 0.0);
+        let pushed = push_face(&turned, CUBE.0, CUBE.1, Face::PosX, 2.0).unwrap();
+        // Local +x is world -z after a quarter turn about y.
+        assert!(pushed.position.x.abs() < 1e-4, "{:?}", pushed.position);
+        assert!(
+            (pushed.position.z + 1.0).abs() < 1e-4,
+            "{:?}",
+            pushed.position
+        );
+
+        // A model whose origin is its base (0..2 tall): pushing the top up
+        // does not move the base.
+        let tree = Transform::default();
+        let taller = push_face(
+            &tree,
+            Vec3::new(-0.5, 0.0, -0.5),
+            Vec3::new(0.5, 2.0, 0.5),
+            Face::PosY,
+            1.0,
+        )
+        .unwrap();
+        assert!((taller.scale.y - 1.5).abs() < 1e-5);
+        assert!(
+            taller.position.y.abs() < 1e-5,
+            "the base stays on the ground"
+        );
+        // Pushing the bottom down moves it.
+        let deeper = push_face(
+            &tree,
+            Vec3::new(-0.5, 0.0, -0.5),
+            Vec3::new(0.5, 2.0, 0.5),
+            Face::NegY,
+            1.0,
+        )
+        .unwrap();
+        assert!(
+            (deeper.position.y + 1.0).abs() < 1e-5,
+            "{:?}",
+            deeper.position
+        );
+    }
+
+    #[test]
+    fn a_face_is_named_in_words() {
+        assert_eq!("+x".parse::<Face>().unwrap(), Face::PosX);
+        assert_eq!("top".parse::<Face>().unwrap(), Face::PosY);
+        assert!("north".parse::<Face>().unwrap_err().contains("+x, -x"));
+    }
+}
