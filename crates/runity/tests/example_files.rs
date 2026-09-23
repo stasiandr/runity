@@ -54,7 +54,7 @@ fn check(entities: &[EntityDesc], file: &Path, seen: &mut HashSet<runity::Entity
 
 #[test]
 fn every_example_scene_names_every_entity() {
-    let scenes = files(&repository().join("scenes"), "ron");
+    let scenes = files(&repository().join("examples/valley/scenes"), "ron");
     assert!(!scenes.is_empty());
     for path in scenes {
         // Parsed raw, not through `Scene::load`, which would quietly fill in
@@ -68,7 +68,7 @@ fn every_example_scene_names_every_entity() {
 
 #[test]
 fn every_example_prefab_names_every_entity() {
-    let prefabs = files(&repository().join("scenes/prefabs"), "prefab");
+    let prefabs = files(&repository().join("examples/valley/prefabs"), "prefab");
     assert!(!prefabs.is_empty());
     for path in prefabs {
         let text = std::fs::read_to_string(&path).unwrap();
@@ -76,4 +76,27 @@ fn every_example_prefab_names_every_entity() {
             ron::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         check(std::slice::from_ref(&root), &path, &mut HashSet::new());
     }
+}
+
+#[test]
+fn the_example_is_a_project_in_the_standard_layout() {
+    // It is what people and agents copy from, so it has to look like what
+    // the generator makes — or the first copy teaches the wrong layout.
+    let root = repository().join("examples/valley");
+    let project = runity::Project::open(&root).expect("examples/valley is a project");
+    assert_eq!(project.name(), "valley");
+    for dir in [
+        project.scenes(),
+        project.prefabs(),
+        project.materials(),
+        project.assets(),
+    ] {
+        assert!(dir.is_dir(), "{} is missing", dir.display());
+    }
+    assert!(
+        std::fs::read_to_string(root.join(".gitignore"))
+            .unwrap()
+            .contains("/library/"),
+        "the built library is derived and must not be committed"
+    );
 }

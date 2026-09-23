@@ -50,15 +50,16 @@ pub struct Session {
     world: hecs::World,
     history: runity::edit::History,
     scene_path: Option<PathBuf>,
+    /// The project the open scene is in. Where prefabs, materials and the
+    /// library are is the project's to say, so the editor finds exactly what
+    /// the headless render and every other tool find.
+    project: Option<runity::Project>,
     library: Option<Library>,
     /// Where that library sits, so the editor can import into it.
     library_dir: Option<PathBuf>,
-    /// Where `.rmat` sources go: `materials/` beside the scene, by the same
-    /// convention prefabs follow.
+    /// Where `.rmat` sources go: the project's `materials/`.
     material_dir: Option<PathBuf>,
-    /// Prefabs a scene's instances name. Loaded from `prefabs/` beside the
-    /// scene when one is opened, so the editor finds the same ones the
-    /// headless render does.
+    /// Prefabs a scene's instances name: the project's `prefabs/`.
     prefabs: runity::Prefabs,
     /// Where those came from, so the editor can write a new one back.
     prefab_dir: Option<PathBuf>,
@@ -125,6 +126,7 @@ impl Session {
             world: hecs::World::new(),
             history: runity::edit::History::new(Scene::default(), 64),
             scene_path: None,
+            project: None,
             library: None,
             library_dir: None,
             material_dir: None,
@@ -191,13 +193,27 @@ impl Session {
         // pointing somewhere else in the editor is a file whose picture
         // nobody can predict.
         self.camera = runity::scene_camera(&scene.view);
-        // Prefabs come from `prefabs/` beside the scene, by the same
-        // convention the headless render uses. An editor that had to be told
-        // where they are would be an editor that shows a different scene
-        // than the one CI renders.
-        let (prefabs, problems) = runity::Prefabs::beside(&path);
-        self.prefab_dir = path.parent().map(|d| d.join("prefabs"));
-        self.material_dir = path.parent().map(|d| d.join("materials"));
+        // Prefabs, materials and the library are the project's, found from
+        // the scene the same way every other tool finds them. An editor that
+        // had to be told where they are would be an editor that shows a
+        // different scene than the one CI renders.
+        let project = runity::Project::find(&path).ok();
+        let (prefabs, problems) = project
+            .as_ref()
+            .map(runity::Prefabs::of)
+            .unwrap_or_default();
+        self.prefab_dir = project.as_ref().map(|p| p.prefabs());
+        self.material_dir = project.as_ref().map(|p| p.materials());
+        if let Some(project) = &project {
+            // The project's library, loaded if it has been built and made on
+            // the first import if not. A library set by hand stays only for
+            // scenes that are in no project.
+            let directory = project.library();
+            self.library = Library::open(&directory).ok().map(|(library, _)| library);
+            self.library_dir = Some(directory);
+            self.uploaded.clear();
+        }
+        self.project = project;
         self.prefabs = prefabs;
         self.history.replace(scene);
         self.scene_path = Some(path);
@@ -226,6 +242,11 @@ impl Session {
     /// The document as it stands.
     pub fn scene(&self) -> &Scene {
         self.history.scene()
+    }
+
+    /// The project the open scene is in, if it is in one.
+    pub fn project(&self) -> Option<&runity::Project> {
+        self.project.as_ref()
     }
 
     // --- the scene tree, flattened --------------------------------------
@@ -459,11 +480,10 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
+        // The project first: outside one there is nowhere for the source to
+        // go, and "no library" would send someone looking for the wrong fix.
+        let source_dir = self.material_dir.clone().ok_or(EditError::NotInProject)?;
         let library_dir = self.library_dir.clone().ok_or(EditError::NoLibrary)?;
-        let source_dir = self
-            .material_dir
-            .clone()
-            .ok_or(EditError::NoSceneDirectory)?;
         let material = self.material(id).ok_or(EditError::NoEntity(id))?;
 
         // Written as sRGB hex, which is what the format is for: the file
@@ -566,7 +586,7 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab"));
         }
-        let directory = self.prefab_dir.clone().ok_or(EditError::NoSceneDirectory)?;
+        let directory = self.prefab_dir.clone().ok_or(EditError::NotInProject)?;
 
         // Taken from the expanded document, so making a prefab out of
         // something that already contains an instance writes what it stands
@@ -630,13 +650,11 @@ impl Session {
         };
         // Sidecars written by this editor hold absolute paths, which ignore
         // the root; ones written by the command line are relative to the
-        // project, and the scene's directory is the closest thing to it the
-        // editor knows.
+        // project.
         let root = self
-            .scene_path
+            .project
             .as_ref()
-            .and_then(|p| p.parent())
-            .map(Path::to_path_buf)
+            .map(|p| p.root().to_path_buf())
             .unwrap_or_else(|| library_dir.clone());
         runity_import::reimport_changed(&library_dir, &root);
 

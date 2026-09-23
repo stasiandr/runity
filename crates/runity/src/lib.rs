@@ -34,6 +34,7 @@ pub mod material;
 #[cfg(feature = "physics")]
 pub mod physics;
 pub mod prefab;
+pub mod project;
 pub mod render;
 pub mod scene;
 #[cfg(feature = "desktop-shell")]
@@ -63,6 +64,7 @@ pub use material::{Material, Shading};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};
 pub use prefab::{instantiate, Instanced, Prefabs};
+pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };

@@ -26,9 +26,9 @@ pub enum EditError {
     NoPath,
     /// An operation that needs a library before one was set.
     NoLibrary,
-    /// An operation that needs a scene on disk — to find `prefabs/` or
-    /// `materials/` beside it — before one was opened.
-    NoSceneDirectory,
+    /// An operation that writes into a project — a prefab, a material — on
+    /// a scene that is not in one.
+    NotInProject,
     /// Placing an instance of a prefab nobody has.
     UnknownPrefab(String),
     /// No adapter to render with.
@@ -51,8 +51,9 @@ impl fmt::Display for EditError {
             EditError::EmptyName(what) => write!(f, "{what} needs a name"),
             EditError::NoPath => f.write_str("no path to save to, and the scene has no file yet"),
             EditError::NoLibrary => f.write_str("no library — call set_library first"),
-            EditError::NoSceneDirectory => f.write_str(
-                "open a scene first — prefabs/ and materials/ live beside the scene file",
+            EditError::NotInProject => f.write_str(
+                "this scene is not in a runity project — prefabs/ and materials/ belong to a \
+                 project, the folder with runity.ron (runity::Project::create makes one)",
             ),
             EditError::UnknownPrefab(name) => write!(f, "no prefab named {name}"),
             EditError::Gpu(e) => write!(f, "no GPU to render with: {e}"),

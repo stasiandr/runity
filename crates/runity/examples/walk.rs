@@ -1,7 +1,7 @@
 //! A window you can walk around in.
 //!
 //! ```text
-//! cargo run --release --features desktop-shell --example walk -- scenes/first-light.ron
+//! cargo run --release --features desktop-shell --example walk -- examples/valley/scenes/first-light.ron
 //! ```
 //!
 //! WASD moves, the mouse looks, shift runs, space rises, control sinks, and
@@ -157,12 +157,14 @@ impl Game for Walk {
 fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "scenes/first-light.ron".into());
+        .unwrap_or_else(|| "examples/valley/scenes/first-light.ron".into());
     let document = Scene::load(&path)?;
     // Instances expanded before anything spawns, the same way the headless
     // render does it — walking into a scene and rendering it have to show
     // the same thing.
-    let (prefabs, problems) = runity::Prefabs::beside(&path);
+    let (prefabs, problems) = runity::Project::find(&path)
+        .map(|project| runity::Prefabs::of(&project))
+        .unwrap_or_default();
     for (path, e) in &problems {
         eprintln!("skipped {}: {e}", path.display());
     }

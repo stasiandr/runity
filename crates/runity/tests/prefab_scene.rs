@@ -1,6 +1,6 @@
 //! The prefab scene, expanded and rendered.
 //!
-//! `scenes/camp.ron` places the same campfire three times and never spells
+//! `examples/valley/scenes/camp.ron` places the same campfire three times and never spells
 //! one out. What has to hold is the whole reason prefabs exist: three lines
 //! in a scene produce three identical arrangements, standing in different
 //! places, and editing the one file moves all of them.
@@ -22,18 +22,19 @@ fn scene_path() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .expect("crates/runity is two levels down")
-        .join("scenes/camp.ron")
+        .join("examples/valley/scenes/camp.ron")
 }
 
-/// The scene as a tool sees it: loaded, then expanded with the prefabs that
-/// sit beside it.
+/// The scene as a tool sees it: loaded, then expanded with its project's
+/// prefabs.
 fn expanded() -> (Scene, runity::Instanced) {
     let document = Scene::load(scene_path()).expect("the camp scene");
-    let (prefabs, problems) = runity::Prefabs::beside(scene_path());
+    let project = runity::Project::find(scene_path()).expect("the example is a project");
+    let (prefabs, problems) = runity::Prefabs::of(&project);
     assert!(problems.is_empty(), "{problems:?}");
     assert!(
         prefabs.get("campfire").is_some(),
-        "prefabs/ sits beside the scene: {:?}",
+        "the project's prefabs/ has it: {:?}",
         prefabs.names()
     );
     let instanced = runity::instantiate(&document, &prefabs);

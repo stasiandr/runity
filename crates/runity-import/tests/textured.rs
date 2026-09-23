@@ -87,14 +87,14 @@ fn a_texture_from_the_library_reaches_the_pixels() {
         return;
     };
 
-    let source = repository_root().join("assets/examples/textures/valley_atlas.png");
+    let source = repository_root().join("examples/valley/assets/textures/valley_atlas.png");
     let out_dir = std::env::temp_dir().join("runity-textured");
     let _ = std::fs::remove_dir_all(&out_dir);
     let library_dir = out_dir.join("library");
     import_file(
         &source,
         &library_dir,
-        ImportSettings::for_source("assets/examples/textures/valley_atlas.png"),
+        ImportSettings::for_source("examples/valley/assets/textures/valley_atlas.png"),
     )
     .expect("importing a committed image");
 

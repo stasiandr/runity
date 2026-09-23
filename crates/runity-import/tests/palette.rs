@@ -211,7 +211,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
         .parent()
         .and_then(Path::parent)
         .expect("crates/runity-import is two levels down");
-    let sources = root.join("assets/examples/materials");
+    let sources = root.join("examples/valley/materials");
     let library_dir = temp("examples").join("library");
 
     let mut imported = 0;
@@ -221,7 +221,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
             continue;
         }
         let relative = format!(
-            "assets/examples/materials/{}",
+            "examples/valley/materials/{}",
             path.file_name().unwrap().to_string_lossy()
         );
         runity_import::import_file(
@@ -262,7 +262,7 @@ fn the_example_palette_stands_in_for_the_builtins() {
 
     // The reference scene names materials the palette now answers for, so
     // rendering it with a library and without one should agree.
-    let scene = Scene::load(root.join("scenes/first-light.ron")).unwrap();
+    let scene = Scene::load(root.join("examples/valley/scenes/first-light.ron")).unwrap();
     let named = scene
         .flatten()
         .iter()

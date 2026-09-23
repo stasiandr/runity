@@ -5,8 +5,8 @@
 # alone — and `docs/stack.md` records what that cost and bought.
 #
 # There is no game code here. What the engine is tested against is its own:
-# builtin meshes and materials, example assets and example scenes, all under
-# `assets/` and `scenes/`. `docs/design/` says what the engine is growing
+# builtin meshes and materials, and an example project in the standard
+# layout, `examples/valley/`. `docs/design/` says what the engine is growing
 # toward.
 [workspace]
 resolver = "2"

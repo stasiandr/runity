@@ -30,7 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "-h" | "--help" => {
-                println!("scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR]");
+                println!(
+                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR]\n\n\
+                     Prefabs and the library come from the project the scene is in;\n\
+                     --library overrides the library."
+                );
                 return Ok(());
             }
             other => scene_path = Some(PathBuf::from(other)),
@@ -39,10 +43,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scene_path = scene_path.ok_or("usage: scene_shot <scene.ron>")?;
     let document = Scene::load(&scene_path)?;
 
-    // Prefabs come from `prefabs/` beside the scene, and every instance is
-    // replaced by what it stands for before anything else looks at the
-    // scene. Nothing downstream knows a prefab existed.
-    let (prefabs, prefab_problems) = runity::Prefabs::beside(&scene_path);
+    // The project the scene is in says where its prefabs and its library
+    // are. Every instance is replaced by what it stands for before anything
+    // else looks at the scene; nothing downstream knows a prefab existed.
+    let project = runity::Project::find(&scene_path).ok();
+    let (prefabs, prefab_problems) = project
+        .as_ref()
+        .map(runity::Prefabs::of)
+        .unwrap_or_default();
     for (path, e) in &prefab_problems {
         eprintln!("skipped {}: {e}", path.display());
     }
@@ -66,9 +74,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let target = OffscreenTarget::new(&gpu, width, height);
     let mut renderer = Renderer::new(&gpu, &target);
 
-    // Models resolve from the builtins first, then from a library if one was
-    // given. Builtins first is what lets the reference scene open with no
-    // pipeline at all.
+    // Models resolve from the builtins first, then from a library: the one
+    // given, or else the project's own if it has been built. Builtins first
+    // is what lets the reference scene open with no pipeline at all.
+    let library_dir = library_dir.or_else(|| {
+        project
+            .as_ref()
+            .map(|p| p.library())
+            .filter(|dir| dir.is_dir())
+    });
     let library = match &library_dir {
         Some(dir) => {
             let (library, problems) = Library::open(dir)?;

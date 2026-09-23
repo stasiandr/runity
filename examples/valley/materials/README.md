@@ -10,11 +10,12 @@
 Линейную тройку тоже можно написать: `color: (0.14, 0.20, 0.09)`.
 
 ```sh
-cargo run -p runity-import -- assets/examples/materials/*.rmat --library library
-cargo run -p runity --example scene_shot -- scenes/first-light.ron --library library
+cargo run -p runity-import -- examples/valley/materials/*.rmat --library examples/valley/library
+cargo run -p runity --example scene_shot -- examples/valley/scenes/first-light.ron
 ```
 
 Вторая команда рисует ту же сцену, но имена материалов в ней теперь
-разрешаются через библиотеку, а не через builtin-ы. Поменяйте шестнадцатеричный
+разрешаются через библиотеку проекта, а не через builtin-ы: `scene_shot`
+находит проект по сцене и берёт его `library/`. Поменяйте шестнадцатеричный
 код, перезапустите обе команды — и увидите новый цвет. Это и есть цикл, для
 которого материал стал ассетом.

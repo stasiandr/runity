@@ -25,13 +25,29 @@ const SCENE: &str = r#"(
     ],
 )"#;
 
+/// A scene inside a freshly made project, the way every scene lives.
 fn scene_file(name: &str, text: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("runity-editor-{name}"));
+    let root = std::env::temp_dir().join(format!("runity-editor-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    runity::Project::create(&root, name).unwrap();
+    let path = root.join("scenes/scene.ron");
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+/// A scene in a plain folder, in no project at all.
+fn loose_scene_file(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("runity-editor-loose-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("scene.ron");
-    std::fs::write(&path, text).unwrap();
+    std::fs::write(&path, SCENE).unwrap();
     path
+}
+
+/// The project folder a test scene sits in.
+fn root_of(scene: &Path) -> PathBuf {
+    scene.parent().and_then(Path::parent).unwrap().to_path_buf()
 }
 
 /// A session with the test scene open, or `None` on a machine with no
@@ -40,14 +56,18 @@ fn open(name: &str) -> Option<(Session, PathBuf)> {
     open_with(name, SCENE)
 }
 
-fn open_with(name: &str, text: &str) -> Option<(Session, PathBuf)> {
-    let mut session = match Session::offscreen(192, 128) {
-        Ok(session) => session,
+fn new_session() -> Option<Session> {
+    match Session::offscreen(192, 128) {
+        Ok(session) => Some(session),
         Err(e) => {
             eprintln!("skipping: {e}");
-            return None;
+            None
         }
-    };
+    }
+}
+
+fn open_with(name: &str, text: &str) -> Option<(Session, PathBuf)> {
+    let mut session = new_session()?;
     let path = scene_file(name, text);
     let skipped = session.open_scene(&path).expect("the scene opens");
     assert!(skipped.is_empty(), "{skipped:?}");
@@ -597,7 +617,7 @@ fn a_thing_arranged_once_becomes_a_thing_placed_many_times() {
         "the lid lives in the prefab file now"
     );
     assert_eq!(session.entity_prefab(crate_id).as_deref(), Some("crate"));
-    let written = path.parent().unwrap().join("prefabs/crate.prefab");
+    let written = root_of(&path).join("prefabs/crate.prefab");
     assert!(
         written.exists(),
         "{} should have been written",
@@ -908,9 +928,8 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
     let Some((mut session, path)) = open("save-material") else {
         return;
     };
-    let library = path.parent().unwrap().join("library");
-    std::fs::create_dir_all(&library).unwrap();
-    session.set_library(&library).unwrap();
+    // The project's library: nothing to set, it is where the project says.
+    let library = root_of(&path).join("library");
 
     // Tune a colour on one object, the way a slider would.
     let crate_id = id(&session, "crate");
@@ -919,7 +938,7 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
     session.save_material(crate_id, "clay").unwrap();
 
     // What came out is a file a person could have written.
-    let source = path.parent().unwrap().join("materials/clay.rmat");
+    let source = root_of(&path).join("materials/clay.rmat");
     let text = std::fs::read_to_string(&source).expect("the .rmat source");
     assert!(
         text.contains("color: \"#"),
@@ -967,9 +986,7 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     let Some((mut session, path)) = open("import") else {
         return;
     };
-    let library = path.parent().unwrap().join("library");
-    std::fs::create_dir_all(&library).unwrap();
-    session.set_library(&library).unwrap();
+    let library = root_of(&path).join("library");
 
     // A triangle is enough: what is being tested is the path, not the
     // parser, which has its own tests next door.
@@ -986,12 +1003,50 @@ fn a_model_dropped_on_the_editor_becomes_something_a_scene_can_use() {
     let added = session.add(None, "wedge").unwrap();
     assert!(session.world_position(added).is_some());
 
-    // Importing without a library says so rather than writing somewhere
-    // surprising.
-    let Some((mut fresh, _)) = open("import-nowhere") else {
+    // A scene in no project has no library to import into, and says so
+    // rather than writing somewhere surprising.
+    let Some(mut loose) = new_session() else {
         return;
     };
-    let err = fresh.import(&source).unwrap_err();
+    loose.open_scene(loose_scene_file("import")).unwrap();
+    let err = loose.import(&source).unwrap_err();
     assert_eq!(err, EditError::NoLibrary);
     assert!(err.to_string().contains("library"), "{err}");
+}
+
+#[test]
+fn a_scene_in_no_project_still_edits_and_says_what_it_cannot_do() {
+    // Prefabs and materials are written into a project; a scene lying in a
+    // plain folder has nowhere to put them. It still opens and edits — and
+    // the refusal names the fix.
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session.open_scene(loose_scene_file("refuse")).unwrap();
+    assert!(session.project().is_none());
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(crate_id, Transform::default())
+        .unwrap();
+
+    let err = session.make_prefab(crate_id, "crate").unwrap_err();
+    assert_eq!(err, EditError::NotInProject);
+    assert!(err.to_string().contains("runity.ron"), "{err}");
+    assert_eq!(
+        session.save_material(crate_id, "clay"),
+        Err(EditError::NotInProject)
+    );
+}
+
+#[test]
+fn opening_a_scene_finds_its_project() {
+    let Some((session, path)) = open("project") else {
+        return;
+    };
+    let project = session.project().expect("the scene is in a project");
+    assert_eq!(
+        std::path::absolute(project.root()).unwrap(),
+        std::path::absolute(root_of(&path)).unwrap()
+    );
+    assert_eq!(project.name(), "project");
 }

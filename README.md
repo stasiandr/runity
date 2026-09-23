@@ -26,18 +26,35 @@
 crates/runity          движок: сцена, ассеты, устройство, рендер, встроенное
 crates/runity-editor   сессия редактора: правки, отмена, гизмо, импорт, режим игры — без UI
 crates/runity-import   импорт исходных форматов в формат движка (в игру не линкуется)
-scenes/                примеры сцен, на которых всё проверяется
-scenes/prefabs/        префабы к ним
-assets/examples/       примеры моделей и текстур (Kenney, CC0) и палитра материалов
+examples/valley/       проект-пример в стандартной раскладке: сцены, префабы, материалы,
+                       модели и текстуры (Kenney, CC0) — на нём всё проверяется
 docs/design/           дизайн игры, ради которой движок и делается
 docs/DNA.md            восемь постулатов, от которых проектируется каждая фича
 docs/stack.md          на чём и почему
 ```
 
+## Проект
+
+У любого проекта на runity одна раскладка — её знают все инструменты и
+агенты, и её же пишет генератор (`runity::Project::create`):
+
+```
+runity.ron   файл проекта: имя, версия движка
+scenes/      сцены, RON — сущность на блок, `id` первым
+prefabs/     префабы
+materials/   .rmat — цвета в sRGB hex
+assets/      исходники: модели, текстуры, звук
+library/     собранные .rasset — производное, в git не попадает
+CLAUDE.md    что нужно знать агенту
+```
+
+Инструмент, которому дали сцену, сам находит её проект (ближайшая папка
+вверх с `runity.ron`) и берёт оттуда префабы, материалы и библиотеку.
+
 ## Посмотреть на кадр
 
 ```
-cargo run --release --example scene_shot -- scenes/first-light.ron -o frame.png
+cargo run --release --example scene_shot -- examples/valley/scenes/first-light.ron -o frame.png
 ```
 
 Референсная сцена открывается без библиотеки и без импорта — все модели в ней
@@ -48,7 +65,7 @@ cargo run --release --example scene_shot -- scenes/first-light.ron -o frame.png
 ## Походить внутри
 
 ```
-cargo run --release --features desktop-shell --example walk -- scenes/first-light.ron
+cargo run --release --features desktop-shell --example walk -- examples/valley/scenes/first-light.ron
 ```
 
 WASD ходит, левая кнопка мыши крутит голову, Escape выходит. Единственная
@@ -58,8 +75,8 @@ WASD ходит, левая кнопка мыши крутит голову, Esc
 ## Префабы
 
 Вещь, собранная один раз, ставится много раз. Префаб — это одно поддерево
-сущностей в своём файле (`scenes/prefabs/campfire.prefab`), а сцена ссылается
-на него по имени:
+сущностей в своём файле (`examples/valley/prefabs/campfire.prefab`), а сцена
+ссылается на него по имени:
 
 ```
 (name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.0, 0.0)))
@@ -67,11 +84,12 @@ WASD ходит, левая кнопка мыши крутит голову, Esc
 
 Экземпляр задаёт имя, место и, если надо, материал и физику корня; всё
 остальное приходит из файла. Поправьте префаб — поменяются все экземпляры
-сразу. Префабы ищутся в каталоге `prefabs/` рядом со сценой: и `scene_shot`,
-и `walk`, и редактор смотрят туда, поэтому все трое показывают одно и то же.
+сразу. Префабы лежат в `prefabs/` проекта: и `scene_shot`, и `walk`, и
+редактор находят их через проект сцены, поэтому все трое показывают одно и то
+же.
 
 ```
-cargo run --release --example scene_shot -- scenes/camp.ron -o camp.png
+cargo run --release --example scene_shot -- examples/valley/scenes/camp.ron -o camp.png
 ```
 
 Переопределений глубже корня пока нет — «у этого костра третий камень
@@ -99,8 +117,8 @@ cargo test --workspace
 один раз, дальше движок открывает только своё:
 
 ```
-cargo run -p runity-import -- assets/examples/models/pine_large.obj --library library
-cargo run --release --example scene_shot -- my-scene.ron --library library
+cargo run -p runity-import -- examples/valley/assets/models/pine_large.obj --library examples/valley/library
+cargo run --release --example scene_shot -- examples/valley/scenes/my-scene.ron
 ```
 
 Понимает `.gltf`/`.glb` (то, чем экспортируют настоящие инструменты), `.obj`,
@@ -114,7 +132,7 @@ cargo run --release --example scene_shot -- my-scene.ron --library library
 девятнадцати сценам. `builtin:stone` — если нужен именно встроенный.
 
 ```
-cargo run -p runity-import -- assets/examples/materials/*.rmat --library library
+cargo run -p runity-import -- examples/valley/materials/*.rmat --library examples/valley/library
 ```
 
 Рядом с `.rasset` ложится `.rimport` — из чего и с какими настройками он

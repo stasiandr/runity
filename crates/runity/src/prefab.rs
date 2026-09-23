@@ -67,19 +67,15 @@ impl Prefabs {
         Ok((prefabs, problems))
     }
 
-    /// Open the prefabs that belong to a scene: the `prefabs/` directory
-    /// beside it.
+    /// A project's prefabs: everything in its `prefabs/`.
     ///
-    /// A convention rather than a path in the scene file, because every tool
-    /// has to find the same ones — the headless render, the walk-around and
-    /// the editor — and a path written in one scene is a path the next scene
-    /// gets wrong. No such directory means no prefabs, which is not an
-    /// error: most scenes have none.
-    pub fn beside(scene: impl AsRef<Path>) -> (Self, Vec<(PathBuf, String)>) {
-        let Some(directory) = scene.as_ref().parent().map(|d| d.join("prefabs")) else {
-            return (Self::new(), Vec::new());
-        };
-        Self::open(directory).unwrap_or_else(|_| (Self::new(), Vec::new()))
+    /// Found through the project rather than next to whichever scene is
+    /// open, so the headless render, the walk-around and the editor all see
+    /// the same set, and a scene in `scenes/caves/` finds the same campfire
+    /// as one in `scenes/`. No folder means no prefabs, which is not an
+    /// error: most projects start with none.
+    pub fn of(project: &crate::Project) -> (Self, Vec<(PathBuf, String)>) {
+        Self::open(project.prefabs()).unwrap_or_else(|_| (Self::new(), Vec::new()))
     }
 
     /// Read one prefab file, returning its name and what is in it.
