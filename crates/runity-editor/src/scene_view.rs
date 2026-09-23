@@ -34,6 +34,7 @@
 //! | Ctrl Shift N / Ctrl Shift G | an empty entity at the view / one around the selection |
 //! | Ctrl Alt F / Ctrl Shift F | move the selection to the view / put it where the view is |
 //! | Escape | select nothing |
+//! | Ctrl P / Ctrl Shift P / Ctrl Alt P | play and stop / pause / one step |
 //!
 //! Ctrl is Cmd on a Mac.
 
@@ -231,6 +232,24 @@ impl Session {
             if pressed(Key::G) && shift && !self.selection().is_empty() {
                 self.group_selection("")?;
                 did.push("group");
+            }
+            if pressed(Key::P) && shift {
+                let paused = !self.is_paused();
+                if self.pause(paused) {
+                    did.push(if paused { "pause" } else { "resume" });
+                }
+            } else if pressed(Key::P) && alt {
+                if self.step_once() {
+                    did.push("step");
+                }
+            } else if pressed(Key::P) {
+                if self.is_playing() {
+                    self.stop();
+                    did.push("stop");
+                } else {
+                    self.play();
+                    did.push("play");
+                }
             }
             if pressed(Key::F) && alt && self.move_to_view()? {
                 did.push("move to view");

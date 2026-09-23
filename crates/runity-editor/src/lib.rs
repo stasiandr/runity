@@ -248,6 +248,9 @@ struct Play {
     /// the changes away when you stop, which is famous for losing an hour's
     /// work; here an edit is refused with a sentence instead.
     before: Scene,
+    /// Held still: the frame clock is not fed, so unpausing does not
+    /// catch up on the seconds spent looking.
+    paused: bool,
 }
 
 impl Session {
@@ -3017,6 +3020,7 @@ impl Session {
             physics,
             clock: runity::Time::new(runity::TimeSettings::default()),
             before: self.history.scene().clone(),
+            paused: false,
         });
         self.drag = None;
         self.drag_from = None;
@@ -3031,16 +3035,15 @@ impl Session {
         let Some(play) = self.play.as_mut() else {
             return 0;
         };
+        if play.paused {
+            return 0;
+        }
         let seconds = seconds.max(0.0);
         play.clock.advance(seconds);
         let fixed = play.clock.settings().fixed_delta;
         let mut steps = 0;
         while play.clock.next_step().is_some() {
-            // What travels by itself moves first, and physics sees it where
-            // it went — a platform carries what stands on it.
-            runity::routes::run_routes(&mut self.world, fixed);
-            runity::world::apply_hierarchy(&mut self.world);
-            play.physics.run(&mut self.world);
+            Self::fixed_step(&mut self.world, &mut play.physics, fixed);
             steps += 1;
         }
         // Animation runs on the frame rather than the step: a pose
@@ -3048,6 +3051,45 @@ impl Session {
         // solver does.
         runity::advance_animations(&mut self.world, seconds);
         steps
+    }
+
+    /// One fixed step: what travels by itself moves first, and physics
+    /// sees it where it went — a platform carries what stands on it.
+    fn fixed_step(world: &mut hecs::World, physics: &mut runity::PhysicsWorld, fixed: f32) {
+        runity::routes::run_routes(world, fixed);
+        runity::world::apply_hierarchy(world);
+        physics.run(world);
+    }
+
+    /// Hold play still, or let it go on — Unity's Pause button. While
+    /// paused, [`Session::step`] does nothing and the world stays inspectable
+    /// as it was the moment it stopped. `false` when not playing.
+    pub fn pause(&mut self, paused: bool) -> bool {
+        match self.play.as_mut() {
+            Some(play) => {
+                play.paused = paused;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.play.as_ref().is_some_and(|p| p.paused)
+    }
+
+    /// Exactly one fixed step, and pause after it — Unity's Step button:
+    /// the frame where the thing went through the wall, looked at one at a
+    /// time. `false` when not playing.
+    pub fn step_once(&mut self) -> bool {
+        let Some(play) = self.play.as_mut() else {
+            return false;
+        };
+        play.paused = true;
+        let fixed = play.clock.settings().fixed_delta;
+        Self::fixed_step(&mut self.world, &mut play.physics, fixed);
+        runity::advance_animations(&mut self.world, fixed);
+        true
     }
 
     /// Stop simulating and put the scene back as it was. `false` when it

@@ -838,6 +838,83 @@ fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
 }
 
 #[test]
+fn pause_holds_the_crate_in_the_air_and_step_moves_it_one_step() {
+    use runity::input::{Input, InputEvent as E, Key};
+    let Some((mut session, _)) = open_with("pause", FALLING) else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let height = |session: &Session| session.world_position(crate_id).unwrap().y;
+    assert!(!session.pause(true), "nothing to pause before play");
+    assert!(!session.step_once());
+
+    // Ctrl P: play. Half a second of falling.
+    let mut input = Input::new();
+    // A chord: the modifiers and the key go down in one frame, up in the next.
+    fn chord(
+        session: &mut Session,
+        input: &mut Input,
+        held: &[Key],
+        key: Key,
+    ) -> Vec<&'static str> {
+        let mut down: Vec<E> = held.iter().map(|k| E::KeyDown(*k)).collect();
+        down.push(E::KeyDown(key));
+        let did = view_frame(session, input, (1.0, 1.0), &down);
+        let up: Vec<E> = down
+            .iter()
+            .map(|e| match e {
+                E::KeyDown(k) => E::KeyUp(*k),
+                e => e.clone(),
+            })
+            .collect();
+        view_frame(session, input, (1.0, 1.0), &up);
+        did
+    }
+    let did = chord(&mut session, &mut input, &[Key::LeftControl], Key::P);
+    assert_eq!(did, ["play"]);
+    for _ in 0..30 {
+        session.step(1.0 / 60.0);
+    }
+    let falling = height(&session);
+    assert!(falling < 4.0, "{falling}");
+
+    // Ctrl Shift P: held in the air, however long the frames are.
+    let did = chord(
+        &mut session,
+        &mut input,
+        &[Key::LeftControl, Key::LeftShift],
+        Key::P,
+    );
+    assert_eq!(did, ["pause"]);
+    assert!(session.is_paused());
+    for _ in 0..30 {
+        assert_eq!(session.step(1.0 / 60.0), 0);
+    }
+    assert_eq!(height(&session), falling);
+
+    // Ctrl Alt P: one step further, and still paused.
+    let did = chord(
+        &mut session,
+        &mut input,
+        &[Key::LeftControl, Key::LeftAlt],
+        Key::P,
+    );
+    assert_eq!(did, ["step"]);
+    let stepped = height(&session);
+    assert!(stepped < falling, "{stepped} after {falling}");
+    assert!(session.is_paused());
+    assert_eq!(session.step(1.0), 0);
+
+    // Resumed, it goes on falling; Ctrl P stops and puts it back.
+    session.pause(false);
+    assert!(session.step(1.0 / 60.0) <= 1, "no catching up on the pause");
+    let did = chord(&mut session, &mut input, &[Key::LeftControl], Key::P);
+    assert_eq!(did, ["stop"]);
+    assert!(!session.is_playing() && !session.is_paused());
+    assert!((height(&session) - 4.0).abs() < 1e-3);
+}
+
+#[test]
 fn a_drag_with_snapping_on_lands_on_the_grid() {
     let Some((mut session, _)) = open("snap") else {
         return;
