@@ -1885,3 +1885,38 @@ fn an_entity_field_is_picked_from_the_scene_and_a_gone_target_is_named() {
         s.session.problems()
     );
 }
+
+#[test]
+fn k_during_play_keeps_where_the_crate_fell() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_ = s.session.find("crate").unwrap();
+    s.session.set_field(crate_, "body", "Dynamic").unwrap();
+    s.session
+        .set_field(crate_, "collider", "Box(half: (0.5, 0.5, 0.5))")
+        .unwrap();
+    // Lifted, so it has somewhere to fall.
+    let mut t = s.session.transform(crate_).unwrap();
+    t.position.y += 3.0;
+    s.session.set_transform(crate_, t).unwrap();
+    let start = t.position;
+    s.frame();
+
+    click(&mut s, "play");
+    assert!(s.session.is_playing());
+    for _ in 0..60 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        s.frame();
+    }
+    click(&mut s, "line crate");
+    key(&mut s, Key::K);
+    assert_eq!(s.session.kept(), vec![crate_]);
+    click(&mut s, "play");
+    assert!(!s.session.is_playing());
+    let after = s.session.transform(crate_).unwrap().position;
+    assert!(
+        after.y < start.y - 0.5,
+        "kept where it fell: {start} -> {after}"
+    );
+}

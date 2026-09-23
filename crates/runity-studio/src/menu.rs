@@ -136,6 +136,8 @@ pub enum Action {
     Float(crate::dock::Panel),
     /// Every floating panel back into the docks.
     DockAll,
+    /// During play: keep the selection where the simulation puts it.
+    KeepSimulation,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -343,6 +345,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Play / Stop", Action::Play).key(key!("⌘P", "Ctrl+P")),
                 item("Pause", Action::Pause).key(key!("⇧⌘P", "Ctrl+Shift+P")),
                 item("Step", Action::Step).key(key!("⌥⌘P", "Ctrl+Alt+P")),
+                item("Keep Simulation Changes", Action::KeepSimulation).key("K"),
             ],
         ),
     ]

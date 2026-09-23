@@ -272,6 +272,9 @@ struct Play {
     /// Held still: the frame clock is not fed, so unpausing does not
     /// catch up on the seconds spent looking.
     paused: bool,
+    /// What Stop keeps where the simulation put it: Unreal's Keep
+    /// Simulation Changes (docs/artist.md).
+    kept: Vec<EntityId>,
 }
 
 impl Session {
@@ -3485,6 +3488,7 @@ impl Session {
             clock: runity::Time::new(runity::TimeSettings::default()),
             before: self.history.scene().clone(),
             paused: false,
+            kept: Vec::new(),
         });
         self.drag = None;
         self.drag_from = None;
@@ -3556,16 +3560,60 @@ impl Session {
         true
     }
 
-    /// Stop simulating and put the scene back as it was. `false` when it
-    /// was not playing.
+    /// Mark the selection to be kept where the simulation puts it: when
+    /// play stops, those entities stay there instead of going back —
+    /// Unreal's K, Keep Simulation Changes. Returns how many are marked;
+    /// nothing is marked when not playing.
+    pub fn keep_simulation(&mut self) -> usize {
+        let selection = self.selection();
+        let Some(play) = self.play.as_mut() else {
+            return 0;
+        };
+        for id in selection {
+            if !play.kept.contains(&id) {
+                play.kept.push(id);
+            }
+        }
+        play.kept.len()
+    }
+
+    /// What is marked to be kept when play stops.
+    pub fn kept(&self) -> Vec<EntityId> {
+        self.play
+            .as_ref()
+            .map(|p| p.kept.clone())
+            .unwrap_or_default()
+    }
+
+    /// Stop simulating and put the scene back as it was — except what was
+    /// marked with [`Session::keep_simulation`], which is moved to where
+    /// the simulation left it, as one undoable step. `false` when it was
+    /// not playing.
     pub fn stop(&mut self) -> bool {
         let Some(play) = self.play.take() else {
             return false;
         };
+        // Where the kept ones are now, read before the world is rebuilt.
+        let kept: Vec<(EntityId, runity::Transform)> = self
+            .world
+            .query::<(&runity::world::SceneId, &runity::Transform)>()
+            .iter()
+            .filter(|(id, _)| play.kept.contains(&id.0))
+            .map(|(id, t)| (id.0, *t))
+            .collect();
         // Untracked: starting and stopping a preview is not something to
         // undo, and putting it on the stack would mean pressing play cost a
         // step of real editing history.
         *self.history.scene_mut_untracked() = play.before;
+        let mut steps = 0;
+        for (id, transform) in kept {
+            if self.set_transform(id, transform).is_ok() {
+                steps += 1;
+            }
+        }
+        if steps > 1 {
+            self.squash_last(steps);
+        }
         self.respawn();
         true
     }

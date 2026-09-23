@@ -4459,3 +4459,51 @@ fn a_link_gets_its_id_on_save_and_follows_a_file_renamed_outside_the_editor() {
         "{saved}"
     );
 }
+
+#[test]
+fn what_the_simulation_did_is_kept_for_the_marked_and_undone_in_one_step() {
+    const TWO: &str = r#"(entities: [
+        (name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
+         body: Static, collider: Box(half: (10.0, 0.05, 10.0))),
+        (name: "crate", model: "builtin:cube", transform: (position: (0.0, 4.0, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+        (name: "other", model: "builtin:cube", transform: (position: (3.0, 4.0, 0.0)),
+         body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5))),
+    ])"#;
+    let Some((mut session, _)) = open_with("keep-simulation", TWO) else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let other = id(&session, "other");
+    let start = session.transform(crate_id).unwrap().position;
+    let other_start = session.transform(other).unwrap().position;
+    let steps = session.undo_steps().len();
+
+    session.play();
+    for _ in 0..90 {
+        session.step(1.0 / 60.0);
+    }
+    session.select(Some(crate_id)).unwrap();
+    assert_eq!(session.keep_simulation(), 1);
+    assert_eq!(session.kept(), vec![crate_id]);
+    assert!(session.stop());
+
+    let kept = session.transform(crate_id).unwrap().position;
+    assert!(
+        kept.y < start.y - 1.0,
+        "it stays where it fell: {start} -> {kept}"
+    );
+    assert_eq!(
+        session.transform(other).unwrap().position,
+        other_start,
+        "what was not marked goes back"
+    );
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    session.undo().unwrap();
+    assert_eq!(session.transform(crate_id).unwrap().position, start);
+    assert_eq!(
+        session.keep_simulation(),
+        0,
+        "nothing to keep when not playing"
+    );
+}

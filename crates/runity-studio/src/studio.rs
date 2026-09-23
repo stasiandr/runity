@@ -837,6 +837,10 @@ impl Studio {
                     self.run(Action::Maximize);
                     return;
                 }
+                if *key == Key::K && self.session.is_playing() {
+                    self.run(Action::KeepSimulation);
+                    return;
+                }
                 if *key == Key::F2 {
                     self.hierarchy.rename_selected(&mut self.ui, &self.session);
                     return;
@@ -899,6 +903,11 @@ impl Studio {
             self.session.resize(size.0, size.1);
         }
         let t1 = Instant::now();
+        // Play runs on the frame's time: the simulation takes as many fixed
+        // steps as the frame took (paused, none).
+        if self.session.is_playing() {
+            self.session.step(dt);
+        }
         let _ = self.session.scene_view(&self.scene_input, dt);
         self.scene_input.begin_frame();
         let t2 = Instant::now();
@@ -2828,6 +2837,16 @@ impl Studio {
                     );
                 }
                 Action::Float(panel) => self.float(panel),
+                Action::KeepSimulation => {
+                    if !s.is_playing() {
+                        return Err("Keep Simulation Changes works while playing".into());
+                    }
+                    let n = s.keep_simulation();
+                    s.say(
+                        Level::Info,
+                        format!("{n} kept where the simulation puts them when play stops"),
+                    );
+                }
                 Action::DockAll => {
                     for panel in self.floats.iter().map(|f| f.panel).collect::<Vec<_>>() {
                         self.dock_back(panel);
