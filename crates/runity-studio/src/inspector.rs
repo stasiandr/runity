@@ -138,6 +138,9 @@ enum SubKind {
     Enum(Vec<String>),
     /// A link to another entity: a picker, as Unity's object field.
     Entity,
+    /// A link to an asset of a kind (`model`, `prefab`, `sound`…): a picker
+    /// of that kind's assets.
+    Asset(String),
     Raw,
 }
 
@@ -871,6 +874,7 @@ impl Inspector {
                 Shape::Text => SubKind::Text,
                 Shape::Enum(variants) => SubKind::Enum(variants.clone()),
                 Shape::Entity => SubKind::Entity,
+                Shape::Asset(kind) => SubKind::Asset(kind.clone()),
                 _ => SubKind::Raw,
             };
             let node = match &sub {
@@ -947,6 +951,50 @@ impl Inspector {
                         "crosshair",
                         if target.is_some() { ACCENT } else { MUTED },
                     );
+                    ui.add_text(
+                        pick,
+                        text()
+                            .fill()
+                            .nowrap()
+                            .text_color(if known { TEXT } else { ERROR }),
+                        &label,
+                    );
+                    icon(ui, pick, "chevron-down", MUTED);
+                    pick
+                }
+                SubKind::Asset(kind) => {
+                    // The asset by name, or None; red when there is none by
+                    // that name or ID.
+                    let link = runity::refs::links_in(&value)
+                        .into_iter()
+                        .next()
+                        .map(|(_, l)| l);
+                    let (label, known) = match &link {
+                        Some(l) if !l.is_empty() => (l.to_string(), session.link_exists(kind, l)),
+                        _ => (format!("None ({kind})"), true),
+                    };
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .fill()
+                            .height(22.0)
+                            .padding_x(6.0)
+                            .gap(SPACE_2)
+                            .center_items()
+                            .radius(6.0)
+                            .border(1.0, if known { DIVIDER } else { ERROR })
+                            .hover(HOVER)
+                            .clickable(),
+                    );
+                    let glyph = match kind.as_str() {
+                        "prefab" => "package",
+                        "sound" => "music",
+                        "scene" => "mountain",
+                        "texture" => "image",
+                        "material" => "sparkles",
+                        _ => "box",
+                    };
+                    icon(ui, pick, glyph, if link.is_some() { ACCENT } else { MUTED });
                     ui.add_text(
                         pick,
                         text()
@@ -1637,6 +1685,39 @@ impl Inspector {
                         &format!("{indent}{}", row.name),
                         link(Some(row.id)),
                     ));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x, r.y + r.height));
+            }
+            (
+                Part::Sub {
+                    component,
+                    key,
+                    kind: SubKind::Asset(kind),
+                },
+                Event::Click { .. },
+            ) => {
+                // Unity's object picker for an asset: None, then every asset
+                // of the kind, each linked by name and ID.
+                let type_name = runity::refs::LINK_KINDS
+                    .iter()
+                    .find(|(_, k)| *k == kind)
+                    .map_or("ModelLink", |(n, _)| n);
+                let link = |name: Option<&str>| {
+                    let inner = match name {
+                        Some(name) => runity::ron::to_string(&session.link_to(&kind, name))
+                            .unwrap_or_default(),
+                        None => "\"\"".to_string(),
+                    };
+                    Action::SetSub(
+                        component.clone(),
+                        key.clone(),
+                        format!("{type_name}({inner})"),
+                    )
+                };
+                let mut items = vec![MenuItem::new("None", link(None)), MenuItem::separator()];
+                for name in session.assets_of_kind(&kind) {
+                    items.push(MenuItem::new(&name, link(Some(&name))));
                 }
                 let r = ui.rect(node);
                 requests.menu = Some((items, r.x, r.y + r.height));

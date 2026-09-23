@@ -2125,3 +2125,61 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
         "a value it cannot be built with is refused"
     );
 }
+
+#[test]
+fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let shapes: std::collections::BTreeMap<String, runity::shape::Shape> = [(
+        "spawner".to_string(),
+        runity::shape::Shape::Struct(vec![
+            ("what".into(), runity::shape::Shape::Asset("prefab".into())),
+            ("every".into(), runity::shape::Shape::Float),
+        ]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::create_dir_all(dir.join(runity::project::SHAPES).parent().unwrap()).unwrap();
+    std::fs::write(
+        dir.join(runity::project::SHAPES),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    s.session.add_component(boulder, "spawner").unwrap();
+    click(&mut s, "line boulder");
+    click(&mut s, "spawner what");
+    click(&mut s, "menu campfire");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.spawner")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(r#"PrefabLink(("campfire","#),
+        "by name and ID: {value}"
+    );
+    let picker = s.ui.find("spawner what").unwrap();
+    assert_eq!(s.ui.text(s.ui.children(picker)[1]), Some("campfire"));
+
+    // Written by hand, wrong: named, with the nearest.
+    s.session
+        .set_component(
+            boulder,
+            "spawner",
+            Some(r#"(what: PrefabLink("campfir"), every: 2.0)"#),
+        )
+        .unwrap();
+    let problems = s.session.problems();
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.message.contains("links to prefab `campfir`")
+                && p.message.contains("`campfire`")),
+        "{problems:?}"
+    );
+}

@@ -387,3 +387,27 @@ fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
         "{line}"
     );
 }
+
+#[test]
+fn a_component_linking_an_asset_that_is_not_there_is_named() {
+    let project = project("typed-links");
+    write(
+        &project.prefabs().join("campfire.prefab"),
+        r#"(name: "campfire")"#,
+    );
+    let scene = project.scenes().join("camp.ron");
+    write(
+        &scene,
+        r#"(entities: [(name: "spawner", components: { "spawner": (what: PrefabLink("campfir")) })])"#,
+    );
+    let lines = errors(&check(&project));
+    let found = one_containing(&lines, "links to prefab `campfir`");
+    assert!(found.contains("campfire"), "{found}");
+    write(
+        &scene,
+        r#"(entities: [(name: "spawner", components: { "spawner": (what: PrefabLink("campfire")) })])"#,
+    );
+    assert!(!errors(&check(&project))
+        .iter()
+        .any(|l| l.contains("links to")));
+}

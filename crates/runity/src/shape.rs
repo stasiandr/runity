@@ -35,6 +35,9 @@ pub enum Shape {
     /// A link to another entity of the scene ([`crate::EntityRef`]): what
     /// an editor shows as a picker.
     Entity,
+    /// A link to an asset of a kind — `model`, `prefab`, `sound`… — by the
+    /// typed links in [`crate::refs`]: a picker of that kind's assets.
+    Asset(String),
 }
 
 /// The shape of `T`.
@@ -79,6 +82,13 @@ impl Shape {
             ),
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
             Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
+            Shape::Asset(kind) => {
+                let name = crate::refs::LINK_KINDS
+                    .iter()
+                    .find(|(_, k)| k == kind)
+                    .map_or("ModelLink", |(n, _)| n);
+                format!("{name}(\"\")")
+            }
         }
     }
 
@@ -107,7 +117,7 @@ impl Shape {
             out.push(format!("{here} is {wanted}, not {}", describe(value)))
         };
         match (self, value) {
-            (Shape::Any | Shape::Enum(_) | Shape::Entity, _) => {}
+            (Shape::Any | Shape::Enum(_) | Shape::Entity | Shape::Asset(_), _) => {}
             (Shape::Bool, V::Bool(_)) => {}
             (Shape::Bool, _) => wrong(out, "true or false"),
             (Shape::Int, V::Number(n)) if n.into_f64().fract() == 0.0 => {}
@@ -192,6 +202,7 @@ impl fmt::Display for Shape {
             }
             Shape::Enum(variants) => write!(f, "{}", variants.join(" | ")),
             Shape::Entity => write!(f, "entity"),
+            Shape::Asset(kind) => write!(f, "{kind}"),
         }
     }
 }
@@ -295,11 +306,17 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         visitor: V,
     ) -> Result<V::Value, Stop> {
         let Tracer { out, depth } = self;
+        // A typed link reads its inside as anything at all, which a tracer
+        // cannot answer: its inside is an empty name, and its shape its kind.
+        if let Some((_, kind)) = crate::refs::LINK_KINDS.iter().find(|(n, _)| *n == name) {
+            *out = Shape::Asset(kind.to_string());
+            return visitor.visit_newtype_struct(IntoDeserializer::<Stop>::into_deserializer(""));
+        }
         let value = visitor.visit_newtype_struct(Tracer {
             out: &mut *out,
             depth,
         });
-        // A link to an entity is text inside; what it means is its name.
+        // A link is text inside; what it means is its name.
         if name == crate::EntityRef::NAME {
             *out = Shape::Entity;
         }
@@ -557,6 +574,18 @@ mod tests {
             panic!("a struct")
         };
         assert_eq!(fields[0], ("switch".to_string(), Shape::Entity));
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Spawner {
+            what: crate::PrefabLink,
+            sound: crate::SoundLink,
+        }
+        let Shape::Struct(spawner) = of::<Spawner>() else {
+            panic!("a struct")
+        };
+        assert_eq!(spawner[0].1, Shape::Asset("prefab".into()));
+        assert_eq!(spawner[1].1, Shape::Asset("sound".into()));
+        assert_eq!(Shape::Asset("prefab".into()).example(), r#"PrefabLink("")"#);
         assert_eq!(fields[1].1, Shape::Bool);
         assert_eq!(Shape::Entity.example(), r#"EntityRef("")"#);
         let example: crate::EntityRef = ron::from_str(&Shape::Entity.example()).unwrap();

@@ -56,6 +56,10 @@ struct Names {
     /// Every model's and prefab's ID, from their sidecars: a link with one
     /// of these is found whatever name it still says.
     ids: HashSet<runity::AssetId>,
+    /// Names typed links can name that the lists above do not have.
+    sounds: HashSet<String>,
+    textures: HashSet<String>,
+    scenes: HashSet<String>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -356,6 +360,28 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
     for root in [project.assets(), project.materials()] {
         runity_import::walk(&root, &mut |path| sources.push(path.to_path_buf()));
     }
+    let scene_files = files(&project.scenes(), "ron");
+    sources.extend(scene_files.iter().cloned());
+    let (mut sounds, mut textures) = (HashSet::new(), HashSet::new());
+    runity_import::walk(&project.assets(), &mut |path| {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+        if let (Some(stem), Some(extension)) = (stem, extension) {
+            match extension.as_str() {
+                "wav" => {
+                    sounds.insert(stem);
+                }
+                "png" | "jpg" | "jpeg" | "tga" | "bmp" => {
+                    textures.insert(stem);
+                }
+                _ => {}
+            }
+        }
+    });
+    let scenes: HashSet<String> = scene_files
+        .iter()
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
     for source in sources {
         if let Some(id) = runity::asset::sidecar_id(runity::asset::sidecar_of(&source)) {
             ids.insert(id);
@@ -366,6 +392,9 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         materials,
         prefabs,
         ids,
+        sounds,
+        textures,
+        scenes,
         components: project.component_names(),
         shapes: std::fs::read_to_string(project.root().join(runity::project::SHAPES))
             .ok()
@@ -434,6 +463,36 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 names,
                 out,
             );
+        }
+        // A game component's links to assets.
+        for (component, value) in &entity.components {
+            for (kind, link) in runity::refs::links_in(value.get_ron()) {
+                if link.is_empty() || link.id.is_some_and(|id| names.ids.contains(&id)) {
+                    continue;
+                }
+                let known: Vec<&str> = match kind {
+                    "model" => names
+                        .models
+                        .keys()
+                        .map(String::as_str)
+                        .chain(runity::builtin::NAMES.iter().copied())
+                        .collect(),
+                    "material" => names.materials.keys().map(String::as_str).collect(),
+                    "prefab" => names.prefabs.iter().map(String::as_str).collect(),
+                    "sound" => names.sounds.iter().map(String::as_str).collect(),
+                    "texture" => names.textures.iter().map(String::as_str).collect(),
+                    _ => names.scenes.iter().map(String::as_str).collect(),
+                };
+                if !known.contains(&link.as_str()) {
+                    out.push(error(
+                        file,
+                        format!(
+                            "{who}: `{component}` links to {kind} `{link}`, which is not there{}",
+                            suggest(&link, known.iter().copied())
+                        ),
+                    ));
+                }
+            }
         }
         if let MaterialRef::Named(link) = &entity.material {
             // Found by its ID, whatever name the line still says.

@@ -547,3 +547,134 @@ pub fn settle(
     }
     changed
 }
+
+/// A game component's link to an asset of one kind: what its field is
+/// shown as — a picker of that kind's assets — and what `check` follows
+/// (docs/refs.md, stage 3). In a scene: `ModelLink(("rock", "fc55…"))`,
+/// or `ModelLink("rock")` written by hand.
+macro_rules! asset_link_kind {
+    ($(#[$doc:meta])* $name:ident, $kind:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+        pub struct $name(pub AssetLink);
+
+        impl $name {
+            /// The type's name in a file, which is how an editor knows it.
+            pub const NAME: &'static str = stringify!($name);
+            /// The kind of asset it links: what its picker lists.
+            pub const KIND: &'static str = $kind;
+        }
+
+        impl std::ops::Deref for $name {
+            type Target = AssetLink;
+            fn deref(&self) -> &AssetLink {
+                &self.0
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_newtype_struct(Self::NAME, &self.0)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                struct Visit;
+                impl<'de> serde::de::Visitor<'de> for Visit {
+                    type Value = $name;
+                    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                        write!(f, "{}(\"name\") or {}((\"name\", \"id\"))", $name::NAME, $name::NAME)
+                    }
+                    fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                        self,
+                        d: D,
+                    ) -> Result<$name, D::Error> {
+                        serde::Deserialize::deserialize(d).map($name)
+                    }
+                }
+                d.deserialize_newtype_struct(Self::NAME, Visit)
+            }
+        }
+    };
+}
+
+asset_link_kind!(
+    /// A link to a model: a mesh or a terrain in `assets/`, or a builtin.
+    ModelLink,
+    "model"
+);
+asset_link_kind!(
+    /// A link to a material in `materials/`.
+    MaterialLink,
+    "material"
+);
+asset_link_kind!(
+    /// A link to a prefab: what a spawner spawns.
+    PrefabLink,
+    "prefab"
+);
+asset_link_kind!(
+    /// A link to a sound: what a door plays when it opens.
+    SoundLink,
+    "sound"
+);
+asset_link_kind!(
+    /// A link to a texture.
+    TextureLink,
+    "texture"
+);
+asset_link_kind!(
+    /// A link to a scene: where a door leads.
+    SceneLink,
+    "scene"
+);
+
+/// Every typed link: its name in a file, and the kind of asset it links.
+pub const LINK_KINDS: [(&str, &str); 6] = [
+    (ModelLink::NAME, ModelLink::KIND),
+    (MaterialLink::NAME, MaterialLink::KIND),
+    (PrefabLink::NAME, PrefabLink::KIND),
+    (SoundLink::NAME, SoundLink::KIND),
+    (TextureLink::NAME, TextureLink::KIND),
+    (SceneLink::NAME, SceneLink::KIND),
+];
+
+/// Every typed link in a value's RON text, with its kind: what `check`
+/// follows in a game's components.
+pub fn links_in(text: &str) -> Vec<(&'static str, AssetLink)> {
+    let mut out = Vec::new();
+    for (name, kind) in LINK_KINDS {
+        let mut rest = text;
+        let open = format!("{name}(");
+        while let Some(at) = rest.find(&open) {
+            let start = at + open.len() - 1;
+            let Some(span) = crate::ron_edit::value_span(rest, start) else {
+                break;
+            };
+            let inner = &rest[span.start + 1..span.end.saturating_sub(1)];
+            if let Ok(link) = ron::from_str::<AssetLink>(inner.trim()) {
+                out.push((kind, link));
+            }
+            rest = &rest[span.end..];
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod typed_link_tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_link_reads_by_name_or_by_name_and_id() {
+        let bare: ModelLink = ron::from_str(r#"ModelLink("rock")"#).unwrap();
+        assert_eq!(bare.name, "rock");
+        let full: PrefabLink = ron::from_str(r#"PrefabLink(("door", "fc55"))"#).unwrap();
+        assert_eq!(full.id, Some("fc55".parse().unwrap()));
+        let found = links_in(r#"(open: SoundLink("creak"), leads: SceneLink(("cellar", "a1")))"#);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, "sound");
+        assert_eq!(found[1].1.name, "cellar");
+    }
+}

@@ -1396,6 +1396,31 @@ impl Session {
             });
         }
 
+        // A game component's links to assets: each finds its asset by ID or
+        // by name, or is named here with the nearest name there is.
+        for (desc, _) in self.instanced.scene.flatten() {
+            for (component, value) in &desc.components {
+                for (kind, link) in runity::refs::links_in(value.get_ron()) {
+                    if link.is_empty() {
+                        continue;
+                    }
+                    if self.link_exists(kind, &link) {
+                        continue;
+                    }
+                    let names = self.assets_of_kind(kind);
+                    let near = runity::spelling::closest(&link, names.iter().map(String::as_str))
+                        .map(|n| format!(" — did you mean `{n}`?"))
+                        .unwrap_or_default();
+                    out.push(Diagnostic {
+                        entity: Some(desc.id),
+                        message: format!(
+                            "`{}` ({}): `{component}` links to {kind} `{link}`, which is not there{near}",
+                            desc.name, desc.id
+                        ),
+                    });
+                }
+            }
+        }
         for link in self.instanced.scene.broken_links() {
             out.push(Diagnostic {
                 entity: Some(link.holder),
@@ -2585,6 +2610,121 @@ impl Session {
         .map_err(|e| EditError::Io(e.to_string()))?;
         self.reload_assets();
         Ok(name)
+    }
+
+    /// Every asset of a kind a typed link can name (`model`, `material`,
+    /// `prefab`, `sound`, `texture`, `scene`), by name: what a picker
+    /// lists, sorted.
+    pub fn assets_of_kind(&self, kind: &str) -> Vec<String> {
+        use runity::asset::AssetKind;
+        let library = |k: AssetKind| -> Vec<String> {
+            self.library
+                .as_ref()
+                .map(|l| l.names_of(k).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        let mut out: Vec<String> = match kind {
+            "model" => {
+                let mut v = library(AssetKind::Mesh);
+                v.extend(builtin::NAMES.iter().map(|n| n.to_string()));
+                v
+            }
+            "material" => library(AssetKind::Material),
+            "sound" => library(AssetKind::Sound),
+            "texture" => library(AssetKind::Texture),
+            "prefab" => self
+                .prefabs
+                .names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            "scene" => self
+                .project
+                .as_ref()
+                .map(|p| p.scene_names())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Whether a typed link finds its asset: by its ID, or by its name.
+    pub fn link_exists(&self, kind: &str, link: &runity::AssetLink) -> bool {
+        use runity::asset::AssetKind;
+        let library = |k: AssetKind| {
+            self.library
+                .as_ref()
+                .is_some_and(|l| l.find(link, k).is_some())
+        };
+        match kind {
+            "model" => builtin::by_name(link).is_some() || library(AssetKind::Mesh),
+            "material" => library(AssetKind::Material),
+            "sound" => library(AssetKind::Sound),
+            "texture" => library(AssetKind::Texture),
+            "prefab" => self.prefabs.find(link).is_some(),
+            "scene" => {
+                let Some(project) = self.project.as_ref() else {
+                    return false;
+                };
+                let named = project.scene_names().iter().any(|n| n == link.as_str());
+                named
+                    || link.id.is_some_and(|id| {
+                        std::fs::read_dir(project.scenes())
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .any(|e| {
+                                let p = e.path();
+                                p.extension().is_some_and(|x| x == "ron")
+                                    && runity::asset::sidecar_id(runity::asset::sidecar_of(&p))
+                                        == Some(id)
+                            })
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    /// A link to an asset of a kind by its name, with its ID when it has
+    /// one: what a picker writes (docs/refs.md).
+    pub fn link_to(&self, kind: &str, name: &str) -> runity::AssetLink {
+        use runity::asset::AssetKind;
+        let mut link = runity::AssetLink::named(name);
+        let found = match kind {
+            "model" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Mesh)),
+            "material" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Material)),
+            "sound" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Sound)),
+            "texture" => self
+                .library
+                .as_ref()
+                .and_then(|l| l.find(&link, AssetKind::Texture)),
+            _ => None,
+        }
+        .map(|(id, name)| (id, name.to_string()));
+        let found = found.or_else(|| match kind {
+            "prefab" => self.prefabs.id_of(name).map(|id| (id, name.to_string())),
+            "scene" => {
+                let file = self.project.as_ref()?.scenes().join(format!("{name}.ron"));
+                runity::asset::sidecar_id(runity::asset::sidecar_of(&file))
+                    .map(|id| (id, name.to_string()))
+            }
+            _ => None,
+        });
+        if let Some((id, name)) = found {
+            link.settle(&name, id);
+        }
+        link
     }
 
     /// A material's `.rmat` in the project, by name.
