@@ -376,7 +376,11 @@ pub fn list(project: &Project) -> Result<Vec<Entry>> {
                 Kind::Model => "model",
                 Kind::Material => "material",
                 Kind::Prefab => "prefab",
-                Kind::Other if extension(&path) == "wav" => "sound",
+                Kind::Other
+                    if matches!(extension(&path).as_str(), "wav" | "mp3" | "ogg" | "flac") =>
+                {
+                    "sound"
+                }
                 Kind::Other => "texture",
             },
             name: stem(&path),

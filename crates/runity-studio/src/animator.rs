@@ -28,8 +28,7 @@ use runity_ui::{Color, Event, NodeId, Style, Ui};
 use crate::theme::*;
 use runity::graph_text::{conditions, number, pairs, read_pairs, write};
 
-const BOX_W: f32 = 150.0;
-const BOX_H: f32 = 36.0;
+use runity_ui::graph_view::{BOX_H, BOX_W};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Chosen {
@@ -54,6 +53,8 @@ enum Part {
     Canvas,
     /// Show a state's blend tree or events fields.
     More(&'static str),
+    /// Take back one change since the last commit, by its place in the list.
+    Revert(usize),
 }
 
 pub struct Animator {
@@ -84,6 +85,9 @@ pub struct Animator {
     /// The state the running game says the selected entity is in, and
     /// when that was last asked.
     live: Option<String>,
+    /// The open graph as the last commit has it: what the changes are
+    /// against. `None` outside git, or for a file not yet committed.
+    head: Option<Graph>,
     asked: std::time::Instant,
 }
 
@@ -157,6 +161,7 @@ impl Animator {
             edge_nodes: Vec::new(),
             more: Vec::new(),
             live: None,
+            head: None,
             asked: std::time::Instant::now(),
         }
     }
@@ -229,6 +234,9 @@ impl Animator {
             .and_then(|t| runity::ron::from_str::<Graph>(&t).map_err(|e| e.to_string()));
         match graph {
             Ok(graph) => {
+                self.head = runity_editor::history::show(&path, "HEAD")
+                    .ok()
+                    .and_then(|t| runity::ron::from_str(&t).ok());
                 self.open = Some((path, graph));
                 self.chosen = None;
                 self.pan = (0.0, 0.0);
@@ -288,7 +296,8 @@ impl Animator {
             let start = name == graph.start;
             let any = name == ANY;
             let live = self.live.as_deref() == Some(name.as_str());
-            let b = ui.add(boxes, box_style(&graph, &name, on, live, (x, y)));
+            let mark = self.mark(&graph, &name);
+            let b = ui.add(boxes, box_style(&graph, &name, on, live, mark, (x, y)));
             ui.set_name(b, format!("state {name}"));
             let label = if any { "Any State" } else { name.as_str() };
             let glyph = if any {
@@ -329,7 +338,11 @@ impl Animator {
         for (name, node) in &self.boxes {
             let on = self.chosen == Some(Chosen::State(name.clone()));
             let live = self.live.as_deref() == Some(name.as_str());
-            ui.set_style(*node, box_style(&graph, name, on, live, self.place(name)));
+            let mark = self.mark(&graph, name);
+            ui.set_style(
+                *node,
+                box_style(&graph, name, on, live, mark, self.place(name)),
+            );
         }
     }
 
@@ -354,6 +367,7 @@ impl Animator {
                     | Part::To(_)
                     | Part::AddState
                     | Part::More(_)
+                    | Part::Revert(_)
             ) && !(matches!(p, Part::Edge(_))
                 && ui.parent(*n).is_some_and(|parent| parent == self.side))
         });
@@ -403,9 +417,8 @@ impl Animator {
         }
     }
 
-    /// An arrow from one box to another, in right angles round the
-    /// `others` boxes where it can, with a head where it meets the box. `back` moves it aside, so that a pair
-    /// of transitions both ways are two arrows.
+    /// An arrow for transition `i`, clickable as it: see
+    /// [`runity_ui::graph_view::arrow`].
     #[allow(clippy::too_many_arguments)]
     fn arrow(
         &mut self,
@@ -418,78 +431,22 @@ impl Animator {
         back: bool,
         others: &[(f32, f32)],
     ) {
-        let shift = if back { 8.0 } else { 0.0 };
-        let color = if on { ACCENT } else { NEUTRAL_500 };
-        let t = if on { 3.0 } else { 2.0 };
-        let (fx, fy) = (from.0 + BOX_W / 2.0 + shift, from.1 + BOX_H / 2.0 + shift);
-        let (tx, ty) = (to.0 + BOX_W / 2.0 + shift, to.1 + BOX_H / 2.0 + shift);
-        // Routes to try, in order; the first that crosses no other box
-        // is drawn, or the first when every one does.
-        type Route = (Vec<(f32, f32, f32, f32)>, (f32, f32));
-        let mut routes: Vec<Route> = Vec::new();
-        let h_seg = |y: f32, a: f32, b: f32| (a.min(b), y - t / 2.0, (b - a).abs() + t, t);
-        let v_seg = |x: f32, a: f32, b: f32| (x - t / 2.0, a.min(b), t, (b - a).abs());
-        if (fy - ty).abs() < BOX_H {
-            // Side by side: straight across to the box's edge…
-            let end = if tx > fx { to.0 } else { to.0 + BOX_W };
-            routes.push((vec![h_seg(fy, fx, end)], (end, fy)));
-            // …or under the row, round whatever is between.
-            let below = from.1.max(to.1) + BOX_H + 22.0 + shift;
-            routes.push((
-                vec![
-                    v_seg(fx, from.1 + BOX_H, below),
-                    h_seg(below, fx, tx),
-                    v_seg(tx, below, to.1 + BOX_H),
-                ],
-                (tx, to.1 + BOX_H),
-            ));
-        } else {
-            // Along, then down or up into the box…
-            let end = if ty > fy { to.1 } else { to.1 + BOX_H };
-            routes.push((vec![h_seg(fy, fx, tx), v_seg(tx, fy, end)], (tx, end)));
-            // …or down or up first, then along into its side.
-            if (fx - tx).abs() > BOX_W {
-                let end = if tx > fx { to.0 } else { to.0 + BOX_W };
-                routes.push((vec![v_seg(fx, fy, ty), h_seg(ty, fx, end)], (end, ty)));
-            }
-        }
-        let crosses = |(x, y, w, h): (f32, f32, f32, f32)| {
-            others
-                .iter()
-                .any(|&(bx, by)| x < bx + BOX_W && x + w > bx && y < by + BOX_H && y + h > by)
-        };
-        let pick = routes
-            .iter()
-            .position(|(segs, _)| !segs.iter().any(|s| crosses(*s)))
-            .unwrap_or(0);
-        let (segments, head) = routes.swap_remove(pick);
-        for (x, y, w, h) in segments {
-            // A wider strip to click than to see.
-            let hit = ui.add(
-                layer,
-                Style::row()
-                    .absolute(x - 3.0, y - 3.0)
-                    .size(w + 6.0, h + 6.0)
-                    .padding(3.0)
-                    .clickable(),
-            );
-            ui.set_name(hit, format!("transition {i}"));
-            ui.add(hit, Style::default().size(w, h).background(color));
-            self.parts.insert(hit, Part::Edge(i));
-            self.edge_nodes.push(hit);
-        }
-        let head_node = ui.add(
+        let nodes = runity_ui::graph_view::arrow(
+            ui,
+            layer,
             self.heads_layer.unwrap_or(layer),
-            Style::default()
-                .absolute(head.0 - 5.0, head.1 - 5.0)
-                .size(10.0, 10.0)
-                .radius(5.0)
-                .background(color)
-                .clickable(),
+            &format!("transition {i}"),
+            from,
+            to,
+            back,
+            others,
+            if on { ACCENT } else { NEUTRAL_500 },
+            if on { 3.0 } else { 2.0 },
         );
-        ui.set_name(head_node, format!("transition {i} head"));
-        self.parts.insert(head_node, Part::Edge(i));
-        self.edge_nodes.push(head_node);
+        for node in nodes {
+            self.parts.insert(node, Part::Edge(i));
+            self.edge_nodes.push(node);
+        }
     }
 
     fn show_side(&mut self, ui: &mut Ui, session: &Session, graph: &Graph) {
@@ -507,6 +464,26 @@ impl Animator {
             .collect();
         for p in problems.iter().take(3) {
             ui.add_text(side, Style::default().text_size(11.5).text_color(ERROR), p);
+        }
+        // What changed since the last commit — an agent's edit to look over
+        // — each with a way to take it back.
+        let changes = self.changes(graph);
+        if !changes.is_empty() {
+            ui.add_text(side, caption(), "CHANGES SINCE THE LAST COMMIT");
+            for (i, change) in changes.iter().enumerate() {
+                let row = ui.add(side, Style::row().full_width().gap(SPACE_2).center_items());
+                ui.add_text(
+                    row,
+                    Style::default()
+                        .text_size(11.5)
+                        .text_color(TEXT)
+                        .mono()
+                        .fill(),
+                    &change.to_string(),
+                );
+                let undo = button(ui, row, &format!("animator undo change {i}"), "Undo", false);
+                self.parts.insert(undo, Part::Revert(i));
+            }
         }
         let head = ui.add(side, Style::row().full_width().gap(SPACE_1).center_items());
         let add = button(ui, head, "animator add state", "+ State", false);
@@ -802,6 +779,15 @@ impl Animator {
                 }
                 self.show(ui, session);
             }
+            Part::Revert(i) if click => {
+                let Some(graph) = self.graph().cloned() else {
+                    return;
+                };
+                if let Some(change) = self.changes(&graph).into_iter().nth(i) {
+                    self.edit(session, |g| change.revert(g));
+                }
+                self.show(ui, session);
+            }
             Part::AddState if click => {
                 let Some(graph) = self.graph() else { return };
                 let mut name = "state".to_string();
@@ -923,6 +909,24 @@ impl Animator {
         }
     }
 
+    /// How a state is marked for what changed since the last commit: new
+    /// in the accent's light, changed in the warning colour.
+    fn mark(&self, graph: &Graph, name: &str) -> Option<Color> {
+        self.changes(graph).iter().find_map(|c| match c {
+            runity::animgraph::Change::StateAdded(n) if n == name => Some(ACCENT_400),
+            runity::animgraph::Change::StateChanged(n, _) if n == name => Some(WARNING),
+            _ => None,
+        })
+    }
+
+    /// What differs from the last commit's graph, if there is one.
+    fn changes(&self, graph: &Graph) -> Vec<runity::animgraph::Change> {
+        self.head
+            .as_ref()
+            .map(|head| runity::animgraph::diff(head, graph))
+            .unwrap_or_default()
+    }
+
     /// Change the graph and write it.
     fn edit(&mut self, session: &mut Session, change: impl FnOnce(&mut Graph)) {
         let Some((path, graph)) = self.open.as_mut() else {
@@ -965,58 +969,25 @@ impl Animator {
 /// into it — by the mean row of those already placed — and then by name,
 /// so arrows cross little. The same graph always comes out the same.
 pub fn layout(graph: &Graph) -> BTreeMap<String, (usize, usize)> {
-    let mut depth: BTreeMap<&str, usize> = BTreeMap::new();
-    if graph.states.contains_key(&graph.start) {
-        depth.insert(&graph.start, 0);
-        let mut frontier = vec![graph.start.as_str()];
-        while !frontier.is_empty() {
-            let mut next = Vec::new();
-            for from in frontier {
-                let d = depth[from];
-                for t in graph.transitions.iter().filter(|t| t.from == from) {
-                    if graph.states.contains_key(&t.to) && !depth.contains_key(t.to.as_str()) {
-                        depth.insert(&t.to, d + 1);
-                        next.push(t.to.as_str());
-                    }
-                }
-            }
-            frontier = next;
-        }
-    }
-    let mut columns: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
-    for name in graph.states.keys() {
-        let column = depth.get(name.as_str()).copied().unwrap_or(1);
-        columns.entry(column).or_default().push(name);
-    }
-    let mut placed: BTreeMap<String, (usize, usize)> = BTreeMap::new();
-    for (column, names) in columns {
-        let pull = |name: &str| -> f32 {
-            let rows: Vec<f32> = graph
-                .transitions
-                .iter()
-                .filter(|t| t.to == name)
-                .filter_map(|t| placed.get(&t.from))
-                .filter(|(c, _)| *c < column)
-                .map(|(_, r)| *r as f32)
-                .collect();
-            if rows.is_empty() {
-                f32::MAX
-            } else {
-                rows.iter().sum::<f32>() / rows.len() as f32
-            }
-        };
-        let mut order: Vec<(f32, &str)> = names.into_iter().map(|n| (pull(n), n)).collect();
-        order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(b.1)));
-        for (row, (_, name)) in order.into_iter().enumerate() {
-            placed.insert(name.to_string(), (column, row));
-        }
-    }
-    placed
+    let nodes: Vec<&str> = graph.states.keys().map(String::as_str).collect();
+    let edges: Vec<(&str, &str)> = graph
+        .transitions
+        .iter()
+        .map(|t| (t.from.as_str(), t.to.as_str()))
+        .collect();
+    runity_ui::graph_view::layout(&graph.start, &nodes, &edges)
 }
 
 /// A state's box: the start filled with the accent, the chosen one ringed
 /// in it, and the one the running game is in ringed in warm light.
-fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)) -> Style {
+fn box_style(
+    graph: &Graph,
+    name: &str,
+    on: bool,
+    live: bool,
+    changed: Option<Color>,
+    (x, y): (f32, f32),
+) -> Style {
     let start = name == graph.start;
     Style::row()
         .absolute(x, y)
@@ -1033,11 +1004,17 @@ fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)
             SURFACE
         })
         .border(
-            if on || live { 2.0 } else { 1.0 },
+            if on || live || changed.is_some() {
+                2.0
+            } else {
+                1.0
+            },
             if live {
                 WARNING
             } else if on {
                 ACCENT
+            } else if let Some(mark) = changed {
+                mark
             } else {
                 NEUTRAL_800
             },

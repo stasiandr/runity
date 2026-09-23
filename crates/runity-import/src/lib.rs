@@ -730,6 +730,94 @@ fn build_mips(width: u32, height: u32, pixels: &[u8], srgb: bool) -> Vec<Texture
 /// Mono is duplicated to both channels here rather than at playback, so the
 /// mixer has one layout and no branch — and so a sound that was mono is not
 /// quietly louder than one that was stereo.
+/// A sound file — WAV, MP3, Ogg Vorbis, FLAC — as a sound asset: decoded to
+/// interleaved stereo when it is short, kept as its compressed bytes (to
+/// be streamed) when it is longer than [`runity::asset::LONG_SOUND_SECONDS`].
+pub fn sound_from_file(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<SoundAsset> {
+    use symphonia::core::audio::sample::Sample;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::errors::Error;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    let path = path.as_ref();
+    let bytes = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    let source = MediaSourceStream::new(
+        Box::new(std::io::Cursor::new(bytes.clone())),
+        Default::default(),
+    );
+    let mut hint = Hint::new();
+    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(extension);
+    }
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            source,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .with_context(|| format!("{}: no sound in it", path.display()))?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .with_context(|| format!("{}: not a sound track", path.display()))?
+        .clone();
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    let mut rate = params.sample_rate.unwrap_or(44_100);
+    let mut samples: Vec<f32> = Vec::new();
+    let mut chunk: Vec<f32> = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(e) => return Err(anyhow::anyhow!("{}: {e}", path.display())),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buffer) => {
+                rate = buffer.spec().rate();
+                let channels = buffer.spec().channels().count().max(1);
+                chunk.resize(buffer.samples_interleaved(), f32::MID);
+                buffer.copy_to_slice_interleaved(&mut chunk);
+                // Stereo, as every sound is here: mono doubled, more than
+                // two downmixed to the first two.
+                for frame in chunk.chunks(channels) {
+                    let left = frame[0];
+                    samples.push(left);
+                    samples.push(frame.get(1).copied().unwrap_or(left));
+                }
+            }
+            Err(Error::DecodeError(_)) => {}
+            Err(e) => return Err(anyhow::anyhow!("{}: {e}", path.display())),
+        }
+    }
+    let seconds = samples.len() as f32 / 2.0 / rate.max(1) as f32;
+    let long = seconds > runity::asset::LONG_SOUND_SECONDS;
+    Ok(SoundAsset {
+        id: settings.asset_id(),
+        name: path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sound".into()),
+        sample_rate: rate,
+        samples: if long { Vec::new() } else { samples },
+        encoded: if long { bytes } else { Vec::new() },
+        seconds,
+    })
+}
+
 pub fn sound_from_wav(path: impl AsRef<Path>, settings: &ImportSettings) -> Result<SoundAsset> {
     let path = path.as_ref();
     let mut reader = hound::WavReader::open(path).with_context(|| format!("{}", path.display()))?;
@@ -772,7 +860,9 @@ pub fn sound_from_wav(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "sound".into()),
         sample_rate: spec.sample_rate,
+        seconds: samples.len() as f32 / 2.0 / spec.sample_rate.max(1) as f32,
         samples,
+        encoded: Vec::new(),
     })
 }
 
@@ -891,6 +981,9 @@ pub struct MaterialSource {
     /// a mirror's picture.
     #[serde(default)]
     pub screen_map: runity::material::ScreenMap,
+    /// Over everything, walls included (transparent only).
+    #[serde(default)]
+    pub on_top: bool,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1244,6 +1337,7 @@ pub fn material_from_ron(
             shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
             params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
             screen_map: source.screen_map,
+            on_top: source.on_top,
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
@@ -1325,8 +1419,8 @@ pub fn import_to(
                 AssetKind::Mesh,
             )
         }
-        "wav" => {
-            let sound = sound_from_wav(source, &settings)?;
+        "wav" | "mp3" | "ogg" | "flac" => {
+            let sound = sound_from_file(source, &settings)?;
             (
                 runity::asset::to_bytes(&sound, AssetKind::Sound)?,
                 sound.id,
@@ -1739,6 +1833,9 @@ pub fn importable(path: &Path) -> bool {
                 | "rterrain"
                 | "rpoly"
                 | "wav"
+                | "mp3"
+                | "ogg"
+                | "flac"
                 | "rmat"
                 | "png"
                 | "jpg"
@@ -2083,6 +2180,48 @@ f 1 4 3
         let bytes = runity::asset::read(&out.asset).unwrap();
         let texture = runity::asset::view::<runity::asset::TextureAsset>(&bytes).unwrap();
         assert!(!texture.srgb);
+    }
+
+    #[test]
+    fn a_short_sound_is_decoded_and_a_long_one_kept_to_stream() {
+        let dir = temp("sound-long");
+        let write = |name: &str, seconds: u32| {
+            let path = dir.join(name);
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 8000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..8000 * seconds {
+                writer
+                    .write_sample(((i as f32 * 0.1).sin() * 8000.0) as i16)
+                    .unwrap();
+            }
+            writer.finalize().unwrap();
+            path
+        };
+        let step = sound_from_file(
+            write("step.wav", 1),
+            &ImportSettings::for_source("step.wav"),
+        )
+        .unwrap();
+        assert_eq!(step.frames(), 8000, "decoded");
+        assert!(step.encoded.is_empty());
+        let wind_path = write("wind.wav", 11);
+        let wind = sound_from_file(&wind_path, &ImportSettings::for_source("wind.wav")).unwrap();
+        assert!(wind.samples.is_empty(), "too long to hold decoded");
+        assert_eq!(
+            wind.encoded,
+            std::fs::read(&wind_path).unwrap(),
+            "the file's own bytes"
+        );
+        assert!(
+            (wind.duration_seconds() - 11.0).abs() < 0.01,
+            "{}",
+            wind.duration_seconds()
+        );
     }
 
     #[test]

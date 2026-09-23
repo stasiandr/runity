@@ -248,6 +248,11 @@ pub struct Material {
     /// ([`ScreenMap::Mirror`] flips it) or a portal's view.
     #[serde(default, skip_serializing_if = "is_default")]
     pub screen_map: ScreenMap,
+    /// Drawn over everything, walls and all — a marker seen from afar, a
+    /// highlight through a wall. Only for a transparent surface; Unity's
+    /// ZTest Always.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_top: bool,
     /// How strongly the normal map bends the surface.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub normal_scale: f32,
@@ -340,6 +345,7 @@ impl Material {
             shader: None,
             params: [0.0; 8],
             screen_map: ScreenMap::Off,
+            on_top: false,
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             tiling: [1.0, 1.0],
@@ -445,6 +451,7 @@ impl From<&ArchivedMaterial> for Material {
                 .map(crate::asset::AssetId::from),
             shader: archived.shader.as_ref().map(crate::asset::AssetId::from),
             params: std::array::from_fn(|i| archived.params[i].to_native()),
+            on_top: archived.on_top,
             screen_map: match archived.screen_map {
                 ArchivedScreenMap::Off => ScreenMap::Off,
                 ArchivedScreenMap::Screen => ScreenMap::Screen,

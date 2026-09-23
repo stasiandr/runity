@@ -1222,6 +1222,8 @@ struct Look {
     /// A material's own shader ([`Renderer::set_material_shader`]); `None`
     /// is the standard one.
     shader: Option<crate::asset::AssetId>,
+    /// Drawn over everything, walls included: see-through only.
+    on_top: bool,
 }
 
 impl Look {
@@ -1236,13 +1238,19 @@ impl Look {
                     Some(Blend::Additive),
                     Some(Blend::Multiply),
                 ] {
-                    out.push(Look {
-                        skinned,
-                        face,
-                        blend,
-                        water: false,
-                        shader: None,
-                    });
+                    for on_top in [false, true] {
+                        if on_top && blend.is_none() {
+                            continue;
+                        }
+                        out.push(Look {
+                            skinned,
+                            face,
+                            blend,
+                            water: false,
+                            shader: None,
+                            on_top,
+                        });
+                    }
                 }
             }
         }
@@ -1253,6 +1261,7 @@ impl Look {
                 blend: Some(Blend::Premultiply),
                 water: true,
                 shader: None,
+                on_top: false,
             });
         }
         out
@@ -1270,6 +1279,7 @@ impl Look {
                 blend: Some(Blend::Premultiply),
                 water: true,
                 shader: None,
+                on_top: false,
             };
         }
         Look {
@@ -1278,6 +1288,7 @@ impl Look {
             blend: material.is_transparent().then_some(material.blend),
             water: false,
             shader: material.shader,
+            on_top: material.on_top && material.is_transparent(),
         }
     }
 }
@@ -1450,7 +1461,11 @@ fn scene_pipelines(
                     // What is see-through does not hide what is drawn
                     // after it; it is tested against the solid world only.
                     depth_write_enabled: Some(look.blend.is_none()),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(if look.on_top {
+                        wgpu::CompareFunction::Always
+                    } else {
+                        wgpu::CompareFunction::Less
+                    }),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),

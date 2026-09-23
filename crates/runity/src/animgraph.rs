@@ -834,6 +834,97 @@ impl Controller {
     }
 }
 
+/// One difference between two versions of a graph: what an agent's edit
+/// did, for a person to look over and take back piece by piece.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
+    StateAdded(String),
+    StateRemoved(String, State),
+    /// The state is there in both, and plays or behaves otherwise.
+    StateChanged(String, State),
+    TransitionAdded(Transition),
+    TransitionRemoved(Transition),
+    /// The start was the first.
+    StartMoved(String),
+}
+
+impl std::fmt::Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let edge = |t: &Transition| format!("{} → {} when {}", t.from, t.to, describe(&t.when));
+        match self {
+            Change::StateAdded(n) => write!(f, "+ state {n}"),
+            Change::StateRemoved(n, _) => write!(f, "− state {n}"),
+            Change::StateChanged(n, _) => write!(f, "~ state {n}"),
+            Change::TransitionAdded(t) => write!(f, "+ {}", edge(t)),
+            Change::TransitionRemoved(t) => write!(f, "− {}", edge(t)),
+            Change::StartMoved(was) => write!(f, "~ start (was {was})"),
+        }
+    }
+}
+
+/// What changed from `before` to `after`, states first.
+pub fn diff(before: &Graph, after: &Graph) -> Vec<Change> {
+    let mut out = Vec::new();
+    for (name, state) in &after.states {
+        match before.states.get(name) {
+            None => out.push(Change::StateAdded(name.clone())),
+            Some(was) if was != state => out.push(Change::StateChanged(name.clone(), was.clone())),
+            _ => {}
+        }
+    }
+    for (name, state) in &before.states {
+        if !after.states.contains_key(name) {
+            out.push(Change::StateRemoved(name.clone(), state.clone()));
+        }
+    }
+    if before.start != after.start {
+        out.push(Change::StartMoved(before.start.clone()));
+    }
+    for t in &after.transitions {
+        if !before.transitions.contains(t) {
+            out.push(Change::TransitionAdded(t.clone()));
+        }
+    }
+    for t in &before.transitions {
+        if !after.transitions.contains(t) {
+            out.push(Change::TransitionRemoved(t.clone()));
+        }
+    }
+    out
+}
+
+impl Change {
+    /// Take this change back in `graph`, as it was before.
+    pub fn revert(&self, graph: &mut Graph) {
+        match self {
+            Change::StateAdded(n) => {
+                graph.states.remove(n);
+                graph.transitions.retain(|t| t.from != *n && t.to != *n);
+            }
+            Change::StateRemoved(n, state) | Change::StateChanged(n, state) => {
+                graph.states.insert(n.clone(), state.clone());
+            }
+            Change::TransitionAdded(t) => {
+                if let Some(i) = graph.transitions.iter().position(|x| x == t) {
+                    graph.transitions.remove(i);
+                }
+            }
+            Change::TransitionRemoved(t) => graph.transitions.push(t.clone()),
+            Change::StartMoved(was) => graph.start = was.clone(),
+        }
+    }
+
+    /// The state this change is about, if it is one: what the canvas marks.
+    pub fn state(&self) -> Option<&str> {
+        match self {
+            Change::StateAdded(n) | Change::StateRemoved(n, _) | Change::StateChanged(n, _) => {
+                Some(n)
+            }
+            _ => None,
+        }
+    }
+}
+
 /// A graph's cases: what it should do, played without the game — as
 /// `animators/<name>.cases.ron` beside it, which `runity check` plays.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1277,6 +1368,54 @@ mod tests {
         controller.update(&mut animator);
         let trail: Vec<String> = controller.trail().map(|p| p.to_string()).collect();
         assert_eq!(trail, ["#1 → idle (start)", "#2 idle → walk (speed > 0.1)"]);
+    }
+
+    #[test]
+    fn an_edit_is_a_list_of_changes_each_taken_back_on_its_own() {
+        let before: Graph = ron::from_str(GRAPH).unwrap();
+        let mut after = before.clone();
+        after.states.remove("jump");
+        after
+            .transitions
+            .retain(|t| t.to != "jump" && t.from != "jump");
+        after
+            .states
+            .insert("swim".into(), after.states["idle"].clone());
+        after.states.get_mut("walk").unwrap().speed = 2.0;
+        after.transitions.push(Transition {
+            from: "idle".into(),
+            to: "swim".into(),
+            when: vec![Condition::Is("wet".into())],
+            fade: 0.2,
+        });
+        let changes = diff(&before, &after);
+        let said: Vec<String> = changes.iter().map(ToString::to_string).collect();
+        assert!(said.contains(&"+ state swim".to_string()), "{said:?}");
+        assert!(said.contains(&"~ state walk".to_string()), "{said:?}");
+        assert!(said.contains(&"− state jump".to_string()), "{said:?}");
+        assert!(
+            said.contains(&"+ idle → swim when wet".to_string()),
+            "{said:?}"
+        );
+        // Taking every change back is where it started.
+        let mut back = after.clone();
+        for change in &changes {
+            change.revert(&mut back);
+        }
+        assert!(
+            diff(&before, &back).is_empty(),
+            "{:?}",
+            diff(&before, &back)
+        );
+        // One alone: only walk's speed goes back.
+        let mut one = after.clone();
+        changes
+            .iter()
+            .find(|c| c.state() == Some("walk"))
+            .unwrap()
+            .revert(&mut one);
+        assert_eq!(one.states["walk"].speed, before.states["walk"].speed);
+        assert!(one.states.contains_key("swim"));
     }
 
     #[test]

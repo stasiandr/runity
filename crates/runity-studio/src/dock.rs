@@ -33,10 +33,11 @@ pub enum Panel {
     WorldDiff,
     Saves,
     Systems,
+    Dialogues,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 15] = [
+    pub const ALL: [Panel; 16] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -52,6 +53,7 @@ impl Panel {
         Panel::WorldDiff,
         Panel::Saves,
         Panel::Systems,
+        Panel::Dialogues,
     ];
 
     pub fn name(self) -> &'static str {
@@ -71,6 +73,7 @@ impl Panel {
             Panel::WorldDiff => "world-diff",
             Panel::Saves => "saves",
             Panel::Systems => "systems",
+            Panel::Dialogues => "dialogues",
         }
     }
 
@@ -91,6 +94,7 @@ impl Panel {
             Panel::WorldDiff => "World Diff",
             Panel::Saves => "Saves",
             Panel::Systems => "Systems",
+            Panel::Dialogues => "Dialogues",
         }
     }
 
@@ -111,6 +115,7 @@ impl Panel {
             Panel::WorldDiff => "layers-2",
             Panel::Saves => "save",
             Panel::Systems => "list-tree",
+            Panel::Dialogues => "type",
         }
     }
 
@@ -450,6 +455,7 @@ impl Docks {
                 Panel::Git,
                 Panel::Animation,
                 Panel::Animator,
+                Panel::Dialogues,
                 Panel::Screens,
                 Panel::Network,
                 Panel::WorldDiff,

@@ -136,6 +136,8 @@ pub struct ShaderLook {
     pub clip: bool,
     /// Not lit: URP's Unlit and Sprite Unlit targets.
     pub unlit: bool,
+    /// Drawn over everything: a graph's `m_ZTestMode` 8, Always.
+    pub on_top: bool,
 }
 
 /// A Shader Graph's URP target (`m_SurfaceType`, `m_RenderFace`,
@@ -163,6 +165,7 @@ pub fn shader_look(path: &Path) -> ShaderLook {
             clip: number("m_AlphaClip").as_deref() == Some("true"),
             unlit: text.contains("UniversalUnlitSubTarget")
                 || text.contains("UniversalSpriteUnlitSubTarget"),
+            on_top: number("m_ZTestMode").as_deref() == Some("8"),
         }
     } else {
         let lower = text.to_lowercase();
@@ -172,6 +175,7 @@ pub fn shader_look(path: &Path) -> ShaderLook {
             face: lower.contains("cull off").then_some("Both"),
             clip: false,
             unlit: !lower.contains("lightmode\"=\"universalforward"),
+            on_top: lower.contains("ztest always"),
         }
     }
 }
@@ -459,6 +463,9 @@ pub fn convert_with(
         if look.unlit {
             fields.push("shading: Unlit".into());
         }
+        if look.on_top && look.transparent {
+            fields.push("on_top: true".into());
+        }
     }
     let shader = own
         .map(|(name, p)| {
@@ -535,6 +542,7 @@ Material:
                 face: Some("Both"),
                 clip: true,
                 unlit: true,
+                on_top: false,
             }
         );
         let hlsl = dir.join("Water.shader");

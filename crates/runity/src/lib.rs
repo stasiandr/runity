@@ -34,6 +34,7 @@ pub mod clouds;
 pub mod components;
 pub mod crash;
 pub mod decals;
+pub mod dialogue;
 #[cfg(feature = "discord")]
 pub mod discord;
 pub mod edit;
