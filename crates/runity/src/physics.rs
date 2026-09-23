@@ -460,6 +460,50 @@ impl PhysicsWorld {
         })
     }
 
+    /// The first thing a ray hits, with the surface's normal there. With
+    /// `statics_only`, bodies that move are looked through — what a
+    /// navigation bake wants, since a crate on the floor is not the floor.
+    pub fn cast_ray_with_normal(
+        &self,
+        from: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+        statics_only: bool,
+    ) -> Option<(Vec3, Vec3, f32)> {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return None;
+        }
+        let ray = Ray::new(
+            point![from.x, from.y, from.z],
+            vector![direction.x, direction.y, direction.z],
+        );
+        let filter = if statics_only {
+            QueryFilter::exclude_dynamic()
+        } else {
+            QueryFilter::default()
+        };
+        let (_, hit) = self.queries.cast_ray_and_get_normal(
+            &self.bodies,
+            &self.colliders,
+            &ray,
+            max_distance,
+            true,
+            filter,
+        )?;
+        Some((
+            from + direction * hit.time_of_impact,
+            Vec3::new(hit.normal.x, hit.normal.y, hit.normal.z),
+            hit.time_of_impact,
+        ))
+    }
+
+    /// Bring ray queries up to date with the bodies, without a step: after
+    /// [`PhysicsWorld::sync_from_world`], before asking where things are.
+    pub fn refresh_queries(&mut self) {
+        self.queries.update(&self.colliders);
+    }
+
     /// Where a body is now, for tests and for anything that wants one
     /// position without walking the world.
     pub fn position(&self, handle: BodyHandle) -> Option<Vec3> {

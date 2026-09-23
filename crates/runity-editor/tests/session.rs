@@ -1475,3 +1475,36 @@ fn copied_entities_paste_as_new_things_here_or_in_another_scene() {
     assert!(other.undo().unwrap() && other.undo().unwrap());
     assert_eq!(other.entity_count(), before, "a step each");
 }
+
+#[test]
+fn a_level_answers_whether_the_exit_can_be_reached() {
+    let Some((mut session, _)) = open_with(
+        "path",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "floor", model: "builtin:cube",
+             transform: (position: (0.0, -0.1, 0.0), scale: (20.0, 0.2, 20.0)),
+             body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+            (id: "00000000000000a2", name: "wall", model: "builtin:cube",
+             transform: (position: (0.0, 1.0, -2.0), scale: (0.5, 2.0, 16.0)),
+             body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        ])"#,
+    ) else {
+        return;
+    };
+    let (spawn, exit) = (Vec3::new(-5.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 0.0));
+    let settings = runity::navigation::NavSettings::default();
+    let path = session
+        .find_path(spawn, exit, settings)
+        .expect("round the wall");
+    assert!(path.iter().any(|p| p.z > 6.0), "through the gap: {path:?}");
+    let before = session.scene().clone();
+
+    // Close the gap: no way, and asking changed nothing.
+    let wall = id(&session, "wall");
+    session
+        .set_transform(wall, transform([0.0, 1.0, 0.0], [0.0; 3], [0.5, 2.0, 20.0]))
+        .unwrap();
+    assert!(session.find_path(spawn, exit, settings).is_none());
+    assert!(session.undo().unwrap());
+    assert_eq!(session.scene(), &before);
+}

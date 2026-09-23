@@ -88,6 +88,13 @@ pub fn list() -> Vec<Value> {
         tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
+        tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
+            "from": vec3("start, on or above the ground"),
+            "to": vec3("goal"),
+            "radius": { "type": "number", "description": "the walker's radius, metres (0.35)" },
+            "max_step": { "type": "number", "description": "the highest step it climbs, metres (0.3)" },
+            "max_slope": { "type": "number", "description": "the steepest slope it walks, degrees (40)" },
+        }), &["from", "to"]),
         tool("locks", "Who holds which Git LFS lock in the project: lock binary sources (textures, models, sounds) before editing them.", json!({}), &[]),
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
         tool("undo", "Take back the last edit.", json!({}), &[]),
@@ -288,6 +295,35 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             let ids: Vec<String> = pasted.iter().map(ToString::to_string).collect();
             Ok(vec![text(ids.join("\n"))])
+        }
+        "path" => {
+            let from = optional_vec3(args, "from")?.ok_or("from is required")?;
+            let to = optional_vec3(args, "to")?.ok_or("to is required")?;
+            let defaults = runity::navigation::NavSettings::default();
+            let number = |key: &str, default: f32| {
+                args.get(key)
+                    .and_then(Value::as_f64)
+                    .map_or(default, |n| n as f32)
+            };
+            let settings = runity::navigation::NavSettings {
+                radius: number("radius", defaults.radius),
+                max_step: number("max_step", defaults.max_step),
+                max_slope: number("max_slope", defaults.max_slope),
+                ..defaults
+            };
+            Ok(vec![text(
+                match server.session()?.find_path(from, to, settings) {
+                    Some(path) => {
+                        let corners: Vec<String> = path.iter().map(|p| triple(*p)).collect();
+                        format!(
+                            "a way, {:.1} m: {}",
+                            runity::navigation::NavGrid::length(&path),
+                            corners.join(" → ")
+                        )
+                    }
+                    None => "no way: nothing walkable connects them".to_string(),
+                },
+            )])
         }
         "locks" => {
             let locks = server.session()?.locks().map_err(|e| e.to_string())?;

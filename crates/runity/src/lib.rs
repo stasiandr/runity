@@ -36,6 +36,8 @@ pub mod live;
 pub mod material;
 pub mod merge;
 #[cfg(feature = "physics")]
+pub mod navigation;
+#[cfg(feature = "physics")]
 pub mod physics;
 pub mod prefab;
 pub mod project;

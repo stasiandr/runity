@@ -275,6 +275,57 @@ impl Session {
         Ok(())
     }
 
+    /// A walkable path between two points of the scene as it stands — can
+    /// the player get from the spawn to the exit, and which way — or `None`
+    /// when there is none.
+    ///
+    /// Baked from the scene's static colliders in a world of its own, so
+    /// asking changes nothing: not the document, not the world the editor
+    /// draws, not a play session.
+    pub fn find_path(
+        &self,
+        from: Vec3,
+        to: Vec3,
+        settings: runity::navigation::NavSettings,
+    ) -> Option<Vec<Vec3>> {
+        let scene = &self.instanced.scene;
+        let mut world = hecs::World::new();
+        runity::spawn_scene(scene, &mut world, |_| Some(MeshHandle::TEST));
+        runity::physics::attach_scene_collision_meshes(&mut world, scene, self.library.as_ref());
+        let mut physics = runity::PhysicsWorld::new(1.0 / 60.0);
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+
+        // The area: everything solid, and both ends, with room to go round.
+        let mut min = from.min(to);
+        let mut max = from.max(to);
+        for (placed, body) in world
+            .query::<(&runity::world::WorldTransform, &runity::world::Physics)>()
+            .iter()
+        {
+            if body.0 != runity::Body::None {
+                let (scale, _, at) = placed.0.to_scale_rotation_translation();
+                min = min.min(at - scale * 0.5);
+                max = max.max(at + scale * 0.5);
+            }
+        }
+        let (min, max) = (min - Vec3::splat(5.0), max + Vec3::splat(5.0));
+        // A finer grid than a million cells buys nothing a level check needs.
+        let extent = (max.x - min.x).max(max.z - min.z);
+        let settings = runity::navigation::NavSettings {
+            cell: settings.cell.max(extent / 1000.0),
+            ceiling: max.y + 10.0,
+            ..settings
+        };
+        let grid = runity::navigation::NavGrid::bake(
+            &physics,
+            runity::glam::Vec2::new(min.x, min.z),
+            runity::glam::Vec2::new(max.x, max.z),
+            settings,
+        );
+        grid.path(from, to)
+    }
+
     /// Who holds which Git LFS lock in the open project's repository —
     /// what the editor shows next to a binary source someone else is
     /// editing.
