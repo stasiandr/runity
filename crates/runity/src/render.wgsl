@@ -230,9 +230,10 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
     let steps = u32(frame.ssr.w);
     let far = frame.ssr.y;
     let thickness = frame.ssr.z;
-    // A little noise in where the steps fall, so bands do not show; small,
-    // since nothing averages it over frames.
-    let jitter = pixel_noise(p.xz * 131.0 + p.y) * 0.35;
+    // Noise in where the steps fall, turned a little every frame, so bands
+    // do not show: TAA averages it into a smooth reflection.
+    let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+    let jitter = fract(pixel_noise(p.xz * 131.0 + p.y) + turn);
     var previous = 0.0;
     var in_front = true;
     for (var i = 1u; i <= steps; i = i + 1u) {
@@ -246,31 +247,39 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
             break;
         }
         let slack = 0.02 + found.y * 0.004;
-        // A hit is a crossing: in front at the last step, just behind now.
-        // Starting out already behind something is being hidden, not a hit.
-        let crossed = in_front && found.x > slack && found.x < thickness + t * 0.03;
+        // A crossing: in front at the last step, behind now — however far
+        // behind, since a long step lands deep behind a thin thing it went
+        // through. Starting out already behind something is being hidden.
+        let crossed = in_front && found.x > slack;
         in_front = found.x <= slack;
         if crossed {
-            // Halve back towards the last step that was in front.
+            // Halve back to where the ray first went behind.
             var lo = previous;
             var hi = t;
-            for (var k = 0; k < 5; k = k + 1) {
+            var depth = found.x;
+            for (var k = 0; k < 7; k = k + 1) {
                 let mid = (lo + hi) * 0.5;
                 let b = ssr_behind(p + r * mid);
-                if b.x > 0.02 + b.y * 0.004 && b.x < thickness + mid * 0.03 {
+                if b.x > 0.02 + b.y * 0.004 {
                     hi = mid;
+                    depth = b.x;
                 } else {
                     lo = mid;
                 }
             }
-            let q = p + r * hi;
-            let was = frame.previous_view_projection * vec4<f32>(q, 1.0);
-            let then = was.xy / was.w;
-            let at = vec2<f32>(then.x * 0.5 + 0.5, 0.5 - then.y * 0.5);
-            let edge = min(min(at.x, 1.0 - at.x), min(at.y, 1.0 - at.y));
-            let trust = smoothstep(0.0, 0.08, edge) * (1.0 - s * s) * (1.0 - smoothstep(0.2, 0.6, roughness));
-            let color = textureSampleLevel(last_frame, fog_sampler, at, 0.0).rgb;
-            return vec4<f32>(color, trust);
+            // Only now is it a hit: just behind the surface there, not
+            // passing far behind something that stands in front.
+            if depth < thickness + hi * 0.03 {
+                let q = p + r * hi;
+                let was = frame.previous_view_projection * vec4<f32>(q, 1.0);
+                let then = was.xy / was.w;
+                let at = vec2<f32>(then.x * 0.5 + 0.5, 0.5 - then.y * 0.5);
+                let edge = min(min(at.x, 1.0 - at.x), min(at.y, 1.0 - at.y));
+                let along = hi / far;
+                let trust = smoothstep(0.0, 0.08, edge) * (1.0 - along) * (1.0 - smoothstep(0.2, 0.6, roughness));
+                let color = textureSampleLevel(last_frame, fog_sampler, at, 0.0).rgb;
+                return vec4<f32>(color, trust);
+            }
         }
         previous = t;
     }
