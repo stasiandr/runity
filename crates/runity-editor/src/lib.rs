@@ -953,6 +953,14 @@ impl Session {
         self.history.scene().find(name).map(|e| e.id)
     }
 
+    /// Every entity a hierarchy search matches, in tree order, prefab parts
+    /// included: `tree`, `c:door m:bark`, `p:campfire`, `body:dynamic` (see
+    /// [`runity::query`]). A query that cannot mean anything says why.
+    pub fn search(&self, query: &str) -> EditResult<Vec<EntityId>> {
+        let query: runity::query::Query = query.parse().map_err(EditError::Scene)?;
+        Ok(query.search(self.history.scene(), &self.instanced.scene))
+    }
+
     /// One entity's name.
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
         self.line(id).map(|e| e.name.clone())

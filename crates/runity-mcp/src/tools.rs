@@ -64,6 +64,7 @@ pub fn list() -> Vec<Value> {
         tool("open_scene", "Open a scene file; its project's prefabs, materials and library come with it.", json!({ "path": { "type": "string" } }), &["path"]),
         tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
+        tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("add_entity", "Add an entity, as one undo step. Returns its id.", add, &[]),
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
@@ -137,6 +138,20 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text("saved")])
         }
         "scene_tree" => Ok(vec![text(tree(server)?)]),
+        "find" => {
+            let query = string(args, "query")?;
+            let session = server.session()?;
+            let found = session.search(&query).map_err(|e| e.to_string())?;
+            Ok(vec![text(if found.is_empty() {
+                format!("nothing matches {query}")
+            } else {
+                found
+                    .iter()
+                    .map(|id| format!("{id} {:?}", session.entity_name(*id).unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })])
+        }
         "get_entity" => {
             let id = id(args, "id")?;
             let session = server.session()?;

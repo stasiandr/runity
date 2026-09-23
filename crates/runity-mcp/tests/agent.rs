@@ -107,6 +107,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "assets",
         "delete_asset",
         "duplicate_asset",
+        "find",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -277,6 +278,10 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     );
     let tree = agent.text("scene_tree", json!({}));
     assert!(tree.contains("material=terracotta"), "{tree}");
+    let found = agent.text("find", json!({ "query": "m:terracotta" }));
+    assert_eq!(found, format!("{id} \"pot\""));
+    let err = agent.call("find", json!({ "query": "t:Pot" })).unwrap_err();
+    assert!(err.contains("no filter `t:`"), "{err}");
     let findings = agent.text("check", json!({}));
     assert!(!findings.contains("terracotta"), "{findings}");
 

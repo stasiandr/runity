@@ -1821,3 +1821,32 @@ fn an_asset_the_open_scene_uses_cannot_be_deleted_even_unsaved() {
         "drawn with the copy"
     );
 }
+
+#[test]
+fn a_search_finds_lines_and_prefab_parts_alike() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "search",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "gate", model: "builtin:cube", components: { "door": (locked: true) }),
+        ])"#,
+    );
+    std::fs::write(
+        root_of(&path).join("prefabs/campfire.prefab"),
+        r#"(id: "00000000000000c1", name: "campfire", model: "builtin:cube",
+            children: [(id: "00000000000000c2", name: "ember", model: "builtin:sphere", material: "ember")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let one: EntityId = "a1".parse().unwrap();
+    assert_eq!(session.search("p:campfire").unwrap(), [one]);
+    assert_eq!(
+        session.search("m:ember").unwrap(),
+        [one.within("c2".parse().unwrap())]
+    );
+    assert_eq!(session.search("c:door").unwrap(), ["a2".parse().unwrap()]);
+    assert!(session.search("c:").is_err());
+}
