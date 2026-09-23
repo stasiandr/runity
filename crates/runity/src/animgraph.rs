@@ -62,6 +62,15 @@ pub struct State {
     pub blend: Vec<(f32, String)>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub blend_by: String,
+    /// A 2D blend tree: clips at points of `blend_by` (x) and `blend_by_y`
+    /// (y) — `[(0.0, 0.0, "idle"), (0.0, 1.0, "walk"), (1.0, 0.0,
+    /// "strafe_right"), …]` — mixed by direction and by how far out: a
+    /// character walking any way while facing one. Unity's 2D Freeform
+    /// Directional blend tree.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub directional: Vec<(f32, f32, String)>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub blend_by_y: String,
     /// Named moments of the cycle, 0..1 — `[(0.1, "footstep"), (0.6,
     /// "footstep")]` — that [`Controller::fired`] reports as they pass:
     /// Unity's animation events, for a sound or a hit on the right frame.
@@ -173,6 +182,10 @@ mod file {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         pub blend_by: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub directional: Vec<(f32, f32, String)>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub blend_by_y: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         pub events: Vec<(f32, String)>,
         #[serde(default = "yes")]
         pub looping: bool,
@@ -218,6 +231,8 @@ mod file {
                         clip: s.clip,
                         blend: s.blend,
                         blend_by: s.blend_by,
+                        directional: s.directional,
+                        blend_by_y: s.blend_by_y,
                         events: s.events,
                         looping: s.looping,
                         speed: s.speed,
@@ -266,6 +281,8 @@ mod file {
                                 clip: s.clip.clone(),
                                 blend: s.blend.clone(),
                                 blend_by: s.blend_by.clone(),
+                                directional: s.directional.clone(),
+                                blend_by_y: s.blend_by_y.clone(),
                                 events: s.events.clone(),
                                 looping: s.looping,
                                 speed: s.speed,
@@ -365,6 +382,22 @@ impl Graph {
                 }
                 continue;
             }
+            if !state.directional.is_empty() {
+                if state.blend_by.is_empty() || state.blend_by_y.is_empty() {
+                    out.push(format!(
+                        "state `{name}` blends in 2D: say blend_by and blend_by_y"
+                    ));
+                }
+                for (_, _, clip) in &state.directional {
+                    if !clips.contains(&clip.as_str()) {
+                        out.push(format!(
+                            "state `{name}` blends `{clip}`, which the model does not have{}",
+                            near(clip, clips)
+                        ));
+                    }
+                }
+                continue;
+            }
             if !clips.contains(&state.clip.as_str()) {
                 out.push(format!(
                     "state `{name}` plays `{}`, which the model does not have{}",
@@ -445,6 +478,70 @@ impl Controller {
         Some((index(&pair[0].1)?, index(&pair[1].1)?, weight))
     }
 
+    /// A 2D blend state's mix for the parameters now: the two points either
+    /// side of the direction, how far between them, and the middle point
+    /// (if there is one) by how far short of their ring it is.
+    #[allow(clippy::type_complexity)]
+    fn mix_2d(
+        &self,
+        state: &State,
+        animator: &Animator,
+    ) -> Option<(usize, usize, f32, Option<(usize, f32)>)> {
+        let index = |clip: &str| animator.clips.iter().position(|c| c.name == clip);
+        let q = glam::Vec2::new(self.param(&state.blend_by), self.param(&state.blend_by_y));
+        let points: Vec<(glam::Vec2, usize)> = state
+            .directional
+            .iter()
+            .filter_map(|(x, y, clip)| Some((glam::Vec2::new(*x, *y), index(clip)?)))
+            .collect();
+        let middle = points.iter().find(|(p, _)| p.length() < 1e-4).map(|(_, c)| *c);
+        let ring: Vec<(f32, f32, usize)> = points
+            .iter()
+            .filter(|(p, _)| p.length() >= 1e-4)
+            .map(|(p, c)| (p.y.atan2(p.x), p.length(), *c))
+            .collect();
+        if ring.is_empty() || q.length() < 1e-4 {
+            let c = middle.or(ring.first().map(|r| r.2))?;
+            return Some((c, c, 0.0, None));
+        }
+        let heading = q.y.atan2(q.x);
+        let turn = |a: f32| {
+            let d = (a - heading).rem_euclid(std::f32::consts::TAU);
+            if d > std::f32::consts::PI {
+                d - std::f32::consts::TAU
+            } else {
+                d
+            }
+        };
+        // The nearest on each side; of several at one heading, the one
+        // whose distance is nearest the parameters'.
+        let pick = |before: bool| {
+            ring.iter()
+                .map(|r| (turn(r.0), r))
+                .filter(|(d, _)| if before { *d <= 0.0 } else { *d > 0.0 })
+                .min_by(|(d1, r1), (d2, r2)| {
+                    d1.abs()
+                        .total_cmp(&d2.abs())
+                        .then((r1.1 - q.length()).abs().total_cmp(&(r2.1 - q.length()).abs()))
+                })
+                .map(|(d, r)| (d, *r))
+        };
+        let (from, to) = match (pick(true), pick(false)) {
+            (Some(a), Some(b)) => (a, b),
+            (Some(a), None) | (None, Some(a)) => (a, a),
+            (None, None) => return None,
+        };
+        let t = if to.1 .2 == from.1 .2 {
+            0.0
+        } else {
+            -from.0 / (to.0 - from.0)
+        };
+        let edge = from.1 .1 + (to.1 .1 - from.1 .1) * t;
+        let out = (q.length() / edge.max(1e-4)).min(1.0);
+        let third = middle.map(|c| (c, 1.0 - out));
+        Some((from.1 .2, to.1 .2, t, third))
+    }
+
     /// Take the first transition whose conditions hold, if any, and play
     /// what the state says on `animator`. Returns the state entered.
     pub fn update(&mut self, animator: &mut Animator) -> Option<String> {
@@ -471,7 +568,18 @@ impl Controller {
         };
         self.triggers.clear();
         if let Some((name, fade)) = &entered {
-            if let Some(state) = self.graph.states.get(name).filter(|s| !s.blend.is_empty()) {
+            if let Some(state) = self
+                .graph
+                .states
+                .get(name)
+                .filter(|s| !s.directional.is_empty())
+            {
+                if let Some((a, b, w, third)) = self.mix_2d(state, animator) {
+                    animator.blend_three(a, b, w, third, *fade);
+                }
+            } else if let Some(state) =
+                self.graph.states.get(name).filter(|s| !s.blend.is_empty())
+            {
                 if let Some((a, b, w)) = self.mix(state, animator) {
                     // From a plain clip: fade in. Between blend states:
                     // the same cycle, other clips.
@@ -489,6 +597,11 @@ impl Controller {
             self.state = Some(name.clone());
         }
         if let Some(state) = self.state.as_ref().and_then(|s| self.graph.states.get(s)) {
+            if entered.is_none() && !state.directional.is_empty() {
+                if let Some((a, b, w, third)) = self.mix_2d(state, animator) {
+                    animator.blend_three(a, b, w, third, 0.0);
+                }
+            }
             if entered.is_none() && !state.blend.is_empty() {
                 if let Some((a, b, w)) = self.mix(state, animator) {
                     animator.blend(a, b, w, 0.0);
@@ -746,6 +859,40 @@ mod tests {
         controller.set("health", 1.0);
         controller.update(&mut animator);
         assert_eq!(animator.playing().unwrap().time, 0.5);
+    }
+
+    #[test]
+    fn a_2d_blend_mixes_by_direction_and_by_how_far_out() {
+        let graph: Graph = ron::from_str(
+            r#"(start: "move", states: {"move": (
+                blend_by: "x", blend_by_y: "y",
+                directional: [(0.0, 0.0, "idle"), (0.0, 1.0, "walk"), (1.0, 0.0, "jump")],
+            )})"#,
+        )
+        .unwrap();
+        assert!(graph.problems(&["idle", "walk", "jump"]).is_empty());
+        let mut animator = animator();
+        let mut controller = Controller::new(graph);
+        controller.set("x", 0.5);
+        controller.set("y", 0.5);
+        controller.update(&mut animator);
+        let blend = animator.blending().expect("a blend");
+        // Between right (jump, 0°) and forward (walk, 90°), halfway round;
+        // 0.71 of the way out, so 0.29 standing.
+        assert_eq!((blend.a, blend.b), (2, 1), "{blend:?}");
+        assert!((blend.weight - 0.5).abs() < 1e-5, "{blend:?}");
+        let (middle, w) = blend.third.unwrap();
+        assert_eq!(middle, 0);
+        assert!((w - (1.0 - 0.5f32.hypot(0.5))).abs() < 1e-5, "{blend:?}");
+        // All the way forward: walk only.
+        controller.set("x", 0.0);
+        controller.set("y", 2.0);
+        controller.update(&mut animator);
+        let blend = animator.blending().unwrap();
+        let clip = if blend.weight < 0.5 { blend.a } else { blend.b };
+        assert_eq!(clip, 1, "{blend:?}");
+        assert_eq!(blend.third.unwrap().1, 0.0);
+        animator.advance(0.1);
     }
 
     #[test]

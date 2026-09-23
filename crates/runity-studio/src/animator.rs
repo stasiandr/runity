@@ -1056,6 +1056,8 @@ fn state(name: &str) -> State {
         clip: name.to_string(),
         blend: Vec::new(),
         blend_by: String::new(),
+        directional: Vec::new(),
+        blend_by_y: String::new(),
         events: Vec::new(),
         looping: true,
         speed: 1.0,
@@ -1136,7 +1138,7 @@ fn conditions(when: &[Condition]) -> String {
 /// under it.
 fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
     let mut fields = Vec::new();
-    if s.blend.is_empty() || !s.clip.is_empty() {
+    if (s.blend.is_empty() && s.directional.is_empty()) || !s.clip.is_empty() {
         fields.push(format!("clip: {}", quote(&s.clip)));
     }
     if !s.blend_by.is_empty() {
@@ -1144,6 +1146,17 @@ fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
     }
     if !s.blend.is_empty() {
         fields.push(format!("blend: {}", pairs(&s.blend)));
+    }
+    if !s.blend_by_y.is_empty() {
+        fields.push(format!("blend_by_y: {}", quote(&s.blend_by_y)));
+    }
+    if !s.directional.is_empty() {
+        let points: Vec<String> = s
+            .directional
+            .iter()
+            .map(|(x, y, clip)| format!("({}, {}, {})", number(*x), number(*y), quote(clip)))
+            .collect();
+        fields.push(format!("directional: [{}]", points.join(", ")));
     }
     if !s.events.is_empty() {
         fields.push(format!("events: {}", pairs(&s.events)));

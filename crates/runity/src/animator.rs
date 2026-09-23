@@ -59,6 +59,9 @@ pub struct Blend {
     /// step put the left foot of one on the right foot of the other.
     pub phase: f32,
     pub speed: f32,
+    /// A third clip over the mix of the two, and how much of it: a 2D
+    /// blend's middle (standing still) under two directions.
+    pub third: Option<(usize, f32)>,
 }
 
 impl Animator {
@@ -130,9 +133,23 @@ impl Animator {
     /// keeps the cycle where it is; called from a plain clip, it fades in
     /// over `fade` seconds.
     pub fn blend(&mut self, a: usize, b: usize, weight: f32, fade: f32) {
+        self.blend_three(a, b, weight, None, fade);
+    }
+
+    /// [`Self::blend`] with a third clip laid over the two by its weight:
+    /// what a 2D blend tree plays.
+    pub fn blend_three(
+        &mut self,
+        a: usize,
+        b: usize,
+        weight: f32,
+        third: Option<(usize, f32)>,
+        fade: f32,
+    ) {
         let weight = weight.clamp(0.0, 1.0);
+        let third = third.map(|(c, w)| (c, w.clamp(0.0, 1.0)));
         if let Some(blend) = &mut self.blend {
-            (blend.a, blend.b, blend.weight) = (a, b, weight);
+            (blend.a, blend.b, blend.weight, blend.third) = (a, b, weight, third);
             return;
         }
         self.previous = self.current;
@@ -150,6 +167,7 @@ impl Animator {
             weight,
             phase: 0.0,
             speed: 1.0,
+            third,
         });
     }
 
@@ -190,7 +208,10 @@ impl Animator {
         if let Some(blend) = &mut self.blend {
             // One cycle takes as long as the mix of the two lengths.
             let length = |c: usize| self.clips.get(c).map_or(1.0, |c| c.duration.max(1e-3));
-            let cycle = length(blend.a) + (length(blend.b) - length(blend.a)) * blend.weight;
+            let mut cycle = length(blend.a) + (length(blend.b) - length(blend.a)) * blend.weight;
+            if let Some((c, w)) = blend.third {
+                cycle += (length(c) - cycle) * w;
+            }
             blend.phase = (blend.phase + dt * blend.speed / cycle).rem_euclid(1.0);
         }
         if let Some(previous) = &mut self.previous {
@@ -215,7 +236,7 @@ impl Animator {
                     let clip = self.clips.get(c)?;
                     Some(clip.sample(&self.skeleton, blend.phase * clip.duration, true))
                 };
-                match (at(blend.a), at(blend.b)) {
+                let two: Option<Vec<PoseTransform>> = match (at(blend.a), at(blend.b)) {
                     (Some(a), Some(b)) => Some(
                         a.iter()
                             .zip(b.iter())
@@ -223,6 +244,15 @@ impl Animator {
                             .collect(),
                     ),
                     (a, b) => a.or(b),
+                };
+                match (two, blend.third.and_then(|(c, w)| Some((at(c)?, w)))) {
+                    (Some(two), Some((c, w))) => Some(
+                        two.iter()
+                            .zip(c.iter())
+                            .map(|(x, y)| x.lerp(y, w))
+                            .collect(),
+                    ),
+                    (two, _) => two,
                 }
             }
             None => self.current.and_then(sample),

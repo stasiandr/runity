@@ -33,11 +33,26 @@ fn clip_name(
         let Ok(text) = std::fs::read_to_string(super::meta_of(path)) else {
             return out;
         };
-        // `- first: {74: 123}` then `second: Name` on the next line.
+        // `- first: {74: 123}` then `second: Name` on the next line; or,
+        // under `clipAnimations`, `name: Name` and later `internalID: 123`.
+        // Mixamo names every clip `mixamo.com`: the model's own name says
+        // more, and keeps the clips of different files apart.
+        let model = super::stem(path);
         let mut pending: Option<i64> = None;
+        let mut named: Option<String> = None;
         for line in text.lines() {
             let line = line.trim();
-            if let Some(rest) = line.strip_prefix("- first:") {
+            if let Some(name) = line.strip_prefix("name:").filter(|_| line.starts_with("name:")) {
+                named = Some(name.trim().to_string());
+            } else if let Some(id) = line
+                .strip_prefix("internalID:")
+                .and_then(|n| n.trim().parse::<i64>().ok())
+            {
+                if let Some(name) = named.take() {
+                    let name = if name == "mixamo.com" { model.clone() } else { name };
+                    out.entry(id).or_insert(name);
+                }
+            } else if let Some(rest) = line.strip_prefix("- first:") {
                 pending = rest
                     .trim()
                     .trim_start_matches('{')
@@ -127,6 +142,8 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
             clip: String::new(),
             blend: Vec::new(),
             blend_by: String::new(),
+            directional: Vec::new(),
+            blend_by_y: String::new(),
             events: Vec::new(),
             looping: true,
             speed: state.body.f32("m_Speed").unwrap_or(1.0),
@@ -139,8 +156,14 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
         };
         if let Some(m) = motion.filter(|m| !m.is_none()) {
             if let Some(tree) = m.guid.is_none().then(|| by_id.get(&m.file_id)).flatten() {
-                // A blend tree in this file: its 1D children by threshold.
+                // A blend tree in this file: 1D children by threshold, 2D
+                // ones (simple and freeform directional, freeform
+                // cartesian) by position.
                 out.blend_by = tree.body.str("m_BlendParameter").unwrap_or("").to_string();
+                let two_d = matches!(tree.body.i64("m_BlendType"), Some(1..=3));
+                if two_d {
+                    out.blend_by_y = tree.body.str("m_BlendParameterY").unwrap_or("").to_string();
+                }
                 for c in tree.body.list("m_Childs") {
                     let Some(clip) = c
                         .reference("m_Motion")
@@ -148,14 +171,23 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
                     else {
                         continue;
                     };
-                    out.blend.push((c.f32("m_Threshold").unwrap_or(0.0), clip));
+                    if two_d {
+                        let at = &c["m_Position"];
+                        out.directional.push((
+                            at.f32("x").unwrap_or(0.0),
+                            at.f32("y").unwrap_or(0.0),
+                            clip,
+                        ));
+                    } else {
+                        out.blend.push((c.f32("m_Threshold").unwrap_or(0.0), clip));
+                    }
                 }
                 out.blend.sort_by(|a, b| a.0.total_cmp(&b.0));
             } else if let Some(clip) = clip_name(unity, &m, &mut clips_cache) {
                 out.clip = clip;
             }
         }
-        if out.clip.is_empty() && out.blend.is_empty() {
+        if out.clip.is_empty() && out.blend.is_empty() && out.directional.is_empty() {
             out.clip = name.clone();
         }
         names.insert(id, name.clone());
@@ -279,6 +311,35 @@ AnimatorStateTransition:
   m_DstState: {fileID: 300}
   m_TransitionDuration: 0.1
 ";
+
+    #[test]
+    fn a_clip_is_named_from_the_models_clip_animations() {
+        let dir = std::env::temp_dir().join(format!("runity-unity-clip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("A_Run.fbx.meta"),
+            "ModelImporter:\n  animations:\n    clipAnimations:\n    - serializedVersion: 16\n      name: mixamo.com\n      takeName: mixamo.com\n      internalID: -42\n    - serializedVersion: 16\n      name: Wave\n      takeName: Take 001\n      internalID: 7\n",
+        )
+        .unwrap();
+        let unity = Unity {
+            layers: Default::default(),
+            root: dir.clone(),
+            guids: [("run".to_string(), dir.join("A_Run.fbx"))].into_iter().collect(),
+            names: Default::default(),
+        };
+        let mut cache = HashMap::new();
+        let clip = |id| yaml::Ref {
+            file_id: id,
+            guid: Some("run".into()),
+        };
+        assert_eq!(
+            clip_name(&unity, &clip(-42), &mut cache).as_deref(),
+            Some("A_Run"),
+            "Mixamo's name for every clip: the model's instead"
+        );
+        assert_eq!(clip_name(&unity, &clip(7), &mut cache).as_deref(), Some("Wave"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_controller_becomes_a_graph() {
