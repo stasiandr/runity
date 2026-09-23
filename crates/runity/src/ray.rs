@@ -12,6 +12,18 @@
 //!   of their shadow maps — every lamp, with no budget of maps to share.
 //! * **Ambient occlusion** by short rays over the hemisphere, which sees
 //!   what is off screen and behind things, where SSAO cannot.
+//! * **Reflections** by a ray along the mirror direction: what is behind
+//!   the camera, off the screen or hidden from it shows in chrome and
+//!   polish, where screen-space reflections have nothing to read. The hit
+//!   is lit simply — its material's colour, the sun (with a shadow ray),
+//!   the sky's hemisphere and the lamps (with theirs) — and its facing is
+//!   found by two more rays beside the first, since the hardware here
+//!   does not hand back the triangle it hit. Textures are not read there:
+//!   a reflected thing shows its material's colour.
+//! * **Refraction** through glass: in through its near side, bent; out
+//!   through its far side, found by a ray that sees only glass, bent
+//!   again (or turned back, past the critical angle); then on to what is
+//!   behind, lit as a reflection's hit is.
 //!
 //! What it is not, yet: temporal by itself — each pixel's few rays are
 //! the frame's whole answer, and only TAA's history, where it is on,
@@ -48,6 +60,21 @@ pub struct RayTracing {
     pub occlusion_rays: u32,
     /// How far an occlusion ray looks, in metres.
     pub occlusion_radius: f32,
+    /// How big a lamp is, its radius in metres: the ray to it aims at a
+    /// different point of it each frame and pixel, so its shadow is sharp
+    /// where it touches its caster and soft away, as a flame's or a bulb's.
+    /// 0 is a point, and a hard edge.
+    pub lamp_size: f32,
+    /// Reflections by rays, instead of the screen's and the probes'.
+    pub reflections: bool,
+    /// The roughest surface that reflects by rays: rougher ones keep the
+    /// probes' blur. 0 to 1, perceptual.
+    pub reflection_roughness: f32,
+    /// Glass bends what is seen through it: a ray in through its near
+    /// side, out through its far one, bent at each, on to what is behind.
+    pub refractions: bool,
+    /// How much glass bends light: 1.5 is window glass, 1.33 water.
+    pub index_of_refraction: f32,
 }
 
 impl Default for RayTracing {
@@ -61,6 +88,11 @@ impl Default for RayTracing {
             sun_rays: 4,
             occlusion_rays: 6,
             occlusion_radius: 1.0,
+            lamp_size: 0.0,
+            reflections: false,
+            reflection_roughness: 0.45,
+            refractions: false,
+            index_of_refraction: 1.5,
         }
     }
 }
@@ -72,12 +104,14 @@ impl RayTracing {
             sun_shadows: true,
             light_shadows: true,
             ambient_occlusion: true,
+            reflections: true,
+            refractions: true,
             ..Self::default()
         }
     }
 
     pub fn any(&self) -> bool {
-        self.sun_shadows || self.light_shadows || self.ambient_occlusion
+        self.sun_shadows || self.light_shadows || self.ambient_occlusion || self.reflections || self.refractions
     }
 }
 
@@ -153,9 +187,39 @@ pub(crate) fn blas(
     blas
 }
 
+/// What a reflection ray reads of the thing it hits: `RayMaterial` in
+/// ray.wgsl.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct RayMaterial {
+    /// Linear colour; metallic, or −1 for what is unlit (a light itself).
+    pub(crate) color_metal: [f32; 4],
+    /// Emission, linear; smoothness.
+    pub(crate) emission_smooth: [f32; 4],
+}
+
+impl RayMaterial {
+    pub(crate) fn of(material: &crate::Material) -> Self {
+        let c = material.color();
+        let unlit = material.shading == crate::material::Shading::Unlit;
+        RayMaterial {
+            color_metal: [c.x, c.y, c.z, if unlit { -1.0 } else { material.metallic.clamp(0.0, 1.0) }],
+            emission_smooth: [
+                material.emission[0].max(0.0),
+                material.emission[1].max(0.0),
+                material.emission[2].max(0.0),
+                material.smoothness.clamp(0.0, 1.0),
+            ],
+        }
+    }
+}
+
 /// The scene as the rays see it: every solid draw of the frame, placed.
 pub(crate) struct RayScene {
     pub(crate) tlas: wgpu::Tlas,
+    /// Each instance's material, by its slot: what a reflection ray that
+    /// hits it reads (`RayMaterial` in ray.wgsl).
+    pub(crate) materials: wgpu::Buffer,
     capacity: u32,
     /// A triangle far below everything, so the structure is never empty.
     placeholder: wgpu::Blas,
@@ -195,6 +259,7 @@ impl RayScene {
         let capacity = 64;
         let mut scene = Self {
             tlas: Self::tlas(gpu, capacity),
+            materials: Self::materials(gpu, capacity),
             capacity,
             placeholder,
             _placeholder_buffers: (vb, ib),
@@ -208,6 +273,15 @@ impl RayScene {
         scene.update(gpu, &mut encoder, &[]);
         gpu.queue.submit(Some(encoder.finish()));
         scene
+    }
+
+    fn materials(gpu: &Gpu, capacity: u32) -> wgpu::Buffer {
+        gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("scene materials (rays)"),
+            size: capacity as u64 * std::mem::size_of::<RayMaterial>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
     }
 
     fn tlas(gpu: &Gpu, capacity: u32) -> wgpu::Tlas {
@@ -225,13 +299,14 @@ impl RayScene {
         &mut self,
         gpu: &Gpu,
         encoder: &mut wgpu::CommandEncoder,
-        instances: &[(&wgpu::Blas, glam::Mat4, u8)],
+        instances: &[(&wgpu::Blas, glam::Mat4, u8, RayMaterial)],
     ) -> bool {
         let needed = instances.len() as u32 + 1;
         let mut remade = false;
         if needed > self.capacity {
             self.capacity = needed.next_power_of_two();
             self.tlas = Self::tlas(gpu, self.capacity);
+            self.materials = Self::materials(gpu, self.capacity);
             remade = true;
         }
         let count = self.capacity as usize;
@@ -245,10 +320,17 @@ impl RayScene {
                 0,
                 0xff,
             ));
-            for (slot, (blas, transform, mask)) in slots[1..].iter_mut().zip(instances) {
-                *slot = Some(wgpu::TlasInstance::new(blas, rows(*transform), 0, *mask));
+            for (i, (slot, (blas, transform, mask, _))) in slots[1..].iter_mut().zip(instances).enumerate() {
+                // Its custom index is its slot: where its material is.
+                *slot = Some(wgpu::TlasInstance::new(blas, rows(*transform), i as u32 + 1, *mask));
             }
         }
+        let mut materials = vec![RayMaterial::default(); instances.len() + 1];
+        for (i, (_, _, _, material)) in instances.iter().enumerate() {
+            materials[i + 1] = *material;
+        }
+        gpu.queue
+            .write_buffer(&self.materials, 0, bytemuck::cast_slice(&materials));
         encoder.build_acceleration_structures(std::iter::empty(), std::iter::once(&self.tlas));
         remade
     }

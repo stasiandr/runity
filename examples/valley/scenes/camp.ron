@@ -19,8 +19,14 @@
 
         // Один и тот же костёр, расставленный по-разному. Имя и место — от
         // экземпляра, всё остальное — от префаба.
-        (id: "876b198bbedf5219", name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.01, 0.0))),
-        (id: "79c8ecaf7992dda2", name: "east fire", model: "", prefab: "campfire", transform: (position: (3.2, 0.01, 0.0), rotation_deg: (0.0, 35.0, 0.0))),
+        // Огонь светит: у горящих костров рядом с угольком лампа — тёплая,
+        // с тенями от камней. У потухшего её нет.
+        (id: "876b198bbedf5219", name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.01, 0.0)), children: [
+            (id: "e1c5a7b3d9f02468", name: "flame", transform: (position: (0.0, 0.55, 0.0)), light: (color: (1.0, 0.52, 0.2), intensity: 3.5, range: 7.0)),
+        ]),
+        (id: "79c8ecaf7992dda2", name: "east fire", model: "", prefab: "campfire", transform: (position: (3.2, 0.01, 0.0), rotation_deg: (0.0, 35.0, 0.0)), children: [
+            (id: "4b8d2f6a0c13e579", name: "flame", transform: (position: (0.0, 0.55, 0.0)), light: (color: (1.0, 0.52, 0.2), intensity: 3.5, range: 7.0)),
+        ]),
 
         // Третий — потухший: экземпляр переопределяет материал корня, не
         // трогая префаб. Уголёк при этом остаётся угольком: глубже корня

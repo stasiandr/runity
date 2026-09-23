@@ -46,12 +46,13 @@ fn expanded() -> (Scene, runity::Instanced) {
 fn three_lines_in_a_scene_become_three_of_the_same_thing() {
     let (document, instanced) = expanded();
 
-    // The document stays small: that is the saving. Five entries — the
-    // ground, three fires and the kettle standing beside one of them.
-    assert_eq!(document.flatten().len(), 5);
+    // The document stays small: that is the saving. Seven entries — the
+    // ground, three fires, the flames of the two that burn, and the kettle
+    // standing beside the cold one.
+    assert_eq!(document.flatten().len(), 7);
     // And the scene that gets drawn is the whole thing: each fire brings a
     // root and five parts.
-    assert_eq!(instanced.scene.flatten().len(), 5 + 3 * 5);
+    assert_eq!(instanced.scene.flatten().len(), 7 + 3 * 5);
 
     // The three arrangements are the same arrangement. Compared by the names
     // and materials under each root, which is what "the same prefab" means;
@@ -68,10 +69,14 @@ fn three_lines_in_a_scene_become_three_of_the_same_thing() {
             .collect()
     };
     assert_eq!(shape("west fire"), shape("east fire"));
-    assert_eq!(shape("west fire").len(), 5, "an ember and four stones");
+    assert_eq!(
+        shape("west fire").len(),
+        6,
+        "an ember and four stones, and the flame the scene put in it"
+    );
     assert_eq!(
         shape("cold fire")[..5],
-        shape("west fire")[..],
+        shape("west fire")[..5],
         "an override on the root does not reach into the prefab — which is \
          stated out loud in prefab.rs, and is the thing to revisit first"
     );

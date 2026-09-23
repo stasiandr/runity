@@ -655,7 +655,8 @@ struct FrameUniform {
     ray: [f32; 4],
     /// Rays to the sun, occlusion rays, occlusion reach.
     ray_params: [f32; 4],
-    /// How many reflection probes there are, and their last mip.
+    /// How many reflection probes there are, and their last mip; 1 when
+    /// reflections are traced, and the roughest surface that is.
     probe_params: [f32; 4],
     /// Each probe: its centre and blend distance; its half size and 1 to
     /// bend reflections to its box.
@@ -707,6 +708,9 @@ struct FrameUniform {
     /// What it is drawn with, for the mesh shader: the instance's numbers
     /// (colour and shading, surface, emission, uv, detail, params).
     terrain_look: [[f32; 4]; 7],
+    /// Glass by rays: 1 when it bends what is seen through it, and its
+    /// index of refraction.
+    glass: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1140,9 +1144,10 @@ pub const SHADER: &str = include_str!("render.wgsl");
 /// Terrain's task and mesh stages, appended to the renderer's shader where
 /// the device has mesh shaders.
 const TERRAIN_MESH: &str = include_str!("terrain_mesh.wgsl");
-/// Ray masks, as render.wgsl's RAY_THINGS and RAY_TERRAIN.
+/// Ray masks, as render.wgsl's RAY_THINGS, RAY_TERRAIN and RAY_GLASS.
 const RAY_THINGS: u8 = 1;
 const RAY_TERRAIN: u8 = 2;
+const RAY_GLASS: u8 = 4;
 
 /// Where the engine's shader source was when the engine was built — for
 /// watching it while working on the engine; see [`ShaderFile`].
@@ -2372,6 +2377,17 @@ impl Renderer {
                 },
                 count: None,
             });
+            // What each thing in it is made of, for reflections' hits.
+            frame_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 24,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            });
         }
         let layout = gpu
             .device
@@ -2456,7 +2472,7 @@ impl Renderer {
                 shadow_map: &shadow_map,
                 shadow_sampler: &shadow_sampler,
                 occlusion: &ssao.result,
-                rays: ray.as_ref().map(|r| &r.tlas),
+                rays: ray.as_ref().map(|r| (&r.tlas, &r.materials)),
                 lights: &light_buffer,
                 cells: &cell_buffer,
                 indices: &index_buffer,
@@ -2852,7 +2868,7 @@ impl Renderer {
                 shadow_map: &self.shadow_map,
                 shadow_sampler: &self.shadow_sampler,
                 occlusion: &self.ssao.result,
-                rays: self.ray.as_ref().map(|r| &r.tlas),
+                rays: self.ray.as_ref().map(|r| (&r.tlas, &r.materials)),
                 lights: &self.light_buffer,
                 cells: &self.cell_buffer,
                 indices: &self.index_buffer,
@@ -4168,13 +4184,18 @@ impl Renderer {
                 frame.ray_tracing.sun_rays.clamp(1, 64) as f32,
                 frame.ray_tracing.occlusion_rays.clamp(1, 64) as f32,
                 frame.ray_tracing.occlusion_radius.max(0.01),
-                0.0,
+                frame.ray_tracing.lamp_size.max(0.0),
             ],
             probe_params: [
                 self.reflections.baked.len() as f32,
                 (crate::reflections::PROBE_MIPS - 1) as f32,
-                0.0,
-                0.0,
+                // Reflections by rays, and up to what roughness.
+                if frame.ray_tracing.reflections && self.ray.is_some() && probe.is_none() {
+                    1.0
+                } else {
+                    0.0
+                },
+                frame.ray_tracing.reflection_roughness.clamp(0.0, 1.0),
             ],
             probes: {
                 let mut out = [[0.0; 4]; crate::reflections::MAX_PROBES * 2];
@@ -4255,6 +4276,16 @@ impl Renderer {
                 }
                 None => [0.0; 4],
             },
+            glass: [
+                if frame.ray_tracing.refractions && self.ray.is_some() && probe.is_none() {
+                    1.0
+                } else {
+                    0.0
+                },
+                frame.ray_tracing.index_of_refraction.max(1.0),
+                0.0,
+                0.0,
+            ],
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -4585,20 +4616,28 @@ impl Renderer {
             // The terrain apart from the rest (RAY_TERRAIN in render.wgsl):
             // rays start past its coarse triangles.
             let terrain = frame.terrain.as_ref().map(|t| t.mesh);
-            let instances: Vec<(&wgpu::Blas, Mat4, u8)> = frame
+            let instances: Vec<(&wgpu::Blas, Mat4, u8, crate::ray::RayMaterial)> = frame
                 .draws
                 .iter()
                 // Glass lets the light through, and what is unlit is a light
                 // itself — a lamp's bulb must not shadow its own lamp.
-                .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
+                // Glass goes in apart (RAY_GLASS), for what is seen through
+                // it to find its far side; water has its own way.
+                .filter(|d| {
+                    d.material.shading != Shading::Unlit
+                        && d.material.shading != Shading::Water
+                        && (!d.material.is_transparent() || frame.ray_tracing.refractions)
+                })
                 .filter_map(|d| {
                     let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
-                    let mask = if Some(d.mesh) == terrain {
+                    let mask = if d.material.is_transparent() {
+                        RAY_GLASS
+                    } else if Some(d.mesh) == terrain {
                         RAY_TERRAIN
                     } else {
                         RAY_THINGS
                     };
-                    Some((blas, d.transform, mask))
+                    Some((blas, d.transform, mask, crate::ray::RayMaterial::of(&d.material)))
                 })
                 .collect();
             let remade = self
@@ -5156,7 +5195,7 @@ struct FrameInputs<'a> {
     shadow_map: &'a wgpu::TextureView,
     shadow_sampler: &'a wgpu::Sampler,
     occlusion: &'a wgpu::TextureView,
-    rays: Option<&'a wgpu::Tlas>,
+    rays: Option<(&'a wgpu::Tlas, &'a wgpu::Buffer)>,
     lights: &'a wgpu::Buffer,
     cells: &'a wgpu::Buffer,
     indices: &'a wgpu::Buffer,
@@ -5262,10 +5301,14 @@ fn frame_bind_group(
         view(22, inputs.history),
         view(23, inputs.terrain_heights),
     ];
-    if let Some(rays) = inputs.rays {
+    if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
             binding: 5,
             resource: rays.as_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: 24,
+            resource: materials.as_entire_binding(),
         });
     }
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {

@@ -107,6 +107,8 @@ struct Frame {
     terrain_bounds: vec4<f32>,
     // what it is drawn with, for the mesh shader: an instance's numbers
     terrain_look: array<vec4<f32>, 7>,
+    // glass by rays: 1 when on; its index of refraction
+    glass: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -585,12 +587,21 @@ fn fs_shadow_clip(in: ClipOut) {
 fn ray_clear(origin: vec3<f32>, direction: vec3<f32>, start: f32, reach: f32, mask: u32) -> f32 {
     return 1.0;
 }
+
+fn ray_reflection(origin: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
+    return vec4<f32>(0.0);
+}
+
+fn ray_refraction(position: vec3<f32>, incoming: vec3<f32>, normal: vec3<f32>, ior: f32) -> vec4<f32> {
+    return vec4<f32>(0.0);
+}
 // ray: stub end
 
 /// What rays can be asked to see: everything drawn but the terrain, and
 /// the terrain (ray.rs gives each instance one of these).
 const RAY_THINGS: u32 = 1u;
 const RAY_TERRAIN: u32 = 2u;
+const RAY_GLASS: u32 = 4u;
 /// How far a ray goes before the terrain can stop it. The rays see the
 /// terrain as its heightfield's triangles, a metre and more apart; what is
 /// drawn is finer — folded down to centimetres, rippled — and dips under
@@ -1322,6 +1333,26 @@ fn probe_picture(probe: u32, direction: vec3<f32>, lod: f32) -> vec3<f32> {
 /// they leave.
 fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let around = probes_and_sky(position, direction, perceptual_roughness);
+    // By a ray, where asked: what is off the screen or behind the camera
+    // too. A rough surface's ray is turned a little every frame and pixel
+    // within its lobe, and TAA gathers them into its blur.
+    if frame.probe_params.z > 0.5 && perceptual_roughness <= frame.probe_params.w {
+        var d = direction;
+        let spread = perceptual_roughness * perceptual_roughness;
+        if spread > 0.0005 {
+            let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+            let n1 = fract(pixel_noise(position.xz * 97.0 + position.y * 13.0) + turn);
+            let n2 = fract(pixel_noise(position.zy * 71.0 + position.x * 7.0) + turn * 1.7);
+            let side = basis_of(direction);
+            let a = n2 * 6.2831853;
+            d = normalize(direction + (side.t * cos(a) + side.b * sin(a)) * sqrt(n1) * spread);
+        }
+        let traced = ray_reflection(position, d);
+        if traced.a > 0.5 {
+            return traced.rgb;
+        }
+        return around;
+    }
     let near = screen_reflection(position, direction, perceptual_roughness);
     return mix(around, near.rgb, near.a);
 }
@@ -1651,7 +1682,21 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         if reach * facing * cone > 0.0 && (flags & 4u) != 0u {
             if frame.ray.y > 0.5 {
                 let start = in.world_position + geometric * 0.02;
-                blocked = ray_visible(start, toward, max(distance_to - 0.05, 0.0));
+                // Aimed at a point of the lamp's ball, turned each frame
+                // and pixel: TAA gathers them into a soft shadow.
+                var aim = at.xyz;
+                let size = frame.ray_params.w;
+                if size > 0.0 {
+                    let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+                    let n1 = fract(pixel_noise(in.clip_position.xy) + turn);
+                    let n2 = fract(pixel_noise(in.clip_position.yx + vec2<f32>(17.0, 5.0)) + turn * 1.7 + f32(n) * 0.37);
+                    let side = basis_of(toward);
+                    let a = n2 * 6.2831853;
+                    aim = aim + (side.t * cos(a) + side.b * sin(a)) * sqrt(n1) * size;
+                }
+                let to_aim = aim - start;
+                let aim_distance = length(to_aim);
+                blocked = ray_visible(start, to_aim / max(aim_distance, 1e-4), max(aim_distance - size - 0.05, 0.0));
             } else {
                 blocked = lamp_shadow(light, in.world_position, geometric, distance_to);
             }
@@ -1686,6 +1731,17 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let distance = length(in.world_position - frame.camera_position.xyz);
     color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), fog_amount(distance));
 
+    // Glass by rays: what is behind it, bent through it, where the blend
+    // would have laid the unbent picture — the glass's own light over it
+    // as much as it is opaque.
+    if frame.glass.x > 0.5 && alpha < 0.999 && unlit < 0.5 {
+        let facing_eye = select(normal, -normal, dot(normal, to_eye) < 0.0);
+        let through = ray_refraction(in.world_position, -to_eye, facing_eye, frame.glass.y);
+        if through.a > 0.5 {
+            color = color * alpha + through.rgb * albedo * (1.0 - alpha);
+            alpha = 1.0;
+        }
+    }
     // An unlit surface takes neither the light nor the fog: it is not a
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
@@ -2028,6 +2084,15 @@ fn fs_water(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var rgb = body * murk * (1.0 - fresnel) + mirrored * fresnel + glint;
     var alpha = clamp(murk * (1.0 - fresnel) + fresnel, 0.0, 1.0);
+    // By rays: the bottom seen through the waves, bent at the surface, with
+    // the depth's colour over it — in place of the unbent picture behind.
+    if frame.glass.x > 0.5 {
+        let through = ray_refraction(p, -to_eye, n, 1.33);
+        if through.a > 0.5 {
+            rgb = mix(through.rgb, body, murk) * (1.0 - fresnel) + mirrored * fresnel + glint;
+            alpha = 1.0;
+        }
+    }
 
     // Foam where it is shallow, broken up.
     let lace = value_noise(p.xz * 2.2 + vec2<f32>(t * 0.25, -t * 0.2)) * 0.6
