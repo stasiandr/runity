@@ -526,8 +526,9 @@ impl Session {
     }
 
     /// The world-space box around a document entity and everything it
-    /// brings, from its models' bounds.
-    fn world_bounds(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
+    /// brings, from its models' bounds, as (min, max): what it measures, in
+    /// metres. `None` for a thing that draws nothing.
+    pub fn world_bounds(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
         let mut low = Vec3::splat(f32::MAX);
         let mut high = Vec3::splat(f32::MIN);
         for (desc, world) in self.instanced.scene.flatten() {
@@ -2210,6 +2211,59 @@ impl Session {
         Ok(())
     }
 
+    /// Line the selection up along one axis (0 x, 1 y, 2 z): their low
+    /// sides, centres or high sides on one plane — the lowest low, the
+    /// average centre, the highest high. One undo step; how many moved.
+    /// Moves are in world space, which is the parent's for a thing at the
+    /// top of the tree.
+    pub fn align_selection(&mut self, axis: usize, to: Align) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        if axis > 2 {
+            return Err(EditError::Scene(format!(
+                "axis {axis}: 0 is x, 1 is y, 2 is z"
+            )));
+        }
+        let boxes: Vec<(EntityId, Vec3, Vec3)> = self
+            .selection_roots()
+            .into_iter()
+            .filter_map(|id| self.world_bounds(id).map(|(a, b)| (id, a, b)))
+            .collect();
+        if boxes.len() < 2 {
+            return Ok(0);
+        }
+        let side = |a: Vec3, b: Vec3| match to {
+            Align::Min => a[axis],
+            Align::Center => (a[axis] + b[axis]) * 0.5,
+            Align::Max => b[axis],
+        };
+        let target = match to {
+            Align::Min => boxes
+                .iter()
+                .map(|(_, a, _)| a[axis])
+                .fold(f32::INFINITY, f32::min),
+            Align::Max => boxes
+                .iter()
+                .map(|(_, _, b)| b[axis])
+                .fold(f32::NEG_INFINITY, f32::max),
+            Align::Center => {
+                boxes.iter().map(|(_, a, b)| side(*a, *b)).sum::<f32>() / boxes.len() as f32
+            }
+        };
+        let scene = self.history.edit();
+        let mut moved = 0;
+        for (id, a, b) in &boxes {
+            let delta = target - side(*a, *b);
+            if delta.abs() > 1e-6 {
+                if let Some(desc) = scene.get_mut(*id) {
+                    desc.transform.position[axis] += delta;
+                    moved += 1;
+                }
+            }
+        }
+        self.respawn();
+        Ok(moved)
+    }
+
     /// The selection as text: the entities in the scene's RON, children
     /// included — what a clipboard holds. Paste it into this scene or
     /// another, or hand it to an agent.
@@ -2754,4 +2808,12 @@ impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
+}
+
+/// Which side [`Session::align_selection`] lines things up by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Min,
+    Center,
+    Max,
 }

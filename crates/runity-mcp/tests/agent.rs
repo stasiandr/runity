@@ -113,6 +113,8 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "push_face",
         "array",
         "edits",
+        "measure",
+        "align",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -315,6 +317,27 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         )
         .unwrap_err();
     assert!(err.contains("+x, -x"), "{err}");
+    let size = agent.text("measure", json!({ "id": wall }));
+    assert!(size.contains("size (10.00, 3.00, 0.30)"), "{size}");
+    let post = agent.text(
+        "add_entity",
+        json!({ "name": "post", "model": "builtin:cube", "position": [9.0, 3.0, 2.0] }),
+    );
+    let apart = agent.text("measure", json!({ "id": wall, "to": post }));
+    assert!(apart.contains("gap per axis (2.50, -0.50, 1.35)"), "{apart}");
+    assert_eq!(
+        agent.text(
+            "align",
+            json!({ "ids": [wall, post], "axis": "y", "to": "min" })
+        ),
+        "1 moved"
+    );
+    let post_now = agent.text("measure", json!({ "id": post }));
+    assert!(
+        post_now.contains("from (8.50, 0.00, 1.50)"),
+        "down on the wall's floor: {post_now}"
+    );
+    agent.text("delete_entity", json!({ "id": post }));
     let copies = agent.text(
         "array",
         json!({ "id": wall, "count": 2, "step": [0.0, 0.0, 4.0] }),

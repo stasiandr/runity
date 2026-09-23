@@ -78,6 +78,8 @@ pub fn list() -> Vec<Value> {
         tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("make_variant", "Save a prefab instance, with its overrides, material, components and children, as prefabs/<name>.prefab — a variant of its prefab — and make it an instance of that. Later changes to the base still reach the variant where it said nothing.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
+        tool("measure", "How big a thing is in the world, in metres — its box, prefab parts and children included — and, given `to`, how far it is from another and the gap between them on each axis.", json!({ "id": { "type": "string", "description": ID }, "to": { "type": "string", "description": ID } }), &["id"]),
+        tool("align", "Line things up on one axis: their min sides, centres or max sides on one plane. One undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "axis": { "type": "string", "enum": ["x", "y", "z"] }, "to": { "type": "string", "enum": ["min", "center", "max"] } }), &["ids", "axis", "to"]),
         tool("array", "Greybox: count copies of an entity in a row, each step further (in its parent's space) than the last — posts, pillars, steps. One undo step; returns the copies' ids.", json!({ "id": { "type": "string", "description": ID }, "count": { "type": "integer" }, "step": vec3("from one copy to the next, metres") }), &["id", "count", "step"]),
         tool("push_face", "Greybox: move one face of a thing by some metres (negative pulls it in), the opposite face staying where it is — make a wall 2 m longer at its +x end. Faces in the thing's own axes: +x -x +y (top) -y (bottom) +z -z. One undo step.", json!({ "id": { "type": "string", "description": ID }, "face": { "type": "string" }, "metres": { "type": "number" } }), &["id", "face", "metres"]),
         tool("scatter", "Scatter copies of a model, or instances of a prefab, over a disc — trees, rocks, grass — as one group and one undo step. The same seed gives the same layout. Returns the group's id.", json!({
@@ -232,6 +234,75 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "prefabs/{name}.prefab written as a variant; {id} is now an instance of it"
             ))])
+        }
+        "measure" => {
+            let id = id(args, "id")?;
+            let other = optional_id(args, "to")?;
+            let session = server.session()?;
+            let (a, b) = session
+                .world_bounds(id)
+                .ok_or(format!("{id} draws nothing to measure"))?;
+            let mut out = format!(
+                "{id}: size {} from {} to {}",
+                triple(b - a),
+                triple(a),
+                triple(b)
+            );
+            if let Some(other) = other {
+                let (c, d) = session
+                    .world_bounds(other)
+                    .ok_or(format!("{other} draws nothing to measure"))?;
+                let centres = ((a + b) * 0.5).distance((c + d) * 0.5);
+                // The space between the two boxes on each axis; negative is
+                // how far they overlap.
+                let gap = (c - b).max(a - d);
+                let _ = write!(
+                    out,
+                    "\n{other}: centres {centres:.2} m apart, gap per axis {}",
+                    triple(gap)
+                );
+            }
+            Ok(vec![text(out)])
+        }
+        "align" => {
+            let ids: Vec<EntityId> = args
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or("ids is a list of entity ids")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .ok_or("an id is a string".to_string())?
+                        .parse::<EntityId>()
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Result<_, String>>()?;
+            let axis = match string(args, "axis")?.as_str() {
+                "x" => 0,
+                "y" => 1,
+                "z" => 2,
+                other => return Err(format!("axis is x, y or z, not {other}")),
+            };
+            let to = match string(args, "to")?.as_str() {
+                "min" => runity_editor::Align::Min,
+                "center" => runity_editor::Align::Center,
+                "max" => runity_editor::Align::Max,
+                other => return Err(format!("to is min, center or max, not {other}")),
+            };
+            let session = server.session()?;
+            let mut first = true;
+            for id in &ids {
+                if first {
+                    session.select(Some(*id)).map_err(|e| e.to_string())?;
+                    first = false;
+                } else {
+                    session.add_to_selection(*id).map_err(|e| e.to_string())?;
+                }
+            }
+            let moved = session
+                .align_selection(axis, to)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{moved} moved"))])
         }
         "array" => {
             let id = id(args, "id")?;
