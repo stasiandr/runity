@@ -83,6 +83,11 @@ pub enum Action {
     Array(usize),
     /// The selection's model or prefab scattered around the view's centre.
     Scatter,
+    /// Show or hide a panel: 0 the Hierarchy, 1 the Inspector, 2 the panel
+    /// under the view.
+    TogglePanel(usize),
+    /// The Scene view over the whole window, or back (Shift Space).
+    Maximize,
     /// A flat terrain to sculpt, and the brush on it.
     NewTerrain,
     ToggleSculpt,
@@ -248,6 +253,16 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                     "Align Z centres",
                     Action::Align(2, runity_editor::Align::Center),
                 ),
+            ],
+        ),
+        (
+            "Window",
+            vec![
+                item("Hierarchy", Action::TogglePanel(0)),
+                item("Inspector", Action::TogglePanel(1)),
+                item("Project and Console", Action::TogglePanel(2)),
+                MenuItem::separator(),
+                item("Maximize the View", Action::Maximize).key("⇧Space"),
             ],
         ),
         (

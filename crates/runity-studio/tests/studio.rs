@@ -688,3 +688,33 @@ fn a_terrain_from_the_menu_rises_under_the_brush() {
     assert!(after > before + 0.5, "{before} -> {after}");
     assert_eq!(s.session.selection(), selected, "the brush does not select");
 }
+
+#[test]
+fn panels_hide_and_the_view_takes_the_window() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    s.ui.paint();
+    let small = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    menu(&mut s, "Window", "Inspector");
+    assert!(
+        s.ui.find("inspector")
+            .is_some_and(|n| s.ui.rect(n).width == 0.0)
+            || !s.ui.dump().contains("#inspector")
+    );
+    s.ui.paint();
+    let wider = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    assert!(wider > small + 200.0, "{small} -> {wider}");
+    // Shift Space: everything but the view, and back.
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    key(&mut s, Key::Space);
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    s.ui.paint();
+    let full = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    assert!(full > 1400.0, "{full}");
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    key(&mut s, Key::Space);
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    s.ui.paint();
+    assert!((s.ui.rect(s.ui.find("scene view").unwrap()).width - wider).abs() < 1.0);
+}

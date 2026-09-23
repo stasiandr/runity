@@ -156,6 +156,10 @@ pub struct Studio {
     snap: NodeId,
     colliders_button: NodeId,
     sculpt_button: NodeId,
+    /// Which of the Hierarchy, the Inspector and the lower panel show, and
+    /// whether the view has the whole window.
+    panels: [bool; 3],
+    maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
     /// A stroke in progress: when the last dab landed, and for a flatten
@@ -358,6 +362,8 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            panels: [true; 3],
+            maximized: false,
             stroke: None,
             tooltip: None,
             resting: None,
@@ -510,6 +516,10 @@ impl Studio {
                         return;
                     }
                 }
+                if *key == Key::Space && self.ui.modifiers().0 {
+                    self.run(Action::Maximize);
+                    return;
+                }
                 if *key == Key::F2 {
                     self.hierarchy.rename_selected(&mut self.ui, &self.session);
                     return;
@@ -623,6 +633,19 @@ impl Studio {
                 eprintln!("{fps:.0} fps, frame {:.1} ms", mean * 1e3);
             }
             self.frame_times.clear();
+        }
+    }
+
+    /// Show the panels that are on, or only the view when it is maximized.
+    fn show_panels(&mut self) {
+        let [left, lower, right] = self.splits;
+        let slots = [(self.left, left), (self.right, right), (self.lower, lower)];
+        for (i, (slot, split)) in slots.into_iter().enumerate() {
+            let on = self.panels[i] && !self.maximized;
+            for n in [slot, split] {
+                self.ui
+                    .restyle(n, |s| if on { s.shown() } else { s.hidden() });
+            }
         }
     }
 
@@ -1601,6 +1624,15 @@ impl Studio {
                     s.scatter(None, &what, centre, &runity::edit::Scatter::default())
                         .map_err(e)?;
                 }
+                Action::TogglePanel(i) => {
+                    self.maximized = false;
+                    self.panels[i] = !self.panels[i];
+                    self.show_panels();
+                }
+                Action::Maximize => {
+                    self.maximized = !self.maximized;
+                    self.show_panels();
+                }
                 Action::NewTerrain => {
                     let mut name = "terrain".to_string();
                     let mut n = 1;
@@ -1986,6 +2018,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "save" => "Save the scene (Ctrl/Cmd S)",
         "snap" => "Snap moves to ¼ m, turns to 15°, scale to 0.1",
         "colliders" => "Show colliders",
+        "scene view" => "Shift Space: the view over the whole window",
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "view persp" => "Perspective view",
         "view top" => "Look down from above",
