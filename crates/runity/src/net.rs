@@ -44,6 +44,29 @@ impl PeerId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Owner(pub PeerId);
 
+/// The network identity of an entity the game spawned at run time — one
+/// the scene file does not have, so no [`SceneId`] names it. Minted by the
+/// peer that spawns it and sent in the [`Spawn`], so every peer calls it
+/// the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NetId(pub EntityId);
+
+/// A prefab spawned at run time, as its spawner announces it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Spawn {
+    pub from: PeerId,
+    pub id: EntityId,
+    pub prefab: String,
+    pub transform: Transform,
+}
+
+/// A run-time entity gone, said by its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Despawn {
+    pub from: PeerId,
+    pub id: EntityId,
+}
+
 /// One entity, as its owner sends it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EntityState {
@@ -73,6 +96,8 @@ pub struct Handover {
 pub enum Message {
     Snapshot(Snapshot),
     Handover(Handover),
+    Spawn(Spawn),
+    Despawn(Despawn),
 }
 
 impl Message {
@@ -96,16 +121,57 @@ pub fn owner_of(world: &hecs::World, entity: hecs::Entity) -> PeerId {
 /// What `me` owns, as a snapshot to send.
 pub fn snapshot(world: &hecs::World, components: &Components, me: PeerId) -> Snapshot {
     let entities = world
-        .query::<(hecs::Entity, &SceneId, &Transform)>()
+        .query::<(hecs::Entity, Option<&SceneId>, Option<&NetId>, &Transform)>()
         .iter()
-        .filter(|(entity, _, _)| owner_of(world, *entity) == me)
-        .map(|(entity, id, transform)| EntityState {
-            id: id.0,
-            transform: *transform,
-            components: components.write_networked(world, entity),
+        .filter(|(entity, _, _, _)| owner_of(world, *entity) == me)
+        .filter_map(|(entity, scene, net, transform)| {
+            Some(EntityState {
+                id: net.map(|n| n.0).or(scene.map(|s| s.0))?,
+                transform: *transform,
+                components: components.write_networked(world, entity),
+            })
         })
         .collect();
     Snapshot { from: me, entities }
+}
+
+/// Every entity a peer can name over the network: the scene's by
+/// [`SceneId`], the run-time ones by [`NetId`].
+fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
+    let mut out: HashMap<EntityId, hecs::Entity> = world
+        .query::<(hecs::Entity, &SceneId)>()
+        .iter()
+        .map(|(entity, id)| (id.0, entity))
+        .collect();
+    out.extend(
+        world
+            .query::<(hecs::Entity, &NetId)>()
+            .iter()
+            .map(|(entity, id)| (id.0, entity)),
+    );
+    out
+}
+
+/// Mark an entity the game just spawned as networked: a fresh [`NetId`],
+/// owned by `me`, and the [`Spawn`] to send so the others spawn it too.
+pub fn announce(
+    world: &mut hecs::World,
+    entity: hecs::Entity,
+    me: PeerId,
+    prefab: &str,
+) -> Message {
+    let id = EntityId::fresh();
+    let transform = world
+        .get::<&Transform>(entity)
+        .map(|t| *t)
+        .unwrap_or_default();
+    let _ = world.insert(entity, (NetId(id), Owner(me)));
+    Message::Spawn(Spawn {
+        from: me,
+        id,
+        prefab: prefab.to_string(),
+        transform,
+    })
 }
 
 /// What applying a message did, and what it refused.
@@ -118,13 +184,20 @@ pub struct Applied {
 }
 
 /// Take a message from another peer into this world — only what its sender
-/// has the right to say.
+/// has the right to say. This form refuses a [`Spawn`]; see [`apply_with`].
 pub fn apply(world: &mut hecs::World, components: &Components, message: &Message) -> Applied {
-    let by_id: HashMap<EntityId, hecs::Entity> = world
-        .query::<(hecs::Entity, &SceneId)>()
-        .iter()
-        .map(|(entity, id)| (id.0, entity))
-        .collect();
+    apply_with(world, components, message, |_, _, _| None)
+}
+
+/// [`apply`], with `spawn` to put a prefab into the world at a transform —
+/// [`crate::LiveScene::spawn_prefab`], usually — for a peer's [`Spawn`].
+pub fn apply_with(
+    world: &mut hecs::World,
+    components: &Components,
+    message: &Message,
+    mut spawn: impl FnMut(&mut hecs::World, &str, Transform) -> Option<hecs::Entity>,
+) -> Applied {
+    let by_id = addressable(world);
     let mut out = Applied::default();
     match message {
         Message::Snapshot(snapshot) => {
@@ -174,14 +247,130 @@ pub fn apply(world: &mut hecs::World, components: &Components, message: &Message
                 .refused
                 .push(format!("{}: no such entity here", handover.id)),
         },
+        Message::Spawn(announced) => {
+            if by_id.contains_key(&announced.id) {
+                out.refused.push(format!("{}: already here", announced.id));
+            } else {
+                match spawn(world, &announced.prefab, announced.transform) {
+                    Some(entity) => {
+                        let _ = world.insert(entity, (NetId(announced.id), Owner(announced.from)));
+                        out.updated += 1;
+                    }
+                    None => out.refused.push(format!(
+                        "{}: no prefab `{}` to spawn here",
+                        announced.id, announced.prefab
+                    )),
+                }
+            }
+        }
+        Message::Despawn(gone) => match by_id.get(&gone.id) {
+            Some(&entity) if world.get::<&NetId>(entity).is_err() => out.refused.push(format!(
+                "{}: the scene's, not something spawned to despawn",
+                gone.id
+            )),
+            Some(&entity) if owner_of(world, entity) == gone.from => {
+                despawn_tree(world, entity);
+                out.updated += 1;
+            }
+            Some(&entity) => out.refused.push(format!(
+                "{}: peer {} despawned it, but peer {} owns it",
+                gone.id,
+                gone.from.0,
+                owner_of(world, entity).0
+            )),
+            None => out
+                .refused
+                .push(format!("{}: no such entity here", gone.id)),
+        },
     }
     out
+}
+
+/// An entity and everything parented to it.
+fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
+    let mut doomed = vec![root];
+    let mut i = 0;
+    while i < doomed.len() {
+        let parent = doomed[i];
+        doomed.extend(
+            world
+                .query::<(hecs::Entity, &crate::world::Parent)>()
+                .iter()
+                .filter(|(_, p)| p.0 == parent)
+                .map(|(e, _)| e),
+        );
+        i += 1;
+    }
+    for entity in doomed {
+        let _ = world.despawn(entity);
+    }
 }
 
 /// The wire: send to one peer, take what arrived.
 pub trait Transport {
     fn send(&mut self, to: PeerId, bytes: Vec<u8>);
     fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)>;
+}
+
+/// Peers over UDP: each datagram is the sender's [`PeerId`] and a
+/// [`Message`]. Unreliable and unordered, which is what snapshots want — a
+/// late one is superseded by the next. Handovers and spawns want delivery
+/// guarantees this does not give yet; a reliable channel is the next step.
+pub struct Udp {
+    socket: std::net::UdpSocket,
+    me: PeerId,
+    peers: HashMap<PeerId, std::net::SocketAddr>,
+}
+
+impl Udp {
+    /// Bind to `address` (`"0.0.0.0:7777"`, or port 0 for any) as `me`.
+    pub fn bind(address: &str, me: PeerId) -> std::io::Result<Self> {
+        let socket = std::net::UdpSocket::bind(address)?;
+        socket.set_nonblocking(true)?;
+        Ok(Self {
+            socket,
+            me,
+            peers: HashMap::new(),
+        })
+    }
+
+    pub fn local_address(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.socket.local_addr()
+    }
+
+    /// Where a peer is.
+    pub fn connect(&mut self, peer: PeerId, address: std::net::SocketAddr) {
+        self.peers.insert(peer, address);
+    }
+}
+
+impl Transport for Udp {
+    fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
+        let Some(address) = self.peers.get(&to) else {
+            return;
+        };
+        let mut datagram = self.me.0.to_le_bytes().to_vec();
+        datagram.extend_from_slice(&bytes);
+        let _ = self.socket.send_to(&datagram, address);
+    }
+
+    fn receive(&mut self) -> Vec<(PeerId, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut buffer = vec![0u8; 65_536];
+        while let Ok((length, address)) = self.socket.recv_from(&mut buffer) {
+            if length < 4 {
+                continue;
+            }
+            let from = PeerId(u32::from_le_bytes([
+                buffer[0], buffer[1], buffer[2], buffer[3],
+            ]));
+            // Learn where a peer is from what it sends: a client need not be
+            // configured on the host.
+            self.peers.entry(from).or_insert(address);
+            out.push((from, buffer[4..length].to_vec()));
+        }
+        out
+    }
 }
 
 /// What each peer has waiting: who sent it, and the bytes.
@@ -347,5 +536,93 @@ mod tests {
                 .y,
             9.0
         );
+    }
+
+    #[test]
+    fn a_spawned_prefab_appears_on_the_other_peer_and_its_owner_can_take_it_away() {
+        let (mut host, components) = peer();
+        let (mut client, _) = peer();
+
+        // The host spawns a torch at run time and announces it.
+        let torch = host.spawn((Transform {
+            position: glam::Vec3::new(2.0, 0.0, 0.0),
+            ..Transform::default()
+        },));
+        let spawn = announce(&mut host, torch, PeerId::HOST, "torch");
+        let mut spawned_here = None;
+        let done = apply_with(&mut client, &components, &spawn, |world, prefab, t| {
+            let e = (prefab == "torch").then(|| world.spawn((t,)));
+            spawned_here = e;
+            e
+        });
+        assert_eq!(done.updated, 1, "{:?}", done.refused);
+        let copy = spawned_here.unwrap();
+        assert_eq!(client.get::<&Transform>(copy).unwrap().position.x, 2.0);
+        assert_eq!(owner_of(&client, copy), PeerId::HOST);
+
+        // It moves in the host's snapshots like anything else it owns.
+        host.get::<&mut Transform>(torch).unwrap().position.x = 5.0;
+        let moved = Message::Snapshot(snapshot(&host, &components, PeerId::HOST));
+        apply(&mut client, &components, &moved);
+        assert_eq!(client.get::<&Transform>(copy).unwrap().position.x, 5.0);
+
+        // Only its owner despawns it, and a scene entity is not despawnable.
+        let Message::Spawn(Spawn { id, .. }) = spawn else {
+            unreachable!()
+        };
+        let forged = Message::Despawn(Despawn {
+            from: PeerId(1),
+            id,
+        });
+        assert_eq!(apply(&mut client, &components, &forged).updated, 0);
+        let scene_crate: EntityId = "b2".parse().unwrap();
+        let scene = Message::Despawn(Despawn {
+            from: PeerId::HOST,
+            id: scene_crate,
+        });
+        assert_eq!(apply(&mut client, &components, &scene).updated, 0);
+        let real = Message::Despawn(Despawn {
+            from: PeerId::HOST,
+            id,
+        });
+        apply(&mut client, &components, &real);
+        assert!(!client.contains(copy));
+    }
+
+    fn wait(transport: &mut impl Transport) -> Vec<(PeerId, Vec<u8>)> {
+        for _ in 0..200 {
+            let got = transport.receive();
+            if !got.is_empty() {
+                return got;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Vec::new()
+    }
+
+    #[test]
+    fn peers_talk_over_udp() {
+        let (Ok(mut host), Ok(mut client)) = (
+            Udp::bind("127.0.0.1:0", PeerId::HOST),
+            Udp::bind("127.0.0.1:0", PeerId(1)),
+        ) else {
+            eprintln!("skipping: no loopback sockets");
+            return;
+        };
+        client.connect(PeerId::HOST, host.local_address().unwrap());
+        let hello = Message::Handover(Handover {
+            from: PeerId(1),
+            id: EntityId::from_raw(7),
+            to: PeerId::HOST,
+        });
+        client.send(PeerId::HOST, hello.encode());
+        let got = wait(&mut host);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, PeerId(1));
+        assert_eq!(Message::decode(&got[0].1).unwrap(), hello);
+
+        // The host learned where the client is from the datagram.
+        host.send(PeerId(1), hello.encode());
+        assert_eq!(wait(&mut client).len(), 1);
     }
 }
