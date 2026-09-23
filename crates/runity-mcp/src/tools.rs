@@ -181,7 +181,7 @@ pub fn list() -> Vec<Value> {
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("problems", "What is wrong with the open document right now, unsaved edits included: models, materials and prefabs nothing answers to, stale overrides — each with the entity id and the likely intended name. Empty means clean.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
-        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, the parameters it reads, and what is wrong with its shape.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
+        tool("graph", "An animator graph (animators/<name>.ron): its start, every state with what it plays, every transition with its conditions, the parameters it reads, what is wrong with its shape, and what changed since the last commit.", json!({ "name": { "type": "string", "description": "the graph's file name without .ron" } }), &["name"]),
         tool("graph_connect", "Add a transition to an animator graph, written into the file where it goes (in the state it leaves). `from` is a state, or \"*\" for any state.", json!({
             "name": { "type": "string" },
             "from": { "type": "string" },
@@ -1841,6 +1841,16 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
             out.push_str(&format!("parameters: {}\n", parameters.join(", ")));
             for problem in graph.shape_problems() {
                 out.push_str(&format!("problem: {problem}\n"));
+            }
+            // What changed since the last commit, as the Animator window
+            // shows it.
+            if let Some(head) = runity_editor::history::show(&path, "HEAD")
+                .ok()
+                .and_then(|t| runity::ron::from_str::<Graph>(&t).ok())
+            {
+                for change in runity::animgraph::diff(&head, &graph) {
+                    out.push_str(&format!("since the last commit: {change}\n"));
+                }
             }
             Ok(vec![text(out)])
         }
