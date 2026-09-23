@@ -123,6 +123,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "place",
         "to_view",
         "override_field",
+        "console",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -535,6 +536,12 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
         Err(e) => panic!("{e}"),
     }
     let opened = agent.text("new_scene", json!({ "name": "cave" }));
+    let said = agent.text("console", json!({ "clear": true }));
+    assert!(
+        said.contains("info: opened") && said.contains("cave.ron"),
+        "{said}"
+    );
+    assert_eq!(agent.text("console", json!({})), "nothing said");
     assert!(
         opened.contains("cave.ron") && opened.contains("scenes: cave, main"),
         "{opened}"

@@ -115,6 +115,7 @@ pub fn list() -> Vec<Value> {
         tool("place", "Put entities on whatever a pixel of the last render shows — a table's top, a wall, a slope — by the bottom of their box, keeping their places relative to each other. One undo step. Pixels from the top left, as `pick` takes them.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["ids", "x", "y"]),
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
+        tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -611,6 +612,31 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 format!("{how} {field}")
             } else {
                 format!("{field} is not overridden there")
+            })])
+        }
+        "console" => {
+            let session = server.session()?;
+            let mut out = String::new();
+            for line in session.console() {
+                let level = match line.level {
+                    runity_editor::console::Level::Info => "info",
+                    runity_editor::console::Level::Warning => "warning",
+                    runity_editor::console::Level::Error => "error",
+                };
+                let times = if line.count > 1 {
+                    format!(" (x{})", line.count)
+                } else {
+                    String::new()
+                };
+                let _ = writeln!(out, "{level}: {}{times}", line.text);
+            }
+            if args.get("clear").and_then(Value::as_bool).unwrap_or(false) {
+                session.clear_console();
+            }
+            Ok(vec![text(if out.is_empty() {
+                "nothing said".to_string()
+            } else {
+                out
             })])
         }
         "hide" => {

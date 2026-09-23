@@ -3142,3 +3142,57 @@ fn a_locked_ground_is_drawn_but_neither_clicked_nor_boxed() {
     session.set_pickable(&[ground], true).unwrap();
     assert_eq!(session.pick(1, h - 2), Some(ground));
 }
+
+#[test]
+fn the_console_says_what_happened_once_with_a_count() {
+    use runity::input::{Input, InputEvent as E, Key};
+    use runity_editor::console::Level;
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"hut\", prefab: \"no_such_hut\"),\n    ],\n)",
+    );
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file("console", &scene);
+    let _ = session.open_scene(&path);
+    let lines = session.console().to_vec();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.level == Level::Info && l.text.starts_with("opened")),
+        "{lines:?}"
+    );
+
+    // A refused edit in the Scene view is said, and said again counts up.
+    session.select(Some(id(&session, "crate"))).unwrap();
+    session.play();
+    let mut input = Input::new();
+    for _ in 0..3 {
+        let _ = view_frame_result(&mut session, &mut input, &[E::KeyDown(Key::Delete)]);
+        view_frame_result(&mut session, &mut input, &[E::KeyUp(Key::Delete)]).unwrap();
+    }
+    session.stop();
+    let errors: Vec<_> = session
+        .console()
+        .iter()
+        .filter(|l| l.level == Level::Error)
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].count, 3);
+    assert_eq!(session.console_counts().2, 1);
+    session.clear_console();
+    assert!(session.console().is_empty());
+}
+
+fn view_frame_result(
+    session: &mut Session,
+    input: &mut runity::input::Input,
+    events: &[runity::input::InputEvent],
+) -> Result<Vec<&'static str>, runity_editor::EditError> {
+    input.begin_frame();
+    for e in events {
+        input.handle(e);
+    }
+    session.scene_view(input, 1.0 / 60.0)
+}

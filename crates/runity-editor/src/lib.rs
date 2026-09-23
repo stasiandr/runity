@@ -17,6 +17,7 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+pub mod console;
 mod error;
 pub mod history;
 pub mod panels;
@@ -143,6 +144,7 @@ pub struct Session {
     surface: Option<runity::PhysicsWorld>,
     /// A vertex snap in progress.
     vertex_grab: Option<surface::VertexGrab>,
+    console: console::Console,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -274,6 +276,7 @@ impl Session {
             fly_speed: 6.0,
             surface: None,
             vertex_grab: None,
+            console: Default::default(),
         })
     }
 
@@ -367,10 +370,22 @@ impl Session {
                 self.focus_selected();
             }
         }
-        Ok(problems
+        let skipped: Vec<String> = problems
             .into_iter()
             .map(|(path, e)| format!("{}: {e}", path.display()))
-            .collect())
+            .collect();
+        let opened = format!(
+            "opened {}",
+            self.scene_path
+                .as_deref()
+                .unwrap_or(Path::new(""))
+                .display()
+        );
+        self.say(console::Level::Info, opened);
+        for line in &skipped {
+            self.say(console::Level::Warning, line.clone());
+        }
+        Ok(skipped)
     }
 
     /// Open a prefab of the project by name: Prefab Mode.
@@ -2062,6 +2077,16 @@ impl Session {
             }
         };
         self.reopen_library()?;
+        self.say(
+            console::Level::Info,
+            format!("imported {}", source.display()),
+        );
+        for warning in &warnings {
+            self.say(
+                console::Level::Warning,
+                format!("{}: {warning}", source.display()),
+            );
+        }
         Ok(warnings)
     }
 
@@ -2079,6 +2104,14 @@ impl Session {
         if let Some(project) = &self.project {
             let synced = runity_import::sync(project);
             let changed = synced.iter().filter(|r| r.result.is_ok()).count();
+            for failed in &synced {
+                if let Err(e) = &failed.result {
+                    self.console.say(
+                        console::Level::Error,
+                        format!("{}: {e}", failed.source.display()),
+                    );
+                }
+            }
             if changed > 0 {
                 // New and moved assets are files the open library has never
                 // seen, so it is read again rather than refreshed.

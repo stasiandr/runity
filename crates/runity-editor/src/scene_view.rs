@@ -44,7 +44,17 @@ impl Session {
     /// done, by name — "select", "drag", "undo", "orbit" — so the window
     /// knows to redraw and a test knows what happened.
     /// `dt` is the seconds since the last call: how far a flythrough goes.
+    /// What it refuses — an edit during play, say — is also said in the
+    /// Console, where a window's user sees it.
     pub fn scene_view(&mut self, input: &Input, dt: f32) -> EditResult<Vec<&'static str>> {
+        let done = self.scene_view_frame(input, dt);
+        if let Err(e) = &done {
+            self.say(crate::console::Level::Error, e.to_string());
+        }
+        done
+    }
+
+    fn scene_view_frame(&mut self, input: &Input, dt: f32) -> EditResult<Vec<&'static str>> {
         let mut did = Vec::new();
         let ctrl = [
             Key::LeftControl,
