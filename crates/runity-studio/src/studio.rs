@@ -2752,8 +2752,8 @@ impl Studio {
                         .add_filter(
                             "model, texture, sound",
                             &[
-                                "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg",
-                                "rterrain", "rpoly",
+                                "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg", "mp3",
+                                "flac", "rterrain", "rpoly",
                             ],
                         )
                         .pick_files()

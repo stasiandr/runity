@@ -3093,6 +3093,7 @@ dependencies = [
  "ron",
  "runity",
  "serde",
+ "symphonia",
  "tobj",
  "yaml-rust2",
 ]

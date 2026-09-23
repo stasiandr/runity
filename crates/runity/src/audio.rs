@@ -11,6 +11,7 @@ use glam::Vec3;
 use kira::backend::cpal::CpalBackend;
 use kira::backend::Backend;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
+use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Decibels, Tween};
 
@@ -58,16 +59,28 @@ impl Falloff {
 }
 
 /// What a sound is playing as.
-pub struct Playing(StaticSoundHandle);
+pub struct Playing(Handle);
+
+/// Decoded and played from memory, or streamed from its compressed bytes.
+enum Handle {
+    Decoded(StaticSoundHandle),
+    Streamed(StreamingSoundHandle<kira::sound::FromFileError>),
+}
 
 impl Playing {
     pub fn stop(&mut self) {
-        self.0.stop(kira::Tween::default());
+        match &mut self.0 {
+            Handle::Decoded(h) => h.stop(kira::Tween::default()),
+            Handle::Streamed(h) => h.stop(kira::Tween::default()),
+        }
     }
 
     pub fn set_volume(&mut self, gain: f32) {
-        self.0
-            .set_volume(gain_to_decibels(gain), kira::Tween::default());
+        let volume = gain_to_decibels(gain);
+        match &mut self.0 {
+            Handle::Decoded(h) => h.set_volume(volume, kira::Tween::default()),
+            Handle::Streamed(h) => h.set_volume(volume, kira::Tween::default()),
+        }
     }
 }
 
@@ -168,10 +181,21 @@ where
         sound: &ArchivedSoundAsset,
         gain: f32,
     ) -> Result<Playing, String> {
-        let data = to_static(sound).volume(gain_to_decibels(gain));
+        let volume = gain_to_decibels(gain);
+        let streaming = if sound.encoded.is_empty() {
+            None
+        } else {
+            Some(streamed(sound)?.volume(volume))
+        };
         let (track, _) = self.group(group)?;
-        let handle = track.play(data).map_err(|e| e.to_string())?;
-        Ok(Playing(handle))
+        if let Some(data) = streaming {
+            let handle = track.play(data).map_err(|e| e.to_string())?;
+            return Ok(Playing(Handle::Streamed(handle)));
+        }
+        let handle = track
+            .play(to_static(sound).volume(volume))
+            .map_err(|e| e.to_string())?;
+        Ok(Playing(Handle::Decoded(handle)))
     }
 
     /// [`Self::play_at`] in a mixer group.
@@ -206,12 +230,17 @@ where
     ///
     /// For music, narration, and anything that is not coming from somewhere.
     pub fn play(&mut self, sound: &ArchivedSoundAsset, gain: f32) -> Result<Playing, String> {
-        let data = to_static(sound);
+        let volume = gain_to_decibels(gain);
+        if !sound.encoded.is_empty() {
+            let data = streamed(sound)?.volume(volume);
+            let handle = self.manager.play(data).map_err(|e| e.to_string())?;
+            return Ok(Playing(Handle::Streamed(handle)));
+        }
         let handle = self
             .manager
-            .play(data.volume(gain_to_decibels(gain)))
+            .play(to_static(sound).volume(volume))
             .map_err(|e| e.to_string())?;
-        Ok(Playing(handle))
+        Ok(Playing(Handle::Decoded(handle)))
     }
 
     /// Play a sound somewhere in the world.
@@ -245,6 +274,14 @@ fn gain_to_decibels(gain: f32) -> Decibels {
         return Decibels(f32::NEG_INFINITY);
     }
     Decibels(20.0 * gain.clamp(0.0, 1.0).log10())
+}
+
+/// A long sound's compressed bytes, to be streamed.
+fn streamed(
+    sound: &ArchivedSoundAsset,
+) -> Result<StreamingSoundData<kira::sound::FromFileError>, String> {
+    StreamingSoundData::from_cursor(std::io::Cursor::new(sound.encoded.to_vec()))
+        .map_err(|e| format!("{}: {e}", sound.name))
 }
 
 /// Turn an archived asset into something kira can play.
@@ -288,11 +325,60 @@ mod tests {
                     [v, v]
                 })
                 .collect(),
+            encoded: Vec::new(),
+            seconds: 1.0,
         }
     }
 
     fn archived() -> Vec<u8> {
         crate::asset::to_bytes(&tone(), crate::asset::AssetKind::Sound).unwrap()
+    }
+
+    /// A WAV file's bytes, a second of silence at 8 kHz, mono 16-bit.
+    fn wav_bytes() -> Vec<u8> {
+        let (rate, frames) = (8000u32, 8000u32);
+        let data = frames * 2;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 2).to_le_bytes());
+        b.extend_from_slice(&2u16.to_le_bytes());
+        b.extend_from_slice(&16u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&data.to_le_bytes());
+        b.resize(b.len() + data as usize, 0);
+        b
+    }
+
+    #[test]
+    fn a_long_sound_streams_from_its_compressed_bytes() {
+        let mut audio = silent();
+        let long = crate::asset::SoundAsset {
+            samples: Vec::new(),
+            encoded: wav_bytes(),
+            seconds: 1.0,
+            ..tone()
+        };
+        let bytes = crate::asset::to_bytes(&long, crate::asset::AssetKind::Sound).unwrap();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        let mut music = audio.play_in("music", sound, 0.8).expect("it streams");
+        music.set_volume(0.5);
+        music.stop();
+        let broken = crate::asset::SoundAsset {
+            encoded: b"not a sound".to_vec(),
+            ..long
+        };
+        let bytes = crate::asset::to_bytes(&broken, crate::asset::AssetKind::Sound).unwrap();
+        let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
+        assert!(
+            audio.play(sound, 1.0).is_err(),
+            "said in words, not a crash"
+        );
     }
 
     #[test]

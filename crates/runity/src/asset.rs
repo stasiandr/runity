@@ -33,7 +33,7 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 13;
 
 /// What kind of asset a file holds.
 ///
@@ -291,9 +291,20 @@ pub struct SoundAsset {
     pub name: String,
     pub sample_rate: u32,
     /// Interleaved stereo. Mono sources are duplicated at import, so the
-    /// mixer has one layout and no branch.
+    /// mixer has one layout and no branch. Empty for a long one, which
+    /// keeps its `encoded` bytes instead.
     pub samples: Vec<f32>,
+    /// A long sound — music, a wind that blows all level — as its file
+    /// was, compressed, played by streaming it: decoded, a ten-minute track
+    /// would be two hundred megabytes. Short ones are decoded at import,
+    /// so a footstep never waits on a decoder. Empty for those.
+    pub encoded: Vec<u8>,
+    /// How long it plays.
+    pub seconds: f32,
 }
+
+/// Sounds longer than this keep their file's compressed bytes and stream.
+pub const LONG_SOUND_SECONDS: f32 = 10.0;
 
 impl SoundAsset {
     pub fn frames(&self) -> usize {
@@ -301,6 +312,9 @@ impl SoundAsset {
     }
 
     pub fn duration_seconds(&self) -> f32 {
+        if self.samples.is_empty() {
+            return self.seconds;
+        }
         self.frames() as f32 / self.sample_rate.max(1) as f32
     }
 }
