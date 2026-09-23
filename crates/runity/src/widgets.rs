@@ -592,6 +592,109 @@ impl Widgets {
         self.focused.is_some()
     }
 
+    /// A row of tabs across `rect` — a settings screen's Video, Sound,
+    /// Controls: the chosen one lit. `true` on the frame another is
+    /// chosen. Each tab is a widget of its own to the mouse and the pad.
+    pub fn tabs(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        names: &[&str],
+        chosen: &mut usize,
+    ) -> bool {
+        let mut changed = false;
+        let width = rect.width / names.len().max(1) as f32;
+        for (i, name) in names.iter().enumerate() {
+            let tab = Rect::new(rect.x + width * i as f32, rect.y, width, rect.height);
+            let id = key(tab, name);
+            let (over, _, clicked) = self.reach(input, tab, id, Nav::Press);
+            if clicked && *chosen != i {
+                *chosen = i;
+                changed = true;
+            }
+            let color = if i == *chosen {
+                self.style.hover
+            } else if over {
+                self.style.pressed
+            } else {
+                self.style.idle
+            };
+            ui.quad(Quad::new(tab.x, tab.y, tab.width, tab.height, color));
+            if i == *chosen {
+                ui.quad(Quad::new(
+                    tab.x,
+                    tab.y + tab.height - 3.0,
+                    tab.width,
+                    3.0,
+                    self.style.accent,
+                ));
+            }
+            self.label(ui, tab, name);
+            self.ring(ui, tab, id);
+        }
+        changed
+    }
+
+    /// Rows to pick one of — saves, servers, recipes: a row `row_height`
+    /// tall for each item from `rect`'s top, the picked one lit, what does
+    /// not fit cut off (put it in a [`Self::scroll`] for more). `true` on
+    /// the frame the pick changes; `picked` is `None` for no pick yet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn list(
+        &mut self,
+        ui: &mut Ui,
+        input: &Input,
+        rect: Rect,
+        row_height: f32,
+        items: &[String],
+        picked: &mut Option<usize>,
+    ) -> bool {
+        let mut changed = false;
+        ui.quad(Quad::new(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            self.style.pressed,
+        ));
+        for (i, item) in items.iter().enumerate() {
+            let row = Rect::new(
+                rect.x,
+                rect.y + row_height * i as f32,
+                rect.width,
+                row_height,
+            );
+            if row.y + row.height > rect.y + rect.height + 0.5 {
+                break;
+            }
+            let id = key(row, item);
+            let (over, _, clicked) = self.reach(input, row, id, Nav::Press);
+            if clicked && *picked != Some(i) {
+                *picked = Some(i);
+                changed = true;
+            }
+            let color = if *picked == Some(i) {
+                self.style.hover
+            } else if over {
+                self.style.idle
+            } else {
+                self.style.pressed
+            };
+            ui.quad(Quad::new(row.x, row.y, row.width, row.height, color));
+            let size = self.style.text_size;
+            ui.text(TextRun::new(
+                row.x + size * 0.5,
+                row.y + (row.height - size) * 0.5,
+                size,
+                self.style.text,
+                item,
+            ));
+            self.ring(ui, row, id);
+        }
+        changed
+    }
+
     /// A value between `min` and `max`, set by dragging along the bar.
     /// `true` on frames it changes. The range is `min..=max`.
     pub fn slider(
@@ -719,6 +822,48 @@ mod tests {
         pad(&mut input, PadButton::South);
         let pressed = draw(&mut widgets, &input, &mut volume);
         assert_eq!(pressed, (false, false));
+    }
+
+    #[test]
+    fn a_tab_and_a_row_are_chosen_by_a_click() {
+        use crate::input::MouseButton as M;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let (mut tab, mut row) = (0, None);
+        let items: Vec<String> = ["Autumn save", "Spring save"].map(String::from).to_vec();
+        let mut draw = |widgets: &mut Widgets, input: &Input| {
+            let mut ui = Ui::new();
+            let tabs = widgets.tabs(
+                &mut ui,
+                input,
+                Rect::new(0.0, 0.0, 300.0, 30.0),
+                &["Video", "Sound", "Controls"],
+                &mut tab,
+            );
+            let list = widgets.list(
+                &mut ui,
+                input,
+                Rect::new(0.0, 40.0, 300.0, 100.0),
+                25.0,
+                &items,
+                &mut row,
+            );
+            (tabs, list, tab, row)
+        };
+        let click = |input: &mut Input, at: (f32, f32)| {
+            frame(input, at, &[InputEvent::MouseDown(M::Left)]);
+        };
+        click(&mut input, (150.0, 15.0));
+        draw(&mut widgets, &input);
+        frame(&mut input, (150.0, 15.0), &[InputEvent::MouseUp(M::Left)]);
+        assert_eq!(draw(&mut widgets, &input), (true, false, 1, None), "Sound");
+        click(&mut input, (50.0, 75.0));
+        draw(&mut widgets, &input);
+        frame(&mut input, (50.0, 75.0), &[InputEvent::MouseUp(M::Left)]);
+        assert_eq!(
+            draw(&mut widgets, &input),
+            (false, true, 1, Some(1)),
+            "the second row"
+        );
     }
 
     #[test]
