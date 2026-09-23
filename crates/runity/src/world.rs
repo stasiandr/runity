@@ -161,7 +161,6 @@ impl WorldUi {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
 
-/// Every camera that draws into a picture, as a frame of its own: what
 /// A camera drawing into a picture: where it looks from, which picture,
 /// and the mirror's plane (a point on it and the way it faces) if it is one.
 type PictureCamera = (
@@ -170,6 +169,7 @@ type PictureCamera = (
     Option<(glam::Vec3, glam::Vec3)>,
 );
 
+/// Every camera that draws into a picture, as a frame of its own: what
 /// [`scene_frame`] puts on a frame for materials to show.
 pub fn texture_views(
     world: &World,
