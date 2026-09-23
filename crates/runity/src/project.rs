@@ -747,6 +747,8 @@ impl shell::Game for Game {
         if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
             eprintln!("{problem}");
         }
+        // The pad's moves between the screen's widgets, before they draw.
+        self.widgets.begin_frame(ctx.input);
         let done = self.hud.draw_localized(&mut self.widgets, &mut self.ui, ctx.input, size, &self.strings);
         if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
