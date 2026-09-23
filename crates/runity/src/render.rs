@@ -665,7 +665,7 @@ struct FrameUniform {
     /// The physical sky: 1 when on, the aerial grid's far end in metres.
     air: [f32; 4],
     /// Wetness, puddles, snow, rain; snowfall.
-    weather: [[f32; 4]; 2],
+    weather: [[f32; 4]; 3],
     /// Up to four water surfaces, two vectors each: height and 1 when
     /// there; the rectangle it covers (min x, min z, max x, max z).
     waters: [[f32; 4]; 8],

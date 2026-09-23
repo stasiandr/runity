@@ -75,11 +75,12 @@ impl Default for Weather {
 const SAND: [f32; 3] = [1.0, 0.56, 0.22];
 
 impl Weather {
-    pub(crate) fn uniform(&self) -> [[f32; 4]; 2] {
+    pub(crate) fn uniform(&self) -> [[f32; 4]; 3] {
         let c = |x: f32| x.clamp(0.0, 1.0);
         [
             [c(self.wetness), c(self.puddles), c(self.snow), c(self.rain)],
             [c(self.snowfall), c(self.sandstorm), c(self.dust_wall), 0.0],
+            [c(self.drifted), 0.0, 0.0, 0.0],
         ]
     }
 
