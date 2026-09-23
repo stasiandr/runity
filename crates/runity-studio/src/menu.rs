@@ -59,6 +59,8 @@ pub enum Action {
     ShowAll,
     View(Side),
     Perspective,
+    /// Perspective or orthographic, whichever it is not.
+    ToggleOrtho,
     ToggleGrid,
     ToggleColliders,
     ToggleSnap,

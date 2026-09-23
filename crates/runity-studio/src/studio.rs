@@ -158,6 +158,9 @@ pub struct Studio {
     colliders_button: NodeId,
     sculpt_button: NodeId,
     docks: Docks,
+    /// The orientation gizmo in the view's corner: its six axes and its
+    /// middle, and the camera it was last turned for.
+    compass: Compass,
     /// When the last event came in: the window draws at full rate for a
     /// while after one.
     last_input: Instant,
@@ -331,6 +334,7 @@ impl Studio {
             SCENE,
         );
         ui.set_name(viewport, "scene view");
+        let compass = build_compass(&mut ui, view_frame);
         let split_lower = splitter(&mut ui, center, false, "split lower");
         let lower = ui.add(
             center,
@@ -387,6 +391,7 @@ impl Studio {
             panels: [true; 3],
             last_input: Instant::now(),
             docks,
+            compass,
             maximized: false,
             stroke: None,
             tooltip: None,
@@ -636,6 +641,7 @@ impl Studio {
             }
         }
         self.update_tooltip();
+        self.turn_compass();
 
         let t4 = Instant::now();
         let stamp = Stamp::of(&self.session);
@@ -685,6 +691,41 @@ impl Studio {
                 self.ui
                     .restyle(n, |s| if on { s.shown() } else { s.hidden() });
             }
+        }
+    }
+
+    /// Turn the compass to the camera: each axis where it points on screen,
+    /// the ones pointing away drawn faint.
+    fn turn_compass(&mut self) {
+        let camera = self.session.camera();
+        let key = (camera.position, camera.target, camera.ortho.is_some());
+        if self.compass.seen == Some(key) {
+            return;
+        }
+        self.compass.seen = Some(key);
+        use runity::glam::Vec3;
+        let forward = (camera.target - camera.position).normalize_or_zero();
+        let right = forward.cross(camera.up).normalize_or_zero();
+        let up = right.cross(forward);
+        let (c, reach) = (COMPASS / 2.0, COMPASS / 2.0 - 11.0);
+        for (i, (node, _)) in self.compass.axes.clone().into_iter().enumerate() {
+            let axis = [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z][i];
+            let x = c + axis.dot(right) * reach;
+            let y = c - axis.dot(up) * reach;
+            let away = axis.dot(forward) > 0.1;
+            let size = if i < 3 { 20.0 } else { 14.0 };
+            self.ui.restyle(node, |s| {
+                s.absolute(x - size / 2.0, y - size / 2.0)
+                    .opacity(if away { 0.45 } else { 1.0 })
+            });
+        }
+        let label = if camera.ortho.is_some() {
+            "iso"
+        } else {
+            "persp"
+        };
+        if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
+            self.ui.set_text(t, label);
         }
     }
 
@@ -1192,6 +1233,16 @@ impl Studio {
         let Event::Click { .. } = event else {
             return false;
         };
+        if let Some((_, side)) = self.compass.axes.iter().find(|(n, _)| *n == node) {
+            requests.action = Some(Action::View(*side));
+            requests.keyboard_to_scene = true;
+            return true;
+        }
+        if node == self.compass.middle {
+            requests.action = Some(Action::ToggleOrtho);
+            requests.keyboard_to_scene = true;
+            return true;
+        }
         if node == self.prefab_back {
             requests.action = Some(Action::ExitPrefab);
             return true;
@@ -1624,6 +1675,10 @@ impl Studio {
                 Action::ShowAll => s.show_all(),
                 Action::View(side) => s.look_from(side),
                 Action::Perspective => s.set_orthographic(false),
+                Action::ToggleOrtho => {
+                    let ortho = s.is_orthographic();
+                    s.set_orthographic(!ortho);
+                }
                 Action::ToggleGrid => {
                     let on = s.show_grid();
                     s.set_show_grid(!on);
@@ -2155,4 +2210,103 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "console clear" => "Clear the Console",
         _ => return None,
     })
+}
+
+/// How big the orientation gizmo is, a side.
+const COMPASS: f32 = 84.0;
+
+struct Compass {
+    /// +X, +Y, +Z, −X, −Y, −Z, and the side each looks from.
+    axes: Vec<(NodeId, runity_editor::Side)>,
+    middle: NodeId,
+    seen: Option<(runity::glam::Vec3, runity::glam::Vec3, bool)>,
+}
+
+/// Unity's scene gizmo: the axes as the camera sees them, in the view's
+/// top right corner. A click on an axis looks from it; the label under it
+/// switches perspective and orthographic.
+fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
+    use runity_editor::Side;
+    let holder = ui.add(
+        frame,
+        Style::row()
+            .absolute(0.0, 0.0)
+            .full_width()
+            .height(COMPASS + 30.0),
+    );
+    let pad = ui.add(holder, Style::row().fill());
+    let _ = pad;
+    let dial = ui.add(
+        holder,
+        Style::row().size(COMPASS, COMPASS + 22.0).margin(4.0),
+    );
+    ui.set_layer(dial, true);
+    ui.set_name(dial, "compass");
+    let colors = [
+        runity_ui::Color::hex(0xe5736f),
+        runity_ui::Color::hex(0x8cc26b),
+        runity_ui::Color::hex(0x6f9be5),
+    ];
+    let middle = ui.add(
+        dial,
+        Style::row()
+            .absolute(COMPASS / 2.0 - 18.0, COMPASS + 2.0)
+            .size(36.0, 18.0)
+            .radius(9.0)
+            .center()
+            .background(NEUTRAL_900.alpha(80))
+            .hover(NEUTRAL_800),
+    );
+    ui.set_name(middle, "compass middle");
+    // Under the dial, as Unity's Persp label: an axis pointing at the
+    // camera sits in the middle and would cover it there.
+    ui.add_text(
+        middle,
+        Style::default().text_size(9.5).text_color(LABEL).nowrap(),
+        "persp",
+    );
+    let sides = [
+        Side::Right,
+        Side::Top,
+        Side::Front,
+        Side::Left,
+        Side::Bottom,
+        Side::Back,
+    ];
+    let mut axes = Vec::new();
+    for (i, side) in sides.into_iter().enumerate() {
+        let positive = i < 3;
+        let size = if positive { 20.0 } else { 14.0 };
+        let color = colors[i % 3];
+        let dot = ui.add(
+            dial,
+            Style::row()
+                .absolute(0.0, 0.0)
+                .size(size, size)
+                .radius(size / 2.0)
+                .center()
+                .background(if positive { color } else { color.alpha(35) })
+                .border(1.0, color)
+                .hover_border(TEXT)
+                .clickable(),
+        );
+        ui.set_name(dot, format!("compass {}", side.name()));
+        if positive {
+            ui.add_text(
+                dot,
+                Style::default()
+                    .text_size(10.0)
+                    .weight(600)
+                    .text_color(BG)
+                    .nowrap(),
+                ["X", "Y", "Z"][i],
+            );
+        }
+        axes.push((dot, side));
+    }
+    Compass {
+        axes,
+        middle,
+        seen: None,
+    }
 }

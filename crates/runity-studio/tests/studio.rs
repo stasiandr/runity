@@ -880,3 +880,16 @@ fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
         "still on the left, on top"
     );
 }
+
+#[test]
+fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "compass top");
+    assert!(s.session.is_orthographic());
+    let c = s.session.camera();
+    assert!(c.position.y > c.target.y + 1.0, "from above: {c:?}");
+    click(&mut s, "compass middle");
+    assert!(!s.session.is_orthographic());
+}
