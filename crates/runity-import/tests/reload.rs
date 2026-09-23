@@ -325,8 +325,14 @@ fn a_terrain_is_described_imported_as_a_mesh_and_rebuilt_when_its_seed_changes()
     assert_eq!(mesh.vertices.len(), 33 * 33);
     let (min, max) = (mesh.bounds.min, mesh.bounds.max);
     assert!((min[1].to_native()).abs() < 1e-4, "lowest point at zero");
-    assert!((max[1].to_native() - 12.0).abs() < 1e-3, "highest at the height asked");
-    assert!((max[0].to_native() - 50.0).abs() < 1e-3 && (min[2].to_native() + 30.0).abs() < 1e-3, "centred");
+    assert!(
+        (max[1].to_native() - 12.0).abs() < 1e-3,
+        "highest at the height asked"
+    );
+    assert!(
+        (max[0].to_native() - 50.0).abs() < 1e-3 && (min[2].to_native() + 30.0).abs() < 1e-3,
+        "centred"
+    );
     let before = asset::read(&first.imported.asset).unwrap();
 
     // The same file, the same hills; another seed, other hills.
@@ -338,7 +344,11 @@ fn a_terrain_is_described_imported_as_a_mesh_and_rebuilt_when_its_seed_changes()
     write(&source, text);
     touch_forward(&source);
     sync(&project);
-    assert_eq!(asset::read(&first.imported.asset).unwrap(), before, "reproducible");
+    assert_eq!(
+        asset::read(&first.imported.asset).unwrap(),
+        before,
+        "reproducible"
+    );
 
     write(&source, "(size: (10.0, 10.0), resolution: 1, height: 1.0)");
     touch_forward(&source);

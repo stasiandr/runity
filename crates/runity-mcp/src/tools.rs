@@ -88,6 +88,8 @@ pub fn list() -> Vec<Value> {
         tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
+        tool("locks", "Who holds which Git LFS lock in the project: lock binary sources (textures, models, sounds) before editing them.", json!({}), &[]),
+        tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
         tool("undo", "Take back the last edit.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
@@ -286,6 +288,29 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             let ids: Vec<String> = pasted.iter().map(ToString::to_string).collect();
             Ok(vec![text(ids.join("\n"))])
+        }
+        "locks" => {
+            let locks = server.session()?.locks().map_err(|e| e.to_string())?;
+            if locks.is_empty() {
+                return Ok(vec![text("nothing is locked")]);
+            }
+            let lines: Vec<String> = locks
+                .iter()
+                .map(|l| format!("{} — {} since {}", l.path, l.owner, l.locked_at))
+                .collect();
+            Ok(vec![text(lines.join("\n"))])
+        }
+        "lock" => {
+            let path = string(args, "path")?;
+            let locked = args.get("locked").and_then(Value::as_bool).unwrap_or(true);
+            server
+                .session()?
+                .set_locked(&path, locked)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{path} {}",
+                if locked { "locked" } else { "unlocked" }
+            ))])
         }
         "undo" => {
             let done = server.session()?.undo().map_err(|e| e.to_string())?;

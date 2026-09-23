@@ -31,7 +31,7 @@ use runity::{
 };
 
 pub use error::EditError;
-pub use history::Revision;
+pub use history::{Lock, Revision};
 
 /// What a failed session call hands back.
 pub type EditResult<T> = Result<T, EditError>;
@@ -273,6 +273,25 @@ impl Session {
             self.on_disk = Some((self.history.scene().clone(), stamps));
         }
         Ok(())
+    }
+
+    /// Who holds which Git LFS lock in the open project's repository —
+    /// what the editor shows next to a binary source someone else is
+    /// editing.
+    pub fn locks(&self) -> EditResult<Vec<Lock>> {
+        let root = self.project.as_ref().ok_or(EditError::NotInProject)?.root();
+        history::locks(root).map_err(EditError::Io)
+    }
+
+    /// Lock a file, or unlock it, through Git LFS.
+    pub fn set_locked(&self, path: impl AsRef<Path>, locked: bool) -> EditResult<()> {
+        let path = path.as_ref();
+        if locked {
+            history::lock(path)
+        } else {
+            history::unlock(path)
+        }
+        .map_err(EditError::Io)
     }
 
     /// The commits that touched the open scene's file, newest first: who,
