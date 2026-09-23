@@ -135,7 +135,7 @@ pub fn spawn_scene_with(
     scene: &Scene,
     world: &mut World,
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut missing = Vec::new();
     for desc in &scene.entities {
@@ -163,7 +163,7 @@ fn spawn_subtree(
     parent_matrix: glam::Mat4,
     world: &mut World,
     resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
@@ -191,7 +191,7 @@ pub fn spawn_owned<'a>(
     parent: Option<hecs::Entity>,
     world: &mut World,
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>) {
     fn walk<'a>(
         desc: &'a EntityDesc,
@@ -199,7 +199,7 @@ pub fn spawn_owned<'a>(
         parent_matrix: glam::Mat4,
         world: &mut World,
         resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
         out: &mut (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>),
     ) {
         let matrix = parent_matrix * desc.transform.matrix();
@@ -233,7 +233,7 @@ fn spawn_one(
     world_matrix: glam::Mat4,
     world: &mut World,
     resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) -> hecs::Entity {
     let entity = world.spawn((
@@ -286,7 +286,7 @@ pub(crate) fn dress(
     entity: hecs::Entity,
     world: &mut World,
     resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&str) -> Option<Material>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
     match desc.decal {
@@ -363,7 +363,7 @@ pub fn patch_scene(
     after: &Scene,
     world: &mut World,
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: impl Fn(&str) -> Option<Material>,
+    palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Patched {
     let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
     index(&before.entities, None, &mut old);
@@ -446,7 +446,7 @@ impl Patch<'_> {
         parent_matrix: glam::Mat4,
         world: &mut World,
         resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     ) {
         self.kept.insert(desc.id);
         let world_matrix = parent_matrix * desc.transform.matrix();
@@ -494,7 +494,7 @@ impl Patch<'_> {
         entity: hecs::Entity,
         world: &mut World,
         resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&str) -> Option<Material>,
+        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
     ) -> bool {
         let mut changed = false;
         if was.is_none_or(|(old, _)| old.transform != desc.transform) {

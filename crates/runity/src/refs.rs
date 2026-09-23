@@ -127,7 +127,10 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
                 }
                 AssetRef::Material(name) => {
                     if names_material(&desc.material, name) {
-                        desc.material = MaterialRef::Named(to.to_string());
+                        // The same material under its new name: the ID stays.
+                        if let MaterialRef::Named(link) = &mut desc.material {
+                            link.name = to.to_string();
+                        }
                         count += 1;
                     }
                 }
@@ -152,7 +155,9 @@ pub fn rewrite(roots: &mut [EntityDesc], from: &AssetRef, to: &str) -> usize {
                             .as_ref()
                             .is_some_and(|m| names_material(m, name)) =>
                     {
-                        change.material = Some(MaterialRef::Named(to.to_string()));
+                        if let Some(MaterialRef::Named(link)) = change.material.as_mut() {
+                            link.name = to.to_string();
+                        }
                         count += 1;
                     }
                     _ => {}
@@ -428,17 +433,27 @@ impl<'de> serde::Deserialize<'de> for AssetLink {
                 mut map: A,
             ) -> Result<AssetLink, A::Error> {
                 let mut link = AssetLink::default();
+                let mut named = false;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
-                        "name" => link.name = map.next_value()?,
+                        "name" => {
+                            link.name = map.next_value()?;
+                            named = true;
+                        }
                         "id" => {
                             let text: String = map.next_value()?;
                             link.id = Some(text.parse().map_err(serde::de::Error::custom)?);
                         }
-                        _ => {
-                            map.next_value::<serde::de::IgnoredAny>()?;
+                        other => {
+                            // Not a link: an inline material beside one in
+                            // an untagged enum is a map too, and must not
+                            // read as a link with no name.
+                            return Err(serde::de::Error::unknown_field(other, &["name", "id"]));
                         }
                     }
+                }
+                if !named {
+                    return Err(serde::de::Error::missing_field("name"));
                 }
                 Ok(link)
             }
@@ -492,15 +507,32 @@ pub fn settle(
             *changed += usize::from(link.settle(name, id));
         }
     };
+    // A material by name: a builtin stays a name (the engine's own, and
+    // `builtin:` says so); a project's gets its ID.
+    let material = |reference: &mut MaterialRef, changed: &mut usize| {
+        let MaterialRef::Named(link) = reference else {
+            return;
+        };
+        if link.starts_with("builtin:") {
+            return;
+        }
+        if let Some((id, name)) = library.and_then(|l| l.find(link, AssetKind::Material)) {
+            *changed += usize::from(link.settle(name, id));
+        }
+    };
     let mut stack: Vec<&mut EntityDesc> = roots.iter_mut().collect();
     while let Some(desc) = stack.pop() {
         model(&mut desc.model, &mut changed);
+        material(&mut desc.material, &mut changed);
         if let Some(along) = desc.along.as_mut() {
             model(&mut along.model, &mut changed);
         }
         for part in desc.overrides.values_mut() {
             if let Some(link) = part.model.as_mut() {
                 model(link, &mut changed);
+            }
+            if let Some(reference) = part.material.as_mut() {
+                material(reference, &mut changed);
             }
         }
         if !desc.prefab.is_empty() {

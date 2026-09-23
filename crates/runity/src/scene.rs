@@ -965,10 +965,11 @@ impl EntityDesc {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MaterialRef {
-    /// A material asset in the library by file stem, or one of the engine's
-    /// builtins. `builtin:stone` forces the builtin even when a project has
-    /// an asset of that name.
-    Named(String),
+    /// A material asset in the library — by link, its name and ID
+    /// (docs/refs.md) — or one of the engine's builtins by name.
+    /// `builtin:stone` forces the builtin even when a project has an asset
+    /// of that name.
+    Named(crate::AssetLink),
     /// Spelled out, for a colour that has not earned a name yet.
     Inline(Material),
 }
@@ -1006,7 +1007,10 @@ impl EntityDesc {
     /// An unknown name falls back rather than failing to load — a scene with
     /// a typo should still open, showing plain grey where the mistake is,
     /// which is more useful than an error and no scene at all.
-    pub fn material_from(&self, lookup: impl Fn(&str) -> Option<Material>) -> Material {
+    pub fn material_from(
+        &self,
+        lookup: impl Fn(&crate::AssetLink) -> Option<Material>,
+    ) -> Material {
         match &self.material {
             MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
                 Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),

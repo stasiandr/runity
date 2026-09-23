@@ -4609,3 +4609,55 @@ fn a_fence_grows_posts_along_its_spline_and_the_file_keeps_only_the_line() {
         "the posts are not in the file"
     );
 }
+
+#[test]
+fn a_material_link_gets_its_id_and_a_builtin_stays_a_name() {
+    let path = scene_file(
+        "material-links",
+        r#"(entities: [
+    (name: "pot", model: "builtin:cube", material: "clay"),
+    (name: "lawn", model: "builtin:plane", material: "grass"),
+    (name: "tile", model: "builtin:cube", material: (base_color: (0.5, 0.5, 0.5))),
+])"#,
+    );
+    let root = root_of(&path);
+    let project = runity::Project::open(&root).unwrap();
+    std::fs::write(
+        project.materials().join("clay.rmat"),
+        r##"(color: "#b0643c")"##,
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session.open_scene(&path).unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"material: ("clay", ""#), "{saved}");
+    assert!(
+        saved.contains(r#"material: "grass""#),
+        "a builtin is the engine's name: {saved}"
+    );
+    assert!(
+        saved.contains("base_color"),
+        "an inline material is still inline: {saved}"
+    );
+
+    // Renamed outside the editor: found by ID, and the line takes the name.
+    std::fs::rename(
+        project.materials().join("clay.rmat"),
+        project.materials().join("terracotta.rmat"),
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    session.open_scene(&path).unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"material: ("terracotta", ""#), "{saved}");
+    let pot = id(&session, "pot");
+    assert!(
+        session.material(pot).unwrap().base_color[0] > 0.3,
+        "still clay-coloured"
+    );
+}

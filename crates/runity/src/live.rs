@@ -237,7 +237,7 @@ impl LiveScene {
             &self.current,
             world,
             resolver(&mut self.meshes, library, gpu, renderer),
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
@@ -302,7 +302,7 @@ impl LiveScene {
                     || library.is_some_and(|l| l.mesh_by_name(name).is_some());
                 known.then_some(MeshHandle::TEST)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let components = self.components.apply(&self.current, world);
         #[cfg(feature = "physics")]
@@ -357,7 +357,7 @@ impl LiveScene {
             parent,
             world,
             resolver(&mut self.meshes, library, gpu, renderer),
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         let mut problems: Vec<String> = missing
             .iter()
@@ -469,7 +469,7 @@ impl LiveScene {
                         &scene,
                         world,
                         resolver(&mut self.meshes, library, gpu, renderer),
-                        |name| library?.material_by_name(name),
+                        |link| library?.material_link(link),
                     ));
                     out.problems.extend(problems);
                     out.problems.extend(
@@ -574,7 +574,7 @@ impl LiveScene {
             .filter_map(|(entity, id, model)| {
                 let desc = self.current.get(id.0)?;
                 let material =
-                    matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n));
+                    matches!(&desc.material, MaterialRef::Named(n) if touched.contains(n.as_str()));
                 let arrived = model.is_none() && touched.contains(desc.model.as_str());
                 (material || arrived).then(|| (entity, desc.clone()))
             })
@@ -587,7 +587,7 @@ impl LiveScene {
                 entity,
                 world,
                 &mut resolve,
-                &|name| library?.material_by_name(name),
+                &|link| library?.material_link(link),
                 &mut ignored,
             );
         }

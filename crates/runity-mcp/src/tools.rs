@@ -1495,7 +1495,7 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
         desc.model = model.into();
     }
     if let Some(material) = optional_string(args, "material")? {
-        desc.material = MaterialRef::Named(material);
+        desc.material = MaterialRef::Named(material.into());
     }
     if let Some(color) = optional_string(args, "color")? {
         desc.material = MaterialRef::Inline(hex(&color)?);

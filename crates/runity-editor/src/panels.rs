@@ -628,7 +628,7 @@ impl Session {
                 next.material = if text.starts_with('"') || text.starts_with('(') {
                     parse::<MaterialRef>(field, text)?
                 } else {
-                    MaterialRef::Named(text.to_string())
+                    MaterialRef::Named(text.into())
                 }
             }
             "body" => next.body = parse::<Body>(field, text)?,

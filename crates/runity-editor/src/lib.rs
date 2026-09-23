@@ -2143,7 +2143,7 @@ impl Session {
     /// carries its own colour.
     pub fn material_name(&self, id: EntityId) -> Option<String> {
         match self.line(id).map(|desc| &desc.material) {
-            Some(MaterialRef::Named(name)) => Some(name.clone()),
+            Some(MaterialRef::Named(name)) => Some(name.to_string()),
             _ => None,
         }
     }
@@ -2160,9 +2160,7 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
-        self.modify(id, |desc| {
-            desc.material = MaterialRef::Named(name.to_string())
-        })
+        self.modify(id, |desc| desc.material = MaterialRef::Named(name.into()))
     }
 
     /// Every material the editor can offer, in the order to show them: the
@@ -2241,7 +2239,7 @@ impl Session {
         }
         self.reopen_library()?;
 
-        self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
+        self.edit_entity(id)?.material = MaterialRef::Named(name.into());
         self.respawn();
         Ok(())
     }
@@ -4081,7 +4079,7 @@ impl Session {
                 uploaded.push((key, handle));
                 Some(handle)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
     }
 
@@ -4101,7 +4099,7 @@ impl Session {
     /// The one place that knows the resolution order, so the inspector and
     /// the frame cannot disagree about what colour something is.
     fn resolve_material(&self, desc: &EntityDesc) -> Material {
-        desc.material_from(|name| self.library.as_ref()?.material_by_name(name))
+        desc.material_from(|link| self.library.as_ref()?.material_link(link))
     }
 
     /// How big a document entity is, as a radius around it.

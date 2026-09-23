@@ -353,9 +353,9 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
         .collect();
     let mut ids = HashSet::new();
     let mut sources = prefab_files;
-    runity_import::walk(&project.assets(), &mut |path| {
-        sources.push(path.to_path_buf())
-    });
+    for root in [project.assets(), project.materials()] {
+        runity_import::walk(&root, &mut |path| sources.push(path.to_path_buf()));
+    }
     for source in sources {
         if let Some(id) = runity::asset::sidecar_id(runity::asset::sidecar_of(&source)) {
             ids.insert(id);
@@ -435,8 +435,11 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 out,
             );
         }
-        if let MaterialRef::Named(name) = &entity.material {
-            check_material(name, &who, file, names, out);
+        if let MaterialRef::Named(link) = &entity.material {
+            // Found by its ID, whatever name the line still says.
+            if !link.id.is_some_and(|id| names.ids.contains(&id)) {
+                check_material(link, &who, file, names, out);
+            }
         }
         let layers = std::iter::once(&entity.layer)
             .chain(entity.overrides.values().filter_map(|o| o.layer.as_ref()));

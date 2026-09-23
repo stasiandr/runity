@@ -268,6 +268,13 @@ impl Library {
             .or_else(|| self.mesh_by_name(link))
     }
 
+    /// Follow a link to a material: by ID first, then by name.
+    pub fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
+        link.id
+            .and_then(|id| self.material(id))
+            .or_else(|| self.material_by_name(link))
+    }
+
     /// What a link names, as the library has it now: the ID and the name
     /// inside the asset. By ID first, then by name — only when the name is
     /// one asset's of that kind, since a guess between two would point a

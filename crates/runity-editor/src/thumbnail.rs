@@ -90,7 +90,7 @@ impl Session {
                 uploaded.push((name.to_string(), handle));
                 Some(handle)
             },
-            |name| library?.material_by_name(name),
+            |link| library?.material_link(link),
         );
         runity::world::apply_hierarchy(&mut world);
         let backdrop = Vec3::new(0.32, 0.33, 0.36);
