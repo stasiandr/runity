@@ -1214,10 +1214,12 @@ pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     let own = std::fs::metadata(path).ok()?.modified().ok()?;
     if path.extension().is_some_and(|e| e == "rterrain") {
-        return terrain::dependencies(path)
-            .iter()
-            .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
-            .fold(Some(own), |latest, t| latest.map(|l| l.max(t)));
+        return Some(
+            terrain::dependencies(path)
+                .iter()
+                .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
+                .fold(own, |latest, t| latest.max(t)),
+        );
     }
     Some(own)
 }
