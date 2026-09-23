@@ -20,6 +20,8 @@
 pub mod console;
 mod error;
 mod grouping;
+mod import_settings;
+pub use import_settings::IMPORT_FIELDS;
 pub mod history;
 pub mod panels;
 pub mod prefs;

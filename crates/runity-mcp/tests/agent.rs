@@ -128,6 +128,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "thumbnail",
         "drop",
         "add_component",
+        "import_settings",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

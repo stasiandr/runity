@@ -3548,3 +3548,48 @@ fn a_selected_light_shows_how_far_it_reaches() {
         "None"
     );
 }
+
+#[test]
+fn an_asset_s_import_settings_are_edited_and_it_is_built_again() {
+    let Some((mut session, path)) = open("import-settings") else {
+        return;
+    };
+    let root = root_of(&path);
+    std::fs::write(
+        root.join("assets/wedge.obj"),
+        "v -1.0 0.0 -1.0\nv  1.0 0.0 -1.0\nv  1.0 1.0  1.0\nf 1 3 2\n",
+    )
+    .unwrap();
+    session.import(root.join("assets/wedge.obj")).unwrap();
+    let wedge = session.add(None, "wedge").unwrap();
+    let before = session.world_bounds(wedge).unwrap();
+    assert_eq!(
+        session.import_settings("assets/wedge.obj").unwrap().scale,
+        1.0
+    );
+
+    session
+        .set_import_setting("assets/wedge.obj", "scale", "2")
+        .unwrap();
+    assert_eq!(
+        session.import_settings("assets/wedge.obj").unwrap().scale,
+        2.0,
+        "in the sidecar"
+    );
+    let after = session.world_bounds(wedge).unwrap();
+    let (b, a) = (before.1 - before.0, after.1 - after.0);
+    assert!(
+        (a.x - 2.0 * b.x).abs() < 1e-3,
+        "twice as big in the scene now: {b} → {a}"
+    );
+
+    let e = session
+        .set_import_setting("assets/wedge.obj", "scael", "2")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("there are scale"), "{e}");
+    assert!(session
+        .set_import_setting("assets/wedge.obj", "scale", "-1")
+        .is_err());
+    assert!(session.import_settings("assets/nothing.obj").is_err());
+}

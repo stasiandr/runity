@@ -123,6 +123,7 @@ pub fn list() -> Vec<Value> {
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
         tool("add_component", "Put one of the game's components on an entity with a value of its shape to start from — Add Component. Needs library/components.ron, which the game writes when it or `runity test` runs; without `name`, lists the components and what each holds.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &[]),
+        tool("import_settings", "An asset source's import settings (its .rimport), or with `field` and `value` one of them changed — scale, recompute_normals, srgb, origin_to_base — and the asset built again, every scene showing it at once.", json!({ "source": { "type": "string", "description": "project-relative, like assets/rock.obj" }, "field": { "type": "string" }, "value": { "type": "string" } }), &["source"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -705,6 +706,25 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             let id = id(args, "id")?;
             let value = session.add_component(id, name).map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{name}: {value}"))])
+        }
+        "import_settings" => {
+            let source = string(args, "source")?;
+            let session = server.session()?;
+            if let (Some(field), Some(value)) = (
+                args.get("field").and_then(Value::as_str),
+                args.get("value").and_then(Value::as_str),
+            ) {
+                session
+                    .set_import_setting(&source, field, value)
+                    .map_err(|e| e.to_string())?;
+            }
+            let s = session
+                .import_settings(&source)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{source}: scale {}, recompute_normals {}, srgb {}, origin_to_base {}",
+                s.scale, s.recompute_normals, s.srgb, s.origin_to_base
+            ))])
         }
         "hide" => {
             let ids = id_list(args)?;
