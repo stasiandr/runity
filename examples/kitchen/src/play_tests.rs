@@ -36,6 +36,8 @@ struct Peer {
     noise: crate::noise::Noise,
     /// A GPU to draw with, for the screenshots; `None` plays headless.
     render: Option<Render>,
+    /// Where a shot looks from, when not the scene's view.
+    view: Option<runity::scene::View>,
 }
 
 /// What draws a peer's frames without a window.
@@ -75,6 +77,7 @@ impl Peer {
             motions: runity::motion::Motions::load(env!("CARGO_MANIFEST_DIR")).0,
             noise: crate::noise::Noise::default(),
             render,
+            view: None,
         }
     }
 
@@ -282,7 +285,7 @@ fn a_tomato_soup_goes_from_the_crate_to_the_window() {
         .world
         .query::<(&Transform, &runity::world::Parent)>()
         .iter()
-        .filter(|(t, _)| t.position.y > 1.3 && t.position.y < 1.5 && t.position.x == 0.5)
+        .filter(|(t, _)| t.position.y > 0.66 && t.position.y < 0.86 && t.position.x == 0.5)
         .map(|(t, _)| t.position.y)
         .collect();
     assert!(!heights.is_empty(), "the bell is up, ringing");
@@ -575,7 +578,10 @@ impl Peer {
     fn shot(&mut self, front: &mut crate::front::Front, name: &str) -> Vec<u8> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let r = self.render.as_mut().expect("a peer that draws");
-        let scene = self.live.scene().clone();
+        let mut scene = self.live.scene().clone();
+        if let Some(view) = self.view {
+            scene.view = view;
+        }
         let camera = runity::scene_camera(&scene.view);
         let frame = runity::world::scene_frame(&self.world, camera, &scene);
         r.overlay.draw_pictures(&r.gpu, &mut r.renderer, &frame);
@@ -933,4 +939,27 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
     let item_at = guest.world.query::<(&Transform, &Item)>().iter().next().unwrap().0.position;
     let flat = Vec3::new(item_at.x - cook_at.x, 0.0, item_at.z - cook_at.z).length();
     assert!(flat < 0.7, "in hand: {cook_at} / {item_at}");
+}
+
+#[test]
+#[ignore = "pictures to look at"]
+fn close_ups() {
+    let Some(render) = Render::new(1280, 720) else { return };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
+    k.open();
+    k.stand(0, TOMATOES, Vec3::Z);
+    k.grab(0);
+    k.seconds(0.5);
+    for (name, at, target) in [
+        ("close_front", Vec3::new(0.0, 3.0, 7.0), Vec3::new(0.0, 0.8, 0.0)),
+        ("close_back", Vec3::new(1.0, 3.0, -1.0), Vec3::new(-2.0, 0.8, 3.5)),
+        ("close_left", Vec3::new(-1.0, 2.5, 0.0), Vec3::new(-4.5, 0.8, -1.0)),
+        ("close_window", Vec3::new(-1.5, 3.2, 0.5), Vec3::new(-1.5, 0.6, 4.0)),
+    ] {
+        k.view = Some(runity::scene::View { position: at, target, fov_deg: 55.0 });
+        k.shot(&mut front, name);
+    }
 }

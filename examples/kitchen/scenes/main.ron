@@ -174,7 +174,7 @@
         (id: "f264accc79ac1b1e", name: "window 1", model: "", transform: (position: (-2.000, 0.500, 3.000), rotation_deg: (0.000, 180.000, 0.000)), body: Static, collider: Box(half: (0.5, 0.5, 0.5)), animator: "window", components: { "station": (kind: Window) }, children: [
 (id: "bb5e4bcf15ed6269", name: "look", model: "kitchenBar", transform: (position: (-0.500, -0.500, 0.490), scale: (2.320, 2.380, 4.700))),
 (id: "d0e6e6607c69dee1", name: "pass", model: "builtin:cube", transform: (position: (0.000, 0.510, 0.000), scale: (0.960, 0.030, 0.960)), material: "window"),
-(id: "2031d750c40db9b4", name: "bell", model: "", transform: (position: (0.500, 0.760, 0.300)), children: [
+(id: "2031d750c40db9b4", name: "bell", model: "", transform: (position: (0.500, 0.640, 0.300)), children: [
 (id: "fa5d310011b7e948", name: "dome", model: "builtin:sphere", transform: (position: (0.000, 0.000, 0.000), scale: (0.300, 0.220, 0.300)), material: "brass"),
 (id: "885f6e66c2b6d2c5", name: "button", model: "builtin:cylinder", transform: (position: (0.000, 0.120, 0.000), scale: (0.060, 0.060, 0.060)), material: "brass"),
 ]),
@@ -218,8 +218,8 @@
         (id: "7c441fe7ab4220a7", name: "cook 4", model: "character-female-d", transform: (position: (2.000, 0.000, 1.800), scale: (1.350, 1.350, 1.350)), animator: "cook", components: { "player": (index: 3, speed: 4.2) }, children: [
 (id: "474a493b3ceddf2d", name: "dust", model: "", transform: (position: (0.000, 0.050, -0.200)), inactive: true, particles: (rate: 14.0, life: 0.5, speed: 0.5, spread_deg: 60.0, size: 0.12, end_size: 0.35, gravity: 0.0, color: (0.9, 0.85, 0.75), alpha: 0.5, end_alpha: 0.0, material: "dust_fx", facing: true), components: { "mark": (name: "dust") }),
 ]),
-        (id: "8a0b3c3336d8393a", name: "customer 1", model: "character-male-e", transform: (position: (-4.500, 0.000, 4.600), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 1.5), components: { "mark": (name: "customer") }),
-        (id: "b92da22b21df306f", name: "customer 2", model: "character-female-f", transform: (position: (3.500, 0.000, 4.600), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (-6.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 0.8), components: { "mark": (name: "customer") }),
+        (id: "8a0b3c3336d8393a", name: "customer 1", model: "character-male-e", transform: (position: (-4.500, 0.000, 4.100), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 1.5), components: { "mark": (name: "customer") }),
+        (id: "b92da22b21df306f", name: "customer 2", model: "character-female-f", transform: (position: (3.500, 0.000, 4.100), scale: (1.350, 1.350, 1.350)), animator: "walker", route: (points: [(0.0, 0.0, 0.0), (-6.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 0.8), components: { "mark": (name: "customer") }),
         (id: "e1e3db63ef7ddc76", name: "stain 1", model: "", transform: (position: (-0.800, 0.020, -1.200)), material: "stain", decal: (size: (0.90, 0.2, 0.72))),
         (id: "93829b43922fe15a", name: "stain 2", model: "", transform: (position: (2.600, 0.020, 1.400)), material: "stain", decal: (size: (0.60, 0.2, 0.48))),
         (id: "3e3511287900f7f9", name: "stain 3", model: "", transform: (position: (-3.500, 0.020, 0.900)), material: "stain", decal: (size: (0.50, 0.2, 0.40))),
