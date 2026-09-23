@@ -30,7 +30,14 @@ pub struct Gpu {
     pub adapter: wgpu::Adapter,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
+    /// Whether the device traces rays in hardware — an experiment
+    /// ([`crate::render::RayTracing`]), on where the adapter can and
+    /// `RUNITY_NO_RAY_TRACING` is not set.
+    pub ray_tracing: bool,
 }
+
+/// Set to leave hardware ray tracing off even where the adapter has it.
+pub const NO_RAY_TRACING_VAR: &str = "RUNITY_NO_RAY_TRACING";
 
 /// Why a device could not be created. Worth its own type because "no adapter"
 /// and "adapter refused the limits we asked for" need different fixes, and a
@@ -79,14 +86,38 @@ impl Gpu {
             .await
             .map_err(|_| GpuError::NoAdapter)?;
 
+        // Hardware ray queries, where there are any: an experiment, so
+        // asked for on top of the downlevel defaults rather than instead of
+        // them — everything else still has to run without.
+        let ray_tracing = adapter
+            .features()
+            .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
+            && std::env::var_os(NO_RAY_TRACING_VAR).is_none();
+        let mut required_limits =
+            wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        if ray_tracing {
+            required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
+        }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("runity"),
                 // Deliberately the downlevel defaults: whatever runs here has
                 // to run on a phone, and asking for desktop limits is how you
                 // find that out two months late.
-                required_limits: wgpu::Limits::downlevel_defaults()
-                    .using_resolution(adapter.limits()),
+                required_limits,
+                required_features: if ray_tracing {
+                    wgpu::Features::EXPERIMENTAL_RAY_QUERY
+                } else {
+                    wgpu::Features::empty()
+                },
+                // SAFETY: wgpu's experimental features may misbehave or
+                // change; ray queries are used only by the renderer's ray
+                // tracing, an experiment that is off unless a frame asks.
+                experimental_features: if ray_tracing {
+                    unsafe { wgpu::ExperimentalFeatures::enabled() }
+                } else {
+                    wgpu::ExperimentalFeatures::disabled()
+                },
                 ..Default::default()
             })
             .await
@@ -97,6 +128,7 @@ impl Gpu {
             adapter,
             device: Arc::new(device),
             queue: Arc::new(queue),
+            ray_tracing,
         })
     }
 

@@ -34,6 +34,7 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
             },
             post: runity::post::PostProcess::OFF,
             ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            ray_tracing: Default::default(),
             camera: Camera::default(),
             lighting: Lighting::default(),
             fog: FogSettings::default(),
@@ -168,6 +169,7 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         },
         post: runity::post::PostProcess::OFF,
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 6.0),
             target: Vec3::ZERO,
@@ -195,6 +197,7 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         },
         post: runity::post::PostProcess::OFF,
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         draws: vec![wall, behind],
         ..base.clone()
     };
@@ -209,6 +212,7 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         },
         post: runity::post::PostProcess::OFF,
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         overlay_draws: vec![behind],
         ..base
     };

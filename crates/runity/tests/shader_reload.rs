@@ -23,6 +23,7 @@ fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 
         },
         post: runity::post::PostProcess::OFF,
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 4.0),
             target: Vec3::ZERO,

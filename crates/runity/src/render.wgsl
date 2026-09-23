@@ -41,6 +41,11 @@ struct Frame {
     // 1 when there is ambient occlusion to read; the share of the direct
     // light it darkens too
     ambient_occlusion: vec4<f32>,
+    // Hardware rays (ray.rs), 1 where asked and traced: sun shadows, lamp
+    // shadows, occlusion; w the tangent of the sun disc's radius
+    ray: vec4<f32>,
+    // rays to the sun, occlusion rays, occlusion reach in metres
+    ray_params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -189,6 +194,70 @@ fn fs_shadow_clip(in: ClipOut) {
     if in.alpha.x * textureSample(surface_texture, surface_sampler, in.uv).a < in.alpha.y {
         discard;
     }
+}
+
+// ray: stub begin
+// On a device that does not trace, nothing is in the way of any ray; the
+// frame never asks one there. ray.rs puts ray.wgsl in place of this.
+fn ray_visible(origin: vec3<f32>, direction: vec3<f32>, reach: f32) -> f32 {
+    return 1.0;
+}
+// ray: stub end
+
+/// Noise that differs pixel to pixel and hides its pattern well (Jimenez's
+/// interleaved gradient noise): what turns each pixel's handful of rays.
+fn pixel_noise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+struct Basis {
+    t: vec3<f32>,
+    b: vec3<f32>,
+};
+
+/// Two directions square to `n` and to each other.
+fn basis_of(n: vec3<f32>) -> Basis {
+    let other = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+    let t = normalize(cross(other, n));
+    return Basis(t, cross(n, t));
+}
+
+/// The sun by rays: a few towards points across its disc, so the shadow
+/// sharpens where it touches its caster and softens away from it.
+fn traced_sun(position: vec3<f32>, normal: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let count = max(u32(frame.ray_params.x), 1u);
+    let spread = frame.ray.w;
+    let frame_of = basis_of(to_sun);
+    let origin = position + normal * (0.01 + 0.001 * length(position - frame.camera_position.xyz));
+    let turn = pixel_noise(pixel) * 6.2831853;
+    var lit = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let r = sqrt((f32(i) + 0.5) / f32(count)) * spread;
+        let a = turn + f32(i) * 2.3999632;
+        let d = normalize(to_sun + (frame_of.t * cos(a) + frame_of.b * sin(a)) * r);
+        lit += ray_visible(origin, d, 1.0e4);
+    }
+    return lit / f32(count);
+}
+
+/// Occlusion by rays: short ones over the hemisphere, cosine-weighted; the
+/// share that reach `reach` without hitting anything.
+fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let count = max(u32(frame.ray_params.y), 1u);
+    let reach = frame.ray_params.z;
+    let frame_of = basis_of(normal);
+    let origin = position + normal * 0.01;
+    let n1 = pixel_noise(pixel);
+    let n2 = pixel_noise(pixel.yx + vec2<f32>(37.0, 11.0));
+    var open = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let u = fract((f32(i) + n1) / f32(count));
+        let phi = fract(f32(i) * 0.618034 + n2) * 6.2831853;
+        let r = sqrt(u);
+        let d = frame_of.t * (r * cos(phi)) + frame_of.b * (r * sin(phi)) + normal * sqrt(1.0 - u);
+        open += ray_visible(origin, d, reach);
+    }
+    return open / f32(count);
 }
 
 /// How much sun reaches a point: 1.0 in the open, 0.0 in full shadow.
@@ -384,12 +453,18 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let to_sun = -normalize(frame.sun_direction.xyz);
     var shadow = 1.0;
     if (flags & 4u) != 0u {
-        shadow = sunlight(in.world_position, normal);
+        if frame.ray.x > 0.5 {
+            shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
+        } else {
+            shadow = sunlight(in.world_position, normal);
+        }
     }
     // Ambient occlusion darkens the light from all around, and a share of
     // the direct light too (URP's Direct Lighting Strength).
     var ao = 1.0;
-    if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
+    if frame.ray.z > 0.5 && unlit < 0.5 {
+        ao = traced_occlusion(in.world_position, geometric, in.clip_position.xy);
+    } else if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
         ao = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0).r;
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
@@ -411,8 +486,14 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let along = dot(-toward, spot.xyz);
         let edge = spot.w + (1.0 - spot.w) * 0.1;
         let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
+        // A lamp's shadow, by a ray to it — only where it lights at all.
+        var blocked = 1.0;
+        if frame.ray.y > 0.5 && reach * facing * cone > 0.0 {
+            let start = in.world_position + geometric * 0.02;
+            blocked = ray_visible(start, toward, max(distance_to - 0.05, 0.0));
+        }
         color = color + direct(b, normal, toward, to_eye, highlights)
-            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone * direct_ao;
+            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone * direct_ao * blocked;
     }
 
     // Hemisphere ambient: a face turned up sees sky, one turned down sees

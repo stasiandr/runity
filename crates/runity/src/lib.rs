@@ -52,6 +52,7 @@ pub mod post;
 pub mod prefab;
 pub mod project;
 pub mod query;
+pub mod ray;
 pub mod refs;
 pub mod relay;
 pub mod render;

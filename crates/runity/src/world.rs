@@ -724,6 +724,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(ambient_occlusion) = scene.ambient_occlusion {
         frame.ambient_occlusion = ambient_occlusion;
     }
+    if let Some(ray_tracing) = scene.ray_tracing {
+        frame.ray_tracing = ray_tracing;
+    }
 }
 
 /// The camera a scene's view describes.
@@ -918,6 +921,7 @@ pub fn build_frame_where(
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),
+        ray_tracing: Default::default(),
     }
 }
 

@@ -1150,6 +1150,11 @@ pub struct Scene {
     /// does not say.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub ambient_occlusion: Option<crate::ssao::AmbientOcclusion>,
+    /// Hardware rays, an experiment: `ray_tracing: (sun_shadows: true,
+    /// light_shadows: true, ambient_occlusion: true)`. Nothing where the
+    /// device does not trace.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub ray_tracing: Option<crate::ray::RayTracing>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1345,6 +1350,7 @@ mod tests {
             fog: Fog::default(),
             sky: None,
             ambient_occlusion: None,
+            ray_tracing: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()

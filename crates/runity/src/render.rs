@@ -473,6 +473,9 @@ pub struct Frame {
     pub post: crate::post::PostProcess,
     /// Crevices and corners darkened: URP's SSAO.
     pub ambient_occlusion: crate::ssao::AmbientOcclusion,
+    /// Hardware rays, where the device has them: an experiment, off by
+    /// default ([`crate::ray`]).
+    pub ray_tracing: crate::ray::RayTracing,
     pub draws: Vec<Draw>,
     /// Drawn after everything else with the depth test off, so they are
     /// never hidden by the scene.
@@ -501,6 +504,7 @@ impl Default for Frame {
             clear_color: Vec3::new(0.62, 0.68, 0.74),
             post: crate::post::PostProcess::default(),
             ambient_occlusion: crate::ssao::AmbientOcclusion::default(),
+            ray_tracing: crate::ray::RayTracing::default(),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
@@ -556,6 +560,11 @@ struct FrameUniform {
     /// 1 when there is ambient occlusion to read; the share of the direct
     /// light it darkens too.
     ambient_occlusion: [f32; 4],
+    /// Traced: sun shadows, lamp shadows, occlusion, each 1 where asked and
+    /// the device traces; `w` the tangent of the sun disc's radius.
+    ray: [f32; 4],
+    /// Rays to the sun, occlusion rays, occlusion reach.
+    ray_params: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -684,6 +693,8 @@ struct GpuMesh {
     /// Kept so the shadow pass can fit its frustum to what is actually being
     /// drawn. A map spread over an empty hundred metres wastes every texel.
     bounds: crate::asset::Bounds,
+    /// What rays hit, on a device that traces.
+    blas: Option<wgpu::Blas>,
 }
 
 /// Holds the pipeline, the uploaded meshes and the buffers a frame needs.
@@ -717,6 +728,8 @@ pub struct Renderer {
     scene: SceneTargets,
     post: crate::post::PostRenderer,
     ssao: crate::ssao::SsaoRenderer,
+    /// The scene as rays see it, on a device that traces.
+    ray: Option<crate::ray::RayScene>,
     pose_layout: wgpu::BindGroupLayout,
     pose_bind_group: wgpu::BindGroup,
     poses: wgpu::Buffer,
@@ -1298,6 +1311,13 @@ impl Renderer {
     /// mid-edit costs a message, not a black screen or a crash.
     pub fn reload_shader(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
         use wgpu::naga;
+        let traced;
+        let source = if self.ray.is_some() {
+            traced = crate::ray::traced(source);
+            traced.as_str()
+        } else {
+            source
+        };
         let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -1348,7 +1368,11 @@ impl Renderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("runity::render"),
-                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(if gpu.ray_tracing {
+                    crate::ray::traced(SHADER).into()
+                } else {
+                    SHADER.into()
+                }),
             });
 
         let frame_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -1358,55 +1382,68 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let mut frame_entries = vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                // A comparison sampler, not an ordinary one: the
+                // hardware does the depth test and the filtering
+                // together, so a single fetch is already a 2x2 PCF
+                // and the edge comes out soft for free.
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                count: None,
+            },
+            // Ambient occlusion, read a texel per pixel.
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ];
+        // The scene as rays see it, on a device that traces.
+        if gpu.ray_tracing {
+            frame_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::AccelerationStructure {
+                    vertex_return: false,
+                },
+                count: None,
+            });
+        }
         let layout = gpu
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("frame"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Depth,
-                            view_dimension: wgpu::TextureViewDimension::D2Array,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        // A comparison sampler, not an ordinary one: the
-                        // hardware does the depth test and the filtering
-                        // together, so a single fetch is already a 2x2 PCF
-                        // and the edge comes out soft for free.
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                        count: None,
-                    },
-                    // Ambient occlusion, read a texel per pixel.
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
+                entries: &frame_entries,
             });
         let ssao = crate::ssao::SsaoRenderer::new(gpu);
+        let ray = gpu.ray_tracing.then(|| crate::ray::RayScene::new(gpu));
         let shadow_resolution = ShadowSettings::default().resolution;
         let (shadow_map, shadow_layers) = shadow_view(gpu, shadow_resolution);
         let shadow_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1426,6 +1463,7 @@ impl Renderer {
             &shadow_map,
             &shadow_sampler,
             &ssao.result,
+            ray.as_ref().map(|r| &r.tlas),
         );
 
         let texture_layout =
@@ -1611,6 +1649,7 @@ impl Renderer {
             scene: scene_targets(gpu, width, height, samples),
             post: crate::post::PostRenderer::new(gpu, format),
             ssao,
+            ray,
             shadow_map,
             shadow_layers,
             casters,
@@ -1702,20 +1741,34 @@ impl Renderer {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
 
+        let traced = if self.ray.is_some() {
+            wgpu::BufferUsages::BLAS_INPUT
+        } else {
+            wgpu::BufferUsages::empty()
+        };
         let vertex_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX,
+                usage: wgpu::BufferUsages::VERTEX | traced,
             });
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
                 contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX,
+                usage: wgpu::BufferUsages::INDEX | traced,
             });
+        let blas = (self.ray.is_some() && !indices.is_empty()).then(|| {
+            crate::ray::blas(
+                gpu,
+                &vertex_buffer,
+                vertices.len() as u32,
+                &index_buffer,
+                indices.len() as u32,
+            )
+        });
 
         self.meshes.push(GpuMesh {
             vertices: vertex_buffer,
@@ -1723,6 +1776,7 @@ impl Renderer {
             indices: index_buffer,
             index_count: indices.len() as u32,
             bounds,
+            blas,
         });
         MeshHandle(self.meshes.len() as u32 - 1)
     }
@@ -2217,6 +2271,7 @@ impl Renderer {
                 &self.shadow_map,
                 &self.shadow_sampler,
                 &self.ssao.result,
+                self.ray.as_ref().map(|r| &r.tlas),
             );
         }
 
@@ -2230,11 +2285,14 @@ impl Renderer {
                 &self.shadow_map,
                 &self.shadow_sampler,
                 &self.ssao.result,
+                self.ray.as_ref().map(|r| &r.tlas),
             );
         }
 
         let sun = frame.lighting.sun_direction.normalize_or_zero();
-        let cascades = if frame.shadows.enabled {
+        // Traced sun shadows need no maps.
+        let traced_sun = self.ray.is_some() && frame.ray_tracing.sun_shadows;
+        let cascades = if frame.shadows.enabled && !traced_sun {
             self.cascades(frame, sun, aspect)
         } else {
             Vec::new()
@@ -2353,6 +2411,28 @@ impl Renderer {
                     .direct_lighting_strength
                     .clamp(0.0, 1.0),
                 0.0,
+                0.0,
+            ],
+            ray: {
+                let on = |asked: bool| {
+                    if asked && self.ray.is_some() {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                let rt = &frame.ray_tracing;
+                [
+                    on(rt.sun_shadows),
+                    on(rt.light_shadows),
+                    on(rt.ambient_occlusion),
+                    (rt.sun_size.max(0.0).to_radians() * 0.5).tan(),
+                ]
+            },
+            ray_params: [
+                frame.ray_tracing.sun_rays.clamp(1, 64) as f32,
+                frame.ray_tracing.occlusion_rays.clamp(1, 64) as f32,
+                frame.ray_tracing.occlusion_radius.max(0.01),
                 0.0,
             ],
         };
@@ -2534,6 +2614,38 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("runity::render"),
             });
+        // The scene as rays see it: every solid draw, seen or not — what is
+        // behind the camera still shadows what is in front of it.
+        let traced = self.ray.is_some() && frame.ray_tracing.any();
+        if traced {
+            let meshes = &self.meshes;
+            let instances: Vec<(&wgpu::Blas, Mat4)> = frame
+                .draws
+                .iter()
+                // Glass lets the light through, and what is unlit is a light
+                // itself — a lamp's bulb must not shadow its own lamp.
+                .filter(|d| !d.material.is_transparent() && d.material.shading != Shading::Unlit)
+                .filter_map(|d| {
+                    let blas = meshes.get(d.mesh.0 as usize)?.blas.as_ref()?;
+                    Some((blas, d.transform))
+                })
+                .collect();
+            let remade = self
+                .ray
+                .as_mut()
+                .is_some_and(|ray| ray.update(gpu, &mut encoder, &instances));
+            if remade {
+                self.bind_group = frame_bind_group(
+                    gpu,
+                    &self.layout,
+                    &self.frame_buffer,
+                    &self.shadow_map,
+                    &self.shadow_sampler,
+                    &self.ssao.result,
+                    self.ray.as_ref().map(|r| &r.tlas),
+                );
+            }
+        }
         for (cascade, layer) in self.shadow_layers.iter().enumerate().take(cascades.len()) {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("runity::shadow"),
@@ -2564,7 +2676,8 @@ impl Renderer {
 
         // Ambient occlusion: the solid things' depth and normals, and the
         // occlusion made from them, before the lit pass reads it.
-        if frame.ambient_occlusion.enabled {
+        let traced_occlusion = traced && frame.ray_tracing.ambient_occlusion;
+        if frame.ambient_occlusion.enabled && !traced_occlusion {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -2799,28 +2912,36 @@ fn frame_bind_group(
     shadow_map: &wgpu::TextureView,
     shadow_sampler: &wgpu::Sampler,
     occlusion: &wgpu::TextureView,
+    rays: Option<&wgpu::Tlas>,
 ) -> wgpu::BindGroup {
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: frame_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(shadow_map),
+        },
+        wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::Sampler(shadow_sampler),
+        },
+        wgpu::BindGroupEntry {
+            binding: 4,
+            resource: wgpu::BindingResource::TextureView(occlusion),
+        },
+    ];
+    if let Some(rays) = rays {
+        entries.push(wgpu::BindGroupEntry {
+            binding: 5,
+            resource: rays.as_binding(),
+        });
+    }
     gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("frame"),
         layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: frame_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(shadow_map),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(shadow_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::TextureView(occlusion),
-            },
-        ],
+        entries: &entries,
     })
 }
 

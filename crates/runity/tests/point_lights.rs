@@ -25,6 +25,7 @@ fn shoot(
         },
         post: runity::post::PostProcess::OFF,
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 10.0, 0.01),
             target: Vec3::ZERO,

@@ -1,0 +1,20 @@
+// Hardware ray tracing, the experiment (`runity::ray`): a lamp among
+// pillars at dusk. With rays each pillar throws the lamp's shadow across the
+// ground and up the wall; without them — on a device that does not trace,
+// or with `ray_tracing` taken out — the lamp lights straight through.
+(
+    view: (position: (0.0, 3.2, 8.0), target: (0.0, 0.8, 0.0), fov_deg: 55.0),
+    sun: (hour: 18.2, intensity: 0.25),
+    post: (bloom: (intensity: 0.5), exposure: 0.5),
+    ray_tracing: (sun_shadows: true, light_shadows: true, ambient_occlusion: true, sun_rays: 8, occlusion_rays: 12, occlusion_radius: 1.5),
+    entities: [
+        (id: "25d6bdfa94ff692a", name: "ground", model: "builtin:plane", transform: (scale: (40.0, 1.0, 40.0)), material: (base_color: (0.19, 0.20, 0.22))),
+        (id: "55dbf7c4c79cd610", name: "lamp", model: "builtin:sphere", transform: (position: (0.0, 1.2, 0.0), scale: (0.15, 0.15, 0.15)), material: (base_color: (1.0, 0.8, 0.5), shading: Unlit, emission: (6.0, 4.0, 2.0)), light: (color: (1.0, 0.75, 0.45), intensity: 6.0, range: 9.0)),
+        (id: "7a2d8916fde6e1ac", name: "p1", model: "builtin:cube", transform: (position: (1.6, 1.0, 0.8), scale: (0.4, 2.0, 0.4)), material: "white"),
+        (id: "c0c30fa0d919bfc8", name: "p2", model: "builtin:cube", transform: (position: (-1.8, 1.0, 0.4), scale: (0.4, 2.0, 0.4)), material: "white"),
+        (id: "4852511f57350409", name: "p3", model: "builtin:cube", transform: (position: (0.9, 1.0, -1.9), scale: (0.4, 2.0, 0.4)), material: "white"),
+        (id: "061ee000e12acd7d", name: "p4", model: "builtin:cube", transform: (position: (-1.1, 1.0, -1.6), scale: (0.4, 2.0, 0.4)), material: "white"),
+        (id: "426737d82ee1b2d2", name: "crate", model: "builtin:cube", transform: (position: (0.6, 0.35, 1.8), scale: (0.7, 0.7, 0.7)), material: "bark"),
+        (id: "203581e1b4df8a78", name: "wall", model: "builtin:cube", transform: (position: (0.0, 1.5, -4.0), scale: (10.0, 3.0, 0.3)), material: "white"),
+    ],
+)
