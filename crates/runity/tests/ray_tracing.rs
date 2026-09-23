@@ -331,3 +331,87 @@ fn a_glass_ball_is_a_lens_only_with_rays() {
     assert!(without[0] > without[2], "unbent, left of middle is the red wall: {without:?}");
     assert!(with[2] > with[0], "through the lens, the blue wall: {with:?}");
 }
+
+/// Mist round a lamp with a wall beside it, no shadow map: by rays the
+/// mist behind the wall is dark — the lamp's light stops at the wall in
+/// the air as on the ground — and without them it glows through.
+#[test]
+fn a_wall_shadows_the_mist_behind_it_only_with_rays() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    if !gpu.ray_tracing {
+        eprintln!("skipping: {} does not trace rays", gpu.describe());
+        return;
+    }
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let shot = |rays: runity::ray::RayTracing| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            ray_tracing: rays,
+            // Looking along the wall, the lamp to the left of it.
+            camera: Camera {
+                position: Vec3::new(0.0, 1.0, 6.0),
+                target: Vec3::new(0.0, 1.0, 0.0),
+                ..Camera::default()
+            },
+            lighting: Lighting {
+                sun_intensity: 0.0,
+                sky_color: Vec3::ZERO,
+                ground_color: Vec3::ZERO,
+                ..Lighting::default()
+            },
+            shadows: ShadowSettings::OFF,
+            clear_color: Vec3::ZERO,
+            volumetric_fog: runity::volume::VolumetricFog {
+                enabled: true,
+                density: 0.3,
+                ambient: 0.0,
+                lamps: 30.0,
+                height_falloff: 0.0,
+                ..Default::default()
+            },
+            lights: vec![PointLight {
+                position: Vec3::new(-1.0, 1.0, 0.0),
+                color: Vec3::splat(4.0),
+                range: 8.0,
+                spot: None,
+                shadows: false,
+            }],
+            draws: vec![Draw {
+                mesh: cube,
+                // A wall along the view, between the lamp and x > 0.
+                transform: Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0))
+                    * Mat4::from_scale(Vec3::new(0.1, 4.0, 11.0)),
+                texture: TextureHandle::WHITE,
+                material: Material::new(0.0, 0.0, 0.0),
+                pose: None,
+            }],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        let pixels = target.read_rgba(&gpu);
+        // The mist right of the wall, level with the lamp.
+        let p = OffscreenTarget::pixel(&pixels, SIZE, SIZE * 3 / 4, SIZE / 2);
+        p[0] as u32 + p[1] as u32 + p[2] as u32
+    };
+    let through = shot(runity::ray::RayTracing::default());
+    let blocked = shot(runity::ray::RayTracing {
+        light_shadows: true,
+        ..Default::default()
+    });
+    assert!(through > 40, "without rays the mist behind the wall glows: {through}");
+    assert!(
+        blocked * 3 < through,
+        "by rays the wall shadows the mist: {blocked} against {through}"
+    );
+}

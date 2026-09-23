@@ -2371,7 +2371,9 @@ impl Renderer {
         if gpu.ray_tracing {
             frame_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 5,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                // The fog's cells trace too: shafts through what stands in
+                // the light.
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::AccelerationStructure {
                     vertex_return: false,
                 },

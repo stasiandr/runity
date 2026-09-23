@@ -894,7 +894,24 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let g = frame.fog_shape.z;
 
     let to_sun = -normalize(frame.sun_direction.xyz);
-    let sun_through = frame.sun_color.rgb * sunlight(p, vec3<f32>(0.0));
+    // The sun into the cell: by its cascades, or by rays from three points
+    // spread through it and turned each frame, so a shaft through a lattice
+    // keeps its bars and TAA smooths what the grid is too coarse for.
+    var sun_seen = 0.0;
+    if frame.ray.x > 0.5 {
+        let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+        for (var k = 0u; k < 3u; k = k + 1u) {
+            let o = fract(vec3<f32>(0.1731, 0.5329, 0.8971) * f32(k + 1u) + turn + pixel_noise(vec2<f32>(id.xy) + f32(id.z) * 7.0)) - 0.5;
+            let r = fog_ray((cell.xy + o.xy) / vec2<f32>(FOG_SIZE.xy));
+            let at = fog_depth((cell.z + o.z) / f32(FOG_SIZE.z));
+            let q = r.start + r.direction * (at - r.start_depth) * r.stretch;
+            sun_seen += ray_visible(q, to_sun, 1.0e4);
+        }
+        sun_seen = sun_seen / 3.0;
+    } else {
+        sun_seen = sunlight(p, vec3<f32>(0.0));
+    }
+    let sun_through = frame.sun_color.rgb * sun_seen;
     var light = sun_through * phase(dot(-to_sun, to_eye), g);
     // The sky's light, from every way at once.
     light += mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * frame.fog_shape.w;
@@ -912,7 +929,12 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
         if reach * cone <= 0.0 {
             continue;
         }
-        let shadow = lamp_shadow(lamp, p, vec3<f32>(0.0), distance_to);
+        var shadow = 1.0;
+        if frame.ray.y > 0.5 {
+            shadow = ray_visible(p, toward, max(distance_to - 0.1, 0.0));
+        } else {
+            shadow = lamp_shadow(lamp, p, vec3<f32>(0.0), distance_to);
+        }
         // Closer to a square law than the surfaces' soft pool: a lamp in
         // mist is a glow round the lamp, not an even wash to its range.
         let near_lamp = 1.0 / (1.0 + distance_to * distance_to);

@@ -109,6 +109,41 @@ lines.append(
     "scale: (0.9, 1.0, 0.9)), material: (base_color: (0.85, 0.95, 0.9), alpha: 0.12, surface: Transparent, smoothness: 0.98))," % ident("glass block")
 )
 
+# A pavilion in the front corner: a dark room with a solid roof, its west
+# wall one tall lattice the low sun comes in through — shafts of light in
+# the dust — and a door in the east wall. A probe makes it dark inside.
+PX0, PX1, PZ0, PZ1, PH = -7.6, -3.4, 5.0, 9.6, 3.4
+box("pavilion roof", ((PX0 + PX1) / 2, PH + 0.15, (PZ0 + PZ1) / 2), (PX1 - PX0 + 0.3, 0.3, PZ1 - PZ0 + 0.3), WALL)
+box("pavilion north", ((PX0 + PX1) / 2, PH / 2, PZ0), (PX1 - PX0, PH, 0.25), WALL)
+box("pavilion south", ((PX0 + PX1) / 2, PH / 2, PZ1), (PX1 - PX0, PH, 0.25), WALL)
+# The east wall with a doorway in its middle.
+door = 1.2
+side = (PZ1 - PZ0 - door) / 2
+box("pavilion east a", (PX1, PH / 2, PZ0 + side / 2), (0.25, PH, side), WALL)
+box("pavilion east b", (PX1, PH / 2, PZ1 - side / 2), (0.25, PH, side), WALL)
+box("pavilion lintel", (PX1, PH - 0.4, (PZ0 + PZ1) / 2), (0.25, 0.8, door), WALL)
+bars = 18
+for i in range(bars):
+    z = PZ0 + (i + 0.5) * (PZ1 - PZ0) / bars
+    box("pavilion lattice bar %d" % i, (PX0, PH / 2, z), (0.07, PH, 0.16), WOOD)
+for j in range(14):
+    y = 0.12 + j * (PH - 0.24) / 13
+    box("pavilion lattice rail %d" % j, (PX0, y, (PZ0 + PZ1) / 2), (0.07, 0.15, PZ1 - PZ0), WOOD)
+# A brazier's glow inside it, to shine out through the lattice at night.
+lines.append(
+    '        (id: "%s", name: "pavilion lamp", model: "builtin:sphere", transform: (position: (%.2f, 1.3, %.2f), '
+    "scale: (0.18, 0.18, 0.18)), material: (base_color: (1.0, 0.6, 0.28), shading: Unlit, emission: (8.0, 4.4, 1.9)), "
+    "light: (color: (1.0, 0.6, 0.28), intensity: 5.0, range: 12.0)),"
+    % (ident("pavilion lamp"), (PX0 + PX1) / 2 + 0.4, (PZ0 + PZ1) / 2)
+)
+lines.append(
+    '        (id: "%s", name: "pavilion probe", transform: (position: (%.2f, %.2f, %.2f)), '
+    "reflection_probe: (size: (%.2f, %.2f, %.2f), blend_distance: 0.2)),"
+    # Its box the room's inside exactly: the walls' outer faces are outside
+    # it, lit by the night rather than by the room.
+    % (ident("pavilion probe"), (PX0 + PX1) / 2, PH / 2, (PZ0 + PZ1) / 2, PX1 - PX0, PH + 0.02, PZ1 - PZ0)
+)
+
 # Things on the floor for the shadows to fall over.
 box("bench left", (-5.5, 0.25, 1.5), (0.6, 0.5, 2.4), WOOD)
 box("bench right", (5.5, 0.25, 1.5), (0.6, 0.5, 2.4), WOOD)
@@ -145,6 +180,7 @@ head = """// Двор для лучей (`runity::ray`): пергола из т�
     sun: (hour: 16.0, intensity: 1.3),
     sky: (mode: Physical),
     post: (bloom: (intensity: 0.4)),
+    volumetric_fog: (enabled: true, density: 0.035, anisotropy: 0.6, base_height: 0.0, height_falloff: 0.15, distance: 40.0, ambient: 0.2, lamps: 20.0),
     ray_tracing: (sun_shadows: true, light_shadows: true, ambient_occlusion: true, sun_size: 0.6, sun_rays: 4, occlusion_rays: 6, occlusion_radius: 1.2, lamp_size: 0.07, reflections: true, reflection_roughness: 0.5, refractions: true),
     entities: [
 """
