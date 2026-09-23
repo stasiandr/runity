@@ -2,6 +2,15 @@
 // distance fog, and the sky behind everything. Drawn in linear light into a
 // high-dynamic-range buffer; post.wgsl turns that into a picture.
 
+// Wind and what bends grass (foliage.rs): in the frame and in each shadow
+// pass, so a thing and its shadow sway together.
+struct Foliage {
+    // level wind direction x and z, strength, time in seconds
+    wind: vec4<f32>,
+    // position and radius of each; radius 0 bends nothing
+    benders: array<vec4<f32>, 8>,
+};
+
 struct Frame {
     view_projection: mat4x4<f32>,
     // Direction the light travels: from the sun toward the ground.
@@ -66,6 +75,7 @@ struct Frame {
     fog_lamps: vec4<f32>,
     // behind everything, with a plain-colour sky
     clear_color: vec4<f32>,
+    foliage: Foliage,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -129,6 +139,7 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 // at binding 3, in the shadow pass's own group.
 struct Caster {
     view_projection: mat4x4<f32>,
+    foliage: Foliage,
 };
 @group(0) @binding(3) var<uniform> caster: Caster;
 
@@ -233,11 +244,56 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     return out;
 }
 
+/// Where a vertex ends up in the wind and round what bends grass.
+///
+/// A thing bends away from the wind by its height above its own origin —
+/// a trunk's foot stays put, its crown moves — rocking in gusts
+/// that roll across the ground, with a quick flutter on top. `amount` is
+/// the material's `wind`; zero moves nothing.
+fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<f32> {
+    if amount <= 0.0 {
+        return world;
+    }
+    let height = max(world.y - origin.y, 0.0);
+    let direction = vec3<f32>(f.wind.x, 0.0, f.wind.y);
+    let strength = f.wind.z;
+    let t = f.wind.w;
+    // Gusts travel downwind: the phase is where the thing stands along it.
+    let along = dot(origin.xz, f.wind.xy);
+    let gust = 0.55 + 0.3 * sin(t * 0.9 - along * 0.35) + 0.15 * sin(t * 2.3 - along * 0.9 + origin.x);
+    // Curved up to a metre — a blade of grass bows — and straight above,
+    // so a tall tree's crown sways a hand's width, not a metre.
+    let bend = amount * strength * height * min(height, 1.0) * 0.04 * gust;
+    let flutter = amount * strength * min(height, 1.0) * 0.015
+        * sin(t * 7.0 + dot(world, vec3<f32>(1.7, 2.3, 1.1)));
+    var moved = world + direction * bend + vec3<f32>(-direction.z, 0.3, direction.x) * flutter;
+    // Kept roughly its length: what leans over also drops.
+    moved.y -= bend * bend / max(2.0 * height, 0.2);
+
+    // Pushed out of the way, and down, by what walks through it.
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let b = f.benders[i];
+        if b.w <= 0.0 {
+            continue;
+        }
+        let away = moved.xz - b.xz;
+        let distance = length(away);
+        let push = (1.0 - smoothstep(0.0, b.w, distance)) * min(height, 1.0) * amount;
+        if push > 0.0 {
+            let out = away / max(distance, 1e-3);
+            moved = moved + vec3<f32>(out.x, 0.0, out.y) * push * 0.5;
+            moved.y -= push * height * 0.6;
+        }
+    }
+    return moved;
+}
+
 /// The depth-only pass, seen from the sun, one cascade at a time.
 @vertex
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
-    return caster.view_projection * model * vec4<f32>(in.position, 1.0);
+    let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
+    return caster.view_projection * vec4<f32>(world, 1.0);
 }
 
 struct ClipOut {
@@ -252,7 +308,8 @@ struct ClipOut {
 fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     var out: ClipOut;
-    out.position = caster.view_projection * model * vec4<f32>(in.position, 1.0);
+    let world = swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, caster.foliage);
+    out.position = caster.view_projection * vec4<f32>(world, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
     return out;
@@ -579,7 +636,10 @@ fn through_fog(color: vec3<f32>, pixel: vec2<f32>, depth: f32) -> vec3<f32> {
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
-    let world = model * vec4<f32>(in.position, 1.0);
+    let world = vec4<f32>(
+        swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
+        1.0,
+    );
 
     var out: VertexOutput;
     out.clip_position = frame.view_projection * world;
@@ -824,6 +884,14 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)
         * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
+    // Lit through from behind: a leaf, a blade of grass — brightest looking
+    // straight at the sun through it.
+    let translucency = in.detail.w;
+    if translucency > 0.0 {
+        let behind = max(dot(-geometric, to_sun), 0.0);
+        let into_sun = pow(max(dot(-to_eye, to_sun), 0.0), 6.0);
+        color += b.diffuse * frame.sun_color.rgb * shadow * translucency * (behind * 0.5 + into_sun * 1.5);
+    }
 
     // Point and spot lights, those listed in this fragment's cell: facing
     // it, and fading to nothing at its range — squared, so the edge of the

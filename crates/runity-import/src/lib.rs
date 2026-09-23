@@ -856,6 +856,12 @@ pub struct MaterialSource {
     pub normal_scale: f32,
     #[serde(default = "one")]
     pub occlusion_strength: f32,
+    /// How much it sways in the wind; see `runity::foliage`.
+    #[serde(default)]
+    pub wind: f32,
+    /// How much light comes through it from behind, 0 to 1.
+    #[serde(default)]
+    pub translucency: f32,
     #[serde(default = "no_tiling")]
     pub tiling: [f32; 2],
     #[serde(default)]
@@ -1006,6 +1012,8 @@ pub fn material_from_ron(
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
             offset: source.offset,
+            wind: source.wind.max(0.0),
+            translucency: source.translucency.clamp(0.0, 1.0),
         },
     })
 }

@@ -499,6 +499,13 @@ pub struct Frame {
     pub decals: Vec<crate::decals::Decal>,
     /// Light seen in the air ([`crate::volume`]); off by default.
     pub volumetric_fog: crate::volume::VolumetricFog,
+    /// What sways foliage, and what bends grass ([`crate::foliage`]).
+    pub wind: crate::foliage::Wind,
+    pub benders: Vec<crate::foliage::Bender>,
+    /// Seconds, for what moves by itself — foliage in the wind. `None`
+    /// takes the renderer's own clock; a test that wants the same picture
+    /// twice says a time.
+    pub time: Option<f32>,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -523,6 +530,9 @@ impl Default for Frame {
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
+            wind: crate::foliage::Wind::default(),
+            benders: Vec::new(),
+            time: None,
             poses: Vec::new(),
         }
     }
@@ -602,6 +612,8 @@ struct FrameUniform {
     fog_lamps: [f32; 4],
     /// What is behind everything with a plain-colour sky.
     clear_color: [f32; 4],
+    /// Wind and benders, for the vertex shaders.
+    foliage: crate::foliage::FoliageUniform,
 }
 
 /// What the shadow pass needs for one cascade.
@@ -609,6 +621,8 @@ struct FrameUniform {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct CasterUniform {
     view_projection: [[f32; 4]; 4],
+    /// Foliage bends in the shadow passes as it does in the frame.
+    foliage: crate::foliage::FoliageUniform,
 }
 
 pub use crate::lights::MAX_LIGHTS;
@@ -707,8 +721,8 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
         detail: [
             material.normal_scale,
             material.occlusion_strength.clamp(0.0, 1.0),
-            0.0,
-            0.0,
+            material.wind.max(0.0),
+            material.translucency.clamp(0.0, 1.0),
         ],
     }
 }
@@ -816,6 +830,8 @@ pub struct Renderer {
     fog_integrate_layout: wgpu::PipelineLayout,
     /// Volumetric fog's grid.
     volumes: crate::volume::Volumes,
+    /// The clock foliage sways by when a frame does not say the time.
+    started: std::time::Instant,
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
@@ -1947,6 +1963,7 @@ impl Renderer {
             fog_integrate_layout,
             volumes,
             fog_bind_group,
+            started: std::time::Instant::now(),
         };
         renderer.rebind(gpu);
 
@@ -2762,6 +2779,14 @@ impl Renderer {
             // to clear at a grazing angle.
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
+        let foliage = crate::foliage::FoliageUniform::new(
+            &frame.wind,
+            &frame.benders,
+            frame.camera.position,
+            frame
+                .time
+                .unwrap_or_else(|| self.started.elapsed().as_secs_f32()),
+        );
         let casters: Vec<u8> = light_view_projection
             .iter()
             .chain(light_views.iter())
@@ -2769,6 +2794,7 @@ impl Renderer {
                 let mut slot = vec![0u8; self.caster_stride as usize];
                 let one = CasterUniform {
                     view_projection: *matrix,
+                    foliage,
                 };
                 slot[..std::mem::size_of::<CasterUniform>()]
                     .copy_from_slice(bytemuck::bytes_of(&one));
@@ -2928,6 +2954,7 @@ impl Renderer {
             },
             fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
             clear_color: extend(frame.clear_color, 1.0),
+            foliage,
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));

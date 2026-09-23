@@ -41,6 +41,9 @@ fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 
         reflection_probes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),
+        wind: Default::default(),
+        benders: Vec::new(),
+        time: None,
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

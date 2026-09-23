@@ -29,7 +29,7 @@ pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
-const OBJECT: [&str; 4] = ["model", "material", "prefab", "layer"];
+const OBJECT: [&str; 5] = ["model", "material", "prefab", "layer", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 4] = ["body", "collider", "physics", "joint"];
 const PARTS: [&str; 6] = [

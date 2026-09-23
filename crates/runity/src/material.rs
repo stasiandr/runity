@@ -205,6 +205,14 @@ pub struct Material {
     pub tiling: [f32; 2],
     #[serde(default, skip_serializing_if = "is_no_offset")]
     pub offset: [f32; 2],
+    /// How much it sways in the scene's wind: 0 a rock, about 1 a tree,
+    /// more for grass. See [`crate::foliage`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wind: f32,
+    /// How much light comes through it from behind, 0 to 1: a leaf, a
+    /// blade of grass, a paper lantern.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub translucency: f32,
 }
 
 fn no_tiling() -> [f32; 2] {
@@ -269,6 +277,8 @@ impl Material {
             occlusion_strength: 1.0,
             tiling: [1.0, 1.0],
             offset: [0.0, 0.0],
+            wind: 0.0,
+            translucency: 0.0,
         }
     }
 
@@ -372,6 +382,8 @@ impl From<&ArchivedMaterial> for Material {
                 archived.offset[0].to_native(),
                 archived.offset[1].to_native(),
             ],
+            wind: archived.wind.to_native(),
+            translucency: archived.translucency.to_native(),
         }
     }
 }

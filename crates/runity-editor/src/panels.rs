@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 19] = [
+pub const FIELDS: [&str; 20] = [
     "name",
     "model",
     "prefab",
@@ -70,6 +70,7 @@ pub const FIELDS: [&str; 19] = [
     "particles",
     "reflection_probe",
     "decal",
+    "bends_grass",
     "route",
     "components.<name>",
 ];
@@ -98,6 +99,7 @@ fn take_field(
         "particles" => one.particles = from.particles.take(),
         "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
         "decal" => one.decal = from.decal.take(),
+        "bends_grass" => one.bends_grass = from.bends_grass.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
@@ -237,6 +239,7 @@ impl Session {
                 "particles" => o.particles.is_some(),
                 "reflection_probe" => o.reflection_probe.is_some(),
                 "decal" => o.decal.is_some(),
+                "bends_grass" => o.bends_grass.is_some(),
                 "route" => o.route.is_some(),
                 other => other
                     .strip_prefix("components.")
@@ -259,6 +262,7 @@ impl Session {
             ("collider".into(), ron(&desc.collider)),
             ("physics".into(), ron(&desc.physics)),
             ("layer".into(), desc.layer.clone()),
+            ("bends_grass".into(), ron(&desc.bends_grass)),
             ("joint".into(), ron(&desc.joint)),
             (
                 "camera".into(),
@@ -509,6 +513,7 @@ impl Session {
             "physics" => ron(&blank.physics),
             "joint" => ron(&blank.joint),
             "layer" => String::new(),
+            "bends_grass" => ron(&blank.bends_grass),
             "camera" | "light" | "particles" | "reflection_probe" | "decal" | "route" => {
                 "None".into()
             }
@@ -597,6 +602,7 @@ impl Session {
             "model" => next.model = text.to_string(),
             "prefab" => next.prefab = text.to_string(),
             "layer" => next.layer = text.to_string(),
+            "bends_grass" => next.bends_grass = parse::<f32>(field, text)?.max(0.0),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,
             "scale" => next.transform.scale = parse(field, text)?,

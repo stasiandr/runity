@@ -74,6 +74,11 @@ pub struct CameraLens(pub crate::scene::Lens);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightSource(pub crate::scene::Light);
 
+/// Grass bends round an entity within this many metres: its line's
+/// `bends_grass`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BendsGrass(pub f32);
+
 /// A decal pressed from an entity: its line's `decal`, and the material it
 /// presses.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -263,6 +268,9 @@ fn spawn_one(
     }
     if let Some(probe) = desc.reflection_probe {
         let _ = world.insert_one(entity, ProbeBox(probe));
+    }
+    if desc.bends_grass > 0.0 {
+        let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
     }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
@@ -564,6 +572,14 @@ impl Patch<'_> {
             }
             changed = true;
         }
+        if was.is_none_or(|(old, _)| old.bends_grass != desc.bends_grass) {
+            if desc.bends_grass > 0.0 {
+                let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
+            } else {
+                let _ = world.remove_one::<BendsGrass>(entity);
+            }
+            changed = true;
+        }
         if was.is_none_or(|(old, _)| old.reflection_probe != desc.reflection_probe) {
             match desc.reflection_probe {
                 Some(probe) => {
@@ -776,6 +792,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(fog) = scene.volumetric_fog {
         frame.volumetric_fog = fog;
     }
+    if let Some(wind) = scene.wind {
+        frame.wind = wind;
+    }
 }
 
 /// The camera a scene's view describes.
@@ -979,6 +998,17 @@ pub fn build_frame_where(
         reflection_probes,
         decals,
         volumetric_fog: Default::default(),
+        wind: Default::default(),
+        benders: world
+            .query::<(&BendsGrass, &WorldTransform, Option<&SceneId>)>()
+            .iter()
+            .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+            .map(|(bends, placed, _)| crate::foliage::Bender {
+                position: placed.0.w_axis.truncate(),
+                radius: bends.0,
+            })
+            .collect(),
+        time: None,
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.
@@ -1011,6 +1041,7 @@ mod tests {
             particles: None,
             reflection_probe: None,
             decal: None,
+            bends_grass: 0.0,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -1040,6 +1071,7 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),

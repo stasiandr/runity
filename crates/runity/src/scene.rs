@@ -653,6 +653,11 @@ pub struct EntityDesc {
     /// A decal pressed from this entity; see [`Decal`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
+    /// Grass and anything else that sways is pushed aside within this many
+    /// metres of it — a player walking through a meadow. 0 is none. See
+    /// [`crate::foliage`].
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bends_grass: f32,
     /// Moving along points by itself; see [`Route`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
@@ -746,6 +751,8 @@ pub struct Override {
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub decal: Option<Decal>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub bends_grass: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub route: Option<Route>,
     /// Components set on the part, one by one.
     #[serde(
@@ -798,6 +805,9 @@ impl Override {
         if self.decal.is_some() {
             part.decal = self.decal;
         }
+        if let Some(radius) = self.bends_grass {
+            part.bends_grass = radius;
+        }
         if self.route.is_some() {
             part.route = self.route.clone();
         }
@@ -825,6 +835,8 @@ impl Override {
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
+            bends_grass: differs(prefab.bends_grass != edited.bends_grass)
+                .map(|_| edited.bends_grass),
             route: differs(prefab.route != edited.route).and(edited.route.clone()),
             components: edited
                 .components
@@ -855,6 +867,7 @@ impl Override {
             particles,
             reflection_probe,
             decal,
+            bends_grass,
             route,
             components,
         } = later;
@@ -871,6 +884,7 @@ impl Override {
         self.particles = particles.or(self.particles);
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
+        self.bends_grass = bends_grass.or(self.bends_grass);
         self.route = route.or(self.route.take());
         self.components.extend(components);
     }
@@ -1225,6 +1239,10 @@ pub struct Scene {
     /// 0.05)`. See [`crate::volume`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub volumetric_fog: Option<crate::volume::VolumetricFog>,
+    /// The wind foliage sways in: `wind: (direction: (1.0, 0.0, 0.3),
+    /// strength: 1.0)`; a breeze when the file does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub wind: Option<crate::foliage::Wind>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1356,6 +1374,7 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1383,6 +1402,7 @@ mod tests {
                     particles: None,
                     reflection_probe: None,
                     decal: None,
+                    bends_grass: 0.0,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),
@@ -1426,6 +1446,7 @@ mod tests {
             ambient_occlusion: None,
             ray_tracing: None,
             volumetric_fog: None,
+            wind: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()
@@ -1436,6 +1457,7 @@ mod tests {
                 particles: None,
                 reflection_probe: None,
                 decal: None,
+                bends_grass: 0.0,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
