@@ -138,6 +138,8 @@ pub struct Session {
     fly_speed: f32,
     /// What a surface drag lands on, built once when the gesture begins.
     surface: Option<runity::PhysicsWorld>,
+    /// A vertex snap in progress.
+    vertex_grab: Option<surface::VertexGrab>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -267,6 +269,7 @@ impl Session {
             marquee: None,
             fly_speed: 6.0,
             surface: None,
+            vertex_grab: None,
         })
     }
 

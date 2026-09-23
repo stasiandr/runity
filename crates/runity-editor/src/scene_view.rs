@@ -13,6 +13,7 @@
 //! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
 //! | Ctrl Shift + drag a move handle | onto whatever is under the cursor |
+//! | V + drag from a vertex | that vertex onto another thing's vertex |
 //! | alt + drag | orbit |
 //! | right drag | look around; with W A S D Q E held, fly (shift: faster, wheel: speed) |
 //! | middle drag | pan |
@@ -59,8 +60,20 @@ impl Session {
         let (x, y) = (at.x.max(0.0) as u32, at.y.max(0.0) as u32);
         let motion = input.mouse_motion();
 
-        // The mouse.
-        if input.mouse_pressed(MouseButton::Left) && !alt {
+        // The mouse. V held: vertex snapping instead of a click or a handle.
+        let vertex = input.held(Key::V) && !ctrl;
+        if input.mouse_pressed(MouseButton::Left) && vertex && self.vertex_begin(x, y)? {
+            did.push("vertex grab");
+        } else if self.is_vertex_snapping() {
+            if input.mouse_held(MouseButton::Left) {
+                if motion != runity::glam::Vec2::ZERO && self.vertex_drag(x, y)? {
+                    did.push("vertex snap");
+                }
+            } else {
+                self.vertex_end();
+                did.push("drop");
+            }
+        } else if input.mouse_pressed(MouseButton::Left) && !alt {
             if self.gizmo_begin(x, y)?.is_some() {
                 did.push("grab");
             } else {

@@ -2987,3 +2987,60 @@ fn move_to_view_and_align_with_view_place_things_from_the_camera() {
         "one step"
     );
 }
+
+#[test]
+fn v_snaps_a_vertex_of_the_selection_onto_a_vertex_of_something_else() {
+    use runity::glam::{Vec2, Vec3};
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let scene = r#"(
+    entities: [
+        (name: "a", model: "builtin:cube", transform: (position: (0.0, 0.5, 0.0))),
+        (name: "b", model: "builtin:cube", transform: (position: (3.0, 0.5, 0.2))),
+    ],
+)"#;
+    let Some((mut session, _)) = open_with("vertex-snap", scene) else {
+        return;
+    };
+    let (a, b) = (id(&session, "a"), id(&session, "b"));
+    session.select(Some(a)).unwrap();
+    session.set_camera(Vec3::new(1.5, 6.0, 7.0), Vec3::new(1.5, 0.5, 0.0));
+    let (w, h) = session.size();
+    let camera = session.camera();
+    let pixel = |p: Vec3| {
+        let at = camera
+            .screen_point(p, Vec2::new(w as f32, h as f32))
+            .unwrap();
+        (at.x, at.y)
+    };
+    // a's top right front corner onto b's top left front corner.
+    let from = pixel(Vec3::new(0.5, 1.0, 0.5));
+    let to = pixel(Vec3::new(2.5, 1.0, 0.7));
+    let mut input = Input::new();
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        from,
+        &[E::KeyDown(Key::V), E::MouseDown(M::Left)],
+    );
+    assert!(did.contains(&"vertex grab"), "{did:?}");
+    let did = view_frame(&mut session, &mut input, to, &[]);
+    assert!(did.contains(&"vertex snap"), "{did:?}");
+    view_frame(
+        &mut session,
+        &mut input,
+        to,
+        &[E::MouseUp(M::Left), E::KeyUp(Key::V)],
+    );
+    let moved = session.world_position(a).unwrap();
+    assert!(
+        (moved - Vec3::new(2.0, 0.5, 0.2)).length() < 1e-4,
+        "{moved}"
+    );
+    assert_eq!(session.world_position(b).unwrap(), Vec3::new(3.0, 0.5, 0.2));
+    session.undo().unwrap();
+    assert_eq!(
+        session.world_position(a).unwrap(),
+        Vec3::new(0.0, 0.5, 0.0),
+        "one step"
+    );
+}
