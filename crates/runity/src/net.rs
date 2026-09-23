@@ -153,6 +153,50 @@ pub fn snapshot(world: &hecs::World, components: &Components, me: PeerId) -> Sna
     Snapshot { from: me, entities }
 }
 
+/// Snapshots that carry only what changed. A peer usually owns much that
+/// stands still — the scene it loaded — and sending all of it ten times a
+/// second is most of the bandwidth for none of the news. Every
+/// `keyframe`-th snapshot is whole anyway: snapshots travel unreliably, and
+/// a peer that lost the one carrying a change gets it back within a
+/// keyframe.
+pub struct Delta {
+    sent: HashMap<EntityId, EntityState>,
+    count: u32,
+    keyframe: u32,
+}
+
+impl Delta {
+    pub fn new(keyframe: u32) -> Self {
+        Self {
+            sent: HashMap::new(),
+            count: 0,
+            keyframe: keyframe.max(1),
+        }
+    }
+
+    /// What `me` owns that changed since the last snapshot — or all of it,
+    /// on a keyframe.
+    pub fn snapshot(
+        &mut self,
+        world: &hecs::World,
+        components: &Components,
+        me: PeerId,
+    ) -> Snapshot {
+        let whole = snapshot(world, components, me);
+        let keyframe = self.count % self.keyframe == 0;
+        self.count = self.count.wrapping_add(1);
+        let entities = whole
+            .entities
+            .into_iter()
+            .filter(|state| keyframe || self.sent.get(&state.id) != Some(state))
+            .collect::<Vec<_>>();
+        for state in &entities {
+            self.sent.insert(state.id, state.clone());
+        }
+        Snapshot { from: me, entities }
+    }
+}
+
 /// Every entity a peer can name over the network: the scene's by
 /// [`SceneId`], the run-time ones by [`NetId`].
 fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
@@ -857,5 +901,39 @@ mod tests {
         assert!((halfway - 5.0).abs() < 0.01, "{halfway}");
         smooth(&mut client, 0.2);
         assert_eq!(client.get::<&Transform>(fire).unwrap().position.x, 10.0);
+    }
+
+    #[test]
+    fn a_delta_sends_what_moved_and_everything_on_a_keyframe() {
+        let (host, components) = peer();
+        let mut delta = Delta::new(10);
+        let first = delta.snapshot(&host, &components, PeerId::HOST);
+        assert_eq!(first.entities.len(), 2, "the first is whole");
+        assert!(
+            delta
+                .snapshot(&host, &components, PeerId::HOST)
+                .entities
+                .is_empty(),
+            "nothing moved"
+        );
+
+        let fire = entity(&host, "a1");
+        host.get::<&mut Transform>(fire).unwrap().position.x = 1.0;
+        let moved = delta.snapshot(&host, &components, PeerId::HOST);
+        assert_eq!(moved.entities.len(), 1);
+        assert_eq!(moved.entities[0].id, "a1".parse().unwrap());
+        // Snapshots 0 (whole), 1 and 2 were sent; 3 to 9 carry nothing new,
+        // and 10 is the next keyframe.
+        for _ in 3..10 {
+            delta.snapshot(&host, &components, PeerId::HOST);
+        }
+        assert_eq!(
+            delta
+                .snapshot(&host, &components, PeerId::HOST)
+                .entities
+                .len(),
+            2,
+            "keyframe"
+        );
     }
 }
