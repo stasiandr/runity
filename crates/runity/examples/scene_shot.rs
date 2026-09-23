@@ -1,4 +1,6 @@
-//! `scene_shot <scene.ron> [-o out.png]` — render a scene and write the frame.
+//! `scene_shot <scene.ron> [-o out.png] [--time N]` — render a scene and
+//! write the frame; with `--time`, also render it N more times and print
+//! how long a frame took on the GPU and CPU together.
 //!
 //! The whole headless loop in one command: change a scene or a shader, run
 //! this, look at the picture. It needs no window and no graphics card, so it
@@ -17,11 +19,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = PathBuf::from("frame.png");
     let mut library_dir: Option<PathBuf> = None;
     let (mut width, mut height) = (960u32, 540u32);
+    let mut timed = 0u32;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-o" | "--out" => out = args.next().map(PathBuf::from).unwrap_or(out),
             "--library" => library_dir = args.next().map(PathBuf::from),
+            "--time" => timed = args.next().and_then(|n| n.parse().ok()).unwrap_or(30),
             "--size" => {
                 if let Some(size) = args.next() {
                     let (w, h) = size.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
@@ -31,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR]\n\n\
+                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N]\n\n\
                      Prefabs and the library come from the project the scene is in;\n\
                      --library overrides the library."
                 );
@@ -146,6 +150,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     renderer.render(&gpu, &target, &frame);
     renderer.render(&gpu, &target, &frame);
     let pixels = target.read_rgba(&gpu);
+    if timed > 0 {
+        let start = std::time::Instant::now();
+        for _ in 0..timed {
+            renderer.render(&gpu, &target, &frame);
+        }
+        // Reading a pixel back waits for the last frame to finish.
+        target.read_rgba(&gpu);
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / timed as f64;
+        eprintln!("{ms:.2} ms a frame over {timed}");
+    }
 
     write_png(&out, &pixels, width, height)?;
     eprintln!("wrote {} ({width}x{height})", out.display());

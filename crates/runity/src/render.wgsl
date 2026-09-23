@@ -1235,11 +1235,15 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
     // Ambient occlusion darkens the light from all around, and a share of
     // the direct light too (URP's Direct Lighting Strength).
+    // Its pass also gathers the light bounced off what is near (rgb).
     var ao = 1.0;
+    var bounce = vec3<f32>(0.0);
     if frame.ray.z > 0.5 && unlit < 0.5 {
         ao = traced_occlusion(in.world_position, geometric, in.clip_position.xy);
     } else if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
-        ao = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0).r;
+        let gathered = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0);
+        ao = gathered.a;
+        bounce = gathered.rgb;
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)
@@ -1288,7 +1292,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // bounce off the ground. A single constant here is what makes every
     // shaded surface in a scene the same dead colour.
     let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5));
-    color = color + b.diffuse * ambient * ao * baked;
+    color = color + b.diffuse * (ambient * ao + bounce) * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
         let fresnel = pow(1.0 - n_v, 4.0);

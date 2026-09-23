@@ -102,7 +102,7 @@ pub const MOODS: &[Mood] = &[
         name: "snowy",
         about: "a white ground under a pale sky, snow still falling",
         fields: &[
-            ("sun", "(hour: 12.0, intensity: 0.9)"),
+            ("sun", "(hour: 12.0, intensity: 0.9, ground: (0.85, 0.87, 0.9))"),
             ("sky", "(mode: Physical, clouds: (coverage: 0.7))"),
             ("fog", "(color: (0.8, 0.83, 0.86), start: 15.0, end: 160.0)"),
             ("volumetric_fog", CLEAR),
@@ -142,7 +142,7 @@ pub const MOODS: &[Mood] = &[
         name: "desert noon",
         about: "a white-hot sun over sand, a dusty pale sky, the air shimmering and a mirage at the horizon",
         fields: &[
-            ("sun", "(hour: 12.5, intensity: 1.5)"),
+            ("sun", "(hour: 12.5, intensity: 1.5, ground: (0.78, 0.6, 0.38))"),
             ("sky", "(mode: Physical, atmosphere: (mie: 2.5))"),
             ("fog", "(color: (0.85, 0.78, 0.66), start: 150.0, end: 900.0)"),
             ("volumetric_fog", CLEAR),
@@ -155,7 +155,7 @@ pub const MOODS: &[Mood] = &[
         name: "sandstorm",
         about: "sand thick in the air on a gale, the sun a dim disc, the distance gone",
         fields: &[
-            ("sun", "(hour: 14.0, intensity: 0.9)"),
+            ("sun", "(hour: 14.0, intensity: 0.9, ground: (0.78, 0.6, 0.38))"),
             ("sky", "(mode: Physical, atmosphere: (mie: 6.0))"),
             ("fog", "(color: (0.8, 0.62, 0.4), start: 5.0, end: 80.0)"),
             ("volumetric_fog", CLEAR),

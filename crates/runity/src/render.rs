@@ -3820,6 +3820,8 @@ impl Renderer {
             .any(|d| d.material.shading == Shading::Water);
         // So do screen-space reflections.
         let ssr_on = frame.screen_space_reflections.enabled && probe.is_none();
+        // Bounced light reads it as well, and the last frame.
+        let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
         let prepass_drawn = ssao_on || lens_on || water_on || ssr_on || wall_on;
@@ -3855,12 +3857,15 @@ impl Renderer {
                 }
             }
             if ssao_on {
+                let now = frame.camera.view_projection(aspect);
                 self.ssao.run(
                     gpu,
                     &mut encoder,
-                    frame.camera.view_projection(aspect),
+                    now,
+                    self.previous_view_projection.unwrap_or(now),
                     frame.camera.apparent_eye(),
                     &frame.ambient_occlusion,
+                    (bounce_on && self.scene.has_history).then_some(&self.scene.history_view),
                 );
             }
         }
@@ -3974,8 +3979,9 @@ impl Renderer {
             }
         }
 
-        // This frame, kept for the next one's screen-space reflections.
-        if ssr_on {
+        // This frame, kept for the next one's screen-space reflections and
+        // bounced light.
+        if ssr_on || bounce_on {
             encoder.copy_texture_to_texture(
                 self.scene.resolved_texture.as_image_copy(),
                 self.scene.history.as_image_copy(),

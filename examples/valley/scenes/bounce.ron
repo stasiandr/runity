@@ -1,0 +1,17 @@
+// Отражённый свет (`ambient_occlusion: (bounce: ...)`, как SSGI в HDRP):
+// двор под утренним солнцем: оранжевая стена освещена, синяя в тени.
+// Пол у оранжевой стены теплеет, светлые кубы берут цвет стен рядом.
+// Поставь `bounce: 0.0`, и цвет стен останется только на самих стенах.
+(
+    view: (position: (0.5, 2.2, 7.0), target: (-0.5, 0.8, 0.0), fov_deg: 55.0),
+    sun: (hour: 8.5, intensity: 1.2),
+    ambient_occlusion: (bounce: 1.0),
+    entities: [
+        (id: "5a0c3e71b9d24f86", name: "floor", model: "builtin:plane", transform: (scale: (14.0, 1.0, 16.0)), material: (base_color: (0.8, 0.8, 0.78))),
+        (id: "b73e19d05c6a2f41", name: "orange wall", model: "builtin:cube", transform: (position: (-4.0, 1.5, 0.0), scale: (0.3, 3.0, 8.0)), material: (base_color: (0.9, 0.35, 0.08))),
+        (id: "0e8d4a62f1c9b375", name: "blue wall", model: "builtin:cube", transform: (position: (4.0, 1.5, 0.0), scale: (0.3, 3.0, 8.0)), material: (base_color: (0.1, 0.25, 0.75))),
+        (id: "c2f69b17e3a0d854", name: "back wall", model: "builtin:cube", transform: (position: (0.0, 1.5, -4.0), scale: (8.0, 3.0, 0.3)), material: (base_color: (0.8, 0.78, 0.72))),
+        (id: "71a5d8e04b3c96f2", name: "block by orange", model: "builtin:cube", transform: (position: (-2.6, 0.6, 0.5), scale: (1.2, 1.2, 1.2)), material: (base_color: (0.85, 0.85, 0.85))),
+        (id: "9f3b27c6d08e14a5", name: "block by blue", model: "builtin:cube", transform: (position: (2.6, 0.6, 0.8), scale: (1.2, 1.2, 1.2)), material: (base_color: (0.85, 0.85, 0.85))),
+    ],
+)

@@ -23,6 +23,15 @@ fn studio() -> Option<(Studio, std::path::PathBuf)> {
             .subsec_nanos()
     ));
     copy_dir(src.as_ref(), &dir);
+    // Only the scene opened: the example's others would fill the Project
+    // panel, which does not scroll, and push the tiles dragged here off it.
+    for entry in std::fs::read_dir(dir.join("scenes")).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.starts_with("first-light.") {
+            std::fs::remove_file(&path).unwrap();
+        }
+    }
     let scene = dir.join("scenes/first-light.ron");
     let session = match runity_studio::open(&scene) {
         Ok(s) => s,

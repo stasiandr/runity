@@ -32,6 +32,14 @@ pub struct AmbientOcclusion {
     /// Points looked at per pixel, up to 16: URP's Low (4), Medium (8),
     /// High (12).
     pub samples: u32,
+    /// Light bounced off what is near, 0 (off) to 1 and past: HDRP's
+    /// Screen Space Global Illumination. A few short rays per pixel across
+    /// the screen, and where one meets something, what that was lit as last
+    /// frame lights this — a red wall reddens the floor beside it, sunlit
+    /// sand warms the rock's shaded side. Off by default.
+    pub bounce: f32,
+    /// How far a bounce ray is followed, metres.
+    pub bounce_radius: f32,
 }
 
 impl Default for AmbientOcclusion {
@@ -43,6 +51,8 @@ impl Default for AmbientOcclusion {
             direct_lighting_strength: 0.25,
             falloff_distance: 100.0,
             samples: 8,
+            bounce: 0.0,
+            bounce_radius: 3.0,
         }
     }
 }
@@ -55,6 +65,8 @@ impl AmbientOcclusion {
         direct_lighting_strength: 0.25,
         falloff_distance: 100.0,
         samples: 8,
+        bounce: 0.0,
+        bounce_radius: 3.0,
     };
 }
 
@@ -64,7 +76,8 @@ pub const SHADER: &str = include_str!("ssao.wgsl");
 pub(crate) const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The prepass's depth: sampled, so single-sample.
 pub(crate) const PREPASS_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The bounced light in rgb, the occlusion in alpha.
+const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -75,6 +88,8 @@ struct SsaoUniform {
     params: [f32; 4],
     size: [f32; 4],
     kernel: [[f32; 4]; 16],
+    previous_view_projection: [[f32; 4]; 4],
+    bounce: [f32; 4],
 }
 
 /// Sixteen points in the unit hemisphere over +z, more of them near the
@@ -176,6 +191,7 @@ impl SsaoRenderer {
                     texture(1, wgpu::TextureSampleType::Depth),
                     texture(2, wgpu::TextureSampleType::Float { filterable: false }),
                     texture(3, wgpu::TextureSampleType::Float { filterable: false }),
+                    texture(4, wgpu::TextureSampleType::Float { filterable: false }),
                 ],
             });
         let pipeline_layout = gpu
@@ -244,14 +260,18 @@ impl SsaoRenderer {
         true
     }
 
-    /// The occlusion, from the prepass already drawn, then blurred.
+    /// The occlusion, from the prepass already drawn, then blurred; and,
+    /// given the last frame and the camera that saw it, the light bounced.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &self,
         gpu: &Gpu,
         encoder: &mut wgpu::CommandEncoder,
         view_projection: Mat4,
+        previous_view_projection: Mat4,
         eye: Vec3,
         settings: &AmbientOcclusion,
+        last_frame: Option<&wgpu::TextureView>,
     ) {
         let (w, h) = self.size;
         let uniform = SsaoUniform {
@@ -266,7 +286,19 @@ impl SsaoRenderer {
             ],
             size: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
             kernel: kernel(),
+            previous_view_projection: previous_view_projection.to_cols_array_2d(),
+            bounce: [
+                if last_frame.is_some() {
+                    settings.bounce.max(0.0)
+                } else {
+                    0.0
+                },
+                settings.bounce_radius.max(0.1),
+                0.0,
+                0.0,
+            ],
         };
+        let last_frame = last_frame.unwrap_or(&self.white);
         gpu.queue
             .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
         let group = |source: &wgpu::TextureView| {
@@ -289,6 +321,10 @@ impl SsaoRenderer {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(last_frame),
                     },
                 ],
             })
