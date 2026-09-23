@@ -15,8 +15,10 @@ struct Frame {
     // density
     fog_range: vec4<f32>,
     camera_position: vec4<f32>,
-    light_view_projection: mat4x4<f32>,
-    // depth bias, normal offset in world units, one texel in UV, on/off
+    // Each cascade's: world to its map's clip space.
+    light_view_projection: array<mat4x4<f32>, 4>,
+    // depth bias, normal offset in world units, one texel in UV, how many
+    // cascades there are (0: no shadows)
     shadow_params: vec4<f32>,
     // Lights, three vectors each: position and range; colour; spot
     // direction and the cosine of half its cone (-2: every way).
@@ -30,13 +32,26 @@ struct Frame {
     sky_horizon: vec4<f32>,
     // Below the horizon; w is the sky's exposure.
     sky_ground: vec4<f32>,
+    // Each cascade's sphere: centre, and radius squared.
+    cascade_spheres: array<vec4<f32>, 4>,
+    // Each cascade's offset along the normal.
+    cascade_bias: vec4<f32>,
+    // Each cascade's depth bias, in its own map's depth.
+    cascade_depth_bias: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(1) var shadow_map: texture_depth_2d_array;
 // A comparison sampler: the hardware does the depth test and the bilinear
 // filter in one fetch, so every tap is already a 2x2 average.
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
+
+// The shadow pass's one matrix: the cascade being drawn. Beside the frame
+// at binding 3, in the shadow pass's own group.
+struct Caster {
+    view_projection: mat4x4<f32>,
+};
+@group(0) @binding(3) var<uniform> caster: Caster;
 
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
@@ -127,37 +142,77 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     return out;
 }
 
-/// The depth-only pass, seen from the sun.
+/// The depth-only pass, seen from the sun, one cascade at a time.
 @vertex
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
-    return frame.light_view_projection * model * vec4<f32>(in.position, 1.0);
+    return caster.view_projection * model * vec4<f32>(in.position, 1.0);
+}
+
+struct ClipOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    // alpha, threshold
+    @location(1) alpha: vec2<f32>,
+};
+
+/// The same, for what is cut out by its alpha: a leaf's shadow is a leaf.
+@vertex
+fn vs_shadow_clip(in: VertexInput) -> ClipOut {
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    var out: ClipOut;
+    out.position = caster.view_projection * model * vec4<f32>(in.position, 1.0);
+    out.uv = in.uv;
+    out.alpha = in.surface.zw;
+    return out;
+}
+
+@fragment
+fn fs_shadow_clip(in: ClipOut) {
+    if in.alpha.x * textureSample(surface_texture, surface_sampler, in.uv).a < in.alpha.y {
+        discard;
+    }
 }
 
 /// How much sun reaches a point: 1.0 in the open, 0.0 in full shadow.
+///
+/// From the first cascade whose sphere holds the point — the finest one
+/// that covers it — and fading out over the last tenth of the last one, so
+/// the shadow distance is not a line on the ground.
 fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
-    if frame.shadow_params.w < 0.5 {
+    let count = u32(frame.shadow_params.w + 0.5);
+    if count == 0u {
+        return 1.0;
+    }
+    var cascade = count;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let d = world_position - frame.cascade_spheres[i].xyz;
+        if dot(d, d) < frame.cascade_spheres[i].w {
+            cascade = i;
+            break;
+        }
+    }
+    if cascade == count {
+        // Past the shadow distance: lit, not shadowed. The opposite makes
+        // everything beyond it a wall of darkness.
         return 1.0;
     }
 
     // Offsetting along the normal before the lookup is what handles grazing
     // angles: there the depth error grows with the slope, and no constant
     // bias large enough to cover it is small enough to keep contact.
-    let offset = world_position + normal * frame.shadow_params.y;
-    let light_clip = frame.light_view_projection * vec4<f32>(offset, 1.0);
+    let offset = world_position + normal * frame.cascade_bias[cascade];
+    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(offset, 1.0);
     let ndc = light_clip.xyz / light_clip.w;
 
     // Clip space is -1..1 across and 0..1 deep; the map is indexed 0..1 with
     // v running the other way.
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
-        // Outside the map is lit, not shadowed. The opposite choice makes
-        // everything beyond the fitted frustum go black, which reads as a
-        // wall of darkness at the edge of the scene.
         return 1.0;
     }
 
-    let reference = ndc.z - frame.shadow_params.x;
+    let reference = ndc.z - frame.cascade_depth_bias[cascade];
     let texel = frame.shadow_params.z;
     // Nine taps, each of them already a hardware 2x2, so the edge is soft
     // enough that the map's resolution stops being visible as stairs.
@@ -165,10 +220,17 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     for (var y = -1; y <= 1; y = y + 1) {
         for (var x = -1; x <= 1; x = x + 1) {
             let tap = uv + vec2<f32>(f32(x), f32(y)) * texel;
-            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, tap, reference);
+            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, i32(cascade), reference);
         }
     }
-    return sum / 9.0;
+    let lit = sum / 9.0;
+
+    // The last cascade fades to lit over its outer tenth.
+    let last = frame.cascade_spheres[count - 1u];
+    let from_centre = length(world_position - last.xyz);
+    let radius = sqrt(last.w);
+    let fade = clamp((radius - from_centre) / (radius * 0.1), 0.0, 1.0);
+    return mix(1.0, lit, fade);
 }
 
 @vertex

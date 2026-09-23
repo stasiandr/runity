@@ -17,7 +17,7 @@ struct Post {
     filter_contrast: vec4<f32>,
     // saturation multiplier, hue shift (turns), chromatic aberration, time
     b: vec4<f32>,
-    // white balance as LMS scales, xyz; w unused
+    // white balance as LMS scales, xyz; w is 1 to dither
     white_balance: vec4<f32>,
     // vignette colour rgb, intensity
     vignette_color: vec4<f32>,
@@ -181,6 +181,16 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(high, low, c <= vec3<f32>(0.0031308));
 }
 
+/// Half a step of an 8-bit screen either way, triangular: gradients come out
+/// smooth rather than banded, and nothing visible is added.
+fn dither(color: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    if post.white_balance.w < 0.5 {
+        return color;
+    }
+    let noise = hash(pixel) + hash(pixel + vec2<f32>(17.0, 59.0)) - 1.0;
+    return color + noise / 255.0;
+}
+
 fn hash(p: vec2<f32>) -> f32 {
     let q = fract(p * vec2<f32>(443.897, 441.423));
     let r = q + dot(q, q.yx + 19.19);
@@ -234,10 +244,24 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     color += grain * post.bloom_tint.w * 0.25 * (1.0 - sqrt(luma(color)));
     color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 
+    return vec4<f32>(finish(color, in.position.xy), 1.0);
+}
+
+/// Into what the screen stores: encoded here when the target does not
+/// encode itself, and dithered in the encoding either way — that is where
+/// a step of the screen is a step.
+fn finish(color: vec3<f32>, pixel: vec2<f32>) -> vec3<f32> {
+    let encoded = dither(linear_to_srgb(color), pixel);
     if post.a.w > 0.5 {
-        color = linear_to_srgb(color);
+        return encoded;
     }
-    return vec4<f32>(color, 1.0);
+    return srgb_to_linear(max(encoded, vec3<f32>(0.0)));
+}
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let low = c / 12.92;
+    let high = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(high, low, c <= vec3<f32>(0.04045));
 }
 
 // FXAA, the console version's idea in a few lines: find the edge by luma
@@ -271,8 +295,5 @@ fn fs_fxaa(in: Varyings) -> @location(0) vec4<f32> {
         let lb = sqrt(luma(b));
         out = select(b, a, lb < lo || lb > hi);
     }
-    if post.a.w > 0.5 {
-        out = linear_to_srgb(out);
-    }
-    return vec4<f32>(out, 1.0);
+    return vec4<f32>(finish(out, in.position.xy), 1.0);
 }

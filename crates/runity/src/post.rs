@@ -116,6 +116,10 @@ pub struct PostProcess {
     /// multisampling the scene is already drawn with: it catches what MSAA
     /// cannot — edges inside a texture, the alpha-cut leaf.
     pub fxaa: bool,
+    /// A little noise, below a step of the screen's precision, so a gentle
+    /// gradient — a sky, a lit wall — does not show its steps as bands.
+    /// URP's camera Dithering.
+    pub dithering: bool,
 }
 
 impl Default for PostProcess {
@@ -135,6 +139,7 @@ impl Default for PostProcess {
             chromatic_aberration: 0.0,
             film_grain: 0.0,
             fxaa: false,
+            dithering: true,
         }
     }
 }
@@ -168,6 +173,7 @@ impl PostProcess {
         chromatic_aberration: 0.0,
         film_grain: 0.0,
         fxaa: false,
+        dithering: false,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -211,6 +217,11 @@ impl PostProcess {
             chromatic_aberration: f(self.chromatic_aberration, other.chromatic_aberration),
             film_grain: f(self.film_grain, other.film_grain),
             fxaa: if half { other.fxaa } else { self.fxaa },
+            dithering: if half {
+                other.dithering
+            } else {
+                self.dithering
+            },
         }
     }
 }
@@ -577,8 +588,11 @@ impl PostRenderer {
             ..base
         };
         if settings.fxaa {
-            // The intermediate is linear; FXAA encodes on the way out.
+            // The intermediate is a float target: left linear, undithered —
+            // FXAA finishes the picture on its way out. (`finish` with
+            // neither flag is the identity, give or take a rounding.)
             composite.a[3] = 0.0;
+            composite.white_balance[3] = 0.0;
         }
         slots.push(composite);
         passes.push((
@@ -670,7 +684,12 @@ impl PostRenderer {
                 s.chromatic_aberration.clamp(0.0, 1.0),
                 (self.started.elapsed().as_secs_f32() * 24.0).floor() % 97.0,
             ],
-            white_balance: [balance.x, balance.y, balance.z, 0.0],
+            white_balance: [
+                balance.x,
+                balance.y,
+                balance.z,
+                if s.dithering { 1.0 } else { 0.0 },
+            ],
             vignette_color: [
                 s.vignette.color[0],
                 s.vignette.color[1],
