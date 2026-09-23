@@ -408,6 +408,10 @@ impl PhysicsWorld {
                 _ => RigidBodyBuilder::fixed(),
             }
             .position(isometry(placed.0))
+            .linear_damping(props.drag.max(0.0))
+            .angular_damping(props.spin_drag.max(0.0))
+            .gravity_scale(props.gravity)
+            .ccd_enabled(props.fast)
             .build();
             let handle = self.bodies.insert(body);
             self.colliders
@@ -1871,5 +1875,58 @@ mod tests {
         run_for(&mut physics, &mut world, 120);
         let y = world.get::<&WorldTransform>(shard).unwrap().0.w_axis.y;
         assert!(y > 1.6, "now it lands on the player: {y}");
+    }
+
+    #[test]
+    fn drag_slows_gravity_scales_and_a_fast_stone_does_not_pass_the_wall() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (name: "feather", model: "m", body: Dynamic, collider: Sphere(radius: 0.1),
+                 transform: (position: (-5.0, 50.0, 0.0)), physics: (drag: 4.0)),
+                (name: "stone", model: "m", body: Dynamic, collider: Sphere(radius: 0.1),
+                 transform: (position: (5.0, 50.0, 0.0))),
+                (name: "balloon", model: "m", body: Dynamic, collider: Sphere(radius: 0.1),
+                 transform: (position: (0.0, 50.0, 5.0)), physics: (gravity: 0.0)),
+            ])"#,
+        );
+        let (feather, stone, balloon) = (
+            by_id(&world, scene.entities[0].id),
+            by_id(&world, scene.entities[1].id),
+            by_id(&world, scene.entities[2].id),
+        );
+        run_for(&mut physics, &mut world, 60);
+        let y = |e| world.get::<&WorldTransform>(e).unwrap().0.w_axis.y;
+        assert!(
+            y(feather) > y(stone) + 2.0,
+            "drag: {} vs {}",
+            y(feather),
+            y(stone)
+        );
+        assert!((y(balloon) - 50.0).abs() < 1e-3, "floats: {}", y(balloon));
+
+        // A stone thrown at 300 m/s at a thin wall: without `fast` it is
+        // past the wall between two steps; with it, it stops there.
+        let throw = |fast: bool| {
+            let (mut physics, mut world, scene) = scene_world(&format!(
+                r#"(entities: [
+                    (name: "wall", model: "m", body: Static, collider: Box(half: (0.05, 5.0, 5.0))),
+                    (name: "stone", model: "m", body: Dynamic, collider: Sphere(radius: 0.05),
+                     transform: (position: (-3.0, 0.0, 0.0)), physics: (gravity: 0.0, fast: {fast})),
+                ])"#
+            ));
+            let stone = by_id(&world, scene.entities[1].id);
+            physics.sync_from_world(&mut world);
+            let handle = world.get::<&BodyHandle>(stone).unwrap().0;
+            physics
+                .bodies
+                .get_mut(handle)
+                .unwrap()
+                .set_linvel(vector![300.0, 0.0, 0.0], true);
+            run_for(&mut physics, &mut world, 10);
+            let x = world.get::<&WorldTransform>(stone).unwrap().0.w_axis.x;
+            x
+        };
+        assert!(throw(false) > 0.5, "tunnelled: {}", throw(false));
+        assert!(throw(true) < 0.0, "stopped at the wall: {}", throw(true));
     }
 }

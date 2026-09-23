@@ -212,6 +212,23 @@ pub struct BodyProps {
     /// 8 is a crate of iron that a wooden one does not push aside.
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub density: f32,
+    /// How fast it slows by itself, per second: air, water, a sled on snow.
+    /// Unity's drag.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub drag: f32,
+    /// How fast its spin dies down, per second: Unity's angular drag.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub spin_drag: f32,
+    /// How much gravity pulls it: 0 floats, 1 is everything else, 2 falls
+    /// twice as hard.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub gravity: f32,
+    /// Checked between steps as well as at them, so something fast and
+    /// small — a thrown stone, a bullet — cannot pass through a wall between
+    /// one step and the next. Costs more; Unity's continuous collision
+    /// detection.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub fast: bool,
 }
 
 impl Default for BodyProps {
@@ -220,6 +237,10 @@ impl Default for BodyProps {
             friction: 0.5,
             bounce: 0.0,
             density: 1.0,
+            drag: 0.0,
+            spin_drag: 0.0,
+            gravity: 1.0,
+            fast: false,
         }
     }
 }
@@ -244,6 +265,9 @@ fn is_one(v: &f32) -> bool {
 }
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
+}
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// A camera on an entity: what the game sees through, looking along the
