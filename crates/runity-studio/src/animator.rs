@@ -370,6 +370,11 @@ impl Animator {
                     .transitions
                     .iter()
                     .any(|o| o.from == t.to && o.to == t.from);
+            let others: Vec<(f32, f32)> = std::iter::once(ANY)
+                .chain(graph.states.keys().map(String::as_str))
+                .filter(|n| *n != t.from && *n != t.to)
+                .map(|n| self.place(n))
+                .collect();
             self.arrow(
                 ui,
                 layer,
@@ -378,12 +383,13 @@ impl Animator {
                 self.place(&t.to),
                 on,
                 back,
+                &others,
             );
         }
     }
 
-    /// An arrow from one box to another: along, then down or up, with a
-    /// head where it meets the box. `back` moves it aside, so that a pair
+    /// An arrow from one box to another, in right angles round the
+    /// `others` boxes where it can, with a head where it meets the box. `back` moves it aside, so that a pair
     /// of transitions both ways are two arrows.
     #[allow(clippy::too_many_arguments)]
     fn arrow(
@@ -395,25 +401,53 @@ impl Animator {
         to: (f32, f32),
         on: bool,
         back: bool,
+        others: &[(f32, f32)],
     ) {
         let shift = if back { 8.0 } else { 0.0 };
         let color = if on { ACCENT } else { NEUTRAL_500 };
         let t = if on { 3.0 } else { 2.0 };
         let (fx, fy) = (from.0 + BOX_W / 2.0 + shift, from.1 + BOX_H / 2.0 + shift);
         let (tx, ty) = (to.0 + BOX_W / 2.0 + shift, to.1 + BOX_H / 2.0 + shift);
-        let mut segments = Vec::new();
-
-        let head = if (fy - ty).abs() < BOX_H {
-            // Side by side: straight across to the box's edge.
+        // Routes to try, in order; the first that crosses no other box
+        // is drawn, or the first when every one does.
+        type Route = (Vec<(f32, f32, f32, f32)>, (f32, f32));
+        let mut routes: Vec<Route> = Vec::new();
+        let h_seg = |y: f32, a: f32, b: f32| (a.min(b), y - t / 2.0, (b - a).abs() + t, t);
+        let v_seg = |x: f32, a: f32, b: f32| (x - t / 2.0, a.min(b), t, (b - a).abs());
+        if (fy - ty).abs() < BOX_H {
+            // Side by side: straight across to the box's edge…
             let end = if tx > fx { to.0 } else { to.0 + BOX_W };
-            segments.push((fx.min(end), fy - t / 2.0, (end - fx).abs(), t));
-            (end, fy)
+            routes.push((vec![h_seg(fy, fx, end)], (end, fy)));
+            // …or under the row, round whatever is between.
+            let below = from.1.max(to.1) + BOX_H + 22.0 + shift;
+            routes.push((
+                vec![
+                    v_seg(fx, from.1 + BOX_H, below),
+                    h_seg(below, fx, tx),
+                    v_seg(tx, below, to.1 + BOX_H),
+                ],
+                (tx, to.1 + BOX_H),
+            ));
         } else {
+            // Along, then down or up into the box…
             let end = if ty > fy { to.1 } else { to.1 + BOX_H };
-            segments.push((fx.min(tx), fy - t / 2.0, (tx - fx).abs() + t, t));
-            segments.push((tx - t / 2.0, fy.min(end), t, (end - fy).abs()));
-            (tx, end)
+            routes.push((vec![h_seg(fy, fx, tx), v_seg(tx, fy, end)], (tx, end)));
+            // …or down or up first, then along into its side.
+            if (fx - tx).abs() > BOX_W {
+                let end = if tx > fx { to.0 } else { to.0 + BOX_W };
+                routes.push((vec![v_seg(fx, fy, ty), h_seg(ty, fx, end)], (end, ty)));
+            }
+        }
+        let crosses = |(x, y, w, h): (f32, f32, f32, f32)| {
+            others
+                .iter()
+                .any(|&(bx, by)| x < bx + BOX_W && x + w > bx && y < by + BOX_H && y + h > by)
         };
+        let pick = routes
+            .iter()
+            .position(|(segs, _)| !segs.iter().any(|s| crosses(*s)))
+            .unwrap_or(0);
+        let (segments, head) = routes.swap_remove(pick);
         for (x, y, w, h) in segments {
             // A wider strip to click than to see.
             let hit = ui.add(
