@@ -1,7 +1,8 @@
 // Пустыня: песок до горизонта, поле дюн (`terrain`) и скалы под
 // полуденным солнцем —
 // сцена для пустынных эффектов (марево и мираж, песчаная буря, следы,
-// рябь на дюнах, перекати-поле по ветру).
+// рябь на дюнах, перекати-поле по ветру) и крытый проезд, из которого
+// выходят на солнце (автоэкспозиция).
 (
     view: (position: (0.0, 1.7, 8.0), target: (0.0, 1.2, -40.0), fov_deg: 55.0),
     ambient_occlusion: (bounce: 1.0),
@@ -20,5 +21,8 @@
         (id: "c4f2a91e07d35b88", name: "tumbleweed 1", model: "tumbleweed", transform: (position: (-22.0, 1.2, -17.0), rotation_deg: (0.0, 67.0, 20.0)), material: (base_color: (0.6, 0.48, 0.32), smoothness: 0.2), body: Dynamic, collider: Sphere(radius: 0.5), physics: (blown: 1.0, density: 0.05, friction: 0.8, spin_drag: 0.05)),
         (id: "1d8e6b3f50a2c947", name: "tumbleweed 2", model: "tumbleweed", transform: (position: (-11.0, 1.2, -28.0), rotation_deg: (0.0, 134.0, 20.0)), material: (base_color: (0.6, 0.48, 0.32), smoothness: 0.2), body: Dynamic, collider: Sphere(radius: 0.5), physics: (blown: 1.0, density: 0.05, friction: 0.8, spin_drag: 0.05)),
         (id: "9a07e5c2d1b4f36e", name: "tumbleweed 3", model: "tumbleweed", transform: (position: (-28.0, 1.2, -6.0), rotation_deg: (0.0, 201.0, 20.0)), material: (base_color: (0.6, 0.48, 0.32), smoothness: 0.2), body: Dynamic, collider: Sphere(radius: 0.5), physics: (blown: 1.0, density: 0.05, friction: 0.8, spin_drag: 0.05)),
+        (id: "3e9a51c07bd2f846", name: "passage left", model: "builtin:cube", transform: (position: (-41.8, 1.7, 22.0), scale: (0.6, 3.4, 14.0)), material: (base_color: (0.62, 0.45, 0.32)), body: Static, collider: Model),
+        (id: "b27c0d4e91a6f385", name: "passage right", model: "builtin:cube", transform: (position: (-38.2, 1.7, 22.0), scale: (0.6, 3.4, 14.0)), material: (base_color: (0.62, 0.45, 0.32)), body: Static, collider: Model),
+        (id: "05f8e3a2c6d19b74", name: "passage roof", model: "builtin:cube", transform: (position: (-40.0, 3.6, 22.0), scale: (4.2, 0.4, 14.0)), material: (base_color: (0.62, 0.45, 0.32)), body: Static, collider: Model),
     ],
 )
