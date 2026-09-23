@@ -474,6 +474,15 @@ impl Ui {
         self.exists(id) && self.node(id).field.is_some()
     }
 
+    /// A text field of several lines: Enter makes a new line, Cmd/Ctrl
+    /// Enter commits, the text wraps at the box's width.
+    pub fn add_textarea(&mut self, parent: NodeId, style: Style, text: &str) -> NodeId {
+        let id = self.add(parent, style.focusable());
+        self.node_mut(id).field = Some(field::FieldState::multiline());
+        self.set_text(id, text);
+        id
+    }
+
     /// A built-in icon by name (`"play"`, `"move-3d"`), drawn in the
     /// node's text colour at the node's size. `None` for a name the set
     /// does not have.
@@ -948,6 +957,10 @@ impl Ui {
 
     /// How tall a node's text is as laid out: its lines times the line
     /// height.
+    pub(crate) fn text_height_of(&self, id: NodeId) -> f32 {
+        self.text_height(id)
+    }
+
     fn text_height(&self, id: NodeId) -> f32 {
         let Some(text) = self.node(id).text.as_ref() else {
             return 0.0;
@@ -1061,7 +1074,7 @@ impl Ui {
                 if let Some(press) = self.press {
                     let node = press.node;
                     if press.dragging && self.node(node).field.is_some() {
-                        self.field_drag(node, *x);
+                        self.field_drag(node, *x, *y);
                     } else if press.dragging {
                         self.events.push((
                             node,
@@ -1104,7 +1117,7 @@ impl Ui {
                     self.focus(focus);
                     if self.node(node).field.is_some() {
                         let extend = self.shift;
-                        self.field_press(node, x, extend);
+                        self.field_press(node, x, y, extend);
                     }
                     self.paint_dirty = true;
                 }

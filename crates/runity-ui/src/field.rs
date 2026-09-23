@@ -23,6 +23,18 @@ pub(crate) struct FieldState {
     /// What it said when it got the keyboard: Escape goes back to it, and
     /// leaving it changed is a Submit.
     original: String,
+    /// Several lines: Enter is a new line, Cmd/Ctrl Enter commits, the
+    /// arrows go up and down, and the text wraps instead of scrolling.
+    pub(crate) multiline: bool,
+}
+
+impl FieldState {
+    pub(crate) fn multiline() -> Self {
+        Self {
+            multiline: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// Where copy and paste go. The window gives the UI the system's; without
@@ -95,13 +107,12 @@ impl Ui {
         if text != state.original {
             self.events.push((id, Event::Submit(text)));
         }
+        let multiline = state.multiline;
         self.set_state(
             id,
             FieldState {
-                cursor: 0,
-                anchor: 0,
-                offset: 0.0,
-                original: String::new(),
+                multiline,
+                ..FieldState::default()
             },
         );
     }
@@ -114,51 +125,77 @@ impl Ui {
         self.set_state(id, state);
     }
 
-    /// The byte offset nearest to `x` (window coordinates) in a field.
-    fn index_at(&self, id: NodeId, x: f32) -> usize {
+    /// The byte offset nearest to a point (window coordinates) in a field.
+    fn index_at(&self, id: NodeId, x: f32, y: f32) -> usize {
         let Some(buffer) = self.node(id).text.as_ref().map(|t| &t.buffer) else {
             return 0;
         };
         let state = self.state(id);
-        let left = self.text_left(id);
-        let x = x - left + state.offset;
+        let (left, top) = self.text_origin(id);
         let text = self.text(id).unwrap_or_default();
-        let Some(run) = buffer.layout_runs().next() else {
-            return 0;
+        let (lx, ly) = (x - left + state.offset, (y - top).max(0.0));
+        let Some(cursor) = buffer.hit(lx, ly) else {
+            return if ly <= 0.0 { 0 } else { text.len() };
         };
-        for glyph in run.glyphs {
-            if x < glyph.x + glyph.w / 2.0 {
-                return glyph.start;
-            }
-        }
-        text.len()
+        line_start(text, cursor.line) + cursor.index
     }
 
-    /// Where a byte offset is drawn, from the text's left edge.
-    fn caret_x(&self, id: NodeId, at: usize) -> f32 {
+    /// Where a byte offset is drawn, from the text's top left: `x`, and the
+    /// top of the line it is on.
+    fn caret_at(&self, id: NodeId, at: usize) -> (f32, f32) {
         let Some(buffer) = self.node(id).text.as_ref().map(|t| &t.buffer) else {
-            return 0.0;
+            return (0.0, 0.0);
         };
-        let Some(run) = buffer.layout_runs().next() else {
-            return 0.0;
-        };
-        for glyph in run.glyphs {
-            if at <= glyph.start {
-                return glyph.x;
+        let text = self.text(id).unwrap_or_default();
+        let (line, index) = line_of(text, at);
+        let mut last = None;
+        for run in buffer.layout_runs().filter(|r| r.line_i == line) {
+            for glyph in run.glyphs {
+                if index <= glyph.start {
+                    return (glyph.x, run.line_top);
+                }
+            }
+            last = Some((
+                run.line_w,
+                run.line_top,
+                run.glyphs.last().map_or(0, |g| g.end),
+            ));
+            // A wrapped line goes on in the next run.
+            if run.glyphs.last().is_some_and(|g| index < g.end) {
+                break;
             }
         }
-        run.line_w
+        match last {
+            Some((w, top, _)) => (w, top),
+            // An empty line: its run has no glyphs, find its top anyway.
+            None => (
+                0.0,
+                buffer
+                    .layout_runs()
+                    .find(|r| r.line_i == line)
+                    .map_or(line as f32 * buffer.metrics().line_height, |r| r.line_top),
+            ),
+        }
     }
 
-    /// The field's text starts here, in window coordinates.
-    fn text_left(&self, id: NodeId) -> f32 {
+    /// Where the field's text starts, in window coordinates.
+    fn text_origin(&self, id: NodeId) -> (f32, f32) {
         let rect = self.node(id).rect;
         let layout = self.tree.layout(id.0).ok();
-        rect.x + layout.map_or(0.0, |l| l.padding.left + l.border.left)
+        let left = rect.x + layout.map_or(0.0, |l| l.padding.left + l.border.left);
+        let top = rect.y + layout.map_or(0.0, |l| l.padding.top + l.border.top);
+        let height = layout.map_or(0.0, |l| {
+            l.size.height - l.padding.top - l.padding.bottom - l.border.top - l.border.bottom
+        });
+        // As the text is drawn: in the middle of a box taller than it.
+        (
+            left,
+            top + ((height - self.text_height_of(id)) / 2.0).max(0.0),
+        )
     }
 
-    pub(crate) fn field_press(&mut self, id: NodeId, x: f32, extend: bool) {
-        let at = self.index_at(id, x);
+    pub(crate) fn field_press(&mut self, id: NodeId, x: f32, y: f32, extend: bool) {
+        let at = self.index_at(id, x, y);
         let mut state = self.state(id);
         state.cursor = at;
         if !extend {
@@ -167,8 +204,8 @@ impl Ui {
         self.set_state(id, state);
     }
 
-    pub(crate) fn field_drag(&mut self, id: NodeId, x: f32) {
-        let at = self.index_at(id, x);
+    pub(crate) fn field_drag(&mut self, id: NodeId, x: f32, y: f32) {
+        let at = self.index_at(id, x, y);
         let mut state = self.state(id);
         state.cursor = at;
         self.set_state(id, state);
@@ -236,6 +273,36 @@ impl Ui {
                 };
                 moved(self, to, &mut state);
             }
+            Key::Up | Key::Down if state.multiline => {
+                // The same x a line up or down, as the layout has it.
+                let (x, y) = self.caret_at(id, state.cursor);
+                let line = self
+                    .node(id)
+                    .text
+                    .as_ref()
+                    .map_or(16.0, |t| t.buffer.metrics().line_height);
+                let (left, top) = self.text_origin(id);
+                let y = if key == Key::Up {
+                    y - line * 0.5
+                } else {
+                    y + line * 1.5
+                };
+                let to = if y < 0.0 {
+                    0
+                } else {
+                    self.index_at(id, left + x, top + y)
+                };
+                moved(self, to, &mut state);
+            }
+            Key::Home if state.multiline => {
+                let (line, _) = line_of(&text, state.cursor);
+                moved(self, line_start(&text, line), &mut state);
+            }
+            Key::End if state.multiline => {
+                let (line, _) = line_of(&text, state.cursor);
+                let end = line_start(&text, line) + text.split('\n').nth(line).map_or(0, str::len);
+                moved(self, end, &mut state);
+            }
             Key::Home | Key::Up => moved(self, 0, &mut state),
             Key::End | Key::Down => moved(self, text.len(), &mut state),
             Key::Backspace => {
@@ -268,9 +335,16 @@ impl Ui {
                 if let Some(paste) = self.clipboard.get() {
                     // One line: a newline in a paste would be a second
                     // line the field cannot show.
-                    let paste = paste.lines().next().unwrap_or_default().to_string();
+                    let paste = if state.multiline {
+                        paste
+                    } else {
+                        paste.lines().next().unwrap_or_default().to_string()
+                    };
                     self.replace_selection(id, &paste);
                 }
+            }
+            Key::Enter if state.multiline && !shortcut => {
+                self.replace_selection(id, "\n");
             }
             Key::Enter | Key::Tab => {
                 self.events.push((id, Event::Submit(text.clone())));
@@ -324,12 +398,15 @@ impl Ui {
             }
             return 0.0;
         }
-        let caret = self.caret_x(id, state.cursor);
-        // Keep the caret inside the box.
-        if caret - state.offset > inner.width - 2.0 {
-            state.offset = caret - inner.width + 2.0;
-        } else if caret - state.offset < 0.0 {
-            state.offset = caret;
+        let (caret_x, caret_y) = self.caret_at(id, state.cursor);
+        // Keep the caret inside the box, sideways; a field of several
+        // lines wraps instead.
+        if state.multiline {
+            state.offset = 0.0;
+        } else if caret_x - state.offset > inner.width - 2.0 {
+            state.offset = caret_x - inner.width + 2.0;
+        } else if caret_x - state.offset < 0.0 {
+            state.offset = caret_x;
         }
         let offset = state.offset;
         let line = self
@@ -339,15 +416,32 @@ impl Ui {
             .map_or(16.0, |t| t.buffer.metrics().line_height);
         let range = self.field_selection(id);
         let clip = clip.intersect(&inner);
-        let from = self.caret_x(id, range.start);
-        let to = self.caret_x(id, range.end);
+        // The selection: a band on each line it covers.
+        let mut bands = Vec::new();
+        if !range.is_empty() {
+            let (sx, sy) = self.caret_at(id, range.start);
+            let (ex, ey) = self.caret_at(id, range.end);
+            let mut y = sy;
+            while y <= ey + 0.5 {
+                let from = if (y - sy).abs() < 0.5 { sx } else { 0.0 };
+                let to = if (y - ey).abs() < 0.5 {
+                    ex
+                } else {
+                    inner.width + offset
+                };
+                if to > from {
+                    bands.push((from, y, to - from));
+                }
+                y += line;
+            }
+        }
         let layer_rects = &mut self.layers.last_mut().expect("a layer").rects;
-        if from != to {
+        for (from, y, width) in bands {
             layer_rects.push(RectPaint {
                 rect: Rect {
                     x: inner.x + from - offset,
-                    y: text_y,
-                    width: to - from,
+                    y: text_y + y,
+                    width,
                     height: line,
                 },
                 fill: CARET.alpha(30),
@@ -359,8 +453,8 @@ impl Ui {
         }
         layer_rects.push(RectPaint {
             rect: Rect {
-                x: inner.x + caret - offset,
-                y: text_y + 1.0,
+                x: inner.x + caret_x - offset,
+                y: text_y + caret_y + 1.0,
                 width: 1.5,
                 height: line - 2.0,
             },
@@ -373,4 +467,21 @@ impl Ui {
         self.node_mut(id).field = Some(state);
         offset
     }
+}
+
+/// Where line `line` (0-based, split at `\n`) starts, as a byte offset.
+fn line_start(text: &str, line: usize) -> usize {
+    text.split('\n')
+        .take(line)
+        .map(|l| l.len() + 1)
+        .sum::<usize>()
+        .min(text.len())
+}
+
+/// Which line a byte offset is on, and how far into it.
+fn line_of(text: &str, at: usize) -> (usize, usize) {
+    let before = &text[..at.min(text.len())];
+    let line = before.matches('\n').count();
+    let start = before.rfind('\n').map_or(0, |i| i + 1);
+    (line, at - start)
 }

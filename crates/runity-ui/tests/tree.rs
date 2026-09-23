@@ -407,3 +407,45 @@ fn a_node_moves_to_another_parent_whole() {
     ui.paint();
     assert_eq!(ui.rect(label).y, ui.rect(b).y);
 }
+
+#[test]
+fn a_textarea_takes_new_lines_and_moves_between_them() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let area = ui.add_textarea(
+        root,
+        Style::column().width(300.0).padding(6.0),
+        "(\n    a: 1,\n)",
+    );
+    ui.click(area);
+    ui.events();
+    // To the end of everything, then up one line: inside `a: 1,`.
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::A));
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::Right));
+    ui.handle(&InputEvent::KeyDown(Key::Up));
+    ui.handle(&InputEvent::KeyDown(Key::End));
+    ui.handle(&InputEvent::KeyDown(Key::Enter));
+    ui.handle(&InputEvent::Text("    b: 2,".into()));
+    assert_eq!(ui.text(area), Some("(\n    a: 1,\n    b: 2,\n)"));
+    // Enter was a new line, not a commit; Cmd Enter commits.
+    assert!(!ui
+        .events()
+        .iter()
+        .any(|(_, e)| matches!(e, Event::Submit(_))));
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::Enter));
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert!(ui
+        .events()
+        .iter()
+        .any(|(_, e)| matches!(e, Event::Submit(t) if t.contains("b: 2"))));
+    // It is as tall as its four lines.
+    ui.paint();
+    assert!(
+        ui.rect(area).height > 4.0 * 13.0 * 1.3,
+        "{:?}",
+        ui.rect(area)
+    );
+}

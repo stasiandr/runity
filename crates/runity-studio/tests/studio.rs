@@ -893,3 +893,45 @@ fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
     click(&mut s, "compass middle");
     assert!(!s.session.is_orthographic());
 }
+
+#[test]
+fn a_long_value_is_edited_on_several_lines() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(
+            crate_id,
+            "light",
+            "(color: (1.0, 0.9, 0.8), intensity: 3.0, range: 8.0)",
+        )
+        .unwrap();
+    click(&mut s, "line crate");
+    click(&mut s, "light");
+    // Enter is a new line inside the value; Cmd Enter commits it.
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "(");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, "    intensity: 5.0,");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, ")");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    key(&mut s, Key::Enter);
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    let light = s
+        .session
+        .inspect(crate_id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "light")
+        .unwrap()
+        .value;
+    assert!(
+        light.contains("intensity:5.0") || light.contains("intensity: 5.0"),
+        "{light}"
+    );
+}

@@ -596,8 +596,24 @@ impl Inspector {
                 }
             }
             None => {
-                let slot =
-                    ui.add_field(line, field_style().fill().mono().text_size(11.5), &f.value);
+                // A long value — a light, a route, a component with no
+                // shape to go by — gets room: several lines, wrapping.
+                let long = f.value.len() > 36 || f.name.starts_with("components.");
+                let slot = if long {
+                    ui.add_textarea(
+                        line,
+                        field_style()
+                            .fill()
+                            .auto_height()
+                            .min_height(22.0)
+                            .padding_y(3.0)
+                            .mono()
+                            .text_size(11.5),
+                        &f.value,
+                    )
+                } else {
+                    ui.add_field(line, field_style().fill().mono().text_size(11.5), &f.value)
+                };
                 ui.set_name(slot, f.name.clone());
                 self.slot(slot, &f.name, None, &f.value);
                 if matches!(f.name.as_str(), "material" | "model" | "prefab") {
