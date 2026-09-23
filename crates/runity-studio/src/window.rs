@@ -27,6 +27,13 @@ struct Running {
     renderer: UiRenderer,
     studio: Studio,
     title: String,
+    /// Whether the input method is on: while a text field is focused.
+    ime: bool,
+    /// Text that came as a key and text an input method committed, with
+    /// when: some platforms send both for one keystroke, and it is typed
+    /// once.
+    last_key_text: Option<(String, Instant)>,
+    last_commit: Option<(String, Instant)>,
 }
 
 struct App {
@@ -109,6 +116,9 @@ impl ApplicationHandler for App {
             renderer,
             studio,
             title: String::new(),
+            ime: false,
+            last_key_text: None,
+            last_commit: None,
         });
     }
 
@@ -144,6 +154,22 @@ impl ApplicationHandler for App {
                     .resize(size.width as f32 / scale, size.height as f32 / scale, scale);
             }
             WindowEvent::DroppedFile(path) => run.studio.drop_file(path),
+            WindowEvent::Ime(ime) => {
+                match ime {
+                    winit::event::Ime::Preedit(text, _) => run.studio.ime_preedit(text),
+                    winit::event::Ime::Commit(text) => {
+                        let twice = run.last_key_text.as_ref().is_some_and(|(t, at)| {
+                            t == text && at.elapsed() < Duration::from_millis(60)
+                        });
+                        if !twice {
+                            run.studio.handle(&InputEvent::Text(text.clone()));
+                        }
+                        run.last_commit = Some((text.clone(), Instant::now()));
+                    }
+                    _ => {}
+                }
+                return;
+            }
             WindowEvent::RedrawRequested => {
                 run.studio.frame();
                 let cursor = match run.studio.cursor() {
@@ -154,6 +180,21 @@ impl ApplicationHandler for App {
                     crate::studio::Cursor::Brush => winit::window::CursorIcon::Crosshair,
                 };
                 run.window.set_cursor(cursor);
+                // The input method only while typing, its candidates at
+                // the caret.
+                let typing = run.studio.typing();
+                if typing != run.ime {
+                    run.window.set_ime_allowed(typing);
+                    run.ime = typing;
+                }
+                if typing {
+                    if let Some(r) = run.studio.ime_area() {
+                        run.window.set_ime_cursor_area(
+                            winit::dpi::LogicalPosition::new(r.x, r.y),
+                            winit::dpi::LogicalSize::new(r.width.max(1.0), r.height),
+                        );
+                    }
+                }
                 let title = run.studio.title();
                 if title != run.title {
                     run.window.set_title(&title);
@@ -184,6 +225,16 @@ impl ApplicationHandler for App {
                     x: x / scale,
                     y: y / scale,
                 },
+                InputEvent::Text(text) => {
+                    let twice = run.last_commit.as_ref().is_some_and(|(t, at)| {
+                        *t == text && at.elapsed() < Duration::from_millis(60)
+                    });
+                    run.last_key_text = Some((text.clone(), Instant::now()));
+                    if twice {
+                        continue;
+                    }
+                    InputEvent::Text(text)
+                }
                 other => other,
             };
             run.studio.handle(&input);

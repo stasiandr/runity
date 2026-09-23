@@ -449,3 +449,30 @@ fn a_textarea_takes_new_lines_and_moves_between_them() {
         ui.rect(area)
     );
 }
+
+#[test]
+fn an_input_method_composes_in_place_and_commits_once() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let field = ui.add_field(root, Style::row().size(200.0, 24.0), "ab");
+    ui.click(field);
+    ui.handle(&InputEvent::KeyDown(Key::End));
+    ui.events();
+    ui.ime_preedit("に");
+    ui.ime_preedit("にほ");
+    assert_eq!(ui.text(field), Some("abにほ"), "shown while composing");
+    assert!(
+        !ui.events()
+            .iter()
+            .any(|(_, e)| matches!(e, Event::Changed(_))),
+        "composing is not typing"
+    );
+    assert!(ui.caret_rect().is_some());
+    ui.ime_preedit("");
+    assert_eq!(ui.text(field), Some("ab"));
+    ui.handle(&InputEvent::Text("日本".into()));
+    assert_eq!(ui.text(field), Some("ab日本"));
+    assert!(ui
+        .events()
+        .contains(&(field, Event::Changed("ab日本".into()))));
+}

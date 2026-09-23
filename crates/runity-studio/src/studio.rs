@@ -513,6 +513,23 @@ impl Studio {
             || !self.session.previewing().is_empty()
     }
 
+    /// Whether a text field has the keyboard: the window turns the input
+    /// method on only then, so W, E and R stay the tools elsewhere.
+    pub fn typing(&self) -> bool {
+        self.ui.focused().is_some_and(|f| self.ui.is_field(f))
+    }
+
+    /// What an input method is composing, shown in the focused field.
+    pub fn ime_preedit(&mut self, text: &str) {
+        self.last_input = Instant::now();
+        self.ui.ime_preedit(text);
+    }
+
+    /// Where the input method's candidates go: by the caret.
+    pub fn ime_area(&self) -> Option<runity_ui::Rect> {
+        self.ui.caret_rect()
+    }
+
     /// What the pointer should look like where it is: an I-beam over a
     /// field, a resize arrow over a border between panels.
     pub fn cursor(&self) -> Cursor {

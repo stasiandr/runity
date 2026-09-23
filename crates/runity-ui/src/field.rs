@@ -26,6 +26,10 @@ pub(crate) struct FieldState {
     /// Several lines: Enter is a new line, Cmd/Ctrl Enter commits, the
     /// arrows go up and down, and the text wraps instead of scrolling.
     pub(crate) multiline: bool,
+    /// Text an input method is composing, not yet typed: where it sits in
+    /// the field's text, and what it is. Shown underlined, never reported
+    /// as a change.
+    preedit: Option<(usize, String)>,
 }
 
 impl FieldState {
@@ -228,7 +232,65 @@ impl Ui {
         self.events.push((id, Event::Changed(next)));
     }
 
+    /// What an input method is composing, shown in the focused field in
+    /// place, underlined; `""` when the composition ends (a commit follows
+    /// as typed text).
+    pub fn ime_preedit(&mut self, text: &str) {
+        let Some(id) = self.focused.filter(|f| self.is_field(*f)) else {
+            return;
+        };
+        let mut state = self.state(id);
+        let shown = self.text(id).unwrap_or_default().to_string();
+        // The text without the old composition.
+        let (start, base) = match &state.preedit {
+            Some((start, old)) => {
+                let mut base = shown.clone();
+                base.replace_range(*start..*start + old.len(), "");
+                (*start, base)
+            }
+            None => (state.cursor.min(state.anchor), shown.clone()),
+        };
+        if text.is_empty() {
+            state.preedit = None;
+            state.cursor = start;
+            state.anchor = start;
+            self.set_text(id, &base);
+        } else {
+            let mut composite = base.clone();
+            composite.insert_str(start, text);
+            state.preedit = Some((start, text.to_string()));
+            state.cursor = start + text.len();
+            state.anchor = state.cursor;
+            self.set_text(id, &composite);
+        }
+        self.set_state(id, state);
+    }
+
+    /// Where the caret of the focused field is, in window coordinates: what
+    /// an input method places its candidate window by.
+    pub fn caret_rect(&self) -> Option<Rect> {
+        let id = self.focused.filter(|f| self.is_field(*f))?;
+        let state = self.state(id);
+        let (x, y) = self.caret_at(id, state.cursor);
+        let (left, top) = self.text_origin(id);
+        let line = self
+            .node(id)
+            .text
+            .as_ref()
+            .map_or(16.0, |t| t.buffer.metrics().line_height);
+        Some(Rect {
+            x: left + x - state.offset,
+            y: top + y,
+            width: 1.0,
+            height: line,
+        })
+    }
+
     pub(crate) fn field_type(&mut self, id: NodeId, text: &str) {
+        // A composition still showing gives way to what was committed.
+        if self.state(id).preedit.is_some() {
+            self.ime_preedit("");
+        }
         // Control characters arrive as text on some platforms alongside
         // the key that made them; the key is what handles them.
         let printable: String = text.chars().filter(|c| !c.is_control()).collect();
@@ -435,6 +497,18 @@ impl Ui {
                 y += line;
             }
         }
+        // The composition, underlined.
+        if let Some((start, text)) = state.preedit.clone() {
+            let (sx, sy) = self.caret_at(id, start);
+            let (ex, _) = self.caret_at(id, start + text.len());
+            bands_underline(
+                &mut self.layers,
+                inner.x + sx - offset,
+                text_y + sy + line - 2.0,
+                (ex - sx).max(1.0),
+                clip,
+            );
+        }
         let layer_rects = &mut self.layers.last_mut().expect("a layer").rects;
         for (from, y, width) in bands {
             layer_rects.push(RectPaint {
@@ -484,4 +558,23 @@ fn line_of(text: &str, at: usize) -> (usize, usize) {
     let line = before.matches('\n').count();
     let start = before.rfind('\n').map_or(0, |i| i + 1);
     (line, at - start)
+}
+
+/// A line under text being composed.
+fn bands_underline(layers: &mut [crate::Layer], x: f32, y: f32, width: f32, clip: Rect) {
+    if let Some(layer) = layers.last_mut() {
+        layer.rects.push(RectPaint {
+            rect: Rect {
+                x,
+                y,
+                width,
+                height: 1.5,
+            },
+            fill: CARET,
+            border: Color::TRANSPARENT,
+            border_width: 0.0,
+            radius: 0.0,
+            clip,
+        });
+    }
 }

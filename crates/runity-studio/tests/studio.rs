@@ -1197,3 +1197,24 @@ fn the_animation_tab_plays_a_clip_in_the_view() {
     click(&mut s, "animation stop");
     assert!(s.session.previewing().is_empty());
 }
+
+#[test]
+fn an_input_method_composes_in_the_focused_field_only() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert!(
+        !s.typing(),
+        "the Scene view has the keyboard: no input method"
+    );
+    click(&mut s, "hierarchy search");
+    assert!(s.typing());
+    s.ime_preedit("クレ");
+    let search = s.ui.find("hierarchy search").unwrap();
+    assert_eq!(s.ui.text(search), Some("クレ"));
+    assert!(s.ime_area().is_some());
+    s.ime_preedit("");
+    s.handle(&InputEvent::Text("crate".into()));
+    s.frame();
+    assert_eq!(s.ui.text(search), Some("crate"));
+}
