@@ -151,6 +151,40 @@ impl Library {
         Ok(id)
     }
 
+    /// Add every `.rasset` in `directory` that is not in the library yet.
+    ///
+    /// What [`Library::reload_changed`] cannot see: it re-reads files it
+    /// already has, and an asset imported while the game runs is a file it
+    /// has never heard of. Unreadable files are skipped, as in
+    /// [`Library::open`]; the next call tries them again.
+    pub fn add_new(&mut self, directory: impl AsRef<Path>) -> Vec<Reloaded> {
+        let Ok(entries) = std::fs::read_dir(directory.as_ref()) else {
+            return Vec::new();
+        };
+        let known: std::collections::HashSet<PathBuf> =
+            self.entries.iter().map(|e| e.path.clone()).collect();
+        let mut fresh: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("rasset"))
+            .filter(|path| !known.contains(path))
+            .collect();
+        fresh.sort();
+        fresh
+            .into_iter()
+            .filter_map(|path| {
+                let id = self.add(&path).ok()?;
+                let kind = self.entries[self.by_id[&id]].kind;
+                Some(Reloaded { id, kind, path })
+            })
+            .collect()
+    }
+
+    /// The name a scene uses for this asset.
+    pub fn name(&self, id: AssetId) -> Option<&str> {
+        Some(self.entries[*self.by_id.get(&id)?].name.as_str())
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

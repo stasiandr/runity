@@ -4,11 +4,14 @@
 //! wanting to add a component adds one, and the renderer only asks for the
 //! three it needs to draw something.
 
+use std::collections::{HashMap, HashSet};
+
 use hecs::World;
 
+use crate::id::EntityId;
 use crate::material::Material;
 use crate::render::{Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, TextureHandle};
-use crate::scene::{Body, Scene, Transform};
+use crate::scene::{Body, EntityDesc, Scene, Transform};
 
 /// Which mesh an entity draws with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +129,7 @@ pub fn spawn_scene_with(
 /// be fine and dropping the branch would move them. It just gets nothing to
 /// draw.
 fn spawn_subtree(
-    desc: &crate::scene::EntityDesc,
+    desc: &EntityDesc,
     parent: Option<hecs::Entity>,
     parent_matrix: glam::Mat4,
     world: &mut World,
@@ -135,26 +138,7 @@ fn spawn_subtree(
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
-    let entity = world.spawn((
-        desc.transform,
-        WorldTransform(world_matrix),
-        Physics(desc.body),
-        Shape(desc.collider),
-        SceneId(desc.id),
-    ));
-    if let Some(parent) = parent {
-        let _ = world.insert_one(entity, Parent(parent));
-    }
-    match resolve(&desc.model) {
-        Some(mesh) => {
-            let surface = Surface(desc.material_from(palette));
-            let _ = world.insert(entity, (Model(mesh), surface));
-        }
-        None => missing.push(Unresolved {
-            entity_name: desc.name.clone(),
-            model: desc.model.clone(),
-        }),
-    }
+    let entity = spawn_one(desc, parent, world_matrix, world, resolve, palette, missing);
     for child in &desc.children {
         spawn_subtree(
             child,
@@ -165,6 +149,261 @@ fn spawn_subtree(
             palette,
             missing,
         );
+    }
+}
+
+/// Spawn one entity from its line in the file, without its children.
+fn spawn_one(
+    desc: &EntityDesc,
+    parent: Option<hecs::Entity>,
+    world_matrix: glam::Mat4,
+    world: &mut World,
+    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    palette: &impl Fn(&str) -> Option<Material>,
+    missing: &mut Vec<Unresolved>,
+) -> hecs::Entity {
+    let entity = world.spawn((
+        desc.transform,
+        WorldTransform(world_matrix),
+        Physics(desc.body),
+        Shape(desc.collider),
+        SceneId(desc.id),
+    ));
+    if let Some(parent) = parent {
+        let _ = world.insert_one(entity, Parent(parent));
+    }
+    dress(desc, entity, world, resolve, palette, missing);
+    entity
+}
+
+/// Give an entity the mesh and surface its line names, or take them away
+/// when the mesh cannot be found.
+pub(crate) fn dress(
+    desc: &EntityDesc,
+    entity: hecs::Entity,
+    world: &mut World,
+    resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+    palette: &impl Fn(&str) -> Option<Material>,
+    missing: &mut Vec<Unresolved>,
+) {
+    match resolve(&desc.model) {
+        Some(mesh) => {
+            let surface = Surface(desc.material_from(palette));
+            let _ = world.insert(entity, (Model(mesh), surface));
+        }
+        None => {
+            let _ = world.remove::<(Model, Surface)>(entity);
+            missing.push(Unresolved {
+                entity_name: desc.name.clone(),
+                model: desc.model.clone(),
+            });
+        }
+    }
+}
+
+/// What [`patch_scene`] did to a world.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Patched {
+    /// Lines new in the file, spawned.
+    pub spawned: usize,
+    /// Lines that changed, patched in the fields that changed and no others.
+    pub updated: usize,
+    /// Lines gone from the file, despawned with whatever hung off them.
+    pub despawned: usize,
+    /// Models the new or changed lines name and nothing answers to.
+    pub missing: Vec<Unresolved>,
+}
+
+impl Patched {
+    /// Whether the world was left as it was.
+    pub fn is_empty(&self) -> bool {
+        self.spawned == 0 && self.updated == 0 && self.despawned == 0
+    }
+}
+
+/// Bring a running world from one version of a scene to the next.
+///
+/// This is what reloading a scene while the game runs means here, and it is
+/// the thing an entity store makes cheap: every entity spawned from the file
+/// carries its line's [`SceneId`], so the new version is matched to the
+/// world line by line, and for each line only the **fields that differ
+/// between the two versions** are written. What the file did not change,
+/// the world keeps — a door the game swung open stays open when someone
+/// recolours the wall beside it; a component the game added is never
+/// touched; an entity the game spawned itself is not the file's to remove.
+///
+/// Lines new in `after` are spawned. Lines gone from it are despawned, and
+/// so is everything parented to them, game-spawned or not — what hangs off
+/// a thing goes with it. A line the world has but `before` lacks is treated
+/// as changed in every field.
+///
+/// Both versions are what [`crate::instantiate`] returns — prefab
+/// instances already expanded — so a changed prefab is a changed scene.
+pub fn patch_scene(
+    before: &Scene,
+    after: &Scene,
+    world: &mut World,
+    mut resolve: impl FnMut(&str) -> Option<MeshHandle>,
+    palette: impl Fn(&str) -> Option<Material>,
+) -> Patched {
+    let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
+    index(&before.entities, None, &mut old);
+    let live: HashMap<EntityId, hecs::Entity> = world
+        .query::<(hecs::Entity, &SceneId)>()
+        .iter()
+        .map(|(entity, id)| (id.0, entity))
+        .collect();
+
+    let mut patch = Patch {
+        old: &old,
+        live: &live,
+        kept: HashSet::new(),
+        out: Patched::default(),
+    };
+    for desc in &after.entities {
+        patch.subtree(
+            desc,
+            None,
+            glam::Mat4::IDENTITY,
+            world,
+            &mut resolve,
+            &palette,
+        );
+    }
+    let Patch { kept, mut out, .. } = patch;
+
+    let mut doomed: HashSet<hecs::Entity> = live
+        .iter()
+        .filter(|(id, _)| !kept.contains(*id))
+        .map(|(_, entity)| *entity)
+        .collect();
+    loop {
+        let hanging: Vec<hecs::Entity> = world
+            .query::<(hecs::Entity, &Parent)>()
+            .iter()
+            .filter(|(entity, parent)| doomed.contains(&parent.0) && !doomed.contains(entity))
+            .map(|(entity, _)| entity)
+            .collect();
+        if hanging.is_empty() {
+            break;
+        }
+        doomed.extend(hanging);
+    }
+    for entity in &doomed {
+        let _ = world.despawn(*entity);
+    }
+    out.despawned = doomed.len();
+
+    apply_hierarchy(world);
+    out
+}
+
+/// Every line of a scene by ID, with the ID of the line it hangs under.
+fn index<'a>(
+    entities: &'a [EntityDesc],
+    parent: Option<EntityId>,
+    out: &mut HashMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
+) {
+    for desc in entities {
+        out.insert(desc.id, (desc, parent));
+        index(&desc.children, Some(desc.id), out);
+    }
+}
+
+struct Patch<'a> {
+    old: &'a HashMap<EntityId, (&'a EntityDesc, Option<EntityId>)>,
+    live: &'a HashMap<EntityId, hecs::Entity>,
+    kept: HashSet<EntityId>,
+    out: Patched,
+}
+
+impl Patch<'_> {
+    fn subtree(
+        &mut self,
+        desc: &EntityDesc,
+        parent: Option<(EntityId, hecs::Entity)>,
+        parent_matrix: glam::Mat4,
+        world: &mut World,
+        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        palette: &impl Fn(&str) -> Option<Material>,
+    ) {
+        self.kept.insert(desc.id);
+        let world_matrix = parent_matrix * desc.transform.matrix();
+        let entity = match self.live.get(&desc.id) {
+            Some(&entity) if world.contains(entity) => {
+                let was = self.old.get(&desc.id).copied();
+                if self.update(desc, was, parent, entity, world, resolve, palette) {
+                    self.out.updated += 1;
+                }
+                entity
+            }
+            _ => {
+                self.out.spawned += 1;
+                spawn_one(
+                    desc,
+                    parent.map(|(_, entity)| entity),
+                    world_matrix,
+                    world,
+                    resolve,
+                    palette,
+                    &mut self.out.missing,
+                )
+            }
+        };
+        for child in &desc.children {
+            self.subtree(
+                child,
+                Some((desc.id, entity)),
+                world_matrix,
+                world,
+                resolve,
+                palette,
+            );
+        }
+    }
+
+    /// Write the fields of one line that differ from its previous version.
+    /// Returns whether anything did.
+    #[allow(clippy::too_many_arguments)]
+    fn update(
+        &mut self,
+        desc: &EntityDesc,
+        was: Option<(&EntityDesc, Option<EntityId>)>,
+        parent: Option<(EntityId, hecs::Entity)>,
+        entity: hecs::Entity,
+        world: &mut World,
+        resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
+        palette: &impl Fn(&str) -> Option<Material>,
+    ) -> bool {
+        let mut changed = false;
+        if was.is_none_or(|(old, _)| old.transform != desc.transform) {
+            let _ = world.insert_one(entity, desc.transform);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.model != desc.model || old.material != desc.material) {
+            dress(desc, entity, world, resolve, palette, &mut self.out.missing);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.body != desc.body) {
+            let _ = world.insert_one(entity, Physics(desc.body));
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.collider != desc.collider) {
+            let _ = world.insert_one(entity, Shape(desc.collider));
+            changed = true;
+        }
+        if was.is_none_or(|(_, old_parent)| old_parent != parent.map(|(id, _)| id)) {
+            match parent {
+                Some((_, parent)) => {
+                    let _ = world.insert_one(entity, Parent(parent));
+                }
+                None => {
+                    let _ = world.remove_one::<Parent>(entity);
+                }
+            }
+            changed = true;
+        }
+        changed
     }
 }
 
@@ -301,7 +540,6 @@ pub fn build_frame(world: &World, camera: Camera, lighting: Lighting, fog: FogSe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::EntityDesc;
     use glam::Vec3;
 
     /// An entity with nothing set, for `..blank()` in the tests below.
@@ -552,5 +790,181 @@ mod tests {
         // should be is a smaller failure than a subtree that silently moved.
         assert_eq!(world.len(), 2);
         assert_eq!(world.query::<&Model>().iter().count(), 1);
+    }
+
+    // --- live reload ------------------------------------------------------
+
+    fn scene(text: &str) -> Scene {
+        let mut scene: Scene = ron::from_str(text).unwrap();
+        scene.assign_ids();
+        scene
+    }
+
+    fn spawned(scene: &Scene) -> World {
+        let mut world = World::new();
+        spawn_scene(scene, &mut world, |_| Some(MeshHandle::TEST));
+        world
+    }
+
+    fn entity(world: &World, id: &str) -> hecs::Entity {
+        let id: EntityId = id.parse().unwrap();
+        world
+            .query::<(hecs::Entity, &SceneId)>()
+            .iter()
+            .find(|(_, s)| s.0 == id)
+            .map(|(e, _)| e)
+            .unwrap_or_else(|| panic!("no entity {id}"))
+    }
+
+    fn patch(before: &Scene, after: &Scene, world: &mut World) -> Patched {
+        patch_scene(before, after, world, |_| Some(MeshHandle::TEST), |_| None)
+    }
+
+    /// Something the game put on an entity, which no file knows about.
+    #[derive(Debug, PartialEq)]
+    struct Health(u32);
+
+    const DOOR: &str = r#"(entities: [
+        (id: "d", name: "door", model: "m", transform: (position: (0.0, 0.0, 0.0))),
+        (id: "a1", name: "wall", model: "m", material: "stone"),
+    ])"#;
+
+    #[test]
+    fn a_reload_writes_only_what_the_file_changed() {
+        let before = scene(DOOR);
+        let mut world = spawned(&before);
+        let door = entity(&world, "d");
+        // The game swings the door open and gives it a component of its own.
+        world
+            .insert_one(
+                door,
+                Transform {
+                    position: Vec3::X,
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+        world.insert_one(door, Health(3)).unwrap();
+
+        // Someone recolours the wall.
+        let after = scene(&DOOR.replace(r#"material: "stone""#, r#"material: "bark""#));
+        let done = patch(&before, &after, &mut world);
+        assert_eq!(
+            (done.spawned, done.updated, done.despawned),
+            (0, 1, 0),
+            "{done:?}"
+        );
+
+        assert_eq!(
+            world.get::<&Transform>(door).unwrap().position,
+            Vec3::X,
+            "the door stays where the game put it"
+        );
+        assert_eq!(*world.get::<&Health>(door).unwrap(), Health(3));
+        let wall = entity(&world, "a1");
+        assert_eq!(
+            world.get::<&Surface>(wall).unwrap().0,
+            crate::material::builtin::BARK,
+            "and the wall has its new colour"
+        );
+    }
+
+    #[test]
+    fn a_field_the_file_changed_wins_over_the_game() {
+        // The file is the source: editing the door's position means you want
+        // it there, whatever the game had done with it.
+        let before = scene(DOOR);
+        let mut world = spawned(&before);
+        let door = entity(&world, "d");
+        world
+            .insert_one(
+                door,
+                Transform {
+                    position: Vec3::X,
+                    ..Transform::default()
+                },
+            )
+            .unwrap();
+
+        let after = scene(&DOOR.replace("(0.0, 0.0, 0.0)", "(0.0, 0.0, 5.0)"));
+        patch(&before, &after, &mut world);
+        assert_eq!(
+            world.get::<&Transform>(door).unwrap().position,
+            Vec3::new(0.0, 0.0, 5.0)
+        );
+        assert_eq!(
+            world.get::<&WorldTransform>(door).unwrap().0.w_axis.z,
+            5.0,
+            "and its world transform follows"
+        );
+    }
+
+    #[test]
+    fn lines_added_and_removed_are_spawned_and_despawned() {
+        let before = scene(DOOR);
+        let mut world = spawned(&before);
+        // The game hangs a torch on the wall, and spawns a bird of its own.
+        let wall = entity(&world, "a1");
+        let torch = world.spawn((Transform::default(), Parent(wall)));
+        let bird = world.spawn((Transform::default(),));
+
+        let after = scene(
+            r#"(entities: [
+                (id: "d", name: "door", model: "m", transform: (position: (0.0, 0.0, 0.0))),
+                (id: "b2", name: "roof", model: "m"),
+            ])"#,
+        );
+        let done = patch(&before, &after, &mut world);
+        assert_eq!((done.spawned, done.despawned), (1, 2), "{done:?}");
+        assert!(!world.contains(wall));
+        assert!(
+            !world.contains(torch),
+            "what hung off the wall goes with it"
+        );
+        assert!(world.contains(bird), "what the game made on its own stays");
+        entity(&world, "b2");
+    }
+
+    #[test]
+    fn a_reparented_line_moves_under_its_new_parent() {
+        let before = scene(
+            r#"(entities: [(id: "a", name: "a", model: "m", transform: (position: (10.0, 0.0, 0.0))), (id: "b", name: "b", model: "m")])"#,
+        );
+        let mut world = spawned(&before);
+        let after = scene(
+            r#"(entities: [(id: "a", name: "a", model: "m", transform: (position: (10.0, 0.0, 0.0)), children: [(id: "b", name: "b", model: "m")])])"#,
+        );
+        let done = patch(&before, &after, &mut world);
+        assert_eq!(done.updated, 1, "{done:?}");
+        let (a, b) = (entity(&world, "a"), entity(&world, "b"));
+        assert_eq!(world.get::<&Parent>(b).unwrap().0, a);
+        assert_eq!(world.get::<&WorldTransform>(b).unwrap().0.w_axis.x, 10.0);
+    }
+
+    #[test]
+    fn the_same_file_twice_changes_nothing() {
+        let before = scene(DOOR);
+        let mut world = spawned(&before);
+        assert!(patch(&before, &before.clone(), &mut world).is_empty());
+    }
+
+    #[test]
+    fn a_model_nothing_answers_to_is_reported_and_leaves_nothing_drawn() {
+        let before = scene(DOOR);
+        let mut world = spawned(&before);
+        let after = scene(&DOOR.replace(
+            r#"name: "door", model: "m""#,
+            r#"name: "door", model: "gone""#,
+        ));
+        let done = patch_scene(
+            &before,
+            &after,
+            &mut world,
+            |name| (name == "m").then_some(MeshHandle::TEST),
+            |_| None,
+        );
+        assert_eq!(done.missing.len(), 1);
+        assert_eq!(done.missing[0].model, "gone");
+        assert!(world.get::<&Model>(entity(&world, "d")).is_err());
     }
 }

@@ -30,6 +30,7 @@ pub mod gpu;
 pub mod id;
 pub mod input;
 pub mod library;
+pub mod live;
 pub mod material;
 #[cfg(feature = "physics")]
 pub mod physics;
@@ -60,6 +61,7 @@ pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
+pub use live::{LiveScene, Reload};
 pub use material::{Material, Shading};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};
@@ -74,6 +76,6 @@ pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use world::{
-    build_frame, captured_view, scene_camera, scene_lighting, spawn_scene, spawn_scene_with, Model,
-    Posed, SceneId, Shape, Surface, Textured,
+    build_frame, captured_view, patch_scene, scene_camera, scene_lighting, spawn_scene,
+    spawn_scene_with, Model, Patched, Posed, SceneId, Shape, Surface, Textured,
 };

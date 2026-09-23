@@ -8,15 +8,20 @@
 //! Escape quits. It exists to prove the loop: the world advances in fixed
 //! steps while the camera turns on the frame, so looking around stays smooth
 //! at any frame rate and movement does not change speed with it.
+//!
+//! And the other loop: save the scene, a prefab, or re-import an asset while
+//! it runs, and the change is in the next frames — patched into the world,
+//! not reloaded over it.
 
-use runity::builtin;
 use runity::glam::Vec3;
 use runity::render::{Camera, FogSettings, Frame};
 use runity::shell::{run, Context, Game, WindowConfig};
-use runity::{Key, MeshHandle, Scene, TextRun, Ui};
+use runity::{Key, LiveScene, TextRun, Ui};
 
 struct Walk {
-    scene: Scene,
+    live: LiveScene,
+    /// Seconds since the files were last looked at.
+    since_reload: f32,
     world: hecs::World,
     /// Where the eye is. Moved on the fixed step, so two machines walking the
     /// same input end up in the same place.
@@ -25,27 +30,25 @@ struct Walk {
     /// tick feels like a head in treacle.
     yaw: f32,
     pitch: f32,
-    uploaded: Vec<(String, MeshHandle)>,
-    started: bool,
     ui: Ui,
 }
 
 impl Walk {
-    fn new(scene: Scene) -> Self {
+    fn new(live: LiveScene) -> Self {
         // Start where the scene says it is looked at from, so walking in and
         // rendering headlessly begin from the same place. A hardcoded
         // viewpoint here meant the two disagreed, and the one you were
         // looking at was whichever tool you happened to run.
-        let eye = scene.view.position;
-        let look = (scene.view.target - eye).normalize_or_zero();
+        let view = live.scene().view;
+        let eye = view.position;
+        let look = (view.target - eye).normalize_or_zero();
         Self {
-            scene,
+            live,
+            since_reload: 0.0,
             world: hecs::World::new(),
             eye,
             yaw: look.x.atan2(-look.z),
             pitch: look.y.clamp(-1.0, 1.0).asin(),
-            uploaded: Vec::new(),
-            started: false,
             ui: Ui::new(),
         }
     }
@@ -61,23 +64,10 @@ impl Walk {
 
 impl Game for Walk {
     fn start(&mut self, ctx: &mut Context) {
-        let mut uploaded = std::mem::take(&mut self.uploaded);
-        let renderer = &mut *ctx.renderer;
-        let gpu = ctx.gpu;
-        let missing = runity::spawn_scene(&self.scene, &mut self.world, |name| {
-            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-                return Some(found.1);
-            }
-            let mesh = builtin::by_name(name)?;
-            let handle = renderer.upload_mesh_owned(gpu, &mesh);
-            uploaded.push((name.to_string(), handle));
-            Some(handle)
-        });
+        let missing = self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer);
         for m in &missing {
             eprintln!("{}: no model named {}", m.entity_name, m.model);
         }
-        self.uploaded = uploaded;
-        self.started = true;
     }
 
     fn step(&mut self, ctx: &mut Context) {
@@ -104,6 +94,24 @@ impl Game for Walk {
         if ctx.input.pressed(Key::Escape) {
             ctx.quit();
         }
+        // A few times a second is as fast as anyone saves a file.
+        self.since_reload += ctx.time.delta();
+        if self.since_reload > 0.25 {
+            self.since_reload = 0.0;
+            let done = self.live.reload(&mut self.world, ctx.gpu, ctx.renderer);
+            for problem in &done.problems {
+                eprintln!("{problem}");
+            }
+            if let Some(patched) = done.patched.filter(|p| !p.is_empty()) {
+                eprintln!(
+                    "scene: {} spawned, {} changed, {} removed",
+                    patched.spawned, patched.updated, patched.despawned
+                );
+            }
+            for asset in &done.assets {
+                eprintln!("reloaded {}", asset.path.display());
+            }
+        }
         // On the frame, not the step: the head turns as fast as the screen
         // refreshes, and waiting for a tick is what makes 15 Hz feel sticky
         // rather than merely slow.
@@ -114,9 +122,9 @@ impl Game for Walk {
         }
 
         let fog = FogSettings {
-            color: Vec3::from_array(self.scene.fog.color),
-            start: self.scene.fog.start,
-            end: self.scene.fog.end,
+            color: Vec3::from_array(self.live.scene().fog.color),
+            start: self.live.scene().fog.start,
+            end: self.live.scene().fog.end,
         };
         let camera = Camera {
             position: self.eye,
@@ -144,7 +152,7 @@ impl Game for Walk {
         runity::build_frame(
             &self.world,
             camera,
-            runity::scene_lighting(&self.scene.sun),
+            runity::scene_lighting(&self.live.scene().sun),
             fog,
         )
     }
@@ -158,30 +166,22 @@ fn main() -> anyhow::Result<()> {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "examples/valley/scenes/first-light.ron".into());
-    let document = Scene::load(&path)?;
-    // Instances expanded before anything spawns, the same way the headless
-    // render does it — walking into a scene and rendering it have to show
-    // the same thing.
-    let (prefabs, problems) = runity::Project::find(&path)
-        .map(|project| runity::Prefabs::of(&project))
-        .unwrap_or_default();
-    for (path, e) in &problems {
-        eprintln!("skipped {}: {e}", path.display());
+    // Prefabs and the library come from the project the scene is in, the
+    // same way the headless render finds them — walking into a scene and
+    // rendering it have to show the same thing.
+    let (live, problems) = LiveScene::open(&path)?;
+    for problem in &problems {
+        eprintln!("{problem}");
     }
-    let instanced = runity::instantiate(&document, &prefabs);
-    for problem in &instanced.problems {
-        eprintln!(
-            "{}: prefab {} — {}",
-            problem.entity_name, problem.prefab, problem.reason
-        );
-    }
-    let scene = instanced.scene;
-    println!("{path}: WASD to walk, hold the left mouse button to look, Escape quits");
+    println!(
+        "{path}: WASD to walk, hold the left mouse button to look, Escape quits. \
+         Save the scene and watch it change."
+    );
     run(
         WindowConfig {
             title: format!("runity — {path}"),
             ..Default::default()
         },
-        Walk::new(scene),
+        Walk::new(live),
     )
 }

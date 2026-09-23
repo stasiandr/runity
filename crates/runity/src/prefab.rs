@@ -86,8 +86,9 @@ impl Prefabs {
             ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
         // The same rule as a scene: an entity without an ID gets one, and a
         // repeated one is re-minted, so every part of an instance has an
-        // identity to be scoped.
-        crate::scene::assign_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
+        // identity to be scoped — derived from its place when missing, so
+        // an instance's parts keep their IDs across reloads of the file.
+        crate::scene::derive_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

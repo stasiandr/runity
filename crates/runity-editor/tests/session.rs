@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use runity::gizmo::{Handle, Tool};
 use runity::glam::Vec3;
 use runity::{EntityId, Material, Transform};
-use runity_editor::{EditError, Session, Snap};
+use runity_editor::{EditError, SceneReload, Session, Snap};
 
 const SCENE: &str = r#"(
     entities: [
@@ -1052,4 +1052,110 @@ fn opening_a_scene_finds_its_project() {
         std::path::absolute(root_of(&path)).unwrap()
     );
     assert_eq!(project.name(), "project");
+}
+
+// --- files changed underneath ---------------------------------------------
+
+/// Write a file the way another program would, with its clock pushed on so
+/// the change is visible inside one tick of the filesystem's clock.
+fn write_elsewhere(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+    let file = std::fs::File::options().write(true).open(path).unwrap();
+    file.set_modified(later).unwrap();
+}
+
+#[test]
+fn a_scene_changed_on_disk_shows_up_and_undo_takes_it_back() {
+    // An agent edits the text while the editor is open. The editor shows it
+    // without being told, and a person who did not want it presses undo.
+    let Some((mut session, path)) = open("reload") else {
+        return;
+    };
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Unchanged);
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    write_elsewhere(&path, &text.replace("(0.0, 0.5, 0.0)", "(4.0, 0.5, 0.0)"));
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Reloaded);
+    assert_eq!(session.transform(crate_id).unwrap().position.x, 4.0);
+    assert_eq!(session.selected(), Some(crate_id), "selection survives");
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Unchanged);
+
+    assert!(session.undo().unwrap());
+    assert_eq!(session.transform(crate_id).unwrap().position.x, 0.0);
+}
+
+#[test]
+fn a_scene_changed_on_both_sides_is_a_conflict_and_nothing_is_lost() {
+    let Some((mut session, path)) = open("conflict") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(crate_id, transform([1.0, 0.5, 0.0], [0.0; 3], [1.0; 3]))
+        .unwrap();
+
+    let text = std::fs::read_to_string(&path).unwrap();
+    let theirs = text.replace("\"ground\"", "\"meadow\"");
+    write_elsewhere(&path, &theirs);
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Conflict);
+    assert_eq!(
+        session.transform(crate_id).unwrap().position.x,
+        1.0,
+        "the session's edit stays"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        theirs,
+        "and so does the file"
+    );
+}
+
+#[test]
+fn saving_is_not_mistaken_for_someone_else_changing_the_file() {
+    let Some((mut session, _path)) = open("own-save") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session
+        .set_transform(crate_id, transform([2.0, 0.5, 0.0], [0.0; 3], [1.0; 3]))
+        .unwrap();
+    session.save_scene(None).unwrap();
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Unchanged);
+    assert!(session.can_undo(), "and the history is untouched");
+}
+
+#[test]
+fn a_prefab_changed_on_disk_reaches_its_instances() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "prefab-reload",
+        r#"(entities: [(id: "a1", name: "fire", prefab: "campfire")])"#,
+    );
+    let prefab = root_of(&path).join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        r#"(name: "campfire", model: "builtin:cube", children: [(id: "c1", name: "ember", model: "builtin:sphere")])"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    assert_eq!(session.spawned_count(), 2);
+
+    write_elsewhere(
+        &prefab,
+        r#"(name: "campfire", model: "builtin:cube", children: [
+            (id: "c1", name: "ember", model: "builtin:sphere"),
+            (id: "c2", name: "stone", model: "builtin:cube"),
+        ])"#,
+    );
+    assert_eq!(session.reload_scene().unwrap(), SceneReload::Reloaded);
+    assert_eq!(
+        session.spawned_count(),
+        3,
+        "the new stone is in the instance"
+    );
 }

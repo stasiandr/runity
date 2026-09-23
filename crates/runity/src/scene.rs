@@ -114,7 +114,9 @@ pub struct EntityDesc {
     pub id: EntityId,
     /// Shown in the editor's tree; not required to be unique.
     pub name: String,
-    /// Path under the asset root, e.g. `models/pine_large.obj`.
+    /// Path under the asset root, e.g. `models/pine_large.obj`. May be left
+    /// out of the file: a group, or a prefab instance, draws nothing itself.
+    #[serde(default)]
     pub model: String,
     /// The prefab this entity is an instance of, by file stem, or empty.
     ///
@@ -345,14 +347,49 @@ impl Default for View {
 }
 
 /// Mint IDs for a subtree: unassigned ones, and ones already in `seen`.
+///
+/// Fresh random IDs, for things being created: an added or duplicated
+/// entity is a new thing and gets a new identity.
 pub(crate) fn assign_ids(
     entities: &mut [EntityDesc],
     seen: &mut std::collections::HashSet<EntityId>,
 ) -> usize {
+    assign(entities, seen, None)
+}
+
+/// As [`assign_ids`], but an entity with no ID gets one derived from where
+/// it stands — its parent's ID, its name, and how many siblings before it
+/// share that name — rather than a random one.
+///
+/// For files read from disk. A hand-written entity without an ID then gets
+/// the same one every time its file is read, so reloading the file while
+/// the game runs finds it again rather than replacing it with a stranger.
+/// Inserting a sibling above it does not change it; renaming it does. It is
+/// a stopgap until the file is saved and the ID written down, not a second
+/// kind of identity: a repeated ID is still re-minted at random.
+pub(crate) fn derive_ids(
+    entities: &mut [EntityDesc],
+    seen: &mut std::collections::HashSet<EntityId>,
+) -> usize {
+    assign(entities, seen, Some(EntityId::UNASSIGNED))
+}
+
+fn assign(
+    entities: &mut [EntityDesc],
+    seen: &mut std::collections::HashSet<EntityId>,
+    parent: Option<EntityId>,
+) -> usize {
     let mut minted = 0;
+    let mut same_name: std::collections::HashMap<String, u64> = Default::default();
     for entity in entities {
+        let nth = same_name.entry(entity.name.clone()).or_insert(0);
+        let position = position_key(&entity.name, *nth);
+        *nth += 1;
         if entity.id.is_unassigned() || seen.contains(&entity.id) {
-            let mut id = EntityId::fresh();
+            let derived = parent
+                .filter(|_| entity.id.is_unassigned())
+                .map(|parent| parent.within(EntityId::from_raw(position)));
+            let mut id = derived.unwrap_or_else(EntityId::fresh);
             while seen.contains(&id) {
                 id = EntityId::fresh();
             }
@@ -360,9 +397,20 @@ pub(crate) fn assign_ids(
             minted += 1;
         }
         seen.insert(entity.id);
-        minted += assign_ids(&mut entity.children, seen);
+        minted += assign(&mut entity.children, seen, parent.map(|_| entity.id));
     }
     minted
+}
+
+/// FNV-1a over the name, then the count: specified, so every build derives
+/// the same ID from the same file.
+fn position_key(name: &str, nth: u64) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.bytes().chain(nth.to_le_bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// A whole scene, as it sits on disk.
@@ -441,12 +489,13 @@ impl Scene {
     /// already taken a new one. Returns how many were minted.
     ///
     /// Called on load, so nothing downstream ever sees an entity it cannot
-    /// name. A repeated ID is re-minted rather than trusted: it comes from a
+    /// name. A missing ID is derived from the entity's place in the file,
+    /// so reading the same file twice names it the same way. A repeated ID is re-minted rather than trusted: it comes from a
     /// block copy-pasted by hand or a merge gone strange, and two entities
     /// answering to one name is how an edit lands on the wrong thing. The
     /// first one in the file keeps it.
     pub fn assign_ids(&mut self) -> usize {
-        assign_ids(&mut self.entities, &mut std::collections::HashSet::new())
+        derive_ids(&mut self.entities, &mut std::collections::HashSet::new())
     }
 
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
@@ -619,6 +668,43 @@ mod tests {
         scene.save(&path).unwrap();
         assert!(std::fs::read_to_string(&path).unwrap().contains("id: \""));
         assert_eq!(Scene::load(&path).unwrap().ids(), ids, "and keeps them");
+    }
+
+    #[test]
+    fn an_entity_without_an_id_is_named_the_same_way_on_every_read() {
+        // A running game reloads a hand-written scene every time it is
+        // saved. If each read minted new IDs, every entity without one would
+        // look new each time and be respawned, losing whatever the game had
+        // done to it.
+        let text = |extra: &str| {
+            format!(
+                r#"(entities: [{extra}
+                    (name: "tree", model: "m"),
+                    (name: "tree", model: "m", children: [(name: "leaf", model: "m")]),
+                ])"#
+            )
+        };
+        let read = |text: &str| {
+            let mut scene: Scene = ron::from_str(text).unwrap();
+            scene.assign_ids();
+            scene
+        };
+        let first = read(&text(""));
+        assert_eq!(
+            first.ids(),
+            read(&text("")).ids(),
+            "the same file, the same IDs"
+        );
+        let ids = first.ids();
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            3,
+            "two trees with one name are still two entities: {ids:?}"
+        );
+
+        // A sibling written above them does not move their identities.
+        let inserted = read(&text(r#"(name: "rock", model: "m"),"#));
+        assert_eq!(inserted.ids()[1..], ids[..]);
     }
 
     #[test]

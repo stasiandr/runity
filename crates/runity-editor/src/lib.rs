@@ -93,6 +93,24 @@ pub struct Session {
     gizmo_arm: Option<MeshHandle>,
     /// Set while the scene is being simulated rather than edited.
     play: Option<Play>,
+    /// The scene as its file last had it — read or written by this session
+    /// — and when the scene's files last changed. What tells an edit made
+    /// on disk from one made here.
+    on_disk: Option<(Scene, runity::live::Stamps)>,
+}
+
+/// What [`Session::reload_scene`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SceneReload {
+    /// The files are as the session last saw them.
+    Unchanged,
+    /// The file changed and the session now shows it. One undo step goes
+    /// back to what was shown before.
+    Reloaded,
+    /// The file changed **and** the session has edits it does not: neither
+    /// is thrown away. Saving keeps the session's; opening the scene again
+    /// takes the file's.
+    Conflict,
 }
 
 /// What play mode holds while it runs.
@@ -144,6 +162,7 @@ impl Session {
             drag_from: None,
             gizmo_arm: None,
             play: None,
+            on_disk: None,
         })
     }
 
@@ -215,6 +234,8 @@ impl Session {
         }
         self.project = project;
         self.prefabs = prefabs;
+        let stamps = runity::live::stamps(&path, self.project.as_ref());
+        self.on_disk = Some((scene.clone(), stamps));
         self.history.replace(scene);
         self.scene_path = Some(path);
         // Another document's IDs mean nothing here.
@@ -228,7 +249,7 @@ impl Session {
     }
 
     /// Write the scene back: to `path`, or where it was opened from.
-    pub fn save_scene(&self, path: Option<&Path>) -> EditResult<()> {
+    pub fn save_scene(&mut self, path: Option<&Path>) -> EditResult<()> {
         let target = path
             .map(Path::to_path_buf)
             .or_else(|| self.scene_path.clone())
@@ -236,7 +257,61 @@ impl Session {
         self.history
             .scene()
             .save(&target)
-            .map_err(|e| EditError::Scene(format!("{e:#}")))
+            .map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        if self.scene_path.as_ref() == Some(&target) {
+            let stamps = runity::live::stamps(&target, self.project.as_ref());
+            self.on_disk = Some((self.history.scene().clone(), stamps));
+        }
+        Ok(())
+    }
+
+    /// Pick up the scene's file, or a prefab, changed by someone else — a
+    /// text editor, `git pull`, an agent.
+    ///
+    /// Cheap when nothing changed: a few `stat`s, so an editor can call it
+    /// several times a second. A changed file becomes an ordinary edit, so
+    /// undo takes it back and selection stays on whatever still exists. When
+    /// the session has unsaved edits of its own, nothing is overwritten
+    /// either way — that is [`SceneReload::Conflict`], and the caller asks.
+    /// While playing it waits: the change is picked up after stop.
+    pub fn reload_scene(&mut self) -> EditResult<SceneReload> {
+        let (Some(path), Some((seen, stamps))) = (&self.scene_path, &self.on_disk) else {
+            return Ok(SceneReload::Unchanged);
+        };
+        if self.play.is_some() {
+            return Ok(SceneReload::Unchanged);
+        }
+        let now = runity::live::stamps(path, self.project.as_ref());
+        if &now == stamps {
+            return Ok(SceneReload::Unchanged);
+        }
+        let prefabs_changed = now[1..] != stamps[1..];
+        let scene = Scene::load(path).map_err(|e| EditError::Scene(format!("{e:#}")))?;
+        let scene_changed = &scene != seen;
+        let ours = self.history.scene() != seen;
+        if scene_changed && ours {
+            return Ok(SceneReload::Conflict);
+        }
+        if prefabs_changed {
+            if let Some(project) = &self.project {
+                self.prefabs = runity::Prefabs::of(project).0;
+            }
+        }
+        if scene_changed {
+            *self.history.edit() = scene.clone();
+            if self
+                .selected
+                .is_some_and(|id| self.history.scene().get(id).is_none())
+            {
+                self.selected = None;
+            }
+        }
+        self.on_disk = Some((scene, now));
+        if scene_changed || prefabs_changed {
+            self.respawn();
+            return Ok(SceneReload::Reloaded);
+        }
+        Ok(SceneReload::Unchanged)
     }
 
     /// The document as it stands.
@@ -254,6 +329,12 @@ impl Session {
     /// How many entities the open scene has, counting children.
     pub fn entity_count(&self) -> usize {
         self.history.scene().flatten().len()
+    }
+
+    /// How many entities are in the world: the scene with its prefab
+    /// instances expanded, which is what is drawn and what a click can hit.
+    pub fn spawned_count(&self) -> usize {
+        self.world.len() as usize
     }
 
     /// Every entity, in the order the tree shows them: depth first, parents
