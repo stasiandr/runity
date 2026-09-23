@@ -74,9 +74,13 @@ impl Transform {
 pub enum Collider {
     #[default]
     None,
-    /// Half the size on each axis, before the transform's scale.
+    /// Half the size on each axis, before the transform's scale, around
+    /// `center` in the entity's own space: a model whose origin is at its
+    /// foot has its box half its height up. Unity's BoxCollider center.
     Box {
         half: Vec3,
+        #[serde(default, skip_serializing_if = "is_zero_vec3")]
+        center: Vec3,
     },
     Sphere {
         radius: f32,
@@ -442,6 +446,9 @@ fn light_range() -> f32 {
 
 fn lens_fov() -> f32 {
     60.0
+}
+fn is_zero_vec3(v: &Vec3) -> bool {
+    *v == Vec3::ZERO
 }
 fn is_zero_i32(v: &i32) -> bool {
     *v == 0
@@ -1152,6 +1159,7 @@ mod tests {
                 body: Body::Dynamic,
                 collider: Collider::Box {
                     half: Vec3::splat(0.5),
+                    center: glam::Vec3::ZERO,
                 },
                 children: vec![EntityDesc {
                     camera: None,

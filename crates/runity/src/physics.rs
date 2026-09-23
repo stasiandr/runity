@@ -1124,9 +1124,11 @@ fn build_collider(
                     .build()
             }
         }
-        ColliderShape::Box { half } => {
-            let h = half * scale;
-            ColliderBuilder::cuboid(h.x.max(1e-4), h.y.max(1e-4), h.z.max(1e-4)).build()
+        ColliderShape::Box { half, center } => {
+            let (h, c) = (half * scale, center * scale);
+            ColliderBuilder::cuboid(h.x.max(1e-4), h.y.max(1e-4), h.z.max(1e-4))
+                .translation(vector![c.x, c.y, c.z])
+                .build()
         }
         ColliderShape::Sphere { radius } => {
             // One radius, so a sphere scaled unevenly takes the largest —
@@ -1233,6 +1235,7 @@ mod tests {
                     Body::Static,
                     ColliderShape::Box {
                         half: Vec3::new(20.0, 0.1, 20.0),
+                        center: glam::Vec3::ZERO,
                     },
                 ),
                 entity(
@@ -1393,6 +1396,7 @@ mod tests {
                     Body::Static,
                     ColliderShape::Box {
                         half: Vec3::new(20.0, 0.1, 20.0),
+                        center: glam::Vec3::ZERO,
                     },
                 ),
                 EntityDesc {
@@ -1406,6 +1410,7 @@ mod tests {
                         Body::Static,
                         ColliderShape::Box {
                             half: Vec3::new(0.2, 1.0, 5.0),
+                            center: glam::Vec3::ZERO,
                         },
                     )
                 },
@@ -1420,6 +1425,7 @@ mod tests {
                         Body::Static,
                         ColliderShape::Box {
                             half: Vec3::new(0.5, 0.1, 5.0),
+                            center: glam::Vec3::ZERO,
                         },
                     )
                 },
@@ -1615,6 +1621,7 @@ mod tests {
             Vec3::splat(2.0),
             ColliderShape::Box {
                 half: Vec3::splat(0.1),
+                center: glam::Vec3::ZERO,
             },
             Vec3::new(0.0, 2.0, -0.75),
         );
@@ -1636,6 +1643,7 @@ mod tests {
             Vec3::new(1.0, 3.0, 1.0),
             ColliderShape::Box {
                 half: Vec3::splat(0.1),
+                center: glam::Vec3::ZERO,
             },
             Vec3::new(0.0, 3.0, 0.0),
         );
@@ -1709,6 +1717,7 @@ mod tests {
             Body::Trigger,
             ColliderShape::Box {
                 half: Vec3::new(1.0, 0.5, 1.0),
+                center: glam::Vec3::ZERO,
             },
         );
         zone.model = String::new();
@@ -1720,6 +1729,7 @@ mod tests {
                     Body::Static,
                     ColliderShape::Box {
                         half: Vec3::new(20.0, 0.1, 20.0),
+                        center: glam::Vec3::ZERO,
                     },
                 ),
                 zone,
@@ -1783,6 +1793,7 @@ mod tests {
             Body::Kinematic,
             ColliderShape::Box {
                 half: Vec3::new(2.0, 0.1, 2.0),
+                center: glam::Vec3::ZERO,
             },
         );
         platform.model = String::new();
@@ -1795,6 +1806,7 @@ mod tests {
                     Body::Dynamic,
                     ColliderShape::Box {
                         half: Vec3::splat(0.5),
+                        center: glam::Vec3::ZERO,
                     },
                 ),
             ],
@@ -2000,6 +2012,33 @@ mod tests {
         run_for(&mut physics, &mut world, 240);
         let door = turned(&world, "d2").abs();
         assert!((door - 45.0).abs() < 6.0, "held at 45°: {door}");
+    }
+
+    #[test]
+    fn a_box_collider_sits_around_its_center() {
+        // A model whose origin is at its foot: its box is half its height up.
+        let (mut physics, mut world, _) = scene_world(
+            r#"(entities: [
+                (name: "post", model: "m", body: Static, transform: (scale: (1.0, 2.0, 1.0)),
+                 collider: Box(half: (0.5, 0.5, 0.5), center: (0.0, 0.5, 0.0))),
+            ])"#,
+        );
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        let hit = physics
+            .cast_ray(Vec3::new(0.0, 10.0, 0.0), Vec3::NEG_Y, 20.0)
+            .unwrap();
+        assert!(
+            (hit.point.y - 2.0).abs() < 1e-3,
+            "top of a 2 m post from its foot: {}",
+            hit.point.y
+        );
+        let text = ron::to_string(&crate::scene::Collider::Box {
+            half: Vec3::splat(0.5),
+            center: Vec3::ZERO,
+        })
+        .unwrap();
+        assert!(!text.contains("center"), "left out when zero: {text}");
     }
 
     #[test]

@@ -514,7 +514,10 @@ mod tests {
                 ..Transform::default()
             },
             body: Body::Static,
-            collider: collider.unwrap_or(Collider::Box { half }),
+            collider: collider.unwrap_or(Collider::Box {
+                half,
+                center: Vec3::ZERO,
+            }),
             ..EntityDesc::default()
         }
     }

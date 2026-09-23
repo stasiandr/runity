@@ -33,6 +33,7 @@ fn scene(n: usize) -> Scene {
         body: Body::Static,
         collider: Collider::Box {
             half: glam::Vec3::new(0.5, 0.01, 0.5),
+            center: glam::Vec3::ZERO,
         },
         transform: runity::Transform {
             scale: glam::Vec3::new(side as f32 * 2.0 + 4.0, 1.0, side as f32 * 2.0 + 4.0),
@@ -50,6 +51,7 @@ fn scene(n: usize) -> Scene {
             body: if falling { Body::Dynamic } else { Body::Static },
             collider: Collider::Box {
                 half: glam::Vec3::splat(0.5),
+                center: glam::Vec3::ZERO,
             },
             transform: runity::Transform {
                 position: glam::Vec3::new(

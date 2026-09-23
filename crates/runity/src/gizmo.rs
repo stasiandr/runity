@@ -331,7 +331,10 @@ pub fn bounds_draws(
     let centre = placed * Mat4::from_translation((min + max) * 0.5);
     collider_draws(
         arm,
-        crate::scene::Collider::Box { half },
+        crate::scene::Collider::Box {
+            half,
+            center: Vec3::ZERO,
+        },
         centre,
         thickness,
         material,
@@ -397,7 +400,15 @@ pub fn collider_draws(
     };
     match shape {
         Collider::None | Collider::Model => return Vec::new(),
-        Collider::Box { half } | Collider::Stairs { half, .. } => {
+        Collider::Box { half, center } => {
+            let c = center * scale;
+            segments.extend(
+                box_edges(half * scale)
+                    .into_iter()
+                    .map(|(a, b)| (a + c, b + c)),
+            );
+        }
+        Collider::Stairs { half, .. } => {
             segments.extend(box_edges(half * scale));
         }
         Collider::Ramp { half } => segments.extend(ramp_edges(half * scale)),
