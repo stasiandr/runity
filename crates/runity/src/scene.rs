@@ -536,7 +536,7 @@ fn yes_route() -> bool {
 /// 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6,
 /// 0.2))`; they leave along the entity's up, within `spread_deg` of it,
 /// and shrink to nothing as they age.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Emitter {
     /// How many a second.
     #[serde(default = "emit_rate")]
@@ -559,6 +559,67 @@ pub struct Emitter {
     pub gravity: f32,
     #[serde(default = "white")]
     pub color: (f32, f32, f32),
+    /// The colour each fades to by the end of its life: Unity's Color over
+    /// Lifetime. Unset, it keeps `color`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_color: Option<(f32, f32, f32)>,
+    /// How big each is at the end: Unity's Size over Lifetime. Unset, it
+    /// shrinks to nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub end_size: Option<f32>,
+    /// Drawn longer the faster it goes, along its way: a spark's streak,
+    /// Unity's Stretched Billboard. Extra length per metre a second.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stretch: f32,
+    /// They move with the emitter — a torch's flame follows the torch —
+    /// instead of staying where they were given off. Unity's Simulation
+    /// Space: Local.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
+    /// Seconds one play lasts: a puff of dust is short and once.
+    #[serde(default = "emit_duration", skip_serializing_if = "is_five")]
+    pub duration: f32,
+    /// Plays once and stops — an effect a game starts with
+    /// `Emitting::play` — instead of going round forever.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub once: bool,
+    /// Waits for `Emitting::play` instead of starting with the scene.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub waits: bool,
+    /// So many at once, so many seconds into each play: `[(0.0, 30)]` is
+    /// the puff a spade makes. Unity's Emission bursts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bursts: Vec<(f32, u32)>,
+    /// Which way they leave, in the entity's own axes: up when not said.
+    /// Unity's cones point along forward — an imported one says so here.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub direction: Option<Vec3>,
+    /// Each is a flat square turned to the camera — smoke, sparks, dust
+    /// with a picture — instead of a small solid. Unity's Billboard.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub facing: bool,
+    /// What each is drawn as; a small cube when not said (a square when
+    /// `facing`).
+    #[serde(default, skip_serializing_if = "str::is_empty")]
+    pub model: crate::AssetLink,
+    /// A material — a picture, transparency, a glow — instead of the plain
+    /// `color`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub material: Option<crate::AssetLink>,
+}
+
+fn emit_duration() -> f32 {
+    5.0
+}
+
+fn is_five(v: &f32) -> bool {
+    *v == 5.0
+}
+
+impl Default for Emitter {
+    fn default() -> Self {
+        ron::from_str("()").expect("every field has a default")
+    }
 }
 
 fn emit_rate() -> f32 {
@@ -828,7 +889,7 @@ impl Override {
             part.light = self.light;
         }
         if self.particles.is_some() {
-            part.particles = self.particles;
+            part.particles = self.particles.clone();
         }
         if self.reflection_probe.is_some() {
             part.reflection_probe = self.reflection_probe;
@@ -859,7 +920,7 @@ impl Override {
             layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
             camera: differs(prefab.camera != edited.camera).and(edited.camera),
             light: differs(prefab.light != edited.light).and(edited.light),
-            particles: differs(prefab.particles != edited.particles).and(edited.particles),
+            particles: differs(prefab.particles != edited.particles).and(edited.particles.clone()),
             reflection_probe: differs(prefab.reflection_probe != edited.reflection_probe)
                 .and(edited.reflection_probe),
             decal: differs(prefab.decal != edited.decal).and(edited.decal),
@@ -906,7 +967,7 @@ impl Override {
         self.layer = layer.or(self.layer.take());
         self.camera = camera.or(self.camera);
         self.light = light.or(self.light);
-        self.particles = particles.or(self.particles);
+        self.particles = particles.or(self.particles.take());
         self.reflection_probe = reflection_probe.or(self.reflection_probe);
         self.decal = decal.or(self.decal);
         self.route = route.or(self.route.take());

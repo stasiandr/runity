@@ -299,7 +299,7 @@ impl Session {
             ),
             (
                 "particles".into(),
-                desc.particles.map_or("None".to_string(), |p| ron(&p)),
+                desc.particles.as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "reflection_probe".into(),

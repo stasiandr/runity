@@ -562,8 +562,149 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             report.skip("Animator (the graph comes over from animators/; the game attaches it)")
         }
         "AudioSource" => report.skip("AudioSource"),
-        "ParticleSystem" | "ParticleSystemRenderer" => report.skip("ParticleSystem (Shuriken)"),
+        "ParticleSystem" => shuriken(desc, b, report),
+        "ParticleSystemRenderer" => {
+            let e = desc.particles.get_or_insert_with(Default::default);
+            match b.i64("m_RenderMode").unwrap_or(0) {
+                // Billboards, and stretched ones: longer the faster.
+                0 | 2 | 3 => e.facing = true,
+                1 => {
+                    e.facing = true;
+                    e.stretch = b.f32("m_VelocityScale").unwrap_or(0.0).max(0.1);
+                }
+                // Mesh.
+                4 => {
+                    if let Some(m) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                        e.model = AssetLink::named(m);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(first) = b.list("m_Materials").first().and_then(yaml::reference) {
+                if let Some(("material", name)) =
+                    first.guid.as_deref().and_then(|g| refs.unity.named(g))
+                {
+                    e.material = Some(AssetLink::named(name));
+                }
+            }
+        }
         other => report.skip(other.to_string()),
+    }
+}
+
+/// A Shuriken value — a MinMaxCurve — as one number: a constant as it is,
+/// two constants as their middle, a curve by where it ends up.
+fn min_max(v: &Yaml) -> Option<f32> {
+    let scalar = v.f32("scalar")?;
+    Some(match v.i64("minMaxState").unwrap_or(0) {
+        3 => (scalar + v.f32("minScalar").unwrap_or(scalar)) * 0.5,
+        1 | 2 => scalar * curve_end(&v["maxCurve"]).unwrap_or(1.0),
+        _ => scalar,
+    })
+}
+
+fn curve_end(curve: &Yaml) -> Option<f32> {
+    curve.list("m_Curve").last().and_then(|k| k.f32("value"))
+}
+
+/// A MinMaxGradient's colour at its start and at its end.
+fn gradient(v: &Yaml) -> Option<([f32; 4], [f32; 4])> {
+    match v.i64("minMaxState").unwrap_or(0) {
+        0 => v.color("maxColor").map(|c| (c, c)),
+        2 => {
+            let (a, b) = (v.color("minColor")?, v.color("maxColor")?);
+            let mid = std::array::from_fn(|i| (a[i] + b[i]) * 0.5);
+            Some((mid, mid))
+        }
+        _ => {
+            let g = &v["maxGradient"];
+            let last = g.i64("m_NumColorKeys").unwrap_or(2).clamp(1, 8) - 1;
+            Some((g.color("key0")?, g.color(&format!("key{last}"))?))
+        }
+    }
+}
+
+/// A Shuriken ParticleSystem onto the entity's emitter: the Main module's
+/// life, speed, size, colour and gravity, the emission rate, the cone,
+/// the simulation space, size and colour over lifetime. What has no
+/// counterpart (bursts, noise, collision, trails…) the report names.
+fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
+    let e = desc.particles.get_or_insert_with(Default::default);
+    let main = &b["InitialModule"];
+    let rgb = |c: [f32; 4]| (c[0], c[1], c[2]);
+    e.life = min_max(&main["startLifetime"]).unwrap_or(5.0);
+    e.speed = min_max(&main["startSpeed"]).unwrap_or(5.0);
+    e.size = min_max(&main["startSize"]).unwrap_or(1.0);
+    if let Some((start, _)) = gradient(&main["startColor"]) {
+        e.color = rgb(start);
+    }
+    e.gravity = -9.81 * min_max(&main["gravityModifier"]).unwrap_or(0.0);
+    // 0 is Local, 1 World.
+    e.local = b.i64("moveWithTransform") == Some(0);
+    let emission = &b["EmissionModule"];
+    e.rate = if emission.i64("enabled") == Some(0) {
+        0.0
+    } else {
+        min_max(&emission["rateOverTime"]).unwrap_or(10.0)
+    };
+    e.bursts = emission
+        .list("m_Bursts")
+        .iter()
+        .map(|burst| {
+            let count = min_max(&burst["countCurve"])
+                .or_else(|| burst.f32("maxCount"))
+                .unwrap_or(0.0);
+            (burst.f32("time").unwrap_or(0.0), count.round().max(0.0) as u32)
+        })
+        .collect();
+    if emission
+        .list("m_Bursts")
+        .iter()
+        .any(|burst| burst.i64("cycleCount").is_some_and(|c| c != 1))
+    {
+        report.skip("a ParticleSystem burst that repeats within a play (it goes off once)");
+    }
+    e.duration = b.f32("lengthInSec").unwrap_or(5.0);
+    e.once = b.i64("looping") == Some(0);
+    e.waits = b.i64("playOnAwake") == Some(0);
+    let shape = &b["ShapeModule"];
+    if shape.i64("enabled") != Some(0) {
+        e.spread_deg = match shape.i64("type").unwrap_or(4) {
+            // Sphere, hemisphere.
+            0 | 1 => 180.0,
+            2 | 3 => 90.0,
+            _ => shape.f32("angle").unwrap_or(25.0),
+        };
+    } else {
+        e.spread_deg = 0.0;
+    }
+    // Unity's cone points along forward, and Z is mirrored.
+    e.direction = Some(Vec3::new(0.0, 0.0, -1.0));
+    let size = &b["SizeModule"];
+    if size.i64("enabled") == Some(1) {
+        e.end_size = Some(e.size * min_max(&size["curve"]).unwrap_or(1.0));
+    } else {
+        e.end_size = Some(e.size);
+    }
+    let colour = &b["ColorModule"];
+    if colour.i64("enabled") == Some(1) {
+        if let Some((_, end)) = gradient(&colour["gradient"]) {
+            e.end_color = Some((e.color.0 * end[0], e.color.1 * end[1], e.color.2 * end[2]));
+        }
+    }
+    for module in [
+        "NoiseModule",
+        "CollisionModule",
+        "TrailModule",
+        "SubModule",
+        "VelocityModule",
+        "ForceModule",
+        "RotationModule",
+        "LightsModule",
+    ] {
+        if b[module].i64("enabled") == Some(1) {
+            report.skip(format!("a ParticleSystem's {module}"));
+        }
     }
 }
 
@@ -845,6 +986,93 @@ PrefabInstance:
       objectReference: {fileID: 0}
   m_SourcePrefab: {fileID: 100100000, guid: ppp, type: 3}
 ";
+
+    const SMOKE: &str = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Chimney smoke
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Father: {fileID: 0}
+--- !u!198 &12
+ParticleSystem:
+  m_GameObject: {fileID: 10}
+  looping: 1
+  moveWithTransform: 0
+  InitialModule:
+    startLifetime: {minMaxState: 3, scalar: 6, minScalar: 4}
+    startSpeed: {minMaxState: 0, scalar: 1.5}
+    startSize: {minMaxState: 0, scalar: 0.4}
+    startColor:
+      minMaxState: 0
+      maxColor: {r: 0.8, g: 0.8, b: 0.8, a: 1}
+    gravityModifier: {minMaxState: 0, scalar: -0.1}
+  ShapeModule:
+    enabled: 1
+    type: 4
+    angle: 12
+  EmissionModule:
+    enabled: 1
+    rateOverTime: {minMaxState: 0, scalar: 20}
+    m_Bursts:
+    - time: 0.5
+      countCurve: {minMaxState: 3, scalar: 40, minScalar: 20}
+      cycleCount: 1
+  SizeModule:
+    enabled: 1
+    curve:
+      minMaxState: 1
+      scalar: 1
+      maxCurve:
+        m_Curve:
+        - {time: 0, value: 1}
+        - {time: 1, value: 3}
+  ColorModule:
+    enabled: 1
+    gradient:
+      minMaxState: 1
+      maxGradient:
+        key0: {r: 1, g: 1, b: 1, a: 1}
+        key1: {r: 0.5, g: 0.5, b: 0.5, a: 0}
+        m_NumColorKeys: 2
+  NoiseModule:
+    enabled: 1
+--- !u!199 &13
+ParticleSystemRenderer:
+  m_GameObject: {fileID: 10}
+  m_RenderMode: 4
+  m_Mesh: {fileID: 10207, guid: 0000000000000000e000000000000000, type: 0}
+  m_Materials:
+  - {fileID: 2100000, guid: mmm, type: 2}
+";
+
+    #[test]
+    fn a_shuriken_system_becomes_an_emitter() {
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), SMOKE, &mut report);
+        let e = roots[0].particles.clone().expect("an emitter");
+        assert_eq!(e.life, 5.0, "two constants: the middle");
+        assert_eq!(e.rate, 20.0);
+        assert_eq!(e.bursts, vec![(0.5, 30)]);
+        assert!(!e.once && !e.waits);
+        assert_eq!(e.spread_deg, 12.0);
+        assert!((e.gravity - 0.981).abs() < 1e-4, "{}", e.gravity);
+        assert!(e.local);
+        assert_eq!(e.end_size, Some(1.2), "size over life: three times");
+        assert_eq!(e.end_color, Some((0.4, 0.4, 0.4)));
+        assert_eq!(e.direction, Some(Vec3::new(0.0, 0.0, -1.0)));
+        assert_eq!(e.model.as_str(), "builtin:sphere");
+        assert_eq!(e.material.as_ref().map(|m| m.as_str()), Some("wood"));
+        assert!(format!("{report:?}").contains("NoiseModule"), "{report:?}");
+        // And the text it makes reads back.
+        let text = ron::to_string(&e).unwrap();
+        let back: runity::scene::Emitter = ron::from_str(&text).unwrap();
+        assert_eq!(back, e);
+    }
 
     #[test]
     fn a_scene_comes_over_with_its_hierarchy_parts_and_components() {

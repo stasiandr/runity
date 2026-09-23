@@ -122,6 +122,10 @@ pub fn reference(y: &Yaml) -> Option<Ref> {
         .map(str::to_string)
         .or_else(|| match &y["guid"] {
             Yaml::Integer(i) => Some(i.to_string()),
+            // `0000000000000000e000000000000000`, Unity's built-in
+            // resources, reads as a number in exponent form: its text is
+            // kept.
+            Yaml::Real(text) => Some(text.clone()),
             _ => None,
         });
     Some(Ref { file_id, guid })

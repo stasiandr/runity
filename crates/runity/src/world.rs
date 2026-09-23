@@ -282,9 +282,9 @@ fn spawn_one(
             crate::routes::Travelling::new(route.clone(), desc.transform.position),
         );
     }
-    if let Some(emitter) = desc.particles {
-        if let Some(mesh) = resolve(&crate::AssetLink::named("builtin:cube")) {
-            let _ = world.insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+    if let Some(emitter) = &desc.particles {
+        if let Some(emitting) = emitting(emitter, resolve, palette) {
+            let _ = world.insert_one(entity, emitting);
         }
     }
     dress(desc, entity, world, resolve, palette, missing);
@@ -293,6 +293,29 @@ fn spawn_one(
 
 /// Give an entity the mesh and surface its line names, or take them away
 /// when the mesh cannot be found.
+/// An emitter ready to run: what its particles are drawn as (its model, or
+/// a small cube) and with (its material, or the plain colour).
+fn emitting(
+    emitter: &crate::scene::Emitter,
+    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+) -> Option<crate::particles::Emitting> {
+    let cube = crate::AssetLink::named(if emitter.facing {
+        "builtin:plane"
+    } else {
+        "builtin:cube"
+    });
+    let model = if emitter.model.is_empty() {
+        &cube
+    } else {
+        &emitter.model
+    };
+    let mesh = resolve(model).or_else(|| resolve(&cube))?;
+    let mut out = crate::particles::Emitting::new(emitter.clone(), mesh);
+    out.material = emitter.material.as_ref().and_then(palette);
+    Some(out)
+}
+
 pub(crate) fn dress(
     desc: &EntityDesc,
     entity: hecs::Entity,
@@ -546,16 +569,19 @@ impl Patch<'_> {
                 .get::<&mut crate::particles::Emitting>(entity)
                 .ok()
                 .map(|mut e| {
-                    if let Some(emitter) = desc.particles {
+                    if let Some(emitter) = &desc.particles {
                         // The knobs change; what is in the air stays.
-                        e.emitter = emitter;
+                        if let Some(fresh) = emitting(emitter, resolve, palette) {
+                            e.mesh = fresh.mesh;
+                            e.material = fresh.material;
+                        }
+                        e.emitter = emitter.clone();
                     }
                 });
-            match (desc.particles, running) {
+            match (&desc.particles, running) {
                 (Some(emitter), None) => {
-                    if let Some(mesh) = resolve(&crate::AssetLink::named("builtin:cube")) {
-                        let _ = world
-                            .insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+                    if let Some(emitting) = emitting(emitter, resolve, palette) {
+                        let _ = world.insert_one(entity, emitting);
                     }
                 }
                 (None, _) => {
@@ -955,7 +981,7 @@ pub fn build_frame_where(
         .iter()
     {
         if keep(line.map(|l| l.0)) {
-            draws.extend(emitting.draws());
+            draws.extend(emitting.draws_facing(Some(camera.position)));
         }
     }
     let lights = world
