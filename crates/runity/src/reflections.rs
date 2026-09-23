@@ -133,7 +133,19 @@ pub(crate) struct ProbeStore {
     pub(crate) blank: wgpu::TextureView,
     /// Taking the pictures now.
     pub(crate) baking: bool,
+    /// The last round's pictures, what the next round is lit by: a pass
+    /// cannot read the texture it draws into.
+    previous: wgpu::Texture,
+    pub(crate) previous_view: wgpu::TextureView,
+    /// Taking a later round, lit by the last one's pictures.
+    pub(crate) bouncing: bool,
 }
+
+/// Rounds of pictures a bake takes. The first is lit as if no probe were
+/// there — a room's walls by the whole open sky; each after by the one
+/// before, so what the sky reaches only through a door or down a passage
+/// dims round after round toward how dark it is.
+pub const BOUNCES: u32 = 3;
 
 impl ProbeStore {
     pub(crate) fn new(gpu: &crate::gpu::Gpu) -> Self {
@@ -148,8 +160,26 @@ impl ProbeStore {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: crate::post::HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
+        });
+        let previous = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("reflection probes, last round"),
+            size: wgpu::Extent3d {
+                width: PROBE_SIZE,
+                height: PROBE_SIZE,
+                depth_or_array_layers: (MAX_PROBES * 6) as u32,
+            },
+            mip_level_count: PROBE_MIPS,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::post::HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let previous_view = previous.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -258,6 +288,9 @@ impl ProbeStore {
             baked: Vec::new(),
             blank,
             baking: false,
+            previous,
+            previous_view,
+            bouncing: false,
         }
     }
 
@@ -275,6 +308,38 @@ impl ProbeStore {
     }
 
     /// Each face's mips, from its sharp picture down.
+    /// Keep this round's pictures, every mip, for the next to be lit by.
+    pub(crate) fn keep_round(&self, gpu: &crate::gpu::Gpu, layers: u32) {
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("probe round"),
+            });
+        for mip in 0..PROBE_MIPS {
+            let side = (PROBE_SIZE >> mip).max(1);
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.texture,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.previous,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d {
+                    width: side,
+                    height: side,
+                    depth_or_array_layers: layers,
+                },
+            );
+        }
+        gpu.queue.submit(Some(encoder.finish()));
+    }
+
     pub(crate) fn make_mips(&self, gpu: &crate::gpu::Gpu, layers: std::ops::Range<u32>) {
         let mut encoder = gpu
             .device
