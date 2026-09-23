@@ -604,6 +604,9 @@ impl Party {
             self.sync.claims(world, &mut claims);
             self.send(claims, Mode::Reliable);
         }
+        self.sync.one_way_ticks = self
+            .round_trip()
+            .map_or(0.0, |trip| trip * 0.5 * crate::net::sync::NET_HZ as f64);
         self.sync.mark(world);
         if matches!(self.stage, Stage::Loading | Stage::Playing) {
             // What time the server says, once a second.

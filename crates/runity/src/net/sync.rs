@@ -87,6 +87,10 @@ pub struct Sync {
     /// While a world state is coming in: what it named.
     welcoming: Option<HashSet<EntityId>>,
     pub tally: Tally,
+    /// Half the round trip, in network ticks: how far behind the newest
+    /// pose from someone else is by the time it is here. What a takeover
+    /// carries it forward by.
+    pub one_way_ticks: f64,
 }
 
 /// Something the world end noticed that the game may want to know.
@@ -111,11 +115,13 @@ impl Sync {
             gates: HashMap::new(),
             welcoming: None,
             tally: Tally::default(),
+            one_way_ticks: 0.0,
         }
     }
 
     /// Keep [`Owned`] and [`Replica`] in step with who owns what.
     pub fn mark(&self, world: &mut hecs::World) {
+        let one_way = self.one_way_ticks;
         let mut own = Vec::new();
         let mut replicate = Vec::new();
         for (entity, owned, replica) in world
@@ -135,7 +141,17 @@ impl Sync {
         }
         for entity in own {
             let _ = world.remove_one::<Replica>(entity);
-            let _ = world.remove_one::<Presented>(entity);
+            // Taken over: from where the old owner has it now, not from
+            // the picture of a moment ago — or everything handed over in
+            // motion steps back by the delay.
+            if let Ok(presented) = world.remove_one::<Presented>(entity) {
+                if let Some((pose, velocity, spin)) = presented.takeover(one_way) {
+                    if let Ok(mut transform) = world.get::<&mut Transform>(entity) {
+                        *transform = pose;
+                    }
+                    let _ = world.insert_one(entity, super::Takeover { velocity, spin });
+                }
+            }
             let _ = world.insert_one(entity, Owned);
         }
         for entity in replicate {
@@ -657,6 +673,10 @@ pub const SNAP_SPEED: f32 = 35.0;
 /// stream.
 pub const HANDOVER_BLEND: f32 = 0.5;
 
+/// The most change of speed a takeover carries forward, metres a second
+/// a second: a little more than gravity.
+pub const TAKEOVER_ACCEL: f32 = 12.0;
+
 /// A replica's recent poses as its owners sent them, and the clock it is
 /// shown by — the dacha simulator's interpolation buffer. The transform on
 /// the entity is the *presented* pose, so the collider, the picking ray
@@ -717,6 +737,53 @@ impl Presented {
         while self.samples.len() > 8 {
             self.samples.pop_front();
         }
+    }
+
+    /// Where the sender has it now, and how fast it goes: the newest pose,
+    /// carried forward over the ticks since it was sent — `one_way` on the
+    /// way here and one more — by its speed and how that was changing
+    /// (gravity, mostly), from the last three. `None` with fewer than two.
+    pub fn takeover(&self, one_way: f64) -> Option<(Transform, Vec3, Vec3)> {
+        let n = self.samples.len();
+        if n < 2 {
+            return None;
+        }
+        let (newest_at, newest) = self.samples[n - 1];
+        let (before_at, before) = self.samples[n - 2];
+        let ticks = (newest_at - before_at).max(1e-6);
+        let mut per_tick = (newest.position - before.position) / ticks as f32;
+        // Speeding up or slowing down, per tick per tick, from a third.
+        let mut accel = Vec3::ZERO;
+        if n >= 3 {
+            let (older_at, older) = self.samples[n - 3];
+            let earlier_ticks = (before_at - older_at).max(1e-6);
+            let earlier = (before.position - older.position) / earlier_ticks as f32;
+            accel = (per_tick - earlier) / (0.5 * (ticks + earlier_ticks)) as f32;
+            // Falling is carried on; a knock — landing, a hit — is not:
+            // it is over by the time the next tick starts, and carrying it
+            // forward throws the body.
+            let most = TAKEOVER_ACCEL / (NET_HZ * NET_HZ);
+            accel = accel.clamp_length_max(most);
+            // The speed at the newest, not half a tick before it.
+            per_tick += accel * (0.5 * ticks) as f32;
+        }
+        let velocity = per_tick * NET_HZ;
+        let lead = ((self.render + DELAY - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
+        // The turn between the last two, the short way round.
+        let mut turn = newest.rotation() * before.rotation().inverse();
+        if turn.w < 0.0 {
+            turn = -turn;
+        }
+        let (axis, angle) = turn.to_axis_angle();
+        let spin_per_tick = axis * angle / ticks as f32;
+        let mut pose = newest;
+        pose.position += per_tick * lead + accel * (0.5 * lead * lead);
+        let velocity = velocity + accel * NET_HZ * lead;
+        let ahead = spin_per_tick * lead;
+        if ahead.length() > 1e-6 {
+            pose.set_rotation(Quat::from_scaled_axis(ahead) * newest.rotation());
+        }
+        Some((pose, velocity, spin_per_tick * NET_HZ))
     }
 
     /// The pose at a timeline tick, between the samples around it; held

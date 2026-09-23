@@ -26,6 +26,8 @@ pub mod animgraph;
 pub mod asset;
 #[cfg(feature = "audio")]
 pub mod audio;
+#[cfg(feature = "physics")]
+pub mod bench;
 pub mod builtin;
 pub mod components;
 pub mod decals;

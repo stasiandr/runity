@@ -17,6 +17,7 @@
 //! runity duplicate FROM TO                copy an asset as a new one
 //! runity add component|system|scene NAME [PROJECT]  a new file where it goes
 //! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
+//! runity bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -55,6 +56,13 @@ runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH]
     controllers as animators/. MonoBehaviours become components written as
     text. --models converts FBX through Blender (slow). Says what it left
     behind, then syncs the library.
+runity bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
+    The physics bench: thirteen scenarios from Dacha Simulator played
+    alone, then by three players passing the bodies around over links from
+    perfect to awful, measured against the solo run. Prints the frontier —
+    how far down the ladder each holds — and every run; writes it all as
+    RON to FILE (bench.ron). Real time: the full ladder takes about an
+    hour a seed.
 runity sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -116,6 +124,7 @@ fn run() -> Result<ExitCode> {
     match command.as_str() {
         "new" => new(&rest),
         "sync" => sync(&find(&rest)?),
+        "bench" => bench(&rest),
         "import-unity" => {
             let mut options = runity_import::unity::Options::default();
             let mut paths: Vec<String> = Vec::new();
@@ -566,5 +575,40 @@ fn build(rest: &[String]) -> Result<ExitCode> {
         built.folder.display(),
         built.executable.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `runity bench`: the physics bench's ladder.
+fn bench(rest: &[String]) -> Result<ExitCode> {
+    let mut seeds = 1u64;
+    let (mut scenarios, mut rungs): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut out = PathBuf::from("bench.ron");
+    let mut args = rest.iter();
+    let list = |v: Option<&String>| -> Result<Vec<String>> {
+        Ok(v.context("wants a comma-separated list")?
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect())
+    };
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--seeds" => seeds = args.next().context("--seeds wants a number")?.parse()?,
+            "--scenarios" => scenarios = list(args.next())?,
+            "--rungs" => rungs = list(args.next())?,
+            "--out" => out = PathBuf::from(args.next().context("--out wants a file")?),
+            other => bail!("unknown option {other}"),
+        }
+    }
+    let wanted = |list: &[String], name: &str| list.is_empty() || list.iter().any(|w| w == name);
+    let report = runity::bench::measure(
+        seeds,
+        |s| wanted(&scenarios, s),
+        |r| wanted(&rungs, r),
+        |line| println!("{line}"),
+    );
+    println!("\n{}", report.text());
+    let text = runity::ron::ser::to_string_pretty(&report, Default::default())?;
+    std::fs::write(&out, text).with_context(|| out.display().to_string())?;
+    println!("written to {}", out.display());
     Ok(ExitCode::SUCCESS)
 }

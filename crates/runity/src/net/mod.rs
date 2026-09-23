@@ -72,6 +72,17 @@ pub struct Owned;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Replica;
 
+/// Just taken over from another peer: the speed it had there, for the
+/// physics to give the body as it becomes ours. The pose is already on
+/// its transform — the newest the old owner sent, carried forward — not
+/// the picture a moment behind that it was being shown at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Takeover {
+    pub velocity: glam::Vec3,
+    /// Radians a second about each axis.
+    pub spin: glam::Vec3,
+}
+
 /// "I want to drive this": put it on an entity, and the next frame takes
 /// it — optimistically, at once — and asks the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
