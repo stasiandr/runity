@@ -1,24 +1,17 @@
-//! `shot` — the editor's window, photographed without a screen.
+//! `shot` — the editor, photographed without a screen.
 //!
 //! ```text
-//! cargo run -p runity-studio --example shot -- [scene.ron] [out.png] [selected name…]
+//! cargo run -p runity-studio --example shot -- [scene.ron] [out.png] [select name…]
 //! ```
 //!
-//! The window is opened off-screen and rendered by the real Metal renderer,
-//! then read back as pixels (GPUI's `VisualTestAppContext`). So this is not
-//! a mock of the editor: it is the editor, drawn by the same code that draws
-//! it on screen — the layout, the fonts, the panels and the engine's frame
-//! inside them.
-//!
-//! Two things it is for. An agent can see what it changed without asking a
-//! person to look at a screen (DNA, postulate 5), and the same picture can
-//! be held against a reference, which is how this repository has checked
-//! renders since it had one.
+//! The whole editor — panels, Scene view and all — drawn by its own code
+//! into an off-screen texture on the session's GPU, and read back. Not a
+//! mock: the same `Studio` the window runs. An agent sees what it changed
+//! without a person looking at a screen (DNA, postulate 5).
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
-use gpui::{px, size, VisualTestAppContext};
+use runity::gpu::OffscreenTarget;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -30,39 +23,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("runity-studio.png"));
+    let (width, height, scale) = (1440.0, 900.0, 2.0);
 
-    let mut session = runity_studio::open(&scene)?;
-    // Anything named after the picture's path is selected, so that the
-    // Inspector and the Hierarchy have something to show.
+    let session = runity_studio::open(&scene)?;
+    let mut studio = runity_studio::Studio::new(session, width, height, scale);
     for name in args {
-        match session.find(&name) {
-            Some(id) => session.add_to_selection(id)?,
+        match studio.session.find(&name) {
+            Some(id) => studio.session.add_to_selection(id)?,
             None => eprintln!("nothing called {name:?}"),
         }
     }
-
-    let platform = gpui_platform::current_platform(false);
-    let mut cx = VisualTestAppContext::with_asset_source(
-        platform,
-        std::sync::Arc::new(gpui_kit::assets::AllAssets),
-    );
-    cx.update(runity_studio::install);
-    let window = cx.open_offscreen_window(size(px(1440.0), px(900.0)), |window, cx| {
-        runity_studio::window_root(session, window, cx)
-    })?;
-
-    // The Scene view asks for the next frame every frame, so a few frames
-    // have to go by before the picture is the engine's and not the empty
-    // panel behind it. Waiting for the wall clock rather than a frame count
-    // keeps this honest on a slow machine.
-    let until = Instant::now() + Duration::from_millis(300);
-    while Instant::now() < until {
-        cx.run_until_parked();
-        std::thread::sleep(Duration::from_millis(16));
+    let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
+    let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
+    let mut renderer = studio.renderer(target.format());
+    // Two frames: the first lays out and sizes the Scene view, the second
+    // draws the scene at that size.
+    for _ in 0..2 {
+        studio.frame();
+        studio.draw(&mut renderer, &target.ui_view(), pw, ph);
     }
-
-    let image = cx.capture_screenshot(window.into())?;
-    image.save(&out)?;
+    let pixels = target.read_rgba(studio.session.gpu());
+    image::save_buffer(&out, &pixels, pw, ph, image::ExtendedColorType::Rgba8)?;
     println!("wrote {}", out.display());
     Ok(())
 }

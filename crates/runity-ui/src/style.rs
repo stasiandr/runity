@@ -354,6 +354,12 @@ impl Style {
         self
     }
 
+    /// Undo [`Style::hidden`]: laid out and drawn again.
+    pub fn shown(mut self) -> Self {
+        self.layout.display = taffy::Display::Flex;
+        self
+    }
+
     // --- look -------------------------------------------------------
 
     pub fn background(mut self, c: Color) -> Self {

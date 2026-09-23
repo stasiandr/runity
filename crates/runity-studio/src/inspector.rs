@@ -1,66 +1,38 @@
 //! The Inspector: the selection's fields, to read and to type into.
 //!
 //! What the fields are and what typing into one does is
-//! `Session::inspect_all` and `Session::set_field_all` — the same calls an
-//! agent makes, one undo step each, with `—` where several selected things
-//! disagree. This panel lays them out: the name on top, the transform as
-//! three numbers a line, the rest grouped as Unity groups them, each as the
-//! RON the scene file holds (a form built from the game's own types waits
-//! on how modules reach the editor — DNA, open question 2).
+//! `Session::inspect_all` and `Session::set_field_all` — the calls an agent
+//! makes, one undo step each, with `—` where several selected things
+//! disagree. This lays them out as Unity does: the name on top, the
+//! transform as three numbers a line, the rest in groups, each as the RON
+//! the scene file holds (a form built from the game's own types waits on
+//! how modules reach the editor — DNA, open question 2). Material and
+//! model have a picker next to them. Empty fields are offered as chips.
 //!
-//! A field is committed on Enter or when the cursor leaves it, and only if
-//! the text changed; what does not parse is said in the Console and the
-//! field goes back to what the scene holds.
+//! A field commits on Enter, Tab, or when the keyboard leaves it changed;
+//! what does not parse is said in the Console and the box goes back to
+//! what the scene holds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
-use gpui::{
-    div, prelude::*, px, rgb, AnyElement, ClickEvent, Context, Entity, Focusable, SharedString,
-    Window,
-};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::Sizable;
 use runity::EntityId;
 use runity_editor::console::Level;
 use runity_editor::panels::{Field, MIXED};
 use runity_editor::Session;
+use runity_ui::{Event, NodeId, Style, Ui};
 
+use crate::menu::{Action, MenuItem};
+use crate::studio::Requests;
 use crate::theme::*;
-use crate::ui::{icon, panel, tag};
 
-/// Where each field goes, in Unity's order. A field in none of them — a
-/// game's component — goes under Components.
 const OBJECT: [&str; 4] = ["model", "material", "prefab", "layer"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 4] = ["body", "collider", "physics", "joint"];
 const PARTS: [&str; 4] = ["camera", "light", "particles", "route"];
 
-/// A field that says nothing: not shown, but offered under «Add».
+/// A field that says nothing: not shown, offered as a chip.
 fn is_empty(value: &str) -> bool {
     matches!(value, "" | "None" | "r#None" | "()" | "\"\"")
-}
-
-/// One text box: a field, or one axis of a vector field.
-struct Slot {
-    field: String,
-    axis: Option<usize>,
-    state: Entity<InputState>,
-    /// What it was last given from the scene: typing that leaves it the
-    /// same is not an edit.
-    shown: String,
-}
-
-pub struct Inspector {
-    session: Entity<Session>,
-    /// Whose fields the slots hold.
-    showing: Vec<EntityId>,
-    slots: Vec<Slot>,
-    /// Empty fields asked for with «Add», shown until something is typed.
-    revealed: BTreeSet<String>,
-    add_component: Entity<InputState>,
-    /// The «Add component» box is emptied on the next draw, which is where
-    /// a window to do it with is at hand.
-    pending_clear: bool,
 }
 
 /// A vector field's three numbers, when its text is one.
@@ -96,156 +68,504 @@ fn title(field: &str) -> String {
     }
 }
 
+/// What a node of the panel stands for.
+#[derive(Debug, Clone, PartialEq)]
+enum Part {
+    /// A box of a field; `axis` for one number of a vector.
+    Slot {
+        field: String,
+        axis: Option<usize>,
+    },
+    /// The dot on an overridden field: revert it.
+    Revert(String),
+    /// A chip offering an empty field.
+    Reveal(String),
+    /// The «…» next to a field with a list to pick from.
+    Pick(String),
+    AddComponent,
+}
+
+pub struct Inspector {
+    body: NodeId,
+    /// Whose fields are shown, and the shape they were laid out in.
+    showing: Vec<EntityId>,
+    shape: Vec<(String, Option<usize>)>,
+    parts: HashMap<NodeId, Part>,
+    /// Slots by field and axis, and what each was last given.
+    slots: Vec<(String, Option<usize>, NodeId, String)>,
+    revealed: BTreeSet<String>,
+    playing: bool,
+}
+
 impl Inspector {
-    pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        cx.observe(&session, |_, _, cx| cx.notify()).detach();
-        let add_component = cx.new(|cx| InputState::new(window, cx).placeholder("Add component…"));
-        cx.subscribe(&add_component, |this, state, event: &InputEvent, cx| {
-            if let InputEvent::PressEnter { .. } = event {
-                let name = state.read(cx).value().trim().to_string();
-                if name.is_empty() {
-                    return;
+    pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
+        let (card, _header, body) = panel(ui, parent, "Inspector");
+        ui.set_name(card, "inspector");
+        let body = ui.add(body, Style::column().fill().full_width().clip());
+        let _ = card;
+        Self {
+            body,
+            showing: Vec::new(),
+            shape: Vec::new(),
+            parts: HashMap::new(),
+            slots: Vec::new(),
+            revealed: BTreeSet::new(),
+            playing: false,
+        }
+    }
+
+    pub fn owns(&self, node: NodeId) -> bool {
+        self.parts.contains_key(&node)
+    }
+
+    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        let ids = session.selection();
+        let fields = session.inspect_all(&ids).unwrap_or_default();
+        let playing = session.is_playing();
+        if ids != self.showing {
+            self.revealed.clear();
+        }
+        let shown = |f: &Field| !is_empty(&f.value) || self.revealed.contains(&f.name);
+        let mut shape = Vec::new();
+        for f in &fields {
+            if f.name.starts_with("game")
+                || !(TRANSFORM.contains(&f.name.as_str()) || f.name == "name" || shown(f))
+            {
+                continue;
+            }
+            if TRANSFORM.contains(&f.name.as_str()) && axes(&f.value).is_some() {
+                for i in 0..3 {
+                    shape.push((f.name.clone(), Some(i)));
                 }
-                let ids = this.showing.clone();
-                this.session.update(cx, |session, cx| {
-                    for id in ids {
+            } else {
+                shape.push((f.name.clone(), None));
+            }
+        }
+        if ids != self.showing || shape != self.shape || playing != self.playing {
+            self.showing = ids.clone();
+            self.shape = shape;
+            self.playing = playing;
+            self.build(ui, session, &ids, &fields);
+            return;
+        }
+        // Same boxes: new text in the ones nobody is typing into.
+        for (field, axis, node, given) in &mut self.slots {
+            let Some(f) = fields.iter().find(|f| f.name == *field) else {
+                continue;
+            };
+            let text = match axis {
+                Some(i) => axes(&f.value).map(|a| a[*i].clone()).unwrap_or_default(),
+                None => f.value.clone(),
+            };
+            if *given != text && ui.focused() != Some(*node) {
+                ui.set_text(*node, &text);
+                *given = text;
+            }
+        }
+    }
+
+    fn build(&mut self, ui: &mut Ui, session: &Session, ids: &[EntityId], fields: &[Field]) {
+        ui.clear(self.body);
+        self.parts.clear();
+        self.slots.clear();
+        if ids.is_empty() {
+            let empty = ui.add(self.body, Style::column().padding(SPACE_4).gap(SPACE_2));
+            ui.add_text(empty, text().text_color(MUTED), "Nothing selected");
+            ui.add_text(
+                empty,
+                Style::default().text_size(12.0).text_color(TEXT.alpha(40)),
+                "Click something in the Scene view or the Hierarchy.",
+            );
+            return;
+        }
+        let find = |name: &str| fields.iter().find(|f| f.name == name);
+        let prefab = find("prefab")
+            .map(|f| f.value.clone())
+            .filter(|p| !p.is_empty() && p != MIXED);
+
+        // The header: what it is, its name, how many.
+        let head = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(SPACE_1)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        icon(
+            ui,
+            head,
+            if prefab.is_some() { "package" } else { "box" },
+            ACCENT,
+        );
+        if let Some(name) = find("name") {
+            let f = ui.add_field(
+                head,
+                field_style().fill().height(26.0).text_size(13.0),
+                &name.value,
+            );
+            ui.set_name(f, "inspector name");
+            self.slot(f, "name", None, &name.value);
+        }
+        if ids.len() > 1 {
+            tag(
+                ui,
+                head,
+                &format!("{} selected", ids.len()),
+                ACCENT_800,
+                ACCENT_100,
+            );
+        }
+        if let Some(p) = &prefab {
+            tag(ui, head, p, ACCENT_900, ACCENT_300);
+        }
+        if self.playing {
+            let note = ui.add(
+                self.body,
+                Style::row()
+                    .margin(SPACE_4)
+                    .padding(SPACE_3)
+                    .radius(RADIUS_MD)
+                    .border(1.0, ACCENT.alpha(40)),
+            );
+            ui.add_text(
+                note,
+                Style::default().text_size(11.5).text_color(ACCENT_300),
+                "Playing: this is where things are now. Stop brings the scene back.",
+            );
+        }
+
+        let shown = |f: &&Field| !is_empty(&f.value) || self.revealed.contains(&f.name);
+        let transform: Vec<&Field> = TRANSFORM.iter().filter_map(|n| find(n)).collect();
+        let object: Vec<&Field> = OBJECT
+            .iter()
+            .filter_map(|n| find(n))
+            .filter(shown)
+            .collect();
+        let physics: Vec<&Field> = PHYSICS
+            .iter()
+            .filter_map(|n| find(n))
+            .filter(shown)
+            .collect();
+        let mut parts: Vec<&Field> = PARTS.iter().filter_map(|n| find(n)).filter(shown).collect();
+        parts.extend(fields.iter().filter(|f| f.name.starts_with("components.")));
+        let game: Vec<&Field> = fields
+            .iter()
+            .filter(|f| f.name.starts_with("game"))
+            .collect();
+
+        for (name, group) in [
+            ("Transform", transform),
+            ("Object", object),
+            ("Physics", physics),
+            ("Components", parts),
+        ] {
+            if group.is_empty() {
+                continue;
+            }
+            self.heading(ui, name);
+            for f in group {
+                self.line(ui, f);
+            }
+        }
+        if !game.is_empty() {
+            self.heading(ui, "Running game");
+            for f in game {
+                let line = ui.add(
+                    self.body,
+                    Style::row().full_width().padding_x(SPACE_4).gap(SPACE_2),
+                );
+                ui.add_text(
+                    line,
+                    Style::default()
+                        .width(84.0)
+                        .fixed()
+                        .text_size(11.5)
+                        .text_color(LABEL)
+                        .nowrap(),
+                    &title(f.name.strip_prefix("game.").unwrap_or(&f.name)),
+                );
+                ui.add_text(
+                    line,
+                    Style::default()
+                        .fill()
+                        .text_size(11.5)
+                        .text_color(MUTED)
+                        .mono(),
+                    &f.value,
+                );
+            }
+        }
+
+        // What could be added: the empty fields as outlined chips, and a
+        // component by name.
+        let foot = ui.add(
+            self.body,
+            Style::column()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(SPACE_3)
+                .gap(SPACE_2),
+        );
+        let chips = ui.add(foot, Style::row().wrap().gap(SPACE_1).full_width());
+        for name in OBJECT.iter().chain(PHYSICS.iter()).chain(PARTS.iter()) {
+            if *name == "prefab" {
+                continue;
+            }
+            let Some(f) = find(name) else { continue };
+            if !is_empty(&f.value) || self.revealed.contains(*name) {
+                continue;
+            }
+            let chip = ui.add(
+                chips,
+                Style::row()
+                    .height(22.0)
+                    .padding_x(SPACE_2)
+                    .gap(4.0)
+                    .center_items()
+                    .radius(6.0)
+                    .border(1.0, DIVIDER)
+                    .hover(HOVER)
+                    .hover_border(ACCENT),
+            );
+            ui.set_name(chip, format!("add {name}"));
+            icon(ui, chip, "plus", MUTED);
+            ui.add_text(
+                chip,
+                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+                &title(name),
+            );
+            self.parts.insert(chip, Part::Reveal(name.to_string()));
+        }
+        let add = ui.add_field(foot, field_style().full_width(), "");
+        ui.set_name(add, "add component");
+        self.parts.insert(add, Part::AddComponent);
+        let _ = session;
+    }
+
+    fn slot(&mut self, node: NodeId, field: &str, axis: Option<usize>, value: &str) {
+        self.parts.insert(
+            node,
+            Part::Slot {
+                field: field.to_string(),
+                axis,
+            },
+        );
+        self.slots
+            .push((field.to_string(), axis, node, value.to_string()));
+    }
+
+    /// A group's heading with the rule after it fading out.
+    fn heading(&mut self, ui: &mut Ui, name: &str) {
+        let h = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(SPACE_2)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add_text(
+            h,
+            Style::default()
+                .text_size(12.0)
+                .text_color(NEUTRAL_300)
+                .nowrap(),
+            name,
+        );
+        ui.add(h, Style::row().fill().height(1.0).background(DIVIDER));
+    }
+
+    /// One field: its label (with the override dot) and its boxes.
+    fn line(&mut self, ui: &mut Ui, f: &Field) {
+        let line = ui.add(
+            self.body,
+            Style::row()
+                .full_width()
+                .padding_x(SPACE_4)
+                .padding_y(2.0)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        let label = ui.add(
+            line,
+            Style::row().width(84.0).fixed().gap(SPACE_2).center_items(),
+        );
+        if f.overridden {
+            let dot = ui.add(
+                label,
+                Style::row()
+                    .size(8.0, 8.0)
+                    .radius(4.0)
+                    .background(ACCENT)
+                    .clickable(),
+            );
+            self.parts.insert(dot, Part::Revert(f.name.clone()));
+        }
+        ui.add_text(
+            label,
+            Style::default()
+                .text_size(12.0)
+                .text_color(if f.overridden { ACCENT_300 } else { LABEL })
+                .nowrap(),
+            &title(&f.name),
+        );
+        match TRANSFORM
+            .contains(&f.name.as_str())
+            .then(|| axes(&f.value))
+            .flatten()
+        {
+            Some(three) => {
+                let boxes = ui.add(line, Style::row().fill().gap(SPACE_1));
+                for (i, value) in three.iter().enumerate() {
+                    let b = ui.add(boxes, Style::row().fill().gap(2.0).center_items());
+                    ui.add_text(
+                        b,
+                        Style::default()
+                            .text_size(10.5)
+                            .text_color(TEXT.alpha(40))
+                            .nowrap(),
+                        ["X", "Y", "Z"][i],
+                    );
+                    let slot = ui.add_field(b, field_style().fill(), value);
+                    ui.set_name(slot, format!("{} {}", f.name, ["x", "y", "z"][i]));
+                    self.slot(slot, &f.name, Some(i), value);
+                }
+            }
+            None => {
+                let slot =
+                    ui.add_field(line, field_style().fill().mono().text_size(11.5), &f.value);
+                ui.set_name(slot, f.name.clone());
+                self.slot(slot, &f.name, None, &f.value);
+                if matches!(f.name.as_str(), "material" | "model" | "prefab") {
+                    let pick = ui.add(
+                        line,
+                        Style::row()
+                            .size(22.0, 22.0)
+                            .fixed()
+                            .center()
+                            .radius(6.0)
+                            .hover(HOVER),
+                    );
+                    ui.set_name(pick, format!("pick {}", f.name));
+                    icon(ui, pick, "ellipsis-vertical", LABEL);
+                    self.parts.insert(pick, Part::Pick(f.name.clone()));
+                }
+            }
+        }
+    }
+
+    pub fn event(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        node: NodeId,
+        event: &Event,
+        requests: &mut Requests,
+    ) {
+        let Some(part) = self.parts.get(&node).cloned() else {
+            return;
+        };
+        match (part, event) {
+            (Part::Slot { field, axis }, Event::Submit(_)) => {
+                self.commit(ui, session, &field, axis);
+                requests.refresh = true;
+            }
+            (Part::Slot { .. }, Event::Cancel) => {
+                requests.refresh = true;
+            }
+            (Part::Revert(field), Event::Click { .. }) => {
+                for id in self.showing.clone() {
+                    let _ = session.revert_field(id, &field);
+                }
+                requests.refresh = true;
+            }
+            (Part::Reveal(field), Event::Click { .. }) => {
+                self.revealed.insert(field.clone());
+                self.shape.clear();
+                requests.refresh = true;
+                requests.focus_named = Some(field);
+            }
+            (Part::Pick(field), Event::Click { .. }) => {
+                let items = self.choices(session, &field);
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x - 180.0, r.y + r.height));
+            }
+            (Part::AddComponent, Event::Submit(name)) => {
+                let name = name.trim().to_string();
+                if !name.is_empty() {
+                    for id in self.showing.clone() {
                         if let Err(e) = session.add_component(id, &name) {
                             session.say(Level::Error, e.to_string());
                             break;
                         }
                     }
-                    cx.notify();
-                });
-                this.pending_clear = true;
-            }
-        })
-        .detach();
-        Self {
-            session,
-            showing: Vec::new(),
-            slots: Vec::new(),
-            revealed: BTreeSet::new(),
-            add_component,
-            pending_clear: false,
-        }
-    }
-
-    /// Make the slots match `fields`: new boxes for a new selection, new
-    /// text for boxes nobody is typing into.
-    fn sync(
-        &mut self,
-        ids: &[EntityId],
-        fields: &[Field],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if ids != self.showing.as_slice() {
-            self.showing = ids.to_vec();
-            self.slots.clear();
-            self.revealed.clear();
-        }
-        let mut wanted: Vec<(String, Option<usize>, String)> = Vec::new();
-        for field in fields {
-            if field.name.starts_with("game") {
-                continue;
-            }
-            match TRANSFORM
-                .contains(&field.name.as_str())
-                .then(|| axes(&field.value))
-                .flatten()
-            {
-                Some(three) => {
-                    for (i, text) in three.into_iter().enumerate() {
-                        wanted.push((field.name.clone(), Some(i), text));
-                    }
                 }
-                None => wanted.push((field.name.clone(), None, field.value.clone())),
+                ui.set_text(node, "");
+                requests.refresh = true;
             }
-        }
-        // Rebuilt when the set of boxes changes shape — a vector that
-        // became mixed, a component added — else updated in place, so the
-        // box being typed into keeps its cursor.
-        let same_shape = wanted.len() == self.slots.len()
-            && wanted
-                .iter()
-                .zip(&self.slots)
-                .all(|((f, a, _), s)| *f == s.field && *a == s.axis);
-        if !same_shape {
-            self.slots = wanted
-                .into_iter()
-                .map(|(field, axis, text)| self.slot(field, axis, text, window, cx))
-                .collect();
-            return;
-        }
-        for ((_, _, text), slot) in wanted.into_iter().zip(self.slots.iter_mut()) {
-            if slot.shown == text {
-                continue;
-            }
-            let typing = slot.state.read(cx).focus_handle(cx).is_focused(window);
-            if !typing {
-                slot.state
-                    .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
-                slot.shown = text;
-            }
-        }
-    }
-
-    fn slot(
-        &self,
-        field: String,
-        axis: Option<usize>,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Slot {
-        let state = cx.new(|cx| InputState::new(window, cx).default_value(text.clone()));
-        let (name, at) = (field.clone(), axis);
-        cx.subscribe(&state, move |this, _, event: &InputEvent, cx| match event {
-            InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit(&name, at, cx),
             _ => {}
-        })
-        .detach();
-        Slot {
-            field,
-            axis,
-            state,
-            shown: text,
         }
     }
 
-    /// Hand what was typed into `field` to the session, if it changed.
-    fn commit(&mut self, field: &str, axis: Option<usize>, cx: &mut Context<Self>) {
+    /// What a picker offers for `field`.
+    fn choices(&self, session: &Session, field: &str) -> Vec<MenuItem> {
+        let names: Vec<String> = match field {
+            "material" => session.palette().into_iter().map(|(n, _)| n).collect(),
+            "model" => {
+                let mut v: Vec<String> = runity::builtin::NAMES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                if let Ok(assets) = session.assets() {
+                    v.extend(
+                        assets
+                            .into_iter()
+                            .filter(|a| a.kind == "model")
+                            .map(|a| a.name),
+                    );
+                }
+                v
+            }
+            "prefab" => session.prefab_names(),
+            _ => Vec::new(),
+        };
+        names
+            .into_iter()
+            .map(|n| MenuItem::new(&n, Action::SetField(field.to_string(), n.clone())))
+            .collect()
+    }
+
+    /// Hand what was typed into `field` to the session.
+    fn commit(&mut self, ui: &mut Ui, session: &mut Session, field: &str, axis: Option<usize>) {
         let text = match axis {
             None => {
-                let Some(slot) = self.slots.iter().find(|s| s.field == field) else {
+                let Some((_, _, node, _)) = self.slots.iter().find(|s| s.0 == field) else {
                     return;
                 };
-                let typed = slot.state.read(cx).value().to_string();
-                if typed == slot.shown {
-                    return;
+                let t = ui.text(*node).unwrap_or_default().to_string();
+                if field == "material" && !t.starts_with('"') && !t.starts_with('(') {
+                    // A material by name, typed as a person types it.
+                    format!("{t:?}")
+                } else {
+                    t
                 }
-                typed
             }
             Some(_) => {
-                let three: Vec<&Slot> = self.slots.iter().filter(|s| s.field == field).collect();
-                let typed: Vec<String> = three
+                let typed: Vec<String> = self
+                    .slots
                     .iter()
-                    .map(|s| s.state.read(cx).value().trim().to_string())
+                    .filter(|s| s.0 == field)
+                    .map(|s| ui.text(s.2).unwrap_or_default().trim().to_string())
                     .collect();
-                if three.iter().zip(&typed).all(|(s, t)| s.shown == *t) {
-                    return;
-                }
-                // A number is what a box of a vector takes; `1+1` is not.
-                let numbers: Option<Vec<f32>> = typed.iter().map(|t| t.parse().ok()).collect();
+                let numbers: Option<Vec<f32>> = typed.iter().map(|t| eval(t)).collect();
                 match numbers {
-                    Some(n) => format!("({:?}, {:?}, {:?})", n[0], n[1], n[2]),
-                    None => {
-                        self.session.update(cx, |session, cx| {
-                            session.say(Level::Error, format!("{field}: every box takes a number"));
-                            cx.notify();
-                        });
-                        self.showing.clear();
-                        cx.notify();
+                    Some(n) if n.len() == 3 => format!("({:?}, {:?}, {:?})", n[0], n[1], n[2]),
+                    _ => {
+                        session.say(Level::Error, format!("{field}: every box takes a number"));
+                        self.shape.clear();
                         return;
                     }
                 }
@@ -254,347 +574,78 @@ impl Inspector {
         if text == MIXED {
             return;
         }
-        let ids = self.showing.clone();
-        let field = field.to_string();
-        self.session.update(cx, |session, cx| {
-            if let Err(e) = session.set_field_all(&ids, &field, &text) {
-                session.say(Level::Error, e.to_string());
-            }
-            cx.notify();
-        });
+        if let Err(e) = session.set_field_all(&self.showing, field, &text) {
+            session.say(Level::Error, e.to_string());
+        }
+        self.revealed.remove(field);
         // Whatever the scene holds now is what the boxes show — including
         // the old text, when it refused.
-        for slot in self.slots.iter_mut().filter(|s| s.field == field) {
-            slot.shown.clear();
+        for s in self.slots.iter_mut().filter(|s| s.0 == field) {
+            s.3.clear();
         }
-        cx.notify();
     }
 
-    fn revert(&mut self, field: &str, cx: &mut Context<Self>) {
-        let ids = self.showing.clone();
-        let field = field.to_string();
-        self.session.update(cx, |session, cx| {
-            for id in ids {
-                let _ = session.revert_field(id, &field);
-            }
-            cx.notify();
-        });
-    }
-
-    fn input(&self, field: &str, axis: Option<usize>) -> Option<&Entity<InputState>> {
-        self.slots
-            .iter()
-            .find(|s| s.field == field && s.axis == axis)
-            .map(|s| &s.state)
-    }
-
-    /// One line: the label (with the override mark and its undo) and what
-    /// to type into.
-    fn line(&self, field: &Field, cx: &mut Context<Self>) -> AnyElement {
-        let name = field.name.clone();
-        let mark = field.overridden.then(|| {
-            div()
-                .id(SharedString::from(format!("revert-{name}")))
-                .flex()
-                .items_center()
-                .gap(px(4.0))
-                .cursor_pointer()
-                .child(div().size(px(6.0)).rounded_full().bg(rgb(ACCENT)))
-                .on_click(cx.listener({
-                    let name = name.clone();
-                    move |this, _: &ClickEvent, _, cx| this.revert(&name, cx)
-                }))
-        });
-        let label_ink = if field.overridden {
-            rgb(ACCENT_300)
+    pub fn set_field(&mut self, session: &mut Session, field: &str, value: &str) {
+        let text = if field == "material" {
+            format!("{value:?}")
         } else {
-            label()
+            value.to_string()
         };
-        let label = div()
-            .flex()
-            .items_center()
-            .gap(SPACE_2)
-            .w(px(84.0))
-            .flex_none()
-            .text_size(px(12.0))
-            .text_color(label_ink)
-            .children(mark)
-            .child(title(&field.name));
-
-        let value: AnyElement = if self.input(&field.name, Some(0)).is_some() {
-            div()
-                .flex()
-                .flex_1()
-                .gap(SPACE_1)
-                .children((0..3).filter_map(|i| {
-                    let state = self.input(&field.name, Some(i))?;
-                    let letter = ["X", "Y", "Z"][i];
-                    Some(
-                        div().flex_1().min_w_0().child(
-                            Input::new(state).small().prefix(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(mix(TEXT, 40))
-                                    .child(letter),
-                            ),
-                        ),
-                    )
-                }))
-                .into_any_element()
-        } else if let Some(state) = self.input(&field.name, None) {
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(Input::new(state).small())
-                .into_any_element()
-        } else {
-            div().flex_1().into_any_element()
-        };
-
-        let mut line = div()
-            .flex()
-            .items_center()
-            .gap(SPACE_2)
-            .px(SPACE_4)
-            .py(px(3.0))
-            .child(label)
-            .child(value);
-        if !field.shape.is_empty() {
-            line = line.child(
-                div()
-                    .id(SharedString::from(format!("shape-{name}")))
-                    .child(icon("info", muted()))
-                    .tooltip({
-                        let shape = field.shape.clone();
-                        move |window, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new(shape.clone())
-                                .build(window, cx)
-                        }
-                    }),
-            );
+        if let Err(e) = session.set_field_all(&self.showing, field, &text) {
+            session.say(Level::Error, e.to_string());
         }
-        line.into_any_element()
     }
 
-    fn section(&self, name: &'static str, lines: Vec<AnyElement>) -> Option<AnyElement> {
-        if lines.is_empty() {
-            return None;
-        }
-        Some(
-            div()
-                .flex()
-                .flex_col()
-                .pb(SPACE_3)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_2)
-                        .px(SPACE_4)
-                        .pt(SPACE_3)
-                        .pb(SPACE_2)
-                        .text_size(px(12.0))
-                        .text_color(rgb(NEUTRAL_300))
-                        // The rule after a heading fades out at its end —
-                        // Nocturne's signature.
-                        .child(name)
-                        .child(div().flex_1().h(px(1.0)).bg(gpui::linear_gradient(
-                            90.0,
-                            gpui::linear_color_stop(divider(), 0.0),
-                            gpui::linear_color_stop(gpui::transparent_black(), 1.0),
-                        ))),
-                )
-                .children(lines)
-                .into_any_element(),
-        )
+    /// The slot for a field, to put the keyboard in after revealing it.
+    pub fn slot_of(&self, field: &str) -> Option<NodeId> {
+        self.slots.iter().find(|s| s.0 == field).map(|s| s.2)
     }
 }
 
-impl Render for Inspector {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if std::mem::take(&mut self.pending_clear) {
-            self.add_component
-                .update(cx, |state, cx| state.set_value("", window, cx));
+/// A number, or a little arithmetic on numbers: `1.5*2`, `10/4`, `-3+1`,
+/// as Unity's fields take.
+fn eval(text: &str) -> Option<f32> {
+    if let Ok(n) = text.parse() {
+        return Some(n);
+    }
+    // Last operator wins, so `a-b-c` is `(a-b)-c`; a leading sign is part
+    // of the number.
+    for ops in [['+', '-'], ['*', '/']] {
+        if let Some((i, op)) = text.char_indices().rev().find(|(i, c)| {
+            ops.contains(c) && *i > 0 && !text[..*i].ends_with(['e', 'E', '*', '/', '+', '-'])
+        }) {
+            let (a, b) = (eval(text[..i].trim())?, eval(text[i + 1..].trim())?);
+            return Some(match op {
+                '+' => a + b,
+                '-' => a - b,
+                '*' => a * b,
+                _ => a / b,
+            });
         }
-        let (ids, fields, playing) = {
-            let session = self.session.read(cx);
-            let ids = session.selection();
-            let fields = session.inspect_all(&ids).unwrap_or_default();
-            (ids, fields, session.is_playing())
-        };
-        if ids.is_empty() {
-            self.showing.clear();
-            self.slots.clear();
-            return panel("Inspector").child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(SPACE_2)
-                    .px(SPACE_4)
-                    .pt(SPACE_6)
-                    .text_size(px(13.0))
-                    .text_color(muted())
-                    .child("Nothing selected")
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(mix(TEXT, 40))
-                            .child("Click something in the Scene view or the Hierarchy."),
-                    ),
-            );
-        }
-        self.sync(&ids, &fields, window, cx);
+    }
+    None
+}
 
-        let shown = |f: &Field| !is_empty(&f.value) || self.revealed.contains(&f.name);
-        let by = |names: &[&str]| -> Vec<&Field> {
-            names
-                .iter()
-                .filter_map(|n| fields.iter().find(|f| f.name == *n))
-                .filter(|f| shown(f))
-                .collect()
-        };
-        let object: Vec<AnyElement> = by(&OBJECT).into_iter().map(|f| self.line(f, cx)).collect();
-        let transform: Vec<AnyElement> = TRANSFORM
-            .iter()
-            .filter_map(|n| fields.iter().find(|f| f.name == *n))
-            .map(|f| self.line(f, cx))
-            .collect();
-        let physics: Vec<AnyElement> = by(&PHYSICS).into_iter().map(|f| self.line(f, cx)).collect();
-        let mut parts: Vec<AnyElement> = by(&PARTS).into_iter().map(|f| self.line(f, cx)).collect();
-        parts.extend(
-            fields
-                .iter()
-                .filter(|f| f.name.starts_with("components."))
-                .map(|f| self.line(f, cx)),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_box_takes_a_little_arithmetic() {
+        assert_eq!(eval("2.5"), Some(2.5));
+        assert_eq!(eval("1.5*2"), Some(3.0));
+        assert_eq!(eval("10 - 4 - 1"), Some(5.0));
+        assert_eq!(eval("-3+1"), Some(-2.0));
+        assert_eq!(eval("2+3*4"), Some(14.0));
+        assert_eq!(eval("abc"), None);
+    }
+
+    #[test]
+    fn numbers_read_as_typed() {
+        assert_eq!(
+            axes("(2.6,0.5,2.0)"),
+            Some(["2.6".into(), "0.5".into(), "2".into()])
         );
-        let game: Vec<AnyElement> = fields
-            .iter()
-            .filter(|f| f.name.starts_with("game"))
-            .map(|f| {
-                div()
-                    .flex()
-                    .gap(SPACE_2)
-                    .px(SPACE_4)
-                    .py(px(2.0))
-                    .text_size(px(11.5))
-                    .child(
-                        div()
-                            .w(px(84.0))
-                            .flex_none()
-                            .text_color(label())
-                            .child(title(f.name.strip_prefix("game.").unwrap_or(&f.name))),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_family(MONO)
-                            .text_color(muted())
-                            .child(f.value.clone()),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-
-        // What could be added: the empty fields, as outlined chips.
-        let addable: Vec<AnyElement> = OBJECT
-            .iter()
-            .chain(PHYSICS.iter())
-            .chain(PARTS.iter())
-            .filter(|n| **n != "prefab")
-            .filter_map(|n| fields.iter().find(|f| f.name == *n))
-            .filter(|f| !shown(f))
-            .map(|f| {
-                let name = f.name.clone();
-                div()
-                    .id(SharedString::from(format!("add-{name}")))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .h(px(22.0))
-                    .px(SPACE_2)
-                    .rounded(px(6.0))
-                    .border_1()
-                    .border_color(divider())
-                    .text_size(px(11.5))
-                    .text_color(label())
-                    .cursor_pointer()
-                    .hover(|s| {
-                        s.bg(hover())
-                            .text_color(rgb(ACCENT))
-                            .border_color(rgb(ACCENT))
-                    })
-                    .child(icon("plus", muted()))
-                    .child(title(&name))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.revealed.insert(name.clone());
-                        cx.notify();
-                    }))
-                    .into_any_element()
-            })
-            .collect();
-
-        let header_name = self.input("name", None).cloned();
-        let count = ids.len();
-        let prefab = fields
-            .iter()
-            .find(|f| f.name == "prefab")
-            .map(|f| f.value.clone())
-            .filter(|p| !p.is_empty() && p != MIXED);
-
-        panel("Inspector").child(
-            div()
-                .id("inspector-body")
-                .flex()
-                .flex_col()
-                .flex_1()
-                .overflow_y_scroll()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_2)
-                        .px(SPACE_4)
-                        .pb(SPACE_2)
-                        .child(icon(if prefab.is_some() { "package" } else { "box" }, rgb(ACCENT)))
-                        .children(header_name.map(|state| div().flex_1().child(Input::new(&state))))
-                        .when(count > 1, |d| d.child(tag(format!("{count} selected"), ACCENT_800, ACCENT_100)))
-                        .children(prefab.map(|p| tag(p, ACCENT_900, ACCENT_300))),
-                )
-                .when(playing, |d| {
-                    d.child(
-                        div()
-                            .mx(SPACE_4)
-                            .mb(SPACE_2)
-                            .px(SPACE_3)
-                            .py(SPACE_2)
-                            .rounded(RADIUS_MD)
-                            .border_1()
-                            .border_color(mix(ACCENT, 40))
-                            .text_size(px(11.5))
-                            .text_color(rgb(ACCENT_300))
-                            .child("Playing: this is where things are now. Stop brings the scene back."),
-                    )
-                })
-                .children(self.section("Transform", transform))
-                .children(self.section("Object", object))
-                .children(self.section("Physics", physics))
-                .children(self.section("Components", parts))
-                .children(self.section("Running game", game))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_2)
-                        .px(SPACE_4)
-                        .pt(SPACE_2)
-                        .pb(SPACE_6)
-                        .child(div().flex().flex_wrap().gap(SPACE_1).children(addable))
-                        .child(
-                            Input::new(&self.add_component)
-                                .small()
-                                .prefix(icon("component", muted())),
-                        ),
-                ),
-        )
+        assert_eq!(trim_number("-0.0"), "0");
     }
 }

@@ -485,12 +485,13 @@ fn rasterize_icon(
     svgs: &mut HashMap<u16, resvg::usvg::Tree>,
     request: RasterizeCustomGlyphRequest,
 ) -> Option<RasterizedCustomGlyph> {
-    if !svgs.contains_key(&request.id) {
-        let (_, data) = crate::icons::ICONS.get(request.id as usize)?;
-        let tree = resvg::usvg::Tree::from_data(data, &Default::default()).ok()?;
-        svgs.insert(request.id, tree);
-    }
-    let svg = svgs.get(&request.id)?;
+    let svg = match svgs.entry(request.id) {
+        std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+        std::collections::hash_map::Entry::Vacant(e) => {
+            let (_, data) = crate::icons::ICONS.get(request.id as usize)?;
+            e.insert(resvg::usvg::Tree::from_data(data, &Default::default()).ok()?)
+        }
+    };
     let size = svg.size();
     let mut pixmap = resvg::tiny_skia::Pixmap::new(request.width as u32, request.height as u32)?;
     let transform = resvg::usvg::Transform::from_scale(

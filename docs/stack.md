@@ -268,12 +268,17 @@ Localization из Unity). Экран пишет `Text("@menu.play")` и пока
 каждый `@ключ` экранов. Язык переключается на ходу, файл перечитывается,
 `runity build` везёт `strings/`.
 
-**Окно редактора** — `runity-studio`, пока на GPUI (только macOS, кадр
-через CPU). Переезжает на свой `runity-ui` (DNA, «Принятые решения»,
-2026-09-23; [ui.md](ui.md)). Раскладка Unity: Hierarchy, Inspector, Scene
-view над Console, тулбар, строка состояния; вид — дизайн-система Nocturne
-из Claude Design (токены в `runity_studio::theme`). Панели читают одну
-сессию и зовут те же функции, что MCP.
+**Окно редактора** — `runity-studio`: winit и свой `runity-ui` ([ui.md](ui.md)),
+на всех ПК. Раскладка Unity: строка меню (File, Edit, GameObject, View,
+Play) и тулбар, Hierarchy, Inspector, Scene view над вкладками Project и
+Console, строка состояния; границы панелей тянутся. Поверхность окна
+создаётся на GPU сессии, так что Scene view — узел UI с текстурой кадра
+сессии, без копии (`Session::set_readback(false)`). `Studio` — редактор без
+окна: окно, тесты (`tests/studio.rs` кликает узлы по именам) и `cargo run
+-p runity-studio --example shot -- сцена.ron out.png [имя…]` гоняют одно и то
+же. Каждое действие меню, кнопки и контекстного меню — `Action`, и
+`Studio::run` — единственное место, где оно становится вызовами сессии. Вид
+— дизайн-система Nocturne из Claude Design (токены в `runity_studio::theme`).
 
 **Панели редактора как данные.** Hierarchy и Inspector Unity — без
 UI-тулкита (`runity_editor::panels`): `hierarchy()` — строки дерева с

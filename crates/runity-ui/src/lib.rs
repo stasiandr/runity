@@ -418,6 +418,12 @@ impl Ui {
         id
     }
 
+    /// Whether `id` is a text field: a window routes keys to it rather than
+    /// to its own shortcuts while it has the keyboard.
+    pub fn is_field(&self, id: NodeId) -> bool {
+        self.exists(id) && self.node(id).field.is_some()
+    }
+
     /// A built-in icon by name (`"play"`, `"move-3d"`), drawn in the
     /// node's text colour at the node's size. `None` for a name the set
     /// does not have.
