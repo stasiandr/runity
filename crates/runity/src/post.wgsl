@@ -374,10 +374,13 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
 
     color *= post.a.x;
     // Night: the eye's cones give up to its rods, which see no colour and
-    // most in blue-green — moonlit sand is grey-blue, not orange.
+    // most in blue-green — moonlit sand is grey-blue, not orange. Only where
+    // it is dark: in a lamp's pool the cones still see, and a flame stays
+    // warm.
     if post.night.x > 0.0 {
         let seen = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-        color = mix(color, seen * vec3<f32>(0.62, 0.8, 1.12), post.night.x * 0.7);
+        let dim = 1.0 - smoothstep(0.04, 0.35, seen);
+        color = mix(color, seen * vec3<f32>(0.62, 0.8, 1.12), post.night.x * 0.7 * dim);
     }
     color = white_balance(color);
     color *= post.filter_contrast.rgb;

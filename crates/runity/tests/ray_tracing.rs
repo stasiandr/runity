@@ -181,3 +181,153 @@ fn rays_do_not_crack_the_sand_with_shadow() {
         WIDE * WIDE
     );
 }
+
+/// A frame for the mirror and the lens: a black sky, no sun, and a light
+/// from all round so what the rays find shows its colour.
+fn lit_by_all_round(camera: Camera, rays: runity::ray::RayTracing, draws: Vec<Draw>) -> Frame {
+    Frame {
+        sky: Sky {
+            mode: SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: rays,
+        camera,
+        lighting: Lighting {
+            sun_intensity: 0.0,
+            sky_color: Vec3::splat(1.0),
+            ground_color: Vec3::splat(1.0),
+            ..Lighting::default()
+        },
+        shadows: ShadowSettings::OFF,
+        clear_color: Vec3::ZERO,
+        draws,
+        ..Frame::default()
+    }
+}
+
+/// A chrome ball in front of the camera, a red block behind it: by rays the
+/// ball shows the block, which is not on the screen for anything else to
+/// read.
+#[test]
+fn a_mirror_shows_what_is_behind_the_camera_only_with_rays() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    if !gpu.ray_tracing {
+        eprintln!("skipping: {} does not trace rays", gpu.describe());
+        return;
+    }
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let shot = |rays: runity::ray::RayTracing| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let ball = renderer.upload_mesh_owned(&gpu, &builtin::sphere(1.0, 48, 24));
+        let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+        let frame = lit_by_all_round(
+            Camera {
+                position: Vec3::new(0.0, 0.0, 3.0),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            rays,
+            vec![
+                Draw {
+                    mesh: ball,
+                    transform: Mat4::IDENTITY,
+                    texture: TextureHandle::WHITE,
+                    material: Material {
+                        metallic: 1.0,
+                        smoothness: 1.0,
+                        ..Material::new(0.95, 0.95, 0.95)
+                    },
+                    pose: None,
+                },
+                // Behind the camera, where the ball's middle looks.
+                Draw {
+                    mesh: cube,
+                    transform: Mat4::from_translation(Vec3::new(0.0, 0.0, 6.0))
+                        * Mat4::from_scale(Vec3::splat(3.0)),
+                    texture: TextureHandle::WHITE,
+                    material: Material::new(0.9, 0.05, 0.05),
+                    pose: None,
+                },
+            ],
+        );
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2)
+    };
+    let without = shot(runity::ray::RayTracing::default());
+    let with = shot(runity::ray::RayTracing {
+        reflections: true,
+        ..Default::default()
+    });
+    let red = |p: [u8; 4]| p[0] as i32 - (p[1] as i32 + p[2] as i32) / 2;
+    assert!(red(without) < 30, "without rays the ball does not see it: {without:?}");
+    assert!(red(with) > 60, "by rays the ball shows the red block: {with:?}");
+}
+
+/// A glass ball before a wall red on the left and blue on the right: by
+/// rays the ball is a lens and turns them round, so just left of its
+/// middle it shows blue.
+#[test]
+fn a_glass_ball_is_a_lens_only_with_rays() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    if !gpu.ray_tracing {
+        eprintln!("skipping: {} does not trace rays", gpu.describe());
+        return;
+    }
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let shot = |rays: runity::ray::RayTracing| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let ball = renderer.upload_mesh_owned(&gpu, &builtin::sphere(1.0, 48, 24));
+        let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+        let wall = |x: f32, color: Material| Draw {
+            mesh: cube,
+            transform: Mat4::from_translation(Vec3::new(x, 0.0, -4.0))
+                * Mat4::from_scale(Vec3::new(8.0, 8.0, 0.2)),
+            texture: TextureHandle::WHITE,
+            material: color,
+            pose: None,
+        };
+        let frame = lit_by_all_round(
+            Camera {
+                position: Vec3::new(0.0, 0.0, 3.0),
+                target: Vec3::ZERO,
+                ..Camera::default()
+            },
+            rays,
+            vec![
+                wall(-4.0, Material::new(0.9, 0.05, 0.05)),
+                wall(4.0, Material::new(0.05, 0.05, 0.9)),
+                Draw {
+                    mesh: ball,
+                    transform: Mat4::IDENTITY,
+                    texture: TextureHandle::WHITE,
+                    material: Material {
+                        alpha: 0.1,
+                        surface: runity::material::SurfaceType::Transparent,
+                        smoothness: 1.0,
+                        ..Material::new(1.0, 1.0, 1.0)
+                    },
+                    pose: None,
+                },
+            ],
+        );
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2 - SIZE / 10, SIZE / 2)
+    };
+    let without = shot(runity::ray::RayTracing::default());
+    let with = shot(runity::ray::RayTracing {
+        refractions: true,
+        ..Default::default()
+    });
+    assert!(without[0] > without[2], "unbent, left of middle is the red wall: {without:?}");
+    assert!(with[2] > with[0], "through the lens, the blue wall: {with:?}");
+}

@@ -112,6 +112,12 @@ impl Gpu {
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
+            // The lit shader reads one storage buffer more when it traces:
+            // what each thing is made of, for reflections' hits.
+            required_limits.max_storage_buffers_per_shader_stage = required_limits
+                .max_storage_buffers_per_shader_stage
+                .max(5)
+                .min(adapter.limits().max_storage_buffers_per_shader_stage);
         }
         if mesh_shaders {
             required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
