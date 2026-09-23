@@ -311,6 +311,12 @@ pub fn camera_color() -> Material {
     Material::new(0.9, 0.9, 0.9).unlit()
 }
 
+/// Where the running game has a thing, outlined in the editor: cyan, not
+/// to be taken for the selection.
+pub fn game_color() -> Material {
+    Material::new(0.1, 0.85, 1.0).unlit()
+}
+
 /// What is selected is outlined in this: Unity's orange.
 pub fn selection_color() -> Material {
     Material::new(1.0, 0.42, 0.0).unlit()

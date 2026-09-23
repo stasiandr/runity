@@ -2452,6 +2452,41 @@ impl Session {
             }
         }
         // What is selected, outlined, parts and children included.
+        // Where the running game has things that are no longer where the
+        // document puts them: an outline there, as Unity's Scene view shows
+        // play. Top-level lines, whose transform is the world's.
+        if let Some(state) = self.game_state() {
+            let arm = self.gizmo_arm_mesh();
+            let document = self.history.scene();
+            for saved in &state.entities {
+                let Some(line) = document.entities.iter().find(|e| e.id == saved.id) else {
+                    continue;
+                };
+                if line.transform == saved.transform {
+                    continue;
+                }
+                let model = self
+                    .instanced
+                    .scene
+                    .get(saved.id)
+                    .map(|e| e.model.clone())
+                    .unwrap_or_default();
+                let Some((min, max)) = self.bounds_of(&model) else {
+                    continue;
+                };
+                let placed = saved.transform.matrix();
+                let thickness =
+                    (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
+                frame.overlay_draws.extend(gizmo::bounds_draws(
+                    arm,
+                    min,
+                    max,
+                    placed,
+                    thickness,
+                    gizmo::game_color(),
+                ));
+            }
+        }
         let selection = self.selection_roots();
         if !selection.is_empty() {
             let arm = self.gizmo_arm_mesh();

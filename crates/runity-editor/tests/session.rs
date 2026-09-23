@@ -3710,6 +3710,18 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
         value("game.position"),
         "the document is where it starts"
     );
+    // The Scene view outlines it where the game has it.
+    let cyan = |session: &mut Session| {
+        session.render();
+        session
+            .frame_pixels()
+            .chunks(4)
+            .filter(|p| p[0] < 90 && p[1] > 180 && p[2] > 220)
+            .count()
+    };
+    session.set_camera(Vec3::new(0.0, 6.0, 9.0), Vec3::new(0.0, 0.0, 2.0));
+    let with = cyan(&mut session);
+    assert!(with > 20, "{with} cyan pixels");
     let e = session
         .set_field(box_id, "game.position", "(0.0, 0.0, 0.0)")
         .unwrap_err()
@@ -3717,6 +3729,7 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
     assert!(e.contains("what the running game says"), "{e}");
     session.stop_game();
     assert!(session.game_state().is_none(), "not after it stopped");
+    assert!(cyan(&mut session) < with / 4, "and no outline");
 }
 
 #[test]
