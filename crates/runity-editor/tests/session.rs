@@ -1395,3 +1395,83 @@ fn editing_a_part_of_an_instance_overrides_it_in_that_instance_only() {
     assert_eq!(session.material_name(ember).as_deref(), Some("ember"));
     assert!(session.scene().get(one).unwrap().overrides.is_empty());
 }
+
+#[test]
+fn a_selection_of_several_moves_duplicates_and_deletes_as_one_step() {
+    let Some((mut session, _)) = open("multi") else {
+        return;
+    };
+    let (ground, crate_id, lid) = (
+        id(&session, "ground"),
+        id(&session, "crate"),
+        id(&session, "lid"),
+    );
+    session.select(Some(crate_id)).unwrap();
+    session.add_to_selection(lid).unwrap();
+    session.add_to_selection(ground).unwrap();
+    assert_eq!(session.selection(), vec![crate_id, lid, ground]);
+
+    // The lid rides on the crate: moved once, with it, not twice.
+    session
+        .translate_selection(Vec3::new(0.0, 0.0, 3.0))
+        .unwrap();
+    assert_eq!(session.transform(crate_id).unwrap().position.z, 3.0);
+    assert_eq!(
+        session.transform(lid).unwrap().position.z,
+        0.0,
+        "local to the crate"
+    );
+    assert_eq!(session.transform(ground).unwrap().position.z, 3.0);
+    assert!(session.undo().unwrap());
+    assert_eq!(
+        session.transform(crate_id).unwrap().position.z,
+        0.0,
+        "one step back"
+    );
+
+    let before = session.entity_count();
+    let copies = session.duplicate_selection().unwrap();
+    assert_eq!(copies.len(), 2, "the crate (with its lid) and the ground");
+    assert_eq!(session.entity_count(), before + 3);
+    assert_eq!(session.selection(), copies, "the copies are selected");
+
+    assert_eq!(session.delete_selection().unwrap(), 2);
+    assert_eq!(session.entity_count(), before);
+    assert!(session.selection().is_empty());
+}
+
+#[test]
+fn copied_entities_paste_as_new_things_here_or_in_another_scene() {
+    let Some((mut session, _)) = open("clipboard") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    let text = session.copy_selection();
+    assert!(
+        text.contains("\"crate\"") && text.contains("\"lid\""),
+        "{text}"
+    );
+
+    let pasted = session.paste(&text, None).unwrap();
+    assert_eq!(pasted.len(), 1);
+    assert_ne!(pasted[0], crate_id, "a new id");
+    let copy = session.scene().get(pasted[0]).unwrap();
+    assert_eq!(copy.children.len(), 1);
+    assert_ne!(copy.children[0].id, id(&session, "lid"), "all the way down");
+
+    // Into another scene, and from hand-written text too.
+    let Some((mut other, _)) = open("clipboard-other") else {
+        return;
+    };
+    let before = other.entity_count();
+    other.paste(&text, None).unwrap();
+    other
+        .paste(r#"(name: "stump", model: "builtin:cylinder")"#, None)
+        .unwrap();
+    assert_eq!(other.entity_count(), before + 3);
+    let err = other.paste("(name: ", None).unwrap_err();
+    assert!(err.to_string().contains("not entities in RON"), "{err}");
+    assert!(other.undo().unwrap() && other.undo().unwrap());
+    assert_eq!(other.entity_count(), before, "a step each");
+}

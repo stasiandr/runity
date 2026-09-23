@@ -102,6 +102,8 @@ pub struct Session {
     /// Theirs, and the conflicts, while a merge of the open scene is being
     /// settled.
     merge: Option<(Scene, Vec<runity::merge::Conflict>)>,
+    /// Selected besides `selected`, which stays the one the gizmo is on.
+    also_selected: Vec<EntityId>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -169,6 +171,7 @@ impl Session {
             play: None,
             on_disk: None,
             merge: None,
+            also_selected: Vec::new(),
         })
     }
 
@@ -246,6 +249,7 @@ impl Session {
         self.scene_path = Some(path);
         // Another document's IDs mean nothing here.
         self.selected = None;
+        self.also_selected.clear();
         self.drag = None;
         self.respawn();
         Ok(problems
@@ -1159,12 +1163,154 @@ impl Session {
             self.require(id)?;
         }
         self.selected = id;
+        self.also_selected.clear();
         self.drag = None;
         Ok(())
     }
 
     pub fn selected(&self) -> Option<EntityId> {
         self.selected
+    }
+
+    /// Add an entity to the selection — shift-click. The first selected
+    /// stays the one the gizmo is on.
+    pub fn add_to_selection(&mut self, id: EntityId) -> EditResult<()> {
+        self.require(id)?;
+        match self.selected {
+            None => self.selected = Some(id),
+            Some(first) if first == id => {}
+            Some(_) => {
+                if !self.also_selected.contains(&id) {
+                    self.also_selected.push(id);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Everything selected, the gizmo's first.
+    pub fn selection(&self) -> Vec<EntityId> {
+        self.selected
+            .into_iter()
+            .chain(self.also_selected.iter().copied())
+            .collect()
+    }
+
+    /// The selection without anything whose ancestor is also selected: what
+    /// a group operation acts on, so a child is not moved twice or copied
+    /// inside its own copied parent.
+    fn selection_roots(&self) -> Vec<EntityId> {
+        let chosen = self.selection();
+        let scene = self.history.scene();
+        chosen
+            .iter()
+            .copied()
+            .filter(|id| {
+                !chosen.iter().any(|other| {
+                    other != id
+                        && scene
+                            .get(*other)
+                            .is_some_and(|desc| desc.flatten().iter().any(|(d, _)| d.id == *id))
+                })
+            })
+            .collect()
+    }
+
+    /// Delete everything selected, as one undoable step.
+    pub fn delete_selection(&mut self) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        let roots = self.selection_roots();
+        if roots.is_empty() {
+            return Ok(0);
+        }
+        let scene = self.history.edit();
+        for id in &roots {
+            runity::edit::remove(scene, *id);
+        }
+        self.after_structural_change();
+        Ok(roots.len())
+    }
+
+    /// Copy everything selected beside itself, as one undoable step, and
+    /// select the copies.
+    pub fn duplicate_selection(&mut self) -> EditResult<Vec<EntityId>> {
+        self.refuse_while_playing()?;
+        let roots = self.selection_roots();
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let scene = self.history.edit();
+        let copies: Vec<EntityId> = roots
+            .iter()
+            .filter_map(|id| runity::edit::duplicate(scene, *id))
+            .collect();
+        self.respawn();
+        self.select_all(&copies);
+        Ok(copies)
+    }
+
+    /// Move everything selected by `offset`, as one undoable step.
+    pub fn translate_selection(&mut self, offset: Vec3) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let roots = self.selection_roots();
+        if roots.is_empty() {
+            return Ok(());
+        }
+        let scene = self.history.edit();
+        for id in roots {
+            if let Some(desc) = scene.get_mut(id) {
+                desc.transform.position += offset;
+            }
+        }
+        self.respawn();
+        Ok(())
+    }
+
+    /// The selection as text: the entities in the scene's RON, children
+    /// included — what a clipboard holds. Paste it into this scene or
+    /// another, or hand it to an agent.
+    pub fn copy_selection(&self) -> String {
+        let scene = self.history.scene();
+        let entities: Vec<EntityDesc> = self
+            .selection_roots()
+            .iter()
+            .filter_map(|id| scene.get(*id).cloned())
+            .collect();
+        let pretty = runity::ron::ser::PrettyConfig::new().depth_limit(3);
+        runity::ron::ser::to_string_pretty(&entities, pretty).unwrap_or_default()
+    }
+
+    /// Paste entities copied as text — [`Session::copy_selection`], or
+    /// written by hand — under `parent` or at the top, as one undoable step.
+    /// Everything pasted gets new IDs: a paste is a new thing, even into the
+    /// scene it was copied from. The pasted entities become the selection.
+    pub fn paste(&mut self, text: &str, parent: Option<EntityId>) -> EditResult<Vec<EntityId>> {
+        self.refuse_while_playing()?;
+        let mut entities: Vec<EntityDesc> = runity::ron::from_str(text.trim())
+            .or_else(|_| runity::ron::from_str::<EntityDesc>(text.trim()).map(|one| vec![one]))
+            .map_err(|e| EditError::Scene(format!("not entities in RON: {e}")))?;
+        if let Some(parent) = parent {
+            self.require(parent)?;
+        }
+        fn forget(desc: &mut EntityDesc) {
+            desc.id = EntityId::default();
+            desc.children.iter_mut().for_each(forget);
+        }
+        entities.iter_mut().for_each(forget);
+        let scene = self.history.edit();
+        let pasted: Vec<EntityId> = entities
+            .into_iter()
+            .filter_map(|desc| runity::edit::add(scene, parent, desc))
+            .collect();
+        self.respawn();
+        self.select_all(&pasted);
+        Ok(pasted)
+    }
+
+    fn select_all(&mut self, ids: &[EntityId]) {
+        self.selected = ids.first().copied();
+        self.also_selected = ids.iter().skip(1).copied().collect();
+        self.drag = None;
     }
 
     pub fn tool(&self) -> Tool {
@@ -1432,6 +1578,11 @@ impl Session {
             if self.history.scene().get(id).is_none() {
                 self.selected = None;
             }
+        }
+        let scene = self.history.scene();
+        self.also_selected.retain(|id| scene.get(*id).is_some());
+        if self.selected.is_none() && !self.also_selected.is_empty() {
+            self.selected = Some(self.also_selected.remove(0));
         }
         self.drag = None;
         self.drag_from = None;

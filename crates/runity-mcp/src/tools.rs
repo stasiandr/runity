@@ -86,6 +86,8 @@ pub fn list() -> Vec<Value> {
         tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
         tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
         tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
+        tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
+        tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
         tool("undo", "Take back the last edit.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
@@ -250,6 +252,40 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "conflict {index} settled theirs' way; not saved"
             ))])
+        }
+        "copy" => {
+            let ids = match args.get("ids") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .and_then(|s| s.parse::<EntityId>().ok())
+                            .ok_or_else(|| format!("ids are {ID}, not {v}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err("ids is a list of entity ids".into()),
+            };
+            let session = server.session()?;
+            let mut first = true;
+            for id in ids {
+                if first {
+                    session.select(Some(id)).map_err(|e| e.to_string())?;
+                    first = false;
+                } else {
+                    session.add_to_selection(id).map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(vec![text(session.copy_selection())])
+        }
+        "paste" => {
+            let ron = string(args, "ron")?;
+            let parent = optional_id(args, "parent")?;
+            let pasted = server
+                .session()?
+                .paste(&ron, parent)
+                .map_err(|e| e.to_string())?;
+            let ids: Vec<String> = pasted.iter().map(ToString::to_string).collect();
+            Ok(vec![text(ids.join("\n"))])
         }
         "undo" => {
             let done = server.session()?.undo().map_err(|e| e.to_string())?;
