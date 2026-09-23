@@ -502,6 +502,9 @@ pub struct Frame {
     /// mirror's: each drawn with everything but post-processing's
     /// history, the size of this frame.
     pub texture_views: Vec<TextureView>,
+    /// Screens on things in the world, drawn into their pictures before
+    /// the frame by whoever draws the overlay ([`crate::world::WorldUi`]).
+    pub ui_pictures: Vec<UiPicture>,
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
@@ -533,6 +536,7 @@ impl Default for Frame {
             flares: Vec::new(),
             live_meshes: Vec::new(),
             texture_views: Vec::new(),
+            ui_pictures: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
@@ -652,6 +656,16 @@ pub struct LiveMeshDraw {
     pub indices: std::sync::Arc<Vec<u32>>,
     pub transform: Mat4,
     pub material: Material,
+}
+
+/// A screen on a thing in the world: its widgets drawn into a picture of
+/// `size` pixels, over `background`, for the thing's material to show.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UiPicture {
+    pub id: crate::asset::AssetId,
+    pub size: (u32, u32),
+    pub background: glam::Vec4,
+    pub ui: crate::ui::Ui,
 }
 
 /// A camera's picture: under what id materials find it
@@ -2663,14 +2677,15 @@ impl Renderer {
         self.render_view(gpu, Some(view), width, height, &frame, None);
     }
 
-    /// A camera's picture, drawn into its texture before the frame that
-    /// shows it. What would show the picture in itself is left out: a
-    /// texture cannot be drawn into and read in one pass.
-    fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
-        let stale = self
-            .targets
-            .get(&picture.id)
-            .is_none_or(|(_, at)| *at != size);
+    /// The texture a picture of `id` is drawn into, `size` pixels, made
+    /// (or made again at a new size) and registered for materials to show.
+    pub fn picture_target(
+        &mut self,
+        gpu: &Gpu,
+        id: crate::asset::AssetId,
+        size: (u32, u32),
+    ) -> wgpu::TextureView {
+        let stale = self.targets.get(&id).is_none_or(|(_, at)| *at != size);
         if stale {
             let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("camera picture"),
@@ -2688,18 +2703,61 @@ impl Renderer {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            match self.by_asset.get(&picture.id) {
+            match self.by_asset.get(&id) {
                 Some(handle) => self.textures[handle.0 as usize] = GpuTexture { view },
                 None => {
                     self.textures.push(GpuTexture { view });
                     let handle = TextureHandle(self.textures.len() as u32 - 1);
-                    self.by_asset.insert(picture.id, handle);
+                    self.by_asset.insert(id, handle);
                 }
             }
             // Bind groups made with the old picture point at nothing.
             self.map_groups.clear();
-            self.targets.insert(picture.id, (texture, size));
+            self.targets.insert(id, (texture, size));
         }
+        self.targets[&id]
+            .0
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    /// Fill a picture with one colour: a world screen's background.
+    pub fn clear_picture(&self, gpu: &Gpu, view: &wgpu::TextureView, color: glam::Vec4) {
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("clear picture"),
+            });
+        {
+            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear picture"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: color.x as f64,
+                            g: color.y as f64,
+                            b: color.z as f64,
+                            a: color.w as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+        }
+        gpu.queue.submit(Some(encoder.finish()));
+    }
+
+    /// A camera's picture, drawn into its texture before the frame that
+    /// shows it. What would show the picture in itself is left out: a
+    /// texture cannot be drawn into and read in one pass.
+    fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
+        self.picture_target(gpu, picture.id, size);
         let mut frame = (*picture.frame).clone();
         let shows = |m: &Material| {
             [m.base_map, m.normal_map, m.mask_map, m.emission_map].contains(&Some(picture.id))

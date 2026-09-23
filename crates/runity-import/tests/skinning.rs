@@ -58,6 +58,7 @@ fn shoot(
         flares: Vec::new(),
         live_meshes: Vec::new(),
         texture_views: Vec::new(),
+        ui_pictures: Vec::new(),
         reflection_probes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),

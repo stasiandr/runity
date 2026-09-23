@@ -85,6 +85,78 @@ pub struct LightSource(pub crate::scene::Light);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A screen on a thing in the world — a shop terminal, a radio's dial —
+/// that the player works by aiming at it: widgets drawn into [`Self::ui`]
+/// with [`Self::pointer`] as their input, as on the screen; the thing's
+/// model (a flat `builtin:plane`, its top the screen) shows the picture.
+/// Each frame: [`WorldUi::aim`] with the crosshair's ray and whether
+/// "use" went down or up, then clear [`Self::ui`] and draw the widgets.
+#[derive(Debug, Clone)]
+pub struct WorldUi {
+    /// The picture's name: a material elsewhere can show it too, as
+    /// `render:<name>`.
+    pub name: String,
+    /// Pixels across and down.
+    pub size: (u32, u32),
+    pub background: glam::Vec4,
+    pub ui: crate::ui::Ui,
+    /// The crosshair, as a mouse on the picture.
+    pub pointer: crate::input::Input,
+}
+
+impl WorldUi {
+    pub fn new(name: &str, size: (u32, u32)) -> Self {
+        Self {
+            name: name.to_string(),
+            size,
+            background: glam::Vec4::new(0.05, 0.06, 0.07, 1.0),
+            ui: Default::default(),
+            pointer: Default::default(),
+        }
+    }
+
+    /// Where a ray from `origin` along `direction` meets this screen,
+    /// placed at `placed` (a `builtin:plane`: a metre square, facing up),
+    /// in its pixels from the top left; `None` when it misses or comes
+    /// from behind.
+    pub fn hit(
+        &self,
+        placed: glam::Mat4,
+        origin: glam::Vec3,
+        direction: glam::Vec3,
+    ) -> Option<glam::Vec2> {
+        let inverse = placed.inverse();
+        let o = inverse.transform_point3(origin);
+        let d = inverse.transform_vector3(direction);
+        if d.y >= -1e-6 || o.y <= 0.0 {
+            return None;
+        }
+        let t = -o.y / d.y;
+        let at = o + d * t;
+        let (u, v) = (at.x + 0.5, at.z + 0.5);
+        ((0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v))
+            .then(|| glam::Vec2::new(u * self.size.0 as f32, v * self.size.1 as f32))
+    }
+
+    /// This frame's pointer: at `at` (from [`Self::hit`]) or off the
+    /// screen, the button going `down` or `up` — "use" pressed and
+    /// released while aiming.
+    pub fn aim(&mut self, at: Option<glam::Vec2>, down: bool, up: bool) {
+        use crate::input::{InputEvent, MouseButton};
+        self.pointer.begin_frame();
+        let at = at.unwrap_or(glam::Vec2::splat(-1e4));
+        self.pointer
+            .handle(&InputEvent::MouseMoved { x: at.x, y: at.y });
+        if down {
+            self.pointer
+                .handle(&InputEvent::MouseDown(MouseButton::Left));
+        }
+        if up {
+            self.pointer.handle(&InputEvent::MouseUp(MouseButton::Left));
+        }
+    }
+}
+
 /// A camera drawing into a picture, from its line's `render_texture`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
@@ -1195,6 +1267,34 @@ pub fn build_frame_where(
             pose,
         });
     }
+    // Screens in the world: their pictures, and the things showing them.
+    let mut ui_pictures = Vec::new();
+    for (entity, screen, line) in world
+        .query::<(hecs::Entity, &WorldUi, Option<&SceneId>)>()
+        .iter()
+    {
+        if !keep(line.map(|l| l.0)) {
+            continue;
+        }
+        let id = crate::asset::AssetId::render_target(&screen.name);
+        ui_pictures.push(crate::render::UiPicture {
+            id,
+            size: screen.size,
+            background: screen.background,
+            ui: screen.ui.clone(),
+        });
+        if let (Ok(model), Ok(placed)) = (
+            world.get::<&Model>(entity),
+            world.get::<&WorldTransform>(entity),
+        ) {
+            if let Some(draw) = draws
+                .iter_mut()
+                .find(|d| d.mesh == model.0 && d.transform == placed.0)
+            {
+                draw.material.base_map = Some(id);
+            }
+        }
+    }
     for (emitting, line) in world
         .query::<(&crate::particles::Emitting, Option<&SceneId>)>()
         .iter()
@@ -1299,6 +1399,7 @@ pub fn build_frame_where(
         flares,
         live_meshes,
         texture_views: Vec::new(),
+        ui_pictures,
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),
