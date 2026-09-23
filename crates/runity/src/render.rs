@@ -1431,6 +1431,7 @@ impl Renderer {
             let unlit = match draw.material.shading {
                 Shading::Lit => 0.0,
                 Shading::Unlit => 1.0,
+                Shading::Grid => 2.0,
             };
             let raw = InstanceRaw {
                 model: draw.transform.to_cols_array_2d(),
@@ -1490,6 +1491,7 @@ impl Renderer {
             let unlit = match draw.material.shading {
                 Shading::Lit => 0.0,
                 Shading::Unlit => 1.0,
+                Shading::Grid => 2.0,
             };
             push(
                 &mut overlay_batches,

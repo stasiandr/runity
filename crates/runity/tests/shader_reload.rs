@@ -54,7 +54,7 @@ fn an_edited_shader_draws_the_next_frame_and_a_broken_one_does_not_draw_at_all()
     let before = centre(&gpu, &mut renderer, &target);
 
     // Everything magenta: the edit someone makes to see that it took.
-    let ret = "    return vec4<f32>(mix(color, albedo, in.unlit), 1.0);";
+    let ret = "    return vec4<f32>(mix(color, albedo, unlit), 1.0);";
     assert!(SHADER.contains(ret), "the test knows where fs returns");
     let magenta = SHADER.replace(ret, "    return vec4<f32>(1.0, 0.0, 1.0, 1.0);");
     renderer.reload_shader(&gpu, &magenta).unwrap();

@@ -47,7 +47,8 @@ struct VertexOutput {
     @location(0) world_position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) base_color: vec3<f32>,
-    @location(3) unlit: f32,
+    // 0 lit, 1 unlit, 2 lit with the metre grid.
+    @location(3) shading: f32,
     @location(4) uv: vec2<f32>,
 };
 
@@ -99,7 +100,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.world_position = world.xyz;
     out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
     out.base_color = in.color_and_shading.rgb;
-    out.unlit = in.color_and_shading.w;
+    out.shading = in.color_and_shading.w;
     out.uv = in.uv;
     return out;
 }
@@ -161,7 +162,7 @@ fn vs(in: VertexInput) -> VertexOutput {
     // where scale is settled anyway.
     out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
     out.base_color = in.color_and_shading.rgb;
-    out.unlit = in.color_and_shading.w;
+    out.shading = in.color_and_shading.w;
     out.uv = in.uv;
     return out;
 }
@@ -178,8 +179,11 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     let sky_amount = normal.y * 0.5 + 0.5;
     let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, sky_amount);
 
+    let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
+    let grid = f32(in.shading > 1.5);
+
     let sampled = textureSample(surface_texture, surface_sampler, in.uv);
-    let albedo = in.base_color * sampled.rgb;
+    let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
     var color = albedo * (ambient + frame.sun_color.rgb * lambert);
 
     let distance = length(in.world_position - frame.camera_position.xyz);
@@ -191,5 +195,27 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
-    return vec4<f32>(mix(color, albedo, in.unlit), 1.0);
+    return vec4<f32>(mix(color, albedo, unlit), 1.0);
+}
+
+/// The greybox surface: a line every metre and alternate metres a shade
+/// apart, projected along the face's main axis so walls, floors and
+/// ceilings all show metres whatever the object's scale. Line width comes
+/// from the screen-space derivative, so a line stays a line at any distance
+/// instead of shimmering into moiré.
+fn metre_grid(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let n = abs(normal);
+    let facing_x = n.x > n.y && n.x > n.z;
+    let facing_z = !facing_x && n.z > n.y;
+    let plane = select(
+        select(world_position.xz, world_position.xy, facing_z),
+        world_position.zy,
+        facing_x,
+    );
+    let width = max(fwidth(plane), vec2<f32>(1e-4));
+    let to_line = abs(fract(plane + 0.5) - 0.5) / width;
+    let line = 1.0 - min(min(to_line.x, to_line.y), 1.0);
+    let cell = floor(plane);
+    let checker = abs(cell.x + cell.y) % 2.0;
+    return mix(1.0, 0.88, checker) * mix(1.0, 0.45, line);
 }

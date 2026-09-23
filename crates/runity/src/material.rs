@@ -41,6 +41,11 @@ pub enum Shading {
     /// For things that are not surfaces: gizmos, debug overlays, and the
     /// embers in `07-look.md`, which are a light rather than something lit.
     Unlit,
+    /// Lit, with a one-metre grid drawn on it in world space: the greybox
+    /// surface. Every face shows its size in metres whatever the object's
+    /// scale, so a corridor reads as three metres wide without measuring
+    /// it. Unity's prototyping materials, without a texture or UVs.
+    Grid,
 }
 
 /// A surface.
@@ -96,6 +101,12 @@ impl Material {
         self
     }
 
+    /// The same colour, with the metre grid on it.
+    pub const fn grid(mut self) -> Self {
+        self.shading = Shading::Grid;
+        self
+    }
+
     pub fn color(&self) -> Vec3 {
         Vec3::from_array(self.base_color)
     }
@@ -119,6 +130,7 @@ impl From<&ArchivedMaterial> for Material {
             shading: match archived.shading {
                 ArchivedShading::Unlit => Shading::Unlit,
                 ArchivedShading::Lit => Shading::Lit,
+                ArchivedShading::Grid => Shading::Grid,
             },
         }
     }
@@ -161,6 +173,8 @@ pub mod builtin {
     pub const NEEDLE: Material = Material::new(0.04, 0.09, 0.05);
     pub const STONE: Material = Material::new(0.19, 0.20, 0.22);
     pub const EMBER: Material = Material::new(1.00, 0.35, 0.10).unlit();
+    /// Light grey with the metre grid: what a greybox is built from.
+    pub const GRID: Material = Material::new(0.45, 0.46, 0.48).grid();
 
     /// Look one up by the name a scene file uses.
     pub fn by_name(name: &str) -> Option<Material> {
@@ -172,12 +186,13 @@ pub mod builtin {
             "needle" => NEEDLE,
             "stone" => STONE,
             "ember" => EMBER,
+            "grid" => GRID,
             _ => return None,
         })
     }
 
-    pub const NAMES: [&str; 7] = [
-        "white", "grass", "earth", "bark", "needle", "stone", "ember",
+    pub const NAMES: [&str; 8] = [
+        "white", "grass", "earth", "bark", "needle", "stone", "ember", "grid",
     ];
 }
 
@@ -227,7 +242,11 @@ mod tests {
         // 07-look.md puts embers on the "code" side of the line because they
         // are a light, not a surface.
         assert_eq!(builtin::EMBER.shading, Shading::Unlit);
-        for name in builtin::NAMES.iter().filter(|n| **n != "ember") {
+        assert_eq!(builtin::GRID.shading, Shading::Grid);
+        for name in builtin::NAMES
+            .iter()
+            .filter(|n| !["ember", "grid"].contains(n))
+        {
             assert_eq!(
                 builtin::by_name(name).unwrap().shading,
                 Shading::Lit,

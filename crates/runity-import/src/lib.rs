@@ -797,6 +797,9 @@ pub struct MaterialSource {
     /// things that are a light rather than something lit.
     #[serde(default)]
     pub unlit: bool,
+    /// The metre grid on it: a greybox surface. Lit, so not with `unlit`.
+    #[serde(default)]
+    pub grid: bool,
 }
 
 /// Read a `.rmat` and build a material asset from it.
@@ -816,10 +819,14 @@ pub fn material_from_ron(
             .unwrap_or_else(|| "material".into()),
         material: Material {
             base_color: source.color.linear()?,
-            shading: if source.unlit {
-                Shading::Unlit
-            } else {
-                Shading::Lit
+            shading: match (source.unlit, source.grid) {
+                (true, true) => anyhow::bail!(
+                    "{}: unlit and grid at once — a grid is drawn on a lit surface; pick one",
+                    path.display()
+                ),
+                (true, false) => Shading::Unlit,
+                (false, true) => Shading::Grid,
+                (false, false) => Shading::Lit,
             },
         },
     })

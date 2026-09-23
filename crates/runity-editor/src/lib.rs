@@ -1497,10 +1497,10 @@ impl Session {
             channel(material.base_color[0]),
             channel(material.base_color[1]),
             channel(material.base_color[2]),
-            if material.shading == runity::Shading::Unlit {
-                ", unlit: true"
-            } else {
-                ""
+            match material.shading {
+                runity::Shading::Unlit => ", unlit: true",
+                runity::Shading::Grid => ", grid: true",
+                runity::Shading::Lit => "",
             }
         );
         std::fs::create_dir_all(&source_dir)?;

@@ -1993,3 +1993,47 @@ fn problems_are_known_as_soon_as_an_edit_makes_them() {
     session.undo().unwrap();
     assert!(session.problems().is_empty(), "undone, gone");
 }
+
+#[test]
+fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
+    // The same floor, seen from above: plain, then with the metre grid.
+    let row_contrast = |material: &str| -> Option<(u32, usize)> {
+        let text = format!(
+            r#"(entities: [(name: "floor", model: "builtin:plane", material: "{material}",
+                transform: (scale: (40.0, 1.0, 40.0)))])"#
+        );
+        let (mut session, _) = open_with(&format!("grid-{material}"), &text)?;
+        session.set_camera(Vec3::new(0.3, 8.0, 0.2), Vec3::new(0.3, 0.0, 0.0));
+        session.render();
+        let (width, height) = session.size();
+        let pixels = session.frame_pixels();
+        let row = (height / 2) as usize;
+        let luma: Vec<u32> = (0..width as usize)
+            .map(|x| {
+                let i = (row * width as usize + x) * 4;
+                pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+            })
+            .collect();
+        let (lo, hi) = (*luma.iter().min()?, *luma.iter().max()?);
+        // Dark dips along the row: grid lines crossed.
+        let mean = luma.iter().sum::<u32>() / luma.len() as u32;
+        let dips = luma
+            .windows(2)
+            .filter(|w| w[0] >= mean * 9 / 10 && w[1] < mean * 9 / 10)
+            .count();
+        Some((hi - lo, dips))
+    };
+    let Some((plain, plain_dips)) = row_contrast("white") else {
+        return;
+    };
+    let (grid, grid_dips) = row_contrast("grid").unwrap();
+    assert!(
+        plain < 12 && plain_dips == 0,
+        "a plain floor is even: {plain}, {plain_dips}"
+    );
+    assert!(grid > 60, "lines darker than the floor: {grid}");
+    assert!(
+        grid_dips >= 4,
+        "a line per metre across the view: {grid_dips}"
+    );
+}
