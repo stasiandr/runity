@@ -4061,6 +4061,40 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     assert!(y(over_gap) < 1.0, "past it: {}", y(over_gap));
     session.stop();
 
+    // Push the wall along z = 0 out by two metres: the hall is longer
+    // toward -z, by exactly that, whichever way the outline runs.
+    session
+        .set_poly(
+            "hall",
+            &runity_import::poly::PolySource {
+                points: l.to_vec(),
+                height: 2.0,
+            },
+        )
+        .unwrap();
+    session.push_poly_edge("hall", 0, 2.0).unwrap();
+    let (low, high) = session.world_bounds(hall).unwrap();
+    assert!(
+        (low.z + 2.0).abs() < 1e-3 && (high.z - 10.0).abs() < 1e-3,
+        "{low} {high}"
+    );
+    let mut reversed: Vec<(f32, f32)> = l.to_vec();
+    reversed.reverse();
+    session
+        .set_poly(
+            "hall",
+            &runity_import::poly::PolySource {
+                points: reversed,
+                height: 2.0,
+            },
+        )
+        .unwrap();
+    // Reversed, the wall along z = 0 runs from point 4 to point 5.
+    session.push_poly_edge("hall", 4, -1.0).unwrap();
+    let (low, _) = session.world_bounds(hall).unwrap();
+    assert!((low.z - 1.0).abs() < 1e-3, "pulled in: {low}");
+    assert!(session.push_poly_edge("hall", 6, 1.0).is_err());
+
     let e = session
         .poly_shape("hall", &l, 1.0, Vec3::ZERO)
         .unwrap_err()

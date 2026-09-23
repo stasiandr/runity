@@ -99,4 +99,49 @@ impl Session {
         self.respawn();
         Ok(())
     }
+
+    /// Push one wall of a Poly Shape out by `metres`, or pull it in: both
+    /// ends of edge `edge` (from point `edge` to the next) move along the
+    /// wall's outward normal, so the room grows on that side and the walls
+    /// beside it follow — `push_face` for a shape a box cannot be.
+    pub fn push_poly_edge(&mut self, name: &str, edge: usize, metres: f32) -> EditResult<()> {
+        let mut source = self.poly(name)?;
+        let n = source.points.len();
+        if edge >= n {
+            return Err(EditError::Scene(format!(
+                "{name} has {n} walls, 0 to {}; not {edge}",
+                n.saturating_sub(1)
+            )));
+        }
+        if !metres.is_finite() {
+            return Err(EditError::Scene(format!(
+                "{metres} metres is not a distance"
+            )));
+        }
+        let (a, b) = (source.points[edge], source.points[(edge + 1) % n]);
+        let along = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        if along < 1e-6 {
+            return Err(EditError::Scene(format!(
+                "wall {edge} of {name} has no length to push"
+            )));
+        }
+        // Outward, whichever way round the outline was drawn: to the right
+        // of a counter-clockwise walk seen from above, the left otherwise.
+        let doubled: f32 = (0..n)
+            .map(|i| {
+                let (p, q) = (source.points[i], source.points[(i + 1) % n]);
+                q.0 * p.1 - p.0 * q.1
+            })
+            .sum();
+        let turn = if doubled >= 0.0 { 1.0 } else { -1.0 };
+        let out = (
+            -(b.1 - a.1) / along * turn * metres,
+            (b.0 - a.0) / along * turn * metres,
+        );
+        for i in [edge, (edge + 1) % n] {
+            source.points[i].0 += out.0;
+            source.points[i].1 += out.1;
+        }
+        self.set_poly(name, &source)
+    }
 }
