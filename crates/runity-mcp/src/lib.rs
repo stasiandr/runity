@@ -15,6 +15,9 @@ mod tools;
 use runity_editor::Session;
 use serde_json::{json, Value};
 
+/// The open document, as a resource.
+const DOCUMENT: &str = "runity://document";
+
 /// The protocol version answered when the client does not name one.
 pub const PROTOCOL: &str = "2025-06-18";
 
@@ -56,13 +59,17 @@ impl Server {
                     .get("protocolVersion")
                     .and_then(Value::as_str)
                     .unwrap_or(PROTOCOL),
-                "capabilities": { "tools": {} },
+                "capabilities": { "tools": {}, "resources": {} },
                 "serverInfo": { "name": "runity", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": INSTRUCTIONS,
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools::list() })),
             "tools/call" => Ok(self.call(&params)),
+            "resources/list" => Ok(json!({ "resources": self.resources() })),
+            "resources/read" => self
+                .read(&params)
+                .map(|contents| json!({ "contents": [contents] })),
             other => Err((-32601, format!("no method `{other}`"))),
         };
         Some(match result {
@@ -85,6 +92,80 @@ impl Server {
             Ok(content) => json!({ "content": content, "isError": false }),
             Err(message) => json!({ "content": [text(message)], "isError": true }),
         }
+    }
+
+    /// What there is to read: the open document as it stands — unsaved
+    /// edits included — and the project's scenes, prefabs and materials as
+    /// files. Empty until something is open; listing never makes a GPU.
+    fn resources(&self) -> Vec<Value> {
+        let Some(session) = &self.session else {
+            return Vec::new();
+        };
+        let mut out = vec![json!({
+            "uri": DOCUMENT,
+            "name": "the open document",
+            "description": "the scene or prefab being edited, as RON, with edits not yet saved",
+            "mimeType": "text/plain",
+        })];
+        let Some(project) = session.project() else {
+            return out;
+        };
+        let mut files = Vec::new();
+        for (dir, extension) in [
+            (project.scenes(), "ron"),
+            (project.prefabs(), "prefab"),
+            (project.materials(), "rmat"),
+        ] {
+            runity_import::walk(&dir, &mut |path| {
+                if path.extension().is_some_and(|e| e == extension) {
+                    files.push(path.to_path_buf());
+                }
+            });
+        }
+        files.sort();
+        for path in files {
+            let name = project.relative(&path).unwrap_or_default();
+            out.push(json!({
+                "uri": format!("file://{}", path.display()),
+                "name": name,
+                "mimeType": "text/plain",
+            }));
+        }
+        out
+    }
+
+    /// One resource's text. Files only from inside the open project.
+    fn read(&self, params: &Value) -> Result<Value, (i64, String)> {
+        let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+        let session = self
+            .session
+            .as_ref()
+            .ok_or((-32002, "nothing is open yet — open_scene first".to_string()))?;
+        let text = if uri == DOCUMENT {
+            let pretty = runity::ron::ser::PrettyConfig::new().depth_limit(4);
+            let scene = session.scene();
+            let written = if session.is_prefab() && scene.entities.len() == 1 {
+                runity::ron::ser::to_string_pretty(&scene.entities[0], pretty)
+            } else {
+                runity::ron::ser::to_string_pretty(scene, pretty)
+            };
+            written.map_err(|e| (-32603, e.to_string()))?
+        } else {
+            let path = uri
+                .strip_prefix("file://")
+                .ok_or((-32002, format!("no resource {uri}")))?;
+            let root = session
+                .project()
+                .and_then(|p| std::fs::canonicalize(p.root()).ok())
+                .ok_or((-32002, "the open scene is in no project".to_string()))?;
+            let path = std::fs::canonicalize(path).map_err(|e| (-32002, format!("{path}: {e}")))?;
+            if !path.starts_with(&root) {
+                return Err((-32002, format!("{} is outside the project", path.display())));
+            }
+            std::fs::read_to_string(&path)
+                .map_err(|e| (-32002, format!("{}: {e}", path.display())))?
+        };
+        Ok(json!({ "uri": uri, "mimeType": "text/plain", "text": text }))
     }
 
     /// The session, made on first use: a GPU is found only when something

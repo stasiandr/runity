@@ -364,3 +364,63 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         .unwrap_err();
     assert!(refused.contains("`pot`"), "{refused}");
 }
+
+#[test]
+fn the_scene_and_the_project_files_are_readable_resources() {
+    let mut agent = Agent::new();
+    let listed = agent.request("resources/list", json!({}));
+    assert_eq!(
+        listed["result"]["resources"].as_array().unwrap().len(),
+        0,
+        "nothing open, nothing listed — and no GPU asked for"
+    );
+    let root = std::env::temp_dir().join("runity-mcp-resources");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    agent.text(
+        "add_entity",
+        json!({ "name": "unsaved stone", "model": "builtin:sphere" }),
+    );
+
+    let listed = agent.request("resources/list", json!({}));
+    let resources = listed["result"]["resources"].as_array().unwrap();
+    let names: Vec<&str> = resources
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"scenes/main.ron"), "{names:?}");
+
+    let document = agent.request("resources/read", json!({ "uri": "runity://document" }));
+    let text = document["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("unsaved stone"),
+        "the document as it stands: {text}"
+    );
+
+    let uri = resources
+        .iter()
+        .find(|r| r["name"] == "scenes/main.ron")
+        .unwrap()["uri"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let file = agent.request("resources/read", json!({ "uri": uri }));
+    let text = file["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("unsaved stone"), "the file, as saved");
+
+    let secret = std::env::temp_dir().join("runity-mcp-outside.txt");
+    std::fs::write(&secret, "not the project's").unwrap();
+    let outside = agent.request(
+        "resources/read",
+        json!({ "uri": format!("file://{}", secret.display()) }),
+    );
+    let message = outside["error"]["message"].as_str().unwrap_or("");
+    assert!(message.contains("outside the project"), "{outside}");
+}

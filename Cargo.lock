@@ -2516,6 +2516,7 @@ dependencies = [
  "runity",
  "runity-cli",
  "runity-editor",
+ "runity-import",
  "serde_json",
 ]
 
