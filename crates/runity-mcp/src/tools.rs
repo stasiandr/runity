@@ -128,6 +128,8 @@ pub fn list() -> Vec<Value> {
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
         tool("add_component", "Put one of the game's components on an entity with a value of its shape to start from — Add Component. Needs library/components.ron, which the game writes when it or `runity test` runs; without `name`, lists the components and what each holds.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &[]),
         tool("import_settings", "An asset source's import settings (its .rimport), or with `field` and `value` one of them changed — scale, recompute_normals, srgb, origin_to_base — and the asset built again, every scene showing it at once.", json!({ "source": { "type": "string", "description": "project-relative, like assets/rock.obj" }, "field": { "type": "string" }, "value": { "type": "string" } }), &["source"]),
+        tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.rpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
+        tool("set_poly", "Change a Poly Shape's outline and/or height: its .rpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" } }), &["name"]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -749,6 +751,56 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 "{source}: scale {}, recompute_normals {}, srgb {}, origin_to_base {}",
                 s.scale, s.recompute_normals, s.srgb, s.origin_to_base
             ))])
+        }
+        "poly_shape" | "set_poly" => {
+            let making = name == "poly_shape";
+            let name = string(args, "name")?;
+            let points = match args.get("points") {
+                None => None,
+                Some(list) => Some(
+                    list.as_array()
+                        .ok_or("points is [[x, z], ...]")?
+                        .iter()
+                        .map(|p| match p.as_array().map(Vec::as_slice) {
+                            Some([x, z]) => Ok((
+                                x.as_f64().ok_or("a point is two numbers")? as f32,
+                                z.as_f64().ok_or("a point is two numbers")? as f32,
+                            )),
+                            _ => Err("a point is [x, z]".to_string()),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
+            };
+            let height = args.get("height").and_then(Value::as_f64).map(|h| h as f32);
+            let session = server.session()?;
+            if making {
+                let at = optional_vec3(args, "at")?.unwrap_or(Vec3::ZERO);
+                let id = session
+                    .poly_shape(
+                        &name,
+                        &points.ok_or("points is [[x, z], ...]")?,
+                        height.ok_or("height is a number of metres")?,
+                        at,
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!("{id} {name:?}, assets/{name}.rpoly"))])
+            } else {
+                let mut source = session.poly(&name).map_err(|e| e.to_string())?;
+                if let Some(points) = points {
+                    source.points = points;
+                }
+                if let Some(height) = height {
+                    source.height = height;
+                }
+                session
+                    .set_poly(&name, &source)
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!(
+                    "{name}: {} points, {} m high",
+                    source.points.len(),
+                    source.height
+                ))])
+            }
         }
         "fit_collider" => {
             let id = id(args, "id")?;

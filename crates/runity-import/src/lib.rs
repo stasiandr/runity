@@ -25,6 +25,7 @@
 //! folder nobody commits is settings nobody keeps.
 
 pub mod assets;
+pub mod poly;
 pub mod terrain;
 use std::path::{Path, PathBuf};
 
@@ -877,6 +878,14 @@ pub fn import_to(
                 AssetKind::Mesh,
             )
         }
+        "rpoly" => {
+            let mesh = poly::mesh_from_poly(source, &settings)?;
+            (
+                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                mesh.id,
+                AssetKind::Mesh,
+            )
+        }
         "rterrain" => {
             let mesh = terrain::mesh_from_terrain(source, &settings)?;
             (
@@ -1184,6 +1193,7 @@ pub fn importable(path: &Path) -> bool {
                 | "glb"
                 | "obj"
                 | "rterrain"
+                | "rpoly"
                 | "wav"
                 | "rmat"
                 | "png"

@@ -3977,3 +3977,98 @@ fn what_the_game_prints_comes_back_into_the_console() {
     assert!(session.stop_game());
     assert!(!session.game_running() && !session.stop_game());
 }
+
+#[test]
+fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
+    let Some((mut session, path)) = open("poly") else {
+        return;
+    };
+    let l = [
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, 6.0),
+        (3.0, 6.0),
+        (3.0, 10.0),
+        (0.0, 10.0),
+    ];
+    let steps = session.undo_steps().len();
+    let hall = session
+        .poly_shape("hall", &l, 0.5, Vec3::new(20.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.selected(), Some(hall));
+    assert!(root_of(&path).join("assets/hall.rpoly").is_file());
+    let (low, high) = session.world_bounds(hall).unwrap();
+    assert!((low - Vec3::new(20.0, 0.0, 0.0)).length() < 1e-3, "{low}");
+    assert!(
+        (high - Vec3::new(28.0, 0.5, 10.0)).length() < 1e-3,
+        "{high}"
+    );
+
+    let line = session.scene().get(hall).unwrap().clone();
+    assert_eq!(line.collider, runity::scene::Collider::Model);
+    assert_eq!(line.body, runity::Body::Static);
+
+    // A new outline: every placement changes; a bad one is refused.
+    let mut source = session.poly("hall").unwrap();
+    assert_eq!(source.points.len(), 6);
+    source.height = 2.0;
+    session.set_poly("hall", &source).unwrap();
+    let (_, high) = session.world_bounds(hall).unwrap();
+    assert!((high.y - 2.0).abs() < 1e-3, "{high}");
+    source.points = vec![(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)];
+    let e = session.set_poly("hall", &source).unwrap_err().to_string();
+    assert!(e.contains("crosses itself"), "{e}");
+    assert_eq!(session.poly("hall").unwrap().height, 2.0, "the file kept");
+
+    // Solid in its own shape: a box over the L's missing corner falls
+    // past it, one over the floor stands on it, two metres up.
+    let dropped = |session: &mut Session, x: f32, z: f32| {
+        session
+            .add_entity(
+                None,
+                runity::EntityDesc {
+                    name: format!("box {x}"),
+                    model: "builtin:cube".into(),
+                    body: runity::Body::Dynamic,
+                    collider: runity::scene::Collider::Box {
+                        half: Vec3::splat(0.25),
+                        center: Vec3::ZERO,
+                    },
+                    transform: runity::scene::Transform {
+                        position: Vec3::new(x, 4.0, z),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    let (over_floor, over_gap) = (
+        dropped(&mut session, 21.0, 2.0),
+        dropped(&mut session, 26.0, 8.0),
+    );
+    session.play();
+    for _ in 0..120 {
+        session.step(1.0 / 60.0);
+    }
+    let y = |id| session.world_position(id).unwrap().y;
+    assert!(
+        (y(over_floor) - 2.25).abs() < 0.1,
+        "on the hall: {}",
+        y(over_floor)
+    );
+    assert!(y(over_gap) < 1.0, "past it: {}", y(over_gap));
+    session.stop();
+
+    let e = session
+        .poly_shape("hall", &l, 1.0, Vec3::ZERO)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("already"), "{e}");
+    let e = session
+        .poly_shape("Big Hall", &l, 1.0, Vec3::ZERO)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("snake_case"), "{e}");
+}

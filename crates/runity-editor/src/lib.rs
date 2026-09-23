@@ -17,6 +17,7 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+mod blockout;
 pub mod console;
 mod error;
 mod game;
