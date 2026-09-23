@@ -1508,3 +1508,57 @@ fn a_level_answers_whether_the_exit_can_be_reached() {
     assert!(session.undo().unwrap());
     assert_eq!(session.scene(), &before);
 }
+
+#[test]
+fn dropping_to_the_ground_rests_things_on_the_real_shape_below() {
+    let Some((mut session, _)) = open_with(
+        "drop",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "ground", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0))),
+            (id: "00000000000000a2", name: "ramp", model: "builtin:ramp",
+             transform: (position: (5.0, 1.0, 0.0), scale: (2.0, 2.0, 4.0))),
+            (id: "00000000000000b1", name: "crate", model: "builtin:cube", transform: (position: (-3.0, 6.0, 0.0))),
+            (id: "00000000000000b2", name: "box", model: "builtin:cube",
+             transform: (position: (5.0, 8.0, 0.0), scale: (0.4, 0.4, 0.4))),
+        ])"#,
+    ) else {
+        return;
+    };
+    let (crate_id, box_id) = (id(&session, "crate"), id(&session, "box"));
+    session.select(Some(crate_id)).unwrap();
+    session.add_to_selection(box_id).unwrap();
+    assert_eq!(session.drop_to_ground().unwrap(), 2);
+
+    let y = session.transform(crate_id).unwrap().position.y;
+    assert!(
+        (y - 0.5).abs() < 0.01,
+        "a unit cube on a plane with no collider of its own: {y}"
+    );
+    let y = session.transform(box_id).unwrap().position.y;
+    assert!(
+        y > 0.5 && y < 2.2,
+        "on the ramp's slope, not on the box around the ramp (top at 2): {y}"
+    );
+    assert!(session.undo().unwrap(), "one step for both");
+    assert_eq!(session.transform(crate_id).unwrap().position.y, 6.0);
+}
+
+#[test]
+fn the_view_orbits_pans_and_zooms_without_touching_the_document() {
+    let Some((mut session, _)) = open("view") else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO);
+    session.orbit(90.0, 0.0);
+    let eye = session.camera().position;
+    assert!(
+        (eye.length() - 10.0).abs() < 1e-3 && eye.z.abs() < 1e-3,
+        "a quarter turn round: {eye}"
+    );
+    session.zoom(0.5);
+    assert!((session.camera().position.length() - 5.0).abs() < 1e-3);
+    session.pan(1.0, 2.0);
+    let camera = session.camera();
+    assert!((camera.target.y - 2.0).abs() < 1e-3, "{:?}", camera.target);
+    assert!(!session.can_undo(), "the view is not an edit");
+}

@@ -88,6 +88,7 @@ pub fn list() -> Vec<Value> {
         tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
+        tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
             "to": vec3("goal"),
@@ -295,6 +296,32 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             let ids: Vec<String> = pasted.iter().map(ToString::to_string).collect();
             Ok(vec![text(ids.join("\n"))])
+        }
+        "drop_to_ground" => {
+            let ids = match args.get("ids") {
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .and_then(|s| s.parse::<EntityId>().ok())
+                            .ok_or_else(|| format!("ids are {ID}, not {v}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => return Err("ids is a list of entity ids".into()),
+            };
+            let session = server.session()?;
+            for (i, id) in ids.iter().enumerate() {
+                if i == 0 {
+                    session.select(Some(*id)).map_err(|e| e.to_string())?;
+                } else {
+                    session.add_to_selection(*id).map_err(|e| e.to_string())?;
+                }
+            }
+            let landed = session.drop_to_ground().map_err(|e| e.to_string())?;
+            Ok(vec![text(format!(
+                "{landed} of {} found ground",
+                ids.len()
+            ))])
         }
         "path" => {
             let from = optional_vec3(args, "from")?.ok_or("from is required")?;

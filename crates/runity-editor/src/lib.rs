@@ -275,6 +275,203 @@ impl Session {
         Ok(())
     }
 
+    /// Put everything selected down on what is beneath it — Unity's End
+    /// key — as one undoable step. Returns how many found ground.
+    ///
+    /// "Beneath" is the real shape of everything else: an entity's collider
+    /// if it has one, its model if not — so a crate settles on a hill's
+    /// slope, not on the box around the hill. What finds nothing below
+    /// stays where it is.
+    pub fn drop_to_ground(&mut self) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        let roots = self.selection_roots();
+        if roots.is_empty() {
+            return Ok(0);
+        }
+        // Everything the drop moves, parts of instances included.
+        let moving: std::collections::HashSet<EntityId> = self
+            .instanced
+            .scene
+            .flatten()
+            .iter()
+            .filter(|(d, _)| {
+                self.instanced
+                    .owner_of(d.id)
+                    .is_some_and(|owner| roots.iter().any(|r| self.is_within(owner, *r)))
+            })
+            .map(|(d, _)| d.id)
+            .collect();
+
+        // A world where everything else is solid.
+        let mut ground = self.instanced.scene.clone();
+        fn solidify(entities: &mut [EntityDesc], moving: &std::collections::HashSet<EntityId>) {
+            for e in entities {
+                if moving.contains(&e.id) {
+                    e.body = runity::Body::None;
+                } else {
+                    e.body = runity::Body::Static;
+                    if e.collider == runity::scene::Collider::None {
+                        e.collider = runity::scene::Collider::Model;
+                    }
+                }
+                solidify(&mut e.children, moving);
+            }
+        }
+        solidify(&mut ground.entities, &moving);
+        let mut world = hecs::World::new();
+        runity::spawn_scene(&ground, &mut world, |_| Some(MeshHandle::TEST));
+        runity::physics::attach_scene_collision_meshes(&mut world, &ground, self.library.as_ref());
+        let mut physics = runity::PhysicsWorld::new(1.0 / 60.0);
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+
+        let mut moves: Vec<(EntityId, f32)> = Vec::new();
+        for root in &roots {
+            let Some((low, high)) = self.world_bounds(*root) else {
+                continue;
+            };
+            // The bottom's corners and middle, from the top down: it rests
+            // on the highest thing under any of them.
+            let (x0, x1, z0, z1) = (low.x, high.x, low.z, high.z);
+            let (xm, zm) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+            let inset = |a: f32, b: f32| (a + (b - a) * 0.1, b - (b - a) * 0.1);
+            let ((ax, bx), (az, bz)) = (inset(x0, x1), inset(z0, z1));
+            let rest = [(xm, zm), (ax, az), (ax, bz), (bx, az), (bx, bz)]
+                .into_iter()
+                .filter_map(|(x, z)| {
+                    physics
+                        .cast_ray_with_normal(
+                            Vec3::new(x, high.y + 0.01, z),
+                            Vec3::NEG_Y,
+                            10_000.0,
+                            false,
+                        )
+                        .map(|(point, _, _)| point.y)
+                })
+                .fold(None, |best: Option<f32>, y| {
+                    Some(best.map_or(y, |b| b.max(y)))
+                });
+            if let Some(y) = rest {
+                moves.push((*root, y - low.y));
+            }
+        }
+        if moves.is_empty() {
+            return Ok(0);
+        }
+        let parents: Vec<Option<Mat4>> =
+            moves.iter().map(|(id, _)| self.parent_world(*id)).collect();
+        let scene = self.history.edit();
+        for ((id, lift), parent) in moves.iter().zip(parents) {
+            let delta = match parent {
+                Some(parent) => parent
+                    .inverse()
+                    .transform_vector3(Vec3::new(0.0, *lift, 0.0)),
+                None => Vec3::new(0.0, *lift, 0.0),
+            };
+            if let Some(desc) = scene.get_mut(*id) {
+                desc.transform.position += delta;
+            }
+        }
+        self.respawn();
+        Ok(moves.len())
+    }
+
+    /// Whether `id` is `ancestor` or under it in the document.
+    fn is_within(&self, id: EntityId, ancestor: EntityId) -> bool {
+        self.history
+            .scene()
+            .get(ancestor)
+            .is_some_and(|a| a.flatten().iter().any(|(d, _)| d.id == id))
+    }
+
+    /// The world matrix of an entity's parent, if it has one.
+    fn parent_world(&self, id: EntityId) -> Option<Mat4> {
+        fn find(
+            entities: &[EntityDesc],
+            id: EntityId,
+            parent: Mat4,
+            has: bool,
+        ) -> Option<Option<Mat4>> {
+            for e in entities {
+                if e.id == id {
+                    return Some(has.then_some(parent));
+                }
+                if let Some(found) = find(&e.children, id, parent * e.transform.matrix(), true) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(&self.history.scene().entities, id, Mat4::IDENTITY, false).flatten()
+    }
+
+    /// The world-space box around a document entity and everything it
+    /// brings, from its models' bounds.
+    fn world_bounds(&self, id: EntityId) -> Option<(Vec3, Vec3)> {
+        let mut low = Vec3::splat(f32::MAX);
+        let mut high = Vec3::splat(f32::MIN);
+        for (desc, world) in self.instanced.scene.flatten() {
+            let owned = self
+                .instanced
+                .owner_of(desc.id)
+                .is_some_and(|owner| self.is_within(owner, id));
+            if !owned {
+                continue;
+            }
+            let Some((a, b)) = self.bounds_of(&desc.model) else {
+                continue;
+            };
+            for corner in 0..8u32 {
+                let pick = |axis: usize| {
+                    if corner & (1 << axis) == 0 {
+                        a[axis]
+                    } else {
+                        b[axis]
+                    }
+                };
+                let p = world.transform_point3(Vec3::new(pick(0), pick(1), pick(2)));
+                low = low.min(p);
+                high = high.max(p);
+            }
+        }
+        (low.x <= high.x).then_some((low, high))
+    }
+
+    // --- the view, moved the way a scene view moves it -----------------
+
+    /// Turn the view around what it looks at: `yaw` about the vertical,
+    /// `pitch` up and down, in degrees. Not an edit.
+    pub fn orbit(&mut self, yaw: f32, pitch: f32) {
+        let offset = self.camera.position - self.camera.target;
+        let distance = offset.length().max(1e-3);
+        let current_pitch = (offset.y / distance).clamp(-1.0, 1.0).asin();
+        let current_yaw = offset.x.atan2(offset.z);
+        let pitch = (current_pitch + pitch.to_radians()).clamp(-1.5, 1.5);
+        let yaw = current_yaw + yaw.to_radians();
+        let offset = Vec3::new(
+            pitch.cos() * yaw.sin(),
+            pitch.sin(),
+            pitch.cos() * yaw.cos(),
+        ) * distance;
+        self.camera.position = self.camera.target + offset;
+    }
+
+    /// Slide the view sideways and up, in metres, keeping its direction.
+    pub fn pan(&mut self, right: f32, up: f32) {
+        let forward = (self.camera.target - self.camera.position).normalize_or_zero();
+        let side = forward.cross(Vec3::Y).normalize_or_zero();
+        let lift = side.cross(forward).normalize_or_zero();
+        let offset = side * right + lift * up;
+        self.camera.position += offset;
+        self.camera.target += offset;
+    }
+
+    /// Move toward what the view looks at — `factor` below one — or away.
+    pub fn zoom(&mut self, factor: f32) {
+        let offset = (self.camera.position - self.camera.target) * factor.max(0.01);
+        self.camera.position = self.camera.target + offset.clamp_length_min(0.1);
+    }
+
     /// A walkable path between two points of the scene as it stands — can
     /// the player get from the spawn to the exit, and which way — or `None`
     /// when there is none.
