@@ -1183,6 +1183,9 @@ input.ron    actions by name (\"jump\"), and the keys for each
 tuning/      the game's numbers, RON, typed in code with runity::Tuned
 ui/          the game's screens: elements anchored in a 1280x720 frame (runity::screen)
 strings/     the game's words, one file per language; a screen says `@key`
+dialogues/   conversations: lines, answers and the flags they set (runity::dialogue)
+animators/   which animation plays when: states and transitions, RON (runity::animgraph)
+shaders/     materials' own looks: one WGSL `surface` function a file
 layers.ron   collision layers, and which pairs pass through each other
 scenes/      scenes, RON — one entity per block, `id` first
 prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`

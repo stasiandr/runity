@@ -157,6 +157,53 @@ impl WorldUi {
     }
 }
 
+/// Switched off, from a line's `inactive` or [`set_active`]: it and all
+/// under it are not drawn and not solid, as Unity's inactive GameObject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inactive;
+
+/// Switch an entity on or off, and so everything under it.
+pub fn set_active(world: &mut World, entity: hecs::Entity, active: bool) {
+    if active {
+        let _ = world.remove_one::<Inactive>(entity);
+    } else {
+        let _ = world.insert_one(entity, Inactive);
+    }
+}
+
+/// Whether an entity is on: itself and every parent up to the top.
+/// Unity's `activeInHierarchy`.
+pub fn is_active(world: &World, entity: hecs::Entity) -> bool {
+    let mut at = Some(entity);
+    let mut depth = 0;
+    while let Some(e) = at {
+        if world.get::<&Inactive>(e).is_ok() {
+            return false;
+        }
+        at = world.get::<&Parent>(e).ok().map(|p| p.0);
+        depth += 1;
+        if depth > 64 {
+            break;
+        }
+    }
+    true
+}
+
+/// Every entity that is off, itself or by a parent: what the frame and the
+/// physics leave out.
+pub fn inactive_in_hierarchy(world: &World) -> std::collections::HashSet<hecs::Entity> {
+    let mut out = std::collections::HashSet::new();
+    if world.query::<&Inactive>().iter().next().is_none() {
+        return out;
+    }
+    for (entity, _) in world.query::<(hecs::Entity, &Transform)>().iter() {
+        if !is_active(world, entity) {
+            out.insert(entity);
+        }
+    }
+    out
+}
+
 /// A camera drawing into a picture, from its line's `render_texture`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToTexture(pub crate::scene::RenderTexture);
@@ -532,6 +579,9 @@ fn spawn_one(
     if let Some(picture) = &desc.render_texture {
         let _ = world.insert_one(entity, ToTexture(picture.clone()));
     }
+    if desc.inactive {
+        let _ = world.insert_one(entity, Inactive);
+    }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
             entity,
@@ -856,6 +906,10 @@ impl Patch<'_> {
                     let _ = world.remove_one::<LightSource>(entity);
                 }
             }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.inactive != desc.inactive) {
+            set_active(world, entity, !desc.inactive);
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.render_texture != desc.render_texture) {
@@ -1286,6 +1340,14 @@ pub fn build_frame_where(
     fog: FogSettings,
     keep: impl Fn(Option<crate::id::EntityId>) -> bool,
 ) -> Frame {
+    // What is switched off, itself or by a parent, is not in the picture.
+    let off: std::collections::HashSet<crate::id::EntityId> = inactive_in_hierarchy(world)
+        .into_iter()
+        .filter_map(|e| world.get::<&SceneId>(e).ok().map(|id| id.0))
+        .collect();
+    let keep = |line: Option<crate::id::EntityId>| {
+        line.is_none_or(|id| !off.contains(&id)) && keep(line)
+    };
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
     for (placed, model, surface, textured, posed, line) in world
@@ -1477,6 +1539,7 @@ mod tests {
             bone: String::new(),
             post_volume: None,
             render_texture: None,
+            inactive: false,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1512,6 +1575,7 @@ mod tests {
                     bone: String::new(),
                     post_volume: None,
                     render_texture: None,
+                    inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -2106,4 +2170,33 @@ mod tests {
         );
         assert_eq!(exposure_at(10.0).0, outside, "far away: the scene's");
     }
+
+    #[test]
+    fn a_thing_switched_off_hides_with_all_under_it_until_switched_on() {
+        let scene: crate::scene::Scene = ron::from_str(
+            r#"(entities: [
+                (id: "0000000000000001", name: "shed", model: "builtin:cube", inactive: true, children: [
+                    (id: "0000000000000002", name: "shelf", model: "builtin:cube"),
+                ]),
+                (id: "0000000000000003", name: "well", model: "builtin:cube"),
+            ])"#,
+        )
+        .unwrap();
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        apply_hierarchy(&mut world);
+        let drawn = |world: &World| {
+            build_frame(world, Camera::default(), Lighting::default(), FogSettings::default())
+                .draws
+                .len()
+        };
+        assert_eq!(drawn(&world), 1, "the well alone");
+        let shed = crate::net::addressable(&world)[&crate::id::EntityId::from_raw(1)];
+        let shelf = crate::net::addressable(&world)[&crate::id::EntityId::from_raw(2)];
+        assert!(!is_active(&world, shelf), "off by its parent");
+        set_active(&mut world, shed, true);
+        assert_eq!(drawn(&world), 3);
+        assert!(is_active(&world, shelf));
+    }
+
 }

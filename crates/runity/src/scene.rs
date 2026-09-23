@@ -819,6 +819,11 @@ pub struct EntityDesc {
     /// `default`. See [`crate::layers`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub layer: String,
+    /// Switched off, and everything under it: not drawn, not solid, not
+    /// heard — there, for the game to switch on (`world::set_active`).
+    /// Unity's inactive GameObject.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inactive: bool,
     /// Friction, bounce and density; see [`BodyProps`].
     #[serde(default, skip_serializing_if = "BodyProps::is_default")]
     pub physics: BodyProps,
@@ -901,6 +906,9 @@ pub struct Override {
     pub physics: Option<BodyProps>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub layer: Option<String>,
+    /// Switched off (or on) in this instance.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub inactive: Option<bool>,
     /// A camera, a light, particles or a route set on the part — changed, or
     /// added where the prefab has none. (Taking one away that the prefab
     /// has is an edit of the prefab.)
@@ -949,6 +957,9 @@ impl Override {
         if let Some(physics) = self.physics {
             part.physics = physics;
         }
+        if let Some(inactive) = self.inactive {
+            part.inactive = inactive;
+        }
         if let Some(layer) = &self.layer {
             part.layer = layer.clone();
         }
@@ -988,6 +999,7 @@ impl Override {
             collider: differs(prefab.collider != edited.collider).map(|_| edited.collider),
             physics: differs(prefab.physics != edited.physics).map(|_| edited.physics),
             layer: differs(prefab.layer != edited.layer).map(|_| edited.layer.clone()),
+            inactive: differs(prefab.inactive != edited.inactive).map(|_| edited.inactive),
             camera: differs(prefab.camera != edited.camera).and(edited.camera),
             light: differs(prefab.light != edited.light).and(edited.light),
             particles: differs(prefab.particles != edited.particles).and(edited.particles.clone()),
@@ -1019,6 +1031,7 @@ impl Override {
             collider,
             physics,
             layer,
+            inactive,
             camera,
             light,
             particles,
@@ -1035,6 +1048,7 @@ impl Override {
         self.collider = collider.or(self.collider);
         self.physics = physics.or(self.physics);
         self.layer = layer.or(self.layer.take());
+        self.inactive = inactive.or(self.inactive);
         self.camera = camera.or(self.camera);
         self.light = light.or(self.light);
         self.particles = particles.or(self.particles.take());
@@ -1674,6 +1688,7 @@ mod tests {
                 bone: String::new(),
                 post_volume: None,
                 render_texture: None,
+                inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1707,6 +1722,7 @@ mod tests {
                     bone: String::new(),
                     post_volume: None,
                     render_texture: None,
+                    inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1766,6 +1782,7 @@ mod tests {
                 bone: String::new(),
                 post_volume: None,
                 render_texture: None,
+                inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),

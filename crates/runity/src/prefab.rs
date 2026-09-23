@@ -281,6 +281,45 @@ fn find_mut(entities: &mut [EntityDesc], id: EntityId) -> Option<&mut EntityDesc
     None
 }
 
+/// A part's id as its prefab alone would give it: the nested instance it
+/// is in, within the id that instance's prefab alone gives it — and so on
+/// down, `shelf.within(screen.within(part))`.
+fn local_key(
+    parts: &HashMap<EntityId, (EntityId, EntityId)>,
+    instance: EntityId,
+    id: EntityId,
+) -> Option<EntityId> {
+    let mut chain = Vec::new();
+    let mut at = id;
+    while at != instance {
+        let (within, own) = *parts.get(&at)?;
+        chain.push(own);
+        at = within;
+    }
+    let mut out = chain.first().copied()?;
+    for outer in &chain[1..] {
+        out = outer.within(out);
+    }
+    Some(out)
+}
+
+fn find_by_key<'a>(
+    entities: &'a mut [EntityDesc],
+    parts: &HashMap<EntityId, (EntityId, EntityId)>,
+    instance: EntityId,
+    key: EntityId,
+) -> Option<&'a mut EntityDesc> {
+    for entity in entities {
+        if local_key(parts, instance, entity.id) == Some(key) {
+            return Some(entity);
+        }
+        if let Some(found) = find_by_key(&mut entity.children, parts, instance, key) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Expand one entity and everything under it.
 ///
 /// `scope` is `None` for an entity of the document, which keeps its own ID,
@@ -483,7 +522,19 @@ fn resolve(
     // file — scoped to this instance, as every part is.
     for (part, change) in &desc.overrides {
         let scoped = id.within(*part);
-        match find_mut(&mut root.children, scoped) {
+        // The prefab's root is this instance itself.
+        if *part == template.id {
+            change.apply(&mut root);
+            root.id = id;
+            continue;
+        }
+        // A part of a prefab inside the prefab is named by the id it has
+        // when the prefab is expanded alone: its instance's within its own.
+        let found = match find_mut(&mut root.children, scoped) {
+            Some(target) => Some(target),
+            None => find_by_key(&mut root.children, parts, id, *part),
+        };
+        match found {
             Some(target) => change.apply(target),
             None => problems.push(Problem {
                 entity_name: desc.name.clone(),
@@ -771,6 +822,77 @@ mod tests {
         for link in links {
             assert!(ids.contains(&link.to_string()), "{link} is a part: {ids:?}");
         }
+    }
+
+    #[test]
+    fn an_override_of_the_prefabs_root_changes_the_instance_itself() {
+        let prefabs = with_campfire();
+        let root = prefabs.find(&crate::AssetLink::named("campfire")).unwrap().1.id;
+        let scene = parse(&format!(
+            r#"(entities: [(id: "00000000000000a1", name: "fire", model: "", prefab: "campfire",
+                overrides: {{ "{root}": (inactive: true) }})])"#
+        ));
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        let fire = done.scene.get("a1".parse().unwrap()).unwrap();
+        assert!(fire.inactive, "switched off in this instance");
+        assert_eq!(fire.name, "fire");
+    }
+
+    #[test]
+    fn an_override_reaches_a_part_of_a_prefab_inside_the_prefab() {
+        // Unity names a part of a nested prefab by one id in the outer
+        // prefab's file; here it is the nested instance's id within the
+        // part's own — what the outer prefab alone would call it.
+        let mut prefabs = with_campfire();
+        let ember = prefabs
+            .find(&crate::AssetLink::named("campfire"))
+            .unwrap()
+            .1
+            .children[0]
+            .id;
+        prefabs.insert(
+            "yard",
+            ron::from_str(
+                r#"(id: "00000000000000b0", name: "yard", model: "", children: [
+                    (id: "00000000000000b1", name: "fire", model: "", prefab: "campfire"),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let key = "b1".parse::<EntityId>().unwrap().within(ember);
+        let scene = parse(&format!(
+            r#"(entities: [(id: "00000000000000a1", name: "home", model: "", prefab: "yard",
+                overrides: {{ "{key}": (inactive: true) }})])"#
+        ));
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        let off: Vec<_> = done
+            .scene
+            .flatten()
+            .into_iter()
+            .filter(|(e, _)| e.inactive)
+            .map(|(e, _)| e.name.clone())
+            .collect();
+        assert_eq!(off, ["ember"]);
+        // Two deep: the yard in a street, the fire in the yard.
+        prefabs.insert(
+            "street",
+            ron::from_str(
+                r#"(id: "00000000000000c0", name: "street", model: "", children: [
+                    (id: "00000000000000c1", name: "yard", model: "", prefab: "yard"),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let key = "c1".parse::<EntityId>().unwrap().within(key);
+        let scene = parse(&format!(
+            r#"(entities: [(id: "00000000000000a2", name: "town", model: "", prefab: "street",
+                overrides: {{ "{key}": (inactive: true) }})])"#
+        ));
+        let done = instantiate(&scene, &prefabs);
+        assert!(done.problems.is_empty(), "{:?}", done.problems);
+        assert!(done.scene.flatten().iter().any(|(e, _)| e.inactive && e.name == "ember"));
     }
 
     #[test]

@@ -355,6 +355,8 @@ impl PhysicsWorld {
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
+        // What is switched off has no body.
+        let off = crate::world::inactive_in_hierarchy(world);
         for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
             world
                 .query::<(
@@ -372,6 +374,10 @@ impl PhysicsWorld {
                 )>()
                 .iter()
         {
+            if off.contains(&entity) {
+                stale.push(entity);
+                continue;
+            }
             let body = solved(physics.0, replica.is_some());
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
@@ -494,7 +500,7 @@ impl PhysicsWorld {
             let kind = solved(physics.0, replica.is_some());
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
-            if existing.is_some() || physics.0 == Body::None {
+            if existing.is_some() || physics.0 == Body::None || off.contains(&entity) {
                 continue;
             }
             let dynamic = kind == Body::Dynamic;
@@ -1554,6 +1560,7 @@ mod tests {
             bone: String::new(),
             post_volume: None,
             render_texture: None,
+            inactive: false,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1648,6 +1655,7 @@ mod tests {
                 bone: String::new(),
                 post_volume: None,
                 render_texture: None,
+                inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -2134,6 +2142,21 @@ mod tests {
         assert!((speed.x - 12.0).abs() < 0.5, "{speed}");
         let at = world.get::<&Transform>(ball).unwrap().position;
         assert!(at.x > 3.3, "on from where it was handed: {at}");
+    }
+
+    #[test]
+    fn a_body_switched_off_does_not_fall_until_switched_on() {
+        let (mut physics, mut world, ball) = dropped(3.0);
+        crate::world::set_active(&mut world, ball, false);
+        for _ in 0..30 {
+            physics.run(&mut world);
+        }
+        assert_eq!(world.get::<&Transform>(ball).unwrap().position.y, 3.0, "off: not simulated");
+        crate::world::set_active(&mut world, ball, true);
+        for _ in 0..30 {
+            physics.run(&mut world);
+        }
+        assert!(world.get::<&Transform>(ball).unwrap().position.y < 2.9, "on: it falls");
     }
 
     /// The one entity with this kind of body.

@@ -17,6 +17,8 @@ const GAME_OBJECT: u32 = 1;
 const TRANSFORM: u32 = 4;
 const RECT_TRANSFORM: u32 = 224;
 const PREFAB_INSTANCE: u32 = 1001;
+/// The fileID Unity gives a model's root GameObject, in every model.
+const MODEL_ROOT: i64 = 919132149155446097;
 
 /// An entity's ID from a Unity fileID: the same object, the same ID, every
 /// time the file is imported (docs/unity-import.md).
@@ -75,7 +77,7 @@ pub fn sun(text: &str) -> Option<runity::scene::Sun> {
 /// The roots of a Unity file as entities, children under them.
 pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<EntityDesc> {
     let docs = yaml::documents(text);
-    let by_id = yaml::by_id(&docs);
+    let mut parts = Parts::default();
 
     // Where each object is: a transform's GameObject, a stripped
     // transform's prefab instance.
@@ -161,7 +163,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     desc.layer = layer.clone();
                 }
                 if d.body.i64("m_IsActive") == Some(0) {
-                    report.skip("an inactive GameObject (brought over active)");
+                    desc.inactive = true;
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
@@ -186,7 +188,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 }
             }
             PREFAB_INSTANCE => {
-                let Some((desc, into)) = instance(d, &by_id, &entity_of_transform, unity, report)
+                let Some((desc, into)) = instance(d, &mut parts, &entity_of_transform, unity, report)
                 else {
                     continue;
                 };
@@ -304,7 +306,7 @@ fn transform(t: &Yaml) -> Transform {
 /// called, from its modifications. And the entity it is under.
 fn instance(
     d: &Doc,
-    _by_id: &HashMap<i64, &Doc>,
+    parts: &mut Parts,
     entity_of_transform: &impl Fn(i64) -> Option<i64>,
     unity: &Unity,
     report: &mut Report,
@@ -382,6 +384,37 @@ fn instance(
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
             }
+        } else if path == "m_IsActive" || path == "m_Layer" {
+            // On the part it names — the prefab's root being the instance
+            // itself, which the engine applies an override of the root to.
+            let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
+            let Some(part) = target.and_then(|t| of.as_ref()?.keys.get(&t).copied()) else {
+                report.skip(format!(
+                    "a prefab modification of `{path}` on something not a GameObject of it"
+                ));
+                continue;
+            };
+            // A placed model has no parts to override: it is its root.
+            let mut own = runity::scene::Override::default();
+            let change = if kind == "model" {
+                &mut own
+            } else {
+                desc.overrides.entry(part).or_default()
+            };
+            if path == "m_IsActive" {
+                change.inactive = Some(value == 0.0);
+            } else {
+                change.layer = Some(
+                    unity
+                        .layers
+                        .get(&(value as i64))
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
+            if kind == "model" {
+                own.apply(&mut desc);
+            }
         } else if path.starts_with("m_LocalEulerAnglesHint") || path == "m_RootOrder" {
             // Editor hints: nothing to carry.
         } else {
@@ -397,6 +430,87 @@ fn instance(
         report.skip("a component removed from a prefab instance");
     }
     Some((desc, into))
+}
+
+/// A prefab file's GameObjects as a modification's `target` names them —
+/// its own, and through the prefabs inside it theirs, whose id in the file is
+/// Unity's `(instance ^ source) & i64::MAX` — to the key runity's overrides
+/// name each part by: its own id, or its instance's within its own.
+#[derive(Default)]
+struct Parts {
+    files: HashMap<String, std::rc::Rc<PrefabParts>>,
+}
+
+#[derive(Default)]
+struct PrefabParts {
+    keys: HashMap<i64, EntityId>,
+    /// The key the prefab's root has — for a variant, its instance's.
+    root: Option<EntityId>,
+}
+
+impl Parts {
+    fn of(&mut self, unity: &Unity, guid: &str, depth: usize) -> std::rc::Rc<PrefabParts> {
+        if let Some(done) = self.files.get(guid) {
+            return done.clone();
+        }
+        let mut out = PrefabParts::default();
+        // A model is one entity: of its objects only its root is anything.
+        if unity.named(guid).is_some_and(|(kind, _)| kind == "model") {
+            let root = entity_id(MODEL_ROOT);
+            out.keys.insert(MODEL_ROOT, root);
+            out.root = Some(root);
+        }
+        let text = unity
+            .named(guid)
+            .filter(|(kind, _)| *kind == "prefab" && depth < 16)
+            .and_then(|_| unity.guids.get(guid))
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        for d in text.as_deref().map(yaml::documents).unwrap_or_default() {
+            match d.class {
+                GAME_OBJECT if !d.stripped => {
+                    out.keys.insert(d.file_id, entity_id(d.file_id));
+                }
+                TRANSFORM | RECT_TRANSFORM if !d.stripped => {
+                    let top = d.body.reference("m_Father").is_none_or(|r| r.file_id == 0);
+                    if top {
+                        out.root = d.body.reference("m_GameObject").map(|r| entity_id(r.file_id));
+                    }
+                }
+                PREFAB_INSTANCE => {
+                    let Some(inner) = d
+                        .body
+                        .reference("m_SourcePrefab")
+                        .and_then(|r| r.guid)
+                        .map(|g| self.of(unity, &g, depth + 1))
+                    else {
+                        continue;
+                    };
+                    let n = entity_id(d.file_id);
+                    // A variant's base is expanded straight into its scope.
+                    let variant = d.body["m_Modification"]
+                        .reference("m_TransformParent")
+                        .is_none_or(|r| r.file_id == 0);
+                    if variant {
+                        out.root = Some(n);
+                    }
+                    for (x, e) in &inner.keys {
+                        let key = if Some(*e) == inner.root {
+                            n
+                        } else if variant {
+                            *e
+                        } else {
+                            n.within(*e)
+                        };
+                        out.keys.insert((d.file_id ^ x) & i64::MAX, key);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let out = std::rc::Rc::new(out);
+        self.files.insert(guid.to_string(), out.clone());
+        out
+    }
 }
 
 /// The field a property path is about: `hunts.any.Array.data[0]` → `hunts`.
