@@ -117,6 +117,13 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         state: None,
         time,
         input: Input::new(),
+        pads: match gilrs::Gilrs::new() {
+            Ok(pads) => Some(pads),
+            Err(e) => {
+                eprintln!("no gamepads: {e}");
+                None
+            }
+        },
     };
     event_loop.run_app(&mut shell)?;
     Ok(())
@@ -137,6 +144,9 @@ struct Shell<G: Game> {
     state: Option<Running>,
     time: Time,
     input: Input,
+    /// Gamepads. `None` where the platform has no way to ask — the game
+    /// still runs, on keyboard and mouse.
+    pads: Option<gilrs::Gilrs>,
 }
 
 impl<G: Game> Shell<G> {
@@ -284,11 +294,79 @@ impl<G: Game> ApplicationHandler for Shell<G> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(pads) = self.pads.as_mut() {
+            while let Some(event) = pads.next_event() {
+                if let Some(event) = translate_pad(event.event) {
+                    self.input.handle(&event);
+                }
+            }
+        }
         // Asking for a redraw here rather than drawing here is what keeps the
         // frame on the compositor's schedule instead of ahead of it.
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
+    }
+}
+
+/// A gilrs button as ours, by where it is on the pad.
+fn pad_button(b: gilrs::Button) -> Option<crate::input::PadButton> {
+    use crate::input::PadButton;
+    use gilrs::Button;
+    Some(match b {
+        Button::South => PadButton::South,
+        Button::East => PadButton::East,
+        Button::West => PadButton::West,
+        Button::North => PadButton::North,
+        // gilrs calls the bumpers triggers and the triggers "2".
+        Button::LeftTrigger => PadButton::LeftBumper,
+        Button::RightTrigger => PadButton::RightBumper,
+        Button::LeftTrigger2 => PadButton::LeftTrigger,
+        Button::RightTrigger2 => PadButton::RightTrigger,
+        Button::Select => PadButton::Select,
+        Button::Start => PadButton::Start,
+        Button::LeftThumb => PadButton::LeftStick,
+        Button::RightThumb => PadButton::RightStick,
+        Button::DPadUp => PadButton::DPadUp,
+        Button::DPadDown => PadButton::DPadDown,
+        Button::DPadLeft => PadButton::DPadLeft,
+        Button::DPadRight => PadButton::DPadRight,
+        _ => return None,
+    })
+}
+
+/// A gilrs stick axis as ours; gilrs already has up and right positive.
+fn pad_stick(a: gilrs::Axis) -> Option<crate::input::PadAxis> {
+    use crate::input::PadAxis;
+    use gilrs::Axis;
+    Some(match a {
+        Axis::LeftStickX => PadAxis::LeftX,
+        Axis::LeftStickY => PadAxis::LeftY,
+        Axis::RightStickX => PadAxis::RightX,
+        Axis::RightStickY => PadAxis::RightY,
+        _ => return None,
+    })
+}
+
+/// Turn one gilrs event into ours: triggers as both a value and a button.
+fn translate_pad(event: gilrs::EventType) -> Option<InputEvent> {
+    use crate::input::PadAxis;
+    use gilrs::{Button, EventType};
+    match event {
+        EventType::ButtonPressed(b, _) => pad_button(b).map(InputEvent::PadDown),
+        EventType::ButtonReleased(b, _) => pad_button(b).map(InputEvent::PadUp),
+        EventType::ButtonChanged(Button::LeftTrigger2, value, _) => Some(InputEvent::PadMoved {
+            axis: PadAxis::LeftTrigger,
+            value,
+        }),
+        EventType::ButtonChanged(Button::RightTrigger2, value, _) => Some(InputEvent::PadMoved {
+            axis: PadAxis::RightTrigger,
+            value,
+        }),
+        EventType::AxisChanged(axis, value, _) => {
+            pad_stick(axis).map(|axis| InputEvent::PadMoved { axis, value })
+        }
+        _ => None,
     }
 }
 
@@ -414,5 +492,25 @@ fn key_from(code: KeyCode) -> Key {
         // Keeping the platform's own value means a rebindable game does not
         // lose keys this enum has no name for.
         other => Key::Other(other as u32),
+    }
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use super::*;
+    use crate::input::{PadAxis, PadButton};
+    use gilrs::{Axis, Button, EventType};
+
+    #[test]
+    fn a_pad_is_read_by_position() {
+        assert_eq!(pad_button(Button::South), Some(PadButton::South));
+        assert_eq!(pad_button(Button::LeftTrigger), Some(PadButton::LeftBumper));
+        assert_eq!(
+            pad_button(Button::RightTrigger2),
+            Some(PadButton::RightTrigger)
+        );
+        assert_eq!(pad_stick(Axis::LeftStickY), Some(PadAxis::LeftY));
+        assert_eq!(pad_stick(Axis::LeftZ), None);
+        assert_eq!(translate_pad(EventType::Connected), None);
     }
 }

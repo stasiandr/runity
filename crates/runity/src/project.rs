@@ -479,15 +479,16 @@ const LAYERS_RON: &str = "\
 
 const INPUT_RON: &str = "\
 // What the player does, by name. The game asks for \"jump\", not Space;
-// rebind here, and a running game picks it up.
+// rebind here, and a running game picks it up. Pad buttons are named by
+// where they are: South is A on Xbox, cross on PlayStation.
 (
     actions: {
         \"quit\": [Key(Escape)],
-        \"jump\": [Key(Space)],
+        \"jump\": [Key(Space), Pad(South)],
     },
     axes: {
-        \"walk\": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)]),
-        \"strafe\": (negative: [Key(A), Key(Left)], positive: [Key(D), Key(Right)]),
+        \"walk\": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)], analog: [LeftY]),
+        \"strafe\": (negative: [Key(A), Key(Left)], positive: [Key(D), Key(Right)], analog: [LeftX]),
     },
 )
 ";

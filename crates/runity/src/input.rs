@@ -103,6 +103,48 @@ pub enum MouseButton {
     Other(u16),
 }
 
+/// A gamepad button, named by where it is rather than what is printed on
+/// it: `South` is A on an Xbox pad, cross on a PlayStation one, B on a
+/// Switch — the button under the right thumb, which is what "jump" wants on
+/// all of them. The Steam Deck's too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PadButton {
+    South,
+    East,
+    West,
+    North,
+    LeftBumper,
+    RightBumper,
+    /// The triggers as buttons: pulled past half way.
+    LeftTrigger,
+    RightTrigger,
+    Select,
+    Start,
+    LeftStick,
+    RightStick,
+    DPadUp,
+    DPadDown,
+    DPadLeft,
+    DPadRight,
+}
+
+/// A gamepad's analog inputs. Sticks run −1..1 with up and right positive;
+/// triggers 0..1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum PadAxis {
+    LeftX,
+    LeftY,
+    RightX,
+    RightY,
+    LeftTrigger,
+    RightTrigger,
+}
+
+/// How far a stick has to move before it counts. Every stick rests a little
+/// off centre, and a character that creeps while nobody touches the pad is
+/// the bug this prevents.
+pub const DEAD_ZONE: f32 = 0.15;
+
 /// What a shell reports.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputEvent {
@@ -127,6 +169,15 @@ pub enum InputEvent {
         x: f32,
         y: f32,
     },
+    /// A gamepad button, from any pad: the game sees one pad, which is what
+    /// a player with one in their hands means.
+    PadDown(PadButton),
+    PadUp(PadButton),
+    /// Where an analog input is now.
+    PadMoved {
+        axis: PadAxis,
+        value: f32,
+    },
     /// The window lost focus. Everything held is released, because the
     /// release event will be delivered to whatever has focus now, and a key
     /// that never comes up is held forever.
@@ -147,6 +198,10 @@ pub struct Input {
     scroll: Vec2,
     text: String,
     has_position: bool,
+    pad_held: HashSet<PadButton>,
+    pad_pressed: HashSet<PadButton>,
+    pad_released: HashSet<PadButton>,
+    pad_axes: std::collections::HashMap<PadAxis, f32>,
 }
 
 impl Input {
@@ -161,6 +216,8 @@ impl Input {
         self.released.clear();
         self.buttons_pressed.clear();
         self.buttons_released.clear();
+        self.pad_pressed.clear();
+        self.pad_released.clear();
         self.motion = Vec2::ZERO;
         self.scroll = Vec2::ZERO;
         self.text.clear();
@@ -202,7 +259,24 @@ impl Input {
                 }
             }
             InputEvent::Scroll { x, y } => self.scroll += Vec2::new(*x, *y),
+            InputEvent::PadDown(button) => {
+                if self.pad_held.insert(*button) {
+                    self.pad_pressed.insert(*button);
+                }
+            }
+            InputEvent::PadUp(button) => {
+                if self.pad_held.remove(button) {
+                    self.pad_released.insert(*button);
+                }
+            }
+            InputEvent::PadMoved { axis, value } => {
+                self.pad_axes.insert(*axis, value.clamp(-1.0, 1.0));
+            }
             InputEvent::FocusLost => {
+                for button in std::mem::take(&mut self.pad_held) {
+                    self.pad_released.insert(button);
+                }
+                self.pad_axes.clear();
                 for key in std::mem::take(&mut self.held) {
                     self.released.insert(key);
                 }
@@ -210,6 +284,28 @@ impl Input {
                     self.buttons_released.insert(button);
                 }
             }
+        }
+    }
+
+    pub fn pad_held(&self, button: PadButton) -> bool {
+        self.pad_held.contains(&button)
+    }
+    pub fn pad_pressed(&self, button: PadButton) -> bool {
+        self.pad_pressed.contains(&button)
+    }
+    pub fn pad_released(&self, button: PadButton) -> bool {
+        self.pad_released.contains(&button)
+    }
+
+    /// An analog input, with the [`DEAD_ZONE`] taken out of the sticks and
+    /// what is left stretched back to the full range, so a stick pushed just
+    /// past the zone moves slowly rather than jumping to 15%.
+    pub fn pad_axis(&self, axis: PadAxis) -> f32 {
+        let value = self.pad_axes.get(&axis).copied().unwrap_or(0.0);
+        match axis {
+            PadAxis::LeftTrigger | PadAxis::RightTrigger => value.clamp(0.0, 1.0),
+            _ if value.abs() < DEAD_ZONE => 0.0,
+            _ => value.signum() * (value.abs() - DEAD_ZONE) / (1.0 - DEAD_ZONE),
         }
     }
 

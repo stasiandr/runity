@@ -30,7 +30,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q mesa-vulkan-drivers libasound2-dev libdbus-1-dev
+          sudo apt-get install -y -q mesa-vulkan-drivers libasound2-dev libdbus-1-dev libudev-dev
 
       - name: Check formatting
         run: cargo fmt --all -- --check

@@ -23,6 +23,7 @@ subsecond = "0.7.10"
 tracing = "0.1.44"
 wgpu = "30"
 winit = { version = "0.30.13", optional = true }
+gilrs = { version = "0.11", optional = true }
 
 # Built-in subsystems are features, so that switching one off is one line
 # and takes its dependencies out of the build with it (DNA, postulate 3).
@@ -43,7 +44,7 @@ audio = ["dep:kira"]
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
 # architecture.
-desktop-shell = ["dep:winit"]
+desktop-shell = ["dep:winit", "dep:gilrs"]
 
 [dev-dependencies]
 hecs = "0.11.0"

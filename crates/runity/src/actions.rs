@@ -11,7 +11,7 @@
 //!         "fire": [Mouse(Left), Key(LeftControl)],
 //!     },
 //!     axes: {
-//!         "walk": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)]),
+//!         "walk": (negative: [Key(S), Key(Down)], positive: [Key(W), Key(Up)], analog: [LeftY]),
 //!     },
 //! )
 //! ```
@@ -27,13 +27,14 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::input::{Input, Key, MouseButton};
+use crate::input::{Input, Key, MouseButton, PadAxis, PadButton};
 
 /// One thing that can trigger an action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Binding {
     Key(Key),
     Mouse(MouseButton),
+    Pad(PadButton),
 }
 
 /// A value from −1 to 1 made of two sets of bindings.
@@ -43,6 +44,10 @@ pub struct Axis {
     pub negative: Vec<Binding>,
     #[serde(default)]
     pub positive: Vec<Binding>,
+    /// Sticks and triggers that drive it directly, −1..1. When a key or
+    /// button of the axis is held it wins; otherwise the largest of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analog: Vec<PadAxis>,
 }
 
 /// What `input.ron` holds.
@@ -120,6 +125,7 @@ impl Actions {
         self.bindings(name).iter().any(|b| match *b {
             Binding::Key(key) => input.pressed(key),
             Binding::Mouse(button) => input.mouse_pressed(button),
+            Binding::Pad(button) => input.pad_pressed(button),
         })
     }
 
@@ -127,16 +133,33 @@ impl Actions {
         self.bindings(name).iter().any(|b| match *b {
             Binding::Key(key) => input.released(key),
             Binding::Mouse(button) => input.mouse_released(button),
+            Binding::Pad(button) => input.pad_released(button),
         })
     }
 
-    /// −1, 0 or 1 — or 0 when both sides are held.
+    /// −1..1: −1, 0 or 1 from keys and buttons — 0 when both sides are
+    /// held — or, when none is, from its sticks.
     pub fn axis(&self, input: &Input, name: &str) -> f32 {
         let Some(axis) = self.map.axes.get(name) else {
             return 0.0;
         };
         let side = |bindings: &[Binding]| f32::from(bindings.iter().any(|b| held(input, *b)));
-        side(&axis.positive) - side(&axis.negative)
+        let digital = side(&axis.positive) - side(&axis.negative);
+        let pressed = axis
+            .positive
+            .iter()
+            .chain(&axis.negative)
+            .any(|b| held(input, *b));
+        if pressed {
+            return digital;
+        }
+        axis.analog
+            .iter()
+            .map(|a| input.pad_axis(*a))
+            .fold(
+                0.0,
+                |best: f32, v| if v.abs() > best.abs() { v } else { best },
+            )
     }
 
     /// The names the game asks for that the file does not define, each with
@@ -171,6 +194,7 @@ fn held(input: &Input, binding: Binding) -> bool {
     match binding {
         Binding::Key(key) => input.held(key),
         Binding::Mouse(button) => input.mouse_held(button),
+        Binding::Pad(button) => input.pad_held(button),
     }
 }
 
@@ -237,5 +261,53 @@ mod tests {
         later(&path, "(actions: {", 4);
         assert!(matches!(actions.reload_if_changed(), Some(Err(_))));
         assert!(actions.held(&input, "jump"), "the old bindings stay");
+    }
+
+    #[test]
+    fn a_pad_binds_like_a_key_and_a_stick_drives_an_axis_past_its_dead_zone() {
+        use crate::input::{PadAxis, PadButton};
+        let actions = Actions::new(
+            ron::from_str(
+                r#"(
+                actions: { "jump": [Key(Space), Pad(South)] },
+                axes: { "walk": (negative: [Key(S)], positive: [Key(W)], analog: [LeftY]) },
+            )"#,
+            )
+            .unwrap(),
+        );
+        let mut input = Input::new();
+        input.handle(&InputEvent::PadDown(PadButton::South));
+        assert!(actions.pressed(&input, "jump"));
+        input.begin_frame();
+        assert!(actions.held(&input, "jump") && !actions.pressed(&input, "jump"));
+
+        let stick = |input: &mut Input, value: f32| {
+            input.handle(&InputEvent::PadMoved {
+                axis: PadAxis::LeftY,
+                value,
+            })
+        };
+        stick(&mut input, 0.1);
+        assert_eq!(
+            actions.axis(&input, "walk"),
+            0.0,
+            "resting off centre is resting"
+        );
+        stick(&mut input, 1.0);
+        assert_eq!(actions.axis(&input, "walk"), 1.0);
+        stick(&mut input, -0.575);
+        assert!(
+            (actions.axis(&input, "walk") + 0.5).abs() < 1e-4,
+            "stretched past the zone"
+        );
+        input.handle(&InputEvent::KeyDown(Key::W));
+        assert_eq!(actions.axis(&input, "walk"), 1.0, "a held key wins");
+        input.handle(&InputEvent::FocusLost);
+        input.handle(&InputEvent::KeyUp(Key::W));
+        assert_eq!(
+            actions.axis(&input, "walk"),
+            0.0,
+            "focus lost lets go of the pad too"
+        );
     }
 }
