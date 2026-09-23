@@ -83,6 +83,9 @@ pub enum Action {
     Array(usize),
     /// The selection's model or prefab scattered around the view's centre.
     Scatter,
+    /// A flat terrain to sculpt, and the brush on it.
+    NewTerrain,
+    ToggleSculpt,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -206,6 +209,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             vec![
                 item("Poly Shape: Floor", Action::PolyFloor),
                 item("Poly Shape: Wall", Action::PolyWall),
+                item("Sculpt Terrain (brush)", Action::ToggleSculpt),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",
@@ -275,6 +279,7 @@ fn create_items(with_group: bool) -> Vec<MenuItem> {
         v.push(item(label, Action::Create(model)));
     }
     v.push(MenuItem::separator());
+    v.push(item("Terrain", Action::NewTerrain));
     v.push(item("Light", Action::CreateLight));
     v.push(item("Camera", Action::CreateCamera));
     v

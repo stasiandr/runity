@@ -48,6 +48,8 @@ pub enum Cursor {
     Text,
     ResizeColumn,
     ResizeRow,
+    /// Over the view with the terrain brush on.
+    Brush,
 }
 
 /// What a panel asks the studio to do after an event.
@@ -153,6 +155,12 @@ pub struct Studio {
     buttons: Vec<(NodeId, Action)>,
     snap: NodeId,
     colliders_button: NodeId,
+    sculpt_button: NodeId,
+    /// The terrain brush is on: a left drag in the view shapes the ground.
+    sculpt: bool,
+    /// A stroke in progress: when the last dab landed, and for a flatten
+    /// the height it flattens to.
+    stroke: Option<(Instant, f32)>,
     /// The tooltip on show, and what the pointer has rested on since when.
     tooltip: Option<NodeId>,
     resting: Option<(NodeId, Instant)>,
@@ -273,6 +281,8 @@ impl Studio {
         buttons.push((snap, Action::ToggleSnap));
         let colliders = icon_button(&mut ui, view_tabs, "colliders", "box", false);
         buttons.push((colliders, Action::ToggleColliders));
+        let sculpt = icon_button(&mut ui, view_tabs, "sculpt", "mountain", false);
+        buttons.push((sculpt, Action::ToggleSculpt));
         // Prefab mode's banner: what is open, and the way back.
         let prefab_bar = ui.add(
             view_slot,
@@ -346,6 +356,9 @@ impl Studio {
             buttons,
             snap,
             colliders_button: colliders,
+            sculpt_button: sculpt,
+            sculpt: false,
+            stroke: None,
             tooltip: None,
             resting: None,
             polled: Instant::now(),
@@ -392,6 +405,7 @@ impl Studio {
             Some(n) if self.ui.is_field(n) => Cursor::Text,
             Some(n) if n == self.splits[1] => Cursor::ResizeRow,
             Some(n) if self.splits.contains(&n) => Cursor::ResizeColumn,
+            Some(n) if n == self.viewport && self.sculpt => Cursor::Brush,
             _ => Cursor::Default,
         }
     }
@@ -441,8 +455,26 @@ impl Studio {
         let to_view = |x: f32, y: f32| ((x - view.x) * scale, (y - view.y) * scale);
         match event {
             InputEvent::MouseMoved { x, y } => {
-                let (x, y) = to_view(*x, *y);
-                self.scene_input.handle(&InputEvent::MouseMoved { x, y });
+                let (vx, vy) = to_view(*x, *y);
+                self.scene_input
+                    .handle(&InputEvent::MouseMoved { x: vx, y: vy });
+                if self.stroke.is_some() {
+                    self.dab(vx, vy, false);
+                }
+            }
+            // The brush takes the left button; Alt still orbits.
+            InputEvent::MouseDown(MouseButton::Left)
+                if over_view && self.sculpt && !self.ui.modifiers().2 =>
+            {
+                let (px, py) = self.ui.pointer();
+                let (vx, vy) = to_view(px, py);
+                self.dab(vx, vy, true);
+                return;
+            }
+            InputEvent::MouseUp(MouseButton::Left) if self.stroke.is_some() => {
+                self.stroke = None;
+                self.refresh();
+                return;
             }
             InputEvent::MouseDown(_)
                 if !self
@@ -592,6 +624,65 @@ impl Studio {
             }
             self.frame_times.clear();
         }
+    }
+
+    /// One dab of the terrain brush where the view's pixel shows the ground:
+    /// raise, Shift lower, Ctrl (Cmd) flatten to where the stroke began. Dabs are
+    /// at most ten a second — each is a line in the terrain's file.
+    fn dab(&mut self, x: f32, y: f32, first: bool) {
+        let (x, y) = (x.max(0.0) as u32, y.max(0.0) as u32);
+        let Some(at) = self.session.point_under(x, y) else {
+            return;
+        };
+        if !first {
+            if let Some((when, _)) = self.stroke {
+                if when.elapsed().as_secs_f32() < 0.1 {
+                    return;
+                }
+            }
+        }
+        let terrain = self
+            .session
+            .selected()
+            .filter(|id| self.session.entity_model(*id).is_some())
+            .or_else(|| {
+                self.session.entities().into_iter().find(|id| {
+                    self.session.entity_model(*id).is_some_and(|m| {
+                        self.session
+                            .project()
+                            .is_some_and(|p| p.assets().join(format!("{m}.rterrain")).is_file())
+                    })
+                })
+            });
+        let Some(terrain) = terrain else {
+            self.session.say(
+                Level::Warning,
+                "no terrain to sculpt: GameObject › Terrain makes one",
+            );
+            self.sculpt = false;
+            self.refresh();
+            return;
+        };
+        let (shift, ctrl, _, command) = self.ui.modifiers();
+        let flatten = ctrl || command;
+        let flatten_to = match self.stroke {
+            Some((_, h)) if !first => h,
+            _ => at.y,
+        };
+        let result = if flatten {
+            self.session.sculpt(terrain, at, 3.0, flatten_to, true)
+        } else {
+            self.session
+                .sculpt(terrain, at, 3.0, if shift { -0.3 } else { 0.3 }, false)
+        };
+        if let Err(e) = result {
+            self.session.say(Level::Error, e.to_string());
+            self.sculpt = false;
+            self.stroke = None;
+            self.refresh();
+            return;
+        }
+        self.stroke = Some((Instant::now(), flatten_to));
     }
 
     /// Where the studio keeps its own layout: next to the session's view
@@ -882,6 +973,7 @@ impl Studio {
         set_button_primary(ui, t.save, modified);
         set_icon_button(ui, self.snap, "magnet", s.snap().meters > 0.0, true);
         set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
+        set_icon_button(ui, self.sculpt_button, "mountain", self.sculpt, true);
         let prefab = s.is_prefab();
         ui.restyle(self.prefab_bar, |st| {
             if prefab {
@@ -1509,6 +1601,29 @@ impl Studio {
                     s.scatter(None, &what, centre, &runity::edit::Scatter::default())
                         .map_err(e)?;
                 }
+                Action::NewTerrain => {
+                    let mut name = "terrain".to_string();
+                    let mut n = 1;
+                    while s.has_model(&name) {
+                        n += 1;
+                        name = format!("terrain_{n}");
+                    }
+                    s.new_terrain(&name, 40.0).map_err(e)?;
+                    self.sculpt = true;
+                    s.say(
+                        Level::Info,
+                        "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
+                    );
+                }
+                Action::ToggleSculpt => {
+                    self.sculpt = !self.sculpt;
+                    if self.sculpt {
+                        s.say(
+                            Level::Info,
+                            "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
+                        );
+                    }
+                }
                 Action::Align(axis, to) => {
                     s.align_selection(axis, to).map_err(e)?;
                 }
@@ -1871,6 +1986,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "save" => "Save the scene (Ctrl/Cmd S)",
         "snap" => "Snap moves to ¼ m, turns to 15°, scale to 0.1",
         "colliders" => "Show colliders",
+        "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "view persp" => "Perspective view",
         "view top" => "Look down from above",
         "view front" => "Look from the front",

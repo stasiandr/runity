@@ -4266,3 +4266,25 @@ fn the_sun_and_the_fog_are_one_undo_step_each() {
     session.undo().unwrap();
     assert_eq!(session.environment(), before);
 }
+
+#[test]
+fn a_new_terrain_is_found_under_the_cursor_and_rises_where_it_is_stroked() {
+    let Some((mut session, _path)) = open("terrain") else {
+        return;
+    };
+    let terrain = session.new_terrain("meadow", 30.0).unwrap();
+    assert_eq!(session.selected(), Some(terrain));
+    session.set_camera(Vec3::new(0.0, 20.0, 20.0), Vec3::ZERO);
+    let (w, h) = session.size();
+    let at = session
+        .point_under(w / 2, h / 2)
+        .expect("the ground is under the middle");
+    assert!(at.length() < 1.0, "{at:?}");
+    session.sculpt(terrain, at, 4.0, 2.0, false).unwrap();
+    let after = session.point_under(w / 2, h / 2).unwrap();
+    assert!(after.y > 1.5, "raised: {after:?}");
+    assert!(
+        session.new_terrain("meadow", 30.0).is_err(),
+        "the name is taken"
+    );
+}

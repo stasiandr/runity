@@ -169,6 +169,9 @@ pub struct Session {
     fly_speed: f32,
     /// What a surface drag lands on, built once when the gesture begins.
     surface: Option<runity::PhysicsWorld>,
+    /// Every solid, for [`Session::point_under`], and the revision it was
+    /// built at; dropped when an asset changes shape.
+    solids: Option<(u64, runity::PhysicsWorld)>,
     /// A vertex snap in progress.
     vertex_grab: Option<surface::VertexGrab>,
     /// Showing where a walker can go: with what walker, and the grid baked
@@ -317,6 +320,7 @@ impl Session {
             marquee: None,
             fly_speed: 6.0,
             surface: None,
+            solids: None,
             vertex_grab: None,
             nav_shown: None,
             console: Default::default(),
@@ -2352,7 +2356,24 @@ impl Session {
     /// first — a changed `.png` becomes a changed `.rasset` — and then the
     /// library re-reads exactly those, so a colour tweaked in a text file
     /// shows up in the viewport without anything being reopened.
+    /// The point of the world a pixel of the view shows, on whatever solid
+    /// is there — where a brush lands, where a click on the ground is.
+    /// `None` over the sky.
+    pub fn point_under(&mut self, x: u32, y: u32) -> Option<Vec3> {
+        let revision = self.history.revision();
+        if self.solids.as_ref().is_none_or(|(r, _)| *r != revision) {
+            self.solids = Some((revision, self.solid_without(&[])));
+        }
+        let (from, direction) = self.ray(x, y);
+        let far = self.camera.far;
+        let (_, world) = self.solids.as_ref()?;
+        world
+            .cast_ray_with_normal(from, direction, far, false)
+            .map(|(point, _, _)| point)
+    }
+
     pub fn reload_assets(&mut self) -> usize {
+        self.solids = None;
         // In a project the sources are the truth: whatever changed, moved
         // or appeared in `assets/` and `materials/` is rebuilt first, and the
         // library read again if anything was. Without one there are no

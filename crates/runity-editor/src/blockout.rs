@@ -14,6 +14,52 @@ use runity_import::poly::PolySource;
 use crate::{EditError, EditResult, Session};
 
 impl Session {
+    /// A flat terrain `size` metres a side: writes `assets/<name>.rterrain`,
+    /// imports it and places it at the origin, selected — ready for
+    /// [`Session::sculpt`]. One undo step (the file stays, as a new asset
+    /// does).
+    pub fn new_terrain(&mut self, name: &str, size: f32) -> EditResult<EntityId> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            return Err(EditError::Scene(format!(
+                "`{name}`: a terrain's name is snake_case, like north_hills"
+            )));
+        }
+        let file = project.assets().join(format!("{name}.rterrain"));
+        if file.exists() || self.bounds_of(name).is_some() {
+            return Err(EditError::Scene(format!(
+                "there is already an asset called `{name}`"
+            )));
+        }
+        let resolution = ((size * 2.0).round() as u32 + 1).clamp(17, 257);
+        std::fs::create_dir_all(project.assets())?;
+        std::fs::write(
+            &file,
+            format!(
+                "// Flat ground, to be shaped with strokes below.\n(size: ({size:.1}, {size:.1}), resolution: {resolution}, height: 0.0)\n"
+            ),
+        )?;
+        self.reload_assets();
+        if self.bounds_of(name).is_none() {
+            return Err(EditError::Import(format!(
+                "{} did not import",
+                file.display()
+            )));
+        }
+        let id = self.add(None, name)?;
+        self.update(id, |d| {
+            d.body = runity::Body::Static;
+        })?;
+        self.history.squash(2);
+        self.select(Some(id))?;
+        Ok(id)
+    }
+
     /// Draw a solid from an outline (see [`PolySource`]: points around its
     /// origin, a height, lying or standing). Writes `assets/<name>.rpoly`,
     /// imports it, and places it at `at` as a static body with a collider

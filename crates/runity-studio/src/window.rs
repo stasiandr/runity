@@ -141,6 +141,7 @@ impl ApplicationHandler for App {
                     crate::studio::Cursor::Text => winit::window::CursorIcon::Text,
                     crate::studio::Cursor::ResizeColumn => winit::window::CursorIcon::ColResize,
                     crate::studio::Cursor::ResizeRow => winit::window::CursorIcon::RowResize,
+                    crate::studio::Cursor::Brush => winit::window::CursorIcon::Crosshair,
                 };
                 run.window.set_cursor(cursor);
                 let title = run.studio.title();

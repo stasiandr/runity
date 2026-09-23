@@ -652,3 +652,39 @@ fn the_layout_is_kept_between_runs() {
     );
     let _ = dir;
 }
+
+#[test]
+fn a_terrain_from_the_menu_rises_under_the_brush() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "GameObject", "Terrain");
+    let terrain = s.session.selected().expect("a terrain, selected");
+    assert_eq!(s.session.entity_model(terrain).as_deref(), Some("terrain"));
+    s.session.set_camera(
+        runity::glam::Vec3::new(0.0, 20.0, 20.0),
+        runity::glam::Vec3::ZERO,
+    );
+    s.frame();
+    // The brush is on after making one: drag across the middle of the view.
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (cx, cy) = view.center();
+    let (w, h) = s.session.size();
+    let before = s.session.point_under(w / 2, h / 2).unwrap().y;
+    let selected = s.session.selection();
+    s.handle(&InputEvent::MouseMoved { x: cx, y: cy });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    for i in 0..3 {
+        std::thread::sleep(std::time::Duration::from_millis(110));
+        s.handle(&InputEvent::MouseMoved {
+            x: cx + i as f32,
+            y: cy,
+        });
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let after = s.session.point_under(w / 2, h / 2).unwrap().y;
+    assert!(after > before + 0.5, "{before} -> {after}");
+    assert_eq!(s.session.selection(), selected, "the brush does not select");
+}
