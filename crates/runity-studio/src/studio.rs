@@ -245,6 +245,9 @@ pub struct Studio {
     bottom: Bottom,
     status: Status,
     splits: [NodeId; 3],
+    view_slot: NodeId,
+    /// The lower dock's height before the UI Builder went wide.
+    lower_before_wide: Option<f32>,
     left: NodeId,
     right: NodeId,
     lower: NodeId,
@@ -535,6 +538,8 @@ impl Studio {
             bottom,
             status,
             splits: [split_left, split_lower, split_right],
+            view_slot,
+            lower_before_wide: None,
             left,
             right,
             lower,
@@ -851,6 +856,7 @@ impl Studio {
                 self.screens.update(&mut self.ui, &self.session);
                 self.screens.draw(&self.session);
             }
+            self.fit_wide();
             if self.docks.is_active(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
             }
@@ -870,6 +876,42 @@ impl Studio {
                 eprintln!("{fps:.0} fps, frame {:.1} ms", mean * 1e3);
             }
             self.frame_times.clear();
+        }
+    }
+
+    /// The UI Builder over the whole window below the toolbar, or back in
+    /// its dock.
+    fn fit_wide(&mut self) {
+        let wide = self.screens.wide
+            && self.docks.is_active(Panel::Screens)
+            && self.docks.dock_of(Panel::Screens) == Some(2);
+        let split = self.splits[1];
+        match (wide, self.lower_before_wide) {
+            (true, _) => {
+                if self.lower_before_wide.is_none() {
+                    self.lower_before_wide = Some(self.ui.rect(self.lower).height);
+                    // The side docks go too: the canvas wants the width.
+                    let [left, _, right] = self.splits;
+                    for n in [self.view_slot, split, self.left, left, self.right, right] {
+                        self.ui.restyle(n, |s| s.hidden());
+                    }
+                }
+                let room = self.ui.parent(self.lower).map(|c| self.ui.rect(c).height);
+                if let Some(room) =
+                    room.filter(|r| (self.ui.rect(self.lower).height - r).abs() > 0.5)
+                {
+                    self.ui.restyle(self.lower, |s| s.height(room));
+                }
+            }
+            (false, Some(height)) => {
+                self.lower_before_wide = None;
+                for n in [self.view_slot, split] {
+                    self.ui.restyle(n, |s| s.shown());
+                }
+                self.ui.restyle(self.lower, |s| s.height(height));
+                self.show_panels();
+            }
+            (false, None) => {}
         }
     }
 
@@ -1071,7 +1113,9 @@ impl Studio {
             "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
             w(self.left),
             w(self.right),
-            self.ui.rect(self.lower).height.round(),
+            self.lower_before_wide
+                .unwrap_or(self.ui.rect(self.lower).height)
+                .round(),
         )
     }
 

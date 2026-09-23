@@ -1396,7 +1396,8 @@ fn ui_builder_moves_and_edits_a_screen() {
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
     std::fs::write(
         &file,
-        r#"(elements: [
+        r#"// The main menu.
+(elements: [
     (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("The Valley"), text_size: 40),
     (id: "play", anchor: Center, at: (0, 0), size: (240, 48), kind: Button("Play")),
 ])"#,
@@ -1442,6 +1443,12 @@ fn ui_builder_moves_and_edits_a_screen() {
         play.at
     );
     assert!((play.at.1 - 20.0).abs() < 2.0, "moved down: {:?}", play.at);
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .starts_with("// The main menu."),
+        "comments kept"
+    );
 
     // Boxes write to the file; a bad kind does not.
     fill(&mut s, "screen field width", "300");
@@ -1462,4 +1469,16 @@ fn ui_builder_moves_and_edits_a_screen() {
     // The list picks too.
     click(&mut s, "element title");
     assert!(s.ui.find("screen field text size").is_some());
+
+    // Wide: the Scene view gives its room to the canvas, and takes it back.
+    let small = s.ui.rect(s.ui.find("screen canvas").unwrap()).width;
+    click(&mut s, "screen wide");
+    s.frame();
+    s.ui.paint();
+    let big = s.ui.rect(s.ui.find("screen canvas").unwrap()).width;
+    assert!(big > small * 2.0, "{small} -> {big}");
+    click(&mut s, "screen wide");
+    s.frame();
+    s.ui.paint();
+    assert!(s.ui.rect(s.ui.find("scene view").unwrap()).height > 300.0);
 }

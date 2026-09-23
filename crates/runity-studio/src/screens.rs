@@ -10,8 +10,8 @@
 //! place, size, text size and what it is. Every change is written to the
 //! file at once, so a running game moves the button too (DNA, postulate 1).
 //!
-//! The file is written back from its values: comments in it do not
-//! survive an edit made here.
+//! Only the elements that changed are rewritten, each in its own place in
+//! the text: comments and hand-made layout survive an edit made here.
 
 use std::path::PathBuf;
 
@@ -47,6 +47,10 @@ pub struct Screens {
     elements_list: NodeId,
     canvas: NodeId,
     fields: NodeId,
+    wide_button: NodeId,
+    /// The panel over the whole middle of the window, the Scene view
+    /// hidden: Unity's UI Builder is a window of its own, with room.
+    pub wide: bool,
     files: Vec<(NodeId, PathBuf)>,
     elements: Vec<(NodeId, String)>,
     boxes: Vec<(NodeId, &'static str)>,
@@ -81,7 +85,10 @@ impl Screens {
                 .fixed()
                 .gap(SPACE_2),
         );
-        ui.add_text(left, caption(), "SCREENS");
+        let head = ui.add(left, Style::row().full_width().center_items());
+        ui.add_text(head, caption(), "SCREENS");
+        spacer(ui, head);
+        let wide_button = icon_button(ui, head, "screen wide", "expand", false);
         let files_list = ui.add(left, Style::column().full_width().gap(2.0));
         ui.add_text(left, caption(), "ELEMENTS");
         let elements_list = ui.add(left, Style::column().fill().full_width().gap(2.0).clip());
@@ -111,6 +118,8 @@ impl Screens {
             elements_list,
             canvas,
             fields,
+            wide_button,
+            wide: false,
             files: Vec::new(),
             elements: Vec::new(),
             boxes: Vec::new(),
@@ -361,7 +370,10 @@ impl Screens {
         layout.elements.iter_mut().find(|e| e.id == id)
     }
 
-    /// Write the screen back; the game picks it up from disk.
+    /// Write the screen back; the game picks it up from disk. Only the
+    /// elements that changed are rewritten, each on its own span of the
+    /// file, so comments and the rest of the text stay as they were — and
+    /// the diff is the change (DNA, postulate 2).
     fn save(&mut self, session: &mut Session) {
         let Some((path, layout)) = &self.open else {
             return;
@@ -371,14 +383,15 @@ impl Screens {
             session.say(Level::Error, format!("{}: not saved, {p}", path.display()));
             return;
         }
-        let pretty = runity::ron::ser::PrettyConfig::new();
-        match runity::ron::ser::to_string_pretty(layout, pretty) {
-            Ok(text) => {
-                if let Err(e) = std::fs::write(path, format!("{text}\n")) {
-                    session.say(Level::Error, format!("{}: {e}", path.display()));
-                }
+        let old = std::fs::read_to_string(path).unwrap_or_default();
+        let text = patched(&old, layout).unwrap_or_else(|| {
+            let pretty = runity::ron::ser::PrettyConfig::new();
+            runity::ron::ser::to_string_pretty(layout, pretty).unwrap_or_default() + "\n"
+        });
+        if text != old {
+            if let Err(e) = std::fs::write(path, text) {
+                session.say(Level::Error, format!("{}: {e}", path.display()));
             }
-            Err(e) => session.say(Level::Error, e.to_string()),
         }
         self.dirty = true;
     }
@@ -409,6 +422,13 @@ impl Screens {
     }
 
     pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
+        if node == self.wide_button {
+            if let Event::Click { .. } = event {
+                self.wide = !self.wide;
+                set_icon_button(ui, self.wide_button, "expand", self.wide, true);
+            }
+            return;
+        }
         if let Some(path) = self
             .files
             .iter()
@@ -536,7 +556,7 @@ impl Screens {
             0.0,
             WIDTH,
             HEIGHT,
-            runity::glam::Vec4::new(0.09, 0.1, 0.13, 1.0),
+            runity::glam::Vec4::from(BG.linear()),
         ));
         if let Some((_, layout)) = &self.open {
             let mut screen = runity::screen::Screen::from_layout(layout.clone());
@@ -550,7 +570,7 @@ impl Screens {
             );
             if let Some(id) = &self.selected {
                 if let Some(r) = layout.rect(id, runity::glam::Vec2::new(WIDTH, HEIGHT)) {
-                    let c = runity::glam::Vec4::new(0.57, 0.52, 0.85, 1.0);
+                    let c = runity::glam::Vec4::from(ACCENT.linear());
                     let t = 2.0;
                     for (x, y, w, h) in [
                         (r.x - t, r.y - t, r.width + 2.0 * t, t),
@@ -608,4 +628,120 @@ fn kind_icon(kind: &Kind) -> &'static str {
 fn trim(n: f32) -> String {
     let s = format!("{n:.2}");
     s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// `old` with every element that differs from `layout` rewritten in place,
+/// or `None` when the file's elements cannot be matched one to one (then
+/// the whole file is written anew).
+fn patched(old: &str, layout: &Layout) -> Option<String> {
+    let on_disk: Layout = runity::ron::from_str(old).ok()?;
+    let spans = element_spans(old)?;
+    if spans.len() != on_disk.elements.len() || spans.len() != layout.elements.len() {
+        return None;
+    }
+    let mut text = old.to_string();
+    for ((span, was), now) in spans
+        .iter()
+        .zip(&on_disk.elements)
+        .zip(&layout.elements)
+        .rev()
+    {
+        if was != now {
+            text.replace_range(span.clone(), &element_text(now));
+        }
+    }
+    let check: Layout = runity::ron::from_str(&text).ok()?;
+    (check == *layout).then_some(text)
+}
+
+/// Where each element's `( … )` is in a screen file: the groups one level
+/// inside the `elements` list, strings and comments skipped.
+fn element_spans(text: &str) -> Option<Vec<std::ops::Range<usize>>> {
+    let bytes = text.as_bytes();
+    let list = text.find("elements")?;
+    let mut i = list + text[list..].find('[')? + 1;
+    let (mut depth, mut start, mut spans) = (0usize, 0usize, Vec::new());
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += text[i + 2..].find("*/")? + 3;
+            }
+            b'(' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    spans.push(start..i + 1);
+                }
+            }
+            b']' if depth == 0 => return Some(spans),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// One element on one line, as the files are written by hand.
+fn element_text(e: &Element) -> String {
+    let kind = runity::ron::to_string(&e.kind).unwrap_or_default();
+    let size = if e.text_size == 18.0 {
+        String::new()
+    } else {
+        format!(", text_size: {}", trim(e.text_size))
+    };
+    format!(
+        "(id: {:?}, anchor: {:?}, at: ({}, {}), size: ({}, {}), kind: {kind}{size})",
+        e.id,
+        e.anchor,
+        trim(e.at.0),
+        trim(e.at.1),
+        trim(e.size.0),
+        trim(e.size.1),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_patch_keeps_comments_and_the_other_lines() {
+        let old = r#"// The main menu.
+(elements: [
+    // Big and on top.
+    (id: "title", anchor: Top, at: (0, 60), size: (600, 60), kind: Text("A (b) \"c\""), text_size: 40),
+    /* the one that starts */ (id: "play", anchor: Center, at: (0, 0), size: (240, 48), kind: Button("Play")),
+])
+"#;
+        let mut layout: Layout = runity::ron::from_str(old).unwrap();
+        layout.elements[1].at = (10.0, -4.5);
+        let new = patched(old, &layout).expect("patched in place");
+        assert!(new.contains("// The main menu."));
+        assert!(new.contains("// Big and on top."));
+        assert!(new.contains("/* the one that starts */ (id: \"play\""));
+        assert!(new.contains("at: (10, -4.5)"));
+        let title_line = old.lines().nth(3).unwrap();
+        assert!(
+            new.contains(title_line),
+            "untouched line kept byte for byte"
+        );
+        let back: Layout = runity::ron::from_str(&new).unwrap();
+        assert_eq!(back, layout);
+    }
 }

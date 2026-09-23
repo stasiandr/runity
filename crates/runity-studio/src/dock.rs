@@ -222,7 +222,7 @@ impl Docks {
         ui.restyle(root, |s| s.hidden());
     }
 
-    fn dock_of(&self, panel: Panel) -> Option<usize> {
+    pub fn dock_of(&self, panel: Panel) -> Option<usize> {
         self.docks
             .iter()
             .position(|d| d.tabs.iter().any(|(p, _)| *p == panel))
