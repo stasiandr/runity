@@ -41,11 +41,16 @@ use crate::world::SceneId;
 
 type Insert = fn(&RawValue, &mut World, hecs::Entity) -> Result<(), String>;
 type Remove = fn(&mut World, hecs::Entity);
+/// A component's value on an entity, as RON — for the ones that go over the
+/// network.
+type Write = fn(&World, hecs::Entity) -> Option<String>;
 
 /// The component types a game has, by the names scenes use for them.
 #[derive(Default, Clone)]
 pub struct Components {
     by_name: BTreeMap<String, (Insert, Remove)>,
+    /// The ones marked networked, and how to write each out.
+    networked: BTreeMap<String, Write>,
 }
 
 /// A component a scene names that could not be put on its entity.
@@ -78,6 +83,14 @@ fn insert<T: hecs::Component + DeserializeOwned>(
         .map_err(|_| "the entity is gone".to_string())
 }
 
+fn write<T: hecs::Component + serde::Serialize>(
+    world: &World,
+    entity: hecs::Entity,
+) -> Option<String> {
+    let value = world.get::<&T>(entity).ok()?;
+    ron::to_string(&*value).ok()
+}
+
 fn remove<T: hecs::Component>(world: &mut World, entity: hecs::Entity) {
     let _ = world.remove_one::<T>(entity);
 }
@@ -92,6 +105,52 @@ impl Components {
         self.by_name
             .insert(name.to_string(), (insert::<T>, remove::<T>));
         self
+    }
+
+    /// Say that `name` means `T`, and that it is networked: its value on
+    /// an entity goes to the other peers in a [`crate::net::Snapshot`]
+    /// from whoever owns the entity. The mark is the design decision — a
+    /// component is local unless it says otherwise — made while there are
+    /// still few components to make it for (DNA, postulate 4).
+    pub fn register_networked<T>(&mut self, name: &str) -> &mut Self
+    where
+        T: hecs::Component + DeserializeOwned + serde::Serialize,
+    {
+        self.register::<T>(name);
+        self.networked.insert(name.to_string(), write::<T>);
+        self
+    }
+
+    pub fn is_networked(&self, name: &str) -> bool {
+        self.networked.contains_key(name)
+    }
+
+    /// Every networked component on an entity, as `(name, RON)`.
+    pub(crate) fn write_networked(
+        &self,
+        world: &World,
+        entity: hecs::Entity,
+    ) -> Vec<(String, String)> {
+        self.networked
+            .iter()
+            .filter_map(|(name, write)| write(world, entity).map(|text| (name.clone(), text)))
+            .collect()
+    }
+
+    /// Put one component's RON onto an entity, by name.
+    pub(crate) fn insert_text(
+        &self,
+        name: &str,
+        text: &str,
+        world: &mut World,
+        entity: hecs::Entity,
+    ) -> Result<(), String> {
+        let (insert, _) = self
+            .by_name
+            .get(name)
+            .ok_or_else(|| format!("no component `{name}` registered"))?;
+        let value = RawValue::from_ron(text).map_err(|e| e.to_string())?;
+        insert(value, world, entity)
     }
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
