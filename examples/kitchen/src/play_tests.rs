@@ -668,6 +668,7 @@ impl Peer {
                 size,
                 &strings,
             );
+            front.floaters(&camera, size, &mut ui, 0.3);
         }
         r.overlay.render(&r.gpu, &r.target, &ui);
         let pixels = r.target.read_rgba(&r.gpu);
@@ -745,7 +746,7 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     k.grab(0);
     // Both stoves going for the picture: one done and steaming over its
     // flame, one burnt and smoking.
-    for (tile, food, cooked) in [(STOVE, Food::Tomato, COOK_SECONDS + 2.0), ((2.0, -3.0), Food::Onion, BURN_SECONDS + 1.0)] {
+    for (tile, food, cooked) in [(STOVE, Food::Tomato, COOK_SECONDS + 2.0), ((2.0, -3.0), Food::Onion, crate::components::pot::FIRE_SECONDS + 1.0)] {
         let stove = station_at(&k.world, tile);
         let pot = Pot {
             foods: vec![food; POT_HOLDS],
@@ -1272,4 +1273,67 @@ fn a_guest_whose_host_closes_the_kitchen_is_told_and_offered_the_menu() {
     assert_eq!(wish, None);
     let words: Vec<&str> = ui.texts.iter().map(|t| t.text.as_str()).collect();
     assert!(words.contains(&"The host closed the kitchen") && words.contains(&"Back to the menu"), "{words:?}");
+}
+
+#[test]
+fn a_burnt_pot_left_catches_fire_costs_points_and_is_scraped_out() {
+    let mut k = Peer::alone();
+    for _ in 0..3 {
+        k.chop_into_pot(0, Food::Onion);
+    }
+    k.seconds(crate::components::pot::FIRE_SECONDS + 0.2);
+    assert!(k.mark_on(STOVE, "fire"), "on fire");
+    let before = k.round().score;
+    k.seconds(2.0);
+    assert!(k.round().score <= before - 2 * crate::systems::cook::FIRE_COST, "{} from {before}", k.round().score);
+    k.stand(0, STOVE, Vec3::Z);
+    k.work(0, 0.2);
+    assert!(!k.mark_on(STOVE, "fire") && k.pot().foods.is_empty(), "scraped out");
+    let after = k.round().score;
+    k.seconds(2.0);
+    assert!(k.round().score >= after - 1, "and it costs nothing more");
+}
+
+#[test]
+fn burnt_meat_left_on_a_pan_catches_fire_and_is_scraped_off() {
+    let mut k = Peer::alone();
+    k.stand(0, MEAT, -Vec3::X);
+    k.grab(0);
+    k.stand(0, PAN, Vec3::Z);
+    k.grab(0);
+    k.seconds(crate::components::fry::FRY_FIRE + 0.3);
+    assert!(k.mark_on(PAN, "fire"));
+    k.stand(0, PAN, Vec3::Z);
+    k.work(0, 0.2);
+    assert!(!k.mark_on(PAN, "fire") && !k.mark_on(PAN, "smoke"), "the pan is clear");
+}
+
+#[test]
+fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are_lost() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let mut k = Peer::alone();
+    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let size = runity::glam::Vec2::new(1280.0, 720.0);
+    let camera = runity::scene_camera(&k.live.scene().view);
+    let mut draw = |k: &Peer, front: &mut crate::front::Front| {
+        let mut ui = runity::ui::Ui::new();
+        front.draw(&k.world, &k.party, &mut runity::widgets::Widgets::new(), &mut ui, &runity::input::Input::default(), size, &strings);
+        front.floaters(&camera, size, &mut ui, 0.1);
+        ui.texts.iter().map(|t| (t.text.clone(), t.x, t.y)).collect::<Vec<_>>()
+    };
+    draw(&k, &mut front);
+    let kitchen_e = kitchen(&k.world).unwrap().0;
+    k.world.get::<&mut Round>(kitchen_e).unwrap().score += 27;
+    let won = draw(&k, &mut front);
+    let plus = won.iter().find(|(t, ..)| t == "+27").expect("the points, up");
+    k.world.get::<&mut Round>(kitchen_e).unwrap().score -= 10;
+    let lost = draw(&k, &mut front);
+    let minus = lost.iter().find(|(t, ..)| t == "−10").expect("and down");
+    assert!(plus.2 > minus.2, "won over the window at the front, lost at the board at the back");
+    for _ in 0..20 {
+        draw(&k, &mut front);
+    }
+    assert!(!draw(&k, &mut front).iter().any(|(t, ..)| t.starts_with('+')), "and gone");
 }

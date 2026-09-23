@@ -20,6 +20,8 @@ pub const POT_HOLDS: usize = 3;
 /// Seconds for a full pot to be soup, and then to burn.
 pub const COOK_SECONDS: f32 = 6.0;
 pub const BURN_SECONDS: f32 = 14.0;
+/// Seconds after which a burnt pot left on the heat catches fire.
+pub const FIRE_SECONDS: f32 = 20.0;
 
 impl Pot {
     pub fn soup(&self) -> Option<Soup> {
@@ -37,6 +39,10 @@ impl Pot {
 
     pub fn burnt(&self) -> bool {
         self.cooked >= BURN_SECONDS
+    }
+
+    pub fn on_fire(&self) -> bool {
+        self.cooked >= FIRE_SECONDS
     }
 }
 

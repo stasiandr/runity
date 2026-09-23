@@ -9,6 +9,8 @@ pub const NETWORKED: bool = true;
 /// Seconds on the pan for a patty, and for a burnt one.
 pub const FRY_SECONDS: f32 = 5.0;
 pub const FRY_BURN: f32 = 13.0;
+/// Seconds after which burnt meat left on the pan catches fire.
+pub const FRY_FIRE: f32 = 19.0;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Fry(pub f32);
@@ -20,5 +22,9 @@ impl Fry {
 
     pub fn burnt(self) -> bool {
         self.0 >= FRY_BURN
+    }
+
+    pub fn on_fire(self) -> bool {
+        self.0 >= FRY_FIRE
     }
 }

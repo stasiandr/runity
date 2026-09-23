@@ -454,6 +454,8 @@ impl shell::Game for Game {
             front::Phase::Kitchen => !front::round_of(&self.world).is_some_and(|r| r.open),
         };
         let camera = self.flyby.camera(&self.tour, touring, ctx.time.delta(), camera);
+        let size = runity::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
+        self.front.floaters(&camera, size, &mut self.ui, ctx.time.delta());
         let started = std::time::Instant::now();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.

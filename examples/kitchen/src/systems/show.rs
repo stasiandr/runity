@@ -15,12 +15,58 @@ use crate::components::station::Kind;
 use crate::components::{Item, Player, Station};
 use crate::state::*;
 
-pub fn run(world: &mut World, _seconds: f32) {
+pub fn run(world: &mut World, seconds: f32) {
     cooks(world);
     held_by(world);
+    hops(world, seconds);
     place_items(world);
     marks(world);
     boiling(world);
+    music(world);
+}
+
+/// The last half minute of a round, the music hurries.
+fn music(world: &mut World) {
+    let hurry = world
+        .query::<&Round>()
+        .iter()
+        .next()
+        .is_some_and(|r| r.open && !r.over && r.time_left < 30.0);
+    for (_, sound) in world.query_mut::<(&crate::components::Kitchen, &mut runity::world::Sounding)>() {
+        sound.0.pitch = if hurry { 1.12 } else { 1.0 };
+    }
+}
+
+/// Seconds a hop lasts.
+const HOP: f32 = 0.22;
+
+/// An item's hop as it lands somewhere new or gets something on it:
+/// seconds of it left, and where it was and how much it carried.
+#[derive(Debug, Clone, Copy)]
+pub struct Hop {
+    left: f32,
+    was: (Place, usize),
+}
+
+/// This peer's items hop when they move to a new place or a plate gets a
+/// part (the others see it in the transforms).
+fn hops(world: &mut World, seconds: f32) {
+    let items: Vec<(Entity, Place, usize, Option<Hop>)> = world
+        .query::<(Entity, &At, Option<&Served>, Option<&Hop>)>()
+        .with::<&Owned>()
+        .iter()
+        .map(|(e, at, served, hop)| (e, at.0, served.map_or(0, |s| s.parts.len()), hop.copied()))
+        .collect();
+    for (item, place, parts, hop) in items {
+        let now = (place, parts);
+        let hop = match hop {
+            Some(h) if h.was == now => Hop { left: (h.left - seconds).max(0.0), was: now },
+            Some(_) => Hop { left: HOP, was: now },
+            // First seen: no hop for being spawned into a hand.
+            None => Hop { left: 0.0, was: now },
+        };
+        let _ = world.insert_one(item, hop);
+    }
 }
 
 /// A full pot boils, louder once it is done: the stove's own `sound`,
@@ -111,10 +157,15 @@ fn place_items(world: &mut World) {
         .collect();
     for (item, spot) in places {
         let flat = world.get::<&Chop>(item).is_ok_and(|c| c.0 >= 1.0);
+        // Squashed and back as it hops.
+        let squash = world
+            .get::<&Hop>(item)
+            .map_or(0.0, |h| (std::f32::consts::PI * (1.0 - h.left / HOP)).sin() * (h.left > 0.0) as u8 as f32);
         if let Ok(mut t) = world.get::<&mut Transform>(item) {
-            t.position = spot;
+            t.position = spot + Vec3::Y * 0.12 * squash;
             // The item's root is unscaled; chopped, it is flat.
-            t.scale.y = if flat { 0.35 } else { 1.0 };
+            let tall = if flat { 0.35 } else { 1.0 };
+            t.scale = Vec3::new(1.0 + 0.18 * squash, tall * (1.0 - 0.22 * squash), 1.0 + 0.18 * squash);
         }
     }
 }
@@ -167,6 +218,9 @@ fn marks(world: &mut World) {
                 .find(|(_, p, _)| (p.x - here.x).abs() < 0.3 && (p.z - here.z).abs() < 0.3 && p.y > here.y);
             sizzling.push((station, if frying.is_some_and(|(_, _, f)| !f.burnt()) { 0.5 } else { 0.0 }));
             if let Some((_, _, fry)) = frying {
+                if fry.on_fire() {
+                    on.push(("fire".into(), 1.0));
+                }
                 if fry.burnt() {
                     on.push(("smoke".into(), 1.0));
                 } else if fry.done() {
@@ -217,6 +271,9 @@ fn marks(world: &mut World) {
                 on.push(("steam".into(), 1.0));
             } else if pot.burnt() {
                 on.push(("smoke".into(), 1.0));
+            }
+            if pot.on_fire() {
+                on.push(("fire".into(), 1.0));
             }
         }
         let here = at.position;

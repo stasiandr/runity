@@ -94,6 +94,8 @@ pub struct Service {
     /// Seconds until each plate that went out of the window is back in
     /// the sink, dirty.
     pub returning: Vec<f32>,
+    /// Seconds of fire not yet paid for in points.
+    pub fire: f32,
 }
 
 /// An entity and everything under it, gone.

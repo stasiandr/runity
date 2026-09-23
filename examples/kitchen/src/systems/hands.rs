@@ -381,6 +381,16 @@ fn work(world: &mut World, station: Entity, seconds: f32) {
                 let _ = world.insert_one(station, Pot::default());
             }
         }
+        Some(Kind::Pan) => {
+            // Burnt meat scraped off the pan, fire and all.
+            let Some(meat) = top_of(world, station) else {
+                return;
+            };
+            if world.get::<&Fry>(meat).is_ok_and(|f| f.burnt()) {
+                let _ = world.insert_one(station, Top(None));
+                despawn_tree(world, meat);
+            }
+        }
         Some(Kind::Sink) => {
             let Ok(mut sink) = world.get::<&mut Sink>(station).map(|s| *s) else {
                 return;

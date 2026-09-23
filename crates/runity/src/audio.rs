@@ -75,6 +75,15 @@ impl Playing {
         }
     }
 
+    /// Faster and higher above 1, slower and lower below, as it plays.
+    pub fn set_pitch(&mut self, pitch: f32) {
+        let rate = kira::PlaybackRate(pitch.max(0.01) as f64);
+        match &mut self.0 {
+            Handle::Decoded(h) => h.set_playback_rate(rate, kira::Tween::default()),
+            Handle::Streamed(h) => h.set_playback_rate(rate, kira::Tween::default()),
+        }
+    }
+
     pub fn set_volume(&mut self, gain: f32) {
         let volume = gain_to_decibels(gain);
         match &mut self.0 {
@@ -341,8 +350,8 @@ impl Sources {
                 };
             match self.playing.get_mut(&entity) {
                 // Another sound while it plays: from the start. Louder,
-                // quieter, carrying further — a motion turning it — is
-                // the same sound.
+                // quieter, faster, carrying further — a motion turning it,
+                // music hurrying at the end — is the same sound.
                 Some(voice) if !same_sound(&voice.source, source) => {
                     if let Some(mut s) = voice.sound.take() {
                         s.stop();
@@ -353,6 +362,9 @@ impl Sources {
                     if let Some(s) = &mut voice.sound {
                         if source.spatial || source.volume != voice.source.volume {
                             s.set_volume(gain);
+                        }
+                        if source.pitch != voice.source.pitch {
+                            s.set_pitch(source.pitch);
                         }
                     }
                     voice.source = source.clone();
@@ -448,7 +460,6 @@ impl Sources {
 fn same_sound(a: &crate::scene::SoundSource, b: &crate::scene::SoundSource) -> bool {
     a.clip == b.clip
         && a.looped == b.looped
-        && a.pitch == b.pitch
         && a.group == b.group
         && a.spatial == b.spatial
         && a.on_start == b.on_start
