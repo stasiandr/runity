@@ -979,10 +979,8 @@ fn black() -> Color {
 /// only what it states changed, so a dozen stones are one material and a
 /// dozen colours, and changing the parent's smoothness changes them all.
 pub fn material_source(path: &Path) -> Result<MaterialSource> {
-    let merged = material_value(path, 0)?;
-    merged
-        .into_rust::<MaterialSource>()
-        .with_context(|| format!("{}", path.display()))
+    let text = material_text(path, 0)?;
+    ron::from_str(&text).with_context(|| format!("{}", path.display()))
 }
 
 /// A material seen as an instance: the parent it names, and each of its
@@ -1084,11 +1082,15 @@ pub fn material_parents(path: &Path) -> Vec<PathBuf> {
 /// shallow enough that a loop is an error and not a hang.
 const MATERIAL_DEPTH: usize = 8;
 
-fn material_value(path: &Path, depth: usize) -> Result<ron::Value> {
+/// A material's text with its parents' under it: the parent's text, each
+/// field this file states set over it in place. As text rather than as
+/// RON's generic value, which cannot hold a bare enum variant
+/// (`render_face: Both`).
+fn material_text(path: &Path, depth: usize) -> Result<String> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
     let value: ron::Value = ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
     let Some(link) = parent_link(&value) else {
-        return Ok(value);
+        return Ok(text);
     };
     anyhow::ensure!(
         depth < MATERIAL_DEPTH,
@@ -1102,18 +1104,25 @@ fn material_value(path: &Path, depth: usize) -> Result<ron::Value> {
             link.name
         )
     })?;
-    let ron::Value::Map(mut under) = material_value(&parent, depth + 1)? else {
-        anyhow::bail!("{}: not a material", parent.display());
-    };
-    let ron::Value::Map(own) = value else {
-        anyhow::bail!("{}: not a material", path.display());
-    };
-    for (key, v) in own.iter() {
-        if key != &ron::Value::String("parent".into()) {
-            under.insert(key.clone(), v.clone());
+    let mut under = material_text(&parent, depth + 1)?;
+    let open = runity::ron_edit::outer_open(&text)
+        .with_context(|| format!("{}: not a material", path.display()))?;
+    let own = runity::ron_edit::items(&text, open)
+        .with_context(|| format!("{}: not a material", path.display()))?;
+    for span in own.items {
+        let Some((key, value)) = text[span].split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key == "parent" {
+            continue;
         }
+        under =
+            runity::ron_edit::set_field(&under, key, Some(value.trim())).with_context(|| {
+                format!("{}: could not lay `{key}` over its parent", path.display())
+            })?;
     }
-    Ok(ron::Value::Map(under))
+    Ok(under)
 }
 
 /// What a material's `parent:` says, as a link.

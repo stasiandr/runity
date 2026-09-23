@@ -1819,7 +1819,7 @@ fn a_panel_floats_in_a_window_of_its_own_and_docks_back() {
     let at = |x: usize, y: usize| &pixels[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
     let surface = runity_studio::theme::SURFACE;
     assert_eq!(
-        at(200, 480),
+        at(200, 20),
         [surface.r, surface.g, surface.b],
         "the panel's card"
     );

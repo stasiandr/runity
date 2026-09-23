@@ -489,16 +489,19 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     }),
                     motor: None,
                 },
+                "SpringJoint" => Joint::Spring {
+                    to,
+                    anchor,
+                    stiffness: b.f32("m_Spring").unwrap_or(10.0),
+                    damping: b.f32("m_Damper").unwrap_or(0.2),
+                },
                 _ => {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));
                     Joint::Ball { to, anchor }
                 }
             };
-            if b.f32("m_BreakForce")
-                .is_some_and(|f| f.is_finite() && f < 1e30)
-            {
-                report.skip("a joint's break force");
-            }
+            // Unity writes an unbreakable joint's force as infinity.
+            desc.joint_break = b.f32("m_BreakForce").filter(|f| f.is_finite() && *f < 1e30);
         }
         "MonoBehaviour" => {
             let Some(script) = b.reference("m_Script") else {

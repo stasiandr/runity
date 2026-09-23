@@ -363,3 +363,18 @@ fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() 
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_material_saying_which_faces_and_what_surface_builds() {
+    let dir = temp("enums");
+    let library = dir.join("library");
+    write_material(
+        &dir,
+        &library,
+        "glass",
+        r##"(color: "#ffffff", render_face: Both, surface: Transparent, alpha: 0.4)"##,
+    );
+    let loaded = Library::open(&library).unwrap().0;
+    let glass = loaded.material_by_name("glass").expect("it built");
+    assert_eq!(glass.render_face, runity::material::RenderFace::Both);
+}

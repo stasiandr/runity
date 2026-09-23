@@ -31,7 +31,9 @@ use hecs::World;
 use rapier3d::prelude::*;
 
 use crate::scene::{Body, Collider as ColliderShape, Transform};
-use crate::world::{Jointed, Layer, Parent, Physics, Props, SceneId, Shape, WorldTransform};
+use crate::world::{
+    JointBreak, JointBroken, Jointed, Layer, Parent, Physics, Props, SceneId, Shape, WorldTransform,
+};
 
 /// Who is touching an entity's body: for a [`Body::Trigger`], what is
 /// inside it; for a solid body, what it is in contact with.
@@ -229,6 +231,10 @@ pub struct PhysicsWorld {
     bodies: RigidBodySet,
     colliders: ColliderSet,
     parameters: IntegrationParameters,
+    /// Joints broken since [`PhysicsWorld::broken`] was last asked.
+    broken: Vec<hecs::Entity>,
+    /// A body's speed when it went kinematic, for when it goes dynamic.
+    held_speed: std::collections::HashMap<RigidBodyHandle, (Vector<Real>, Vector<Real>)>,
     pipeline: PhysicsPipeline,
     islands: IslandManager,
     broad_phase: DefaultBroadPhase,
@@ -296,6 +302,8 @@ impl PhysicsWorld {
             gravity: Vec3::new(0.0, -9.81, 0.0),
             bodies: RigidBodySet::new(),
             colliders: ColliderSet::new(),
+            broken: Vec::new(),
+            held_speed: Default::default(),
             parameters,
             pipeline: PhysicsPipeline::new(),
             islands: IslandManager::new(),
@@ -346,6 +354,7 @@ impl PhysicsWorld {
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
+        let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
         for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
             world
                 .query::<(
@@ -367,6 +376,20 @@ impl PhysicsWorld {
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
+            // Dynamic ↔ kinematic keeps the body and its speed: switched in
+            // place, as Unity's isKinematic does.
+            let switch = built.body != body
+                && matches!(built.body, Body::Dynamic | Body::Kinematic)
+                && matches!(body, Body::Dynamic | Body::Kinematic)
+                && built.collider == shape.0
+                && built.mesh == mesh
+                && built.props == props
+                && built.layer == layer;
+            if switch {
+                switched.push((entity, handle.0, body));
+                live.insert(handle.0);
+                continue;
+            }
             if built.body != body
                 || built.collider != shape.0
                 || built.mesh != mesh
@@ -379,6 +402,33 @@ impl PhysicsWorld {
                 if built.local != *local {
                     teleport.push((entity, handle.0, placed.0, *local, body));
                 }
+            }
+        }
+        for (entity, handle, kind) in switched {
+            if let Some(body) = self.bodies.get_mut(handle) {
+                match kind {
+                    Body::Kinematic => {
+                        // Its speed, kept for when it is let go again.
+                        self.held_speed
+                            .insert(handle, (*body.linvel(), *body.angvel()));
+                        body.set_body_type(RigidBodyType::KinematicPositionBased, true);
+                    }
+                    _ => {
+                        body.set_body_type(RigidBodyType::Dynamic, true);
+                        // Moved while held: it goes on as it was moved. Held
+                        // still: as fast as when it was taken.
+                        let kept = self.held_speed.remove(&handle);
+                        if let Some((linear, angular)) = kept {
+                            if body.linvel().norm() < 1e-3 && body.angvel().norm() < 1e-3 {
+                                body.set_linvel(linear, true);
+                                body.set_angvel(angular, true);
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(mut built) = world.get::<&mut Built>(entity) {
+                built.body = kind;
             }
         }
         for entity in stale {
@@ -526,17 +576,23 @@ impl PhysicsWorld {
             RigidBodyHandle,
             glam::Mat4,
         )> = Vec::new();
-        for (entity, joint, body, placed, built) in world
+        let mut retune: Vec<(hecs::Entity, crate::scene::Joint)> = Vec::new();
+        for (entity, joint, body, placed, built, broken) in world
             .query::<(
                 hecs::Entity,
                 Option<&Jointed>,
                 Option<&BodyHandle>,
                 &WorldTransform,
                 Option<&JointBuilt>,
+                Option<&JointBroken>,
             )>()
             .iter()
         {
-            let wanted = joint.zip(body).map(|(joint, body)| (joint.0, body.0));
+            // Broken stays broken until the joint is set anew.
+            let wanted = joint
+                .zip(body)
+                .filter(|_| broken.is_none())
+                .map(|(joint, body)| (joint.0, body.0));
             let partner = |joint: &crate::scene::Joint| -> Option<RigidBodyHandle> {
                 match joint.to() {
                     Some(to) if !to.is_unassigned() => bodies_by_id.get(&to).copied(),
@@ -553,10 +609,30 @@ impl PhysicsWorld {
                 if still {
                     continue;
                 }
+                // Only its drive or its limits changed — a spring's target
+                // moved while the game runs: tuned where it is, not built
+                // again from where the bodies stand now.
+                let tuned = wanted.is_some_and(|(joint, body)| {
+                    same_but_drive(&joint, &built.joint)
+                        && body == built.bodies.1
+                        && self.impulse_joints.get(built.handle).is_some()
+                });
+                if let (true, Some((joint, _))) = (tuned, wanted) {
+                    retune.push((entity, joint));
+                    continue;
+                }
                 drop.push(entity);
             }
             if let Some((joint, body)) = wanted {
                 build.push((entity, joint, body, placed.0));
+            }
+        }
+        for (entity, joint) in retune {
+            if let Ok(mut built) = world.get::<&mut JointBuilt>(entity) {
+                if let Some(rapier) = self.impulse_joints.get_mut(built.handle, true) {
+                    drive(&mut rapier.data, &joint);
+                }
+                built.joint = joint;
             }
         }
         for entity in drop {
@@ -647,8 +723,43 @@ impl PhysicsWorld {
     pub fn run(&mut self, world: &mut World) {
         self.sync_from_world(world);
         self.step();
+        self.break_joints(world);
         self.sync_to_world(world);
         self.update_contacts(world);
+    }
+
+    /// Break every joint pulled harder than its `joint_break` this step:
+    /// the joint goes, the entity is marked [`JointBroken`], and
+    /// [`PhysicsWorld::broken`] says which. Part of [`PhysicsWorld::run`].
+    pub fn break_joints(&mut self, world: &mut World) {
+        let dt = self.parameters.dt.max(1e-6);
+        let mut snapped = Vec::new();
+        for (entity, built, limit) in world
+            .query::<(hecs::Entity, &JointBuilt, &JointBreak)>()
+            .iter()
+        {
+            let Some(joint) = self.impulse_joints.get(built.handle) else {
+                continue;
+            };
+            let i = joint.impulses;
+            let force = (i[0] * i[0] + i[1] * i[1] + i[2] * i[2]).sqrt() / dt;
+            if force > limit.0 {
+                snapped.push(entity);
+            }
+        }
+        for entity in snapped {
+            if let Ok(built) = world.remove_one::<JointBuilt>(entity) {
+                self.impulse_joints.remove(built.handle, true);
+            }
+            let _ = world.insert_one(entity, JointBroken);
+            self.broken.push(entity);
+        }
+    }
+
+    /// The entities whose joints broke since this was last asked: Unity's
+    /// `OnJointBreak`, as a list.
+    pub fn broken(&mut self) -> Vec<hecs::Entity> {
+        std::mem::take(&mut self.broken)
     }
 
     /// Take one step. Call it once per simulation step, never per frame.
@@ -1074,6 +1185,88 @@ fn groups(layers: &crate::layers::Layers, name: &str) -> InteractionGroups {
     )
 }
 
+/// Whether two joints differ at most in what drives them — a motor, a
+/// spring's strength, limits — and are the same joint otherwise.
+fn same_but_drive(a: &crate::scene::Joint, b: &crate::scene::Joint) -> bool {
+    use crate::scene::Joint;
+    match (*a, *b) {
+        (
+            Joint::Hinge {
+                to, anchor, axis, ..
+            },
+            Joint::Hinge {
+                to: t,
+                anchor: n,
+                axis: x,
+                ..
+            },
+        ) => to == t && anchor == n && axis == x,
+        (Joint::Slider { to, axis, .. }, Joint::Slider { to: t, axis: x, .. }) => {
+            to == t && axis == x
+        }
+        (
+            Joint::Spring { to, anchor, .. },
+            Joint::Spring {
+                to: t, anchor: n, ..
+            },
+        ) => to == t && anchor == n,
+        _ => false,
+    }
+}
+
+/// Set what drives a built joint to what the scene now says.
+fn drive(data: &mut GenericJoint, joint: &crate::scene::Joint) {
+    use crate::scene::Joint;
+    match *joint {
+        Joint::Hinge {
+            limits_deg, motor, ..
+        } => {
+            if let Some((low, high)) = limits_deg {
+                data.set_limits(JointAxis::AngX, [low.to_radians(), high.to_radians()]);
+            }
+            set_motor(data, JointAxis::AngX, motor, 1f32.to_radians());
+        }
+        Joint::Slider { limits, motor, .. } => {
+            if let Some((low, high)) = limits {
+                data.set_limits(JointAxis::LinX, [low, high]);
+            }
+            set_motor(data, JointAxis::LinX, motor, 1.0);
+        }
+        Joint::Spring {
+            stiffness, damping, ..
+        } => {
+            for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
+                data.set_motor_position(axis, 0.0, stiffness.max(0.0), damping.max(0.0));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn set_motor(
+    data: &mut GenericJoint,
+    axis: JointAxis,
+    motor: Option<crate::scene::Motor>,
+    unit: f32,
+) {
+    match motor {
+        Some(motor) => {
+            let strength = motor.strength.max(0.0);
+            match motor.hold {
+                Some(hold) => {
+                    data.set_motor_position(axis, hold * unit, strength, strength * 0.2);
+                }
+                None => {
+                    data.set_motor_velocity(axis, motor.speed * unit, strength);
+                }
+            }
+        }
+        None => {
+            data.set_motor_velocity(axis, 0.0, 0.0);
+        }
+    }
+}
+
 /// A scene joint as rapier's, between a body at `one` and the jointed body
 /// at `two`, from where the jointed entity stands now.
 ///
@@ -1094,7 +1287,7 @@ fn joint_data(
         Joint::None => return None,
         Joint::Fixed { .. } => (Vec3::ZERO, Vec3::X),
         Joint::Hinge { anchor, axis, .. } => (anchor, axis),
-        Joint::Ball { anchor, .. } => (anchor, Vec3::X),
+        Joint::Ball { anchor, .. } | Joint::Spring { anchor, .. } => (anchor, Vec3::X),
         Joint::Slider { axis, .. } => (Vec3::ZERO, axis),
     };
     let at = placed.transform_point3(anchor);
@@ -1112,6 +1305,8 @@ fn joint_data(
         Joint::Hinge { .. } => JointAxesMask::LOCKED_REVOLUTE_AXES,
         Joint::Ball { .. } => JointAxesMask::LOCKED_SPHERICAL_AXES,
         Joint::Slider { .. } => JointAxesMask::LOCKED_PRISMATIC_AXES,
+        // Nothing locked: the spring's motors do the holding.
+        Joint::Spring { .. } => JointAxesMask::empty(),
         Joint::None => return None,
     };
     let mut builder = GenericJointBuilder::new(locked)
@@ -1144,6 +1339,14 @@ fn joint_data(
             Some(hold) => builder.motor_position(axis, hold * unit, strength, strength * 0.2),
             None => builder.motor_velocity(axis, motor.speed * unit, strength),
         };
+    }
+    if let Joint::Spring {
+        stiffness, damping, ..
+    } = *joint
+    {
+        for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
+            builder = builder.motor_position(axis, 0.0, stiffness.max(0.0), damping.max(0.0));
+        }
     }
     Some(builder.build())
 }
@@ -1279,6 +1482,7 @@ mod tests {
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
+            joint_break: None,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1369,6 +1573,7 @@ mod tests {
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
+                joint_break: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -2036,6 +2241,125 @@ mod tests {
         run_for(&mut physics, &mut world, 1);
         assert!(world.get::<&JointBuilt>(tail).is_err());
         assert_eq!(physics.impulse_joints.len(), 0);
+    }
+
+    #[test]
+    fn a_joint_pulled_past_its_break_force_breaks_once_and_says_so() {
+        // A heavy block hanging from the world on a weak fixed joint.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000c1", name: "block", model: "m", body: Dynamic,
+                 collider: Box(half: (0.5, 0.5, 0.5)), physics: (density: 50.0),
+                 transform: (position: (0.0, 4.0, 0.0)),
+                 joint: Fixed(), joint_break: 100.0),
+            ])"#,
+        );
+        let block = by_id(&world, scene.entities[0].id);
+        run_for(&mut physics, &mut world, 30);
+        assert!(
+            world.get::<&JointBroken>(block).is_ok(),
+            "held more than 100 N"
+        );
+        assert_eq!(physics.broken(), vec![block]);
+        assert!(physics.broken().is_empty(), "said once");
+        let y = world.get::<&WorldTransform>(block).unwrap().0.w_axis.y;
+        run_for(&mut physics, &mut world, 30);
+        let fallen = world.get::<&WorldTransform>(block).unwrap().0.w_axis.y;
+        assert!(fallen < y - 0.5, "and it falls: {y} -> {fallen}");
+        assert_eq!(physics.impulse_joints.len(), 0, "not built again");
+    }
+
+    #[test]
+    fn a_spring_pulls_a_body_back_and_its_drive_changes_in_place() {
+        // A ball on a spring to the world, pulled sideways by its start.
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000d1", name: "ball", model: "m", body: Dynamic,
+                 collider: Sphere(radius: 0.25), physics: (gravity: 0.0),
+                 transform: (position: (0.0, 2.0, 0.0)),
+                 joint: Spring(stiffness: 40.0, damping: 4.0)),
+            ])"#,
+        );
+        let ball = by_id(&world, scene.entities[0].id);
+        run_for(&mut physics, &mut world, 2);
+        physics.set_velocity(&world, ball, Vec3::new(4.0, 0.0, 0.0));
+        run_for(&mut physics, &mut world, 120);
+        let at = world
+            .get::<&WorldTransform>(ball)
+            .unwrap()
+            .0
+            .w_axis
+            .truncate();
+        assert!(
+            (at - Vec3::new(0.0, 2.0, 0.0)).length() < 0.2,
+            "pulled back: {at:?}"
+        );
+
+        // Stiffer while the game runs: the same joint, tuned where it is.
+        let handle = world.get::<&JointBuilt>(ball).unwrap().handle;
+        world.get::<&mut Jointed>(ball).unwrap().0 = crate::scene::Joint::Spring {
+            to: crate::id::EntityId::UNASSIGNED,
+            anchor: Vec3::ZERO,
+            stiffness: 400.0,
+            damping: 20.0,
+        };
+        run_for(&mut physics, &mut world, 1);
+        assert_eq!(
+            world.get::<&JointBuilt>(ball).unwrap().handle,
+            handle,
+            "not rebuilt"
+        );
+    }
+
+    #[test]
+    fn going_kinematic_and_back_keeps_the_body_and_its_speed() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (id: "00000000000000f1", name: "crate", model: "m", body: Dynamic,
+                 collider: Box(half: (0.5, 0.5, 0.5)), physics: (gravity: 0.0),
+                 transform: (position: (0.0, 2.0, 0.0))),
+            ])"#,
+        );
+        let crate_ = by_id(&world, scene.entities[0].id);
+        run_for(&mut physics, &mut world, 1);
+        physics.set_velocity(&world, crate_, Vec3::new(3.0, 0.0, 0.0));
+        let handle = *world.get::<&BodyHandle>(crate_).unwrap();
+        world.get::<&mut Physics>(crate_).unwrap().0 = Body::Kinematic;
+        run_for(&mut physics, &mut world, 1);
+        assert_eq!(
+            *world.get::<&BodyHandle>(crate_).unwrap(),
+            handle,
+            "the same body"
+        );
+        world.get::<&mut Physics>(crate_).unwrap().0 = Body::Dynamic;
+        run_for(&mut physics, &mut world, 1);
+        assert_eq!(*world.get::<&BodyHandle>(crate_).unwrap(), handle);
+        let speed = physics.velocity(&world, crate_).unwrap();
+        assert!(speed.x > 2.5, "still moving: {speed:?}");
+    }
+
+    #[test]
+    fn two_physics_worlds_in_one_process_do_not_touch() {
+        let text = r#"(entities: [
+            (id: "00000000000000a9", name: "ball", model: "m", body: Dynamic,
+             collider: Sphere(radius: 0.5), transform: (position: (0.0, 5.0, 0.0))),
+        ])"#;
+        let (mut one, mut first, scene) = scene_world(text);
+        let (mut two, mut second, _) = scene_world(text);
+        let (a, b) = (
+            by_id(&first, scene.entities[0].id),
+            by_id(&second, scene.entities[0].id),
+        );
+        run_for(&mut one, &mut first, 60);
+        let fell = first.get::<&WorldTransform>(a).unwrap().0.w_axis.y;
+        let still = second.get::<&WorldTransform>(b).unwrap().0.w_axis.y;
+        assert!(fell < 4.0 && (still - 5.0).abs() < 1e-4, "{fell} {still}");
+        run_for(&mut two, &mut second, 60);
+        let same = second.get::<&WorldTransform>(b).unwrap().0.w_axis.y;
+        assert!(
+            (same - fell).abs() < 1e-4,
+            "the same fall, deterministic: {fell} {same}"
+        );
     }
 
     #[test]

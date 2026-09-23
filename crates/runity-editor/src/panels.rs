@@ -51,7 +51,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "joint" => ron(&blank.joint),
         "layer" => String::new(),
         "camera" | "light" | "particles" | "reflection_probe" | "decal" | "route" | "spline"
-        | "along" => "None".into(),
+        | "along" | "joint_break" => "None".into(),
         _ => return None,
     })
 }
@@ -285,6 +285,10 @@ impl Session {
             ("physics".into(), ron(&desc.physics)),
             ("layer".into(), desc.layer.clone()),
             ("joint".into(), ron(&desc.joint)),
+            (
+                "joint_break".into(),
+                desc.joint_break.map_or("None".to_string(), |f| ron(&f)),
+            ),
             (
                 "camera".into(),
                 desc.camera.map_or("None".to_string(), |c| ron(&c)),
@@ -635,6 +639,13 @@ impl Session {
             "collider" => next.collider = parse::<Collider>(field, text)?,
             "physics" => next.physics = parse::<BodyProps>(field, text)?,
             "joint" => next.joint = parse::<Joint>(field, text)?,
+            "joint_break" => {
+                next.joint_break = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<f32>(field, text)?)
+                }
+            }
             "camera" => {
                 next.camera = if text.trim() == "None" {
                     None

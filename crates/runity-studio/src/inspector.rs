@@ -31,7 +31,7 @@ use crate::theme::*;
 
 const OBJECT: [&str; 4] = ["model", "material", "prefab", "layer"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
-const PHYSICS: [&str; 4] = ["body", "collider", "physics", "joint"];
+const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
 const PARTS: [&str; 8] = [
     "camera",
     "light",

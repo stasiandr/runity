@@ -95,6 +95,15 @@ pub struct Props(pub crate::scene::BodyProps);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Jointed(pub crate::scene::Joint);
 
+/// How hard its joint may be pulled before it breaks, in newtons.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct JointBreak(pub f32);
+
+/// Its joint broke: it is not built again until the entity's joint is set
+/// anew (remove this to mend it).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct JointBroken;
+
 /// The shape physics sees, kept from the scene.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape(pub crate::scene::Collider);
@@ -248,6 +257,9 @@ fn spawn_one(
     }
     if !desc.joint.is_none() {
         let _ = world.insert_one(entity, Jointed(desc.joint));
+    }
+    if let Some(force) = desc.joint_break {
+        let _ = world.insert_one(entity, JointBreak(force));
     }
     if !desc.physics.is_default() {
         let _ = world.insert_one(entity, Props(desc.physics));
@@ -607,6 +619,19 @@ impl Patch<'_> {
                 let _ = world.remove_one::<Jointed>(entity);
             } else {
                 let _ = world.insert_one(entity, Jointed(desc.joint));
+            }
+            // A joint set anew is whole again.
+            let _ = world.remove_one::<JointBroken>(entity);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.joint_break != desc.joint_break) {
+            match desc.joint_break {
+                Some(force) => {
+                    let _ = world.insert_one(entity, JointBreak(force));
+                }
+                None => {
+                    let _ = world.remove_one::<JointBreak>(entity);
+                }
             }
             changed = true;
         }
@@ -1017,6 +1042,7 @@ mod tests {
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
+            joint_break: None,
             overrides: Default::default(),
             components: Default::default(),
             id: Default::default(),
@@ -1048,6 +1074,7 @@ mod tests {
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
+                    joint_break: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),

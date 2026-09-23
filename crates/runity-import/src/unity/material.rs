@@ -55,22 +55,28 @@ const MAPS: [(&str, &str); 5] = [
     ("_MaskMap", "mask_map"),
 ];
 
-/// The textures every material uses: what is worth copying.
-pub fn textures_used(unity: &Unity) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
+/// The textures every material uses — what is worth copying — and which
+/// of them are only ever data (a normal map, a mask), never colour.
+pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut used = BTreeSet::new();
+    let mut colour = BTreeSet::new();
     for (_, path) in unity.of_kind("material") {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
         for doc in yaml::documents(&text) {
-            for (slot, _) in MAPS {
+            for (slot, field) in MAPS {
                 if let Some((guid, _)) = texture(&doc.body, slot) {
-                    out.insert(guid);
+                    if matches!(field, "base_map" | "emission_map") {
+                        colour.insert(guid.clone());
+                    }
+                    used.insert(guid);
                 }
             }
         }
     }
-    out
+    let data = used.difference(&colour).cloned().collect();
+    (used, data)
 }
 
 fn hex(c: [f32; 4]) -> String {

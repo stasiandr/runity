@@ -173,7 +173,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
 
     // Textures first, and only those materials use: a project's Assets/
     // holds many a picture nothing draws.
-    let used = material::textures_used(&unity);
+    let (used, data_only) = material::textures_used(&unity);
     let textures = project.assets().join("textures");
     for guid in &used {
         let (Some(path), Some(name)) = (unity.guids.get(guid), unity.names.get(guid)) else {
@@ -191,8 +191,26 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         let to = textures.join(format!("{name}.{extension}"));
         if let Err(e) = std::fs::copy(path, &to) {
             report.errors.push(format!("{}: {e}", path.display()));
-        } else {
-            report.textures += 1;
+            continue;
+        }
+        report.textures += 1;
+        // Data, not colour — a normal map, a mask — as Unity's importer
+        // said, or as every material using it uses it: not decoded from
+        // sRGB.
+        let unity_meta = std::fs::read_to_string(meta_of(path)).unwrap_or_default();
+        let data = data_only.contains(guid)
+            || unity_meta.lines().any(|l| {
+                let l = l.trim();
+                l == "sRGBTexture: 0" || l == "textureType: 1"
+            });
+        if data {
+            let mut settings = crate::ImportSettings::for_source(
+                project
+                    .relative(&to)
+                    .unwrap_or_else(|| to.to_string_lossy().into_owned()),
+            );
+            settings.srgb = false;
+            let _ = settings.save(crate::sidecar_for(&to));
         }
     }
 
@@ -275,8 +293,11 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
         .unwrap_or_else(|| PathBuf::from("blender"));
     let out = project.assets().join("models");
     let _ = std::fs::create_dir_all(&out);
-    for (guid, path) in unity.of_kind("model") {
+    let all = unity.of_kind("model");
+    let count = all.len();
+    for (i, (guid, path)) in all.into_iter().enumerate() {
         let name = &unity.names[guid];
+        eprintln!("model {}/{count} {name}", i + 1);
         let to = out.join(format!("{name}.glb"));
         let extension = path
             .extension()
@@ -290,10 +311,19 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
             }
             continue;
         }
+        // Unity takes an FBX in by mirroring X; the scene comes over by
+        // mirroring Z (docs/unity-import.md). Between the two the model is
+        // turned half a turn about up: done here, under a parent the
+        // glTF importer bakes into the mesh.
         let script = format!(
-            "import bpy\n\
+            "import bpy, math\n\
              bpy.ops.wm.read_factory_settings(use_empty=True)\n\
              bpy.ops.import_scene.fbx(filepath={:?})\n\
+             roots = [o for o in bpy.context.scene.objects if o.parent is None]\n\
+             turn = bpy.data.objects.new('unity_turn', None)\n\
+             bpy.context.scene.collection.objects.link(turn)\n\
+             for o in roots: o.parent = turn\n\
+             turn.rotation_euler[2] = math.pi\n\
              bpy.ops.export_scene.gltf(filepath={:?}, export_format='GLB', export_animations=True)\n",
             path.to_string_lossy(),
             to.to_string_lossy()

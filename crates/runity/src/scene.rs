@@ -159,6 +159,19 @@ pub enum Joint {
         #[serde(default)]
         anchor: Vec3,
     },
+    /// Pulls its anchor toward the other body's, like a rubber band:
+    /// Unity's SpringJoint. `stiffness` is how hard, `damping` how fast the
+    /// bounce dies. Free to turn and to move otherwise.
+    Spring {
+        #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+        to: EntityId,
+        #[serde(default)]
+        anchor: Vec3,
+        #[serde(default = "spring_stiffness")]
+        stiffness: f32,
+        #[serde(default = "spring_damping")]
+        damping: f32,
+    },
     /// Slides along one axis, within limits in metres if given.
     Slider {
         #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
@@ -198,6 +211,14 @@ fn up() -> Vec3 {
     Vec3::Y
 }
 
+fn spring_stiffness() -> f32 {
+    50.0
+}
+
+fn spring_damping() -> f32 {
+    5.0
+}
+
 impl Joint {
     pub fn is_none(&self) -> bool {
         *self == Joint::None
@@ -210,6 +231,7 @@ impl Joint {
             Joint::Fixed { to }
             | Joint::Hinge { to, .. }
             | Joint::Ball { to, .. }
+            | Joint::Spring { to, .. }
             | Joint::Slider { to, .. } => Some(to),
         }
     }
@@ -221,6 +243,7 @@ impl Joint {
             Joint::Fixed { to }
             | Joint::Hinge { to, .. }
             | Joint::Ball { to, .. }
+            | Joint::Spring { to, .. }
             | Joint::Slider { to, .. } => *to = other,
         }
         self
@@ -676,6 +699,11 @@ pub struct EntityDesc {
     /// What holds this body to another; see [`Joint`].
     #[serde(default, skip_serializing_if = "Joint::is_none")]
     pub joint: Joint,
+    /// The joint breaks when pulled harder than this many newtons: Unity's
+    /// Break Force. What broke is marked, and a game hears of it
+    /// (`PhysicsWorld::broken`).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub joint_break: Option<f32>,
     /// The game's own components, by the name the game registered each
     /// under (see [`crate::components`]), each value in RON:
     ///
@@ -1508,6 +1536,7 @@ mod tests {
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
+                joint_break: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
@@ -1537,6 +1566,7 @@ mod tests {
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
+                    joint_break: None,
                     overrides: Default::default(),
                     components: Default::default(),
                     id: Default::default(),
@@ -1592,6 +1622,7 @@ mod tests {
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
+                joint_break: None,
                 overrides: Default::default(),
                 components: Default::default(),
                 id: Default::default(),
