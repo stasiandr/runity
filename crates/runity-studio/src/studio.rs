@@ -156,6 +156,9 @@ pub struct Studio {
     snap: NodeId,
     colliders_button: NodeId,
     sculpt_button: NodeId,
+    /// When the last event came in: the window draws at full rate for a
+    /// while after one.
+    last_input: Instant,
     /// Which of the Hierarchy, the Inspector and the lower panel show, and
     /// whether the view has the whole window.
     panels: [bool; 3],
@@ -363,6 +366,7 @@ impl Studio {
             sculpt_button: sculpt,
             sculpt: false,
             panels: [true; 3],
+            last_input: Instant::now(),
             maximized: false,
             stroke: None,
             tooltip: None,
@@ -401,6 +405,20 @@ impl Studio {
         studio.restore_layout();
         studio.refresh();
         studio
+    }
+
+    /// Whether the next frame should come soon: something is moving, the
+    /// person is doing something, or the UI has changes to show. When not,
+    /// the window can wait — an editor left open on a scene draws a few
+    /// frames a second instead of a hundred.
+    pub fn wants_frame(&self) -> bool {
+        self.last_input.elapsed().as_secs_f32() < 1.0
+            || self.ui.is_dirty()
+            || self.session.is_playing()
+            || self.session.is_dragging()
+            || self.stroke.is_some()
+            || self.job.is_some()
+            || !self.scene_buttons.is_empty()
     }
 
     /// What the pointer should look like where it is: an I-beam over a
@@ -453,6 +471,7 @@ impl Studio {
 
     /// One event from the window, in logical pixels.
     pub fn handle(&mut self, event: &InputEvent) {
+        self.last_input = Instant::now();
         self.ui.handle(event);
         let over_view = self.popup.is_none() && self.ui.hovered() == Some(self.viewport);
         let typing = self.ui.focused().is_some_and(|f| self.ui.is_field(f));

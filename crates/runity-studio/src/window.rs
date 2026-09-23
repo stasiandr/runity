@@ -41,6 +41,9 @@ struct App {
     next: Instant,
 }
 
+/// How much longer an idle frame waits: four a second.
+const IDLE: Duration = Duration::from_millis(242);
+
 /// The most frames a second the editor draws.
 const FRAME: Duration = Duration::from_micros(1_000_000 / 120);
 
@@ -49,11 +52,18 @@ impl ApplicationHandler for App {
         let Some(run) = self.running.as_ref() else {
             return;
         };
-        if Instant::now() >= self.next {
+        // Idle, a few frames a second: the disk is still watched and
+        // emitters still play, but nothing burns a core for a still scene.
+        let due = if run.studio.wants_frame() {
+            self.next
+        } else {
+            self.next + IDLE
+        };
+        if Instant::now() >= due {
             run.window.request_redraw();
             event_loop.set_control_flow(ControlFlow::Wait);
         } else {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(self.next));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(due));
         }
     }
 
