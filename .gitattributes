@@ -6,3 +6,4 @@
 # `cargo run -p runity-cli -- git-setup examples/valley` turns the driver on.
 examples/valley/scenes/**/*.ron merge=runity
 examples/valley/prefabs/**/*.prefab merge=runity
+examples/kitchen/** !text !filter !merge !diff
