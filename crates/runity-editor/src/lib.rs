@@ -1639,6 +1639,44 @@ impl Session {
         Ok(true)
     }
 
+    /// Play with the game's own code: save the open scene and give the
+    /// command that runs the game on it (`cargo run` in the project, the
+    /// scene named by `RUNITY_SCENE`) for the window to start. The game
+    /// opens its own window — the viewport stays the editor's, DNA open
+    /// question 1 untouched — and keeps up with the scene as it is edited
+    /// and saved, as every running game does. The editor's own
+    /// [`Session::play`] simulates physics in place without the game.
+    pub fn game_command(&mut self) -> EditResult<std::process::Command> {
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        if !project.root().join("Cargo.toml").is_file() {
+            return Err(EditError::Scene(format!(
+                "{} has no game crate to run",
+                project.root().display()
+            )));
+        }
+        let path = self.scene_path.clone().ok_or(EditError::NoPath)?;
+        if !path.starts_with(project.scenes()) || is_prefab(Some(&path)) {
+            return Err(EditError::Scene(
+                "the game plays scenes from scenes/; open one to play it".into(),
+            ));
+        }
+        self.save_scene(None)?;
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut command = std::process::Command::new("cargo");
+        command
+            .arg("run")
+            .current_dir(project.root())
+            .env("RUNITY_SCENE", &name);
+        self.say(
+            console::Level::Info,
+            format!("playing scenes/{name}.ron in the game"),
+        );
+        Ok(command)
+    }
+
     /// File → New Scene: make `scenes/NAME.ron` in the open project — a
     /// ground to stand on — and open it. What was open is not saved first;
     /// save it before, as Unity asks.

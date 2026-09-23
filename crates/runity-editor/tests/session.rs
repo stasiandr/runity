@@ -3479,3 +3479,27 @@ fn the_inspector_knows_a_game_component_by_what_the_game_wrote_down() {
         .to_string();
     assert!(e.contains("did you mean `door`?"), "{e}");
 }
+
+#[test]
+fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
+    let Some((mut session, path)) = open("game-command") else {
+        return;
+    };
+    session
+        .set_field(id(&session, "crate"), "name", "box")
+        .unwrap();
+    let command = session.game_command().unwrap();
+    assert!(
+        std::fs::read_to_string(&path).unwrap().contains("\"box\""),
+        "saved first"
+    );
+    assert_eq!(command.get_program(), "cargo");
+    assert_eq!(command.get_args().collect::<Vec<_>>(), ["run"]);
+    assert_eq!(command.get_current_dir(), Some(root_of(&path).as_path()));
+    let scene = command
+        .get_envs()
+        .find(|(k, _)| *k == "RUNITY_SCENE")
+        .and_then(|(_, v)| v)
+        .unwrap();
+    assert_eq!(scene, "scene");
+}

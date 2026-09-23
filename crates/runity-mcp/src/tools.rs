@@ -690,7 +690,8 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 let shapes = session.component_shapes();
                 if shapes.is_empty() {
                     return Ok(vec![text(
-                        "no library/components.ron yet: run the game or `runity test` once".to_string(),
+                        "no library/components.ron yet: run the game or `runity test` once"
+                            .to_string(),
                     )]);
                 }
                 let mut out = String::new();
