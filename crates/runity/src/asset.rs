@@ -422,6 +422,18 @@ pub fn kind_of(bytes: &[u8]) -> Result<AssetKind, AssetError> {
     AssetKind::from_byte(bytes[12]).ok_or(AssetError::UnknownKind(bytes[12]))
 }
 
+/// Whether the `.rasset` at `path` was written in this build's format: its
+/// sixteen header bytes alone are read. A library built before a format
+/// change is out of date even though no source changed.
+pub fn is_current(path: impl AsRef<Path>) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; HEADER];
+    std::fs::File::open(path.as_ref())
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok()
+        && split_header(&header).is_ok()
+}
+
 /// Check the header and hand back the body, without touching it.
 ///
 /// Split out so that a caller who has mapped a file can validate the first

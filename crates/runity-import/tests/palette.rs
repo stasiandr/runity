@@ -300,3 +300,32 @@ fn touch_forward(path: &Path) {
     let file = std::fs::File::options().write(true).open(path).unwrap();
     file.set_modified(later).unwrap();
 }
+
+#[test]
+fn a_library_from_an_older_format_is_rebuilt_by_sync() {
+    // No source changed, but the build that reads the library did: sync
+    // decides by content hash, and it must still see that the asset on disk
+    // is one this build refuses to read.
+    let root = temp("outdated");
+    std::fs::remove_dir_all(&root).unwrap();
+    let project = runity::Project::create(&root, "outdated").unwrap();
+    let source = project.materials().join("clay.rmat");
+    std::fs::write(&source, r##"(color: "#8a5a3c")"##).unwrap();
+    runity_import::import_into(&project, &source, None).unwrap();
+    let asset = runity_import::asset_for(&source, &project.library());
+    assert!(runity::asset::is_current(&asset));
+    assert!(runity_import::sync(&project).is_empty(), "nothing to do");
+
+    // As a build one format older would have written it.
+    let mut bytes = std::fs::read(&asset).unwrap();
+    let old = runity::asset::FORMAT_VERSION - 1;
+    bytes[8..12].copy_from_slice(&old.to_le_bytes());
+    std::fs::write(&asset, &bytes).unwrap();
+    assert!(!runity::asset::is_current(&asset));
+
+    let done = runity_import::sync(&project);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].change, runity_import::Change::Outdated);
+    assert!(done[0].result.is_ok(), "{:?}", done[0].result);
+    assert!(runity::asset::is_current(&asset));
+}

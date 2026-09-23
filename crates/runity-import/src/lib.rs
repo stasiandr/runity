@@ -1180,6 +1180,9 @@ pub enum Change {
     Changed,
     /// Its asset was missing from the library and has been built.
     Built,
+    /// Its asset was written by an older build's format and has been built
+    /// again.
+    Outdated,
     /// The sidecar's source was gone and the same contents turned up
     /// elsewhere: the sidecar followed, with its settings and its asset's ID.
     Moved { from: String },
@@ -1261,6 +1264,8 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         let asset = asset_for(&source, &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
+        } else if !runity::asset::is_current(&asset) {
+            Some(Change::Outdated)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
             // The clock says maybe; the hash decides.
             match content_hash(&source) {
