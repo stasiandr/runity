@@ -112,6 +112,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "problems",
         "push_face",
         "array",
+        "edits",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

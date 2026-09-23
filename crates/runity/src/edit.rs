@@ -101,6 +101,14 @@ impl History {
         self.past.last().map(|before| describe(before, &self.scene))
     }
 
+    /// Every step that can be undone, oldest first, in words — Unity's Undo
+    /// History window. Read off the states, like the undo label.
+    pub fn steps(&self) -> Vec<String> {
+        let mut states: Vec<&Scene> = self.past.iter().collect();
+        states.push(&self.scene);
+        states.windows(2).map(|w| describe(w[0], w[1])).collect()
+    }
+
     /// What redo would put back, in words.
     pub fn redo_description(&self) -> Option<String> {
         self.future.last().map(|after| describe(&self.scene, after))
@@ -858,6 +866,25 @@ pub fn push_face(
     out.position += transform.rotation() * along;
     out.scale = new_scale;
     Some(out)
+}
+
+#[cfg(test)]
+mod steps_tests {
+    use super::*;
+
+    #[test]
+    fn the_history_lists_every_step_in_words() {
+        let mut scene: Scene =
+            ron::from_str(r#"(entities: [(name: "crate", model: "builtin:cube")])"#).unwrap();
+        scene.assign_ids();
+        let id = scene.entities[0].id;
+        let mut history = History::new(scene, 10);
+        history.edit().get_mut(id).unwrap().transform.position.x = 2.0;
+        history.edit().get_mut(id).unwrap().name = "box".into();
+        assert_eq!(history.steps(), ["move `crate`", "rename `crate` to `box`"]);
+        history.undo();
+        assert_eq!(history.steps(), ["move `crate`"]);
+    }
 }
 
 #[cfg(test)]

@@ -117,6 +117,7 @@ pub fn list() -> Vec<Value> {
         tool("apply_overrides", "Write a prefab instance's overrides into the prefab file, so every instance gets them, and clear them from this instance.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("revert_overrides", "Drop a prefab instance's overrides: it is the prefab again. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("undo", "Take back the last edit; says what it was (\"move `crate`\").", json!({}), &[]),
+        tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
@@ -518,6 +519,19 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 (true, Some(what)) => format!("undone: {what}"),
                 (true, None) => "undone".into(),
                 (false, _) => "nothing to undo".into(),
+            })])
+        }
+        "edits" => {
+            let steps = server.session()?.undo_steps();
+            Ok(vec![text(if steps.is_empty() {
+                "no edits yet".to_string()
+            } else {
+                steps
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. {s}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })])
         }
         "redo" => {

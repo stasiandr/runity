@@ -1450,6 +1450,11 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// Every step undo can take back, oldest first, in words.
+    pub fn undo_steps(&self) -> Vec<String> {
+        self.history.steps()
+    }
+
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
     }
