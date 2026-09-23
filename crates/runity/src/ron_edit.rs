@@ -398,3 +398,18 @@ mod tests {
         );
     }
 }
+#[cfg(test)]
+mod dbg_tmp {
+    #[test]
+    fn dbg() {
+        let t =
+            "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n)\n";
+        let out = super::set_field(t, "any", Some("[\n        (to: \"a\"),\n    ]")).unwrap();
+        eprintln!("OUT<<{out}>>");
+        let found = super::items(t, super::outer_open(t).unwrap()).unwrap();
+        for r in &found.items {
+            eprintln!("ITEM<<{}>>", &t[r.clone()]);
+        }
+        panic!();
+    }
+}

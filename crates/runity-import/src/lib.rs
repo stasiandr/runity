@@ -27,6 +27,7 @@
 pub mod assets;
 pub mod poly;
 pub mod terrain;
+pub mod unity;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};

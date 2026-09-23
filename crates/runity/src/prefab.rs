@@ -318,6 +318,28 @@ fn expand(
             expanded.joint = expanded.joint.with_to(instance.within(to));
         }
     }
+    // So does a component's link to another part: a door's hinge in the
+    // prefab is this door's hinge in the scene, as Unity rewrites a
+    // prefab's references per instance.
+    if let Some(instance) = scope {
+        for value in expanded.components.values_mut() {
+            let text = value.get_ron();
+            let links = crate::EntityRef::find_in(text);
+            if links.is_empty() {
+                continue;
+            }
+            let mut scoped = text.to_string();
+            for id in links {
+                scoped = scoped.replace(
+                    &format!("EntityRef(\"{id}\")"),
+                    &format!("EntityRef(\"{}\")", instance.within(id)),
+                );
+            }
+            if let Ok(raw) = ron::value::RawValue::from_boxed_ron(scoped.into_boxed_str()) {
+                *value = raw;
+            }
+        }
+    }
     // Its own children come after whatever the prefab brought, in the same
     // scope as itself: a kettle put beside a campfire in the scene is the
     // scene's, not the campfire's.

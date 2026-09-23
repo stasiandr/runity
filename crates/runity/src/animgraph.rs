@@ -7,19 +7,35 @@
 //! (
 //!     start: "idle",
 //!     states: {
-//!         "idle": (clip: "idle"),
-//!         "walk": (clip: "walk", speed_from: "speed"),
+//!         "idle": (clip: "idle", transitions: [
+//!             (to: "walk", when: [Above("speed", 0.1)]),
+//!         ]),
+//!         "walk": (clip: "walk", speed_from: "speed", transitions: [
+//!             (to: "idle", when: [Below("speed", 0.1)]),
+//!         ]),
 //!         "move": (blend_by: "speed", blend: [(0.0, "idle"), (2.0, "walk")]),
-//!         "jump": (clip: "jump", looping: false),
+//!         "jump": (clip: "jump", looping: false, transitions: [
+//!             (to: "idle", when: [Finished]),
+//!         ]),
 //!     },
-//!     transitions: [
-//!         (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
-//!         (from: "walk", to: "idle", when: [Below("speed", 0.1)]),
-//!         (from: "*",    to: "jump", when: [Trigger("jump")], fade: 0.1),
-//!         (from: "jump", to: "idle", when: [Finished]),
+//!     any: [
+//!         (to: "jump", when: [Trigger("jump")], fade: 0.1),
 //!     ],
 //! )
 //! ```
+//!
+//! A transition is written inside the state it leaves, and `any` holds
+//! Unity's Any State transitions. Adding a transition touches one state's
+//! entry, so two people adding one each to different states merge without
+//! a conflict (DNA, postulate 2), and an agent never has to match a `from`
+//! at one end of the file to a state at the other. Order is priority: the
+//! first transition whose conditions hold is taken, Any State's before a
+//! state's own, as in Unity. A file of the older shape — every transition
+//! in one list at the end, with `from:` — still reads, and is written in
+//! this shape the next time the editor changes it.
+//!
+//! In memory a [`Graph`] keeps its transitions as one list with `from`, in
+//! priority order ([`Graph::normalize`]); the shape above is only the file.
 //!
 //! The game sets parameters — `set("speed", 3.2)`, `trigger("jump")` — and
 //! the graph picks the clip; the game never says "play the walk". Clips are
@@ -118,16 +134,174 @@ pub struct Transition {
     pub fade: f32,
 }
 
-/// A whole graph: its file.
+/// A whole graph. In memory the transitions are one list in priority
+/// order; in the file each sits in the state it leaves (see the module).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "file::Graph", into = "file::Graph")]
 pub struct Graph {
     pub start: String,
     pub states: BTreeMap<String, State>,
-    #[serde(default)]
     pub transitions: Vec<Transition>,
 }
 
+/// The graph as it is written: transitions inside their states.
+mod file {
+    use super::*;
+
+    /// A transition as written in the state it leaves, or in `any`.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Exit {
+        pub to: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub when: Vec<Condition>,
+        #[serde(default = "fade")]
+        pub fade: f32,
+    }
+
+    /// [`super::State`] and the transitions that leave it.
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct State {
+        #[serde(default)]
+        pub clip: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub blend: Vec<(f32, String)>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pub blend_by: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub events: Vec<(f32, String)>,
+        #[serde(default = "yes")]
+        pub looping: bool,
+        #[serde(default = "one")]
+        pub speed: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+        pub speed_from: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub transitions: Vec<Exit>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub struct Graph {
+        pub start: String,
+        pub states: BTreeMap<String, State>,
+        /// Any State's transitions.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub any: Vec<Exit>,
+        /// The older shape: every transition here, with `from`. Read, never
+        /// written.
+        #[serde(default, skip_serializing)]
+        pub transitions: Vec<Transition>,
+    }
+
+    impl From<Graph> for super::Graph {
+        fn from(f: Graph) -> Self {
+            let exit = |from: &str, e: Exit| Transition {
+                from: from.to_string(),
+                to: e.to,
+                when: e.when,
+                fade: e.fade,
+            };
+            let mut transitions: Vec<Transition> =
+                f.any.into_iter().map(|e| exit(ANY, e)).collect();
+            let mut states = BTreeMap::new();
+            for (name, s) in f.states {
+                transitions.extend(s.transitions.into_iter().map(|e| exit(&name, e)));
+                states.insert(
+                    name,
+                    super::State {
+                        clip: s.clip,
+                        blend: s.blend,
+                        blend_by: s.blend_by,
+                        events: s.events,
+                        looping: s.looping,
+                        speed: s.speed,
+                        speed_from: s.speed_from,
+                    },
+                );
+            }
+            transitions.extend(f.transitions);
+            let mut graph = super::Graph {
+                start: f.start,
+                states,
+                transitions,
+            };
+            graph.normalize();
+            graph
+        }
+    }
+
+    impl From<super::Graph> for Graph {
+        /// A transition from a state that is not there has nowhere to be
+        /// written and is left out; [`super::Graph::problems`] names it
+        /// before it comes to that.
+        fn from(g: super::Graph) -> Self {
+            let exit = |t: &Transition| Exit {
+                to: t.to.clone(),
+                when: t.when.clone(),
+                fade: t.fade,
+            };
+            let from = |name: &str| -> Vec<Exit> {
+                g.transitions
+                    .iter()
+                    .filter(|t| t.from == name)
+                    .map(exit)
+                    .collect()
+            };
+            Graph {
+                start: g.start.clone(),
+                states: g
+                    .states
+                    .iter()
+                    .map(|(name, s)| {
+                        (
+                            name.clone(),
+                            State {
+                                clip: s.clip.clone(),
+                                blend: s.blend.clone(),
+                                blend_by: s.blend_by.clone(),
+                                events: s.events.clone(),
+                                looping: s.looping,
+                                speed: s.speed,
+                                speed_from: s.speed_from.clone(),
+                                transitions: from(name),
+                            },
+                        )
+                    })
+                    .collect(),
+                any: from(ANY),
+                transitions: Vec::new(),
+            }
+        }
+    }
+}
+
+/// The name Any State's transitions leave from.
+pub const ANY: &str = "*";
+
 impl Graph {
+    /// Put the transitions in the order the file gives them — Any State's
+    /// first, then each state's in name order — keeping the order within
+    /// each, which is their priority. What the file says and what runs are
+    /// then the same list.
+    pub fn normalize(&mut self) {
+        let rank = |from: &str| -> usize {
+            if from == ANY {
+                0
+            } else {
+                self.states
+                    .keys()
+                    .position(|k| k == from)
+                    .map_or(usize::MAX, |i| i + 1)
+            }
+        };
+        let mut ranked: Vec<(usize, Transition)> = self
+            .transitions
+            .drain(..)
+            .map(|t| (rank(&t.from), t))
+            .collect();
+        ranked.sort_by_key(|(r, _)| *r);
+        self.transitions = ranked.into_iter().map(|(_, t)| t).collect();
+    }
+
     /// What cannot work, in words: a start or a transition naming a state
     /// that is not there, a state naming a clip the model does not have.
     pub fn problems(&self, clips: &[&str]) -> Vec<String> {
@@ -147,7 +321,7 @@ impl Graph {
         }
         for t in &self.transitions {
             for name in [&t.from, &t.to] {
-                if name != "*" && !self.states.contains_key(name) {
+                if name != ANY && !self.states.contains_key(name) {
                     out.push(format!(
                         "a transition names `{name}`, which is not a state{}",
                         near(name, &states)
@@ -272,7 +446,7 @@ impl Controller {
                 self.graph
                     .transitions
                     .iter()
-                    .filter(|t| (t.from == *now || t.from == "*") && t.to != *now)
+                    .filter(|t| (t.from == *now || t.from == ANY) && t.to != *now)
                     .find(|t| {
                         t.when.iter().all(|c| match c {
                             Condition::Above(p, v) => self.param(p) > *v,
@@ -386,17 +560,73 @@ mod tests {
     const GRAPH: &str = r#"(
         start: "idle",
         states: {
-            "idle": (clip: "idle"),
-            "walk": (clip: "walk", speed_from: "speed"),
-            "jump": (clip: "jump", looping: false),
+            "idle": (clip: "idle", transitions: [
+                (to: "walk", when: [Above("speed", 0.1)]),
+            ]),
+            "walk": (clip: "walk", speed_from: "speed", transitions: [
+                (to: "idle", when: [Below("speed", 0.1)]),
+            ]),
+            "jump": (clip: "jump", looping: false, transitions: [
+                (to: "idle", when: [Finished]),
+            ]),
         },
-        transitions: [
-            (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
-            (from: "walk", to: "idle", when: [Below("speed", 0.1)]),
-            (from: "*", to: "jump", when: [Trigger("jump")], fade: 0.1),
-            (from: "jump", to: "idle", when: [Finished]),
-        ],
+        any: [(to: "jump", when: [Trigger("jump")], fade: 0.1)],
     )"#;
+
+    #[test]
+    fn transitions_are_written_in_the_state_they_leave() {
+        let graph: Graph = ron::from_str(GRAPH).unwrap();
+        // Any State's first, then by state; each keeps its priority.
+        let order: Vec<(&str, &str)> = graph
+            .transitions
+            .iter()
+            .map(|t| (t.from.as_str(), t.to.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("*", "jump"),
+                ("idle", "walk"),
+                ("jump", "idle"),
+                ("walk", "idle")
+            ]
+        );
+        let text = ron::ser::to_string_pretty(&graph, Default::default()).unwrap();
+        assert!(
+            text.lines().all(|l| !l.trim_start().starts_with("from:")),
+            "no `from` in the file: {text}"
+        );
+        assert!(text.contains("any:"), "{text}");
+        assert_eq!(ron::from_str::<Graph>(&text).unwrap(), graph);
+    }
+
+    #[test]
+    fn a_file_of_the_older_shape_still_reads() {
+        let old: Graph = ron::from_str(
+            r#"(
+            start: "idle",
+            states: {"idle": (clip: "idle"), "walk": (clip: "walk")},
+            transitions: [
+                (from: "walk", to: "idle", when: [Below("speed", 0.1)]),
+                (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
+                (from: "*", to: "idle", when: [Trigger("reset")]),
+            ],
+        )"#,
+        )
+        .unwrap();
+        let new: Graph = ron::from_str(
+            r#"(
+            start: "idle",
+            states: {
+                "idle": (clip: "idle", transitions: [(to: "walk", when: [Above("speed", 0.1)])]),
+                "walk": (clip: "walk", transitions: [(to: "idle", when: [Below("speed", 0.1)])]),
+            },
+            any: [(to: "idle", when: [Trigger("reset")])],
+        )"#,
+        )
+        .unwrap();
+        assert_eq!(old, new);
+    }
 
     fn animator() -> Animator {
         let skeleton = Arc::new(Skeleton {
@@ -490,13 +720,11 @@ mod tests {
             r#"(
             start: "move",
             states: {
-                "move": (blend_by: "speed", blend: [(0.0, "idle"), (2.0, "walk")]),
-                "jump": (clip: "jump", looping: false),
+                "move": (blend_by: "speed", blend: [(0.0, "idle"), (2.0, "walk")], transitions: [
+                    (to: "jump", when: [Trigger("jump")], fade: 0.1),
+                ]),
+                "jump": (clip: "jump", looping: false, transitions: [(to: "move", when: [Finished])]),
             },
-            transitions: [
-                (from: "move", to: "jump", when: [Trigger("jump")], fade: 0.1),
-                (from: "jump", to: "move", when: [Finished]),
-            ],
         )"#,
         )
         .unwrap();
@@ -558,8 +786,8 @@ mod tests {
     #[test]
     fn a_graph_that_cannot_work_says_why() {
         let graph: Graph = ron::from_str(&GRAPH.replace(
-            "to: \"idle\", when: [Finished]",
-            "to: \"idel\", when: [Finished]",
+            "(to: \"idle\", when: [Finished])",
+            "(to: \"idel\", when: [Finished])",
         ))
         .unwrap();
         let problems = graph.problems(&["idle", "walk"]);

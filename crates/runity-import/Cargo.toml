@@ -19,6 +19,7 @@ ron = "0.12.2"
 runity = { version = "0.1.0", path = "../runity" }
 serde = { version = "1.0.229", features = ["derive"] }
 tobj = "4.0.5"
+yaml-rust2 = "0.10"
 
 [[bin]]
 name = "runity-import"

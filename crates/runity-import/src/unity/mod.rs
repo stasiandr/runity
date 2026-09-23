@@ -1,0 +1,438 @@
+//! Importing a Unity project's content: scenes, prefabs, materials, models,
+//! animator controllers (docs/unity-import.md).
+//!
+//! Content, not code: a game's scripts are rewritten by hand, and their
+//! MonoBehaviours come over as components written as text, for `check` to
+//! list until each has its Rust type.
+
+mod animator;
+mod material;
+mod scene;
+pub mod yaml;
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+pub use scene::convert_file;
+
+/// What an import did, and what it could not.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub scenes: usize,
+    pub prefabs: usize,
+    pub materials: usize,
+    pub textures: usize,
+    pub models: usize,
+    pub animators: usize,
+    /// What was left behind, by kind, with how many times: a component
+    /// with no counterpart, a modification it could not carry.
+    pub skipped: BTreeMap<String, usize>,
+    /// Files that could not be read or written, in words.
+    pub errors: Vec<String>,
+}
+
+impl Report {
+    pub(crate) fn skip(&mut self, what: impl Into<String>) {
+        *self.skipped.entry(what.into()).or_default() += 1;
+    }
+}
+
+impl std::fmt::Display for Report {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "{} scenes, {} prefabs, {} materials, {} textures, {} models, {} animators",
+            self.scenes, self.prefabs, self.materials, self.textures, self.models, self.animators
+        )?;
+        if !self.skipped.is_empty() {
+            writeln!(f, "left behind:")?;
+            let mut skipped: Vec<_> = self.skipped.iter().collect();
+            skipped.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+            for (what, n) in skipped {
+                writeln!(f, "  {n:>5} × {what}")?;
+            }
+        }
+        for e in &self.errors {
+            writeln!(f, "error: {e}")?;
+        }
+        Ok(())
+    }
+}
+
+/// What to bring over.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// Convert FBX models through Blender: slow, so asked for.
+    pub models: bool,
+    /// Blender to use; found on the PATH when not given.
+    pub blender: Option<PathBuf>,
+}
+
+/// A Unity project, indexed: every asset by GUID, and the name each gets in
+/// the runity project.
+pub struct Unity {
+    pub root: PathBuf,
+    /// GUID → the asset's file.
+    pub guids: HashMap<String, PathBuf>,
+    /// GUID → its name in runity: a file stem, made unique within its kind.
+    pub names: HashMap<String, String>,
+}
+
+/// The kind a Unity file becomes in runity, by its extension.
+pub fn kind_of(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_string_lossy().to_lowercase();
+    Some(match extension.as_str() {
+        "unity" => "scene",
+        "prefab" => "prefab",
+        "mat" => "material",
+        "fbx" | "obj" | "gltf" | "glb" | "blend" => "model",
+        "png" | "jpg" | "jpeg" | "tga" | "bmp" | "psd" | "tif" | "tiff" | "exr" => "texture",
+        "wav" | "ogg" | "mp3" => "sound",
+        "controller" => "animator",
+        "cs" => "script",
+        _ => return None,
+    })
+}
+
+impl Unity {
+    /// Index a Unity project's `Assets/` by the GUIDs in its `.meta` files.
+    pub fn open(root: &Path) -> Result<Self> {
+        let assets = root.join("Assets");
+        anyhow::ensure!(
+            assets.is_dir(),
+            "{} has no Assets/: not a Unity project",
+            root.display()
+        );
+        let mut guids = HashMap::new();
+        walk_all(&assets, &mut |path| {
+            if path.extension().is_some_and(|e| e == "meta") {
+                if let Some(guid) = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|t| yaml::meta_guid(&t))
+                {
+                    guids.insert(guid, path.with_extension(""));
+                }
+            }
+        });
+        // Names: the file's stem, and where two of one kind share it, the
+        // folder before it too — `props_crate`, `tools_crate`.
+        let mut by_kind: HashMap<(&str, String), Vec<String>> = HashMap::new();
+        for (guid, path) in &guids {
+            let Some(kind) = kind_of(path) else { continue };
+            let stem = stem(path);
+            by_kind.entry((kind, stem)).or_default().push(guid.clone());
+        }
+        let mut names = HashMap::new();
+        for ((_, stem), mut clash) in by_kind {
+            clash.sort();
+            if clash.len() == 1 {
+                names.insert(clash.remove(0), stem);
+                continue;
+            }
+            for guid in clash {
+                let folder = guids[&guid]
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                names.insert(guid.clone(), clean(&format!("{folder}_{stem}")));
+            }
+        }
+        Ok(Self {
+            root: root.to_path_buf(),
+            guids,
+            names,
+        })
+    }
+
+    /// The runity name of the asset a GUID names, and its kind.
+    pub fn named(&self, guid: &str) -> Option<(&'static str, &str)> {
+        let path = self.guids.get(guid)?;
+        Some((kind_of(path)?, self.names.get(guid)?.as_str()))
+    }
+
+    /// Every asset of a kind: its GUID and file.
+    pub fn of_kind(&self, kind: &str) -> Vec<(&str, &Path)> {
+        let mut out: Vec<(&str, &Path)> = self
+            .guids
+            .iter()
+            .filter(|(_, p)| kind_of(p) == Some(kind))
+            .map(|(g, p)| (g.as_str(), p.as_path()))
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(b.1));
+        out
+    }
+}
+
+/// Bring a Unity project's content into a runity project.
+pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) -> Result<Report> {
+    let unity = Unity::open(unity)?;
+    let mut report = Report::default();
+
+    // Textures first, and only those materials use: a project's Assets/
+    // holds many a picture nothing draws.
+    let used = material::textures_used(&unity);
+    let textures = project.assets().join("textures");
+    for guid in &used {
+        let (Some(path), Some(name)) = (unity.guids.get(guid), unity.names.get(guid)) else {
+            continue;
+        };
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "tga" | "bmp") {
+            report.skip(format!("texture in .{extension} (convert it to PNG)"));
+            continue;
+        }
+        std::fs::create_dir_all(&textures)?;
+        let to = textures.join(format!("{name}.{extension}"));
+        if let Err(e) = std::fs::copy(path, &to) {
+            report.errors.push(format!("{}: {e}", path.display()));
+        } else {
+            report.textures += 1;
+        }
+    }
+
+    for (guid, path) in unity.of_kind("material") {
+        match material::convert(&unity, path) {
+            Ok(text) => {
+                let name = &unity.names[guid];
+                write(&project.materials().join(format!("{name}.rmat")), &text)?;
+                report.materials += 1;
+            }
+            Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
+
+    for (guid, path) in unity.of_kind("prefab") {
+        let Some(text) = read_text(path, &mut report) else {
+            continue;
+        };
+        let roots = scene::convert_file(&unity, &text, &mut report);
+        let Some(root) = roots.into_iter().next() else {
+            report
+                .errors
+                .push(format!("{}: no root object", path.display()));
+            continue;
+        };
+        let name = &unity.names[guid];
+        let file = project
+            .prefabs()
+            .join(format!("{name}.{}", runity::prefab::EXTENSION));
+        runity::Prefabs::save(&root, &file).map_err(anyhow::Error::msg)?;
+        report.prefabs += 1;
+    }
+
+    for (guid, path) in unity.of_kind("scene") {
+        let Some(text) = read_text(path, &mut report) else {
+            continue;
+        };
+        let entities = scene::convert_file(&unity, &text, &mut report);
+        let scene = runity::Scene {
+            entities,
+            ..Default::default()
+        };
+        let name = &unity.names[guid];
+        scene
+            .save(project.scenes().join(format!("{name}.ron")))
+            .with_context(|| format!("scene {name}"))?;
+        report.scenes += 1;
+    }
+
+    for (guid, path) in unity.of_kind("animator") {
+        match animator::convert(&unity, path) {
+            Ok(text) => {
+                let dir = project.root().join(runity::project::ANIMATORS);
+                let name = &unity.names[guid];
+                write(&dir.join(format!("{name}.ron")), &text)?;
+                report.animators += 1;
+            }
+            Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
+
+    if options.models {
+        models(&unity, project, options, &mut report);
+    } else {
+        let n = unity.of_kind("model").len();
+        if n > 0 {
+            report.skip(format!(
+                "{n} models: pass --models to convert them through Blender"
+            ));
+        }
+    }
+    Ok(report)
+}
+
+/// FBX (and friends) to GLB through Blender, into `assets/models/`.
+fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &mut Report) {
+    let blender = options
+        .blender
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("blender"));
+    let out = project.assets().join("models");
+    let _ = std::fs::create_dir_all(&out);
+    for (guid, path) in unity.of_kind("model") {
+        let name = &unity.names[guid];
+        let to = out.join(format!("{name}.glb"));
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if matches!(extension.as_str(), "gltf" | "glb" | "obj") {
+            let to = out.join(format!("{name}.{extension}"));
+            match std::fs::copy(path, &to) {
+                Ok(_) => report.models += 1,
+                Err(e) => report.errors.push(format!("{}: {e}", path.display())),
+            }
+            continue;
+        }
+        let script = format!(
+            "import bpy\n\
+             bpy.ops.wm.read_factory_settings(use_empty=True)\n\
+             bpy.ops.import_scene.fbx(filepath={:?})\n\
+             bpy.ops.export_scene.gltf(filepath={:?}, export_format='GLB', export_animations=True)\n",
+            path.to_string_lossy(),
+            to.to_string_lossy()
+        );
+        let result = std::process::Command::new(&blender)
+            .args(["-b", "--factory-startup", "--python-expr", &script])
+            .output();
+        match result {
+            Ok(o) if o.status.success() && to.is_file() => report.models += 1,
+            Ok(o) => report.errors.push(format!(
+                "{}: Blender could not convert it: {}",
+                path.display(),
+                String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+            )),
+            Err(e) => {
+                report.errors.push(format!(
+                    "Blender ({}) did not start: {e}",
+                    blender.display()
+                ));
+                return;
+            }
+        }
+    }
+}
+
+/// A Unity file as text, or why not: a file saved in Unity's binary
+/// serialization is not YAML, and is named in the report.
+fn read_text(path: &Path, report: &mut Report) -> Option<String> {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.starts_with(b"%YAML") => String::from_utf8(bytes).ok(),
+        Ok(_) => {
+            report.errors.push(format!(
+                "{}: saved as binary, not text — in Unity, Project Settings › Editor › Asset Serialization: Force Text",
+                path.display()
+            ));
+            None
+        }
+        Err(e) => {
+            report.errors.push(format!("{}: {e}", path.display()));
+            None
+        }
+    }
+}
+
+fn write(path: &Path, text: &str) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, text).with_context(|| format!("{}", path.display()))
+}
+
+/// A Unity asset's `.meta` file.
+pub(crate) fn meta_of(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".meta");
+    PathBuf::from(name)
+}
+
+pub(crate) fn stem(path: &Path) -> String {
+    clean(
+        &path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    )
+}
+
+/// A name a runity file can have: letters, digits, `_` and `-`; spaces and
+/// the rest become `_`.
+pub(crate) fn clean(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    while out.contains("__") {
+        out = out.replace("__", "_");
+    }
+    out.trim_matches('_').to_string()
+}
+
+/// `PlayerController` → `player_controller`: a component's name as a
+/// runity game writes it.
+pub(crate) fn snake(name: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if c.is_uppercase() {
+            let prev_lower =
+                i > 0 && (chars[i - 1].is_lowercase() || chars[i - 1].is_ascii_digit());
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if i > 0 && (prev_lower || (next_lower && chars[i - 1].is_uppercase())) {
+                out.push('_');
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(*c);
+        }
+    }
+    out
+}
+
+/// Every file under `root`, hidden or not except `.git`: Unity keeps
+/// nothing that matters in dotfiles, but `walk` skips them all.
+fn walk_all(root: &Path, visit: &mut impl FnMut(&Path)) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == ".git") {
+            continue;
+        }
+        if path.is_dir() {
+            walk_all(&path, visit);
+        } else {
+            visit(&path);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_what_a_runity_file_can_be_called() {
+        assert_eq!(snake("PlayerController"), "player_controller");
+        assert_eq!(snake("HTTPClient"), "http_client");
+        assert_eq!(snake("Item3D"), "item3_d");
+        assert_eq!(clean("Big Rock (1)"), "Big_Rock_1");
+    }
+}

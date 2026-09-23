@@ -1568,12 +1568,11 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
 (
     start: "idle",
     states: {
-        "idle": (clip: "idle"), // standing
+        "idle": (clip: "idle", transitions: [
+            (to: "walk", when: [Above("speed", 0.1)]),
+        ]), // standing
         "walk": (clip: "walk"),
     },
-    transitions: [
-        (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
-    ],
 )
 "#,
     )
@@ -1589,15 +1588,16 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     assert!(s.ui.find("state idle").is_some(), "{}", s.ui.dump());
     assert!(s.ui.find("transition 0").is_some(), "an arrow idle → walk");
 
-    // A box dragged moves, and the file does not change for it.
+    // The boxes place themselves: walk one column over from idle, and
+    // pulling at a box neither moves it nor writes anything anywhere.
     let before = std::fs::read_to_string(&file).unwrap();
     s.ui.paint();
+    let idle = s.ui.rect(s.ui.find("state idle").unwrap());
     let walk = s.ui.rect(s.ui.find("state walk").unwrap());
+    assert!(walk.x > idle.x + idle.width, "{idle:?} {walk:?}");
     let (x, y) = walk.center();
     s.handle(&InputEvent::MouseMoved { x, y });
     s.handle(&InputEvent::MouseDown(MouseButton::Left));
-    s.frame();
-    s.handle(&InputEvent::MouseMoved { x: x + 20.0, y });
     s.frame();
     s.handle(&InputEvent::MouseMoved {
         x: x + 60.0,
@@ -1607,15 +1607,15 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
     s.ui.paint();
-    let moved = s.ui.rect(s.ui.find("state walk").unwrap());
+    let after = s.ui.rect(s.ui.find("state walk").unwrap());
     assert!(
-        (moved.x - walk.x - 60.0).abs() < 2.0,
-        "{walk:?} -> {moved:?}"
+        (after.x - walk.x).abs() < 1.0 && (after.y - walk.y).abs() < 1.0,
+        "{walk:?} -> {after:?}"
     );
     assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
     assert!(
-        dir.join(".runity/animators.ron").exists(),
-        "where boxes stand is kept"
+        !dir.join(".runity/animators.ron").exists(),
+        "no places kept"
     );
 
     // Walk is chosen by the press: back to idle, on a condition.
@@ -1624,6 +1624,12 @@ fn the_animator_edits_a_graph_and_keeps_its_comments() {
     let g = read();
     assert_eq!(g.transitions.len(), 2);
     assert_eq!(g.transitions[1].from, "walk");
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"walk\": (clip: \"walk\", transitions: [\n            (to: \"idle\", when: [Below(\"speed\", 0.1)]),\n        ]),"),
+        "written in the state it leaves"
+    );
     assert_eq!(
         g.transitions[1].when,
         vec![runity::animgraph::Condition::Below("speed".into(), 0.1)]
@@ -1656,7 +1662,7 @@ fn the_animator_lights_up_the_state_the_running_game_is_in() {
     std::fs::create_dir_all(dir.join("animators")).unwrap();
     std::fs::write(
         dir.join("animators/hero.ron"),
-        r#"(start: "idle", states: {"idle": (clip: "idle"), "walk": (clip: "walk")}, transitions: [])"#,
+        r#"(start: "idle", states: {"idle": (clip: "idle"), "walk": (clip: "walk")})"#,
     )
     .unwrap();
     // A game that says the boulder walks: its report, from a stand-in.

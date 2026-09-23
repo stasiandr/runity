@@ -2,21 +2,25 @@
 //!
 //! Unity's Animator window for `runity::animgraph`: the files in
 //! `animators/` are graphs of states and transitions. Here a state is a
-//! box, a transition an arrow, and "Any State" the box `"*"` transitions
-//! leave from. A box is dragged to where it reads best, and where the boxes
-//! stand is the editor's, in `.runity/animators.ron`, not the graph's: the
-//! graph file stays what the game reads. Choosing a box or an arrow shows
-//! its fields on the right. The chips there add a transition to another
-//! state, and the buttons make a state the start or delete it.
+//! box, a transition an arrow, and "Any State" the box the graph's `any`
+//! transitions leave from. Choosing a box or an arrow shows its fields on
+//! the right. The chips there add a transition to another state, and the
+//! buttons make a state the start or delete it.
+//!
+//! Where the boxes stand is worked out from the graph every time
+//! ([`layout`]), never dragged and never kept: an agent that adds three
+//! states gives them no places and needs none, a graph looks the same to
+//! everyone who opens it, and there is no second file to fall out of step
+//! with the first. The ground is dragged to pan.
 //!
 //! Every change is written at once, and only where it changed: a state's
-//! entry, a transition, the start (see [`runity::ron_edit`]). Comments stay, and
-//! the diff is the change.
+//! entry with the transitions that leave it, Any State's list, the start
+//! (see [`runity::ron_edit`]). Comments stay, and the diff is the change.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-use runity::animgraph::{Condition, Graph, State, Transition};
+use runity::animgraph::{Condition, Graph, State, Transition, ANY};
 use runity_editor::console::Level;
 use runity_editor::Session;
 use runity_ui::{Color, Event, NodeId, Style, Ui};
@@ -26,8 +30,6 @@ use runity::ron_edit::{self as patch, Change};
 
 const BOX_W: f32 = 150.0;
 const BOX_H: f32 = 36.0;
-/// The name `"*"` transitions leave from, shown as its own box.
-const ANY: &str = "*";
 
 #[derive(Debug, Clone, PartialEq)]
 enum Chosen {
@@ -65,9 +67,9 @@ pub struct Animator {
     parts: HashMap<NodeId, Part>,
     open: Option<(PathBuf, Graph)>,
     chosen: Option<Chosen>,
-    /// Where each box stands, by file and state, and how far the canvas is
-    /// panned.
-    places: BTreeMap<String, BTreeMap<String, (f32, f32)>>,
+    /// Each state's column and row, from [`layout`], and how far the
+    /// canvas is panned.
+    layout: BTreeMap<String, (usize, usize)>,
     pan: (f32, f32),
     listed: bool,
     /// The canvas's two layers — arrows under boxes — moved whole to pan.
@@ -145,7 +147,7 @@ impl Animator {
             parts,
             open: None,
             chosen: None,
-            places: BTreeMap::new(),
+            layout: BTreeMap::new(),
             pan: (0.0, 0.0),
             listed: false,
             edges_layer: None,
@@ -176,22 +178,12 @@ impl Animator {
             .map(|p| p.root().join(runity::project::ANIMATORS))
     }
 
-    fn places_file(session: &Session) -> Option<PathBuf> {
-        session
-            .project()
-            .map(|p| p.root().join(".runity").join("animators.ron"))
-    }
-
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         self.follow_game(ui, session);
         if self.listed {
             return;
         }
         self.listed = true;
-        if let Some(text) = Self::places_file(session).and_then(|p| std::fs::read_to_string(p).ok())
-        {
-            self.places = runity::ron::from_str(&text).unwrap_or_default();
-        }
         self.list(ui, session);
     }
 
@@ -247,21 +239,12 @@ impl Animator {
         }
     }
 
-    /// Where a box stands: as dragged, or on a grid in name order.
+    /// Where a box stands, from its column and row in the layout.
     fn place(&self, name: &str) -> (f32, f32) {
-        let Some((path, graph)) = &self.open else {
-            return (0.0, 0.0);
-        };
-        if let Some(p) = self.places.get(&stem(path)).and_then(|m| m.get(name)) {
-            return *p;
-        }
         if name == ANY {
             return (24.0, 20.0);
         }
-        // Columns by how many transitions from the start a state is,
-        // rows in name order within a column: arrows mostly go to the
-        // next column over, not under other boxes.
-        let (column, row) = layered(graph, name);
+        let (column, row) = self.layout.get(name).copied().unwrap_or((0, 0));
         (
             24.0 + column as f32 * (BOX_W + 70.0),
             90.0 + row as f32 * (BOX_H + 50.0),
@@ -282,6 +265,7 @@ impl Animator {
             );
             return;
         };
+        self.layout = layout(&graph);
         let layer = |ui: &mut Ui, canvas: NodeId, pan: (f32, f32)| {
             ui.add(
                 canvas,
@@ -349,8 +333,7 @@ impl Animator {
         }
     }
 
-    /// Choose a box or an arrow without building the canvas again: the
-    /// node being pressed stays, so a drag that follows still has it.
+    /// Choose a box or an arrow without building the canvas again.
     fn choose(&mut self, ui: &mut Ui, session: &Session, chosen: Option<Chosen>) {
         if self.chosen == chosen {
             return;
@@ -533,7 +516,7 @@ impl Animator {
                 ui.add_text(
                     side,
                     Style::default().text_size(12.0).text_color(MUTED),
-                    "Pick a state or an arrow. Drag a box to move it; drag the ground to pan.",
+                    "Pick a state or an arrow. The boxes place themselves; drag the ground to pan.",
                 );
             }
             Some(Chosen::State(name)) if name == ANY => {
@@ -746,25 +729,9 @@ impl Animator {
                 Event::Click { .. } => self.choose(ui, session, None),
                 _ => {}
             },
-            Part::Box(name) => match event {
-                Event::Press { .. } => self.choose(ui, session, Some(Chosen::State(name))),
-                Event::Drag { dx, dy, .. } => {
-                    let (x, y) = self.place(&name);
-                    let (x, y) = (x + dx, y + dy);
-                    if let Some((path, _)) = &self.open {
-                        self.places
-                            .entry(stem(path))
-                            .or_default()
-                            .insert(name.clone(), (x, y));
-                    }
-                    if let Some(b) = self.boxes.get(&name) {
-                        ui.restyle(*b, |s| s.absolute(x, y));
-                    }
-                    self.draw_edges(ui);
-                }
-                Event::DragEnd { .. } => self.save_places(session),
-                _ => {}
-            },
+            Part::Box(name) if matches!(event, Event::Press { .. }) => {
+                self.choose(ui, session, Some(Chosen::State(name)))
+            }
             Part::Edge(i) if click => self.choose(ui, session, Some(Chosen::Transition(i))),
             Part::Field(key) => {
                 if let Event::Submit(value) = event {
@@ -774,6 +741,7 @@ impl Animator {
             }
             Part::To(to) if click => {
                 if let Some(Chosen::State(from)) = self.chosen.clone() {
+                    let (f, t) = (from.clone(), to.clone());
                     self.edit(session, |g| {
                         g.transitions.push(Transition {
                             from,
@@ -782,8 +750,12 @@ impl Animator {
                             fade: 0.2,
                         });
                     });
-                    let last = self.graph().map_or(0, |g| g.transitions.len() - 1);
-                    self.chosen = Some(Chosen::Transition(last));
+                    // The new one is the last leaving `from` for `to`, wherever
+                    // putting the list in order has put it.
+                    let at = self
+                        .graph()
+                        .and_then(|g| g.transitions.iter().rposition(|x| x.from == f && x.to == t));
+                    self.chosen = at.map(Chosen::Transition);
                     self.show(ui, session);
                 }
             }
@@ -880,7 +852,6 @@ impl Animator {
                             g.start = new.clone();
                         }
                     });
-                    self.rename_place(session, &name, value);
                     self.chosen = Some(Chosen::State(value.to_string()));
                     Ok(())
                 }
@@ -948,33 +919,13 @@ impl Animator {
             return;
         };
         change(graph);
+        graph.normalize();
         let old = std::fs::read_to_string(&*path).unwrap_or_default();
         let text = write(&old, graph);
         if text != old {
             if let Err(e) = std::fs::write(&*path, text) {
                 session.say(Level::Error, format!("{}: {e}", path.display()));
             }
-        }
-    }
-
-    fn rename_place(&mut self, session: &Session, old: &str, new: &str) {
-        let Some((path, _)) = &self.open else { return };
-        if let Some(m) = self.places.get_mut(&stem(path)) {
-            if let Some(p) = m.remove(old) {
-                m.insert(new.to_string(), p);
-            }
-        }
-        self.save_places(session);
-    }
-
-    fn save_places(&self, session: &Session) {
-        let Some(path) = Self::places_file(session) else {
-            return;
-        };
-        let pretty = runity::ron::ser::PrettyConfig::new();
-        if let Ok(text) = runity::ron::ser::to_string_pretty(&self.places, pretty) {
-            let _ = std::fs::create_dir_all(path.parent().expect("a file in .runity"));
-            let _ = std::fs::write(path, text + "\n");
         }
     }
 
@@ -989,7 +940,7 @@ impl Animator {
             path = dir.join(format!("animator_{n}.ron"));
             n += 1;
         }
-        let text = "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n    },\n    transitions: [],\n)\n";
+        let text = "(\n    start: \"idle\",\n    states: {\n        \"idle\": (clip: \"idle\"),\n    },\n)\n";
         match std::fs::write(&path, text) {
             Ok(()) => self.open(ui, session, path),
             Err(e) => session.say(Level::Error, format!("{}: {e}", path.display())),
@@ -997,8 +948,13 @@ impl Animator {
     }
 }
 
-/// A state's column and row in the default layout.
-fn layered(graph: &Graph, name: &str) -> (usize, usize) {
+/// Each state's column and row. Columns go by how many transitions from
+/// the start a state is, so arrows mostly run to the next column over;
+/// states reached from nowhere but Any State, or from nowhere, stand in the
+/// first column over. Within a column, a state goes near the ones that lead
+/// into it — by the mean row of those already placed — and then by name,
+/// so arrows cross little. The same graph always comes out the same.
+pub fn layout(graph: &Graph) -> BTreeMap<String, (usize, usize)> {
     let mut depth: BTreeMap<&str, usize> = BTreeMap::new();
     if graph.states.contains_key(&graph.start) {
         depth.insert(&graph.start, 0);
@@ -1017,16 +973,35 @@ fn layered(graph: &Graph, name: &str) -> (usize, usize) {
             frontier = next;
         }
     }
-    // Reached from nowhere but Any State: the first column over.
-    let column_of = |n: &str| depth.get(n).copied().unwrap_or(1);
-    let column = column_of(name);
-    let row = graph
-        .states
-        .keys()
-        .filter(|k| column_of(k) == column)
-        .position(|k| k == name)
-        .unwrap_or(0);
-    (column, row)
+    let mut columns: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+    for name in graph.states.keys() {
+        let column = depth.get(name.as_str()).copied().unwrap_or(1);
+        columns.entry(column).or_default().push(name);
+    }
+    let mut placed: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for (column, names) in columns {
+        let pull = |name: &str| -> f32 {
+            let rows: Vec<f32> = graph
+                .transitions
+                .iter()
+                .filter(|t| t.to == name)
+                .filter_map(|t| placed.get(&t.from))
+                .filter(|(c, _)| *c < column)
+                .map(|(_, r)| *r as f32)
+                .collect();
+            if rows.is_empty() {
+                f32::MAX
+            } else {
+                rows.iter().sum::<f32>() / rows.len() as f32
+            }
+        };
+        let mut order: Vec<(f32, &str)> = names.into_iter().map(|n| (pull(n), n)).collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(b.1)));
+        for (row, (_, name)) in order.into_iter().enumerate() {
+            placed.insert(name.to_string(), (column, row));
+        }
+    }
+    placed
 }
 
 /// A state's box: the start filled with the accent, the chosen one ringed
@@ -1058,7 +1033,6 @@ fn box_style(graph: &Graph, name: &str, on: bool, live: bool, (x, y): (f32, f32)
             },
         )
         .clickable()
-        .draggable()
 }
 
 fn stem(path: &std::path::Path) -> String {
@@ -1147,8 +1121,9 @@ fn conditions(when: &[Condition]) -> String {
 }
 
 /// A state's entry as the files are written by hand: what differs from
-/// the defaults, on one line.
-fn state_entry(name: &str, s: &State) -> String {
+/// the defaults, on one line, and the transitions leaving it one to a line
+/// under it.
+fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
     let mut fields = Vec::new();
     if s.blend.is_empty() || !s.clip.is_empty() {
         fields.push(format!("clip: {}", quote(&s.clip)));
@@ -1171,11 +1146,16 @@ fn state_entry(name: &str, s: &State) -> String {
     if let Some(p) = &s.speed_from {
         fields.push(format!("speed_from: {}", quote(p)));
     }
+    if !exits.is_empty() {
+        fields.push(format!("transitions: {}", exit_list(exits, "        ")));
+    }
     format!("{}: ({})", quote(name), fields.join(", "))
 }
 
-fn transition_entry(t: &Transition) -> String {
-    let mut out = format!("(from: {}, to: {}", quote(&t.from), quote(&t.to));
+/// A transition as written in the state it leaves: where to, when, and a
+/// fade only when it is not the usual one.
+fn exit_entry(t: &Transition) -> String {
+    let mut out = format!("(to: {}", quote(&t.to));
     if !t.when.is_empty() {
         out += &format!(", when: {}", conditions(&t.when));
     }
@@ -1185,88 +1165,101 @@ fn transition_entry(t: &Transition) -> String {
     out + ")"
 }
 
+/// Transitions one to a line, the list closing at `indent`.
+fn exit_list(exits: &[&Transition], indent: &str) -> String {
+    let mut out = String::from("[\n");
+    for t in exits {
+        out += &format!("{indent}    {},\n", exit_entry(t));
+    }
+    out + indent + "]"
+}
+
+fn leaving<'a>(graph: &'a Graph, from: &str) -> Vec<&'a Transition> {
+    graph
+        .transitions
+        .iter()
+        .filter(|t| t.from == from)
+        .collect()
+}
+
 /// The file `old` with `graph` written into it where it differs, or the
 /// graph written anew when the text is past patching.
 pub fn write(old: &str, graph: &Graph) -> String {
-    patched(old, graph).unwrap_or_else(|| {
+    let mut graph = graph.clone();
+    graph.normalize();
+    patched(old, &graph).unwrap_or_else(|| {
         let pretty = runity::ron::ser::PrettyConfig::new();
-        runity::ron::ser::to_string_pretty(graph, pretty).unwrap_or_default() + "\n"
+        runity::ron::ser::to_string_pretty(&graph, pretty).unwrap_or_default() + "\n"
     })
 }
 
 fn patched(old: &str, graph: &Graph) -> Option<String> {
     let was: Graph = runity::ron::from_str(old).ok()?;
     let mut text = old.to_string();
-    // Transitions, by place: one changed, one added at the end, one gone.
-    if was.transitions != graph.transitions {
-        let (a, b) = (&was.transitions, &graph.transitions);
-        let changes: Vec<Change> = if a.len() == b.len() {
-            (0..a.len())
-                .filter(|&i| a[i] != b[i])
-                .map(|i| Change::Replace(i, transition_entry(&b[i])))
-                .collect()
-        } else if b.len() > a.len() && b[..a.len()] == a[..] {
-            b[a.len()..]
-                .iter()
-                .map(|t| Change::Append(transition_entry(t)))
-                .collect()
-        } else if b.len() < a.len() {
-            // Some gone, the rest in order: remove the ones not kept.
-            let mut kept = b.iter().peekable();
-            let mut gone = Vec::new();
-            for (i, t) in a.iter().enumerate() {
-                if kept.peek() == Some(&t) {
-                    kept.next();
-                } else {
-                    gone.push(Change::Remove(i));
-                }
-            }
-            if kept.next().is_some() {
-                return None;
-            }
-            gone
-        } else {
-            return None;
-        };
-        let open = patch::value_start(&text, "transitions")?;
+    // A file of the older shape: its one list of every transition goes,
+    // and each goes into the state it leaves.
+    let older = patch::value_start(&text, "transitions").is_some();
+    if older {
+        text = patch::set_field(&text, "transitions", None)?;
+    }
+    let changed = |key: &str| {
+        older
+            || was.states.get(key) != graph.states.get(key)
+            || leaving(&was, key) != leaving(graph, key)
+    };
+    // States, by name, in the order the file has them; a state's entry
+    // holds the transitions that leave it.
+    let open = patch::value_start(&text, "states")?;
+    let found = patch::items(&text, open)?;
+    let keys: Vec<String> = found
+        .items
+        .iter()
+        .map(|r| {
+            let item = &text[r.clone()];
+            runity::ron::from_str::<String>(item.split(':').next().unwrap_or("").trim())
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut changes = Vec::new();
+    for (i, key) in keys.iter().enumerate() {
+        match graph.states.get(key) {
+            None => changes.push(Change::Remove(i)),
+            Some(s) if changed(key) => changes.push(Change::Replace(
+                i,
+                state_entry(key, s, &leaving(graph, key)),
+            )),
+            Some(_) => {}
+        }
+    }
+    for (key, s) in &graph.states {
+        if !keys.contains(key) {
+            changes.push(Change::Append(state_entry(key, s, &leaving(graph, key))));
+        }
+    }
+    if !changes.is_empty() {
         text = patch::apply(&text, open, &changes)?;
     }
-    // States, by name, in the order the file has them.
-    if was.states != graph.states {
-        let open = patch::value_start(&text, "states")?;
-        let found = patch::items(&text, open)?;
-        let keys: Vec<String> = found
-            .items
-            .iter()
-            .map(|r| {
-                let item = &text[r.clone()];
-                runity::ron::from_str::<String>(item.split(':').next().unwrap_or("").trim())
-                    .unwrap_or_default()
-            })
-            .collect();
-        let mut changes = Vec::new();
-        for (i, key) in keys.iter().enumerate() {
-            match graph.states.get(key) {
-                None => changes.push(Change::Remove(i)),
-                Some(s) if was.states.get(key) != Some(s) => {
-                    changes.push(Change::Replace(i, state_entry(key, s)))
-                }
-                Some(_) => {}
-            }
-        }
-        for (key, s) in &graph.states {
-            if !keys.contains(key) {
-                changes.push(Change::Append(state_entry(key, s)));
-            }
-        }
-        text = patch::apply(&text, open, &changes)?;
+    // Any State's transitions: the list whole, or gone when there are none.
+    if older || leaving(&was, ANY) != leaving(graph, ANY) {
+        let any = leaving(graph, ANY);
+        let list = (!any.is_empty()).then(|| exit_list(&any, "    "));
+        text = patch::set_field(&text, "any", list.as_deref())?;
     }
     if was.start != graph.start {
         let at = patch::value_start(&text, "start")?;
         let span = patch::value_span(&text, at)?;
         text.replace_range(span, &quote(&graph.start));
     }
-    let check: Graph = runity::ron::from_str(&text).ok()?;
+    let check: Graph = match runity::ron::from_str(&text) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("DBG parse {e}\n{text}");
+            return None;
+        }
+    };
+    if check != *graph {
+        eprintln!("DBG differ\n{text}\n{check:?}\n{graph:?}");
+    }
     (check == *graph).then_some(text)
 }
 
@@ -1278,14 +1271,14 @@ mod tests {
 (
     start: "idle",
     states: {
-        "idle": (clip: "idle"), // standing
-        "walk": (clip: "walk", speed_from: "speed"),
-    },
-    transitions: [
-        (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
+        "idle": (clip: "idle", transitions: [
+            (to: "walk", when: [Above("speed", 0.1)]),
+        ]), // standing
         // Back when slow.
-        (from: "walk", to: "idle", when: [Below("speed", 0.1)]),
-    ],
+        "walk": (clip: "walk", speed_from: "speed", transitions: [
+            (to: "idle", when: [Below("speed", 0.1)]),
+        ]),
+    },
 )
 "#;
 
@@ -1315,19 +1308,92 @@ mod tests {
             out.contains(r#"        "jump": (clip: "jump", looping: false),"#),
             "{out}"
         );
-        assert!(out.contains(r#"(from: "*", to: "jump", when: [Trigger("jump")], fade: 0.1),"#));
-        assert!(out.contains(r#""walk": (clip: "walk", speed: 1.5, speed_from: "speed")"#));
+        assert!(
+            out.contains(
+                "    any: [\n        (to: \"jump\", when: [Trigger(\"jump\")], fade: 0.1),\n    ],"
+            ),
+            "{out}"
+        );
+        assert!(out
+            .contains(r#""walk": (clip: "walk", speed: 1.5, speed_from: "speed", transitions: ["#));
         assert!(out.contains(r#"start: "walk","#));
+        g.normalize();
         assert_eq!(runity::ron::from_str::<Graph>(&out).unwrap(), g);
+
+        // A transition added to one state touches that state's entry only.
+        let before = out.clone();
+        g.transitions.push(Transition {
+            from: "idle".into(),
+            to: "jump".into(),
+            when: Vec::new(),
+            fade: 0.2,
+        });
+        let out = write(&before, &g);
+        let added: Vec<&str> = out
+            .lines()
+            .filter(|l| !before.lines().any(|b| b == *l))
+            .collect();
+        assert_eq!(added, [r#"            (to: "jump"),"#], "{out}");
 
         // A state and its transitions gone.
         g.states.remove("idle");
         g.transitions.retain(|t| t.from != "idle" && t.to != "idle");
         let out = write(&out, &g);
+        g.normalize();
         assert_eq!(runity::ron::from_str::<Graph>(&out).unwrap(), g);
         assert!(
             out.starts_with("// The hero."),
             "patched, not rewritten: {out}"
         );
+    }
+
+    #[test]
+    fn a_file_of_the_older_shape_is_written_in_the_new_one_and_keeps_its_comments() {
+        let old = r#"// The hero.
+(
+    start: "idle",
+    states: {
+        "idle": (clip: "idle"), // standing
+        "walk": (clip: "walk"),
+    },
+    transitions: [
+        (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
+        (from: "*", to: "idle", when: [Trigger("reset")]),
+    ],
+)
+"#;
+        let mut g: Graph = runity::ron::from_str(old).unwrap();
+        g.states.get_mut("walk").unwrap().speed = 2.0;
+        let out = write(old, &g);
+        assert!(out.starts_with("// The hero."), "{out}");
+        assert!(out.contains("// standing"), "{out}");
+        assert!(!out.contains("from:"), "{out}");
+        assert!(out.contains("any: ["), "{out}");
+        g.normalize();
+        assert_eq!(runity::ron::from_str::<Graph>(&out).unwrap(), g);
+    }
+
+    #[test]
+    fn the_layout_is_the_graph_s_own() {
+        let g: Graph = runity::ron::from_str(
+            r#"(start: "idle", states: {
+                "idle": (clip: "idle", transitions: [(to: "walk"), (to: "crouch")]),
+                "walk": (clip: "walk", transitions: [(to: "run")]),
+                "crouch": (clip: "crouch", transitions: [(to: "crawl")]),
+                "run": (clip: "run"),
+                "crawl": (clip: "crawl"),
+                "dead": (clip: "dead"),
+            }, any: [(to: "dead")])"#,
+        )
+        .unwrap();
+        let l = layout(&g);
+        assert_eq!(l["idle"], (0, 0));
+        assert_eq!(l["crouch"], (1, 0));
+        assert_eq!(l["walk"], (1, 1));
+        assert_eq!(l["dead"], (1, 2), "reached only from Any State");
+        // Each goes beside what leads to it, not in name order.
+        assert_eq!(l["crawl"], (2, 0));
+        assert_eq!(l["run"], (2, 1));
+        assert_eq!(layout(&g), l, "the same every time");
     }
 }
