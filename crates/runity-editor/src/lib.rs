@@ -2113,6 +2113,28 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// The project's collision layers by name, from `layers.ron`: what a
+    /// line's `layer` picks from. Empty with no project or no file.
+    pub fn layer_names(&self) -> Vec<String> {
+        self.project
+            .as_ref()
+            .map(|p| p.root().join(runity::layers::FILE))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| runity::ron::from_str::<runity::layers::Layers>(&text).ok())
+            .map(|l| l.layers)
+            .unwrap_or_default()
+    }
+
+    /// A slider dragged, a number scrubbed: every edit until
+    /// [`Self::end_gesture`] undoes as one step, the state before it.
+    pub fn begin_gesture(&mut self) {
+        self.history.begin_gesture();
+    }
+
+    pub fn end_gesture(&mut self) {
+        self.history.end_gesture();
+    }
+
     /// Make the last `steps` undo steps one: what a caller that made
     /// something and then named it wants undone in one go.
     pub fn squash_last(&mut self, steps: usize) {

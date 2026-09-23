@@ -29,15 +29,11 @@ pub enum Panel {
     Animation,
     Screens,
     Animator,
-    Network,
-    WorldDiff,
-    Saves,
-    Systems,
     Dialogues,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 16] = [
+    pub const ALL: [Panel; 12] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -49,10 +45,6 @@ impl Panel {
         Panel::Animation,
         Panel::Screens,
         Panel::Animator,
-        Panel::Network,
-        Panel::WorldDiff,
-        Panel::Saves,
-        Panel::Systems,
         Panel::Dialogues,
     ];
 
@@ -69,10 +61,6 @@ impl Panel {
             Panel::Animation => "animation",
             Panel::Screens => "screens",
             Panel::Animator => "animator",
-            Panel::Network => "network",
-            Panel::WorldDiff => "world-diff",
-            Panel::Saves => "saves",
-            Panel::Systems => "systems",
             Panel::Dialogues => "dialogues",
         }
     }
@@ -90,10 +78,6 @@ impl Panel {
             Panel::Animation => "Animation",
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
-            Panel::Network => "Network",
-            Panel::WorldDiff => "World Diff",
-            Panel::Saves => "Saves",
-            Panel::Systems => "Systems",
             Panel::Dialogues => "Dialogues",
         }
     }
@@ -111,10 +95,6 @@ impl Panel {
             Panel::Animation => "play",
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
-            Panel::Network => "globe",
-            Panel::WorldDiff => "layers-2",
-            Panel::Saves => "save",
-            Panel::Systems => "list-tree",
             Panel::Dialogues => "type",
         }
     }
@@ -457,10 +437,6 @@ impl Docks {
                 Panel::Animator,
                 Panel::Dialogues,
                 Panel::Screens,
-                Panel::Network,
-                Panel::WorldDiff,
-                Panel::Saves,
-                Panel::Systems,
                 Panel::Settings,
                 Panel::Profiler,
             ],

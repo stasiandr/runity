@@ -113,15 +113,6 @@ pub enum Action {
     StopSound,
     /// A game component by name onto the selection.
     AddComponent(String),
-    /// Blockout: a floor or a wall drawn as a Poly Shape in front of the view.
-    PolyFloor,
-    PolyWall,
-    /// Push one face of the selection out (or in) by metres.
-    PushFace(runity::edit::Face, f32),
-    /// Copies of the selection in a row along X, its own width apart.
-    Array(usize),
-    /// The selection's model or prefab scattered around the view's centre.
-    Scatter,
     /// Show or hide a dock: 0 the left, 1 the right, 2 the one under the
     /// view.
     TogglePanel(usize),
@@ -142,12 +133,6 @@ pub enum Action {
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.
     MaterialInstance(String),
-    /// A fence: copies of the selection's model (or posts) along a spline.
-    NewFence,
-    /// One more point at the end of the selection's spline.
-    AddSplinePoint,
-    /// Line the selection up along an axis.
-    Align(usize, runity_editor::Align),
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -253,7 +238,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Check Project", Action::CheckProject),
             ],
         ),
-        ("GameObject", create_items(true)),
+        ("Entity", create_items(true)),
         (
             "View",
             vec![
@@ -278,56 +263,6 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Snap", Action::ToggleSnap),
                 item("Snap Settings…", Action::SnapSettings),
                 item("Navigation", Action::ToggleNavigation),
-            ],
-        ),
-        (
-            "Tools",
-            vec![
-                item("Poly Shape: Floor", Action::PolyFloor),
-                item("Poly Shape: Wall", Action::PolyWall),
-                item("Sculpt Terrain (brush)", Action::ToggleSculpt),
-                item("Face Mode (drag a face)", Action::ToggleFaces),
-                item("Foliage Brush", Action::ToggleFoliage),
-                item("Spline: New Fence", Action::NewFence),
-                item("Spline: Add Point", Action::AddSplinePoint),
-                MenuItem::separator(),
-                item(
-                    "Push Top +0.5",
-                    Action::PushFace(runity::edit::Face::PosY, 0.5),
-                ),
-                item(
-                    "Pull Top −0.5",
-                    Action::PushFace(runity::edit::Face::PosY, -0.5),
-                ),
-                item(
-                    "Push Right +0.5",
-                    Action::PushFace(runity::edit::Face::PosX, 0.5),
-                ),
-                item(
-                    "Push Left +0.5",
-                    Action::PushFace(runity::edit::Face::NegX, 0.5),
-                ),
-                item(
-                    "Push Front +0.5",
-                    Action::PushFace(runity::edit::Face::PosZ, 0.5),
-                ),
-                item(
-                    "Push Back +0.5",
-                    Action::PushFace(runity::edit::Face::NegZ, 0.5),
-                ),
-                MenuItem::separator(),
-                item("Array: 4 copies along X", Action::Array(4)),
-                item("Scatter 20 around the view", Action::Scatter),
-                MenuItem::separator(),
-                item(
-                    "Align X centres",
-                    Action::Align(0, runity_editor::Align::Center),
-                ),
-                item("Align bottoms", Action::Align(1, runity_editor::Align::Min)),
-                item(
-                    "Align Z centres",
-                    Action::Align(2, runity_editor::Align::Center),
-                ),
             ],
         ),
         (

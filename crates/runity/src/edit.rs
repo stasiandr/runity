@@ -25,6 +25,10 @@ pub struct History {
     /// Counts every change of any kind: what a window compares to know the
     /// document moved, without comparing documents.
     revision: u64,
+    /// A gesture in progress — a slider dragged, a number scrubbed — and
+    /// whether its first edit has taken the snapshot yet: every edit after
+    /// that one is the same step.
+    gesture: Option<bool>,
 }
 
 impl History {
@@ -38,7 +42,18 @@ impl History {
             past: Vec::new(),
             future: Vec::new(),
             limit: limit.max(1),
+            gesture: None,
         }
+    }
+
+    /// Start a gesture: from here until [`Self::end_gesture`], however many
+    /// edits are made undo as one — the state before the first of them.
+    pub fn begin_gesture(&mut self) {
+        self.gesture = Some(false);
+    }
+
+    pub fn end_gesture(&mut self) {
+        self.gesture = None;
     }
 
     pub fn scene(&self) -> &Scene {
@@ -68,6 +83,11 @@ impl History {
     /// until the next snapshot, undoes as one step.
     pub fn snapshot(&mut self) {
         self.revision += 1;
+        match self.gesture {
+            Some(true) => return,
+            Some(false) => self.gesture = Some(true),
+            None => {}
+        }
         self.past.push(self.scene.clone());
         if self.past.len() > self.limit {
             self.past.remove(0);
@@ -551,6 +571,22 @@ pub fn scatter(layout: &Scatter) -> Vec<crate::Transform> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_gesture_is_one_step_however_many_edits_it_makes() {
+        let mut history = History::new(Scene::default(), 64);
+        history.edit().entities.push(EntityDesc::default());
+        history.begin_gesture();
+        for _ in 0..100 {
+            history.edit().entities.push(EntityDesc::default());
+        }
+        history.end_gesture();
+        assert_eq!(history.depth(), 2, "the first edit, and the gesture");
+        history.undo();
+        assert_eq!(history.scene().entities.len(), 1, "back to before the gesture");
+        history.edit().entities.clear();
+        assert_eq!(history.depth(), 2, "after it, edits are steps again");
+    }
     use glam::Vec3;
 
     fn entity(name: &str, children: Vec<EntityDesc>) -> EntityDesc {
