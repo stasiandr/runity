@@ -154,7 +154,11 @@ impl SaveGame {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+        // Whole or not at all: a game that stops halfway through a save
+        // keeps the one before, and a reader never sees half a file.
+        let part = path.with_extension("part");
+        std::fs::write(&part, text).map_err(|e| format!("{}: {e}", part.display()))?;
+        std::fs::rename(&part, path).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn read(path: impl AsRef<Path>) -> Result<Self, String> {

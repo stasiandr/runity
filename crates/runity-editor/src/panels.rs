@@ -268,6 +268,21 @@ impl Session {
         for (name, value) in &desc.components {
             fields.push((format!("components.{name}"), value.get_ron().to_string()));
         }
+        // What the running game says about it, read-only: the document is
+        // where it starts, this is where it is.
+        if let Some(state) = self.game_state() {
+            if let Some(saved) = state.entities.iter().find(|s| s.id == id) {
+                let t = saved.transform;
+                fields.push(("game.position".into(), ron(&t.position)));
+                fields.push(("game.rotation".into(), ron(&t.rotation_deg)));
+                fields.push(("game.scale".into(), ron(&t.scale)));
+                for (name, value) in &saved.components {
+                    fields.push((format!("game.components.{name}"), value.clone()));
+                }
+            } else if state.gone.contains(&id) {
+                fields.push(("game".into(), "gone".into()));
+            }
+        }
         let shapes = self.component_shapes();
         Some(
             fields
@@ -540,6 +555,11 @@ impl Session {
     /// edit of a part is. Text that does not parse costs no step, and an
     /// unknown field names the ones there are.
     pub fn set_field(&mut self, id: EntityId, field: &str, text: &str) -> EditResult<()> {
+        if field == "game" || field.starts_with("game.") {
+            return Err(EditError::Scene(format!(
+                "`{field}` is what the running game says; edit the field without `game.` and the game is given it"
+            )));
+        }
         if let Some(component) = field.strip_prefix("components.") {
             let value = (!text.trim().is_empty() && text.trim() != "None").then_some(text);
             return self.set_component(id, component, value);

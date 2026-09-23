@@ -52,7 +52,17 @@ pub struct LiveScene {
     meshes: HashMap<String, MeshHandle>,
     since_poll: f32,
     components: Components,
+    /// Where to tell an editor what the world is like, when one started
+    /// this game (`RUNITY_STATE_FILE`); see [`LiveScene::report`].
+    report_to: Option<PathBuf>,
+    since_report: f32,
 }
+
+/// The variable an editor names the state file in, for a game it starts.
+pub const STATE_VAR: &str = "RUNITY_STATE_FILE";
+
+/// How often the world is reported to an editor watching it.
+const REPORT_SECONDS: f32 = 0.25;
 
 /// A prefab spawned at run time.
 #[derive(Debug)]
@@ -163,6 +173,8 @@ impl LiveScene {
                 meshes: HashMap::new(),
                 since_poll: 0.0,
                 components: Components::new(),
+                report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
+                since_report: 0.0,
             },
             problems,
         ))
@@ -187,6 +199,31 @@ impl LiveScene {
 
     /// The game's component types, which scene lines name. Set before
     /// [`LiveScene::spawn`].
+    /// Tell the editor that started this game what the world is like now:
+    /// every few frames, [`crate::save::capture`] — where each of the
+    /// scene's entities is, the components marked saved, what is gone and
+    /// what was spawned — written whole to the file the editor named in
+    /// `RUNITY_STATE_FILE`. Unity's Inspector during play, across a process
+    /// boundary. Nothing at all in a game nobody started from an editor.
+    pub fn report(&mut self, world: &World, delta: f32) -> Result<(), String> {
+        let Some(path) = &self.report_to else {
+            return Ok(());
+        };
+        self.since_report += delta;
+        if self.since_report < REPORT_SECONDS {
+            return Ok(());
+        }
+        self.since_report = 0.0;
+        crate::save::capture(world, &self.components, &self.current).write(path)
+    }
+
+    /// Report to this file instead of the one `RUNITY_STATE_FILE` names;
+    /// `None` stops reporting.
+    pub fn reporting_to(mut self, path: Option<PathBuf>) -> Self {
+        self.report_to = path;
+        self
+    }
+
     pub fn with_components(mut self, components: Components) -> Self {
         self.components = components;
         self
@@ -589,5 +626,45 @@ fn resolver<'a>(
         };
         meshes.insert(name.to_string(), handle);
         Some(handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_game_started_from_an_editor_reports_where_things_are() {
+        let dir = std::env::temp_dir().join(format!("runity-report-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let scene = dir.join("s.ron");
+        std::fs::write(
+            &scene,
+            r#"(entities: [(id: "00000000000000a1", name: "crate", transform: (position: (0.0, 4.0, 0.0)))])"#,
+        )
+        .unwrap();
+        let state = dir.join("s.state.ron");
+        let (live, _) = LiveScene::open(&scene).unwrap();
+        let mut live = live.reporting_to(Some(state.clone()));
+        let mut world = World::new();
+        let id: crate::id::EntityId = "00000000000000a1".parse().unwrap();
+        world.spawn((
+            crate::world::SceneId(id),
+            crate::scene::Transform {
+                position: glam::Vec3::new(0.0, 0.5, 0.0),
+                ..Default::default()
+            },
+        ));
+        live.report(&world, 0.1).unwrap();
+        assert!(!state.exists(), "not every frame");
+        live.report(&world, 0.2).unwrap();
+        let said = crate::save::SaveGame::read(&state).unwrap();
+        assert_eq!(said.entities.len(), 1);
+        assert_eq!(
+            said.entities[0].transform.position.y, 0.5,
+            "where it fell to"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

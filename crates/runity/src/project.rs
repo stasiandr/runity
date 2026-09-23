@@ -746,6 +746,10 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
+        // Started from the editor: tell it where things are.
+        if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
+            eprintln!("{problem}");
+        }
         // F3: what each part costs, over the game.
         if self.actions.pressed(ctx.input, "profile") {
             self.show_profile = !self.show_profile;

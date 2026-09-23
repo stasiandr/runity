@@ -1688,12 +1688,17 @@ impl Session {
             .join(".runity/live")
             .join(format!("{name}.ron"));
         game::write_live(self.history.scene(), &live)?;
+        // And where the game says what its world is like, for the
+        // Inspector: nothing from a game before this one.
+        let state = live.with_extension("state.ron");
+        let _ = std::fs::remove_file(&state);
         let mut command = std::process::Command::new("cargo");
         command
             .arg("run")
             .current_dir(project.root())
             .env("RUNITY_SCENE", &name)
-            .env(game::LIVE_VAR, &live);
+            .env(game::LIVE_VAR, &live)
+            .env(runity::live::STATE_VAR, &state);
         self.say(
             console::Level::Info,
             format!("playing scenes/{name}.ron in the game"),

@@ -12,6 +12,10 @@
 //! and every edit of the open scene is written there — the running game
 //! patches itself from it, keeping its state, without anyone saving. What
 //! is on disk under `scenes/` changes only when the person saves.
+//!
+//! And back: the game writes what its world is like to the file named in
+//! `RUNITY_STATE_FILE` a few times a second (`LiveScene::report`), and the
+//! Inspector shows it as `game.` fields beside the document's.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -52,6 +56,8 @@ pub(crate) struct Running {
     child: Child,
     lines: Receiver<String>,
     mirror: Option<Mirror>,
+    /// Where the game says what its world is like.
+    state: Option<PathBuf>,
     /// The entry being put together: a message whose details — a stack
     /// trace, where a compile error is — may still be arriving.
     pending: Option<(String, std::time::Instant)>,
@@ -157,10 +163,16 @@ impl Session {
                 file: PathBuf::from(file),
                 given: self.history.scene().clone(),
             });
+        let state = command
+            .get_envs()
+            .find(|(k, _)| *k == runity::live::STATE_VAR)
+            .and_then(|(_, v)| v)
+            .map(PathBuf::from);
         self.game = Some(Running {
             child,
             lines,
             mirror,
+            state,
             pending: None,
         });
         Ok(())
@@ -255,6 +267,15 @@ impl Session {
                 format!("the game could not be given the edit: {problem}"),
             );
         }
+    }
+
+    /// What the running game last said its world is like: where each of
+    /// the scene's entities is, their saved components, what is gone and
+    /// what was spawned. `None` without a running game, or before it has
+    /// said anything.
+    pub fn game_state(&self) -> Option<runity::save::SaveGame> {
+        let path = self.game.as_ref()?.state.as_ref()?;
+        runity::save::SaveGame::read(path).ok()
     }
 
     /// Whether a game started from here is still running.

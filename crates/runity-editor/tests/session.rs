@@ -3663,6 +3663,60 @@ fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
     session.poll_game();
     assert!(given(&live).find("box").is_some());
     session.stop_game();
+
+    // And back: what the game says about its world shows in the Inspector,
+    // beside what the document says, and cannot be edited there.
+    let state = command
+        .get_envs()
+        .find(|(k, _)| *k == "RUNITY_STATE_FILE")
+        .and_then(|(_, v)| v)
+        .map(PathBuf::from)
+        .unwrap();
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30")
+        .env("RUNITY_SCENE_FILE", &live)
+        .env("RUNITY_STATE_FILE", &state);
+    session.run_in_console(game).unwrap();
+    let box_id = id(&session, "box");
+    assert!(session.game_state().is_none(), "nothing said yet");
+    runity::save::SaveGame {
+        entities: vec![runity::save::Saved {
+            id: box_id,
+            transform: Transform {
+                position: Vec3::new(0.0, 0.5, 3.0),
+                ..Default::default()
+            },
+            components: vec![("door".into(), "(open: true)".into())],
+            prefab: String::new(),
+        }],
+        gone: vec![],
+    }
+    .write(&state)
+    .unwrap();
+    let fields = session.inspect(box_id).unwrap();
+    let value = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.value.clone())
+    };
+    assert_eq!(value("game.position").as_deref(), Some("(0.0,0.5,3.0)"));
+    assert_eq!(
+        value("game.components.door").as_deref(),
+        Some("(open: true)")
+    );
+    assert_ne!(
+        value("position"),
+        value("game.position"),
+        "the document is where it starts"
+    );
+    let e = session
+        .set_field(box_id, "game.position", "(0.0, 0.0, 0.0)")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("what the running game says"), "{e}");
+    session.stop_game();
+    assert!(session.game_state().is_none(), "not after it stopped");
 }
 
 #[test]
