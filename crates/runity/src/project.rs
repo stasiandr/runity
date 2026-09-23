@@ -71,6 +71,10 @@ pub const UI: &str = "ui";
 /// Which animation plays when — Animator Controllers — one RON file each:
 /// see [`crate::animgraph`].
 pub const ANIMATORS: &str = "animators";
+
+/// Materials' own shaders, one `surface` function a file: `shaders/water.wgsl`
+/// is `shader: "water"` in a material.
+pub const SHADERS: &str = "shaders";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
@@ -654,6 +658,8 @@ struct Game {
     profile: runity::perf::Profiler,
     show_profile: bool,
     widgets: Widgets,
+    /// Materials' own shaders, put in and reloaded as they are saved.
+    shaders: runity::render::MaterialShaders,
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
@@ -756,6 +762,12 @@ impl shell::Game for Game {
         let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in reload.lines() {
             eprintln!("{line}");
+        }
+        for (name, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
+            match result {
+                Ok(()) => eprintln!("shader {name}: in"),
+                Err(problem) => eprintln!("{problem}"),
+            }
         }
         // Played together: what the others own comes in, what this player
         // owns goes out, and whatever they spawn is spawned here too.
@@ -893,6 +905,7 @@ fn main() -> anyhow::Result<()> {
         profile: runity::perf::Profiler::new(600),
         show_profile: false,
         widgets: Widgets::new(),
+        shaders: runity::render::MaterialShaders::new(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),

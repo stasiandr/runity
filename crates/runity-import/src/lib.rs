@@ -866,6 +866,10 @@ pub struct MaterialSource {
     pub mask_map: String,
     #[serde(default)]
     pub emission_map: String,
+    /// Its own shader: `shaders/<name>.wgsl` in the project, a `surface`
+    /// function over the standard one. Empty is the standard one.
+    #[serde(default)]
+    pub shader: String,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1205,6 +1209,7 @@ pub fn material_from_ron(
             normal_map: texture_id(path, &source.normal_map, true)?,
             mask_map: texture_id(path, &source.mask_map, true)?,
             emission_map: texture_id(path, &source.emission_map, false)?,
+            shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
@@ -1472,6 +1477,9 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
         let asset = asset_for(settings.asset_id(), &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
+        } else if runity::asset::stale_format(&asset) {
+            // Written by an older engine: built again, whatever the clock.
+            Some(Change::Changed)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
             // The clock says maybe; the hash decides.
             match content_hash(&source) {

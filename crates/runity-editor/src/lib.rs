@@ -76,6 +76,8 @@ impl Snap {
 pub struct Session {
     gpu: Gpu,
     renderer: Renderer,
+    /// The project's materials' own shaders, put in as they are saved.
+    shaders: Option<runity::render::MaterialShaders>,
     target: OffscreenTarget,
     world: hecs::World,
     history: runity::edit::History,
@@ -287,6 +289,7 @@ impl Session {
         Ok(Self {
             gpu,
             renderer,
+            shaders: None,
             target,
             world: hecs::World::new(),
             history: runity::edit::History::new(Scene::default(), 64),
@@ -2884,6 +2887,22 @@ impl Session {
 
     /// Draw one frame into the session's image.
     pub fn render(&mut self) {
+        // The project's material shaders, as they are saved.
+        if self.shaders.is_none() {
+            self.shaders = self.project().map(|p| {
+                runity::render::MaterialShaders::new(p.root().join(runity::project::SHADERS))
+            });
+        }
+        if let Some(shaders) = &mut self.shaders {
+            for (name, result) in shaders.poll(&mut self.renderer, &self.gpu) {
+                match result {
+                    Ok(()) => self
+                        .console
+                        .say(console::Level::Info, format!("shader {name}: in")),
+                    Err(problem) => self.console.say(console::Level::Error, problem),
+                }
+            }
+        }
         // Emitters play while they are looked at, as Unity previews them:
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);

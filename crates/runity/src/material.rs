@@ -194,6 +194,12 @@ pub struct Material {
     /// URP's Emission Map, times `emission`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub emission_map: Option<crate::asset::AssetId>,
+    /// Its own shader — water, glass, something that moves — as
+    /// [`crate::asset::shader_id`] names it: a `surface` function in
+    /// `shaders/<name>.wgsl` that changes what the standard one worked out
+    /// before it is lit. `None` is the standard one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shader: Option<crate::asset::AssetId>,
     /// How strongly the normal map bends the surface.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub normal_scale: f32,
@@ -265,6 +271,7 @@ impl Material {
             normal_map: None,
             mask_map: None,
             emission_map: None,
+            shader: None,
             normal_scale: 1.0,
             occlusion_strength: 1.0,
             tiling: [1.0, 1.0],
@@ -362,6 +369,7 @@ impl From<&ArchivedMaterial> for Material {
                 .emission_map
                 .as_ref()
                 .map(crate::asset::AssetId::from),
+            shader: archived.shader.as_ref().map(crate::asset::AssetId::from),
             normal_scale: archived.normal_scale.to_native(),
             occlusion_strength: archived.occlusion_strength.to_native(),
             tiling: [

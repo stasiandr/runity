@@ -794,6 +794,13 @@ struct GpuMesh {
 /// Holds the pipeline, the uploaded meshes and the buffers a frame needs.
 pub struct Renderer {
     pipelines: Pipelines,
+    /// The standard shader's source now — [`SHADER`], or what was reloaded.
+    base_shader: String,
+    /// Materials' own `surface` functions, by id: built again whenever the
+    /// standard shader is reloaded.
+    material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
+    /// Since when the renderer has run: the time a material's shader sees.
+    began: std::time::Instant,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -964,6 +971,81 @@ pub const SHADER: &str = include_str!("render.wgsl");
 /// watching it while working on the engine; see [`ShaderFile`].
 pub const SHADER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/render.wgsl");
 
+/// The standard shader with a material's `surface` put in place of its
+/// own, between the `runity:surface` marks.
+pub fn with_surface(base: &str, surface: &str) -> Result<String, String> {
+    const OPEN: &str = "// runity:surface {";
+    const CLOSE: &str = "// runity:surface }";
+    let start = base
+        .find(OPEN)
+        .ok_or("the standard shader has no `runity:surface` mark")?;
+    let end = base[start..]
+        .find(CLOSE)
+        .map(|i| start + i + CLOSE.len())
+        .ok_or("the standard shader's `runity:surface` mark is not closed")?;
+    if !surface.contains("fn surface(") {
+        return Err(
+            "a material's shader has to have `fn surface(in: SurfaceIn, out: Surface) -> Surface`"
+                .into(),
+        );
+    }
+    Ok(format!("{}{surface}\n{}", &base[..start], &base[end..]))
+}
+
+/// Every material shader in a folder — `shaders/water.wgsl` for
+/// `shader: "water"` — put into a renderer, and again when one changes.
+pub struct MaterialShaders {
+    dir: std::path::PathBuf,
+    stamps: std::collections::HashMap<std::path::PathBuf, std::time::SystemTime>,
+}
+
+impl MaterialShaders {
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            stamps: Default::default(),
+        }
+    }
+
+    /// Put in whatever is new or changed since the last call: each one's
+    /// name, and what went wrong with it if it did not build.
+    pub fn poll(
+        &mut self,
+        renderer: &mut Renderer,
+        gpu: &Gpu,
+    ) -> Vec<(String, Result<(), String>)> {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "wgsl") {
+                continue;
+            }
+            let Ok(stamp) = entry.metadata().and_then(|m| m.modified()) else {
+                continue;
+            };
+            if self.stamps.get(&path) == Some(&stamp) {
+                continue;
+            }
+            self.stamps.insert(path.clone(), stamp);
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let result = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|source| {
+                    renderer.set_material_shader(gpu, crate::asset::shader_id(&name), &source)
+                })
+                .map_err(|e| format!("{}:\n{e}", path.display()));
+            out.push((name, result));
+        }
+        out
+    }
+}
+
 /// A shader source file, reloaded into a renderer when it changes. DNA,
 /// postulate 1: shaders reload too.
 pub struct ShaderFile {
@@ -1011,6 +1093,9 @@ struct Look {
     face: RenderFace,
     /// `None` is opaque.
     blend: Option<Blend>,
+    /// A material's own shader ([`Renderer::set_material_shader`]); `None`
+    /// is the standard one.
+    shader: Option<crate::asset::AssetId>,
 }
 
 impl Look {
@@ -1029,6 +1114,7 @@ impl Look {
                         skinned,
                         face,
                         blend,
+                        shader: None,
                     });
                 }
             }
@@ -1041,6 +1127,7 @@ impl Look {
             skinned,
             face: material.render_face,
             blend: material.is_transparent().then_some(material.blend),
+            shader: material.shader,
         }
     }
 }
@@ -1150,17 +1237,15 @@ fn blend_state(blend: Blend) -> wgpu::BlendState {
     }
 }
 
-/// Every pipeline the renderer draws with, from one shader module: at
-/// start, and again when the shader is reloaded. The scene draws into the
-/// HDR format, multisampled `samples` times; overlays onto `output`, after
-/// post-processing.
-fn build_pipelines(
+/// The scene's pipelines for these looks, from one shader module: the
+/// standard shader's at start, a material's own when it is set.
+fn scene_pipelines(
     gpu: &Gpu,
     shader: &wgpu::ShaderModule,
-    output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
-) -> Pipelines {
+    looks: Vec<Look>,
+) -> std::collections::HashMap<Look, wgpu::RenderPipeline> {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
         count: samples,
@@ -1221,10 +1306,29 @@ fn build_pipelines(
                 cache: None,
             })
     };
-    let scene = Look::all()
+    looks
         .into_iter()
         .map(|look| (look, scene_pipeline(look)))
-        .collect();
+        .collect()
+}
+
+/// Every pipeline the renderer draws with, from one shader module: at
+/// start, and again when the shader is reloaded. The scene draws into the
+/// HDR format, multisampled `samples` times; overlays onto `output`, after
+/// post-processing.
+fn build_pipelines(
+    gpu: &Gpu,
+    shader: &wgpu::ShaderModule,
+    output: wgpu::TextureFormat,
+    samples: u32,
+    layouts: &Layouts,
+) -> Pipelines {
+    let format = crate::post::HDR_FORMAT;
+    let multisample = wgpu::MultisampleState {
+        count: samples,
+        ..Default::default()
+    };
+    let scene = scene_pipelines(gpu, shader, samples, layouts, Look::all());
     let prepass_pipeline = |skinned: bool, face: RenderFace| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -1456,6 +1560,7 @@ impl Renderer {
     /// words too. Either way the old shader keeps drawing — a typo saved
     /// mid-edit costs a message, not a black screen or a crash.
     pub fn reload_shader(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
+        let original = source;
         use wgpu::naga;
         let traced;
         let source = if self.ray.is_some() {
@@ -1498,6 +1603,92 @@ impl Renderer {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
+        self.base_shader = original.to_string();
+        // The materials' own shaders are the standard one with their
+        // surface in: built again on the new one.
+        let own: Vec<(crate::asset::AssetId, String)> = self
+            .material_shaders
+            .iter()
+            .map(|(id, s)| (*id, s.clone()))
+            .collect();
+        for (id, surface) in own {
+            if let Err(e) = self.set_material_shader(gpu, id, &surface) {
+                eprintln!("a material's shader no longer builds on the reloaded one: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The pipeline for a look: a material's own shader's, or the standard
+    /// one's while that shader is not in (not yet written, or broken).
+    fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
+        self.pipelines.scene.get(&look).or_else(|| {
+            self.pipelines.scene.get(&Look {
+                shader: None,
+                ..look
+            })
+        })
+    }
+
+    /// Give materials whose `shader` is `id` their own `surface` function
+    /// (see `render.wgsl`): the standard shader with it put in, checked,
+    /// and its pipelines built. Refused in words — file, line, column —
+    /// with whatever it had before kept drawing.
+    pub fn set_material_shader(
+        &mut self,
+        gpu: &Gpu,
+        id: crate::asset::AssetId,
+        surface: &str,
+    ) -> Result<(), String> {
+        let composed = with_surface(&self.base_shader, surface)?;
+        let source = if self.ray.is_some() {
+            crate::ray::traced(&composed)
+        } else {
+            composed
+        };
+        use wgpu::naga;
+        let module =
+            naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(&source))?;
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("runity::material shader"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let looks: Vec<Look> = Look::all()
+            .into_iter()
+            .map(|look| Look {
+                shader: Some(id),
+                ..look
+            })
+            .collect();
+        let built = scene_pipelines(
+            gpu,
+            &shader,
+            self.samples,
+            &Layouts {
+                main: &self.pipeline_layout,
+                shadow: &self.shadow_pipeline_layout,
+                shadow_clip: &self.shadow_clip_layout,
+                skinned: &self.skinned_layout,
+                sky: &self.sky_layout,
+                fog_inject: &self.fog_inject_layout,
+                fog_integrate: &self.fog_integrate_layout,
+            },
+            looks,
+        );
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("the shader does not fit the renderer: {error}"));
+        }
+        self.pipelines.scene.extend(built);
+        self.material_shaders.insert(id, surface.to_string());
         Ok(())
     }
 
@@ -1955,6 +2146,9 @@ impl Renderer {
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
             pipelines,
+            base_shader: SHADER.to_string(),
+            material_shaders: std::collections::HashMap::new(),
+            began: std::time::Instant::now(),
             layout,
             bind_group,
             shadow_bind_group,
@@ -2366,7 +2560,7 @@ impl Renderer {
                     let pipeline = if prepass {
                         self.pipelines.prepass.get(&(look.skinned, look.face))
                     } else {
-                        self.pipelines.scene.get(look)
+                        self.scene_pipeline(*look)
                     };
                     if let Some(pipeline) = pipeline {
                         pass.set_pipeline(pipeline);
@@ -2412,7 +2606,7 @@ impl Renderer {
         let pipeline = if prepass {
             self.pipelines.prepass.get(&(look.skinned, look.face))
         } else {
-            self.pipelines.scene.get(&look)
+            self.scene_pipeline(look)
         };
         let Some(pipeline) = pipeline else {
             return;
@@ -3144,7 +3338,7 @@ impl Renderer {
                 ]
             },
             fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
-            clear_color: extend(frame.clear_color, 1.0),
+            clear_color: extend(frame.clear_color, self.began.elapsed().as_secs_f32()),
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));

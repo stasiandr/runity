@@ -64,7 +64,8 @@ struct Frame {
     fog_shape: vec4<f32>,
     // the lamps' share
     fog_lamps: vec4<f32>,
-    // behind everything, with a plain-colour sky
+    // behind everything, with a plain-colour sky; w: seconds the renderer
+    // has run, for a material's shader to move by
     clear_color: vec4<f32>,
 };
 
@@ -738,6 +739,34 @@ fn mapped_normal(geometric: vec3<f32>, world_position: vec3<f32>, uv: vec2<f32>,
     return normalize(t * inverse * n.x + b * inverse * n.y + geometric * n.z);
 }
 
+// What a material's own shader is given: where the fragment is, its
+// surface's normal, its texture coordinates and the time.
+struct SurfaceIn {
+    world_position: vec3<f32>,
+    normal: vec3<f32>,
+    uv: vec2<f32>,
+    time: f32,
+};
+
+// What the standard shader worked out for the fragment, before the light:
+// what a material's shader changes.
+struct Surface {
+    albedo: vec3<f32>,
+    alpha: f32,
+    metallic: f32,
+    smoothness: f32,
+    normal: vec3<f32>,
+    emission: vec3<f32>,
+};
+
+// A material's shader replaces this function — everything between the two
+// marks — with its own `surface` (and whatever it needs above it).
+// runity:surface {
+fn surface(in: SurfaceIn, out: Surface) -> Surface {
+    return out;
+}
+// runity:surface }
+
 @fragment
 fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let sampled = textureSample(surface_texture, surface_sampler, in.uv);
@@ -751,7 +780,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // filtered by, worked out here where every pixel still runs together.
     let across = dpdx(in.world_position);
     let down = dpdy(in.world_position);
-    let alpha = in.surface.z * sampled.a;
+    var alpha = in.surface.z * sampled.a;
     // Alpha clipping: what is less opaque than the threshold is not drawn
     // at all.
     if in.surface.w > 0.0 && alpha < in.surface.w {
@@ -799,8 +828,18 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         }
     }
 
+    // The material's own shader has its say, before the light.
+    let shaped = surface(
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w),
+        Surface(albedo, alpha, in.surface.x * mask.r, smoothness, normal, in.emission.rgb * emitted),
+    );
+    albedo = shaped.albedo;
+    alpha = shaped.alpha;
+    smoothness = shaped.smoothness;
+    normal = normalize(shaped.normal);
+
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
-    let b = brdf(albedo, in.surface.x * mask.r, smoothness);
+    let b = brdf(albedo, shaped.metallic, smoothness);
     let baked = mix(1.0, mask.g, in.detail.y);
     let highlights = (flags & 1u) != 0u;
 
@@ -868,7 +907,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let seen = reflected(in.world_position, reflect(-to_eye, normal), b.perceptual_roughness);
         color = color + seen * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
     }
-    let emission = in.emission.rgb * emitted;
+    let emission = shaped.emission;
     color = color + emission;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
