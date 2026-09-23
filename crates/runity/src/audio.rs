@@ -340,8 +340,10 @@ impl Sources {
                     1.0
                 };
             match self.playing.get_mut(&entity) {
-                // Changed in the scene while it plays: from the start.
-                Some(voice) if voice.source != *source => {
+                // Another sound while it plays: from the start. Louder,
+                // quieter, carrying further — a motion turning it — is
+                // the same sound.
+                Some(voice) if !same_sound(&voice.source, source) => {
                     if let Some(mut s) = voice.sound.take() {
                         s.stop();
                     }
@@ -349,10 +351,11 @@ impl Sources {
                 }
                 Some(voice) => {
                     if let Some(s) = &mut voice.sound {
-                        if source.spatial {
+                        if source.spatial || source.volume != voice.source.volume {
                             s.set_volume(gain);
                         }
                     }
+                    voice.source = source.clone();
                     seen.insert(entity);
                     continue;
                 }
@@ -439,6 +442,16 @@ impl Sources {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Whether two sources are one sound, whatever its volume and reach.
+fn same_sound(a: &crate::scene::SoundSource, b: &crate::scene::SoundSource) -> bool {
+    a.clip == b.clip
+        && a.looped == b.looped
+        && a.pitch == b.pitch
+        && a.group == b.group
+        && a.spatial == b.spatial
+        && a.on_start == b.on_start
 }
 
 /// Linear gain to decibels, which is what a mixer actually works in.

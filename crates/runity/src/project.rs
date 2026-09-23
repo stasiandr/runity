@@ -669,6 +669,8 @@ struct Game {
     audio: Option<runity::audio::Audio>,
     /// The scene's `sound`s, played.
     sounds: runity::audio::Sources,
+    /// The graphs and clips that lines' `animator`s play.
+    motions: runity::motion::Motions,
 }
 
 impl Game {
@@ -685,8 +687,10 @@ impl Game {
 fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::perf::Profiler, seconds: f32) {
     // systems, in order
     profile.time("spin", || systems::spin::run(world, seconds));
-    // Platforms and lifts on their routes, then everything placed.
+    // Platforms and lifts on their routes, and lines with an `animator`
+    // moving what is under them; then everything placed.
     profile.time("routes", || runity::routes::run_routes(world, seconds));
+    profile.time("motion", || runity::motion::run(world, seconds));
     runity::world::apply_hierarchy(world);
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
@@ -767,9 +771,13 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
-        for (name, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
+        // Lines that came in with an `animator` start their graphs.
+        for problem in runity::motion::attach(&mut self.world, &self.motions) {
+            eprintln!("{problem}");
+        }
+        for (shader, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
             match result {
-                Ok(()) => eprintln!("shader {name}: in"),
+                Ok(()) => eprintln!("shader {shader}: in"),
                 Err(problem) => eprintln!("{problem}"),
             }
         }
@@ -894,6 +902,10 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     };
+    let (motions, problems) = runity::motion::Motions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
+    for problem in &problems {
+        eprintln!("{problem}");
+    }
     let actions = Actions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
@@ -927,6 +939,7 @@ fn main() -> anyhow::Result<()> {
         components: game_components(),
         audio: runity::audio::Audio::new().map_err(|e| eprintln!("no sound: {e}")).ok(),
         sounds: runity::audio::Sources::new(),
+        motions,
     };
     run(config, game)
 }
@@ -1198,6 +1211,7 @@ ui/          the game's screens: elements anchored in a 1280x720 frame (runity::
 strings/     the game's words, one file per language; a screen says `@key`
 dialogues/   conversations: lines, answers and the flags they set (runity::dialogue)
 animators/   which animation plays when: states and transitions, RON (runity::animgraph)
+clips/       clips that move things, not bones — a line's `animator` plays them (runity::motion)
 shaders/     materials' own looks: one WGSL `surface` function a file
 layers.ron   collision layers, and which pairs pass through each other
 scenes/      scenes, RON — one entity per block, `id` first

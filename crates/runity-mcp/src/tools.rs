@@ -45,6 +45,7 @@ fn entity_fields() -> Value {
         "decal": { "type": "string", "description": "RON: a decal's box, centred here and pressed down its -y — (size: (2.0, 1.0, 2.0)); the entity's material is the picture (base map, alpha, normal map) — or None" },
         "reflection_probe": { "type": "string", "description": "RON: a reflection probe's box, centred here — (size: (8.0, 4.0, 8.0)); box_projection: false, blend_distance: 1.0 — what polished things in it reflect instead of the sky; or None" },
         "sound": { "type": "string", "description": "RON: a sound it makes — (clip: \"radio\", looped: true); volume: 1.0, on_start: true, spatial: true (false: everywhere, music), near: 1.0, far: 40.0, group: \"music\" — or None" },
+        "animator": { "type": "string", "description": "the graph in animators/ that moves it and what is under it, with clips from clips/ (Unity's Animator); empty for none" },
         "inactive": { "type": "boolean", "description": "switched off: it and everything under it is not drawn, has no body, makes no sound" },
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
@@ -1589,6 +1590,9 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
                     .map_err(|e| format!("sound: {e}"))?,
             )
         };
+    }
+    if let Some(animator) = optional_string(args, "animator")? {
+        desc.animator = animator.trim().to_string();
     }
     if let Some(inactive) = args.get("inactive") {
         desc.inactive = inactive

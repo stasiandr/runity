@@ -26,7 +26,14 @@ fn clip_name(
     let guid = r.guid.clone()?;
     let path = unity.guids.get(&guid)?;
     if path.extension().is_some_and(|e| e == "anim") {
-        return Some(super::stem(path));
+        // As `clips/` names it.
+        return Some(
+            unity
+                .names
+                .get(&guid)
+                .cloned()
+                .unwrap_or_else(|| super::stem(path)),
+        );
     }
     let table = cache.entry(guid).or_insert_with(|| {
         let mut out = HashMap::new();
@@ -192,6 +199,15 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
                 out.blend.sort_by(|a, b| a.0.total_cmp(&b.0));
             } else if let Some(clip) = clip_name(unity, &m, &mut clips_cache) {
                 out.clip = clip;
+                // An `.anim` says whether it loops (Loop Time).
+                let anim = m
+                    .guid
+                    .as_ref()
+                    .and_then(|g| unity.guids.get(g))
+                    .filter(|p| p.extension().is_some_and(|e| e == "anim"));
+                if let Some(text) = anim.and_then(|p| std::fs::read_to_string(p).ok()) {
+                    out.looping = !text.contains("m_LoopTime: 0");
+                }
             }
         }
         if out.clip.is_empty() && out.blend.is_empty() && out.directional.is_empty() {

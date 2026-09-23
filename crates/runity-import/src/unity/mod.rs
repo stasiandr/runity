@@ -6,6 +6,7 @@
 //! list until each has its Rust type.
 
 mod animator;
+mod motion;
 mod material;
 mod scene;
 pub mod yaml;
@@ -28,6 +29,7 @@ pub struct Report {
     pub sounds: usize,
     pub models: usize,
     pub animators: usize,
+    pub motions: usize,
     /// What was left behind, by kind, with how many times: a component
     /// with no counterpart, a modification it could not carry.
     pub skipped: BTreeMap<String, usize>,
@@ -45,14 +47,15 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators",
+            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators, {} clips",
             self.scenes,
             self.prefabs,
             self.materials,
             self.textures,
             self.sounds,
             self.models,
-            self.animators
+            self.animators,
+            self.motions
         )?;
         if !self.skipped.is_empty() {
             writeln!(f, "left behind:")?;
@@ -124,6 +127,7 @@ pub fn kind_of(path: &Path) -> Option<&'static str> {
         "png" | "jpg" | "jpeg" | "tga" | "bmp" | "psd" | "tif" | "tiff" | "exr" => "texture",
         "wav" | "ogg" | "mp3" | "flac" => "sound",
         "controller" => "animator",
+        "anim" => "motion",
         "cs" => "script",
         _ => return None,
     })
@@ -442,6 +446,18 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
                 let name = &unity.names[guid];
                 write(&dir.join(format!("{name}.ron")), &text)?;
                 report.animators += 1;
+            }
+            Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
+        }
+    }
+
+    for (guid, path) in unity.of_kind("motion") {
+        match motion::convert(path, &mut report) {
+            Ok(clip) => {
+                let dir = project.root().join(runity::motion::DIR);
+                let name = &unity.names[guid];
+                write(&dir.join(format!("{name}.ron")), &motion::text(&clip))?;
+                report.motions += 1;
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
         }

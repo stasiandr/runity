@@ -735,7 +735,15 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "Animator" => {
-            report.skip("Animator (the graph comes over from animators/; the game attaches it)")
+            let graph = b
+                .reference("m_Controller")
+                .and_then(|r| refs.unity.named(r.guid.as_deref()?))
+                .filter(|(kind, _)| *kind == "animator");
+            match graph {
+                Some((_, name)) if b.i64("m_Enabled") != Some(0) => desc.animator = name.to_string(),
+                Some(_) => report.skip("a switched-off Animator"),
+                None => report.skip("an Animator with no controller (or an override controller)"),
+            }
         }
         "AudioSource" => audio_source(desc, b, refs.unity, report),
         "ParticleSystem" => shuriken(desc, b, report),

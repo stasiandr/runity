@@ -60,6 +60,8 @@ struct Names {
     sounds: HashSet<String>,
     textures: HashSet<String>,
     scenes: HashSet<String>,
+    /// The graphs in `animators/`, by name.
+    animators: HashSet<String>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -218,6 +220,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         runity::layers::FILE,
         runity::strings::DIR,
         runity::dialogue::DIR,
+        runity::motion::DIR,
         "Cargo.toml",
         "Cargo.lock",
         "build.rs",
@@ -402,7 +405,13 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             ids.insert(id);
         }
     }
+    let animators = files(&project.root().join(runity::project::ANIMATORS), "ron")
+        .iter()
+        .filter(|p| !p.to_string_lossy().ends_with(".cases.ron"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
     Names {
+        animators,
         models,
         materials,
         prefabs,
@@ -478,6 +487,16 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 names,
                 out,
             );
+        }
+        if !entity.animator.is_empty() && !names.animators.contains(&entity.animator) {
+            out.push(error(
+                file,
+                format!(
+                    "{who}: animator `{}` is not a graph in animators/{}",
+                    entity.animator,
+                    suggest(&entity.animator, names.animators.iter().map(String::as_str))
+                ),
+            ));
         }
         if let Some(sound) = &entity.sound {
             let clip = &sound.clip;
@@ -726,6 +745,11 @@ fn parse<T: serde::de::DeserializeOwned>(
 /// transition never taken), and every parameter they read that the game's
 /// code never names — a graph waiting on a number nobody sets.
 fn animators(project: &Project, out: &mut Vec<Finding>) {
+    // The motion clips: each reads.
+    for path in files(&project.root().join(runity::motion::DIR), "ron") {
+        let file = relative(project, &path);
+        parse::<runity::motion::Motion>(&path, &file, out);
+    }
     let dir = project.root().join(runity::project::ANIMATORS);
     let graphs = files(&dir, "ron");
     if graphs.is_empty() {

@@ -204,6 +204,27 @@ pub fn inactive_in_hierarchy(world: &World) -> std::collections::HashSet<hecs::E
     out
 }
 
+/// A line's `animator`, with every thing under it by its path of names.
+fn animates(desc: &EntityDesc) -> crate::motion::Animates {
+    fn walk(desc: &EntityDesc, path: &str, out: &mut Vec<(String, crate::id::EntityId)>) {
+        for child in &desc.children {
+            let at = if path.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{path}/{}", child.name)
+            };
+            out.push((at.clone(), child.id));
+            walk(child, &at, out);
+        }
+    }
+    let mut parts = vec![(String::new(), desc.id)];
+    walk(desc, "", &mut parts);
+    crate::motion::Animates {
+        graph: desc.animator.clone(),
+        parts,
+    }
+}
+
 /// A sound the entity makes, from its line's `sound`; played by
 /// [`crate::audio::Sources`].
 #[derive(Debug, Clone, PartialEq)]
@@ -587,6 +608,9 @@ fn spawn_one(
     if let Some(sound) = &desc.sound {
         let _ = world.insert_one(entity, Sounding(sound.clone()));
     }
+    if !desc.animator.is_empty() {
+        let _ = world.insert_one(entity, animates(desc));
+    }
     if desc.inactive {
         let _ = world.insert_one(entity, Inactive);
     }
@@ -918,6 +942,15 @@ impl Patch<'_> {
         }
         if was.is_none_or(|(old, _)| old.inactive != desc.inactive) {
             set_active(world, entity, !desc.inactive);
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.animator != desc.animator) {
+            let _ = world.remove_one::<crate::motion::Moving>(entity);
+            if desc.animator.is_empty() {
+                let _ = world.remove_one::<crate::motion::Animates>(entity);
+            } else {
+                let _ = world.insert_one(entity, animates(desc));
+            }
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.sound != desc.sound) {
@@ -1559,6 +1592,7 @@ mod tests {
             post_volume: None,
             render_texture: None,
             sound: None,
+            animator: String::new(),
             inactive: false,
             overrides: Default::default(),
             components: Default::default(),
@@ -1596,6 +1630,7 @@ mod tests {
                     post_volume: None,
                     render_texture: None,
                     sound: None,
+                    animator: String::new(),
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),

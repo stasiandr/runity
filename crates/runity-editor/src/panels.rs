@@ -49,7 +49,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "collider" => ron(&blank.collider),
         "physics" => ron(&blank.physics),
         "joint" => ron(&blank.joint),
-        "layer" | "bone" => String::new(),
+        "layer" | "bone" | "animator" => String::new(),
         "inactive" => "false".into(),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
         | "render_texture" | "sound" | "route" | "spline" | "along" | "joint_break" => {
@@ -290,6 +290,7 @@ impl Session {
             ("physics".into(), ron(&desc.physics)),
             ("layer".into(), desc.layer.clone()),
             ("inactive".into(), desc.inactive.to_string()),
+            ("animator".into(), desc.animator.clone()),
             ("bone".into(), desc.bone.clone()),
             ("joint".into(), ron(&desc.joint)),
             (
@@ -645,6 +646,7 @@ impl Session {
             "prefab" => next.prefab = text.into(),
             "layer" => next.layer = text.to_string(),
             "inactive" => next.inactive = parse::<bool>(field, text)?,
+            "animator" => next.animator = text.trim().to_string(),
             "bone" => next.bone = text.trim().to_string(),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,

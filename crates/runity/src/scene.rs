@@ -865,6 +865,11 @@ pub struct EntityDesc {
     /// see [`RenderTexture`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_texture: Option<RenderTexture>,
+    /// The graph in `animators/` that moves it and the things under it,
+    /// with the clips in `clips/` (see [`crate::motion`]): Unity's Animator
+    /// on a GameObject.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub animator: String,
     /// A sound it makes; see [`SoundSource`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub sound: Option<SoundSource>,
@@ -1751,6 +1756,7 @@ mod tests {
                 post_volume: None,
                 render_texture: None,
                 sound: None,
+                animator: String::new(),
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
@@ -1786,6 +1792,7 @@ mod tests {
                     post_volume: None,
                     render_texture: None,
                     sound: None,
+                    animator: String::new(),
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
@@ -1847,6 +1854,7 @@ mod tests {
                 post_volume: None,
                 render_texture: None,
                 sound: None,
+                animator: String::new(),
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),

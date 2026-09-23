@@ -122,6 +122,8 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
         ANIMATORS,
         SHADERS,
         runity::strings::DIR,
+        runity::dialogue::DIR,
+        runity::motion::DIR,
     ] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;
     }
