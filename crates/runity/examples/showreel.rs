@@ -64,6 +64,21 @@ fn shots() -> Vec<Shot> {
             look: &[],
         },
         Shot {
+            name: "rays",
+            caption: "Тени лучами (аппаратный рейтрейсинг): на закате полутень растёт от камня, тень перекати-поля — кружево веток",
+            scene: "desert.ron",
+            seconds: 8.0,
+            from: (v(-12.5, 1.1, -5.0), v(-10.5, 0.1, -10.5)),
+            to: (v(7.5, 1.1, 0.5), v(9.5, 0.1, -5.0)),
+            hours: Some((17.7, 17.8)),
+            clock: 0.0,
+            speed: 1.0,
+            look: &[(
+                "ray_tracing",
+                "(sun_shadows: true, ambient_occlusion: true, sun_size: 0.6, sun_rays: 8, occlusion_rays: 8, occlusion_radius: 1.5)",
+            )],
+        },
+        Shot {
             name: "sand-close",
             caption: "Песок: рябь поперёк ветра, искры песчинок на низком солнце",
             scene: "desert.ron",
