@@ -28,6 +28,7 @@ pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod builtin;
+pub mod clouds;
 pub mod components;
 pub mod decals;
 pub mod edit;

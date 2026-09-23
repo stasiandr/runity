@@ -318,6 +318,8 @@ pub struct Sky {
     pub exposure: f32,
     /// The air, for [`SkyMode::Physical`].
     pub atmosphere: crate::atmosphere::Atmosphere,
+    /// Clouds over it ([`crate::clouds`]); none by default.
+    pub clouds: crate::clouds::Clouds,
 }
 
 impl Default for Sky {
@@ -330,6 +332,7 @@ impl Default for Sky {
             sun_size: 1.5,
             exposure: 1.0,
             atmosphere: crate::atmosphere::Atmosphere::default(),
+            clouds: crate::clouds::Clouds::default(),
         }
     }
 }
@@ -632,6 +635,9 @@ struct FrameUniform {
     /// Up to four water surfaces, two vectors each: height and 1 when
     /// there; the rectangle it covers (min x, min z, max x, max z).
     waters: [[f32; 4]; 8],
+    /// Clouds: coverage, base, thickness, density; drift x and z, size,
+    /// how dark their shadows are.
+    clouds: [[f32; 4]; 2],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -865,6 +871,8 @@ pub struct Renderer {
     atmosphere: crate::atmosphere::AtmosphereRenderer,
     /// One texel of depth, bound in place of the prepass's while it draws.
     blank_depth: wgpu::TextureView,
+    /// The clouds' picture.
+    clouds: crate::clouds::CloudRenderer,
     /// The frame's bind group with the fog left out, for the passes that
     /// make the fog.
     fog_bind_group: wgpu::BindGroup,
@@ -1730,6 +1738,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The clouds, a quarter of the frame.
+            wgpu::BindGroupLayoutEntry {
+                binding: 21,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The solid scene's depth, from the prepass: what water sees
             // under itself.
             wgpu::BindGroupLayoutEntry {
@@ -1826,10 +1845,12 @@ impl Renderer {
         let decal_atlases = crate::decals::DecalAtlases::new(gpu);
         let volumes = crate::volume::Volumes::new(gpu);
         let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
+        let clouds = crate::clouds::CloudRenderer::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                clouds: clouds.view(),
                 scene_depth: &ssao.depth,
                 sky_view: &atmosphere.sky_view,
                 aerial: &atmosphere.aerial,
@@ -2097,6 +2118,7 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             atmosphere,
+            clouds,
             blank_depth: gpu
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -2141,6 +2163,7 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                clouds: self.clouds.view(),
                 scene_depth: if making_fog {
                     &self.blank_depth
                 } else {
@@ -2791,6 +2814,14 @@ impl Renderer {
             for face in 0..6 {
                 let seen = Frame {
                     camera: crate::reflections::face_camera(probe, face),
+                    // The clouds' picture is the camera's, not the probe's.
+                    sky: Sky {
+                        clouds: crate::clouds::Clouds {
+                            coverage: 0.0,
+                            ..frame.sky.clouds
+                        },
+                        ..frame.sky
+                    },
                     post: crate::post::PostProcess::OFF,
                     ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
                     ray_tracing: crate::ray::RayTracing::default(),
@@ -2827,6 +2858,12 @@ impl Renderer {
             self.depth_size = (width, height);
         }
         if probe.is_none() && self.ssao.resize(gpu, (width, height)) {
+            self.rebind(gpu);
+        }
+        if probe.is_none()
+            && frame.sky.clouds.coverage > 0.0
+            && self.clouds.resize(gpu, (width, height))
+        {
             self.rebind(gpu);
         }
 
@@ -3141,6 +3178,15 @@ impl Renderer {
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
             weather: frame.weather.uniform(),
+            clouds: {
+                let (shape, mut drift) = frame.sky.clouds.vectors(&frame.wind);
+                drift[3] = frame.sky.clouds.shadows.clamp(0.0, 1.0);
+                if frame.sky.mode == SkyMode::Color {
+                    [[0.0; 4], drift]
+                } else {
+                    [shape, drift]
+                }
+            },
             waters: {
                 let mut out = [[0.0f32; 4]; 8];
                 let planes = frame
@@ -3498,6 +3544,29 @@ impl Renderer {
             );
         }
 
+        // The clouds, from where the camera stands.
+        if probe.is_none() && frame.sky.mode != SkyMode::Color && frame.sky.clouds.coverage > 0.0 {
+            let (shape, drift) = frame.sky.clouds.vectors(&frame.wind);
+            self.clouds.run(
+                gpu,
+                &mut encoder,
+                crate::clouds::CloudUniform {
+                    inverse_view_projection: frame
+                        .camera
+                        .view_projection(aspect)
+                        .inverse()
+                        .to_cols_array_2d(),
+                    eye: extend(frame.camera.position, foliage.wind[3]),
+                    to_sun: extend(to_sun, 1.0),
+                    sun: extend(sun_light, 0.0),
+                    ambient: extend(sky_light, 0.0),
+                    shape,
+                    drift,
+                    size: [0.0; 4],
+                },
+            );
+        }
+
         // The fog in the air, once every shadow it looks through is drawn.
         if frame.volumetric_fog.enabled {
             self.volumes.run(
@@ -3823,6 +3892,7 @@ struct FrameInputs<'a> {
     sky_view: &'a wgpu::TextureView,
     aerial: &'a wgpu::TextureView,
     scene_depth: &'a wgpu::TextureView,
+    clouds: &'a wgpu::TextureView,
 }
 
 fn frame_bind_group(
@@ -3871,6 +3941,7 @@ fn frame_bind_group(
         view(18, inputs.sky_view),
         view(19, inputs.aerial),
         view(20, inputs.scene_depth),
+        view(21, inputs.clouds),
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

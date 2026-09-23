@@ -83,6 +83,9 @@ struct Frame {
     // up to four water surfaces: height and 1 when there; the rectangle
     // it covers (min x, min z, max x, max z)
     waters: array<vec4<f32>, 8>,
+    // clouds.rs: coverage, base, thickness, density; drift x and z, size,
+    // how dark their shadows are
+    clouds: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -148,6 +151,48 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 @group(0) @binding(19) var aerial: texture_3d<f32>;
 // The solid scene's depth, from the prepass: what water sees under itself.
 @group(0) @binding(20) var scene_depth: texture_depth_2d;
+// The clouds (clouds.wgsl): what they add over the sky, and let through.
+@group(0) @binding(21) var cloud_layer: texture_2d<f32>;
+
+fn cloud_hash(p: vec3<f32>) -> f32 {
+    var q = fract(p * 0.1031);
+    q += dot(q, q.zyx + 31.32);
+    return fract((q.x + q.y) * q.z);
+}
+
+fn cloud_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = mix(mix(cloud_hash(i), cloud_hash(i + vec3<f32>(1.0, 0.0, 0.0)), u.x),
+        mix(cloud_hash(i + vec3<f32>(0.0, 1.0, 0.0)), cloud_hash(i + vec3<f32>(1.0, 1.0, 0.0)), u.x), u.y);
+    let b = mix(mix(cloud_hash(i + vec3<f32>(0.0, 0.0, 1.0)), cloud_hash(i + vec3<f32>(1.0, 0.0, 1.0)), u.x),
+        mix(cloud_hash(i + vec3<f32>(0.0, 1.0, 1.0)), cloud_hash(i + vec3<f32>(1.0, 1.0, 1.0)), u.x), u.y);
+    return mix(a, b, u.z);
+}
+
+/// How much of the sun a cloud above takes from a point: the same density
+/// the cloud pass marches, looked up once where the way to the sun crosses
+/// the middle of the layer.
+fn cloud_shadow(p: vec3<f32>) -> f32 {
+    let shape = frame.clouds[0];
+    let drift = frame.clouds[1];
+    if shape.x <= 0.0 || drift.w <= 0.0 {
+        return 1.0;
+    }
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    if to_sun.y < 0.05 {
+        return 1.0;
+    }
+    let middle = shape.y + shape.z * 0.4;
+    let q_world = p + to_sun * ((middle - p.y) / to_sun.y);
+    let drifted = q_world - vec3<f32>(drift.x, 0.0, drift.y) * frame.foliage.wind.w;
+    let q = drifted / drift.z;
+    let noise = cloud_noise(q) * 0.55 + cloud_noise(q * 2.03) * 0.28 + cloud_noise(q * 4.1) * 0.17;
+    // The profile at 0.4 of the way up is nearly whole.
+    let d = clamp((noise * 0.95 - (1.0 - shape.x)) / max(shape.x, 0.05), 0.0, 1.0) * shape.w;
+    return 1.0 - drift.w * (1.0 - exp(-d * 4.0));
+}
 
 /// The physical sky the way `direction` looks: its table's azimuth
 /// across, latitude up, squeezed towards the horizon as it was filled.
@@ -1024,6 +1069,8 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             shadow = sunlight(in.world_position, normal);
         }
     }
+    // Under a cloud: in its shadow.
+    shadow *= cloud_shadow(in.world_position);
     // Under water: the sun comes down as caustics, dimmer the deeper.
     let submerged = under_water(in.world_position);
     if submerged > 0.0 {
@@ -1358,5 +1405,10 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let disc = smoothstep(radius, radius + (1.0 - radius) * 0.15, facing);
     let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
     let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
-    return vec4<f32>(through_fog((color + sun) * frame.sky_ground.w, in.position.xy, frame.volume.y), 1.0);
+    var sky = (color + sun) * frame.sky_ground.w;
+    if frame.clouds[0].x > 0.0 {
+        let c = textureSampleLevel(cloud_layer, fog_sampler, in.position.xy / frame.cluster_depth.zw, 0.0);
+        sky = sky * c.a + c.rgb;
+    }
+    return vec4<f32>(through_fog(sky, in.position.xy, frame.volume.y), 1.0);
 }
