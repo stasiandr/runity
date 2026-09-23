@@ -45,6 +45,8 @@ pub enum Wish {
     Invite,
     /// This player is ready, or not after all.
     Ready(bool),
+    /// The host takes everyone to another kitchen, by scene.
+    Level(&'static str),
     Again,
     /// Back to the menu, out of any session.
     Leave,
@@ -54,6 +56,9 @@ pub enum Wish {
     /// The language, by its file in `strings/`.
     Language(&'static str),
 }
+
+/// The kitchens the host may choose in the lobby, in its order, by scene.
+pub const LEVELS: [&str; 2] = ["main", "rush"];
 
 /// The languages the menu offers, in its order, by file.
 pub const LANGUAGES: [&str; 2] = ["en", "ru"];
@@ -72,6 +77,8 @@ pub struct Front {
     pub lost: Screen,
     /// Steam is running: lobbies and invites, not addresses.
     pub steam: bool,
+    /// The scene the session plays.
+    pub level: String,
     /// The doors were open last frame: the chef talks as they open.
     was_open: bool,
     /// The score as last seen, and the points on their way up.
@@ -123,6 +130,7 @@ impl Front {
             host_lost: None,
             lost: screen("lost")?,
             steam: false,
+            level: LEVELS[0].to_string(),
             was_open: false,
             last_score: None,
             floaters: runity::floaters::Floaters::new(),
@@ -241,6 +249,10 @@ impl Front {
                     let start = strings.resolve("@lobby.start");
                     self.lobby.set_text("start", format!("{start} ({set}/{})", roster.len()));
                     self.lobby.set_hidden("start", !host);
+                    self.lobby.set_hidden("level", !host);
+                    if let Some(i) = LEVELS.iter().position(|l| *l == self.level) {
+                        self.lobby.set_chosen("level", i);
+                    }
                     self.lobby.set_hidden("wait", host);
                     self.lobby.set_hidden("invite", !self.steam);
                     let done = self.lobby.draw_localized(widgets, ui, input, size, strings);
@@ -252,6 +264,10 @@ impl Front {
                     }
                     if done.clicked("ready") {
                         wish = Some(Wish::Ready(!mine));
+                    }
+                    if done.changed("level") && host {
+                        let chosen = self.lobby.chosen("level").min(LEVELS.len() - 1);
+                        wish = Some(Wish::Level(LEVELS[chosen]));
                     }
                     if done.clicked("leave") {
                         wish = Some(Wish::Leave);

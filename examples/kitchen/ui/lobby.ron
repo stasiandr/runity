@@ -1,12 +1,14 @@
 // The kitchen before the doors open: who is in and who is ready, and — for
-// the host — the button that starts the round for everyone. On the right,
+// the host — which kitchen, and the button that starts the round for
+// everyone. On the right,
 // so the cooks can walk about the kitchen while they wait.
 (
     elements: [
         (id: "card", anchor: Right, at: (-24, 0), size: (360, 480), kind: Panel),
         (id: "title", anchor: Right, at: (-44, -200), size: (320, 40), kind: Text("@lobby.title"), text_size: 22, align: Center),
         (id: "hint", anchor: Right, at: (-44, -166), size: (320, 22), kind: Text("@lobby.hint"), text_size: 14, align: Center),
-        (id: "players", anchor: Right, at: (-44, -52), size: (320, 160), kind: List(row: 32)),
+        (id: "players", anchor: Right, at: (-44, -76), size: (320, 128), kind: List(row: 32)),
+        (id: "level", anchor: Right, at: (-44, 10), size: (320, 36), kind: Choice(label: "@lobby.level", options: ["Classic", "Rush hour"])),
         (id: "ready", anchor: Right, at: (-44, 60), size: (320, 40), kind: Button("@lobby.ready")),
         (id: "start", anchor: Right, at: (-44, 112), size: (320, 46), kind: Button("@lobby.start")),
         (id: "wait", anchor: Right, at: (-44, 112), size: (320, 24), kind: Text("@lobby.wait"), text_size: 15, align: Center),

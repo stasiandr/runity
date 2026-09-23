@@ -36,6 +36,7 @@
     "lobby.start": "Открыть двери",
     "lobby.invite": "Позвать друзей",
     "lobby.leave": "Уйти",
+    "lobby.level": "Кухня",
     "lobby.ready": "Я готов",
     "lobby.unready": "Ещё не готов",
     "lobby.is_ready": "готов",

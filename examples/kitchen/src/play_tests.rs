@@ -1363,3 +1363,38 @@ fn a_guest_says_they_are_ready_and_the_host_sees_it_in_the_lobby() {
     assert!(words.contains(&"guest — ready") && words.contains(&"host"), "{words:?}");
     assert!(words.iter().any(|w| w.starts_with("Open the doors") && w.ends_with("(1/2)")), "{words:?}");
 }
+
+#[test]
+fn in_rush_hour_the_island_rides_and_carries_what_is_on_it() {
+    let mut k = Peer::in_scene("rush", Party::alone("rush", &game_components()), None);
+    let counter = station_at(&k.world, COUNTER);
+    k.open();
+    // A plate onto the island's counter, wherever it is now.
+    k.plate(0);
+    let now = k.world.get::<&Transform>(counter).unwrap().position;
+    k.stand(0, (now.x, now.z), Vec3::Z);
+    k.grab(0);
+    assert_eq!(k.held(0), None, "{:?}", k.round().note);
+    let start = now.z;
+    k.seconds(2.0);
+    let at = k.world.get::<&Transform>(counter).unwrap().position;
+    assert!((at.z - start).abs() > 0.3, "the island has moved: {at} from {start}");
+    let plate = k
+        .world
+        .query::<(&Transform, &Item)>()
+        .iter()
+        .find(|(_, i)| i.thing == Thing::Plate)
+        .map(|(t, _)| t.position)
+        .unwrap();
+    assert!((plate.z - at.z).abs() < 0.05 && (plate.x - at.x).abs() < 0.05, "and the plate on it: {plate} on {at}");
+}
+
+#[test]
+fn the_host_takes_everyone_to_rush_hour() {
+    let (mut host, mut guest) = together_shut();
+    host.events.clear();
+    guest.events.clear();
+    host.party.set_scene("rush");
+    let wanted = Event::SceneRequired { scene: "rush".into() };
+    until(&mut host, &mut guest, |h, g| h.events.contains(&wanted) && g.events.contains(&wanted));
+}

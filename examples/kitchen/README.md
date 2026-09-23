@@ -61,7 +61,8 @@ Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
 | **A font of the game's own**, a **widget style** | Kenney Future, `front::FONT`; round buttons with a lip, `front::style` |
 | **Things moved by a graph** (`animator`, `clips/`) | the bell over the window rings on every soup served: `animators/window.ron`, `clips/bell_ring.ron`, `front::ring` |
 | **Physics** (rapier): bodies made at run time, a first speed | thrown food: `hands::throw`, `launch` in `src/main.rs`, `systems/fly.rs`; the counters, the floor and the wall are static bodies in the scene |
-| **Routes** | the customers walking past outside |
+| **Routes** | the customers walking past outside; in rush hour (`scenes/rush.ron`) the island riding back and forth, a `Kinematic` body carrying what is on it |
+| **Changing scene together** (`Party::set_scene`) | the host picks the kitchen in the lobby; every peer switches on `Event::SceneRequired` |
 | **Decals** | the stains on the floor |
 | **Lights**, **post-processing** | a warm lamp over the stoves; ACES, bloom, vignette, depth of field, grain, TAA and SSAO (`post:`, `ambient_occlusion:` in the scene) |
 | Switched-off things (`inactive`) | the soup, bars and steam marks; cooks nobody plays |

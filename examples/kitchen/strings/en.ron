@@ -36,6 +36,7 @@
     "lobby.start": "Open the doors",
     "lobby.invite": "Invite friends",
     "lobby.leave": "Leave",
+    "lobby.level": "Kitchen",
     "lobby.ready": "I'm ready",
     "lobby.unready": "Not ready after all",
     "lobby.is_ready": "ready",

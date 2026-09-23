@@ -112,6 +112,7 @@ impl Game {
     /// Out of any session, and the kitchen as the scene has it.
     fn leave(&mut self, ctx: &mut Context) {
         self.lobby.leave();
+        self.front.level = self.scene.clone();
         self.front.host_lost = None;
         self.party = Party::alone(&self.scene, &self.components);
         match self.live.switch(&self.scene, &mut self.world, ctx.gpu, ctx.renderer) {
@@ -153,6 +154,9 @@ impl Game {
             Wish::Friends => self.lobby.friends(),
             Wish::Invite => self.lobby.invite(),
             Wish::Ready(ready) => front::set_ready(&mut self.world, &self.party, ready),
+            // Everyone to the other kitchen: each peer switches as the
+            // session says (Event::SceneRequired), this one too.
+            Wish::Level(level) => self.party.set_scene(level),
             Wish::Start => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Again => self.party.publish(state::ACT, &state::Act::Restart),
             Wish::Leave => self.leave(ctx),
@@ -374,6 +378,7 @@ impl shell::Game for Game {
             match event {
                 // The session plays another scene: go there, then say so.
                 Event::SceneRequired { scene } => {
+                    self.front.level = scene.clone();
                     match self.live.switch(&scene, &mut self.world, ctx.gpu, ctx.renderer) {
                         Ok((spawned, problems)) => {
                             for line in spawned.lines().into_iter().chain(problems) {
