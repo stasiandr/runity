@@ -36,7 +36,7 @@ use runity_editor::console::Level;
 use runity_editor::Session;
 use serde::{Deserialize, Serialize};
 
-pub use provider::{Fal, Input, Output, Provider};
+pub use provider::{secret, Fal, Input, Output, Provider};
 
 /// Where drafts live, under the project's `assets/`.
 pub const DRAFTS: &str = "drafts";

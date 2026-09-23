@@ -60,18 +60,17 @@ three-quarter view from slightly above, plain white background, soft even light,
 stylized 3D game asset";
 
 impl Fal {
-    /// The key from `FAL_KEY`, where fal's own tools look for it. Never
-    /// from the project: a key in a committed file is a key on GitHub.
+    /// The key from `FAL_KEY`, where fal's own tools look for it: the
+    /// environment, or a `.env` in this folder or one above it (see
+    /// [`secret`]). Never from a committed file: a key in git is a key on
+    /// GitHub.
     pub fn from_env() -> Result<Self> {
-        let key = std::env::var("FAL_KEY")
-            .ok()
-            .filter(|k| !k.trim().is_empty())
-            .ok_or_else(|| {
-                anyhow!(
-                    "FAL_KEY is not set: get a key at https://fal.ai/dashboard/keys \
-                     and put it in the environment the editor runs in"
-                )
-            })?;
+        let key = secret("FAL_KEY").ok_or_else(|| {
+            anyhow!(
+                "FAL_KEY is not set: get a key at https://fal.ai/dashboard/keys and put \
+                 `FAL_KEY=…` in the environment or in a .env at the project's root"
+            )
+        })?;
         Ok(Self::new(key))
     }
 
@@ -227,6 +226,42 @@ impl Provider for Fal {
     }
 }
 
+/// A key for a service: from the environment, or else from the nearest
+/// `.env` up from the working directory that names it.
+///
+/// Read, not loaded: the process's environment is not written, because
+/// the editor has threads and setting a variable under them is a race.
+pub fn secret(name: &str) -> Option<String> {
+    if let Some(value) = std::env::var(name).ok().filter(|v| !v.trim().is_empty()) {
+        return Some(value);
+    }
+    let here = std::env::current_dir().ok()?;
+    here.ancestors().find_map(|dir| {
+        let text = std::fs::read_to_string(dir.join(".env")).ok()?;
+        dotenv(&text, name)
+    })
+}
+
+/// One variable from a `.env`'s text: `NAME=value`, with `export ` in
+/// front and quotes around allowed, `#` lines skipped.
+fn dotenv(text: &str, name: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let (key, value) = line.split_once('=')?;
+        if line.starts_with('#') || key.trim() != name {
+            return None;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
 /// An HTTP error with what the service said, not only its code: fal
 /// explains a bad key or a bad argument in the body.
 fn failure(app: &str, error: ureq::Error) -> anyhow::Error {
@@ -240,5 +275,20 @@ fn failure(app: &str, error: ureq::Error) -> anyhow::Error {
             anyhow!("{app}: HTTP {code}{hint}: {body}")
         }
         other => anyhow!("{app}: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dotenv;
+
+    #[test]
+    fn a_dotenv_line_is_read_the_ways_people_write_it() {
+        let text = "# keys\nOTHER=1\nexport FAL_KEY = \"abc:def\"\n";
+        assert_eq!(dotenv(text, "FAL_KEY").as_deref(), Some("abc:def"));
+        assert_eq!(dotenv("FAL_KEY='x'", "FAL_KEY").as_deref(), Some("x"));
+        assert_eq!(dotenv("FAL_KEY=plain", "FAL_KEY").as_deref(), Some("plain"));
+        assert_eq!(dotenv("#FAL_KEY=no\nFAL_KEY=", "FAL_KEY"), None);
+        assert_eq!(dotenv("FAL_KEYS=no", "FAL_KEY"), None);
     }
 }

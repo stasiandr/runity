@@ -436,6 +436,9 @@ const GITIGNORE: &str = "\
 /build/
 # The editor's memory for whoever uses it: views, the last scene.
 /.runity/
+# Keys for the services editor modules call (FAL_KEY, …): a key in git is a
+# key on GitHub.
+.env
 ";
 
 /// The `.gitattributes` lines that send scenes and prefabs to `runity
