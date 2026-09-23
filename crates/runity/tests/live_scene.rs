@@ -212,3 +212,47 @@ fn a_prefab_spawned_at_run_time_is_whole_and_outlives_a_reload() {
         .unwrap_err();
     assert!(err.contains("did you mean `campfire`?"), "{err}");
 }
+
+#[test]
+fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, 8, 8);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let project = project("additive");
+    let (village, forest) = (
+        project.scenes().join("village.ron"),
+        project.scenes().join("forest.ron"),
+    );
+    write(
+        &village,
+        r#"(entities: [(id: "c1", name: "well", model: "builtin:cube")])"#,
+    );
+    write(
+        &forest,
+        r#"(entities: [(id: "d1", name: "oak", model: "builtin:cone"), (id: "d2", name: "elm", model: "builtin:cone")])"#,
+    );
+    let mut world = hecs::World::new();
+    let (mut one, _) = LiveScene::open(&village).unwrap();
+    let (mut two, _) = LiveScene::open(&forest).unwrap();
+    one.spawn(&mut world, &gpu, &mut renderer);
+    two.spawn(&mut world, &gpu, &mut renderer);
+    let well = entity(&world, "c1");
+
+    // The forest loses a tree: the village is not touched.
+    write(
+        &forest,
+        r#"(entities: [(id: "d1", name: "oak", model: "builtin:cone")])"#,
+    );
+    let done = two.reload(&mut world, &gpu, &mut renderer);
+    assert_eq!(done.patched.unwrap().despawned, 1);
+    assert!(world.contains(well));
+    assert!(one.reload(&mut world, &gpu, &mut renderer).is_empty());
+
+    // Leaving the forest takes the forest, and only the forest.
+    assert_eq!(two.unload(&mut world), 1);
+    assert!(world.contains(well));
+    assert_eq!(world.query::<&SceneId>().iter().count(), 1);
+}
