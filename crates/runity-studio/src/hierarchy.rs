@@ -461,8 +461,27 @@ impl Hierarchy {
             Drop::After(t) => (parent_of(t), Some(index_of(t) + 1)),
             Drop::End => (None, None),
         };
-        if let Err(e) = session.move_in_hierarchy(id, parent, index) {
-            session.say(runity_editor::console::Level::Warning, e.to_string());
+        // A line of the selection takes the whole selection with it, in the
+        // order the lines are shown, as one undo step.
+        let selection = session.selection();
+        let moving: Vec<EntityId> = if selection.contains(&id) && selection.len() > 1 {
+            self.shown
+                .iter()
+                .map(|r| r.id)
+                .filter(|r| selection.contains(r) && Some(*r) != parent)
+                .collect()
+        } else {
+            vec![id]
+        };
+        let mut moved = 0;
+        for (i, one) in moving.iter().enumerate() {
+            match session.move_in_hierarchy(*one, parent, index.map(|at| at + i)) {
+                Ok(_) => moved += 1,
+                Err(e) => session.say(runity_editor::console::Level::Warning, e.to_string()),
+            }
+        }
+        if moved > 1 {
+            session.squash_last(moved);
         }
         if let Some(p) = parent {
             session.set_open(p, true);

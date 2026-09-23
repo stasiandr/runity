@@ -2095,6 +2095,14 @@ impl Studio {
                 Action::CreateEmpty => {
                     s.create_empty("Empty").map_err(e)?;
                 }
+                Action::CreateChild => {
+                    let parent = s.selected().ok_or("select what the child goes under")?;
+                    let child = s.create_empty("Child").map_err(e)?;
+                    s.reparent(child, Some(parent)).map_err(e)?;
+                    s.squash_last(2);
+                    s.set_open(parent, true);
+                    s.select(Some(child)).map_err(e)?;
+                }
                 Action::Group => {
                     s.group_selection("Group").map_err(e)?;
                 }

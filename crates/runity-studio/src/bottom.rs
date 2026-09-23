@@ -64,6 +64,9 @@ pub struct Bottom {
     visible: [bool; 4],
     // Project
     search: NodeId,
+    /// The type filter's chips, and the kind chosen.
+    kind_chips: Vec<(NodeId, &'static str)>,
+    kind: &'static str,
     grid: NodeId,
     entries: HashMap<NodeId, Asset>,
     // Console
@@ -160,6 +163,30 @@ impl Bottom {
         let search = ui.add_field(bar, field_style().width(240.0).height(24.0), "");
         ui.set_name(search, "project search");
         ui.set_placeholder(search, "Search assets");
+        // What kind to show: Unity's type filter.
+        let kinds = ui.add(
+            bar,
+            Style::row().gap(2.0).padding_left(SPACE_2).center_items(),
+        );
+        let mut kind_chips = Vec::new();
+        for kind in ["All", "Scenes", "Prefabs", "Models", "Sounds", "Materials"] {
+            let chip = ui.add(
+                kinds,
+                Style::row()
+                    .height(22.0)
+                    .padding_x(SPACE_2)
+                    .center()
+                    .radius(6.0)
+                    .hover(HOVER),
+            );
+            ui.set_name(chip, format!("kind {kind}"));
+            ui.add_text(
+                chip,
+                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+                kind,
+            );
+            kind_chips.push((chip, kind));
+        }
         let grid = ui.add(
             project,
             Style::row()
@@ -229,6 +256,8 @@ impl Bottom {
             roots: [project, console, history, git],
             visible: [true, false, false, false],
             search,
+            kind_chips,
+            kind: "All",
             grid,
             entries: HashMap::new(),
             counts,
@@ -280,6 +309,18 @@ impl Bottom {
         if !query.is_empty() {
             out.retain(|a| a.label().to_lowercase().contains(&query));
         }
+        let kind = self.kind;
+        out.retain(|a| {
+            matches!(
+                (kind, a),
+                ("All", _)
+                    | ("Scenes", Asset::Scene(_))
+                    | ("Prefabs", Asset::Prefab(_))
+                    | ("Models", Asset::Model(..))
+                    | ("Sounds", Asset::Sound(..))
+                    | ("Materials", Asset::Material(_))
+            )
+        });
         out
     }
 }
@@ -384,6 +425,17 @@ impl Bottom {
                 }
             });
             self.entries.insert(tile, asset);
+        }
+
+        for (chip, kind) in &self.kind_chips {
+            let on = *kind == self.kind;
+            ui.restyle(*chip, |s| {
+                s.background(if on {
+                    ACCENT_900
+                } else {
+                    runity_ui::Color::TRANSPARENT
+                })
+            });
         }
 
         // Console
@@ -750,6 +802,10 @@ impl Bottom {
                 requests.refresh = true;
             }
             Event::Changed(_) | Event::Cancel if node == self.search => requests.refresh = true,
+            Event::Click { .. } if self.kind_chips.iter().any(|(c, _)| *c == node) => {
+                self.kind = self.kind_chips.iter().find(|(c, _)| *c == node).unwrap().1;
+                requests.refresh = true;
+            }
             Event::Click {
                 button: runity::input::MouseButton::Right,
                 ..

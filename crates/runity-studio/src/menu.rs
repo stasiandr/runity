@@ -46,6 +46,8 @@ pub enum Action {
     DropToGround,
     SnapToGrid,
     CreateEmpty,
+    /// An empty entity under the selection.
+    CreateChild,
     Group,
     Create(&'static str),
     CreateLight,
@@ -378,6 +380,7 @@ pub fn context_menu() -> Vec<MenuItem> {
         item("Revert Overrides", Action::RevertOverrides),
         item("Unpack Prefab", Action::Unpack),
         MenuItem::separator(),
+        item("Create Empty Child", Action::CreateChild),
         item("Create Empty", Action::CreateEmpty),
         item("Cube", Action::Create("builtin:cube")),
     ]

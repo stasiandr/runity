@@ -1307,3 +1307,51 @@ fn quick_search_finds_things_in_the_scene_the_project_and_the_menus() {
     click(&mut s, "result Game View");
     assert!(s.session.is_game_view());
 }
+
+#[test]
+fn a_dragged_selection_moves_whole_and_a_child_is_made_under_a_line() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "line tree near");
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    click(&mut s, "line tree mid");
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    drag_line(&mut s, "line tree near", "line crate", 0.5);
+    let rows = s.session.hierarchy();
+    for name in ["tree near", "tree mid"] {
+        assert_eq!(
+            rows.iter().find(|r| r.name == name).unwrap().depth,
+            1,
+            "{name} under the crate"
+        );
+    }
+    click(&mut s, "undo");
+    let rows = s.session.hierarchy();
+    assert!(
+        rows.iter()
+            .filter(|r| r.name.starts_with("tree"))
+            .all(|r| r.depth == 0),
+        "one step back"
+    );
+
+    press(&mut s, "line boulder", MouseButton::Right);
+    click(&mut s, "menu Create Empty Child");
+    let rows = s.session.hierarchy();
+    assert_eq!(rows.iter().find(|r| r.name == "Child").unwrap().depth, 1);
+}
+
+#[test]
+fn the_project_filters_by_kind() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "kind Scenes");
+    let dump = s.ui.dump();
+    assert!(
+        dump.contains("#asset first-light") && !dump.contains("#asset cube"),
+        "only scenes"
+    );
+    click(&mut s, "kind All");
+    assert!(s.ui.dump().contains("#asset cube"));
+}
