@@ -88,6 +88,13 @@ pub fn list() -> Vec<Value> {
         tool("take_theirs", "Settle one conflict (its number from `conflicts`) theirs' way, as one undo step. Keeping ours needs nothing. Save, then `git add` the file.", json!({ "conflict": { "type": "integer" } }), &["conflict"]),
         tool("copy", "Entities (children included) as RON text, for `paste` here or in another scene.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("paste", "Add entities from RON text — from `copy`, or written by hand, one entity or a list — as new things with new ids, one undo step. Returns their ids.", json!({ "ron": { "type": "string" }, "parent": { "type": "string", "description": ID } }), &["ron"]),
+        tool("sculpt", "Shape a terrain with one brush stroke at a world point: raise (by > 0) or lower it, or with flatten: true pull it toward the height `by`. Written as one line in the terrain's .rterrain and rebuilt at once.", json!({
+            "id": { "type": "string", "description": "the terrain entity's id" },
+            "at": vec3("where the stroke lands"),
+            "radius": { "type": "number" },
+            "by": { "type": "number", "description": "metres up (or down), or the height to flatten to" },
+            "flatten": { "type": "boolean" },
+        }), &["id", "at", "radius", "by"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
@@ -298,6 +305,27 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             let ids: Vec<String> = pasted.iter().map(ToString::to_string).collect();
             Ok(vec![text(ids.join("\n"))])
+        }
+        "sculpt" => {
+            let terrain = id(args, "id")?;
+            let at = optional_vec3(args, "at")?.ok_or("at is required")?;
+            let number = |key: &str| {
+                args.get(key)
+                    .and_then(Value::as_f64)
+                    .map(|n| n as f32)
+                    .ok_or_else(|| format!("{key} is a number"))
+            };
+            let flatten = args
+                .get("flatten")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            server
+                .session()?
+                .sculpt(terrain, at, number("radius")?, number("by")?, flatten)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(
+                "sculpted; the stroke is a line in the terrain's .rterrain",
+            )])
         }
         "drop_to_ground" => {
             let ids = match args.get("ids") {

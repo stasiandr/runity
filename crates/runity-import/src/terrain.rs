@@ -6,8 +6,16 @@
 //!     resolution: 129,        // vertices along each side
 //!     height: 18.0,           // metres from the lowest point to the highest
 //!     noise: (seed: 7, scale: 60.0, octaves: 5, persistence: 0.5),
+//!     edits: [
+//!         Raise(at: (20.0, -10.0), radius: 8.0, by: 3.0),
+//!         Flatten(at: (0.0, 0.0), radius: 12.0, to: 2.0),
+//!     ],
 //! )
 //! ```
+//!
+//! `edits` are what a brush leaves: applied in order over the noise, each a
+//! line — so sculpting is a diff someone can read, and undoing one stroke
+//! is deleting its line.
 //!
 //! Imported into an ordinary mesh named after the file, centred on x and z
 //! with its lowest point at zero, so a scene places it like any model —
@@ -34,6 +42,44 @@ struct TerrainSource {
     height: f32,
     #[serde(default)]
     noise: Noise,
+    #[serde(default)]
+    edits: Vec<Edit>,
+}
+
+/// One brush stroke, in metres, with a smooth falloff to its radius.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, Deserialize)]
+pub enum Edit {
+    /// Up by `by` at the centre (down if negative).
+    Raise {
+        at: (f32, f32),
+        radius: f32,
+        by: f32,
+    },
+    /// Toward the height `to`, fully at the centre.
+    Flatten {
+        at: (f32, f32),
+        radius: f32,
+        to: f32,
+    },
+}
+
+impl Edit {
+    fn apply(&self, x: f32, z: f32, height: f32) -> f32 {
+        let (at, radius) = match *self {
+            Edit::Raise { at, radius, .. } | Edit::Flatten { at, radius, .. } => (at, radius),
+        };
+        let distance = ((x - at.0).powi(2) + (z - at.1).powi(2)).sqrt();
+        if distance >= radius.max(1e-3) {
+            return height;
+        }
+        // Smoothstep from the centre out: no crease where a stroke ends.
+        let t = 1.0 - distance / radius;
+        let weight = t * t * (3.0 - 2.0 * t);
+        match *self {
+            Edit::Raise { by, .. } => height + by * weight,
+            Edit::Flatten { to, .. } => height + (to - height) * weight,
+        }
+    }
 }
 
 fn default_resolution() -> u32 {
@@ -125,7 +171,8 @@ pub fn mesh_from_terrain(path: &Path, settings: &ImportSettings) -> Result<MeshA
     );
 
     // Heights first, normalised so the lowest point is at zero and the
-    // highest at `height`: the number in the file is the number you get.
+    // highest at `height` — the number in the file is the number you get —
+    // and then the edits, in metres on top.
     let at = |i: u32, j: u32| {
         (
             -width * 0.5 + width * i as f32 / (n - 1) as f32,
@@ -142,8 +189,12 @@ pub fn mesh_from_terrain(path: &Path, settings: &ImportSettings) -> Result<MeshA
         .iter()
         .fold((f32::MAX, f32::MIN), |(lo, hi), h| (lo.min(*h), hi.max(*h)));
     let range = (high - low).max(1e-6);
-    for h in &mut heights {
+    for (k, h) in heights.iter_mut().enumerate() {
         *h = (*h - low) / range * source.height;
+        let (x, z) = at(k as u32 % n, k as u32 / n);
+        for edit in &source.edits {
+            *h = edit.apply(x, z, *h);
+        }
     }
     let height = |i: u32, j: u32| heights[(j.min(n - 1) * n + i.min(n - 1)) as usize];
 

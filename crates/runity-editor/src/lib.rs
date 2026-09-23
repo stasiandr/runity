@@ -120,6 +120,54 @@ pub enum SceneReload {
     Conflict,
 }
 
+/// A terrain source with one more line in its `edits`: added to the list
+/// if there is one, the list added before the closing bracket if not. The
+/// rest of the file — comments, layout — is left as it was.
+fn add_edit(text: &str, edit: &str) -> String {
+    if let Some(at) = text.find("edits:") {
+        if let Some(open) = text[at..].find('[').map(|i| at + i) {
+            let mut depth = 0;
+            for (i, c) in text[open..].char_indices() {
+                match c {
+                    '[' | '(' => depth += 1,
+                    ']' | ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let close = open + i;
+                            let before = text[..close].trim_end();
+                            let comma = if before.ends_with('[') || before.ends_with(',') {
+                                ""
+                            } else {
+                                ","
+                            };
+                            return format!(
+                                "{before}{comma}\n        {edit},\n    {}",
+                                &text[close..]
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    match text.rfind(')') {
+        Some(close) => {
+            let before = text[..close].trim_end();
+            let comma = if before.ends_with(',') || before.ends_with('(') {
+                ""
+            } else {
+                ","
+            };
+            format!(
+                "{before}{comma}\n    edits: [\n        {edit},\n    ],\n{}",
+                &text[close..]
+            )
+        }
+        None => text.to_string(),
+    }
+}
+
 /// What play mode holds while it runs.
 ///
 /// The engine is a guest, so this does not own a loop or a thread: the
@@ -470,6 +518,80 @@ impl Session {
     pub fn zoom(&mut self, factor: f32) {
         let offset = (self.camera.position - self.camera.target) * factor.max(0.01);
         self.camera.position = self.camera.target + offset.clamp_length_min(0.1);
+    }
+
+    /// Shape a terrain: one brush stroke at a point of the world, written as
+    /// a line of the terrain's `.rterrain` and rebuilt at once. `by` raises
+    /// (or with a negative, lowers) the ground at the centre; `flatten`
+    /// instead pulls it toward the height `by`.
+    ///
+    /// The stroke goes into the source file, not the scene: every scene with
+    /// this terrain gets it, and it is one readable line in a diff — taking
+    /// it back is deleting that line. It is not a step of the scene's undo.
+    pub fn sculpt(
+        &mut self,
+        terrain: EntityId,
+        at: Vec3,
+        radius: f32,
+        by: f32,
+        flatten: bool,
+    ) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        let desc = self
+            .line(terrain)
+            .ok_or(EditError::NoEntity(terrain))?
+            .clone();
+        let mut source = None;
+        runity_import::walk(&project.assets(), &mut |path| {
+            let named = path
+                .file_stem()
+                .is_some_and(|s| s.to_string_lossy() == desc.model);
+            if named && path.extension().is_some_and(|e| e == "rterrain") {
+                source = Some(path.to_path_buf());
+            }
+        });
+        let source = source.ok_or_else(|| {
+            EditError::Scene(format!(
+                "`{}` does not draw a terrain: no {}.rterrain in assets/",
+                desc.name, desc.model
+            ))
+        })?;
+
+        // Into the terrain's own space: where the stroke lands on it, and
+        // how big it is there.
+        let world = self
+            .instanced
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(d, _)| d.id == terrain)
+            .map(|(_, m)| m)
+            .unwrap_or(Mat4::IDENTITY);
+        let local = world.inverse().transform_point3(at);
+        let (scale, _, _) = world.to_scale_rotation_translation();
+        let radius = radius / scale.x.max(scale.z).max(1e-4);
+        let edit = if flatten {
+            runity_import::terrain::Edit::Flatten {
+                at: (local.x, local.z),
+                radius,
+                to: world
+                    .inverse()
+                    .transform_point3(Vec3::new(at.x, by, at.z))
+                    .y,
+            }
+        } else {
+            runity_import::terrain::Edit::Raise {
+                at: (local.x, local.z),
+                radius,
+                by: by / scale.y.max(1e-4),
+            }
+        };
+        let line = runity::ron::to_string(&edit).map_err(|e| EditError::Scene(e.to_string()))?;
+        let text = std::fs::read_to_string(&source)?;
+        std::fs::write(&source, add_edit(&text, &line))?;
+        self.reload_assets();
+        Ok(())
     }
 
     /// Write an instance's overrides into its prefab — Unity's "Apply" — so

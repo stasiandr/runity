@@ -1612,3 +1612,52 @@ fn applying_overrides_writes_them_into_the_prefab_for_every_instance() {
         Some("moss")
     );
 }
+
+#[test]
+fn sculpting_a_terrain_writes_a_readable_line_and_reshapes_it_at_once() {
+    let Some((mut session, path)) = open_with(
+        "sculpt",
+        r#"(entities: [(id: "00000000000000a1", name: "valley", model: "hills", transform: (position: (100.0, 0.0, 0.0)))])"#,
+    ) else {
+        return;
+    };
+    let source = root_of(&path).join("assets/hills.rterrain");
+    std::fs::write(
+        &source,
+        "// Flat, to begin with.\n(size: (40.0, 40.0), resolution: 41, height: 0.0)\n",
+    )
+    .unwrap();
+    session.reload_assets();
+    let valley = id(&session, "valley");
+
+    session
+        .sculpt(valley, Vec3::new(105.0, 0.0, 5.0), 4.0, 3.0, false)
+        .unwrap();
+    let text = std::fs::read_to_string(&source).unwrap();
+    assert!(text.starts_with("// Flat, to begin with."), "{text}");
+    assert!(
+        text.contains("Raise(at:(5.0,5.0),radius:4.0,by:3.0)"),
+        "in the terrain's own space: {text}"
+    );
+
+    session
+        .sculpt(valley, Vec3::new(95.0, 0.0, 0.0), 6.0, 1.5, true)
+        .unwrap();
+    let text = std::fs::read_to_string(&source).unwrap();
+    assert!(text.contains("Flatten("), "{text}");
+    assert_eq!(
+        text.matches("Raise(").count(),
+        1,
+        "the first stroke is still there once"
+    );
+
+    // The ground rose where the stroke was: a crate dropped there sits up.
+    let crate_id = session.add(None, "builtin:cube").unwrap();
+    session
+        .set_transform(crate_id, transform([105.0, 20.0, 5.0], [0.0; 3], [0.2; 3]))
+        .unwrap();
+    session.select(Some(crate_id)).unwrap();
+    session.drop_to_ground().unwrap();
+    let y = session.transform(crate_id).unwrap().position.y;
+    assert!((y - 3.1).abs() < 0.15, "on the raised ground: {y}");
+}

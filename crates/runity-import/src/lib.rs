@@ -24,7 +24,7 @@
 //! is derived and the settings are not (DNA, postulate 2): a sidecar in a
 //! folder nobody commits is settings nobody keeps.
 
-mod terrain;
+pub mod terrain;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
