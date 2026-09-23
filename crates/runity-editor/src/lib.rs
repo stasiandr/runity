@@ -383,7 +383,7 @@ impl Session {
         // Where the view was in the scene being left.
         self.remember_view();
         let path = path.as_ref().to_path_buf();
-        let scene = load_document(&path)?;
+        let mut scene = load_document(&path)?;
         // The scene says where it is looked at from, and opening it puts the
         // view there: a file that renders one way headlessly and opens
         // pointing somewhere else in the editor is a file whose picture
@@ -411,6 +411,10 @@ impl Session {
         }
         self.project = project;
         self.prefabs = prefabs;
+        // Every link given its ID and its file's name now (docs/refs.md).
+        // Not an edit: the document is what the file means, and the next
+        // save writes it down.
+        runity::refs::settle(&mut scene.entities, self.library.as_ref(), &self.prefabs);
         let stamps = runity::live::stamps(&path, self.project.as_ref());
         self.on_disk = Some((scene.clone(), stamps));
         self.history.replace(scene);
@@ -3678,16 +3682,22 @@ impl Session {
         runity::spawn_scene_with(
             &self.instanced.scene,
             &mut self.world,
-            |name| {
-                if let Some(found) = uploaded.iter().find(|(n, _)| **n == **name) {
+            |link| {
+                // Kept by ID when the link has one: two models with one
+                // name are two meshes.
+                let key = link
+                    .id
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| link.to_string());
+                if let Some(found) = uploaded.iter().find(|(n, _)| *n == key) {
                     return Some(found.1);
                 }
-                let handle = if let Some(mesh) = builtin::by_name(name) {
+                let handle = if let Some(mesh) = builtin::by_name(link) {
                     renderer.upload_mesh_owned(gpu, &mesh)
                 } else {
-                    renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
+                    renderer.upload_mesh(gpu, library?.mesh_link(link)?)
                 };
-                uploaded.push((name.to_string(), handle));
+                uploaded.push((key, handle));
                 Some(handle)
             },
             |name| library?.material_by_name(name),

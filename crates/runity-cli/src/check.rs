@@ -53,6 +53,9 @@ struct Names {
     models: HashMap<String, Vec<String>>,
     materials: HashMap<String, Vec<String>>,
     prefabs: HashSet<String>,
+    /// Every model's and prefab's ID, from their sidecars: a link with one
+    /// of these is found whatever name it still says.
+    ids: HashSet<runity::AssetId>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -325,32 +328,44 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             }
         });
     }
-    // The library knows an asset by its source's file name, so two sources
-    // with one name in different folders are one name with two meanings,
-    // and whichever was built last wins.
-    for (kind, map) in [("model", &models), ("material", &materials)] {
-        let mut clashes: Vec<_> = map.iter().filter(|(_, files)| files.len() > 1).collect();
-        clashes.sort();
-        for (name, files) in clashes {
-            let mut files = files.clone();
-            files.sort();
-            out.push(error(
-                &files[0],
-                format!(
-                    "{kind} name `{name}` is used by {} — scenes cannot tell them apart; rename all but one",
-                    files.join(", ")
-                ),
-            ));
-        }
+    // Materials are still named, not linked (docs/refs.md): two with one
+    // name are one name with two meanings.
+    let mut clashes: Vec<_> = materials
+        .iter()
+        .filter(|(_, files)| files.len() > 1)
+        .collect();
+    clashes.sort();
+    for (name, files) in clashes {
+        let mut files = files.clone();
+        files.sort();
+        out.push(error(
+            &files[0],
+            format!(
+                "material name `{name}` is used by {} — scenes cannot tell them apart; rename all but one",
+                files.join(", ")
+            ),
+        ));
     }
-    let prefabs = files(&project.prefabs(), "prefab")
+    let prefab_files = files(&project.prefabs(), "prefab");
+    let prefabs = prefab_files
         .iter()
         .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
         .collect();
+    let mut ids = HashSet::new();
+    let mut sources = prefab_files;
+    runity_import::walk(&project.assets(), &mut |path| {
+        sources.push(path.to_path_buf())
+    });
+    for source in sources {
+        if let Some(id) = runity::asset::sidecar_id(runity::asset::sidecar_of(&source)) {
+            ids.insert(id);
+        }
+    }
     Names {
         models,
         materials,
         prefabs,
+        ids,
         components: project.component_names(),
         shapes: std::fs::read_to_string(project.root().join(runity::project::SHAPES))
             .ok()
@@ -397,7 +412,8 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         };
 
         if !entity.prefab.is_empty() {
-            if !names.prefabs.contains(entity.prefab.as_str()) {
+            let by_id = entity.prefab.id.is_some_and(|id| names.ids.contains(&id));
+            if !by_id && !names.prefabs.contains(entity.prefab.as_str()) {
                 out.push(error(
                     file,
                     format!(
@@ -474,7 +490,18 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
     }
 }
 
-fn check_model(model: &str, who: &str, file: &str, names: &Names, out: &mut Vec<Finding>) {
+fn check_model(
+    link: &runity::AssetLink,
+    who: &str,
+    file: &str,
+    names: &Names,
+    out: &mut Vec<Finding>,
+) {
+    let model = link.as_str();
+    // Found by its ID, whatever name the line still says (docs/refs.md).
+    if link.id.is_some_and(|id| names.ids.contains(&id)) {
+        return;
+    }
     if model.starts_with("builtin:") {
         if runity::builtin::by_name(model).is_none() {
             out.push(error(
@@ -486,6 +513,20 @@ fn check_model(model: &str, who: &str, file: &str, names: &Names, out: &mut Vec<
             ));
         }
         return;
+    }
+    if link.id.is_none() {
+        if let Some(files) = names.models.get(model).filter(|files| files.len() > 1) {
+            let mut files = files.clone();
+            files.sort();
+            out.push(error(
+                file,
+                format!(
+                    "{who}: `{model}` is the name of {} — open and save the scene in the editor to pick one by its ID, or rename all but one",
+                    files.join(", ")
+                ),
+            ));
+            return;
+        }
     }
     if !names.models.contains_key(model) {
         let known = names

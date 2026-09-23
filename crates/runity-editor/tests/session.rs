@@ -4408,3 +4408,54 @@ fn the_face_under_the_pointer_is_the_one_facing_it() {
     // Past it, sky: no face.
     assert_eq!(session.face_under(w / 2, 0), None);
 }
+
+#[test]
+fn a_link_gets_its_id_on_save_and_follows_a_file_renamed_outside_the_editor() {
+    let path = scene_file("links", r#"(entities: [(name: "block", model: "wedge")])"#);
+    let root = root_of(&path);
+    let project = runity::Project::open(&root).unwrap();
+    std::fs::write(
+        project.assets().join("wedge.obj"),
+        "v -1 0 -1\nv 1 0 -1\nv 1 0 1\nf 1 3 2\n",
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session.open_scene(&path).unwrap();
+    assert!(!session.is_modified(), "opening is not an edit");
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#"model: ("wedge", ""#), "{saved}");
+    let id = runity_import::ImportSettings::load(runity_import::sidecar_for(
+        &project.assets().join("wedge.obj"),
+    ))
+    .unwrap()
+    .asset_id();
+    assert!(saved.contains(&id.to_string()));
+
+    // Renamed in Finder: the sidecar is left behind, and sync finds the
+    // file by its contents. The line follows by ID and takes the new name.
+    std::fs::rename(
+        project.assets().join("wedge.obj"),
+        project.assets().join("rock.obj"),
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    session.open_scene(&path).unwrap();
+    assert!(
+        !session
+            .problems()
+            .iter()
+            .any(|p| p.message.contains("model")),
+        "{:?}",
+        session.problems()
+    );
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains(&format!(r#"model: ("rock", "{id}")"#)),
+        "{saved}"
+    );
+}

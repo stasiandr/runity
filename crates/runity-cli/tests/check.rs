@@ -113,16 +113,37 @@ fn a_scene_that_does_not_parse_says_where() {
 }
 
 #[test]
-fn two_sources_with_one_name_are_one_name_too_many() {
+fn two_sources_with_one_name_are_fine_until_a_line_names_them_without_an_id() {
     let project = project("clash");
     write(&project.assets().join("trees/pine.obj"), CUBE);
     write(&project.assets().join("rocks/pine.obj"), CUBE);
+    runity_import::sync(&project);
+    assert!(
+        !errors(&check(&project)).iter().any(|l| l.contains("pine")),
+        "two assets, two IDs: nothing wrong yet"
+    );
+
+    // A line that says only `pine` cannot tell which.
+    let scene = project.scenes().join("forest.ron");
+    write(&scene, r#"(entities: [(name: "tree", model: "pine")])"#);
     let lines = errors(&check(&project));
-    let clash = one_containing(&lines, "model name `pine`");
+    let clash = one_containing(&lines, "`pine` is the name of");
     assert!(
         clash.contains("assets/rocks/pine.obj, assets/trees/pine.obj"),
         "{clash}"
     );
+
+    // With the ID, it can.
+    let id = runity_import::ImportSettings::load(runity_import::sidecar_for(
+        &project.assets().join("trees/pine.obj"),
+    ))
+    .unwrap()
+    .asset_id();
+    write(
+        &scene,
+        &format!(r#"(entities: [(name: "tree", model: ("pine", "{id}"))])"#),
+    );
+    assert!(!errors(&check(&project)).iter().any(|l| l.contains("pine")));
 }
 
 #[test]

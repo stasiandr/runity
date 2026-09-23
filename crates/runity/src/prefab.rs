@@ -39,6 +39,10 @@ pub const EXTENSION: &str = "prefab";
 #[derive(Debug, Clone, Default)]
 pub struct Prefabs {
     by_name: HashMap<String, EntityDesc>,
+    /// Each prefab's ID, from its sidecar, and back: what a link to one
+    /// holds (docs/refs.md).
+    ids: HashMap<crate::AssetId, String>,
+    id_of: HashMap<String, crate::AssetId>,
 }
 
 impl Prefabs {
@@ -61,6 +65,10 @@ impl Prefabs {
             }
             match Self::read(&path) {
                 Ok((name, desc)) => {
+                    if let Some(id) = crate::asset::sidecar_id(crate::asset::sidecar_of(&path)) {
+                        prefabs.ids.insert(id, name.clone());
+                        prefabs.id_of.insert(name.clone(), id);
+                    }
                     prefabs.insert(name, desc);
                 }
                 Err(e) => problems.push((path, e)),
@@ -114,6 +122,23 @@ impl Prefabs {
 
     pub fn get(&self, name: &str) -> Option<&EntityDesc> {
         self.by_name.get(name)
+    }
+
+    /// Follow a link to a prefab: by its ID, then by its name. The name
+    /// found is the prefab's name now.
+    pub fn find(&self, link: &crate::AssetLink) -> Option<(&str, &EntityDesc)> {
+        let name = link
+            .id
+            .and_then(|id| self.ids.get(&id))
+            .map(String::as_str)
+            .unwrap_or(link.as_str());
+        let (name, desc) = self.by_name.get_key_value(name)?;
+        Some((name.as_str(), desc))
+    }
+
+    /// A prefab's ID, when its sidecar has been written.
+    pub fn id_of(&self, name: &str) -> Option<crate::AssetId> {
+        self.id_of.get(name).copied()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -323,7 +348,7 @@ fn resolve(
         });
         return None;
     }
-    let Some(template) = prefabs.get(&desc.prefab) else {
+    let Some((_, template)) = prefabs.find(&desc.prefab) else {
         problems.push(Problem {
             entity_name: desc.name.clone(),
             prefab: desc.prefab.to_string(),

@@ -278,7 +278,8 @@ mod tests {
 /// A link to an asset: its name, for a person reading the line, and its
 /// ID, for finding it (docs/refs.md).
 ///
-/// In a file it is `(name: "rock", id: "fc5513a0…")`, or a bare `"rock"`
+/// In a file it is `("rock", "fc5513a0…")` — name, then ID — or a bare
+/// `"rock"`
 /// as a person or an agent writes it by hand — found by name, and given
 /// its ID the first time it is saved. Following a link tries the ID first
 /// and the name second, so a link survives its file being renamed or moved
@@ -373,15 +374,17 @@ impl PartialEq<String> for AssetLink {
 
 impl serde::Serialize for AssetLink {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
+        use serde::ser::SerializeTuple;
         match self.id {
             // As it was written: a line a person wrote stays as written
             // until the engine has found what it names.
             None => serializer.serialize_str(&self.name),
+            // A pair, not a struct: a tuple stays on its line, so an entity
+            // written on one line stays on one line.
             Some(id) => {
-                let mut s = serializer.serialize_struct("AssetLink", 2)?;
-                s.serialize_field("name", &self.name)?;
-                s.serialize_field("id", &id.to_string())?;
+                let mut s = serializer.serialize_tuple(2)?;
+                s.serialize_element(&self.name)?;
+                s.serialize_element(&id.to_string())?;
                 s.end()
             }
         }
@@ -404,6 +407,20 @@ impl<'de> serde::Deserialize<'de> for AssetLink {
 
             fn visit_string<E: serde::de::Error>(self, name: String) -> Result<AssetLink, E> {
                 Ok(AssetLink::named(name))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<AssetLink, A::Error> {
+                let name: String = seq
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                let id: Option<String> = seq.next_element()?;
+                let id = id
+                    .map(|text| text.parse().map_err(serde::de::Error::custom))
+                    .transpose()?;
+                Ok(AssetLink { name, id })
             }
 
             fn visit_map<A: serde::de::MapAccess<'de>>(
@@ -440,8 +457,10 @@ mod link_tests {
         let bare: AssetLink = ron::from_str(r#""rock""#).unwrap();
         assert_eq!(bare, AssetLink::named("rock"));
         assert_eq!(ron::to_string(&bare).unwrap(), r#""rock""#);
-        let full: AssetLink = ron::from_str(r#"(name: "rock", id: "fc55")"#).unwrap();
+        let full: AssetLink = ron::from_str(r#"("rock", "fc55")"#).unwrap();
         assert_eq!(full, AssetLink::to("rock", id));
+        let spelled: AssetLink = ron::from_str(r#"(name: "rock", id: "fc55")"#).unwrap();
+        assert_eq!(spelled, full, "the long form, written by hand, reads too");
         let back: AssetLink = ron::from_str(&ron::to_string(&full).unwrap()).unwrap();
         assert_eq!(back, full);
         assert!(full == "rock" && !full.is_empty());
@@ -451,4 +470,45 @@ mod link_tests {
         assert_eq!(moved.name, "boulder");
         assert!(!moved.settle("boulder", id));
     }
+}
+
+/// Point every model and prefab link under `roots` at what it names now:
+/// its ID, and the name its file has. How a scene opened in the editor
+/// gets IDs for lines written by name, and names that follow files renamed
+/// since; the next save writes them. A link that finds nothing is left as
+/// it is, for `check` to name. Returns how many links changed.
+pub fn settle(
+    roots: &mut [EntityDesc],
+    library: Option<&crate::Library>,
+    prefabs: &crate::Prefabs,
+) -> usize {
+    use crate::asset::AssetKind;
+    let mut changed = 0;
+    let model = |link: &mut AssetLink, changed: &mut usize| {
+        if link.is_empty() || crate::builtin::by_name(link).is_some() {
+            return;
+        }
+        if let Some((id, name)) = library.and_then(|l| l.find(link, AssetKind::Mesh)) {
+            *changed += usize::from(link.settle(name, id));
+        }
+    };
+    let mut stack: Vec<&mut EntityDesc> = roots.iter_mut().collect();
+    while let Some(desc) = stack.pop() {
+        model(&mut desc.model, &mut changed);
+        for part in desc.overrides.values_mut() {
+            if let Some(link) = part.model.as_mut() {
+                model(link, &mut changed);
+            }
+        }
+        if !desc.prefab.is_empty() {
+            let found = prefabs
+                .find(&desc.prefab)
+                .and_then(|(name, _)| Some((prefabs.id_of(name)?, name.to_string())));
+            if let Some((id, name)) = found {
+                changed += usize::from(desc.prefab.settle(&name, id));
+            }
+        }
+        stack.extend(desc.children.iter_mut());
+    }
+    changed
 }
