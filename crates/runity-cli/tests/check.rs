@@ -258,3 +258,22 @@ fn a_layer_no_file_names_is_found() {
         "{errors:#?}"
     );
 }
+
+#[test]
+fn a_screen_with_two_elements_of_one_id_is_found() {
+    let project = project("screens");
+    assert!(
+        project.root().join("ui/hud.ron").is_file(),
+        "a new project has a HUD"
+    );
+    write(
+        &project.root().join("ui/menu.ron"),
+        r#"(elements: [
+            (id: "play", size: (200, 40), kind: Button("Play")),
+            (id: "play", size: (200, 40), kind: Button("Again")),
+        ])"#,
+    );
+    let errors = errors(&check(&project));
+    let line = one_containing(&errors, "is the id of two elements");
+    assert!(line.contains("ui/menu.ron"), "{line}");
+}

@@ -15,6 +15,7 @@
 //!   materials/      *.rmat
 //!   assets/         sources: models, textures, sounds
 //!   tuning/         the game's numbers, RON, reloaded while it runs
+//!   ui/             the game's screens, RON, reloaded while it runs
 //!   library/        built .rasset — derived, never committed
 //!   Cargo.toml      the game crate, its own workspace
 //!   build.rs        finds the components and systems below; not edited
@@ -64,6 +65,9 @@ pub const SRC: &str = "src";
 pub const COMPONENTS: &str = "src/components";
 /// Where the game's systems live, one per file, under [`SRC`].
 pub const SYSTEMS: &str = "src/systems";
+/// The game's screens — menus, the HUD — one RON file each: see
+/// [`crate::screen`].
+pub const UI: &str = "ui";
 /// What the player does, by name, and which keys that is.
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
@@ -246,6 +250,11 @@ impl Project {
         std::fs::write(root.join(SCENES).join("main.ron"), starter_scene())?;
         std::fs::write(root.join(INPUT), INPUT_RON)?;
         std::fs::write(root.join(crate::layers::FILE), LAYERS_RON)?;
+        std::fs::create_dir_all(root.join(UI))?;
+        std::fs::write(
+            root.join(UI).join("hud.ron"),
+            HUD_RON.replace("{name}", name),
+        )?;
         std::fs::create_dir_all(root.join(TUNING))?;
         std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
@@ -445,6 +454,19 @@ const WORLD_RON: &str = "\
 ";
 
 /// The bindings a new project starts with.
+const HUD_RON: &str = "\
+// The heads-up display, drawn over the scene. Each element hangs from an
+// anchor (TopLeft, Top, Center, BottomRight, ...), in pixels of a 1280x720
+// screen, scaled with the window. Move something here and the running game
+// shows it there. See runity::screen.
+(
+    elements: [
+        (id: \"title\", anchor: TopLeft, at: (20, 16), size: (400, 30), kind: Text(\"{name}\"), text_size: 22),
+        (id: \"quit\", anchor: TopRight, at: (-20, 16), size: (120, 36), kind: Button(\"Quit\")),
+    ],
+)
+";
+
 const LAYERS_RON: &str = "\
 // Collision layers. A scene line puts a body on one with `layer: \"debris\"`;
 // a line without one is on \"default\". Pairs in `ignore` pass through each
@@ -488,6 +510,9 @@ use runity::hecs::World;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
+use runity::screen::Screen;
+use runity::ui::Ui;
+use runity::widgets::Widgets;
 use runity::{Actions, Components, LiveScene, Tuned};
 use serde::Deserialize;
 
@@ -512,6 +537,9 @@ struct Game {
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
     layers: Tuned<runity::layers::Layers>,
+    hud: Screen,
+    widgets: Widgets,
+    ui: Ui,
     world: World,
     physics: PhysicsWorld,
 }
@@ -549,7 +577,13 @@ impl shell::Game for Game {
             Some(Err(problem)) => eprintln!("{problem}"),
             None => {}
         }
-        if self.actions.pressed(ctx.input, "quit") {
+        if let Some(Err(problem)) = self.hud.poll(ctx.time.delta()) {
+            eprintln!("{problem}");
+        }
+        self.ui.clear();
+        let size = runity::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
+        let done = self.hud.draw(&mut self.widgets, &mut self.ui, ctx.input, size);
+        if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
         }
         let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
@@ -563,6 +597,10 @@ impl shell::Game for Game {
             runity::scene_lighting(&scene.sun),
             runity::scene_fog(&scene.fog),
         )
+    }
+
+    fn overlay(&mut self) -> &Ui {
+        &self.ui
     }
 }
 
@@ -588,11 +626,16 @@ fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
     let layers = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
         .map_err(anyhow::Error::msg)?;
+    let hud = Screen::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui/hud.ron"))
+        .map_err(anyhow::Error::msg)?;
     let game = Game {
         live,
         actions,
         tuning,
         layers,
+        hud,
+        widgets: Widgets::new(),
+        ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
     };
@@ -812,6 +855,8 @@ things in the same place:
 runity.ron   the project file
 input.ron    actions by name (\"jump\"), and the keys for each
 tuning/      the game's numbers, RON, typed in code with runity::Tuned
+ui/          the game's screens: elements anchored in a 1280x720 frame (runity::screen)
+layers.ron   collision layers, and which pairs pass through each other
 scenes/      scenes, RON — one entity per block, `id` first
 prefabs/     one entity subtree per file; a scene places it with `prefab: \"name\"`
 materials/   .rmat sources: `(color: \"#rrggbb\")`, sRGB hex

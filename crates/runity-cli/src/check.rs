@@ -98,6 +98,15 @@ pub fn check(project: &Project) -> Vec<Finding> {
         }
     }
 
+    for path in files(&project.root().join(runity::project::UI), "ron") {
+        let file = relative(project, &path);
+        if let Some(layout) = parse::<runity::screen::Layout>(&path, &file, &mut out) {
+            for problem in layout.problems() {
+                out.push(error(&file, problem));
+            }
+        }
+    }
+
     for path in files(&project.root().join(runity::project::TUNING), "ron") {
         let file = relative(project, &path);
         let _: Option<ron::Value> = parse(&path, &file, &mut out);

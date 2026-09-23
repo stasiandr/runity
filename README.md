@@ -50,6 +50,8 @@ cd ../moss && cargo run      # окно на scenes/main.ron; сохранени
 runity.ron   файл проекта: имя, версия движка
 scenes/      сцены, RON — сущность на блок, `id` первым
 prefabs/     префабы
+ui/          экраны игры: меню и HUD, элементы с якорями, перечитываются на ходу
+layers.ron   слои столкновений
 materials/   .rmat — цвета в sRGB hex
 assets/      исходники: модели, текстуры, звук
 library/     собранные .rasset — производное, в git не попадает
