@@ -210,6 +210,78 @@ fn forget_ids(desc: &mut EntityDesc) {
     }
 }
 
+/// How to lay out a scatter: `count` things in a disc of `radius`, no two
+/// closer than `spacing`, each turned and sized at random.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scatter {
+    pub radius: f32,
+    pub count: u32,
+    /// The least distance between two; `0.0` for none. When the disc is too
+    /// full for it, fewer than `count` come out rather than a clump.
+    pub spacing: f32,
+    /// The same seed lays the same things out the same way, so a scatter
+    /// in a scene file is reproducible and its diff is not noise.
+    pub seed: u64,
+    /// Uniform scale, between these two.
+    pub scale: (f32, f32),
+    /// Turn each one about the vertical at random.
+    pub turn: bool,
+}
+
+impl Default for Scatter {
+    fn default() -> Self {
+        Self {
+            radius: 10.0,
+            count: 20,
+            spacing: 1.0,
+            seed: 1,
+            scale: (0.8, 1.2),
+            turn: true,
+        }
+    }
+}
+
+/// Where each thing of a scatter goes, relative to the scatter's centre.
+///
+/// Evenly over the disc (not bunched at the middle, which picking a random
+/// angle and a random distance would do), rejecting a point that lands
+/// within `spacing` of one already placed.
+pub fn scatter(layout: &Scatter) -> Vec<crate::Transform> {
+    let mut state = layout.seed ^ 0x9e37_79b9_7f4a_7c15;
+    let mut next = move || {
+        // splitmix64: small, specified, and the same on every machine.
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let mut placed: Vec<crate::Transform> = Vec::new();
+    let attempts = layout.count.saturating_mul(30);
+    for _ in 0..attempts {
+        if placed.len() as u32 >= layout.count {
+            break;
+        }
+        let angle = next() * std::f32::consts::TAU;
+        let distance = next().sqrt() * layout.radius.max(0.0);
+        let position = glam::Vec3::new(angle.cos() * distance, 0.0, angle.sin() * distance);
+        let (yaw, size) = (next(), next());
+        if placed
+            .iter()
+            .any(|t| t.position.distance(position) < layout.spacing)
+        {
+            continue;
+        }
+        let scale = layout.scale.0 + (layout.scale.1 - layout.scale.0) * size;
+        placed.push(crate::Transform {
+            position,
+            rotation_deg: glam::Vec3::new(0.0, if layout.turn { yaw * 360.0 } else { 0.0 }, 0.0),
+            scale: glam::Vec3::splat(scale),
+        });
+    }
+    placed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +514,42 @@ mod tests {
         let other = scene.find("other").unwrap().clone();
         let added = add(&mut scene, None, other.clone()).unwrap();
         assert_ne!(added, other.id);
+    }
+
+    #[test]
+    fn a_scatter_is_the_same_for_the_same_seed_and_keeps_its_spacing() {
+        let layout = Scatter {
+            radius: 8.0,
+            count: 30,
+            spacing: 1.5,
+            seed: 7,
+            ..Scatter::default()
+        };
+        let a = scatter(&layout);
+        assert_eq!(a, scatter(&layout), "reproducible");
+        assert_eq!(a.len(), 30);
+        for (i, p) in a.iter().enumerate() {
+            assert!(p.position.length() <= 8.0 + 1e-3);
+            for q in &a[i + 1..] {
+                assert!(p.position.distance(q.position) >= 1.5);
+            }
+        }
+        assert_ne!(
+            a,
+            scatter(&Scatter {
+                seed: 8,
+                ..layout.clone()
+            }),
+            "and seed-dependent"
+        );
+
+        // Too full for the spacing: fewer, not a clump.
+        let crowded = scatter(&Scatter {
+            radius: 1.0,
+            count: 50,
+            spacing: 1.0,
+            ..layout
+        });
+        assert!(crowded.len() < 50 && !crowded.is_empty());
     }
 }

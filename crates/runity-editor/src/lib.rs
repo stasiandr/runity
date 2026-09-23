@@ -467,6 +467,54 @@ impl Session {
         self.insert(parent, desc)
     }
 
+    /// Scatter copies of a model — or instances of a prefab, when `what`
+    /// names one — over a disc around `centre`, as one group entity and one
+    /// undoable step. Returns the group's ID.
+    ///
+    /// Laid out by [`runity::edit::scatter`]: the same seed gives the same
+    /// layout, so the scene file says exactly what was placed and a
+    /// re-scatter with another seed is a readable diff.
+    pub fn scatter(
+        &mut self,
+        parent: Option<EntityId>,
+        what: &str,
+        centre: Vec3,
+        layout: &runity::edit::Scatter,
+    ) -> EditResult<EntityId> {
+        let prefab = self.prefabs.get(what).is_some();
+        if what.is_empty() {
+            return Err(EditError::EmptyName("a model or prefab to scatter"));
+        }
+        let children = runity::edit::scatter(layout)
+            .into_iter()
+            .map(|transform| EntityDesc {
+                name: what.trim_start_matches("builtin:").to_string(),
+                model: if prefab {
+                    String::new()
+                } else {
+                    what.to_string()
+                },
+                prefab: if prefab {
+                    what.to_string()
+                } else {
+                    String::new()
+                },
+                transform,
+                ..Default::default()
+            })
+            .collect();
+        let group = EntityDesc {
+            name: format!("{} ×{}", what.trim_start_matches("builtin:"), layout.count),
+            transform: runity::Transform {
+                position: centre,
+                ..Default::default()
+            },
+            children,
+            ..Default::default()
+        };
+        self.insert(parent, group)
+    }
+
     /// Delete an entity and everything under it.
     pub fn delete(&mut self, id: EntityId) -> EditResult<()> {
         self.refuse_while_playing()?;

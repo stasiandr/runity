@@ -189,6 +189,166 @@ pub fn sphere(radius: f32, segments: u32, rings: u32) -> MeshAsset {
     finish("sphere", vertices, indices)
 }
 
+// --- blockout ---------------------------------------------------------------
+//
+// Greybox shapes: what a level is sketched from before it has art. Centred on
+// the origin like the cube, one unit across, so the centred colliders —
+// `Box`, `Cylinder`, `Ramp`, `Stairs` — fit them with the same numbers, and
+// scaling the entity scales both.
+
+/// A flat face from its corners, wound so that its normal points away from
+/// `inside` — a point within the shape. Correct by construction rather than
+/// by the care of whoever lists the corners.
+fn face(
+    vertices: &mut Vec<Vertex>,
+    indices: &mut Vec<u32>,
+    corners: &[[f32; 3]],
+    inside: [f32; 3],
+) {
+    let v = |i: usize| glam::Vec3::from_array(corners[i]);
+    let mut normal = (v(1) - v(0)).cross(v(2) - v(0)).normalize_or_zero();
+    let centre = corners
+        .iter()
+        .map(|c| glam::Vec3::from_array(*c))
+        .sum::<glam::Vec3>()
+        / corners.len() as f32;
+    let flip = normal.dot(centre - glam::Vec3::from_array(inside)) < 0.0;
+    if flip {
+        normal = -normal;
+    }
+    let base = vertices.len() as u32;
+    for (i, corner) in corners.iter().enumerate() {
+        vertices.push(Vertex {
+            position: *corner,
+            normal: normal.to_array(),
+            uv: [(i == 1 || i == 2) as u32 as f32, (i >= 2) as u32 as f32],
+        });
+    }
+    for i in 1..corners.len() as u32 - 1 {
+        if flip {
+            indices.extend_from_slice(&[base, base + i + 1, base + i]);
+        } else {
+            indices.extend_from_slice(&[base, base + i, base + i + 1]);
+        }
+    }
+}
+
+/// An axis-aligned box between two corners, faces outward.
+fn add_box(vertices: &mut Vec<Vertex>, indices: &mut Vec<u32>, min: [f32; 3], max: [f32; 3]) {
+    let inside = [
+        (min[0] + max[0]) * 0.5,
+        (min[1] + max[1]) * 0.5,
+        (min[2] + max[2]) * 0.5,
+    ];
+    let [x0, y0, z0] = min;
+    let [x1, y1, z1] = max;
+    for corners in [
+        [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        [[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]],
+        [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0]],
+        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+        [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]],
+        [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]],
+    ] {
+        face(vertices, indices, &corners, inside);
+    }
+}
+
+/// An upright cylinder, centred, with flat caps and smooth sides: a pillar,
+/// a tower, a barrel.
+pub fn cylinder(radius: f32, height: f32, segments: u32) -> MeshAsset {
+    let segments = segments.max(3);
+    let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+    let h = height * 0.5;
+    let tau = std::f32::consts::TAU;
+    let at = |i: u32| {
+        let a = tau * i as f32 / segments as f32;
+        (a.cos(), a.sin())
+    };
+    // Sides: two vertices a column, normals straight out.
+    for i in 0..=segments {
+        let (c, s) = at(i);
+        for y in [-h, h] {
+            vertices.push(Vertex {
+                position: [c * radius, y, s * radius],
+                normal: [c, 0.0, s],
+                uv: [i as f32 / segments as f32, if y < 0.0 { 1.0 } else { 0.0 }],
+            });
+        }
+    }
+    for i in 0..segments {
+        let a = i * 2;
+        indices.extend_from_slice(&[a, a + 1, a + 2, a + 2, a + 1, a + 3]);
+    }
+    // Caps, each a fan with its own flat normal.
+    for (y, up) in [(h, 1.0f32), (-h, -1.0)] {
+        let centre = vertices.len() as u32;
+        vertices.push(Vertex {
+            position: [0.0, y, 0.0],
+            normal: [0.0, up, 0.0],
+            uv: [0.5, 0.5],
+        });
+        for i in 0..segments {
+            let (c, s) = at(i);
+            vertices.push(Vertex {
+                position: [c * radius, y, s * radius],
+                normal: [0.0, up, 0.0],
+                uv: [0.5 + c * 0.5, 0.5 + s * 0.5],
+            });
+        }
+        for i in 0..segments {
+            let a = centre + 1 + i;
+            let b = centre + 1 + (i + 1) % segments;
+            if up > 0.0 {
+                indices.extend_from_slice(&[centre, b, a]);
+            } else {
+                indices.extend_from_slice(&[centre, a, b]);
+            }
+        }
+    }
+    finish("cylinder", vertices, indices)
+}
+
+/// A wedge: flat along the front (+z) at the bottom, full height at the
+/// back (−z). What a slope, a ramp or a roof is sketched with.
+pub fn ramp(size: f32) -> MeshAsset {
+    let h = size * 0.5;
+    let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+    let inside = [0.0, -h / 3.0, -h / 3.0];
+    let (b0, b1, b2, b3) = ([-h, -h, -h], [h, -h, -h], [h, -h, h], [-h, -h, h]);
+    let (t0, t1) = ([-h, h, -h], [h, h, -h]);
+    for corners in [
+        &[b0, b1, b2, b3][..],
+        &[b0, b1, t1, t0][..],
+        &[b3, b2, t1, t0][..],
+        &[b1, b2, t1][..],
+        &[b0, b3, t0][..],
+    ] {
+        face(&mut vertices, &mut indices, corners, inside);
+    }
+    finish("ramp", vertices, indices)
+}
+
+/// A flight of `steps` steps, rising toward the back (−z), in a unit box.
+pub fn stairs(size: f32, steps: u32) -> MeshAsset {
+    let steps = steps.max(1);
+    let h = size * 0.5;
+    let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+    let depth = size / steps as f32;
+    for i in 0..steps {
+        // A column from the ground up to its step's height.
+        let front = h - i as f32 * depth;
+        let top = -h + (i + 1) as f32 * depth;
+        add_box(
+            &mut vertices,
+            &mut indices,
+            [-h, -h, front - depth],
+            [h, top, front],
+        );
+    }
+    finish("stairs", vertices, indices)
+}
+
 /// Look a builtin up by the name a scene file uses.
 ///
 /// Scenes say `builtin:plane` rather than a path, so an example scene needs
@@ -199,18 +359,28 @@ pub fn by_name(name: &str) -> Option<MeshAsset> {
         "cube" => Some(cube(1.0)),
         "cone" => Some(cone(0.5, 1.0, 16)),
         "sphere" => Some(sphere(0.5, 24, 16)),
+        "cylinder" => Some(cylinder(0.5, 1.0, 24)),
+        "ramp" => Some(ramp(1.0)),
+        "stairs" => Some(stairs(1.0, STAIRS)),
         _ => None,
     }
 }
 
 /// Every builtin name, for an editor's list and for tests that want to check
 /// all of them without repeating the list.
-pub const NAMES: [&str; 4] = [
+pub const NAMES: [&str; 7] = [
     "builtin:plane",
     "builtin:cube",
     "builtin:cone",
     "builtin:sphere",
+    "builtin:cylinder",
+    "builtin:ramp",
+    "builtin:stairs",
 ];
+
+/// How many steps `builtin:stairs` has: what a `Stairs` collider for it
+/// should say.
+pub const STAIRS: u32 = 4;
 
 #[cfg(test)]
 mod tests {

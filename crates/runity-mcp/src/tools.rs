@@ -31,14 +31,14 @@ fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> 
 fn entity_fields() -> Value {
     json!({
         "name": { "type": "string" },
-        "model": { "type": "string", "description": "builtin:plane|cube|cone|sphere, or a model's file name without extension from assets/" },
+        "model": { "type": "string", "description": "builtin:plane|cube|cone|sphere|cylinder|ramp|stairs (blockout shapes, one unit, centred), or a model's file name without extension from assets/" },
         "material": { "type": "string", "description": "a material name: materials/<name>.rmat, or builtin grass, earth, bark, needle, stone, ember, white" },
         "color": { "type": "string", "description": "#rrggbb, sRGB — a colour spelled out instead of a material name" },
         "position": vec3("metres, relative to the parent"),
         "rotation_deg": vec3("Euler degrees, applied Y then X then Z"),
         "scale": vec3("per axis"),
         "body": { "type": "string", "enum": ["None", "Static", "Dynamic"] },
-        "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r)" },
+        "collider": { "type": "string", "description": "RON: None, Box(half: (x, y, z)), Sphere(radius: r), Capsule(half_height: h, radius: r), Cylinder(half_height: h, radius: r), Ramp(half: (x, y, z)), Stairs(half: (x, y, z), steps: n). builtin:cube/cylinder/ramp/stairs fit Box/Cylinder/Ramp/Stairs with half 0.5 (stairs: steps 4)" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
 }
@@ -71,6 +71,17 @@ pub fn list() -> Vec<Value> {
         tool("duplicate_entity", "Copy an entity with its children, as its next sibling. Returns the copy's id.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
+        tool("scatter", "Scatter copies of a model, or instances of a prefab, over a disc — trees, rocks, grass — as one group and one undo step. The same seed gives the same layout. Returns the group's id.", json!({
+            "what": { "type": "string", "description": "a model (builtin:cone, or a name from assets/) or a prefab name" },
+            "centre": vec3("the middle of the disc"),
+            "radius": { "type": "number" },
+            "count": { "type": "integer" },
+            "spacing": { "type": "number", "description": "least distance between two; fewer come out if the disc is too full" },
+            "seed": { "type": "integer" },
+            "scale_min": { "type": "number" },
+            "scale_max": { "type": "number" },
+            "parent": { "type": "string", "description": ID },
+        }), &["what", "count"]),
         tool("undo", "Take back the last edit.", json!({}), &[]),
         tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
@@ -142,6 +153,42 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "prefabs/{name}.prefab written; {id} is now an instance"
             ))])
+        }
+        "scatter" => {
+            let what = string(args, "what")?;
+            let number = |key: &str, default: f32| -> Result<f32, String> {
+                match args.get(key) {
+                    None | Some(Value::Null) => Ok(default),
+                    Some(v) => v
+                        .as_f64()
+                        .map(|n| n as f32)
+                        .ok_or_else(|| format!("{key} is a number, not {v}")),
+                }
+            };
+            let defaults = runity::edit::Scatter::default();
+            let layout = runity::edit::Scatter {
+                radius: number("radius", defaults.radius)?,
+                count: integer(args, "count")?.min(10_000),
+                spacing: number("spacing", defaults.spacing)?,
+                seed: optional_integer(args, "seed")?.map_or(defaults.seed, u64::from),
+                scale: (
+                    number("scale_min", defaults.scale.0)?,
+                    number("scale_max", defaults.scale.1)?,
+                ),
+                turn: true,
+            };
+            let centre = optional_vec3(args, "centre")?.unwrap_or(Vec3::ZERO);
+            let parent = optional_id(args, "parent")?;
+            let group = server
+                .session()?
+                .scatter(parent, &what, centre, &layout)
+                .map_err(|e| e.to_string())?;
+            let placed = server
+                .session()?
+                .scene()
+                .get(group)
+                .map_or(0, |g| g.children.len());
+            Ok(vec![text(format!("{group}: {placed} placed"))])
         }
         "undo" => {
             let done = server.session()?.undo().map_err(|e| e.to_string())?;

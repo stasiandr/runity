@@ -1184,3 +1184,46 @@ fn a_game_component_is_set_as_text_saved_as_written_and_undone_in_one_step() {
     assert!(session.undo().unwrap(), "the one real step");
     assert!(session.scene().get(crate_id).unwrap().components.is_empty());
 }
+
+#[test]
+fn a_scatter_is_one_group_one_step_and_the_same_for_the_same_seed() {
+    let Some((mut session, _)) = open("scatter") else {
+        return;
+    };
+    let before = session.entity_count();
+    let layout = runity::edit::Scatter {
+        radius: 6.0,
+        count: 12,
+        spacing: 1.0,
+        seed: 3,
+        ..Default::default()
+    };
+    let group = session
+        .scatter(None, "builtin:cone", Vec3::new(5.0, 0.0, 0.0), &layout)
+        .unwrap();
+    assert_eq!(session.entity_count(), before + 13, "a group and twelve");
+    let first: Vec<Transform> = session
+        .scene()
+        .get(group)
+        .unwrap()
+        .children
+        .iter()
+        .map(|c| c.transform)
+        .collect();
+
+    assert!(session.undo().unwrap());
+    assert_eq!(session.entity_count(), before, "one step takes all of it back");
+
+    let again = session
+        .scatter(None, "builtin:cone", Vec3::new(5.0, 0.0, 0.0), &layout)
+        .unwrap();
+    let second: Vec<Transform> = session
+        .scene()
+        .get(again)
+        .unwrap()
+        .children
+        .iter()
+        .map(|c| c.transform)
+        .collect();
+    assert_eq!(first, second, "the same seed, the same layout");
+}

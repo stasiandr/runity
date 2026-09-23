@@ -394,6 +394,52 @@ fn build_collider(shape: ColliderShape, transform: glam::Mat4) -> Option<Collide
             (radius * scale.x.max(scale.z)).max(1e-4),
         )
         .build(),
+        ColliderShape::Cylinder {
+            half_height,
+            radius,
+        } => ColliderBuilder::cylinder(
+            (half_height * scale.y).max(1e-4),
+            (radius * scale.x.max(scale.z)).max(1e-4),
+        )
+        .build(),
+        ColliderShape::Ramp { half } => {
+            let h = half * scale;
+            let points: Vec<Point<Real>> = [
+                (-1.0, -1.0, -1.0),
+                (1.0, -1.0, -1.0),
+                (1.0, -1.0, 1.0),
+                (-1.0, -1.0, 1.0),
+                (-1.0, 1.0, -1.0),
+                (1.0, 1.0, -1.0),
+            ]
+            .into_iter()
+            .map(|(x, y, z)| point![x * h.x, y * h.y, z * h.z])
+            .collect();
+            ColliderBuilder::convex_hull(&points)?.build()
+        }
+        ColliderShape::Stairs { half, steps } => {
+            // One box per step, each from the ground up, as the mesh has
+            // them: a flight a body can climb, not a slope it slides on.
+            let h = half * scale;
+            let steps = steps.max(1);
+            let depth = 2.0 * h.z / steps as f32;
+            let parts = (0..steps)
+                .map(|i| {
+                    let height = 2.0 * h.y * (i + 1) as f32 / steps as f32;
+                    let z = h.z - depth * (i as f32 + 0.5);
+                    let y = -h.y + height * 0.5;
+                    (
+                        Isometry::translation(0.0, y, z),
+                        SharedShape::cuboid(
+                            h.x.max(1e-4),
+                            (height * 0.5).max(1e-4),
+                            (depth * 0.5).max(1e-4),
+                        ),
+                    )
+                })
+                .collect();
+            ColliderBuilder::compound(parts).build()
+        }
     })
 }
 
@@ -747,5 +793,91 @@ mod tests {
             2,
             "and not a second one beside the old"
         );
+    }
+
+    // --- blockout colliders --------------------------------------------------
+
+    /// A static shape at the origin and a dynamic thing above it.
+    fn over(
+        ground: ColliderShape,
+        scale: Vec3,
+        thing: ColliderShape,
+        at: Vec3,
+    ) -> (PhysicsWorld, World, hecs::Entity) {
+        let mut floor = entity("shape", 0.0, Body::Static, ground);
+        floor.transform.scale = scale;
+        let mut dropped = entity("thing", 0.0, Body::Dynamic, thing);
+        dropped.transform.position = at;
+        let scene = Scene {
+            entities: vec![floor, dropped],
+            ..Default::default()
+        };
+        let mut world = World::new();
+        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        let physics = PhysicsWorld::new(1.0 / 60.0);
+        let thing = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Dynamic)
+            .map(|(e, _)| e)
+            .unwrap();
+        (physics, world, thing)
+    }
+
+    #[test]
+    fn a_ball_on_a_ramp_rolls_down_toward_the_low_edge() {
+        let (mut physics, mut world, ball) = over(
+            ColliderShape::Ramp {
+                half: Vec3::splat(0.5),
+            },
+            Vec3::new(4.0, 2.0, 4.0),
+            ColliderShape::Sphere { radius: 0.2 },
+            Vec3::new(0.0, 1.5, -1.0),
+        );
+        run_for(&mut physics, &mut world, 60);
+        let at = world.get::<&Transform>(ball).unwrap().position;
+        assert!(at.z > -0.5, "it rolled toward the front: {at:?}");
+        assert!(at.y < 1.5, "and down: {at:?}");
+    }
+
+    #[test]
+    fn a_box_dropped_on_stairs_rests_on_a_step() {
+        // Four steps in a 2 m cube, a quarter of the height each; the top
+        // step's surface is at y = 1.
+        let (mut physics, mut world, block) = over(
+            ColliderShape::Stairs {
+                half: Vec3::splat(0.5),
+                steps: 4,
+            },
+            Vec3::splat(2.0),
+            ColliderShape::Box {
+                half: Vec3::splat(0.1),
+            },
+            Vec3::new(0.0, 2.0, -0.75),
+        );
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&Transform>(block).unwrap().position.y;
+        assert!(
+            (y - 1.1).abs() < 0.05,
+            "on the top step, not inside the flight: {y}"
+        );
+    }
+
+    #[test]
+    fn a_cylinder_is_as_tall_as_it_says() {
+        let (mut physics, mut world, block) = over(
+            ColliderShape::Cylinder {
+                half_height: 0.5,
+                radius: 0.5,
+            },
+            Vec3::new(1.0, 3.0, 1.0),
+            ColliderShape::Box {
+                half: Vec3::splat(0.1),
+            },
+            Vec3::new(0.0, 3.0, 0.0),
+        );
+        run_for(&mut physics, &mut world, 120);
+        let y = world.get::<&Transform>(block).unwrap().position.y;
+        assert!((y - 1.6).abs() < 0.05, "on the top of a 3 m pillar: {y}");
     }
 }

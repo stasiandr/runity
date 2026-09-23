@@ -87,6 +87,24 @@ pub enum Collider {
         half_height: f32,
         radius: f32,
     },
+    /// An upright cylinder, centred: what fits `builtin:cylinder` with
+    /// `half_height: 0.5, radius: 0.5`.
+    Cylinder {
+        half_height: f32,
+        radius: f32,
+    },
+    /// A wedge, high at the back (−z): what fits `builtin:ramp` with
+    /// `half: (0.5, 0.5, 0.5)`. Walkable, which a box standing in for a
+    /// slope is not.
+    Ramp {
+        half: Vec3,
+    },
+    /// A flight of steps rising toward the back: what fits
+    /// `builtin:stairs` with `half: (0.5, 0.5, 0.5), steps: 4`.
+    Stairs {
+        half: Vec3,
+        steps: u32,
+    },
 }
 
 /// How an entity takes part in the physics world.
