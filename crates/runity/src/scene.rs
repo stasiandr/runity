@@ -1243,6 +1243,10 @@ pub struct Scene {
     /// strength: 1.0)`; a breeze when the file does not say.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub wind: Option<crate::foliage::Wind>,
+    /// Rain, snow, wet ground and puddles: `weather: (rain: 1.0, wetness:
+    /// 1.0, puddles: 0.6)`. See [`crate::weather`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub weather: Option<crate::weather::Weather>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1447,6 +1451,7 @@ mod tests {
             ray_tracing: None,
             volumetric_fog: None,
             wind: None,
+            weather: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()

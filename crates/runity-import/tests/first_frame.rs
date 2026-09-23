@@ -130,6 +130,7 @@ fn a_source_model_becomes_a_frame() {
         wind: Default::default(),
         benders: Vec::new(),
         time: None,
+        weather: Default::default(),
         draws: vec![
             Draw {
                 mesh: handle,

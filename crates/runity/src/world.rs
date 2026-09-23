@@ -795,6 +795,9 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(wind) = scene.wind {
         frame.wind = wind;
     }
+    if let Some(weather) = scene.weather {
+        frame.weather = weather;
+    }
 }
 
 /// The camera a scene's view describes.
@@ -1009,6 +1012,7 @@ pub fn build_frame_where(
             })
             .collect(),
         time: None,
+        weather: Default::default(),
         clear_color: fog.color,
         // The horizon is the fog's colour, so the far hills fade into the
         // sky rather than against it.

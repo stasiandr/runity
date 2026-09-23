@@ -82,6 +82,7 @@ pub mod tuned;
 pub mod ui;
 pub mod ui_render;
 pub mod volume;
+pub mod weather;
 pub mod widgets;
 pub mod world;
 

@@ -61,6 +61,7 @@ fn shoot(
         wind: Default::default(),
         benders: Vec::new(),
         time: None,
+        weather: Default::default(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

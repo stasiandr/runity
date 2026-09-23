@@ -62,6 +62,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         wind: Default::default(),
         benders: Vec::new(),
         time: None,
+        weather: Default::default(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

@@ -78,6 +78,8 @@ struct Frame {
     foliage: Foliage,
     // the physical sky: 1 when on, the aerial grid's far end in metres
     air: vec4<f32>,
+    // weather.rs: wetness, puddles, snow, rain; snowfall
+    weather: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -683,6 +685,91 @@ fn through_fog(color: vec3<f32>, pixel: vec2<f32>, depth: f32) -> vec3<f32> {
     return color * fog.a + fog.rgb;
 }
 
+fn hash21(p: vec2<f32>) -> f32 {
+    let q = fract(p * vec2<f32>(123.34, 456.21));
+    let r = q + dot(q, q + 45.32);
+    return fract(r.x * r.y);
+}
+
+/// Smooth noise, 0 to 1.
+fn value_noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash21(i);
+    let b = hash21(i + vec2<f32>(1.0, 0.0));
+    let c = hash21(i + vec2<f32>(0.0, 1.0));
+    let d = hash21(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+/// Where water and snow gather on the ground: broad patches, a finer
+/// edge.
+fn patches(p: vec2<f32>) -> f32 {
+    return value_noise(p * 0.35) * 0.65 + value_noise(p * 1.3) * 0.35;
+}
+
+/// A puddle's surface in the rain: rings spreading where drops land, two
+/// staggered grids of them, each ring born, growing and fading.
+fn ripples(p: vec2<f32>, t: f32, rain: f32) -> vec3<f32> {
+    var slope = vec2<f32>(0.0);
+    for (var k = 0; k < 2; k = k + 1) {
+        let q = p / 0.35 + vec2<f32>(f32(k) * 0.5);
+        let cell = floor(q);
+        let born = hash21(cell + f32(k) * 7.0);
+        let centre = cell + vec2<f32>(hash21(cell + 3.1), hash21(cell + 5.7));
+        let age = fract(t * 1.3 + born);
+        let away = q - centre;
+        let d = length(away);
+        let x = (d - age * 0.7) * 12.0;
+        let wave = select(0.0, sin(x * 3.14159) * (1.0 - abs(x)), abs(x) < 1.0) * (1.0 - age);
+        slope += away / max(d, 1e-3) * wave * rain;
+    }
+    return normalize(vec3<f32>(-slope.x * 0.25, 1.0, -slope.y * 0.25));
+}
+
+struct Weathered {
+    albedo: vec3<f32>,
+    smoothness: f32,
+    normal: vec3<f32>,
+    // what is left of the surface's metal under water or snow
+    metal: f32,
+};
+
+/// A surface as the weather leaves it: darker and shinier wet, still water
+/// in the level patches, snow on what faces up.
+fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>) -> Weathered {
+    var out = Weathered(albedo, smoothness, normal, 1.0);
+    let w = frame.weather[0];
+    if w.x + w.y + w.z <= 0.0 {
+        return out;
+    }
+    let up = clamp(geometric.y, 0.0, 1.0);
+    // Wet: what soaks darkens, and everything shines — up-facing most.
+    let wet = w.x * (0.5 + 0.5 * up);
+    out.albedo = out.albedo * mix(1.0, 0.55, wet);
+    out.smoothness = mix(out.smoothness, 0.85, wet * 0.8);
+    // Puddles: on what is level, in patches that grow with the amount.
+    let level = smoothstep(0.92, 0.98, geometric.y);
+    let puddle = level * smoothstep(1.0 - w.y, 1.0 - w.y + 0.08, patches(position.xz)) * step(0.001, w.y);
+    if puddle > 0.0 {
+        out.albedo = out.albedo * mix(1.0, 0.35, puddle);
+        out.smoothness = mix(out.smoothness, 1.0, puddle);
+        let water = ripples(position.xz, frame.foliage.wind.w, w.w);
+        out.normal = normalize(mix(out.normal, water, puddle));
+        out.metal = 1.0 - puddle;
+    }
+    // Snow: on what faces up, patchy until it is whole.
+    let facing = smoothstep(0.3, 0.8, geometric.y);
+    let cover = patches(position.xz * 1.7 + 13.0) * 0.7 + 0.3;
+    let snow = facing * smoothstep(1.0 - w.z, 1.0 - w.z + 0.15, cover) * step(0.001, w.z);
+    out.albedo = mix(out.albedo, vec3<f32>(0.9, 0.92, 0.95), snow);
+    out.smoothness = mix(out.smoothness, 0.25, snow);
+    out.normal = normalize(mix(out.normal, geometric, snow * 0.8));
+    out.metal = out.metal * (1.0 - snow);
+    return out;
+}
+
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
@@ -912,8 +999,14 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         }
     }
 
+    // The weather on it: wet, under water, under snow.
+    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position);
+    albedo = weather.albedo;
+    smoothness = weather.smoothness;
+    normal = weather.normal;
+
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
-    let b = brdf(albedo, in.surface.x * mask.r, smoothness);
+    let b = brdf(albedo, in.surface.x * mask.r * weather.metal, smoothness);
     let baked = mix(1.0, mask.g, in.detail.y);
     let highlights = (flags & 1u) != 0u;
 
@@ -1060,6 +1153,61 @@ struct SkyOut {
     @builtin(position) position: vec4<f32>,
     @location(0) ndc: vec2<f32>,
 };
+
+/// Rain streaks or snowflakes in one layer of the air round the camera:
+/// cells over the directions the camera looks, each holding a drop or not,
+/// falling with time and slanted by the wind.
+fn falling_layer(azimuth: f32, elevation: f32, layer: f32, t: f32, amount: f32, snow: bool) -> f32 {
+    let columns = select(70.0 + layer * 55.0, 40.0 + layer * 30.0, snow);
+    let rows = select(columns * 0.12, columns * 0.9, snow);
+    var p = vec2<f32>(azimuth / 6.2831853 * columns, elevation / 3.14159 * rows);
+    let speed = select(9.0 + layer * 3.0, 0.9 + layer * 0.3, snow);
+    p.y += t * speed;
+    // Slanted by the wind's side-on share.
+    p.x += p.y * frame.foliage.wind.x * frame.foliage.wind.z * select(0.06, 0.2, snow);
+    let cell = floor(p);
+    let f = fract(p);
+    if hash21(cell + layer * 17.0) > amount * select(0.45, 0.35, snow) {
+        return 0.0;
+    }
+    let x = hash21(cell + 2.3) * 0.8 + 0.1;
+    if snow {
+        let sway = sin(t * 1.3 + cell.y * 2.1 + layer) * 0.15;
+        let c = vec2<f32>(x + sway, hash21(cell + 4.7) * 0.8 + 0.1);
+        let r = 0.08 / (1.0 + layer * 0.5);
+        return smoothstep(r, r * 0.3, length((f - c) * vec2<f32>(1.0, rows / columns * 1.1)));
+    }
+    let width = 0.04 / (1.0 + layer * 0.4);
+    return smoothstep(width, 0.0, abs(f.x - x)) * smoothstep(0.0, 0.35, f.y) * smoothstep(1.0, 0.65, f.y);
+}
+
+// Rain and snow falling, over the finished frame: faint streaks and flakes
+// lit by the sky, a touch of the sun, a little dimming where they cover.
+@fragment
+fn fs_precipitation(in: SkyOut) -> @location(0) vec4<f32> {
+    let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
+    let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
+    let d = normalize(far.xyz / far.w - near.xyz / near.w);
+    let azimuth = atan2(d.x, d.z);
+    let elevation = asin(clamp(d.y, -1.0, 1.0));
+    let t = frame.foliage.wind.w;
+    let rain = frame.weather[0].w;
+    let snowfall = frame.weather[1].x;
+    var cover = 0.0;
+    var snow_cover = 0.0;
+    for (var layer = 0; layer < 3; layer = layer + 1) {
+        let l = f32(layer);
+        if rain > 0.0 {
+            cover += falling_layer(azimuth, elevation, l, t, rain, false) * (0.35 / (1.0 + l));
+        }
+        if snowfall > 0.0 {
+            snow_cover += falling_layer(azimuth, elevation, l, t, snowfall, true) * (0.9 / (1.0 + l * 0.6));
+        }
+    }
+    let light = frame.sky_color.rgb * 1.5 + frame.sun_color.rgb * 0.15;
+    let rgb = light * cover + (light * 0.6 + vec3<f32>(0.25)) * snow_cover;
+    return vec4<f32>(rgb, clamp(cover * 0.3 + snow_cover * 0.8, 0.0, 1.0));
+}
 
 /// One triangle over the screen, on the far plane.
 @vertex

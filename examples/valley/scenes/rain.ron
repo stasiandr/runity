@@ -1,0 +1,17 @@
+// Rain (`runity::weather`) in the courtyard of reflections.ron: wet stone,
+// puddles with rings where the drops land, streaks in the air. The probe
+// makes the puddles reflect the walls.
+(
+    view: (position: (0.0, 2.4, 7.5), target: (0.0, 0.9, 0.0), fov_deg: 55.0),
+    sun: (hour: 15.0, intensity: 0.5),
+    weather: (rain: 1.0, wetness: 1.0, puddles: 0.6),
+    entities: [
+        (id: "723f5963310270c7", name: "probe", transform: (position: (0.0, 1.5, 0.0)), reflection_probe: (size: (12.0, 6.0, 16.0))),
+        (id: "f409d575018b8aa3", name: "floor", model: "builtin:plane", transform: (scale: (12.0, 1.0, 16.0)), material: (base_color: (0.12, 0.12, 0.13), metallic: 0.2, smoothness: 0.9)),
+        (id: "42d46eab4648cb4c", name: "red wall", model: "builtin:cube", transform: (position: (-4.0, 1.5, 0.0), scale: (0.3, 3.0, 8.0)), material: (base_color: (0.75, 0.12, 0.08))),
+        (id: "60f1565395a1b235", name: "blue wall", model: "builtin:cube", transform: (position: (4.0, 1.5, 0.0), scale: (0.3, 3.0, 8.0)), material: (base_color: (0.08, 0.22, 0.7))),
+        (id: "cb16e5c3f0e96b04", name: "back wall", model: "builtin:cube", transform: (position: (0.0, 1.5, -4.0), scale: (8.0, 3.0, 0.3)), material: (base_color: (0.85, 0.8, 0.7))),
+        (id: "8a1e82649c83e227", name: "chrome", model: "builtin:sphere", transform: (position: (-0.9, 0.8, 0.5), scale: (1.6, 1.6, 1.6)), material: (base_color: (0.95, 0.95, 0.95), metallic: 1.0, smoothness: 0.97)),
+        (id: "150d828fe9b8f92e", name: "brushed", model: "builtin:sphere", transform: (position: (1.3, 0.6, 1.0), scale: (1.2, 1.2, 1.2)), material: (base_color: (0.95, 0.75, 0.45), metallic: 1.0, smoothness: 0.6)),
+    ],
+)

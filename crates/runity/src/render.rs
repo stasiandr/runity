@@ -513,6 +513,9 @@ pub struct Frame {
     /// takes the renderer's own clock; a test that wants the same picture
     /// twice says a time.
     pub time: Option<f32>,
+    /// Rain, snow, wet ground and puddles ([`crate::weather`]); clear by
+    /// default.
+    pub weather: crate::weather::Weather,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -540,6 +543,7 @@ impl Default for Frame {
             wind: crate::foliage::Wind::default(),
             benders: Vec::new(),
             time: None,
+            weather: crate::weather::Weather::default(),
             poses: Vec::new(),
         }
     }
@@ -623,6 +627,8 @@ struct FrameUniform {
     foliage: crate::foliage::FoliageUniform,
     /// The physical sky: 1 when on, the aerial grid's far end in metres.
     air: [f32; 4],
+    /// Wetness, puddles, snow, rain; snowfall.
+    weather: [[f32; 4]; 2],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1021,6 +1027,8 @@ struct Pipelines {
     prepass: std::collections::HashMap<(bool, RenderFace), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
+    /// Rain and snow falling, over the frame.
+    precipitation: wgpu::RenderPipeline,
     /// Volumetric fog: what each cell scatters, and the sums along the view.
     fog_inject: wgpu::ComputePipeline,
     fog_integrate: wgpu::ComputePipeline,
@@ -1342,6 +1350,41 @@ fn build_pipelines(
             cache: None,
         });
 
+    // Rain and snow: over everything, added, depth left alone.
+    let precipitation = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::precipitation"),
+            layout: Some(layouts.sky),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_sky"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs_precipitation"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend_state(Blend::Premultiply)),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample,
+            multiview_mask: None,
+            cache: None,
+        });
+
     let shadow_clip = gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1398,6 +1441,7 @@ fn build_pipelines(
         prepass,
         overlay,
         sky,
+        precipitation,
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
     }
@@ -3011,6 +3055,7 @@ impl Renderer {
             clear_color: extend(frame.clear_color, 1.0),
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
+            weather: frame.weather.uniform(),
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3458,6 +3503,12 @@ impl Renderer {
             for (_, look, mesh, texture, pose, _) in &transparent {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
+            }
+            // What falls, in front of it all.
+            if frame.weather.falling() {
+                pass.set_pipeline(&self.pipelines.precipitation);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.draw(0..3, 0..1);
             }
         }
 
