@@ -276,7 +276,7 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
             // A little noise in where the steps fall hides their banding;
             // little, since nothing averages it over frames.
             let jitter = 0.3 + 0.4 * fract(sin(dot(vec2<f32>(id.xy), vec2<f32>(12.9898, 78.233))) * 43758.547);
-            let sand = vec3<f32>(0.93, 0.7, 0.47);
+            let sand = vec3<f32>(0.95, 0.66, 0.4);
             for (var i = 0; i < steps; i = i + 1) {
                 let p = eye + d * (t0 + step * (f32(i) + jitter));
                 let u = dust_uvw(p);
@@ -291,9 +291,12 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
                 }
                 let low = clamp(p.y / cloud.dust.z, 0.0, 1.0);
                 let open = cell.b;
-                let many = cell.a * 0.45 * (0.5 + 0.7 * open);
+                // Deep inside, light scattered through the dust from all
+                // round: never black, and the same glow the storm has when
+                // it closes over the camera.
+                let many = (cell.a * 0.45 + 0.12) * (0.7 + 0.5 * open);
                 let lit = cloud.sun.rgb * cloud.to_sun.w * (cell.g * 1.2 + many)
-                    + cloud.ambient.rgb * (0.45 + 0.55 * low) * (0.3 + 1.0 * open);
+                    + cloud.ambient.rgb * (0.45 + 0.55 * low) * (0.55 + 0.8 * open);
                 let extinction = density * 0.07;
                 let passed = exp(-extinction * step);
                 dust_light += dust_through * lit * sand * (1.0 - passed);

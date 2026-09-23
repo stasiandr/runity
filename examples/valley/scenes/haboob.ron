@@ -5,7 +5,7 @@
 (
     view: (position: (0.0, 1.8, 0.0), target: (-60.0, 6.0, -8.0), fov_deg: 60.0),
     sun: (hour: 15.5, intensity: 1.2),
-    sky: (mode: Physical, atmosphere: (mie: 3.0), clouds: (coverage: 0.75)),
+    sky: (mode: Physical, atmosphere: (mie: 3.0), clouds: (coverage: 0.6, shadows: 0.4)),
     fog: (color: (0.8, 0.72, 0.6), start: 400.0, end: 3000.0),
     wind: (direction: (1.0, 0.0, 0.15), strength: 2.0),
     weather: (dust_wall: 1.0, dust_wall_distance: 700.0, dust_wall_height: 380.0),
