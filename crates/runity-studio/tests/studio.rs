@@ -2066,3 +2066,62 @@ fn a_fence_from_the_tools_menu_is_shaped_by_dragging_its_points() {
     assert_eq!(spline(&s).points.len(), 3);
     assert!(s.ui.find("spline point 2").is_some());
 }
+
+#[test]
+fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "project search");
+    type_text(&mut s, "stone");
+    s.frame();
+    s.frame();
+    press(&mut s, "asset stone", MouseButton::Right);
+    click(&mut s, "menu Create Material Instance");
+    s.frame();
+    let file = dir.join("materials/stone_instance.rmat");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains(r#"(parent: ("stone", ""#),
+        "linked by name and ID: {text}"
+    );
+    let library = runity::Library::open(dir.join("library")).unwrap().0;
+    assert_eq!(
+        library
+            .material_by_name("stone_instance")
+            .unwrap()
+            .base_color,
+        library.material_by_name("stone").unwrap().base_color,
+        "the parent, until something on it says otherwise"
+    );
+
+    // The Inspector shows it as an instance; a parameter set there is one
+    // line of its file, and the arrow takes it back to the parent's.
+    s.frame();
+    assert!(s.ui.dump().contains("Instance of stone"), "{}", s.ui.dump());
+    fill(&mut s, "material smoothness", "0.9");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("smoothness: 0.9"), "{text}");
+    assert!(text.starts_with("// stone"), "the comment stays: {text}");
+    let library = runity::Library::open(dir.join("library")).unwrap().0;
+    assert_eq!(
+        library
+            .material_by_name("stone_instance")
+            .unwrap()
+            .smoothness,
+        0.9
+    );
+    click(&mut s, "reset material smoothness");
+    s.frame();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("smoothness"), "{text}");
+    fill(&mut s, "material metallic", "lots");
+    assert!(
+        s.session
+            .console()
+            .iter()
+            .any(|l| l.text.contains("metallic")),
+        "a value it cannot be built with is refused"
+    );
+}

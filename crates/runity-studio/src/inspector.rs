@@ -87,6 +87,10 @@ enum Part {
     /// The yellow arrow: set the field back to what a new entity has, or
     /// to the prefab's.
     Reset(String),
+    /// A parameter of the material shown from the Project, and its arrow:
+    /// back to the parent's.
+    MaterialParam(String, String),
+    MaterialReset(String, String),
     /// A box of a field; `axis` for one number of a vector.
     Slot {
         field: String,
@@ -1212,6 +1216,58 @@ impl Inspector {
                 );
             }
         }
+        // Its parameters, as an instance of its parent: what it sets itself
+        // stands out and has an arrow back to the parent's.
+        if kind == "material" {
+            if let Ok(layers) = session.material_layers(&name) {
+                let title_text = match &layers.parent {
+                    Some(parent) => format!("Instance of {}", parent.as_str()),
+                    None => "Material".to_string(),
+                };
+                self.heading(ui, &title_text);
+                for (key, value, set) in layers.fields {
+                    let line = ui.add(
+                        self.body,
+                        Style::row()
+                            .full_width()
+                            .padding_x(SPACE_4)
+                            .padding_y(2.0)
+                            .gap(SPACE_2)
+                            .center_items(),
+                    );
+                    ui.add_text(
+                        line,
+                        Style::default()
+                            .width(120.0)
+                            .fixed()
+                            .text_size(12.0)
+                            .text_color(if set { ACCENT_300 } else { LABEL })
+                            .nowrap(),
+                        &title(&key),
+                    );
+                    let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &value);
+                    ui.set_name(f, format!("material {key}"));
+                    self.parts
+                        .insert(f, Part::MaterialParam(name.clone(), key.clone()));
+                    if set && layers.parent.is_some() {
+                        let reset = ui.add(
+                            line,
+                            Style::row()
+                                .size(18.0, 22.0)
+                                .fixed()
+                                .center()
+                                .radius(6.0)
+                                .hover(HOVER)
+                                .clickable(),
+                        );
+                        ui.set_name(reset, format!("reset material {key}"));
+                        icon(ui, reset, "undo-2", WARNING);
+                        self.parts
+                            .insert(reset, Part::MaterialReset(name.clone(), key.clone()));
+                    }
+                }
+            }
+        }
         // How it is imported: a model with a source in the project.
         if let (Some(source), "model") = (&file, kind) {
             if let Ok(settings) = session.import_settings(source) {
@@ -1456,6 +1512,18 @@ impl Inspector {
             }
             (Part::Slot { .. }, Event::Cancel) => {
                 requests.refresh = true;
+            }
+            (Part::MaterialParam(material, key), Event::Submit(value)) => {
+                if let Err(e) = session.set_material_param(&material, &key, Some(value.trim())) {
+                    session.say(Level::Error, e.to_string());
+                }
+                requests.inspect = Some(Asset::Material(material));
+            }
+            (Part::MaterialReset(material, key), Event::Click { .. }) => {
+                if let Err(e) = session.set_material_param(&material, &key, None) {
+                    session.say(Level::Error, e.to_string());
+                }
+                requests.inspect = Some(Asset::Material(material));
             }
             (Part::Reset(field), Event::Click { .. }) => {
                 for id in self.showing.clone() {

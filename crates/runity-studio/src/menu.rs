@@ -140,6 +140,8 @@ pub enum Action {
     KeepSimulation,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
+    /// A material that is another one with nothing changed yet.
+    MaterialInstance(String),
     /// A fence: copies of the selection's model (or posts) along a spline.
     NewFence,
     /// One more point at the end of the selection's spline.

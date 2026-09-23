@@ -184,11 +184,8 @@ fn named_by_id(path: &Path) -> bool {
 pub fn content_hash(path: &Path) -> std::io::Result<String> {
     let mut hash: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
     const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
-    let is_terrain = path.extension().is_some_and(|e| e == "rterrain");
     let mut files = vec![path.to_path_buf()];
-    if is_terrain {
-        files.extend(terrain::dependencies(path));
-    }
+    files.extend(dependencies(path));
     for file in files {
         for byte in std::fs::read(&file)? {
             hash ^= byte as u128;
@@ -975,14 +972,189 @@ fn black() -> Color {
 }
 
 /// Read a `.rmat` and build a material asset from it.
+/// A material's source with its parent's under it: Unreal's Material
+/// Instance (docs/artist.md). A `.rmat` that says `parent: "stone"` — or
+/// `parent: ("stone", "<id>")`, a link (docs/refs.md) — is the parent with
+/// only what it states changed, so a dozen stones are one material and a
+/// dozen colours, and changing the parent's smoothness changes them all.
+pub fn material_source(path: &Path) -> Result<MaterialSource> {
+    let merged = material_value(path, 0)?;
+    merged
+        .into_rust::<MaterialSource>()
+        .with_context(|| format!("{}", path.display()))
+}
+
+/// A material seen as an instance: the parent it names, and each of its
+/// parameters with the value it takes and whether this file sets it
+/// (rather than inheriting it). What the editor's material panel shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialLayers {
+    pub parent: Option<runity::AssetLink>,
+    /// `(name, value as RON, set here)`, in the source's field order.
+    pub fields: Vec<(String, String, bool)>,
+}
+
+pub fn material_layers(path: &Path) -> Result<MaterialLayers> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let own: ron::Value = ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let parent = parent_link(&own);
+    let own_keys: Vec<String> = match &own {
+        ron::Value::Map(map) => map
+            .keys()
+            .filter_map(|k| match k {
+                ron::Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    // Every parameter, defaults filled in, as the source would say it.
+    let effective = material_source(path)?;
+    let text = ron::to_string(&effective)?;
+    let ron::Value::Map(all) = ron::from_str::<ron::Value>(&text)? else {
+        anyhow::bail!("{}: not a material", path.display());
+    };
+    let order: Vec<String> = {
+        // Field order as the struct declares it: serialise and read keys in turn.
+        let mut keys = Vec::new();
+        let inner = text.trim().trim_start_matches('(').trim_end_matches(')');
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut start = 0;
+        let bytes = inner.as_bytes();
+        for (i, &c) in bytes.iter().enumerate() {
+            match c {
+                b'"' => in_string = !in_string,
+                b'(' | b'[' | b'{' if !in_string => depth += 1,
+                b')' | b']' | b'}' if !in_string => depth -= 1,
+                b',' if !in_string && depth == 0 => {
+                    if let Some(k) = inner[start..i].split(':').next() {
+                        keys.push(k.trim().to_string());
+                    }
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        if let Some(k) = inner[start..].split(':').next() {
+            if !k.trim().is_empty() {
+                keys.push(k.trim().to_string());
+            }
+        }
+        keys
+    };
+    let fields = order
+        .into_iter()
+        .filter_map(|key| {
+            let value = all.get(&ron::Value::String(key.clone()))?;
+            let text = ron::to_string(value).ok()?;
+            let set = own_keys.contains(&key);
+            Some((key, text, set))
+        })
+        .collect();
+    Ok(MaterialLayers { parent, fields })
+}
+
+/// The files a material is made of: itself, then its parent, its parent's
+/// parent… What its hash covers, so an edited parent rebuilds its
+/// instances.
+pub fn material_parents(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut at = path.to_path_buf();
+    while out.len() < MATERIAL_DEPTH {
+        let Some(parent) = std::fs::read_to_string(&at)
+            .ok()
+            .and_then(|text| ron::from_str::<ron::Value>(&text).ok())
+            .and_then(|value| parent_link(&value))
+            .and_then(|link| find_material(&at, &link))
+        else {
+            break;
+        };
+        if parent == path || out.contains(&parent) {
+            break;
+        }
+        out.push(parent.clone());
+        at = parent;
+    }
+    out
+}
+
+/// How deep a chain of parents may go: deep enough for any real palette,
+/// shallow enough that a loop is an error and not a hang.
+const MATERIAL_DEPTH: usize = 8;
+
+fn material_value(path: &Path, depth: usize) -> Result<ron::Value> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let value: ron::Value = ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let Some(link) = parent_link(&value) else {
+        return Ok(value);
+    };
+    anyhow::ensure!(
+        depth < MATERIAL_DEPTH,
+        "{}: parents go more than {MATERIAL_DEPTH} deep — does a material name itself?",
+        path.display()
+    );
+    let parent = find_material(path, &link).with_context(|| {
+        format!(
+            "{}: no material `{}` to be the parent",
+            path.display(),
+            link.name
+        )
+    })?;
+    let ron::Value::Map(mut under) = material_value(&parent, depth + 1)? else {
+        anyhow::bail!("{}: not a material", parent.display());
+    };
+    let ron::Value::Map(own) = value else {
+        anyhow::bail!("{}: not a material", path.display());
+    };
+    for (key, v) in own.iter() {
+        if key != &ron::Value::String("parent".into()) {
+            under.insert(key.clone(), v.clone());
+        }
+    }
+    Ok(ron::Value::Map(under))
+}
+
+/// What a material's `parent:` says, as a link.
+fn parent_link(value: &ron::Value) -> Option<runity::AssetLink> {
+    let ron::Value::Map(map) = value else {
+        return None;
+    };
+    let parent = map.get(&ron::Value::String("parent".into()))?;
+    parent.clone().into_rust::<runity::AssetLink>().ok()
+}
+
+/// A `.rmat` of the project by link: the one whose sidecar has the ID,
+/// or the one with the name.
+fn find_material(near: &Path, link: &runity::AssetLink) -> Option<PathBuf> {
+    let root = runity::Project::find(near)
+        .map(|p| p.materials())
+        .unwrap_or_else(|_| near.parent().map(Path::to_path_buf).unwrap_or_default());
+    let mut found = Vec::new();
+    walk(&root, &mut |p| {
+        if p.extension().is_some_and(|e| e == "rmat") {
+            found.push(p.to_path_buf());
+        }
+    });
+    if let Some(id) = link.id {
+        if let Some(p) = found
+            .iter()
+            .find(|p| runity::asset::sidecar_id(sidecar_for(p)) == Some(id))
+        {
+            return Some(p.clone());
+        }
+    }
+    found
+        .into_iter()
+        .find(|p| p.file_stem().is_some_and(|s| s == link.as_str()))
+}
+
 pub fn material_from_ron(
     path: impl AsRef<Path>,
     settings: &ImportSettings,
 ) -> Result<MaterialAsset> {
     let path = path.as_ref();
-    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
-    let source: MaterialSource =
-        ron::from_str(&text).with_context(|| format!("{}", path.display()))?;
+    let source = material_source(path)?;
     Ok(MaterialAsset {
         id: settings.asset_id(),
         name: path
@@ -1532,15 +1704,22 @@ pub fn walk(root: &Path, visit: &mut impl FnMut(&Path)) {
 /// it and its heightmap, so repainting the image counts.
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
     let own = std::fs::metadata(path).ok()?.modified().ok()?;
-    if path.extension().is_some_and(|e| e == "rterrain") {
-        return Some(
-            terrain::dependencies(path)
-                .iter()
-                .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
-                .fold(own, |latest, t| latest.max(t)),
-        );
+    Some(
+        dependencies(path)
+            .iter()
+            .filter_map(|d| std::fs::metadata(d).ok()?.modified().ok())
+            .fold(own, |latest, t| latest.max(t)),
+    )
+}
+
+/// The other files a source is built from: a terrain's heightmap, a
+/// material's parents.
+fn dependencies(path: &Path) -> Vec<PathBuf> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("rterrain") => terrain::dependencies(path),
+        Some("rmat") => material_parents(path),
+        _ => Vec::new(),
     }
-    Some(own)
 }
 
 fn touch(path: &Path) {

@@ -300,3 +300,66 @@ fn touch_forward(path: &Path) {
     let file = std::fs::File::options().write(true).open(path).unwrap();
     file.set_modified(later).unwrap();
 }
+
+#[test]
+fn an_instance_is_its_parent_with_what_it_says_changed_and_follows_the_parent() {
+    let root = std::env::temp_dir().join(format!("runity-instances-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let project = runity::Project::create(&root, "instances").unwrap();
+    let materials = project.materials();
+    std::fs::write(
+        materials.join("stone.rmat"),
+        r##"(color: "#808080", smoothness: 0.2, metallic: 0.1)"##,
+    )
+    .unwrap();
+    std::fs::write(
+        materials.join("wet_stone.rmat"),
+        r#"// Stone after rain.
+(parent: "stone", smoothness: 0.8)"#,
+    )
+    .unwrap();
+    runity_import::sync(&project);
+    let read = |name: &str| {
+        Library::open(project.library())
+            .unwrap()
+            .0
+            .material_by_name(name)
+            .unwrap()
+    };
+    let (stone, wet) = (read("stone"), read("wet_stone"));
+    assert_eq!(wet.base_color, stone.base_color, "the parent's colour");
+    assert_eq!(wet.metallic, stone.metallic, "and metal");
+    assert_eq!(wet.smoothness, 0.8, "its own smoothness");
+
+    // The parent changes colour: the instance follows, rebuilt by sync.
+    let stone_file = materials.join("stone.rmat");
+    std::fs::write(&stone_file, r##"(color: "#ff0000", smoothness: 0.2)"##).unwrap();
+    touch_forward(&stone_file);
+    let changed = runity_import::sync(&project);
+    assert!(
+        changed.iter().any(|r| r.source.ends_with("wet_stone.rmat")),
+        "{changed:?}"
+    );
+    let wet = read("wet_stone");
+    assert!(
+        wet.base_color[0] > 0.9 && wet.base_color[1] < 0.1,
+        "red now: {:?}",
+        wet.base_color
+    );
+    assert_eq!(wet.smoothness, 0.8);
+
+    // A parent that is not there says so.
+    std::fs::write(materials.join("odd.rmat"), r#"(parent: "nowhere")"#).unwrap();
+    let said = runity_import::sync(&project);
+    let odd = said
+        .iter()
+        .find(|r| r.source.ends_with("odd.rmat"))
+        .unwrap();
+    assert!(
+        odd.result
+            .as_ref()
+            .is_err_and(|e| e.contains("no material `nowhere`")),
+        "{odd:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

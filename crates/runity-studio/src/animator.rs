@@ -10,7 +10,7 @@
 //! state, and the buttons make a state the start or delete it.
 //!
 //! Every change is written at once, and only where it changed: a state's
-//! entry, a transition, the start (see [`crate::patch`]). Comments stay, and
+//! entry, a transition, the start (see [`runity::ron_edit`]). Comments stay, and
 //! the diff is the change.
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,8 +21,8 @@ use runity_editor::console::Level;
 use runity_editor::Session;
 use runity_ui::{Color, Event, NodeId, Style, Ui};
 
-use crate::patch::{self, Change};
 use crate::theme::*;
+use runity::ron_edit::{self as patch, Change};
 
 const BOX_W: f32 = 150.0;
 const BOX_H: f32 = 36.0;

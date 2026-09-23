@@ -2555,6 +2555,96 @@ impl Session {
             .map(|(point, _, _)| point)
     }
 
+    /// A new material that is `parent` with nothing changed yet —
+    /// Unreal's Material Instance (docs/artist.md): `materials/<parent>_instance.rmat`
+    /// saying only `parent: ("<parent>", "<its id>")`. What is set on it
+    /// afterwards changes it alone; what is set on the parent changes both.
+    /// Built at once. Returns the new material's name.
+    pub fn new_material_instance(&mut self, parent: &str) -> EditResult<String> {
+        let materials = self
+            .project
+            .as_ref()
+            .ok_or(EditError::NotInProject)?
+            .materials();
+        let source = self.material_file(parent)?;
+        let dir = source.parent().unwrap_or(&materials).to_path_buf();
+        let mut name = format!("{parent}_instance");
+        let mut n = 2;
+        while dir.join(format!("{name}.rmat")).exists() {
+            name = format!("{parent}_instance_{n}");
+            n += 1;
+        }
+        let link = match runity::asset::sidecar_id(runity::asset::sidecar_of(&source)) {
+            Some(id) => format!("({parent:?}, \"{id}\")"),
+            None => format!("{parent:?}"),
+        };
+        std::fs::write(
+            dir.join(format!("{name}.rmat")),
+            format!(
+                "// {parent}, as it is until something here says otherwise.\n(parent: {link})\n"
+            ),
+        )
+        .map_err(|e| EditError::Io(e.to_string()))?;
+        self.reload_assets();
+        Ok(name)
+    }
+
+    /// A material's `.rmat` in the project, by name.
+    fn material_file(&self, name: &str) -> EditResult<PathBuf> {
+        let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
+        let mut found = None;
+        runity_import::walk(&project.materials(), &mut |p| {
+            if p.extension().is_some_and(|e| e == "rmat")
+                && p.file_stem().is_some_and(|s| s == name)
+            {
+                found = Some(p.to_path_buf());
+            }
+        });
+        found.ok_or_else(|| EditError::Scene(format!("no material `{name}` in materials/")))
+    }
+
+    /// A material's parent and parameters: what each is and whether the
+    /// material sets it or takes it from its parent.
+    pub fn material_layers(&self, name: &str) -> EditResult<runity_import::MaterialLayers> {
+        let file = self.material_file(name)?;
+        runity_import::material_layers(&file).map_err(|e| EditError::Scene(format!("{e:#}")))
+    }
+
+    /// Set one parameter of a material (`value` is RON: `0.8`,
+    /// `"#ff8800"`), or with `None` let it take its parent's again. Only
+    /// that line of the file changes. A value it cannot be built with is
+    /// refused and the file left as it was.
+    pub fn set_material_param(
+        &mut self,
+        name: &str,
+        key: &str,
+        value: Option<&str>,
+    ) -> EditResult<()> {
+        let file = self.material_file(name)?;
+        let known = self.material_layers(name)?;
+        if key != "parent" && !known.fields.iter().any(|(k, _, _)| k == key) {
+            let names: Vec<&str> = known.fields.iter().map(|(k, _, _)| k.as_str()).collect();
+            let near = runity::spelling::closest(key, names.iter().copied())
+                .map(|n| format!(" — did you mean `{n}`?"))
+                .unwrap_or_default();
+            return Err(EditError::Scene(format!("a material has no `{key}`{near}")));
+        }
+        let old = std::fs::read_to_string(&file).map_err(|e| EditError::Io(e.to_string()))?;
+        let new = runity::ron_edit::set_field(&old, key, value).ok_or_else(|| {
+            EditError::Scene(format!(
+                "{}: could not find where `{key}` goes",
+                file.display()
+            ))
+        })?;
+        std::fs::write(&file, &new).map_err(|e| EditError::Io(e.to_string()))?;
+        if let Err(e) = runity_import::material_source(&file) {
+            let _ = std::fs::write(&file, &old);
+            return Err(EditError::Scene(format!("{key}: {e:#}")));
+        }
+        self.reload_assets();
+        Ok(())
+    }
+
     pub fn reload_assets(&mut self) -> usize {
         self.solids = None;
         // In a project the sources are the truth: whatever changed, moved

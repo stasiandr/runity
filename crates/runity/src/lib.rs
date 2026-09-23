@@ -60,6 +60,7 @@ pub mod reflections;
 pub mod refs;
 pub mod relay;
 pub mod render;
+pub mod ron_edit;
 mod ron_text;
 pub mod routes;
 pub mod save;

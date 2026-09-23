@@ -280,6 +280,9 @@ pub struct Studio {
     /// The selection's spline points, as handles over the view, and the
     /// one being dragged: which entity and point, and how many undo steps
     /// the drag has made, to be one.
+    /// An asset to show in the Inspector once the action that made it is
+    /// done: a material instance just created.
+    show_next: Option<Asset>,
     spline_handles: Vec<NodeId>,
     spline_drag: Option<(EntityId, usize, usize)>,
     /// Face mode: ProBuilder's face selection over the faces of boxes.
@@ -611,6 +614,7 @@ impl Studio {
             foliage_radius: 4.0,
             foliage_stroke: None,
             foliage_seed: 0,
+            show_next: None,
             spline_handles: Vec::new(),
             spline_drag: None,
             faces: false,
@@ -1007,6 +1011,17 @@ impl Studio {
             }
             self.seen = Some(stamp);
             self.update_panels(moving);
+        }
+        // An asset an action made, shown once the panels have caught up
+        // (catching up clears what the Inspector showed).
+        if let Some(asset) = self.show_next.take() {
+            if let Some(pixels) = self
+                .inspector
+                .show_asset(&mut self.ui, &mut self.session, asset)
+            {
+                self.pending_images
+                    .push((crate::inspector::PREVIEW, 256, pixels));
+            }
         }
         {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1e3;
@@ -2397,6 +2412,7 @@ impl Studio {
         if let Some(action) = requests.action {
             self.run(action);
         }
+
         if let Some(asset) = requests.inspect {
             if self.foliage {
                 if let Asset::Model(name, _) | Asset::Prefab(name) = &asset {
@@ -3062,6 +3078,14 @@ impl Studio {
                     );
                 }
                 Action::Float(panel) => self.float(panel),
+                Action::MaterialInstance(parent) => {
+                    let name = s.new_material_instance(&parent).map_err(e)?;
+                    s.say(
+                        Level::Info,
+                        format!("{name}: {parent} until something on it says otherwise"),
+                    );
+                    self.show_next = Some(Asset::Material(name));
+                }
                 Action::NewFence => {
                     let what = s
                         .selected()

@@ -24,7 +24,6 @@ mod dock;
 mod hierarchy;
 mod inspector;
 pub mod menu;
-mod patch;
 mod screens;
 mod studio;
 pub mod theme;
