@@ -111,6 +111,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "open_prefab",
         "problems",
         "push_face",
+        "array",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -313,6 +314,17 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
         )
         .unwrap_err();
     assert!(err.contains("+x, -x"), "{err}");
+    let copies = agent.text(
+        "array",
+        json!({ "id": wall, "count": 2, "step": [0.0, 0.0, 4.0] }),
+    );
+    assert_eq!(copies.lines().count(), 2, "{copies}");
+    let tree = agent.text("scene_tree", json!({}));
+    assert!(tree.contains("(1.00, 1.50, 8.00)"), "{tree}");
+    agent.text("undo", json!({}));
+    assert!(!agent
+        .text("scene_tree", json!({}))
+        .contains("(1.00, 1.50, 8.00)"));
     agent.text("undo", json!({}));
     agent.text("delete_entity", json!({ "id": wall }));
     let found = agent.text("find", json!({ "query": "m:terracotta" }));

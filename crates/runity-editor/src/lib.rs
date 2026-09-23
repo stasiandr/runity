@@ -1367,6 +1367,26 @@ impl Session {
         Ok(copy)
     }
 
+    /// `count` copies of an entity in a row, `step` apart, as one undo
+    /// step (see [`runity::edit::array`]). Returns the copies' IDs.
+    pub fn array(&mut self, id: EntityId, count: usize, step: Vec3) -> EditResult<Vec<EntityId>> {
+        self.refuse_while_playing()?;
+        self.require(id)?;
+        if self.history.scene().get(id).is_none() {
+            return Err(EditError::Scene(format!(
+                "{id} is a part of a prefab; array the instance, or edit the prefab"
+            )));
+        }
+        if count == 0 || count > 1000 {
+            return Err(EditError::Scene(format!(
+                "an array of {count}: between 1 and 1000 copies"
+            )));
+        }
+        let copies = runity::edit::array(self.history.edit(), id, count, step);
+        self.respawn();
+        Ok(copies)
+    }
+
     /// Move an entity under another, or to the top. Refuses to make
     /// something its own ancestor, and says `false` when it did.
     pub fn reparent(&mut self, id: EntityId, new_parent: Option<EntityId>) -> EditResult<bool> {

@@ -323,6 +323,30 @@ pub fn duplicate(scene: &mut Scene, id: EntityId) -> Option<EntityId> {
     walk(&mut scene.entities, id, &mut taken)
 }
 
+/// `count` more copies of an entity, each `step` further along from the
+/// last, in its parent's space — posts along a fence, pillars down a hall,
+/// the greybox way of placing a row. Each copy is a [`duplicate`], with new
+/// IDs, beside the original in the tree and in order. The copies' IDs, or
+/// empty when `id` is not in the scene.
+pub fn array(scene: &mut Scene, id: EntityId, count: usize, step: glam::Vec3) -> Vec<EntityId> {
+    let Some(start) = scene.get(id).map(|e| e.transform.position) else {
+        return Vec::new();
+    };
+    let mut copies = Vec::with_capacity(count);
+    let mut last = id;
+    for i in 1..=count {
+        let Some(copy) = duplicate(scene, last) else {
+            break;
+        };
+        if let Some(entity) = scene.get_mut(copy) {
+            entity.transform.position = start + step * i as f32;
+        }
+        copies.push(copy);
+        last = copy;
+    }
+    copies
+}
+
 /// Move an entity under a different parent, or to the roots.
 ///
 /// Refuses to make something its own ancestor, which is the one way a tree
@@ -834,6 +858,35 @@ pub fn push_face(
     out.position += transform.rotation() * along;
     out.scale = new_scale;
     Some(out)
+}
+
+#[cfg(test)]
+mod array_tests {
+    use super::*;
+    use glam::Vec3;
+
+    #[test]
+    fn an_array_places_copies_in_a_row_in_order() {
+        let mut scene: Scene = ron::from_str(
+            r#"(entities: [
+                (name: "post", model: "builtin:cube", transform: (position: (1.0, 0.5, 0.0))),
+                (name: "gate", model: "builtin:cube"),
+            ])"#,
+        )
+        .unwrap();
+        scene.assign_ids();
+        let post = scene.entities[0].id;
+        let copies = array(&mut scene, post, 3, Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(copies.len(), 3);
+        let xs: Vec<f32> = scene
+            .entities
+            .iter()
+            .map(|e| e.transform.position.x)
+            .collect();
+        assert_eq!(xs, [1.0, 3.0, 5.0, 7.0, 0.0], "in a row, before the gate");
+        assert!(copies.iter().all(|c| *c != post));
+        assert!(array(&mut scene, EntityId::fresh(), 2, Vec3::X).is_empty());
+    }
 }
 
 #[cfg(test)]

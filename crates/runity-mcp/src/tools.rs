@@ -74,6 +74,7 @@ pub fn list() -> Vec<Value> {
         tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("make_variant", "Save a prefab instance, with its overrides, material, components and children, as prefabs/<name>.prefab — a variant of its prefab — and make it an instance of that. Later changes to the base still reach the variant where it said nothing.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
+        tool("array", "Greybox: count copies of an entity in a row, each step further (in its parent's space) than the last — posts, pillars, steps. One undo step; returns the copies' ids.", json!({ "id": { "type": "string", "description": ID }, "count": { "type": "integer" }, "step": vec3("from one copy to the next, metres") }), &["id", "count", "step"]),
         tool("push_face", "Greybox: move one face of a thing by some metres (negative pulls it in), the opposite face staying where it is — make a wall 2 m longer at its +x end. Faces in the thing's own axes: +x -x +y (top) -y (bottom) +z -z. One undo step.", json!({ "id": { "type": "string", "description": ID }, "face": { "type": "string" }, "metres": { "type": "number" } }), &["id", "face", "metres"]),
         tool("scatter", "Scatter copies of a model, or instances of a prefab, over a disc — trees, rocks, grass — as one group and one undo step. The same seed gives the same layout. Returns the group's id.", json!({
             "what": { "type": "string", "description": "a model (builtin:cone, or a name from assets/) or a prefab name" },
@@ -225,6 +226,25 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "prefabs/{name}.prefab written as a variant; {id} is now an instance of it"
             ))])
+        }
+        "array" => {
+            let id = id(args, "id")?;
+            let count = args
+                .get("count")
+                .and_then(Value::as_u64)
+                .ok_or("count is a whole number")? as usize;
+            let step = optional_vec3(args, "step")?.ok_or("step is [x, y, z]")?;
+            let copies = server
+                .session()?
+                .array(id, count, step)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(
+                copies
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )])
         }
         "push_face" => {
             let id = id(args, "id")?;
