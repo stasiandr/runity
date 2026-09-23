@@ -498,7 +498,10 @@ mod tests {
         touch(&mut input, 7, Started, 50.0, 250.0);
         touch(&mut input, 7, Moved, 150.0, 200.0);
         let v = widgets.stick(&mut Ui::new(), &input, pad);
-        assert!(v.x > 0.85 && v.y > 0.4 && (v.length() - 1.0).abs() < 1e-4, "{v}");
+        assert!(
+            v.x > 0.85 && v.y > 0.4 && (v.length() - 1.0).abs() < 1e-4,
+            "{v}"
+        );
         input.begin_frame();
         touch(&mut input, 7, Ended, 150.0, 200.0);
         input.begin_frame();

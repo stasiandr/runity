@@ -394,6 +394,9 @@ pub enum NavStatus {
 pub struct NavAgent {
     /// Metres per second.
     pub speed: f32,
+    /// How much room it takes: two agents closer than their radii together
+    /// step apart, so a crowd sent to one door queues rather than stacks.
+    pub radius: f32,
     destination: Option<Vec3>,
     path: Vec<Vec3>,
     next: usize,
@@ -405,6 +408,7 @@ impl NavAgent {
     pub fn new(speed: f32) -> Self {
         Self {
             speed,
+            radius: 0.35,
             destination: None,
             path: Vec::new(),
             next: 0,
@@ -496,7 +500,48 @@ pub fn move_agents(world: &mut hecs::World, grid: &NavGrid, dt: f32) {
             }
         }
     }
+    keep_apart(world, grid);
     crate::world::apply_hierarchy(world);
+}
+
+/// Agents closer than their radii together are pushed apart, half each,
+/// but never off walkable ground: Unity's agent avoidance, in its simplest
+/// form. Pairs, so a few hundred agents at most.
+fn keep_apart(world: &mut hecs::World, grid: &NavGrid) {
+    let agents: Vec<(hecs::Entity, Vec3, f32)> = world
+        .query::<(hecs::Entity, &crate::scene::Transform, &NavAgent)>()
+        .iter()
+        .map(|(e, t, a)| (e, t.position, a.radius.max(0.0)))
+        .collect();
+    let mut pushes: std::collections::HashMap<hecs::Entity, Vec3> = Default::default();
+    for (i, (a, pa, ra)) in agents.iter().enumerate() {
+        for (b, pb, rb) in &agents[i + 1..] {
+            let apart = Vec2::new(pb.x - pa.x, pb.z - pa.z);
+            let distance = apart.length();
+            let room = ra + rb;
+            if distance >= room {
+                continue;
+            }
+            // Exactly on top of each other: apart along x, by who is who.
+            let way = if distance > 1e-4 {
+                apart / distance
+            } else {
+                Vec2::X
+            };
+            let half = (room - distance) * 0.5;
+            let push = Vec3::new(way.x, 0.0, way.y) * half;
+            *pushes.entry(*a).or_default() -= push;
+            *pushes.entry(*b).or_default() += push;
+        }
+    }
+    for (entity, push) in pushes {
+        if let Ok(mut transform) = world.get::<&mut crate::scene::Transform>(entity) {
+            let to = transform.position + push;
+            if grid.is_walkable(to) {
+                transform.position = to;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +695,47 @@ mod tests {
             grid.path(Vec3::new(0.0, 0.0, 6.0), top).is_none(),
             "two metres is a wall"
         );
+    }
+
+    #[test]
+    fn a_crowd_sent_to_one_spot_stands_around_it_rather_than_in_it() {
+        let grid = baked(vec![floor()]);
+        let mut world = hecs::World::new();
+        let crowd: Vec<hecs::Entity> = (0..6)
+            .map(|i| {
+                world.spawn((
+                    Transform {
+                        position: Vec3::new(-4.0 + i as f32 * 0.2, 0.0, -4.0),
+                        ..Transform::default()
+                    },
+                    crate::world::WorldTransform(glam::Mat4::IDENTITY),
+                    NavAgent::new(3.0),
+                ))
+            })
+            .collect();
+        for &one in &crowd {
+            world
+                .get::<&mut NavAgent>(one)
+                .unwrap()
+                .go_to(Vec3::new(3.0, 0.0, 3.0));
+        }
+        for _ in 0..600 {
+            move_agents(&mut world, &grid, 1.0 / 60.0);
+        }
+        let at: Vec<Vec3> = crowd
+            .iter()
+            .map(|e| world.get::<&Transform>(*e).unwrap().position)
+            .collect();
+        for (i, a) in at.iter().enumerate() {
+            for b in &at[i + 1..] {
+                let apart = Vec2::new(a.x - b.x, a.z - b.z).length();
+                assert!(apart > 0.6, "room for each: {apart} between {a} and {b}");
+            }
+            assert!(
+                (*a - Vec3::new(3.0, 0.0, 3.0)).length() < 1.5,
+                "near the spot: {a}"
+            );
+        }
     }
 
     #[test]
