@@ -77,6 +77,29 @@ impl Animator {
         }
     }
 
+    /// Clips made on another rig, to play on this one (see
+    /// [`Clip::retarget`]): Mixamo's, one clip to a file. A clip Mixamo
+    /// named as it names all of them (`mixamo.com`) takes `model`, the
+    /// name of the file it came from — as the Unity import names it.
+    pub fn take_clips(
+        &mut self,
+        model: &str,
+        from: &crate::animation::Skeleton,
+        clips: &[Clip],
+    ) {
+        let taken: Vec<Clip> = clips
+            .iter()
+            .map(|clip| {
+                let mut clip = clip.retarget(from, &self.skeleton);
+                if clip.name == "mixamo.com" || (clips.len() == 1 && clip.name.is_empty()) {
+                    clip.name = model.to_string();
+                }
+                clip
+            })
+            .collect();
+        std::sync::Arc::make_mut(&mut self.clips).extend(taken);
+    }
+
     pub fn playing(&self) -> Option<Playing> {
         self.current
     }
@@ -347,6 +370,17 @@ mod tests {
 
     fn height(pose: &[PoseTransform]) -> f32 {
         pose[0].translation[1]
+    }
+
+    #[test]
+    fn clips_from_another_file_play_under_that_files_name() {
+        let mut animator = animator();
+        let mut mixamo = clips()[1].clone();
+        mixamo.name = "mixamo.com".into();
+        animator.take_clips("A_Running", &skeleton(), &[mixamo]);
+        let at = animator.clips.iter().position(|c| c.name == "A_Running");
+        animator.play(at.expect("taken, under the file's name"), 0.0);
+        assert_eq!(height(&animator.advance(0.0)), 20.0);
     }
 
     #[test]

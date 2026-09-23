@@ -252,6 +252,85 @@ impl Clip {
     }
 }
 
+/// A joint's name without its rig's prefix: `mixamorig:Hips` and
+/// `mixamorig1:Hips` are both `Hips`, the same bone of two downloads.
+pub fn bare_joint_name(name: &str) -> &str {
+    name.rsplit(':').next().unwrap_or(name)
+}
+
+impl Clip {
+    /// This clip, made on `from`, for `to`: joints matched by name (less
+    /// the rig's prefix), each rotation carried as its turn away from the
+    /// rest pose, so two rigs posed a little differently at rest still
+    /// agree. Only the root moves, scaled by how much taller one rig's
+    /// root stands than the other's: the other bones keep `to`'s lengths,
+    /// or a short character would be stretched to a tall one's arms.
+    /// Scale is left to `to`. Joints `to` does not have are dropped.
+    ///
+    /// What Mixamo's clips need to play on a character that is not the
+    /// one each was downloaded with: Unity's Humanoid retargeting, for
+    /// rigs that share bone names.
+    pub fn retarget(&self, from: &Skeleton, to: &Skeleton) -> Clip {
+        let by_name: std::collections::HashMap<&str, usize> = to
+            .joints
+            .iter()
+            .enumerate()
+            .map(|(i, j)| (bare_joint_name(&j.name), i))
+            .collect();
+        let mut channels = Vec::new();
+        for channel in &self.channels {
+            let Some(source) = from.joints.get(channel.joint as usize) else {
+                continue;
+            };
+            let Some(&target) = by_name.get(bare_joint_name(&source.name)) else {
+                continue;
+            };
+            let aim = &to.joints[target];
+            match channel.path {
+                Path::Rotation => {
+                    let from_rest = Quat::from_array(source.rest.rotation);
+                    let to_rest = Quat::from_array(aim.rest.rotation);
+                    let values = channel
+                        .values
+                        .chunks_exact(4)
+                        .flat_map(|q| {
+                            let turn = from_rest.inverse() * Quat::from_slice(q);
+                            (to_rest * turn).normalize().to_array()
+                        })
+                        .collect();
+                    channels.push(Channel {
+                        joint: target as u16,
+                        path: Path::Rotation,
+                        times: channel.times.clone(),
+                        values,
+                    });
+                }
+                Path::Translation if aim.parent.is_none() || source.parent.is_none() => {
+                    let from_height = Vec3::from_array(source.rest.translation).length();
+                    let to_height = Vec3::from_array(aim.rest.translation).length();
+                    let ratio = if from_height > 1e-5 {
+                        to_height / from_height
+                    } else {
+                        1.0
+                    };
+                    channels.push(Channel {
+                        joint: target as u16,
+                        path: Path::Translation,
+                        times: channel.times.clone(),
+                        values: channel.values.iter().map(|v| v * ratio).collect(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Clip {
+            name: self.name.clone(),
+            duration: self.duration,
+            channels,
+        }
+    }
+}
+
 /// The two keys a time falls between, and how far along it is.
 ///
 /// Before the first key or after the last, both indices are the same one and
@@ -303,6 +382,48 @@ mod tests {
                 joint("hand", Some(1), 2.0),
             ],
         }
+    }
+
+    #[test]
+    fn a_clip_retargets_by_bone_name_as_turns_from_rest() {
+        let mut from = arm();
+        for j in &mut from.joints {
+            j.name = format!("mixamorig:{}", j.name);
+        }
+        from.joints[0].rest.translation = [0.0, 2.0, 0.0];
+        from.joints.push(Joint {
+            name: "mixamorig:tail".into(),
+            ..from.joints[2].clone()
+        });
+        let mut to = arm();
+        to.joints[0].rest.translation = [0.0, 1.0, 0.0];
+        let bent = Quat::from_rotation_z(1.0);
+        to.joints[1].rest.rotation = bent.to_array();
+        let wave = Quat::from_rotation_x(0.5);
+        let key = |joint: u16, path: Path, values: Vec<f32>| Channel {
+            joint,
+            path,
+            times: vec![0.0],
+            values,
+        };
+        let clip = Clip {
+            name: "mixamo.com".into(),
+            duration: 1.0,
+            channels: vec![
+                key(0, Path::Translation, vec![0.0, 2.2, 0.4]),
+                key(1, Path::Rotation, wave.to_array().to_vec()),
+                key(1, Path::Translation, vec![0.0, 5.0, 0.0]),
+                key(3, Path::Rotation, wave.to_array().to_vec()),
+            ],
+        };
+        let moved = clip.retarget(&from, &to);
+        assert_eq!(moved.channels.len(), 2, "the tail and the elbow's stretch go");
+        let root = &moved.channels[0];
+        assert_eq!((root.joint, root.path), (0, Path::Translation));
+        assert!((root.values[1] - 1.1).abs() < 1e-5, "half as tall: half the lift");
+        let elbow = &moved.channels[1];
+        let q = Quat::from_slice(&elbow.values);
+        assert!(q.angle_between(bent * wave) < 1e-4, "its own rest, the same turn");
     }
 
     #[test]
