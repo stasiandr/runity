@@ -2756,3 +2756,47 @@ fn what_is_selected_is_outlined_in_orange() {
     session.render();
     assert_eq!(orange(&session), 0);
 }
+
+#[test]
+fn local_handles_slide_a_turned_wall_along_its_own_length() {
+    use runity::glam::{Vec2, Vec3};
+    use runity::input::{Input, InputEvent as E, Key};
+    let scene = SCENE.replace(
+        "    ],\n)",
+        "        (name: \"wall\", model: \"builtin:cube\", transform: (position: (0.0, 1.0, 0.0), rotation_deg: (0.0, 90.0, 0.0), scale: (4.0, 2.0, 0.2))),\n    ],\n)",
+    );
+    let Some((mut session, _)) = open_with("local-handles", &scene) else {
+        return;
+    };
+    let wall = id(&session, "wall");
+    session.select(Some(wall)).unwrap();
+    session.set_camera(Vec3::new(8.0, 4.0, 3.0), Vec3::new(0.0, 1.0, 0.0));
+    let (w, h) = session.size();
+    let size = Vec2::new(w as f32, h as f32);
+    let origin = session.world_position(wall).unwrap();
+    // The wall's own x is the world's −z.
+    let along = Vec3::NEG_Z;
+    let arm = session.camera().apparent_distance(origin) * 0.15;
+    let camera = session.camera();
+    let pixel = |p: Vec3| {
+        let at = camera.screen_point(p, size).unwrap();
+        (at.x as u32, at.y as u32)
+    };
+
+    let mut input = Input::new();
+    let did = view_frame(&mut session, &mut input, (1.0, 1.0), &[E::KeyDown(Key::X)]);
+    assert!(did.contains(&"space"), "{did:?}");
+    assert_eq!(session.space(), runity_editor::Space::Local);
+
+    let (x, y) = pixel(origin + along * arm * 0.7);
+    assert_eq!(session.gizmo_begin(x, y).unwrap(), Some(Handle::X));
+    let (x, y) = pixel(origin + along * arm * 1.5);
+    session.gizmo_drag(x, y).unwrap();
+    session.gizmo_end();
+    let went = session.world_position(wall).unwrap() - origin;
+    assert!(went.z < -0.05, "{went}");
+    assert!(
+        went.x.abs() < 1e-3 && went.y.abs() < 1e-3,
+        "only along its length: {went}"
+    );
+}

@@ -18,6 +18,7 @@
 //! | middle drag | pan |
 //! | wheel | zoom |
 //! | W / E / R | move / rotate / scale tool |
+//! | X | handles along the world's axes or the entity's own |
 //! | F | frame the selection |
 //! | End | down onto what is beneath |
 //! | H / Shift H | hide the selection / show it alone (again: all) |
@@ -186,6 +187,13 @@ impl Session {
                     self.set_tool(tool);
                     did.push(name);
                 }
+            }
+            if pressed(Key::X) {
+                self.set_space(match self.space() {
+                    crate::Space::Global => crate::Space::Local,
+                    crate::Space::Local => crate::Space::Global,
+                });
+                did.push("space");
             }
             if pressed(Key::F) && self.focus_selected() {
                 did.push("frame");

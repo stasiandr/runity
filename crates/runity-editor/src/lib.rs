@@ -25,7 +25,7 @@ mod surface;
 mod views;
 mod visibility;
 
-pub use views::Side;
+pub use views::{Side, Space};
 
 use std::path::{Path, PathBuf};
 
@@ -101,6 +101,10 @@ pub struct Session {
     /// The rest of the selection's roots and their transforms when the drag
     /// began: they move, turn and stretch with the gizmo's entity.
     drag_others: Vec<(EntityId, runity::Transform)>,
+    /// Which way the handles pointed when the drag began.
+    drag_orientation: runity::glam::Quat,
+    /// World or the entity's own axes for the handles.
+    space: Space,
     /// A unit cube, uploaded once, that the gizmo's handles are made of.
     gizmo_arm: Option<MeshHandle>,
     /// Whether frames show every collider as an outline.
@@ -244,6 +248,8 @@ impl Session {
             drag: None,
             drag_from: None,
             drag_others: Vec::new(),
+            drag_orientation: runity::glam::Quat::IDENTITY,
+            space: Space::Global,
             gizmo_arm: None,
             show_colliders: false,
             play: None,
@@ -2170,13 +2176,21 @@ impl Session {
         // handle visible against anything.
         if let Some(origin) = self.selected_origin() {
             let arm = self.gizmo_arm_mesh();
-            frame.overlay_draws.extend(gizmo::draws_for(
-                self.tool,
-                arm,
-                &self.camera,
-                &self.gizmo_style,
+            let orientation = match self.drag {
+                Some(_) => self.drag_orientation,
+                None => self.handle_orientation(),
+            };
+            frame.overlay_draws.extend(gizmo::draws_turned(
+                gizmo::draws_for(
+                    self.tool,
+                    arm,
+                    &self.camera,
+                    &self.gizmo_style,
+                    origin,
+                    self.drag.map(|d| d.handle),
+                ),
                 origin,
-                self.drag.map(|d| d.handle),
+                orientation,
             ));
         }
         self.renderer.render(&self.gpu, &self.target, &frame);
@@ -2496,6 +2510,7 @@ impl Session {
     pub fn gizmo_hover(&self, x: u32, y: u32) -> Option<Handle> {
         let origin = self.selected_origin()?;
         let (from, direction) = self.ray(x, y);
+        let (from, direction) = gizmo::ray_into(origin, self.handle_orientation(), from, direction);
         gizmo::hit_for(
             self.tool,
             &self.camera,
@@ -2512,7 +2527,9 @@ impl Session {
         let Some(origin) = self.selected_origin() else {
             return Ok(None);
         };
+        let orientation = self.handle_orientation();
         let (from, direction) = self.ray(x, y);
+        let (from, direction) = gizmo::ray_into(origin, orientation, from, direction);
         let Some(handle) = gizmo::hit_for(
             self.tool,
             &self.camera,
@@ -2538,6 +2555,7 @@ impl Session {
             None => Vec::new(),
         };
         self.drag = Some(gizmo::begin_for(self.tool, origin, handle, from, direction));
+        self.drag_orientation = orientation;
         Ok(Some(handle))
     }
 
@@ -2547,8 +2565,22 @@ impl Session {
         let (Some(drag), Some(id)) = (self.drag, self.selected) else {
             return Ok(false);
         };
+        let orientation = self.drag_orientation;
         let (from, direction) = self.ray(x, y);
-        let motion = gizmo::update_for(&drag, from, direction);
+        let (from, direction) = gizmo::ray_into(drag.origin, orientation, from, direction);
+        let mut motion = gizmo::motion_out_of(
+            gizmo::update_for(&drag, from, direction),
+            drag.origin,
+            orientation,
+        );
+        // Along an entity's own axes, the step is what snaps: a grid in the
+        // parent's axes would pull it off the axis it is sliding along.
+        let turned = orientation != runity::glam::Quat::IDENTITY;
+        if let (true, Motion::Position(moved)) = (turned, motion) {
+            let step = orientation.inverse() * (moved - drag.origin);
+            let step = gizmo::snap_all(step, self.snap.meters);
+            motion = Motion::Position(drag.origin + orientation * step);
+        }
 
         // The gizmo sits at the entity's world position, but what is edited
         // is its local one. The difference is the parent's transform, and
@@ -2572,7 +2604,11 @@ impl Session {
                 // and the space a person means: a child snapped in world
                 // space lands on a grid its parent is not on.
                 let local = parent.inverse().transform_point3(moved);
-                desc.transform.position = gizmo::snap_all(local, snap.meters);
+                desc.transform.position = if turned {
+                    local
+                } else {
+                    gizmo::snap_all(local, snap.meters)
+                };
                 // The rest go as far, in the world, as the gizmo's went.
                 if let Some(started) = started {
                     let went = parent.transform_point3(desc.transform.position)

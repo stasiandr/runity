@@ -15,6 +15,16 @@ use crate::Session;
 /// the picture depends on it.
 pub(crate) const ORTHO_STAND: f32 = 200.0;
 
+/// Which axes the handles are along: Unity's Global / Local toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Space {
+    /// The world's: a move is north, east or up.
+    #[default]
+    Global,
+    /// The entity's own: a turned wall slides along its own length.
+    Local,
+}
+
 /// Which side of the world to look from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -143,6 +153,29 @@ impl Session {
     /// Metres a second a flythrough goes before shift.
     pub fn fly_speed(&self) -> f32 {
         self.fly_speed
+    }
+
+    /// Handles along the world's axes or the selected entity's own.
+    pub fn set_space(&mut self, space: Space) {
+        self.space = space;
+    }
+
+    pub fn space(&self) -> Space {
+        self.space
+    }
+
+    /// Which way the handles point now: the selected entity's turn in the
+    /// world when Local — and always for scale, which stretches the
+    /// entity's own axes whichever way the toggle is, as in Unity.
+    pub(crate) fn handle_orientation(&self) -> runity::glam::Quat {
+        let local = self.space == Space::Local || self.tool == runity::gizmo::Tool::Scale;
+        match (local, self.selected) {
+            (true, Some(id)) => self
+                .placed(id)
+                .map(|(_, m)| m.to_scale_rotation_translation().1)
+                .unwrap_or_default(),
+            _ => runity::glam::Quat::IDENTITY,
+        }
     }
 
     /// Look through another camera exactly — the game's, lens and all.

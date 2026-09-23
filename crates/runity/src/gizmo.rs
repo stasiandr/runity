@@ -29,10 +29,10 @@ use crate::render::{Camera, Draw, MeshHandle, TextureHandle};
 /// is the same: the same three axes, the same colours, the same rule about
 /// staying the same size on screen.
 ///
-/// All three work in **world** axes, including rotate. A local-axis toggle
-/// is the obvious next step and is deliberately not here yet: it doubles
-/// every solver's cases, and the one thing worse than not having it is
-/// having it disagree with what the handles are drawn as.
+/// All three solve in **world** axes. Handles along an entity's own axes
+/// are the same solvers in a turned frame — [`ray_into`], [`draws_turned`],
+/// [`motion_out_of`] — rather than a second set of cases, so what is drawn
+/// and what a drag does cannot disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tool {
     /// Arms along the axes; a drag slides along one.
@@ -439,6 +439,48 @@ pub fn collider_draws(
         .collect()
 }
 
+/// Handles along an entity's own axes rather than the world's: Unity's
+/// Local. Rather than teach every solver a second set of cases, the ray is
+/// turned into the handles' frame, the world-axis solver runs there, and
+/// what it answers is turned back — one rule, so what is drawn and what a
+/// drag does cannot disagree.
+///
+/// A ray into a frame turned by `orientation` about `origin`.
+pub fn ray_into(
+    origin: Vec3,
+    orientation: Quat,
+    ray_origin: Vec3,
+    ray_direction: Vec3,
+) -> (Vec3, Vec3) {
+    let back = orientation.inverse();
+    (origin + back * (ray_origin - origin), back * ray_direction)
+}
+
+/// Draws made in world axes, turned into the frame.
+pub fn draws_turned(draws: Vec<Draw>, origin: Vec3, orientation: Quat) -> Vec<Draw> {
+    let turn = Mat4::from_translation(origin)
+        * Mat4::from_quat(orientation)
+        * Mat4::from_translation(-origin);
+    draws
+        .into_iter()
+        .map(|d| Draw {
+            transform: turn * d.transform,
+            ..d
+        })
+        .collect()
+}
+
+/// A solver's answer in the frame, back in the world. A scale is per the
+/// frame's axes either way, which are the entity's own when the frame is
+/// its rotation.
+pub fn motion_out_of(motion: Motion, origin: Vec3, orientation: Quat) -> Motion {
+    match motion {
+        Motion::Position(p) => Motion::Position(origin + orientation * (p - origin)),
+        Motion::Rotation(q) => Motion::Rotation(orientation * q * orientation.inverse()),
+        Motion::Scale(s) => Motion::Scale(s),
+    }
+}
+
 /// Which handle a ray passes close enough to, nearest first.
 pub fn hit(
     camera: &Camera,
@@ -755,6 +797,45 @@ mod tests {
         assert!(
             (moved - origin).length() < 1e-4,
             "expected no movement, got {moved}"
+        );
+    }
+
+    #[test]
+    fn turned_handles_slide_along_the_turned_axis() {
+        // From the side: the turned x runs across the view, not into it.
+        let camera = Camera {
+            position: Vec3::new(10.0, 3.0, 0.0),
+            target: Vec3::ZERO,
+            ..Camera::default()
+        };
+        let style = GizmoStyle::default();
+        let origin = Vec3::ZERO;
+        // A quarter turn about y: the entity's x is the world's −z.
+        let turn = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let length = style.arm_length(&camera, origin);
+        let aim = |p: Vec3| {
+            let direction = (p - camera.position).normalize();
+            ray_into(origin, turn, camera.position, direction)
+        };
+        let (from, direction) = aim(turn * Vec3::X * length * 0.7);
+        let handle = hit_for(Tool::Move, &camera, &style, origin, from, direction);
+        assert_eq!(handle, Some(Handle::X));
+        let drag = begin_for(Tool::Move, origin, Handle::X, from, direction);
+        let (from, direction) = aim(turn * Vec3::X * length * 1.7);
+        let Motion::Position(p) = motion_out_of(update_for(&drag, from, direction), origin, turn)
+        else {
+            panic!("a move");
+        };
+        assert!(p.z < -0.1 && p.x.abs() < 1e-3 && p.y.abs() < 1e-3, "{p}");
+        let drawn = draws_turned(
+            draws(MeshHandle::TEST, &camera, &style, origin, None),
+            origin,
+            turn,
+        );
+        let x_arm = drawn[0].transform.w_axis.truncate();
+        assert!(
+            x_arm.z < 0.0 && x_arm.x.abs() < 1e-3,
+            "drawn where it is grabbed: {x_arm}"
         );
     }
 
