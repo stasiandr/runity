@@ -27,6 +27,22 @@ struct Post {
     texel: vec4<f32>,
     // bloom: threshold, knee, scatter, clamp
     bloom: vec4<f32>,
+    // Channel Mixer: each output channel's shares of r, g, b
+    mixer_red: vec4<f32>,
+    mixer_green: vec4<f32>,
+    mixer_blue: vec4<f32>,
+    // Shadows Midtones Highlights: colours; w the ranges (shadows start,
+    // shadows end, highlights start; lift.w highlights end)
+    smh_shadows: vec4<f32>,
+    smh_midtones: vec4<f32>,
+    smh_highlights: vec4<f32>,
+    // Lift Gamma Gain
+    lift: vec4<f32>,
+    gamma: vec4<f32>,
+    gain: vec4<f32>,
+    // Split Toning: shadows tint (w: balance), highlights tint
+    split_shadows: vec4<f32>,
+    split_highlights: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -217,6 +233,31 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     // Contrast about middle grey, in log space where it is even-handed.
     let log_color = log2(max(color, vec3<f32>(1e-6)) / 0.18);
     color = 0.18 * exp2(log_color * post.filter_contrast.w);
+    // Channel Mixer.
+    color = vec3<f32>(
+        dot(color, post.mixer_red.rgb),
+        dot(color, post.mixer_green.rgb),
+        dot(color, post.mixer_blue.rgb),
+    );
+    color = max(color, vec3<f32>(0.0));
+    // Shadows Midtones Highlights: by luminance, each its colour.
+    let y = luma(color);
+    let shadows = 1.0 - smoothstep(post.smh_shadows.w, post.smh_midtones.w, y);
+    let highlights = smoothstep(post.smh_highlights.w, post.lift.w, y);
+    let midtones = 1.0 - shadows - highlights;
+    color = color * (post.smh_shadows.rgb * shadows + post.smh_midtones.rgb * midtones
+        + post.smh_highlights.rgb * highlights);
+    // Lift Gamma Gain.
+    color = post.gain.rgb * (color + post.lift.rgb * (vec3<f32>(1.0) - min(color, vec3<f32>(1.0))));
+    color = pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0) / post.gamma.rgb);
+    // Split Toning, soft-lit in gamma space as URP does.
+    if any(post.split_shadows.rgb != vec3<f32>(0.5)) || any(post.split_highlights.rgb != vec3<f32>(0.5)) {
+        var g = linear_to_srgb(clamp(color, vec3<f32>(0.0), vec3<f32>(1.0)));
+        let t = clamp(luma(g) + post.split_shadows.w, 0.0, 1.0);
+        g = soft_light(g, mix(vec3<f32>(0.5), post.split_shadows.rgb, 1.0 - t));
+        g = soft_light(g, mix(vec3<f32>(0.5), post.split_highlights.rgb, t));
+        color = srgb_to_linear(g) + max(color - vec3<f32>(1.0), vec3<f32>(0.0));
+    }
     if abs(post.b.y) > 1e-5 {
         var hsv = rgb_to_hsv(color);
         hsv.x = fract(hsv.x + post.b.y);
@@ -296,4 +337,11 @@ fn fs_fxaa(in: Varyings) -> @location(0) vec4<f32> {
         out = select(b, a, lb < lo || lb > hi);
     }
     return vec4<f32>(finish(out, in.position.xy), 1.0);
+}
+
+/// Photoshop's soft light: darker below mid grey, lighter above.
+fn soft_light(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+    let low = 2.0 * base * blend + base * base * (1.0 - 2.0 * blend);
+    let high = sqrt(base) * (2.0 * blend - 1.0) + 2.0 * base * (1.0 - blend);
+    return select(high, low, blend < vec3<f32>(0.5));
 }

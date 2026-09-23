@@ -84,6 +84,96 @@ impl Default for Vignette {
     }
 }
 
+/// Each output channel as a mix of the inputs: URP's Channel Mixer, as
+/// shares rather than percent (1.0 is URP's 100).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelMixer {
+    pub red: [f32; 3],
+    pub green: [f32; 3],
+    pub blue: [f32; 3],
+}
+
+impl Default for ChannelMixer {
+    fn default() -> Self {
+        Self {
+            red: [1.0, 0.0, 0.0],
+            green: [0.0, 1.0, 0.0],
+            blue: [0.0, 0.0, 1.0],
+        }
+    }
+}
+
+/// The three trackballs of a grade: `lift` raises the darks (added,
+/// fading to nothing at white), `gamma` bends the middle (a power), `gain`
+/// scales the brights. URP's Lift Gamma Gain.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiftGammaGain {
+    pub lift: [f32; 3],
+    pub gamma: [f32; 3],
+    pub gain: [f32; 3],
+}
+
+impl Default for LiftGammaGain {
+    fn default() -> Self {
+        Self {
+            lift: [0.0; 3],
+            gamma: [1.0; 3],
+            gain: [1.0; 3],
+        }
+    }
+}
+
+/// A colour for the darks, one for the middle and one for the lights, each
+/// multiplied in where the picture is that bright. URP's Shadows Midtones
+/// Highlights.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShadowsMidtonesHighlights {
+    pub shadows: [f32; 3],
+    pub midtones: [f32; 3],
+    pub highlights: [f32; 3],
+    /// Where the shadows end: fully shadows below the first, none above
+    /// the second, by luminance.
+    pub shadows_range: [f32; 2],
+    /// Where the highlights begin.
+    pub highlights_range: [f32; 2],
+}
+
+impl Default for ShadowsMidtonesHighlights {
+    fn default() -> Self {
+        Self {
+            shadows: [1.0; 3],
+            midtones: [1.0; 3],
+            highlights: [1.0; 3],
+            shadows_range: [0.0, 0.3],
+            highlights_range: [0.55, 1.0],
+        }
+    }
+}
+
+/// One tint in the darks and another in the lights, soft-lit in: the
+/// teal-and-orange grade. URP's Split Toning; grey (0.5) is no tint.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SplitToning {
+    pub shadows: [f32; 3],
+    pub highlights: [f32; 3],
+    /// -100 (all highlights) to 100 (all shadows).
+    pub balance: f32,
+}
+
+impl Default for SplitToning {
+    fn default() -> Self {
+        Self {
+            shadows: [0.5; 3],
+            highlights: [0.5; 3],
+            balance: 0.0,
+        }
+    }
+}
+
 /// Everything done to a frame after it is drawn, with URP's names and
 /// ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -108,6 +198,10 @@ pub struct PostProcess {
     pub temperature: f32,
     pub tint: f32,
     pub vignette: Vignette,
+    pub channel_mixer: ChannelMixer,
+    pub lift_gamma_gain: LiftGammaGain,
+    pub shadows_midtones_highlights: ShadowsMidtonesHighlights,
+    pub split_toning: SplitToning,
     /// Red and blue apart at the edges, 0 to 1.
     pub chromatic_aberration: f32,
     /// Film grain, 0 to 1.
@@ -136,6 +230,10 @@ impl Default for PostProcess {
             temperature: 0.0,
             tint: 0.0,
             vignette: Vignette::default(),
+            channel_mixer: ChannelMixer::default(),
+            lift_gamma_gain: LiftGammaGain::default(),
+            shadows_midtones_highlights: ShadowsMidtonesHighlights::default(),
+            split_toning: SplitToning::default(),
             chromatic_aberration: 0.0,
             film_grain: 0.0,
             fxaa: false,
@@ -169,6 +267,28 @@ impl PostProcess {
             smoothness: 0.4,
             color: [0.0, 0.0, 0.0],
             center: [0.5, 0.5],
+        },
+        channel_mixer: ChannelMixer {
+            red: [1.0, 0.0, 0.0],
+            green: [0.0, 1.0, 0.0],
+            blue: [0.0, 0.0, 1.0],
+        },
+        lift_gamma_gain: LiftGammaGain {
+            lift: [0.0; 3],
+            gamma: [1.0; 3],
+            gain: [1.0; 3],
+        },
+        shadows_midtones_highlights: ShadowsMidtonesHighlights {
+            shadows: [1.0; 3],
+            midtones: [1.0; 3],
+            highlights: [1.0; 3],
+            shadows_range: [0.0, 0.3],
+            highlights_range: [0.55, 1.0],
+        },
+        split_toning: SplitToning {
+            shadows: [0.5; 3],
+            highlights: [0.5; 3],
+            balance: 0.0,
         },
         chromatic_aberration: 0.0,
         film_grain: 0.0,
@@ -213,6 +333,40 @@ impl PostProcess {
                     f(self.vignette.center[0], other.vignette.center[0]),
                     f(self.vignette.center[1], other.vignette.center[1]),
                 ],
+            },
+            channel_mixer: ChannelMixer {
+                red: v3(self.channel_mixer.red, other.channel_mixer.red),
+                green: v3(self.channel_mixer.green, other.channel_mixer.green),
+                blue: v3(self.channel_mixer.blue, other.channel_mixer.blue),
+            },
+            lift_gamma_gain: LiftGammaGain {
+                lift: v3(self.lift_gamma_gain.lift, other.lift_gamma_gain.lift),
+                gamma: v3(self.lift_gamma_gain.gamma, other.lift_gamma_gain.gamma),
+                gain: v3(self.lift_gamma_gain.gain, other.lift_gamma_gain.gain),
+            },
+            shadows_midtones_highlights: {
+                let (a, b) = (
+                    &self.shadows_midtones_highlights,
+                    &other.shadows_midtones_highlights,
+                );
+                ShadowsMidtonesHighlights {
+                    shadows: v3(a.shadows, b.shadows),
+                    midtones: v3(a.midtones, b.midtones),
+                    highlights: v3(a.highlights, b.highlights),
+                    shadows_range: [
+                        f(a.shadows_range[0], b.shadows_range[0]),
+                        f(a.shadows_range[1], b.shadows_range[1]),
+                    ],
+                    highlights_range: [
+                        f(a.highlights_range[0], b.highlights_range[0]),
+                        f(a.highlights_range[1], b.highlights_range[1]),
+                    ],
+                }
+            },
+            split_toning: SplitToning {
+                shadows: v3(self.split_toning.shadows, other.split_toning.shadows),
+                highlights: v3(self.split_toning.highlights, other.split_toning.highlights),
+                balance: f(self.split_toning.balance, other.split_toning.balance),
             },
             chromatic_aberration: f(self.chromatic_aberration, other.chromatic_aberration),
             film_grain: f(self.film_grain, other.film_grain),
@@ -267,6 +421,22 @@ struct PostUniform {
     vignette: [f32; 4],
     texel: [f32; 4],
     bloom: [f32; 4],
+    mixer_red: [f32; 4],
+    mixer_green: [f32; 4],
+    mixer_blue: [f32; 4],
+    /// Shadows' colour; `w` where the shadows start fading.
+    smh_shadows: [f32; 4],
+    /// Midtones' colour; `w` where the shadows are gone.
+    smh_midtones: [f32; 4],
+    /// Highlights' colour; `w` where the highlights start.
+    smh_highlights: [f32; 4],
+    /// Lift; `w` where the highlights are whole.
+    lift: [f32; 4],
+    gamma: [f32; 4],
+    gain: [f32; 4],
+    /// Split toning's shadows tint; `w` the balance, -1 to 1.
+    split_shadows: [f32; 4],
+    split_highlights: [f32; 4],
 }
 
 /// One uniform slot per pass of a frame, at the device's alignment.
@@ -652,6 +822,8 @@ impl PostRenderer {
     }
 
     fn uniform(&self, s: &PostProcess, (w, h): (u32, u32)) -> PostUniform {
+        let v4 = |c: [f32; 3], w: f32| [c[0], c[1], c[2], w];
+        let smh = &s.shadows_midtones_highlights;
         let tonemapper = match s.tonemapping {
             Tonemapping::None => 0.0,
             Tonemapping::Neutral => 1.0,
@@ -709,6 +881,20 @@ impl PostRenderer {
                 s.bloom.scatter.clamp(0.0, 1.0),
                 s.bloom.clamp.max(1.0),
             ],
+            mixer_red: v4(s.channel_mixer.red, 0.0),
+            mixer_green: v4(s.channel_mixer.green, 0.0),
+            mixer_blue: v4(s.channel_mixer.blue, 0.0),
+            smh_shadows: v4(smh.shadows, smh.shadows_range[0]),
+            smh_midtones: v4(smh.midtones, smh.shadows_range[1]),
+            smh_highlights: v4(smh.highlights, smh.highlights_range[0]),
+            lift: v4(s.lift_gamma_gain.lift, smh.highlights_range[1]),
+            gamma: v4(s.lift_gamma_gain.gamma.map(|g| g.max(1e-3)), 0.0),
+            gain: v4(s.lift_gamma_gain.gain, 0.0),
+            split_shadows: v4(
+                s.split_toning.shadows,
+                (s.split_toning.balance / 100.0).clamp(-1.0, 1.0),
+            ),
+            split_highlights: v4(s.split_toning.highlights, 0.0),
         }
     }
 }
