@@ -878,6 +878,9 @@ pub struct MaterialSource {
     /// a mirror's picture.
     #[serde(default)]
     pub screen_map: runity::material::ScreenMap,
+    /// Over everything, walls included (transparent only).
+    #[serde(default)]
+    pub on_top: bool,
     #[serde(default = "one")]
     pub normal_scale: f32,
     #[serde(default = "one")]
@@ -1220,6 +1223,7 @@ pub fn material_from_ron(
             shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
             params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
             screen_map: source.screen_map,
+            on_top: source.on_top,
             normal_scale: source.normal_scale,
             occlusion_strength: source.occlusion_strength.clamp(0.0, 1.0),
             tiling: source.tiling,
