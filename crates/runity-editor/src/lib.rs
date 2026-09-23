@@ -2685,16 +2685,12 @@ impl Session {
 
     /// The world ray through a pixel.
     fn ray(&self, x: u32, y: u32) -> (Vec3, Vec3) {
-        let (width, height) = {
-            let (w, h) = self.size();
-            (w as f32, h as f32)
-        };
-        let ndc_x = (x as f32 + 0.5) / width * 2.0 - 1.0;
-        let ndc_y = 1.0 - (y as f32 + 0.5) / height * 2.0;
-        let inverse = self.camera.view_projection(width / height).inverse();
-        let near = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
-        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
-        (near, (far - near).normalize_or_zero())
+        let (w, h) = self.size();
+        // Through the pixel's centre.
+        self.camera.ray_through(
+            runity::glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5),
+            runity::glam::Vec2::new(w as f32, h as f32),
+        )
     }
 
     /// Where the gizmo sits: the selected entity's world position.

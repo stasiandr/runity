@@ -86,6 +86,61 @@ impl Camera {
         );
         projection * Mat4::look_at_rh(self.position, self.target, self.up)
     }
+
+    /// The ray through a point of a `size`-pixel image, from the top left —
+    /// where a click lands: Unity's `ScreenPointToRay`. As (origin on the
+    /// near plane, unit direction); hand it to a physics ray cast.
+    pub fn ray_through(&self, pixel: glam::Vec2, size: glam::Vec2) -> (Vec3, Vec3) {
+        let ndc_x = pixel.x / size.x.max(1.0) * 2.0 - 1.0;
+        let ndc_y = 1.0 - pixel.y / size.y.max(1.0) * 2.0;
+        let inverse = self.view_projection(size.x / size.y.max(1.0)).inverse();
+        let near = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 0.0));
+        let far = inverse.project_point3(Vec3::new(ndc_x, ndc_y, 1.0));
+        (near, (far - near).normalize_or_zero())
+    }
+
+    /// Where a point of the world lands in a `size`-pixel image, from the top
+    /// left — a name over a head, a marker on a door: `WorldToScreenPoint`.
+    /// `None` behind the camera.
+    pub fn screen_point(&self, world: Vec3, size: glam::Vec2) -> Option<glam::Vec2> {
+        let clip = self.view_projection(size.x / size.y.max(1.0)) * world.extend(1.0);
+        if clip.w <= 0.0 {
+            return None;
+        }
+        let ndc = clip.truncate() / clip.w;
+        Some(glam::Vec2::new(
+            (ndc.x + 1.0) * 0.5 * size.x,
+            (1.0 - ndc.y) * 0.5 * size.y,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+
+    #[test]
+    fn a_click_is_a_ray_and_a_point_lands_back_where_it_was_clicked() {
+        let camera = Camera::default();
+        let size = glam::Vec2::new(1280.0, 720.0);
+        let (_, along) = camera.ray_through(size * 0.5, size);
+        let straight = (camera.target - camera.position).normalize();
+        assert!(
+            (along - straight).length() < 1e-4,
+            "the middle looks where the camera does"
+        );
+        let corner = glam::Vec2::new(100.0, 600.0);
+        let (origin, along) = camera.ray_through(corner, size);
+        let point = origin + along * 7.0;
+        let back = camera.screen_point(point, size).unwrap();
+        assert!((back - corner).length() < 0.01, "{back:?}");
+        assert!(
+            camera
+                .screen_point(camera.position - straight, size)
+                .is_none(),
+            "behind"
+        );
+    }
 }
 
 /// The sun, and the sky it hangs in.
