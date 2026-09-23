@@ -692,6 +692,11 @@ struct FrameUniform {
     terrain_to_world: [[f32; 4]; 4],
     /// Its size, its cells, 1 when there is one, the finest spacing.
     terrain: [f32; 4],
+    /// Its lowest and highest ground in the world; patches per ring side.
+    terrain_bounds: [f32; 4],
+    /// What it is drawn with, for the mesh shader: the instance's numbers
+    /// (colour and shading, surface, emission, uv, detail, params).
+    terrain_look: [[f32; 4]; 7],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1000,6 +1005,11 @@ pub struct Renderer {
     texture_sampler: wgpu::Sampler,
     /// Kept to rebuild the pipelines when the shader is reloaded.
     pipeline_layout: wgpu::PipelineLayout,
+    /// The terrain's mesh-shader group and pipeline layouts, its uniform,
+    /// and the group bound (remade with the heights).
+    terrain_mesh_layouts: Option<(wgpu::BindGroupLayout, wgpu::PipelineLayout)>,
+    terrain_mesh_buffer: wgpu::Buffer,
+    terrain_mesh_group: Option<wgpu::BindGroup>,
     shadow_pipeline_layout: wgpu::PipelineLayout,
     shadow_clip_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
@@ -1114,6 +1124,9 @@ fn map_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 
 /// The engine's shader, as compiled in.
 pub const SHADER: &str = include_str!("render.wgsl");
+/// Terrain's task and mesh stages, appended to the renderer's shader where
+/// the device has mesh shaders.
+const TERRAIN_MESH: &str = include_str!("terrain_mesh.wgsl");
 
 /// Where the engine's shader source was when the engine was built — for
 /// watching it while working on the engine; see [`ShaderFile`].
@@ -1349,6 +1362,9 @@ struct Pipelines {
     /// Volumetric fog: what each cell scatters, and the sums along the view.
     fog_inject: wgpu::ComputePipeline,
     fog_integrate: wgpu::ComputePipeline,
+    /// Terrain's fine grid by task and mesh shaders — drawn and in the
+    /// prepass — where the device has them and they built.
+    terrain_mesh: Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)>,
 }
 
 /// The layouts the pipelines are built against, kept to rebuild them when
@@ -1361,6 +1377,8 @@ struct Layouts<'a> {
     sky: &'a wgpu::PipelineLayout,
     fog_inject: &'a wgpu::PipelineLayout,
     fog_integrate: &'a wgpu::PipelineLayout,
+    /// The terrain's mesh-shader pipelines: the main groups and its own.
+    terrain_mesh: Option<&'a wgpu::PipelineLayout>,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -1530,9 +1548,138 @@ fn scene_pipelines(
 /// start, and again when the shader is reloaded. The scene draws into the
 /// HDR format, multisampled `samples` times; overlays onto `output`, after
 /// post-processing.
+/// The terrain functions of the renderer's shader, for the mesh stages:
+/// the same code reading their own group (`frame.` as `tframe.`, the
+/// heights as `mesh_heights`), each name with `_m`.
+fn mesh_stage_copy(source: &str) -> Option<String> {
+    let begin = source.find("// terrain-stage:begin")?;
+    let end = source.find("// terrain-stage:end")?;
+    let mut copy = source[begin..end]
+        .replace("frame.", "tframe.")
+        .replace("terrain_heights", "mesh_heights");
+    for name in [
+        "relief_height",
+        "sand_wind",
+        "ripples_at",
+        "terrain_ground",
+        "terrain_vertex",
+    ] {
+        copy = copy.replace(&format!("{name}("), &format!("{name}_m("));
+    }
+    Some(copy)
+}
+
+/// What of the frame the terrain's mesh stages read: `TerrainFrame` in
+/// terrain_mesh.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TerrainFrameUniform {
+    view_projection: [[f32; 4]; 4],
+    camera_position: [f32; 4],
+    wind: [f32; 4],
+    terrain_to_local: [[f32; 4]; 4],
+    terrain_to_world: [[f32; 4]; 4],
+    terrain: [f32; 4],
+    terrain_bounds: [f32; 4],
+    terrain_look: [[f32; 4]; 7],
+}
+
+/// The terrain's mesh-shader pipelines, from the renderer's shader `source`
+/// with the task and mesh stages after it: `None` where the device has no
+/// mesh shaders or they do not build (the vertex-shader grid draws then).
+fn terrain_mesh_pipelines(
+    gpu: &Gpu,
+    source: &str,
+    samples: u32,
+    layouts: &Layouts,
+) -> Option<(wgpu::RenderPipeline, wgpu::RenderPipeline)> {
+    let layout = layouts.terrain_mesh?;
+    let full = format!(
+        "enable wgpu_mesh_shader;\n{source}\n{}\n{TERRAIN_MESH}",
+        mesh_stage_copy(source)?
+    );
+    let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    // SAFETY: the task and mesh stages index only arrays they size
+    // themselves, within their loops' bounds; naga's added checks (and
+    // clearing the workgroups' memory) cost the mesh draw most of its time.
+    let module = unsafe {
+        gpu.device.create_shader_module_trusted(
+            wgpu::ShaderModuleDescriptor {
+                label: Some("runity::terrain mesh"),
+                source: wgpu::ShaderSource::Wgsl(full.into()),
+            },
+            wgpu::ShaderRuntimeChecks::unchecked(),
+        )
+    };
+    let pipeline = |fragment: &str, target: wgpu::ColorTargetState, depth, samples| {
+        gpu.device
+            .create_mesh_pipeline(&wgpu::MeshPipelineDescriptor {
+                label: Some("runity::terrain mesh"),
+                layout: Some(layout),
+                task: Some(wgpu::TaskState {
+                    module: &module,
+                    entry_point: Some("ts_terrain"),
+                    compilation_options: Default::default(),
+                }),
+                mesh: wgpu::MeshState {
+                    module: &module,
+                    entry_point: Some("ms_terrain"),
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: depth,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &[Some(target)],
+                }),
+                multiview: None,
+                cache: None,
+            })
+    };
+    let drawn = pipeline(
+        "fs",
+        wgpu::ColorTargetState {
+            format: crate::post::HDR_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        },
+        DEPTH_FORMAT,
+        samples,
+    );
+    let prepass = pipeline(
+        "fs_normals",
+        crate::ssao::NORMAL_FORMAT.into(),
+        crate::ssao::PREPASS_DEPTH,
+        1,
+    );
+    match pollster::block_on(scope.pop()) {
+        Some(error) => {
+            eprintln!("terrain by mesh shaders did not build, drawn without: {error}");
+            None
+        }
+        None => Some((drawn, prepass)),
+    }
+}
+
 fn build_pipelines(
     gpu: &Gpu,
     shader: &wgpu::ShaderModule,
+    source: &str,
     output: wgpu::TextureFormat,
     samples: u32,
     layouts: &Layouts,
@@ -1802,6 +1949,7 @@ fn build_pipelines(
         precipitation,
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
         fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
+        terrain_mesh: terrain_mesh_pipelines(gpu, source, samples, layouts),
     }
 }
 
@@ -1850,6 +1998,7 @@ impl Renderer {
         let pipelines = build_pipelines(
             gpu,
             &shader,
+            source,
             self.format,
             self.samples,
             &Layouts {
@@ -1860,6 +2009,7 @@ impl Renderer {
                 sky: &self.sky_layout,
                 fog_inject: &self.fog_inject_layout,
                 fog_integrate: &self.fog_integrate_layout,
+                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -1944,6 +2094,7 @@ impl Renderer {
                 sky: &self.sky_layout,
                 fog_inject: &self.fog_inject_layout,
                 fog_integrate: &self.fog_integrate_layout,
+                terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
             looks,
         );
@@ -2335,6 +2486,52 @@ impl Renderer {
                 bind_group_layouts: &[Some(&layout), Some(&texture_layout)],
                 immediate_size: 0,
             });
+        // The terrain's task and mesh stages: a group of their own (see
+        // terrain_mesh.wgsl for why), after the main ones.
+        let terrain_mesh_layouts = gpu.mesh_shaders.then(|| {
+            let stages = wgpu::ShaderStages::TASK | wgpu::ShaderStages::MESH;
+            let group = gpu
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("terrain mesh"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: stages,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: stages,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let pipeline = gpu
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("runity::terrain mesh"),
+                    bind_group_layouts: &[Some(&layout), Some(&texture_layout), None, Some(&group)],
+                    immediate_size: 0,
+                });
+            (group, pipeline)
+        });
+        let terrain_mesh_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("terrain mesh"),
+            size: std::mem::size_of::<TerrainFrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         // The shadow pass sees one cascade's matrix, picked by a dynamic
         // offset: binding 3, beside the frame's, so the one shader module
@@ -2459,9 +2656,15 @@ impl Renderer {
         let fog_inject_layout = fog_layout("runity::fog inject", &volumes.inject_layout);
         let fog_integrate_layout = fog_layout("runity::fog integrate", &volumes.integrate_layout);
         let samples = sample_count(gpu);
+        let shader_source = if gpu.ray_tracing {
+            crate::ray::traced(SHADER)
+        } else {
+            SHADER.to_string()
+        };
         let pipelines = build_pipelines(
             gpu,
             &shader,
+            &shader_source,
             format,
             samples,
             &Layouts {
@@ -2472,6 +2675,7 @@ impl Renderer {
                 sky: &sky_layout,
                 fog_inject: &fog_inject_layout,
                 fog_integrate: &fog_integrate_layout,
+                terrain_mesh: terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
 
@@ -2541,6 +2745,9 @@ impl Renderer {
             texture_layout,
             texture_sampler,
             pipeline_layout,
+            terrain_mesh_layouts,
+            terrain_mesh_buffer,
+            terrain_mesh_group: None,
             shadow_pipeline_layout,
             shadow_clip_layout,
             skinned_layout,
@@ -2955,6 +3162,37 @@ impl Renderer {
             pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
             first += count;
         }
+    }
+
+    /// Whether terrain is drawn by mesh shaders here: asked for, the device
+    /// has them, and they built.
+    pub fn terrain_by_mesh_shaders(&self) -> bool {
+        self.pipelines.terrain_mesh.is_some()
+    }
+
+    /// The terrain's fine grid by mesh shaders: every patch of every ring
+    /// to the task shader, which keeps what is worth drawing.
+    fn draw_mesh_terrain<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        maps: Option<Maps>,
+        prepass: bool,
+    ) {
+        let (Some(maps), Some((drawn, depth)), Some(group)) = (
+            maps,
+            self.pipelines.terrain_mesh.as_ref(),
+            self.terrain_mesh_group.as_ref(),
+        ) else {
+            return;
+        };
+        pass.set_pipeline(if prepass { depth } else { drawn });
+        pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+        self.bind_maps(pass, maps);
+        pass.set_bind_group(3, group, &[]);
+        let patches = crate::terrain::CLIPMAP_LEVELS * crate::terrain::PATCHES_PER_RING;
+        // Sixty-four task invocations a group, eight patches each (see
+        // terrain_mesh.wgsl): a task group costs the same kept or not.
+        pass.draw_mesh_tasks(patches.div_ceil(64 * 8), 1, 1);
     }
 
     /// The frame's bind group — or, for the prepass, the one without the
@@ -3489,6 +3727,22 @@ impl Renderer {
                 self.terrain_heights = terrain_height_view(gpu, cells + 1, &t.terrain.heights());
                 self.terrain_made = Some(t.terrain);
                 self.rebind(gpu);
+                self.terrain_mesh_group = self.terrain_mesh_layouts.as_ref().map(|(layout, _)| {
+                    gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("terrain mesh"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: self.terrain_mesh_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&self.terrain_heights),
+                            },
+                        ],
+                    })
+                });
             }
         }
         // What is drawn with: the camera, moved by the jitter.
@@ -3922,6 +4176,32 @@ impl Renderer {
                 ],
                 None => [1.0, 2.0, 0.0, crate::terrain::CLIPMAP_FINEST],
             },
+            terrain_bounds: match fine_terrain {
+                Some(t) => {
+                    let base = t.placed.w_axis.y;
+                    [
+                        base - 0.5,
+                        base + t.terrain.dunes.height * 1.3 + 0.5,
+                        crate::terrain::PATCHES_PER_RING as f32,
+                        0.0,
+                    ]
+                }
+                None => [0.0; 4],
+            },
+            terrain_look: fine_terrain
+                .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
+                .map_or([[0.0; 4]; 7], |d| {
+                    let raw = instance_of(d.transform, &d.material);
+                    [
+                        raw.color_and_shading,
+                        raw.surface,
+                        raw.emission,
+                        raw.uv,
+                        raw.detail,
+                        raw.params[0],
+                        raw.params[1],
+                    ]
+                }),
             puffs: {
                 let mut out = [[0.0; 4]; 2 * crate::volume::MOST_PUFFS];
                 for (i, p) in puffs.iter().enumerate() {
@@ -3972,6 +4252,20 @@ impl Renderer {
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
+        if fine_terrain.is_some() && self.terrain_mesh_group.is_some() {
+            let t = TerrainFrameUniform {
+                view_projection: uniform.view_projection,
+                camera_position: uniform.camera_position,
+                wind: foliage.wind,
+                terrain_to_local: uniform.terrain_to_local,
+                terrain_to_world: uniform.terrain_to_world,
+                terrain: uniform.terrain,
+                terrain_bounds: uniform.terrain_bounds,
+                terrain_look: uniform.terrain_look,
+            };
+            gpu.queue
+                .write_buffer(&self.terrain_mesh_buffer, 0, bytemuck::bytes_of(&t));
+        }
 
         // Draws are grouped by pipeline, mesh and texture so that one mesh
         // drawn a hundred times costs one call. A forest is the same tree
@@ -3991,6 +4285,8 @@ impl Renderer {
         let mut clip_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         let mut singles: Vec<(Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
+        // The terrain's maps, when mesh shaders draw it.
+        let mut mesh_terrain: Option<Maps> = None;
         let mut transparent: Vec<(f32, Look, MeshHandle, Maps, u32, InstanceRaw)> = Vec::new();
         let mut stats = FrameStats {
             submitted: frame.draws.len() as u32,
@@ -4029,6 +4325,16 @@ impl Renderer {
             let look = Look::of(&draw.material, skinned);
             // The terrain near the camera: its fine grid instead, placed and
             // raised by its own vertex shader. Its mesh still casts shadows.
+            if fine_terrain.is_some_and(|t| t.mesh == draw.mesh)
+                && self.pipelines.terrain_mesh.is_some()
+                && self.terrain_mesh_group.is_some()
+                && !draw.material.is_transparent()
+            {
+                // By mesh shaders, after the batches: its maps are all it
+                // needs from the draw; the rest is in the frame.
+                mesh_terrain = Some(maps);
+                continue;
+            }
             if let (Some(t), Some(grid)) = (fine_terrain, self.clipmap) {
                 if draw.mesh == t.mesh && !draw.material.is_transparent() {
                     let look = Look {
@@ -4121,6 +4427,7 @@ impl Renderer {
             .map(|((_, _, maps), _)| *maps)
             .chain(singles.iter().map(|single| single.2))
             .chain(transparent.iter().map(|t| t.3))
+            .chain(mesh_terrain)
             .collect();
         self.prepare_maps(gpu, sets);
 
@@ -4373,6 +4680,7 @@ impl Renderer {
                     multiview_mask: None,
                 });
                 self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
+                self.draw_mesh_terrain(&mut pass, mesh_terrain, true);
                 let first = shadow_total + batched_total;
                 for (instance, (look, mesh, texture, pose, _)) in (first..).zip(&singles) {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
@@ -4497,6 +4805,7 @@ impl Renderer {
                 multiview_mask: None,
             });
             self.draw_batches(&mut pass, &batches, shadow_total, true);
+            self.draw_mesh_terrain(&mut pass, mesh_terrain, false);
             let mut instance = shadow_total + batched_total;
             for (look, mesh, texture, pose, _) in &singles {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);

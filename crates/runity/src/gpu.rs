@@ -34,10 +34,19 @@ pub struct Gpu {
     /// ([`crate::render::RayTracing`]), on where the adapter can and
     /// `RUNITY_NO_RAY_TRACING` is not set.
     pub ray_tracing: bool,
+    /// Whether the device runs mesh shaders — task and mesh stages in place
+    /// of the vertex one — an experiment the terrain can be drawn with
+    /// ([`crate::terrain`]): on where the adapter has them and
+    /// `RUNITY_MESH_SHADERS` is set. Off by default: measured on an M5
+    /// through wgpu 30, the terrain by mesh shaders costs a frame more
+    /// than by the vertex shader.
+    pub mesh_shaders: bool,
 }
 
 /// Set to leave hardware ray tracing off even where the adapter has it.
 pub const NO_RAY_TRACING_VAR: &str = "RUNITY_NO_RAY_TRACING";
+/// Set to draw terrain with mesh shaders where the adapter has them.
+pub const MESH_SHADERS_VAR: &str = "RUNITY_MESH_SHADERS";
 
 /// Why a device could not be created. Worth its own type because "no adapter"
 /// and "adapter refused the limits we asked for" need different fixes, and a
@@ -93,10 +102,26 @@ impl Gpu {
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_RAY_QUERY)
             && std::env::var_os(NO_RAY_TRACING_VAR).is_none();
+        // Mesh shaders likewise: an experiment on top, the terrain's fine
+        // grid drawn by task and mesh stages where there are any.
+        let mesh_shaders = adapter
+            .features()
+            .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER)
+            && std::env::var_os(MESH_SHADERS_VAR).is_some();
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
+        }
+        if mesh_shaders {
+            required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
+        }
+        let mut required_features = wgpu::Features::empty();
+        if ray_tracing {
+            required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+        }
+        if mesh_shaders {
+            required_features |= wgpu::Features::EXPERIMENTAL_MESH_SHADER;
         }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -105,15 +130,13 @@ impl Gpu {
                 // to run on a phone, and asking for desktop limits is how you
                 // find that out two months late.
                 required_limits,
-                required_features: if ray_tracing {
-                    wgpu::Features::EXPERIMENTAL_RAY_QUERY
-                } else {
-                    wgpu::Features::empty()
-                },
+                required_features,
                 // SAFETY: wgpu's experimental features may misbehave or
                 // change; ray queries are used only by the renderer's ray
-                // tracing, an experiment that is off unless a frame asks.
-                experimental_features: if ray_tracing {
+                // tracing, an experiment that is off unless a frame asks,
+                // and mesh shaders only by the terrain, which has a way
+                // without them.
+                experimental_features: if ray_tracing || mesh_shaders {
                     unsafe { wgpu::ExperimentalFeatures::enabled() }
                 } else {
                     wgpu::ExperimentalFeatures::disabled()
@@ -129,6 +152,7 @@ impl Gpu {
             device: Arc::new(device),
             queue: Arc::new(queue),
             ray_tracing,
+            mesh_shaders,
         })
     }
 

@@ -101,6 +101,10 @@ struct Frame {
     terrain_to_world: mat4x4<f32>,
     // its size, its cells, 1 when there is one, the finest spacing
     terrain: vec4<f32>,
+    // its lowest and highest ground in the world; patches per ring side
+    terrain_bounds: vec4<f32>,
+    // what it is drawn with, for the mesh shader: an instance's numbers
+    terrain_look: array<vec4<f32>, 7>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -1022,6 +1026,19 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
     return out;
 }
 
+/// What a terrain is drawn with: its instance's numbers, from the vertex
+/// input or, for the mesh shader, from the frame.
+struct TerrainLook {
+    color_and_shading: vec4<f32>,
+    surface: vec4<f32>,
+    emission: vec4<f32>,
+    uv_transform: vec4<f32>,
+    detail: vec4<f32>,
+    params_0: vec4<f32>,
+    params_1: vec4<f32>,
+};
+
+// terrain-stage:begin (copied for the mesh shader, frame -> tframe)
 /// The terrain's own height at `local` (metres in its space, from its
 /// middle): its grid of heights, between four of them; 0 off it.
 fn relief_height(local: vec2<f32>) -> f32 {
@@ -1086,27 +1103,18 @@ fn terrain_ground(xz: vec2<f32>, fine: f32, coarse: f32, sand: bool) -> f32 {
     return y;
 }
 
-/// Terrain's fine grid round the camera — tessellation, done as the GPU
-/// allows it: rings of 128 cells, each twice the spacing of the one inside
-/// it, from three centimetres at one's feet; each ring snapped to its own
-/// grid as the camera moves, its outer edge folding into the next ring's
-/// spacing so no crack opens between them. Every vertex raised to the
-/// terrain's height and, where the grid is fine enough to hold them, to
-/// the sand's ripples — real relief, catching the light and standing out
-/// against the sky. Its normal is the slope of what it was raised to.
-@vertex
-fn vs_terrain(in: VertexInput) -> VertexOutput {
-    let level = in.position.y;
+/// A vertex of terrain's fine grid: cell `g` of ring `level`, placed round
+/// the camera and raised (see [`vs_terrain`]).
+fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     let spacing = frame.terrain.w * exp2(level);
     let eye = frame.camera_position.xz;
     let snap = spacing * 2.0;
     let centre = floor(eye / snap) * snap;
-    let g = in.position.xz;
     let first = centre + g * spacing;
     // Toward the ring's edge, odd vertices fold onto their even
-    // neighbours: the next ring out has only those.
-    // Folded fully by 62 cells out, so the overlap with the next ring —
-    // to 66 — is the next ring's own grid, triangle for triangle.
+    // neighbours: the next ring out has only those. Folded fully by 62
+    // cells out, so the overlap with the next ring — to 66 — is the next
+    // ring's own grid, triangle for triangle.
     let d = max(abs(first.x - eye.x), abs(first.y - eye.y)) / spacing;
     let morph = clamp((d - 44.0) / 18.0, 0.0, 1.0);
     let folded = g - fract(g * 0.5) * 2.0 * morph;
@@ -1116,7 +1124,7 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
     // four; the big ones, sixty apart, every twelve or so.
     let fine = 1.0 - smoothstep(0.02, 0.045, span);
     let coarse = 1.0 - smoothstep(0.1, 0.2, span);
-    let sand = in.color_and_shading.w > 3.5;
+    let sand = look.color_and_shading.w > 3.5;
     let y = terrain_ground(xz, fine, coarse, sand);
     let e = max(span, 0.01);
     let hx = terrain_ground(xz + vec2<f32>(e, 0.0), fine, coarse, sand) - terrain_ground(xz - vec2<f32>(e, 0.0), fine, coarse, sand);
@@ -1132,17 +1140,36 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
     out.clip_position = frame.view_projection * vec4<f32>(world, 1.0);
     out.world_position = world;
     out.normal = normal;
-    out.base_color = in.color_and_shading.rgb;
-    out.shading = in.color_and_shading.w;
-    out.uv = xz * in.uv_transform.xy + in.uv_transform.zw;
-    out.surface = vec4<f32>(in.surface.xyz, select(0.0, 2.0, outside));
-    out.emission = in.emission;
-    out.detail = in.detail;
-    out.params_0 = in.params_0;
+    out.base_color = look.color_and_shading.rgb;
+    out.shading = look.color_and_shading.w;
+    out.uv = xz * look.uv_transform.xy + look.uv_transform.zw;
+    out.surface = vec4<f32>(look.surface.xyz, select(0.0, 2.0, outside));
+    out.emission = look.emission;
+    out.detail = look.detail;
+    out.params_0 = look.params_0;
     // How much of the ripples the geometry holds: the sand shader draws
     // only the rest.
-    out.params_1 = vec4<f32>(in.params_1.xy, fine, coarse);
+    out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
     return out;
+}
+
+// terrain-stage:end
+
+/// Terrain's fine grid round the camera — tessellation, done as the GPU
+/// allows it: rings of 128 cells, each twice the spacing of the one inside
+/// it, from three centimetres at one's feet; each ring snapped to its own
+/// grid as the camera moves, its outer edge folding into the next ring's
+/// spacing so no crack opens between them. Every vertex raised to the
+/// terrain's height and, where the grid is fine enough to hold them, to
+/// the sand's ripples — real relief, catching the light and standing out
+/// against the sky. Its normal is the slope of what it was raised to.
+@vertex
+fn vs_terrain(in: VertexInput) -> VertexOutput {
+    return terrain_vertex(
+        in.position.xz,
+        in.position.y,
+        TerrainLook(in.color_and_shading, in.surface, in.emission, in.uv_transform, in.detail, in.params_0, in.params_1),
+    );
 }
 
 @vertex
