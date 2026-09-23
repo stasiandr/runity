@@ -495,6 +495,9 @@ pub struct Frame {
     /// Lamps with a lens flare of their own: where each is, its colour
     /// and how bright its flare. Drawn by the post pass.
     pub flares: Vec<Flare>,
+    /// Meshes the game changes as it goes — water, a rope — drawn from
+    /// their data and uploaded again only when it changed.
+    pub live_meshes: Vec<LiveMeshDraw>,
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
@@ -524,6 +527,7 @@ impl Default for Frame {
             overlay_draws: Vec::new(),
             lights: Vec::new(),
             flares: Vec::new(),
+            live_meshes: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
@@ -630,6 +634,19 @@ pub struct PointLight {
     pub spot: Option<(Vec3, f32)>,
     /// Casts shadows, if a shadow map is left for it ([`crate::lights`]).
     pub shadows: bool,
+}
+
+/// A mesh the game rewrites as it goes, as a frame carries it. `key`
+/// tells one from another between frames; `version` changes when the data
+/// did, and only then is it uploaded again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveMeshDraw {
+    pub key: u64,
+    pub version: u64,
+    pub vertices: std::sync::Arc<Vec<crate::asset::Vertex>>,
+    pub indices: std::sync::Arc<Vec<u32>>,
+    pub transform: Mat4,
+    pub material: Material,
 }
 
 /// A lamp's own lens flare, in the world.
@@ -810,6 +827,9 @@ pub struct Renderer {
     pose_capacity: u64,
     stats: FrameStats,
     meshes: Vec<GpuMesh>,
+    /// Live meshes by their key: the mesh each is drawn with, and the
+    /// version last uploaded.
+    live: std::collections::HashMap<u64, (MeshHandle, u64)>,
     textures: Vec<GpuTexture>,
     /// Which handle each texture asset was uploaded as, so a material's
     /// maps — asset ids — find theirs.
@@ -1946,6 +1966,7 @@ impl Renderer {
             pose_capacity,
             stats: FrameStats::default(),
             meshes: Vec::new(),
+            live: std::collections::HashMap::new(),
             textures: Vec::new(),
             by_asset: std::collections::HashMap::new(),
             map_groups: std::collections::HashMap::new(),
@@ -2083,14 +2104,14 @@ impl Renderer {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | traced,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | traced,
             });
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
                 contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX | traced,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | traced,
             });
         let blas = (self.ray.is_some() && !indices.is_empty()).then(|| {
             crate::ray::blas(
@@ -2595,8 +2616,62 @@ impl Renderer {
         height: u32,
         frame: &Frame,
     ) {
-        self.bake_probes(gpu, frame);
-        self.render_view(gpu, Some(view), width, height, frame, None);
+        if frame.live_meshes.is_empty() {
+            self.bake_probes(gpu, frame);
+            self.render_view(gpu, Some(view), width, height, frame, None);
+            return;
+        }
+        let mut frame = frame.clone();
+        for live in std::mem::take(&mut frame.live_meshes) {
+            let mesh = match self.live.get(&live.key) {
+                Some(&(mesh, version)) if version == live.version => mesh,
+                Some(&(mesh, _)) => {
+                    self.update_mesh(gpu, mesh, &live.vertices, &live.indices);
+                    mesh
+                }
+                None => self.upload(gpu, &live.vertices, &live.indices),
+            };
+            self.live.insert(live.key, (mesh, live.version));
+            frame.draws.push(Draw {
+                mesh,
+                transform: live.transform,
+                texture: TextureHandle::WHITE,
+                material: live.material,
+                pose: None,
+            });
+        }
+        self.bake_probes(gpu, &frame);
+        self.render_view(gpu, Some(view), width, height, &frame, None);
+    }
+
+    /// Put new vertices and indices into a mesh already uploaded: the same
+    /// buffers when the counts are the same, new ones in the same place
+    /// when not. What a surface that moves every frame is drawn with.
+    pub fn update_mesh(
+        &mut self,
+        gpu: &Gpu,
+        mesh: MeshHandle,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+    ) {
+        let Some(old) = self.meshes.get(mesh.0 as usize) else {
+            return;
+        };
+        let same = old.blas.is_none()
+            && old.vertices.size() == std::mem::size_of_val(vertices) as u64
+            && old.indices.size() == std::mem::size_of_val(indices) as u64;
+        if same {
+            gpu.queue
+                .write_buffer(&old.vertices, 0, bytemuck::cast_slice(vertices));
+            gpu.queue
+                .write_buffer(&old.indices, 0, bytemuck::cast_slice(indices));
+            self.meshes[mesh.0 as usize].bounds = crate::asset::Bounds::of(vertices);
+            return;
+        }
+        let fresh = self.upload(gpu, vertices, indices);
+        let made = self.meshes.pop().expect("just uploaded");
+        debug_assert_eq!(fresh.0 as usize, self.meshes.len());
+        self.meshes[mesh.0 as usize] = made;
     }
 
     /// The probes' pictures, when the probes are not the ones they are of:

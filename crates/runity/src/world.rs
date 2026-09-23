@@ -85,6 +85,66 @@ pub struct LightSource(pub crate::scene::Light);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pressing(pub crate::scene::Decal, pub Material);
 
+/// A mesh the game rewrites as it goes — the water's surface, a rope
+/// between two hands — drawn at the entity with its material. Changing it
+/// ([`LiveMesh::set`]) uploads it again on the next frame; leaving it
+/// alone costs nothing more than any other mesh.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveMesh {
+    vertices: std::sync::Arc<Vec<crate::asset::Vertex>>,
+    indices: std::sync::Arc<Vec<u32>>,
+    version: u64,
+}
+
+impl LiveMesh {
+    pub fn new(vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) -> Self {
+        Self {
+            vertices: std::sync::Arc::new(vertices),
+            indices: std::sync::Arc::new(indices),
+            version: 0,
+        }
+    }
+
+    /// New vertices and triangles.
+    pub fn set(&mut self, vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) {
+        self.vertices = std::sync::Arc::new(vertices);
+        self.indices = std::sync::Arc::new(indices);
+        self.version += 1;
+    }
+
+    /// Move the vertices where `to` says, keeping the triangles, and turn
+    /// each normal to the triangles round it: a surface pushed about by a
+    /// wave is lit as the wave.
+    pub fn move_vertices(&mut self, to: impl Fn(usize, glam::Vec3) -> glam::Vec3) {
+        let mut vertices = (*self.vertices).clone();
+        for (i, v) in vertices.iter_mut().enumerate() {
+            v.position = to(i, glam::Vec3::from_array(v.position)).to_array();
+        }
+        let mut normals = vec![glam::Vec3::ZERO; vertices.len()];
+        for t in self.indices.chunks_exact(3) {
+            let [a, b, c] = [t[0] as usize, t[1] as usize, t[2] as usize];
+            let at = |i: usize| glam::Vec3::from_array(vertices[i].position);
+            let n = (at(b) - at(a)).cross(at(c) - at(a));
+            for i in [a, b, c] {
+                normals[i] += n;
+            }
+        }
+        for (v, n) in vertices.iter_mut().zip(normals) {
+            v.normal = n.normalize_or(glam::Vec3::Y).to_array();
+        }
+        self.vertices = std::sync::Arc::new(vertices);
+        self.version += 1;
+    }
+
+    pub fn vertices(&self) -> &[crate::asset::Vertex] {
+        &self.vertices
+    }
+
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+}
+
 /// A local look at an entity, from its line's `post_volume`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostVolumeBox(pub crate::scene::PostVolume);
@@ -1101,6 +1161,27 @@ pub fn build_frame_where(
             }
         })
         .collect();
+    let live_meshes = world
+        .query::<(
+            hecs::Entity,
+            &LiveMesh,
+            &WorldTransform,
+            Option<&Surface>,
+            Option<&SceneId>,
+        )>()
+        .iter()
+        .filter(|(_, _, _, _, line)| keep(line.map(|l| l.0)))
+        .map(
+            |(entity, live, placed, surface, _)| crate::render::LiveMeshDraw {
+                key: entity.to_bits().get(),
+                version: live.version,
+                vertices: live.vertices.clone(),
+                indices: live.indices.clone(),
+                transform: placed.0,
+                material: surface.map_or_else(Material::default, |s| s.0),
+            },
+        )
+        .collect();
     let flares = world
         .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
         .iter()
@@ -1154,6 +1235,7 @@ pub fn build_frame_where(
         overlay_draws: Vec::new(),
         lights,
         flares,
+        live_meshes,
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),
