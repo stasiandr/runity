@@ -402,18 +402,18 @@ impl Animator {
         let (fx, fy) = (from.0 + BOX_W / 2.0 + shift, from.1 + BOX_H / 2.0 + shift);
         let (tx, ty) = (to.0 + BOX_W / 2.0 + shift, to.1 + BOX_H / 2.0 + shift);
         let mut segments = Vec::new();
-        let head;
-        if (fy - ty).abs() < BOX_H {
+
+        let head = if (fy - ty).abs() < BOX_H {
             // Side by side: straight across to the box's edge.
             let end = if tx > fx { to.0 } else { to.0 + BOX_W };
             segments.push((fx.min(end), fy - t / 2.0, (end - fx).abs(), t));
-            head = (end, fy);
+            (end, fy)
         } else {
             let end = if ty > fy { to.1 } else { to.1 + BOX_H };
             segments.push((fx.min(tx), fy - t / 2.0, (tx - fx).abs() + t, t));
             segments.push((tx - t / 2.0, fy.min(end), t, (end - fy).abs()));
-            head = (tx, end);
-        }
+            (tx, end)
+        };
         for (x, y, w, h) in segments {
             // A wider strip to click than to see.
             let hit = ui.add(
