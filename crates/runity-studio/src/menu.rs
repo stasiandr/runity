@@ -48,6 +48,7 @@ pub enum Action {
     Perspective,
     ToggleGrid,
     ToggleColliders,
+    ToggleSnap,
     Tool(Tool),
     ToggleSpace,
     TogglePivot,
@@ -166,6 +167,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 MenuItem::separator(),
                 item("Grid", Action::ToggleGrid),
                 item("Colliders", Action::ToggleColliders),
+                item("Snap", Action::ToggleSnap),
             ],
         ),
         (

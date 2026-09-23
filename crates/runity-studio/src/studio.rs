@@ -142,6 +142,15 @@ pub struct Studio {
     view_frame: NodeId,
     tab_scene: NodeId,
     tab_game: NodeId,
+    /// Buttons that are one action each: the view's corner, the snap.
+    buttons: Vec<(NodeId, Action)>,
+    snap: NodeId,
+    colliders_button: NodeId,
+    /// The tooltip on show, and what the pointer has rested on since when.
+    tooltip: Option<NodeId>,
+    resting: Option<(NodeId, Instant)>,
+    /// When the disk was last looked at for a changed scene or asset.
+    polled: Instant,
     toolbar: Toolbar,
     hierarchy: Hierarchy,
     inspector: Inspector,
@@ -164,6 +173,7 @@ pub struct Studio {
     /// A scene someone asked to open over unsaved work, once.
     discard_asked: Option<std::path::PathBuf>,
     colliders: bool,
+    conflict_said: bool,
     clipboard: SystemClipboard,
 }
 
@@ -205,6 +215,45 @@ impl Studio {
         );
         let tab_scene = view_tab(&mut ui, view_tabs, "view scene", "hand", "Scene", true);
         let tab_game = view_tab(&mut ui, view_tabs, "view game", "camera", "Game", false);
+        spacer(&mut ui, view_tabs);
+        let mut buttons = Vec::new();
+        for (name, label, action) in [
+            ("view persp", "Persp", Action::Perspective),
+            ("view top", "Top", Action::View(runity_editor::Side::Top)),
+            (
+                "view front",
+                "Front",
+                Action::View(runity_editor::Side::Front),
+            ),
+            (
+                "view right",
+                "Right",
+                Action::View(runity_editor::Side::Right),
+            ),
+        ] {
+            let b = ui.add(
+                view_tabs,
+                Style::row()
+                    .height(24.0)
+                    .padding_x(SPACE_2)
+                    .center()
+                    .radius(6.0)
+                    .hover(HOVER)
+                    .pressed(PRESSED),
+            );
+            ui.set_name(b, name);
+            ui.add_text(
+                b,
+                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+                label,
+            );
+            buttons.push((b, action));
+        }
+        separator(&mut ui, view_tabs);
+        let snap = icon_button(&mut ui, view_tabs, "snap", "magnet", false);
+        buttons.push((snap, Action::ToggleSnap));
+        let colliders = icon_button(&mut ui, view_tabs, "colliders", "box", false);
+        buttons.push((colliders, Action::ToggleColliders));
         let view_frame = ui.add(
             view_slot,
             Style::column()
@@ -256,6 +305,12 @@ impl Studio {
             view_frame,
             tab_scene,
             tab_game,
+            buttons,
+            snap,
+            colliders_button: colliders,
+            tooltip: None,
+            resting: None,
+            polled: Instant::now(),
             toolbar,
             hierarchy,
             inspector,
@@ -274,6 +329,7 @@ impl Studio {
             fps,
             discard_asked: None,
             colliders: false,
+            conflict_said: false,
             clipboard: SystemClipboard::new(),
         };
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
@@ -308,6 +364,22 @@ impl Studio {
                 let (x, y) = to_view(*x, *y);
                 self.scene_input.handle(&InputEvent::MouseMoved { x, y });
             }
+            InputEvent::MouseDown(_)
+                if !self
+                    .hierarchy
+                    .owns(&self.ui, self.ui.hovered().unwrap_or(self.viewport))
+                    && self.ui.hovered().is_some() =>
+            {
+                // A click anywhere but the Hierarchy gives the arrows back
+                // to the Scene view.
+                self.hierarchy.set_active(false);
+                if over_view && !self.session.is_game_view() {
+                    if let InputEvent::MouseDown(button) = event {
+                        self.scene_buttons.insert(*button);
+                    }
+                    self.scene_input.handle(event);
+                }
+            }
             InputEvent::MouseDown(button) if over_view && !self.session.is_game_view() => {
                 self.scene_buttons.insert(*button);
                 self.scene_input.handle(event);
@@ -319,6 +391,13 @@ impl Studio {
             }
             InputEvent::Scroll { .. } if over_view => self.scene_input.handle(event),
             InputEvent::KeyDown(key) if !typing => {
+                if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) {
+                    let shift = self.ui.modifiers().0;
+                    if self.hierarchy.key(&mut self.session, *key, shift) {
+                        self.refresh();
+                        return;
+                    }
+                }
                 if *key == Key::F2 {
                     self.hierarchy.rename_selected(&mut self.ui, &self.session);
                     return;
@@ -380,6 +459,9 @@ impl Studio {
         self.scene_input.begin_frame();
         self.session.render();
 
+        self.poll_disk();
+        self.update_tooltip();
+
         let stamp = Stamp::of(&self.session);
         let moving = self.session.is_dragging() || self.session.is_playing();
         if self.seen.as_ref() != Some(&stamp) || moving {
@@ -399,6 +481,95 @@ impl Studio {
             }
             self.frame_times.clear();
         }
+    }
+
+    /// Twice a second, pick up what changed on disk: the scene edited in a
+    /// text editor or by git, an asset re-exported (DNA, postulate 1).
+    fn poll_disk(&mut self) {
+        if self.polled.elapsed().as_secs_f32() < 0.5 {
+            return;
+        }
+        self.polled = Instant::now();
+        match self.session.reload_scene() {
+            Ok(runity_editor::SceneReload::Reloaded) => {
+                self.session.say(
+                    Level::Info,
+                    "the scene changed on disk and was reloaded (undo takes it back)",
+                );
+            }
+            Ok(runity_editor::SceneReload::Conflict) => {
+                if !self.conflict_said {
+                    self.conflict_said = true;
+                    self.session.say(
+                        Level::Warning,
+                        "the scene changed on disk and here too: saving keeps these edits, opening it again takes the file's",
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.session.say(Level::Error, e.to_string()),
+        }
+        let n = self.session.reload_assets();
+        if n > 0 {
+            self.session.say(
+                Level::Info,
+                format!("{n} assets changed on disk and were reloaded"),
+            );
+        }
+    }
+
+    /// A control's name, said when the pointer rests on it.
+    fn update_tooltip(&mut self) {
+        let hovered = self.ui.hovered();
+        let now = Instant::now();
+        match self.resting {
+            Some((n, _)) if Some(n) == hovered => {}
+            _ => {
+                self.resting = hovered.map(|n| (n, now));
+                if let Some(t) = self.tooltip.take() {
+                    self.ui.remove(t);
+                }
+            }
+        }
+        let Some((node, since)) = self.resting else {
+            return;
+        };
+        if self.tooltip.is_some()
+            || self.popup.is_some()
+            || now - since < std::time::Duration::from_millis(600)
+        {
+            return;
+        }
+        let Some(tip) = self.ui.name(node).and_then(tooltip) else {
+            return;
+        };
+        let r = self.ui.rect(node);
+        let root = self.ui.root();
+        let (w, h, _) = self.ui.viewport();
+        let x = r.x.min(w - 320.0).max(4.0);
+        let y = if r.y + r.height + 34.0 > h {
+            r.y - 30.0
+        } else {
+            r.y + r.height + 6.0
+        };
+        let t = self.ui.add(
+            root,
+            Style::row()
+                .absolute(x, y)
+                .height(24.0)
+                .padding_x(SPACE_3)
+                .center_items()
+                .radius(6.0)
+                .background(NEUTRAL_900)
+                .border(1.0, NEUTRAL_800),
+        );
+        self.ui.set_layer(t, true);
+        self.ui.add_text(
+            t,
+            Style::default().text_size(11.5).text_color(TEXT).nowrap(),
+            tip,
+        );
+        self.tooltip = Some(t);
     }
 
     /// Draw into `view` (the plain-bytes view of the window's frame or of an
@@ -506,6 +677,8 @@ impl Studio {
         set_icon_button(ui, t.undo, "undo-2", false, s.can_undo());
         set_icon_button(ui, t.redo, "redo-2", false, s.can_redo());
         set_button_primary(ui, t.save, modified);
+        set_icon_button(ui, self.snap, "magnet", s.snap().meters > 0.0, true);
+        set_icon_button(ui, self.colliders_button, "box", self.colliders, true);
         let game = s.is_game_view();
         set_view_tab(ui, self.tab_scene, !game);
         set_view_tab(ui, self.tab_game, game);
@@ -613,6 +786,11 @@ impl Studio {
         let Event::Click { .. } = event else {
             return false;
         };
+        if let Some((_, action)) = self.buttons.iter().find(|(n, _)| *n == node) {
+            requests.action = Some(action.clone());
+            requests.keyboard_to_scene = true;
+            return true;
+        }
         if node == self.tab_scene || node == self.tab_game {
             requests.action = Some(Action::GameView(node == self.tab_game));
             requests.keyboard_to_scene = true;
@@ -862,6 +1040,18 @@ impl Studio {
                 Action::ToggleGrid => {
                     let on = s.show_grid();
                     s.set_show_grid(!on);
+                }
+                Action::ToggleSnap => {
+                    let on = s.snap().meters > 0.0;
+                    s.set_snap(if on {
+                        runity_editor::Snap {
+                            meters: 0.0,
+                            degrees: 0.0,
+                            scale: 0.0,
+                        }
+                    } else {
+                        runity_editor::Snap::INCREMENT
+                    });
                 }
                 Action::ToggleColliders => {
                     self.colliders = !self.colliders;
@@ -1257,4 +1447,32 @@ fn set_view_tab(ui: &mut Ui, tab: NodeId, on: bool) {
     let kids = ui.children(tab);
     ui.restyle(kids[0], |s| s.text_color(if on { ACCENT } else { LABEL }));
     ui.restyle(kids[1], |s| s.text_color(if on { TEXT } else { LABEL }));
+}
+
+/// What a control does, for its tooltip — by the control's name.
+fn tooltip(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "tool Move" => "Move (W)",
+        "tool Rotate" => "Rotate (E)",
+        "tool Scale" => "Scale (R)",
+        "space" => "Handles along the world's axes or the entity's own (X)",
+        "pivot" => "Handles on the pivot or the selection's centre (Z)",
+        "grid" => "Show the grid",
+        "play" => "Play / Stop (Ctrl/Cmd P)",
+        "pause" => "Pause (Ctrl/Cmd Shift P)",
+        "step" => "One step (Ctrl/Cmd Alt P)",
+        "undo" => "Undo (Ctrl/Cmd Z)",
+        "redo" => "Redo (Ctrl/Cmd Shift Z)",
+        "save" => "Save the scene (Ctrl/Cmd S)",
+        "snap" => "Snap moves to ¼ m, turns to 15°, scale to 0.1",
+        "colliders" => "Show colliders",
+        "view persp" => "Perspective view",
+        "view top" => "Look down from above",
+        "view front" => "Look from the front",
+        "view right" => "Look from the right",
+        "view scene" => "The Scene view: edit",
+        "view game" => "The Game view: what the game's camera sees",
+        "console clear" => "Clear the Console",
+        _ => return None,
+    })
 }

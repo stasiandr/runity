@@ -244,3 +244,113 @@ fn play_looks_through_the_game_and_the_tabs_switch_views() {
     click(&mut s, "play");
     assert!(!s.session.is_game_view(), "and Stop takes it away");
 }
+
+/// Drag the line named `from` to a spot `t` of the way down the line named
+/// `onto` (0 top, 1 bottom).
+fn drag_line(s: &mut Studio, from: &str, onto: &str, t: f32) {
+    s.ui.paint();
+    let a = s.ui.rect(s.ui.find(from).unwrap());
+    let b = s.ui.rect(s.ui.find(onto).unwrap());
+    let (ax, ay) = a.center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay + 8.0 });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved {
+        x: b.x + 60.0,
+        y: b.y + b.height * t,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+}
+
+fn order(s: &Studio) -> Vec<String> {
+    s.session.hierarchy().into_iter().map(|r| r.name).collect()
+}
+
+#[test]
+fn lines_dragged_reorder_and_nest() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    // Onto the top quarter of «tree near»: before it, at the top level.
+    drag_line(&mut s, "line boulder", "line tree near", 0.1);
+    let names = order(&s);
+    let b = names.iter().position(|n| n == "boulder").unwrap();
+    let t = names.iter().position(|n| n == "tree near").unwrap();
+    assert_eq!(b + 1, t, "{names:?}");
+    // Onto the middle of «crate»: into it.
+    drag_line(&mut s, "line boulder", "line crate", 0.5);
+    let crate_id = s.session.find("crate").unwrap();
+    let rows = s.session.hierarchy();
+    let boulder = rows.iter().find(|r| r.name == "boulder").unwrap();
+    assert_eq!(boulder.depth, 1, "a child now");
+    let _ = crate_id;
+    // One undo takes it back out.
+    click(&mut s, "undo");
+    let rows = s.session.hierarchy();
+    assert_eq!(rows.iter().find(|r| r.name == "boulder").unwrap().depth, 0);
+}
+
+#[test]
+fn shift_selects_a_range_and_the_arrows_move_it() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "line tree near");
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    click(&mut s, "line tree far");
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    assert_eq!(s.session.selection().len(), 3, "near, mid, far");
+
+    click(&mut s, "line crate");
+    key(&mut s, Key::Down);
+    assert_eq!(s.session.selected(), s.session.find("boulder"));
+    key(&mut s, Key::Up);
+    assert_eq!(s.session.selected(), s.session.find("crate"));
+    // Down to the campfire, then Left folds it.
+    key(&mut s, Key::Down);
+    key(&mut s, Key::Down);
+    let lines = s.session.hierarchy().len();
+    key(&mut s, Key::Left);
+    assert_eq!(s.session.hierarchy().len(), lines - 5);
+    key(&mut s, Key::Right);
+    assert_eq!(s.session.hierarchy().len(), lines);
+}
+
+#[test]
+fn snap_and_views_from_the_corner() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert_eq!(s.session.snap().meters, 0.0);
+    click(&mut s, "snap");
+    assert_eq!(s.session.snap().meters, 0.25);
+    click(&mut s, "view top");
+    assert!(s.session.is_orthographic());
+    click(&mut s, "view persp");
+    assert!(!s.session.is_orthographic());
+}
+
+#[test]
+fn a_scene_changed_on_disk_comes_in_by_itself() {
+    let Some((mut s, dir)) = studio() else { return };
+    let path = dir.join("scenes/first-light.ron");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, text.replace("\"boulder\"", "\"big rock\"")).unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while s.session.find("big rock").is_none() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        s.frame();
+    }
+    assert!(s.session.find("big rock").is_some(), "reloaded");
+    assert!(s.ui.find("line big rock").is_some(), "and shown");
+}
+
+#[test]
+fn the_inspector_says_when_nothing_is_selected() {
+    let Some((mut s, _dir)) = studio() else { return };
+    assert!(s.ui.dump().contains("\"Nothing selected\""));
+}

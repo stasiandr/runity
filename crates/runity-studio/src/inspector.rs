@@ -95,6 +95,9 @@ pub struct Inspector {
     slots: Vec<(String, Option<usize>, NodeId, String)>,
     revealed: BTreeSet<String>,
     playing: bool,
+    /// Built at least once: an empty selection at the start is still a
+    /// panel to build.
+    built: bool,
 }
 
 impl Inspector {
@@ -111,6 +114,7 @@ impl Inspector {
             slots: Vec::new(),
             revealed: BTreeSet::new(),
             playing: false,
+            built: false,
         }
     }
 
@@ -141,7 +145,8 @@ impl Inspector {
                 shape.push((f.name.clone(), None));
             }
         }
-        if ids != self.showing || shape != self.shape || playing != self.playing {
+        if !self.built || ids != self.showing || shape != self.shape || playing != self.playing {
+            self.built = true;
             self.showing = ids.clone();
             self.shape = shape;
             self.playing = playing;

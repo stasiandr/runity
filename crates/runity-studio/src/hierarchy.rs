@@ -43,6 +43,24 @@ pub struct Hierarchy {
     /// The first line in view the last time a line was selected, so the
     /// view can follow a selection made in the Scene view.
     followed: Option<EntityId>,
+    /// The lines as last shown, in order.
+    shown: Vec<Row>,
+    /// The arrow keys move the selection here.
+    active: bool,
+    /// Where a Shift click selects from.
+    anchor: Option<EntityId>,
+    /// The accent line that shows where a dragged line will land.
+    indicator: NodeId,
+}
+
+/// Where a dragged line lands, relative to the line under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Drop {
+    Before(EntityId),
+    Into(EntityId),
+    After(EntityId),
+    /// Below every line: the end of the top level.
+    End,
 }
 
 impl Hierarchy {
@@ -73,7 +91,20 @@ impl Hierarchy {
                 .clickable(),
         );
         ui.set_name(list, "hierarchy list");
+        let indicator = ui.add(
+            card,
+            Style::row()
+                .absolute(0.0, 0.0)
+                .size(0.0, 2.0)
+                .radius(1.0)
+                .background(ACCENT)
+                .hidden(),
+        );
         Self {
+            shown: Vec::new(),
+            active: false,
+            anchor: None,
+            indicator,
             card,
             count,
             search,
@@ -124,6 +155,7 @@ impl Hierarchy {
             }
         }
         self.parts = parts;
+        self.shown = rows.clone();
         // Follow the selection into view when it changed from elsewhere.
         let selected = session.selected();
         if selected != self.followed {
@@ -235,32 +267,38 @@ impl Hierarchy {
                     _ if *count >= 2 => {
                         session.focus_selected();
                     }
-                    _ if shift || ctrl || command => {
-                        let _ = session.add_to_selection(id);
+                    _ if shift => self.select_range(session, id),
+                    _ if ctrl || command => {
+                        // Cmd toggles one line in or out.
+                        let mut ids = session.selection();
+                        if let Some(i) = ids.iter().position(|x| *x == id) {
+                            ids.remove(i);
+                        } else {
+                            ids.push(id);
+                        }
+                        let _ = session.select(None);
+                        for x in ids {
+                            let _ = session.add_to_selection(x);
+                        }
+                        self.anchor = Some(id);
                     }
                     _ => {
                         let _ = session.select(Some(id));
+                        self.anchor = Some(id);
                     }
                 }
+                self.active = true;
                 self.followed = Some(id);
                 requests.refresh = true;
                 requests.keyboard_to_scene = true;
             }
-            (Some(Part::Line(id)), Event::DragEnd { over }) => {
-                let target = over.and_then(|o| match self.parts.get(&o) {
-                    Some(Part::Line(t)) => Some(Some(*t)),
-                    _ if o == self.list => Some(None),
-                    _ => None,
-                });
-                if let Some(parent) = target {
-                    if parent != Some(id) {
-                        if let Err(e) = session.reparent(id, parent) {
-                            session.say(runity_editor::console::Level::Warning, e.to_string());
-                        }
-                        if let Some(p) = parent {
-                            session.set_open(p, true);
-                        }
-                    }
+            (Some(Part::Line(_)), Event::Drag { .. }) => {
+                self.show_drop(ui);
+            }
+            (Some(Part::Line(id)), Event::DragEnd { .. }) => {
+                ui.restyle(self.indicator, |s| s.hidden());
+                if let Some(drop) = self.drop_at(ui) {
+                    self.land(session, id, drop);
                 }
                 requests.refresh = true;
             }
@@ -275,6 +313,192 @@ impl Hierarchy {
             }
             _ => {}
         }
+    }
+
+    /// Where the pointer is over the list, as a drop.
+    fn drop_at(&self, ui: &Ui) -> Option<Drop> {
+        let (x, y) = ui.pointer();
+        if !ui.rect(self.list).contains(x, y) {
+            return None;
+        }
+        for (line, row) in ui.children(self.list).into_iter().zip(&self.shown) {
+            let r = ui.rect(line);
+            if y >= r.y && y < r.y + r.height {
+                let t = (y - r.y) / r.height;
+                return Some(if t < 0.25 {
+                    Drop::Before(row.id)
+                } else if t > 0.75 && !(row.has_children && row.open) {
+                    Drop::After(row.id)
+                } else {
+                    Drop::Into(row.id)
+                });
+            }
+        }
+        Some(Drop::End)
+    }
+
+    /// The accent line (or the outlined line) where a drop would land.
+    fn show_drop(&mut self, ui: &mut Ui) {
+        let Some(drop) = self.drop_at(ui) else {
+            ui.restyle(self.indicator, |s| s.hidden());
+            return;
+        };
+        let card = ui.rect(self.card);
+        let line_of = |id: EntityId| {
+            ui.children(self.list)
+                .into_iter()
+                .zip(&self.shown)
+                .find(|(_, r)| r.id == id)
+                .map(|(n, r)| (ui.rect(n), r.depth))
+        };
+        let (y, x, w, h) = match drop {
+            Drop::Before(id) | Drop::After(id) | Drop::Into(id) => {
+                let Some((r, depth)) = line_of(id) else {
+                    return;
+                };
+                let indent = 22.0 + depth as f32 * INDENT;
+                match drop {
+                    Drop::Before(_) => (r.y - 1.0, r.x + indent, r.width - indent, 2.0),
+                    Drop::After(_) => (r.y + r.height - 1.0, r.x + indent, r.width - indent, 2.0),
+                    _ => (r.y, r.x, r.width, r.height),
+                }
+            }
+            Drop::End => {
+                let last = ui.children(self.list).last().map(|n| ui.rect(*n));
+                let Some(r) = last else { return };
+                (r.y + r.height, r.x, r.width, 2.0)
+            }
+        };
+        let into = matches!(drop, Drop::Into(_));
+        ui.restyle(self.indicator, |s| {
+            let s = s.shown().absolute(x - card.x, y - card.y).size(w, h);
+            if into {
+                s.background(ACCENT.alpha(12)).border(1.0, ACCENT)
+            } else {
+                s.background(ACCENT)
+                    .border(0.0, runity_ui::Color::TRANSPARENT)
+            }
+        });
+    }
+
+    /// Put `id` where it was dropped: before or after a line (a sibling
+    /// of it), into a line (its last child), or at the end of the top.
+    fn land(&mut self, session: &mut Session, id: EntityId, drop: Drop) {
+        let parent_of = |target: EntityId| -> Option<EntityId> {
+            let i = self.shown.iter().position(|r| r.id == target)?;
+            let depth = self.shown[i].depth;
+            self.shown[..i]
+                .iter()
+                .rev()
+                .find(|r| r.depth + 1 == depth)
+                .map(|r| r.id)
+        };
+        let index_of = |target: EntityId| -> usize {
+            let Some(i) = self.shown.iter().position(|r| r.id == target) else {
+                return 0;
+            };
+            let depth = self.shown[i].depth;
+            let mut n = 0;
+            for r in self.shown[..i].iter().rev() {
+                if r.depth < depth {
+                    break;
+                }
+                if r.depth == depth && r.id != id {
+                    n += 1;
+                }
+            }
+            n
+        };
+        let (parent, index) = match drop {
+            Drop::Into(t) if t == id => return,
+            Drop::Into(t) => (Some(t), None),
+            Drop::Before(t) if t == id => return,
+            Drop::After(t) if t == id => return,
+            Drop::Before(t) => (parent_of(t), Some(index_of(t))),
+            Drop::After(t) => (parent_of(t), Some(index_of(t) + 1)),
+            Drop::End => (None, None),
+        };
+        if let Err(e) = session.move_in_hierarchy(id, parent, index) {
+            session.say(runity_editor::console::Level::Warning, e.to_string());
+        }
+        if let Some(p) = parent {
+            session.set_open(p, true);
+        }
+    }
+
+    /// Shift click: everything between the last line clicked and this one.
+    fn select_range(&mut self, session: &mut Session, to: EntityId) {
+        let from = self.anchor.unwrap_or(to);
+        let a = self.shown.iter().position(|r| r.id == from);
+        let b = self.shown.iter().position(|r| r.id == to);
+        let (Some(a), Some(b)) = (a, b) else {
+            let _ = session.add_to_selection(to);
+            return;
+        };
+        let (lo, hi) = (a.min(b), a.max(b));
+        let _ = session.select(None);
+        for r in &self.shown[lo..=hi] {
+            let _ = session.add_to_selection(r.id);
+        }
+    }
+
+    /// The arrow keys, while the Hierarchy was the last thing clicked: up
+    /// and down move the selection, left folds (or goes to the parent),
+    /// right unfolds. `true` when it used the key.
+    pub fn key(&mut self, session: &mut Session, key: runity::input::Key, shift: bool) -> bool {
+        use runity::input::Key;
+        if !self.active {
+            return false;
+        }
+        let Some(current) = session.selected() else {
+            return false;
+        };
+        let Some(i) = self.shown.iter().position(|r| r.id == current) else {
+            return false;
+        };
+        let row = &self.shown[i];
+        match key {
+            Key::Up | Key::Down => {
+                let j = if key == Key::Up {
+                    i.checked_sub(1)
+                } else {
+                    Some(i + 1)
+                };
+                let Some(next) = j.and_then(|j| self.shown.get(j)) else {
+                    return true;
+                };
+                if shift {
+                    let _ = session.add_to_selection(next.id);
+                } else {
+                    let _ = session.select(Some(next.id));
+                    self.anchor = Some(next.id);
+                }
+            }
+            Key::Left => {
+                if row.has_children && row.open {
+                    session.set_open(row.id, false);
+                } else if let Some(p) = self.shown[..i]
+                    .iter()
+                    .rev()
+                    .find(|r| r.depth + 1 == row.depth)
+                {
+                    let _ = session.select(Some(p.id));
+                }
+            }
+            Key::Right => {
+                if row.has_children {
+                    session.set_open(row.id, true);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Whether the Hierarchy has the arrows: after a click on it, until a
+    /// click elsewhere.
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
     }
 
     /// F2 on the selection, from the Edit menu or the keyboard.
