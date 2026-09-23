@@ -878,6 +878,18 @@ fn pause_holds_the_crate_in_the_air_and_step_moves_it_one_step() {
     let falling = height(&session);
     assert!(falling < 4.0, "{falling}");
 
+    // The Inspector says where it is now; the file still says 4.
+    let shown = session
+        .inspect(crate_id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "position")
+        .unwrap()
+        .value;
+    let y: Vec3 = runity::ron::from_str(&shown).unwrap();
+    assert!((y.y - falling).abs() < 1e-3, "{shown} while falling at {falling}");
+    assert!((session.transform(crate_id).unwrap().position.y - 4.0).abs() < 1e-3);
+
     // Ctrl Shift P: held in the air, however long the frames are.
     let did = chord(
         &mut session,

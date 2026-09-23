@@ -231,7 +231,10 @@ impl Session {
                     .is_some_and(|c| o.components.contains_key(c)),
             })
         };
-        let t = desc.transform;
+        // During play the Inspector shows where things are, as Unity's
+        // does: the document says where they start, the world where they
+        // fell to. The document is what comes back when play stops.
+        let t = self.live_transform(id).unwrap_or(desc.transform);
         let mut fields: Vec<(String, String)> = vec![
             ("name".into(), desc.name.clone()),
             ("model".into(), desc.model.clone()),
@@ -281,6 +284,18 @@ impl Session {
                 })
                 .collect(),
         )
+    }
+
+    /// The entity's transform in the running world, while playing.
+    fn live_transform(&self, id: EntityId) -> Option<runity::scene::Transform> {
+        if !self.is_playing() {
+            return None;
+        }
+        self.world
+            .query::<(&runity::SceneId, &runity::scene::Transform)>()
+            .iter()
+            .find(|(scene_id, _)| scene_id.0 == id)
+            .map(|(_, t)| *t)
     }
 
     /// What the game's components look like, by name, as the game last
