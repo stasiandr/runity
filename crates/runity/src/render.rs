@@ -356,6 +356,289 @@ pub struct Renderer {
     textures: Vec<GpuTexture>,
     texture_layout: wgpu::BindGroupLayout,
     texture_sampler: wgpu::Sampler,
+    /// Kept to rebuild the pipelines when the shader is reloaded.
+    pipeline_layout: wgpu::PipelineLayout,
+    shadow_pipeline_layout: wgpu::PipelineLayout,
+    skinned_layout: wgpu::PipelineLayout,
+}
+
+/// The engine's shader, as compiled in.
+pub const SHADER: &str = include_str!("render.wgsl");
+
+/// Where the engine's shader source was when the engine was built — for
+/// watching it while working on the engine; see [`ShaderFile`].
+pub const SHADER_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/render.wgsl");
+
+/// A shader source file, reloaded into a renderer when it changes. DNA,
+/// postulate 1: shaders reload too.
+pub struct ShaderFile {
+    path: std::path::PathBuf,
+    stamp: Option<std::time::SystemTime>,
+}
+
+impl ShaderFile {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        Self { path, stamp }
+    }
+
+    /// Reload the shader if the file changed: `None` when it did not, and
+    /// the compiler's words — file, line, column — when it does not build.
+    /// The renderer keeps the last shader that did.
+    pub fn poll(&mut self, renderer: &mut Renderer, gpu: &Gpu) -> Option<Result<(), String>> {
+        let now = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        if now == self.stamp {
+            return None;
+        }
+        self.stamp = now;
+        let source = match std::fs::read_to_string(&self.path) {
+            Ok(source) => source,
+            Err(e) => return Some(Err(format!("{}: {e}", self.path.display()))),
+        };
+        Some(
+            renderer
+                .reload_shader(gpu, &source)
+                .map_err(|e| format!("{}:\n{e}", self.path.display())),
+        )
+    }
+}
+
+/// Every pipeline the renderer draws with, from one shader module: at
+/// start, and again when the shader is reloaded.
+fn build_pipelines(
+    gpu: &Gpu,
+    shader: &wgpu::ShaderModule,
+    format: wgpu::TextureFormat,
+    pipeline_layout: &wgpu::PipelineLayout,
+    shadow_pipeline_layout: &wgpu::PipelineLayout,
+    skinned_layout: &wgpu::PipelineLayout,
+) -> (
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+    wgpu::RenderPipeline,
+) {
+    let pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::render"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                        ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                            6 => Float32x4, 7 => Float32x4
+                        ],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState {
+                // Back faces are dropped, which is why the importer cares
+                // about winding: a model wound inside out disappears.
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+    // Depth only: no fragment stage at all, because nothing is written
+    // but depth and a colour target would only cost fill.
+    let shadow_pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::shadow"),
+            layout: Some(shadow_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                        ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                            6 => Float32x4, 7 => Float32x4
+                        ],
+                    }),
+                ],
+            },
+            fragment: None,
+            primitive: wgpu::PrimitiveState {
+                // Front faces are culled here, not back ones. Drawing
+                // only the far side of an object into the map moves the
+                // self-shadowing error behind the surface that would
+                // have shown it, which removes most acne before any bias
+                // is applied.
+                cull_mode: Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState {
+                    constant: 2,
+                    slope_scale: 2.0,
+                    clamp: 0.0,
+                },
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+    let skinned_pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::skinned"),
+            layout: Some(skinned_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs_skinned"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                        ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                            6 => Float32x4, 7 => Float32x4
+                        ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+    // The same shader and the same vertex layout, with the depth test
+    // turned off and depth writes suppressed — so an overlay neither
+    // hides behind the scene nor blocks anything drawn after it.
+    let overlay_pipeline = gpu
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("runity::overlay"),
+            layout: Some(pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![
+                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
+                        ],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![
+                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+                            6 => Float32x4, 7 => Float32x4
+                        ],
+                    }),
+                ],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(format.into())],
+            }),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+    (
+        pipeline,
+        shadow_pipeline,
+        skinned_pipeline,
+        overlay_pipeline,
+    )
 }
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -364,6 +647,50 @@ impl Renderer {
     /// Build a renderer for an offscreen target.
     pub fn new(gpu: &Gpu, target: &OffscreenTarget) -> Self {
         Self::with_format(gpu, target.format, target.width, target.height)
+    }
+
+    /// Draw with another shader from now on: `source` is WGSL with the
+    /// entry points and bindings of [`SHADER`] — `vs`, `fs`, `vs_shadow`,
+    /// `vs_skinned`.
+    ///
+    /// Checked before anything changes: parsed and validated, with the line
+    /// and column of what is wrong, and then built under an error scope, so
+    /// a shader that compiles but does not fit the pipelines is refused in
+    /// words too. Either way the old shader keeps drawing — a typo saved
+    /// mid-edit costs a message, not a black screen or a crash.
+    pub fn reload_shader(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
+        use wgpu::naga;
+        let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(source))?;
+
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = gpu
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("runity::render (reloaded)"),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let (pipeline, shadow_pipeline, skinned_pipeline, overlay_pipeline) = build_pipelines(
+            gpu,
+            &shader,
+            self.format,
+            &self.pipeline_layout,
+            &self.shadow_pipeline_layout,
+            &self.skinned_layout,
+        );
+        if let Some(error) = pollster::block_on(scope.pop()) {
+            return Err(format!("the shader does not fit the renderer: {error}"));
+        }
+        self.pipeline = pipeline;
+        self.shadow_pipeline = shadow_pipeline;
+        self.skinned_pipeline = skinned_pipeline;
+        self.overlay_pipeline = overlay_pipeline;
+        Ok(())
     }
 
     /// Build a renderer for a window's surface.
@@ -381,7 +708,7 @@ impl Renderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("runity::render"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("render.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
             });
 
         let frame_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -516,112 +843,6 @@ impl Renderer {
                     immediate_size: 0,
                 });
 
-        let pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("runity::render"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![
-                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                            ],
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array![
-                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                                6 => Float32x4, 7 => Float32x4
-                            ],
-                        }),
-                    ],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    // Back faces are dropped, which is why the importer cares
-                    // about winding: a model wound inside out disappears.
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
-        // Depth only: no fragment stage at all, because nothing is written
-        // but depth and a colour target would only cost fill.
-        let shadow_pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("runity::shadow"),
-                layout: Some(&shadow_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_shadow"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![
-                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                            ],
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array![
-                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                                6 => Float32x4, 7 => Float32x4
-                            ],
-                        }),
-                    ],
-                },
-                fragment: None,
-                primitive: wgpu::PrimitiveState {
-                    // Front faces are culled here, not back ones. Drawing
-                    // only the far side of an object into the map moves the
-                    // self-shadowing error behind the surface that would
-                    // have shown it, which removes most acne before any bias
-                    // is applied.
-                    cull_mode: Some(wgpu::Face::Front),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: wgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 2.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
-
         // Skinning: a second pipeline, an extra vertex buffer of joint
         // bindings, and one bind group of matrices switched per draw with a
         // dynamic offset.
@@ -665,111 +886,15 @@ impl Renderer {
                 bind_group_layouts: &[Some(&layout), Some(&texture_layout), Some(&pose_layout)],
                 immediate_size: 0,
             });
-        let skinned_pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("runity::skinned"),
-                layout: Some(&skinned_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_skinned"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![
-                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                            ],
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array![
-                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                                6 => Float32x4, 7 => Float32x4
-                            ],
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<SkinVertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4],
-                        }),
-                    ],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
 
-        // The same shader and the same vertex layout, with the depth test
-        // turned off and depth writes suppressed — so an overlay neither
-        // hides behind the scene nor blocks anything drawn after it.
-        let overlay_pipeline = gpu
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("runity::overlay"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    compilation_options: Default::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &wgpu::vertex_attr_array![
-                                0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                            ],
-                        }),
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                            step_mode: wgpu::VertexStepMode::Instance,
-                            attributes: &wgpu::vertex_attr_array![
-                                3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                                6 => Float32x4, 7 => Float32x4
-                            ],
-                        }),
-                    ],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(format.into())],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
-                    ..Default::default()
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(false),
-                    depth_compare: Some(wgpu::CompareFunction::Always),
-                    stencil: Default::default(),
-                    bias: Default::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            });
+        let (pipeline, shadow_pipeline, skinned_pipeline, overlay_pipeline) = build_pipelines(
+            gpu,
+            &shader,
+            format,
+            &pipeline_layout,
+            &shadow_pipeline_layout,
+            &skinned_layout,
+        );
 
         let instance_capacity = 256;
         let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -806,6 +931,9 @@ impl Renderer {
             textures: Vec::new(),
             texture_layout,
             texture_sampler,
+            pipeline_layout,
+            shadow_pipeline_layout,
+            skinned_layout,
         };
 
         // Handle 0 is always the white pixel, so `TextureHandle::WHITE` is a

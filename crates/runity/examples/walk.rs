@@ -11,7 +11,9 @@
 //!
 //! And the other loop: save the scene, a prefab, or re-import an asset while
 //! it runs, and the change is in the next frames — patched into the world,
-//! not reloaded over it.
+//! not reloaded over it. Save the engine's `render.wgsl` and the next frame
+//! draws with it; a shader that does not compile is reported and the old
+//! one keeps drawing.
 
 use runity::glam::Vec3;
 use runity::render::{Camera, Frame};
@@ -20,6 +22,8 @@ use runity::{Key, LiveScene, TextRun, Ui};
 
 struct Walk {
     live: LiveScene,
+    /// The engine's shader source, reloaded when it is saved.
+    shader: runity::render::ShaderFile,
     /// The last few seconds of frames: the median and the stutters.
     times: runity::FrameTimes,
     world: hecs::World,
@@ -44,6 +48,7 @@ impl Walk {
         let look = (view.target - eye).normalize_or_zero();
         Self {
             live,
+            shader: runity::render::ShaderFile::new(runity::render::SHADER_PATH),
             times: runity::FrameTimes::new(300),
             world: hecs::World::new(),
             eye,
@@ -102,6 +107,11 @@ impl Game for Walk {
             .poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in done.lines() {
             eprintln!("{line}");
+        }
+        match self.shader.poll(ctx.renderer, ctx.gpu) {
+            Some(Ok(())) => eprintln!("shader reloaded"),
+            Some(Err(problem)) => eprintln!("{problem}"),
+            None => {}
         }
         // On the frame, not the step: the head turns as fast as the screen
         // refreshes, and waiting for a tick is what makes 15 Hz feel sticky
