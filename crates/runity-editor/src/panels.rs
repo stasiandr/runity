@@ -66,6 +66,38 @@ pub const FIELDS: [&str; 14] = [
 /// What a field of several things shows when they disagree.
 pub const MIXED: &str = "—";
 
+/// Move the one field `field` names out of an override: what it said, as
+/// an override of its own (empty when it said nothing about it).
+fn take_field(
+    from: &mut runity::scene::Override,
+    field: &str,
+) -> EditResult<runity::scene::Override> {
+    let mut one = runity::scene::Override::default();
+    match field {
+        "name" => one.name = from.name.take(),
+        "model" => one.model = from.model.take(),
+        "position" | "rotation" | "scale" => one.transform = from.transform.take(),
+        "material" => one.material = from.material.take(),
+        "body" => one.body = from.body.take(),
+        "collider" => one.collider = from.collider.take(),
+        "physics" => one.physics = from.physics.take(),
+        "layer" => one.layer = from.layer.take(),
+        other => match other.strip_prefix("components.") {
+            Some(name) => {
+                if let Some(value) = from.components.remove(name) {
+                    one.components.insert(name.to_string(), value);
+                }
+            }
+            None => {
+                return Err(EditError::Scene(format!(
+                    "`{other}` is not a field a part overrides — there are name, model, position, rotation, scale, material, body, collider, physics, layer, components.<name>"
+                )))
+            }
+        },
+    }
+    Ok(one)
+}
+
 fn ron<T: serde::Serialize>(value: &T) -> String {
     runity::ron::to_string(value).unwrap_or_default()
 }
@@ -229,6 +261,77 @@ impl Session {
                 .cloned()
                 .unwrap_or_default(),
         )
+    }
+
+    /// Revert one overridden field of a prefab's part to what the prefab
+    /// says — Unity's Revert on a single property — as one undo step.
+    /// `false` when that field was not overridden. `position`, `rotation`
+    /// and `scale` are one override, the transform, and revert together.
+    pub fn revert_field(&mut self, id: EntityId, field: &str) -> EditResult<bool> {
+        self.refuse_while_playing()?;
+        let (instance, part) = self.part_of(id)?;
+        let mut rest = self
+            .scene()
+            .get(instance)
+            .and_then(|l| l.overrides.get(&part).cloned())
+            .unwrap_or_default();
+        if take_field(&mut rest, field)?.is_empty() {
+            return Ok(false);
+        }
+        let line = self.edit_entity(instance)?;
+        if rest.is_empty() {
+            line.overrides.remove(&part);
+        } else {
+            line.overrides.insert(part, rest);
+        }
+        self.respawn();
+        Ok(true)
+    }
+
+    /// Apply one overridden field of a prefab's part to the prefab file —
+    /// Unity's Apply on a single property: every instance gets it, this one
+    /// stops overriding it, its other overrides stay. One undo step in the
+    /// scene (the file stays applied, as with [`Session::apply_overrides`]).
+    pub fn apply_field(&mut self, id: EntityId, field: &str) -> EditResult<bool> {
+        self.refuse_while_playing()?;
+        let (instance, part) = self.part_of(id)?;
+        let all = self
+            .scene()
+            .get(instance)
+            .map(|l| l.overrides.clone())
+            .unwrap_or_default();
+        let mut rest = all.get(&part).cloned().unwrap_or_default();
+        let one = take_field(&mut rest, field)?;
+        if one.is_empty() {
+            return Ok(false);
+        }
+        let before = self.history.depth();
+        // Only this field goes to the file; then the others come back.
+        self.edit_entity(instance)?.overrides = [(part, one)].into_iter().collect();
+        self.apply_overrides(instance)?;
+        let mut others = all;
+        if rest.is_empty() {
+            others.remove(&part);
+        } else {
+            others.insert(part, rest);
+        }
+        self.edit_entity(instance)?.overrides = others;
+        self.respawn();
+        self.history.squash(self.history.depth() - before);
+        Ok(true)
+    }
+
+    /// The instance a prefab's part came with, and the part's id in it.
+    fn part_of(&self, id: EntityId) -> EditResult<(EntityId, EntityId)> {
+        if self.scene().get(id).is_some() {
+            return Err(EditError::Scene(format!(
+                "{id} is a line of the scene, not a part of a prefab: it has nothing to revert to"
+            )));
+        }
+        self.instanced_parts()
+            .get(&id)
+            .copied()
+            .ok_or(EditError::NoEntity(id))
     }
 
     /// The Inspector for several things at once: the first one's fields,

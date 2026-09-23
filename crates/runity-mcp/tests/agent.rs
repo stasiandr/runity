@@ -122,6 +122,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "isolate",
         "place",
         "to_view",
+        "override_field",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

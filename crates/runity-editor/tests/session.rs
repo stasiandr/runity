@@ -3044,3 +3044,69 @@ fn v_snaps_a_vertex_of_the_selection_onto_a_vertex_of_something_else() {
         "one step"
     );
 }
+
+#[test]
+fn one_overridden_field_of_a_part_is_applied_or_reverted_on_its_own() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "field-overrides",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "fire one", prefab: "campfire"),
+            (id: "00000000000000a2", name: "fire two", prefab: "campfire", transform: (position: (4.0, 0.0, 0.0))),
+        ])"#,
+    );
+    let prefab = root_of(&path).join("prefabs/campfire.prefab");
+    std::fs::write(
+        &prefab,
+        "(id: \"00000000000000c1\", name: \"campfire\", model: \"builtin:cube\",\n    children: [(id: \"00000000000000c2\", name: \"ember\", model: \"builtin:sphere\", material: \"ember\")])\n",
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    let (one, two): (EntityId, EntityId) = ("a1".parse().unwrap(), "a2".parse().unwrap());
+    let part: EntityId = "c2".parse().unwrap();
+    let ember = one.within(part);
+    session.set_field(ember, "material", "moss").unwrap();
+    session.set_field(ember, "layer", "debris").unwrap();
+    session.set_field(ember, "name", "coal").unwrap();
+    let overridden = |s: &Session, name: &str| {
+        s.inspect(ember)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .overridden
+    };
+
+    // Revert the name alone.
+    assert!(session.revert_field(ember, "name").unwrap());
+    assert_eq!(session.entity_name(ember).as_deref(), Some("ember"));
+    assert!(overridden(&session, "material") && overridden(&session, "layer"));
+    assert!(
+        !session.revert_field(ember, "name").unwrap(),
+        "nothing left to revert"
+    );
+
+    // Apply the material alone: every instance has it; the layer stays ours.
+    let steps = session.undo_steps().len();
+    assert!(session.apply_field(ember, "material").unwrap());
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(
+        session.material_name(two.within(part)).as_deref(),
+        Some("moss")
+    );
+    assert!(!overridden(&session, "material"));
+    assert!(overridden(&session, "layer"));
+    let text = std::fs::read_to_string(&prefab).unwrap();
+    assert!(
+        text.contains("\"moss\"") && !text.contains("debris"),
+        "{text}"
+    );
+
+    assert!(
+        session.revert_field(one, "name").is_err(),
+        "a scene line has no prefab to go back to"
+    );
+    assert!(session.revert_field(ember, "colour").is_err());
+}
