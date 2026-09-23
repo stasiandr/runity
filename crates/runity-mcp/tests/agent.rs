@@ -115,6 +115,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "edits",
         "measure",
         "align",
+        "replace_with_prefab",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }

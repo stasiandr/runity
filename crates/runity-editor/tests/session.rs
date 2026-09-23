@@ -2130,3 +2130,46 @@ fn an_unpacked_instance_is_plain_entities_and_stops_following_the_prefab() {
         "nothing left to unpack"
     );
 }
+
+#[test]
+fn greybox_cubes_become_the_real_prefab_where_they_stood() {
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file(
+        "replace",
+        r#"(entities: [
+            (id: "00000000000000a1", name: "crate", model: "builtin:cube", material: "grid", transform: (position: (1.0, 0.5, 0.0))),
+            (id: "00000000000000a2", name: "crate", model: "builtin:cube", material: "grid", transform: (position: (4.0, 0.5, 2.0), rotation_deg: (0.0, 30.0, 0.0))),
+            (id: "00000000000000a3", name: "wall", model: "builtin:cube", material: "grid"),
+        ])"#,
+    );
+    std::fs::write(
+        root_of(&path).join("prefabs/barrel.prefab"),
+        r#"(id: "00000000000000c1", name: "barrel", model: "builtin:cylinder", material: "bark")"#,
+    )
+    .unwrap();
+    session.open_scene(&path).unwrap();
+    assert_eq!(session.select_matching("crate").unwrap(), 2);
+    assert_eq!(session.replace_with_prefab("barrel").unwrap(), 2);
+    let second: EntityId = "a2".parse().unwrap();
+    let line = session.scene().get(second).unwrap();
+    assert_eq!(line.prefab, "barrel");
+    assert_eq!(line.name, "crate");
+    assert_eq!(
+        line.transform.rotation_deg.y, 30.0,
+        "where it stood, as it stood"
+    );
+    assert!(line.model.is_empty());
+    assert_eq!(
+        session.scene().get("a3".parse().unwrap()).unwrap().prefab,
+        "",
+        "the wall stays"
+    );
+    assert!(session.undo().unwrap());
+    assert!(
+        session.scene().get(second).unwrap().prefab.is_empty(),
+        "one step"
+    );
+    assert!(session.replace_with_prefab("nothing").is_err());
+}

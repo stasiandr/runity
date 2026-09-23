@@ -1197,6 +1197,57 @@ impl Session {
         Ok(query.search(self.history.scene(), &self.instanced.scene))
     }
 
+    /// Select everything a search finds — lines of the scene, not prefab
+    /// parts, which are selected through their instance. How many.
+    pub fn select_matching(&mut self, query: &str) -> EditResult<usize> {
+        let found: Vec<EntityId> = self
+            .search(query)?
+            .into_iter()
+            .filter(|id| self.history.scene().get(*id).is_some())
+            .collect();
+        self.select(None)?;
+        for (i, id) in found.iter().enumerate() {
+            if i == 0 {
+                self.select(Some(*id))?;
+            } else {
+                self.add_to_selection(*id)?;
+            }
+        }
+        Ok(found.len())
+    }
+
+    /// Put a prefab where each selected thing is — the greybox cube becomes
+    /// the real crate — keeping its id, name and transform, and dropping its
+    /// model, material, physics and children, which the prefab brings now.
+    /// Unity's "Replace Selected with Prefab". One undo step; how many.
+    pub fn replace_with_prefab(&mut self, prefab: &str) -> EditResult<usize> {
+        self.refuse_while_playing()?;
+        if self.prefabs.get(prefab).is_none() {
+            return Err(EditError::UnknownPrefab(prefab.to_string()));
+        }
+        let roots = self.selection_roots();
+        if roots.is_empty() {
+            return Ok(0);
+        }
+        let scene = self.history.edit();
+        let mut replaced = 0;
+        for id in roots {
+            if let Some(line) = scene.get_mut(id) {
+                *line = EntityDesc {
+                    id: line.id,
+                    name: line.name.clone(),
+                    transform: line.transform,
+                    prefab: prefab.to_string(),
+                    ..EntityDesc::default()
+                };
+                replaced += 1;
+            }
+        }
+        self.respawn();
+        self.after_structural_change();
+        Ok(replaced)
+    }
+
     /// One entity's name.
     pub fn entity_name(&self, id: EntityId) -> Option<String> {
         self.line(id).map(|e| e.name.clone())

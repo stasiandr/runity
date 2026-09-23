@@ -120,6 +120,7 @@ pub fn list() -> Vec<Value> {
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
         tool("apply_overrides", "Write a prefab instance's overrides into the prefab file, so every instance gets them, and clear them from this instance.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("unpack_prefab", "Turn a prefab instance into plain entities of the scene, overrides applied, no longer following the prefab file. One undo step; its parts keep their ids.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
+        tool("replace_with_prefab", "Put a prefab where each thing a search finds is — the greybox cubes named `crate` become the real crate — keeping ids, names and places. One undo step.", json!({ "query": { "type": "string", "description": "what to replace, as find takes it: `crate`, `m:grid model:builtin:cube`" }, "prefab": { "type": "string" } }), &["query", "prefab"]),
         tool("revert_overrides", "Drop a prefab instance's overrides: it is the prefab again. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("undo", "Take back the last edit; says what it was (\"move `crate`\").", json!({}), &[]),
         tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
@@ -584,6 +585,18 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .unpack_prefab(id)
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{id} is plain entities now"))])
+        }
+        "replace_with_prefab" => {
+            let (query, prefab) = (string(args, "query")?, string(args, "prefab")?);
+            let session = server.session()?;
+            let found = session.select_matching(&query).map_err(|e| e.to_string())?;
+            if found == 0 {
+                return Err(format!("nothing matches {query}"));
+            }
+            let replaced = session
+                .replace_with_prefab(&prefab)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(format!("{replaced} replaced with {prefab}"))])
         }
         "revert_overrides" => {
             let id = id(args, "id")?;
