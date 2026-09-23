@@ -21,6 +21,7 @@ pub use ron;
 
 pub mod actions;
 pub mod animation;
+pub mod appearance;
 pub mod animator;
 pub mod animgraph;
 pub mod asset;

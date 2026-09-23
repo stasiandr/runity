@@ -605,3 +605,62 @@ mod tests {
         assert!(crate::world::is_active(&world, glow), "lit halfway through");
     }
 }
+
+/// A line's `animator`, with every thing under it by its path of names.
+pub(crate) fn animates(desc: &crate::scene::EntityDesc) -> crate::motion::Animates {
+    fn walk(desc: &crate::scene::EntityDesc, path: &str, out: &mut Vec<(String, crate::id::EntityId)>) {
+        for child in &desc.children {
+            let at = if path.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{path}/{}", child.name)
+            };
+            out.push((at.clone(), child.id));
+            walk(child, &at, out);
+        }
+    }
+    let mut parts = vec![(String::new(), desc.id)];
+    walk(desc, "", &mut parts);
+    crate::motion::Animates {
+        graph: desc.animator().clone(),
+        model: desc.model().clone(),
+        parts,
+    }
+}
+
+/// The animation module's dresser ([`crate::world::Dress`]): the graph a
+/// line's `animator` plays, and the bone of its parent's skeleton it rides
+/// on.
+pub struct MotionDress;
+
+impl crate::world::Dress for MotionDress {
+    fn parts(&self) -> &[&'static str] {
+        &["animator", "bone"]
+    }
+
+    fn dress(
+        &mut self,
+        line: &crate::scene::EntityDesc,
+        entity: hecs::Entity,
+        world: &mut hecs::World,
+        changed: crate::world::Changed,
+        _: &mut Vec<crate::world::Unresolved>,
+    ) {
+        if changed.has("animator") {
+            let _ = world.remove_one::<Moving>(entity);
+            if line.animator().is_empty() {
+                let _ = world.remove_one::<Animates>(entity);
+            } else {
+                let _ = world.insert_one(entity, animates(line));
+            }
+        }
+        if changed.has("bone") {
+            let bone = line.bone();
+            if bone.is_empty() {
+                let _ = world.remove_one::<crate::world::OnBone>(entity);
+            } else {
+                let _ = world.insert_one(entity, crate::world::OnBone(bone));
+            }
+        }
+    }
+}

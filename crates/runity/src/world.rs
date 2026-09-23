@@ -209,27 +209,6 @@ pub fn inactive_in_hierarchy(world: &World) -> std::collections::HashSet<hecs::E
     out
 }
 
-/// A line's `animator`, with every thing under it by its path of names.
-fn animates(desc: &EntityDesc) -> crate::motion::Animates {
-    fn walk(desc: &EntityDesc, path: &str, out: &mut Vec<(String, crate::id::EntityId)>) {
-        for child in &desc.children {
-            let at = if path.is_empty() {
-                child.name.clone()
-            } else {
-                format!("{path}/{}", child.name)
-            };
-            out.push((at.clone(), child.id));
-            walk(child, &at, out);
-        }
-    }
-    let mut parts = vec![(String::new(), desc.id)];
-    walk(desc, "", &mut parts);
-    crate::motion::Animates {
-        graph: desc.animator().clone(),
-        model: desc.model().clone(),
-        parts,
-    }
-}
 
 /// A sound the entity makes, from its line's `sound`; played by
 /// [`crate::audio::Sources`].
@@ -443,6 +422,67 @@ pub struct Unresolved {
     pub model: String,
 }
 
+/// Which of a line's module fields changed: all of them for a line being
+/// spawned, the ones whose text differs for a line a reload patches.
+#[derive(Debug, Clone, Copy)]
+pub enum Changed<'a> {
+    All,
+    Only(&'a [String]),
+}
+
+impl Changed<'_> {
+    /// Whether any of these fields changed.
+    pub fn any(&self, names: &[&str]) -> bool {
+        match self {
+            Changed::All => true,
+            Changed::Only(changed) => names.iter().any(|n| changed.iter().any(|c| c == n)),
+        }
+    }
+
+    pub fn has(&self, name: &str) -> bool {
+        self.any(&[name])
+    }
+}
+
+/// How a module puts its fields of a line on the entity spawned from it —
+/// a body, a light, a sound, what it looks like — and takes off what the
+/// line no longer asks for: as the line spawns, and again when a reload
+/// changed one of the fields it reads (docs/modules.md). The core spawns an
+/// entity's identity, place and tree; everything else is a module's
+/// dresser.
+pub trait Dress {
+    /// The fields it reads: a reload that changed none of them passes it by.
+    fn parts(&self) -> &[&'static str];
+
+    /// Dress `entity` from `line`, for the fields `changed` names. Models
+    /// and other things asked for that nothing answers to go in `missing`.
+    fn dress(
+        &mut self,
+        line: &EntityDesc,
+        entity: hecs::Entity,
+        world: &mut World,
+        changed: Changed,
+        missing: &mut Vec<Unresolved>,
+    );
+}
+
+/// Every module's dresser this build has, the look resolving models and
+/// materials with `resolve` and `palette`.
+pub fn dressers<'a>(
+    resolve: &'a mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
+) -> Vec<Box<dyn Dress + 'a>> {
+    let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
+    #[cfg(feature = "physics")]
+    out.push(Box::new(crate::physics::PhysicsDress));
+    out.push(Box::new(crate::motion::MotionDress));
+    out.push(Box::new(crate::routes::RouteDress));
+    out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
+    #[cfg(feature = "audio")]
+    out.push(Box::new(crate::audio::SoundDress));
+    out
+}
+
 /// Put a scene into a world.
 ///
 /// `resolve` turns the scene's model name into an uploaded mesh. It is a
@@ -472,17 +512,15 @@ pub fn spawn_scene_with(
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Unresolved> {
+    let mut dressers = dressers(&mut resolve, &palette);
+    spawn_scene_dressed(scene, world, &mut dressers)
+}
+
+/// Put a scene into a world with these modules' dressers.
+pub fn spawn_scene_dressed(scene: &Scene, world: &mut World, dressers: &mut [Box<dyn Dress + '_>]) -> Vec<Unresolved> {
     let mut missing = Vec::new();
     for desc in &scene.entities {
-        spawn_subtree(
-            desc,
-            None,
-            glam::Mat4::IDENTITY,
-            world,
-            &mut resolve,
-            &palette,
-            &mut missing,
-        );
+        spawn_subtree(desc, None, glam::Mat4::IDENTITY, world, dressers, &mut missing);
     }
     missing
 }
@@ -497,22 +535,13 @@ fn spawn_subtree(
     parent: Option<hecs::Entity>,
     parent_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+    dressers: &mut [Box<dyn Dress + '_>],
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
-    let entity = spawn_one(desc, parent, world_matrix, world, resolve, palette, missing);
+    let entity = spawn_one(desc, parent, world_matrix, world, dressers, missing);
     for child in &desc.children {
-        spawn_subtree(
-            child,
-            Some(entity),
-            world_matrix,
-            world,
-            resolve,
-            palette,
-            missing,
-        );
+        spawn_subtree(child, Some(entity), world_matrix, world, dressers, missing);
     }
 }
 
@@ -533,188 +562,48 @@ pub fn spawn_owned<'a>(
         parent: Option<hecs::Entity>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+        dressers: &mut [Box<dyn Dress + '_>],
         out: &mut (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>),
     ) {
         let matrix = parent_matrix * desc.transform.matrix();
-        let entity = spawn_one(desc, parent, matrix, world, resolve, palette, &mut out.1);
+        let entity = spawn_one(desc, parent, matrix, world, dressers, &mut out.1);
         let _ = world.remove_one::<SceneId>(entity);
         out.0.push((entity, desc));
         for child in &desc.children {
-            walk(child, Some(entity), matrix, world, resolve, palette, out);
+            walk(child, Some(entity), matrix, world, dressers, out);
         }
     }
     let parent_matrix = parent
         .and_then(|p| world.get::<&WorldTransform>(p).ok().map(|w| w.0))
         .unwrap_or(glam::Mat4::IDENTITY);
+    let mut dressers = dressers(&mut resolve, &palette);
     let mut out = (Vec::new(), Vec::new());
-    walk(
-        desc,
-        parent,
-        parent_matrix,
-        world,
-        &mut resolve,
-        &palette,
-        &mut out,
-    );
+    walk(desc, parent, parent_matrix, world, &mut dressers, &mut out);
     out
 }
 
-/// Spawn one entity from its line in the file, without its children.
+/// Spawn one entity from its line in the file, without its children: the
+/// core's part — its place, its identity, its parent, whether it is on —
+/// then every module's.
 fn spawn_one(
     desc: &EntityDesc,
     parent: Option<hecs::Entity>,
     world_matrix: glam::Mat4,
     world: &mut World,
-    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+    dressers: &mut [Box<dyn Dress + '_>],
     missing: &mut Vec<Unresolved>,
 ) -> hecs::Entity {
-    let entity = world.spawn((
-        desc.transform,
-        WorldTransform(world_matrix),
-        Physics(desc.body()),
-        Shape(desc.collider()),
-        SceneId(desc.id),
-    ));
+    let entity = world.spawn((desc.transform, WorldTransform(world_matrix), SceneId(desc.id)));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
-    }
-    if !desc.joint().is_none() {
-        let _ = world.insert_one(entity, Jointed(desc.joint()));
-    }
-    if let Some(force) = desc.joint_break() {
-        let _ = world.insert_one(entity, JointBreak(force));
-    }
-    if !desc.bone().is_empty() {
-        let _ = world.insert_one(entity, OnBone(desc.bone().clone()));
-    }
-    if !desc.physics().is_default() {
-        let _ = world.insert_one(entity, Props(desc.physics()));
-    }
-    if !desc.layer().is_empty() {
-        let _ = world.insert_one(entity, Layer(desc.layer().clone()));
-    }
-    if let Some(lens) = desc.camera() {
-        let _ = world.insert_one(entity, CameraLens(lens));
-    }
-    if let Some(light) = desc.light() {
-        let _ = world.insert_one(entity, LightSource(light));
-    }
-    if let Some(probe) = desc.reflection_probe() {
-        let _ = world.insert_one(entity, ProbeBox(probe));
-    }
-    if desc.bends_grass() > 0.0 {
-        let _ = world.insert_one(entity, BendsGrass(desc.bends_grass()));
-    }
-    if let Some(prints) = desc.footprints() {
-        let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
-    }
-    if let Some(volume) = desc.post_volume() {
-        let _ = world.insert_one(entity, PostVolumeBox(volume));
-    }
-    if let Some(picture) = &desc.render_texture() {
-        let _ = world.insert_one(entity, ToTexture(picture.clone()));
-    }
-    if let Some(sound) = &desc.sound() {
-        let _ = world.insert_one(entity, Sounding(sound.clone()));
-    }
-    if !desc.animator().is_empty() {
-        let _ = world.insert_one(entity, animates(desc));
     }
     if desc.inactive {
         let _ = world.insert_one(entity, Inactive);
     }
-    if let Some(route) = &desc.route() {
-        let _ = world.insert_one(
-            entity,
-            crate::routes::Travelling::new(route.clone(), desc.transform.position),
-        );
+    for dresser in dressers.iter_mut() {
+        dresser.dress(desc, entity, world, Changed::All, missing);
     }
-    if let Some(emitter) = &desc.particles() {
-        if let Some(emitting) = emitting(emitter, resolve, palette) {
-            let _ = world.insert_one(entity, emitting);
-        }
-    }
-    dress(desc, entity, world, resolve, palette, missing);
     entity
-}
-
-/// Give an entity the mesh and surface its line names, or take them away
-/// when the mesh cannot be found.
-/// An emitter ready to run: what its particles are drawn as (its model, or
-/// a small cube) and with (its material, or the plain colour).
-fn emitting(
-    emitter: &crate::scene::Emitter,
-    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
-) -> Option<crate::particles::Emitting> {
-    let cube = crate::AssetLink::named(if emitter.facing {
-        "builtin:plane"
-    } else {
-        "builtin:cube"
-    });
-    let model = if emitter.model.is_empty() {
-        &cube
-    } else {
-        &emitter.model
-    };
-    let mesh = resolve(model).or_else(|| resolve(&cube))?;
-    let mut out = crate::particles::Emitting::new(emitter.clone(), mesh);
-    out.material = emitter.material.as_ref().and_then(palette);
-    Some(out)
-}
-
-pub(crate) fn dress(
-    desc: &EntityDesc,
-    entity: hecs::Entity,
-    world: &mut World,
-    resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-    palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
-    missing: &mut Vec<Unresolved>,
-) {
-    match desc.decal() {
-        Some(decal) => {
-            let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
-        }
-        None => {
-            let _ = world.remove_one::<Pressing>(entity);
-        }
-    }
-    // Ground made from its numbers: its mesh comes when it is first drawn
-    // (`terrain::upload_terrains`), and again only if they changed.
-    if let Some(terrain) = desc.terrain() {
-        let same = world
-            .get::<&crate::terrain::Relief>(entity)
-            .is_ok_and(|r| r.terrain == terrain);
-        if !same {
-            let _ = world.remove_one::<Model>(entity);
-            let _ = world.insert_one(entity, crate::terrain::Relief::new(terrain));
-        }
-        let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
-        return;
-    }
-    let _ = world.remove_one::<crate::terrain::Relief>(entity);
-    // No model is nothing to draw — a probe, a decal, a light, an empty to
-    // hang children on — not a model that could not be found.
-    if desc.model().is_empty() {
-        let _ = world.remove::<(Model, Surface)>(entity);
-        return;
-    }
-    match resolve(&desc.model()) {
-        Some(mesh) => {
-            let surface = Surface(desc.material_from(palette));
-            let _ = world.insert(entity, (Model(mesh), surface));
-        }
-        None => {
-            let _ = world.remove::<(Model, Surface)>(entity);
-            missing.push(Unresolved {
-                entity_name: desc.name.clone(),
-                model: desc.model().to_string(),
-            });
-        }
-    }
 }
 
 /// What [`patch_scene`] did to a world.
@@ -764,6 +653,17 @@ pub fn patch_scene(
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Patched {
+    let mut dressers = dressers(&mut resolve, &palette);
+    patch_scene_dressed(before, after, world, &mut dressers)
+}
+
+/// [`patch_scene`] with these modules' dressers.
+pub fn patch_scene_dressed(
+    before: &Scene,
+    after: &Scene,
+    world: &mut World,
+    dressers: &mut [Box<dyn Dress + '_>],
+) -> Patched {
     let mut old: HashMap<EntityId, (&EntityDesc, Option<EntityId>)> = HashMap::new();
     index(&before.entities, None, &mut old);
     let live: HashMap<EntityId, hecs::Entity> = world
@@ -779,14 +679,7 @@ pub fn patch_scene(
         out: Patched::default(),
     };
     for desc in &after.entities {
-        patch.subtree(
-            desc,
-            None,
-            glam::Mat4::IDENTITY,
-            world,
-            &mut resolve,
-            &palette,
-        );
+        patch.subtree(desc, None, glam::Mat4::IDENTITY, world, dressers);
     }
     let Patch { kept, mut out, .. } = patch;
 
@@ -844,15 +737,14 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         parent_matrix: glam::Mat4,
         world: &mut World,
-        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+        dressers: &mut [Box<dyn Dress + '_>],
     ) {
         self.kept.insert(desc.id);
         let world_matrix = parent_matrix * desc.transform.matrix();
         let entity = match self.live.get(&desc.id) {
             Some(&entity) if world.contains(entity) => {
                 let was = self.old.get(&desc.id).copied();
-                if self.update(desc, was, parent, entity, world, resolve, palette) {
+                if self.update(desc, was, parent, entity, world, dressers) {
                     self.out.updated += 1;
                 }
                 entity
@@ -864,27 +756,19 @@ impl Patch<'_> {
                     parent.map(|(_, entity)| entity),
                     world_matrix,
                     world,
-                    resolve,
-                    palette,
+                    dressers,
                     &mut self.out.missing,
                 )
             }
         };
         for child in &desc.children {
-            self.subtree(
-                child,
-                Some((desc.id, entity)),
-                world_matrix,
-                world,
-                resolve,
-                palette,
-            );
+            self.subtree(child, Some((desc.id, entity)), world_matrix, world, dressers);
         }
     }
 
-    /// Write the fields of one line that differ from its previous version.
-    /// Returns whether anything did.
-    #[allow(clippy::too_many_arguments)]
+    /// Write the fields of one line that differ from its previous version:
+    /// the core's here, each module's by its dresser. Returns whether
+    /// anything did.
     fn update(
         &mut self,
         desc: &EntityDesc,
@@ -892,214 +776,15 @@ impl Patch<'_> {
         parent: Option<(EntityId, hecs::Entity)>,
         entity: hecs::Entity,
         world: &mut World,
-        resolve: &mut impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
-        palette: &impl Fn(&crate::AssetLink) -> Option<Material>,
+        dressers: &mut [Box<dyn Dress + '_>],
     ) -> bool {
         let mut changed = false;
         if was.is_none_or(|(old, _)| old.transform != desc.transform) {
             let _ = world.insert_one(entity, desc.transform);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| {
-            old.model() != desc.model()
-                || old.material_ref() != desc.material_ref()
-                || old.decal() != desc.decal()
-        }) {
-            dress(desc, entity, world, resolve, palette, &mut self.out.missing);
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.body() != desc.body()) {
-            let _ = world.insert_one(entity, Physics(desc.body()));
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.collider() != desc.collider()) {
-            let _ = world.insert_one(entity, Shape(desc.collider()));
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.route() != desc.route()) {
-            match &desc.route() {
-                Some(route) => {
-                    let _ = world.insert_one(
-                        entity,
-                        crate::routes::Travelling::new(route.clone(), desc.transform.position),
-                    );
-                }
-                None => {
-                    let _ = world.remove_one::<crate::routes::Travelling>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.particles() != desc.particles()) {
-            let running = world
-                .get::<&mut crate::particles::Emitting>(entity)
-                .ok()
-                .map(|mut e| {
-                    if let Some(emitter) = &desc.particles() {
-                        // The knobs change; what is in the air stays.
-                        if let Some(fresh) = emitting(emitter, resolve, palette) {
-                            e.mesh = fresh.mesh;
-                            e.material = fresh.material;
-                        }
-                        e.emitter = emitter.clone();
-                    }
-                });
-            match (&desc.particles(), running) {
-                (Some(emitter), None) => {
-                    if let Some(emitting) = emitting(emitter, resolve, palette) {
-                        let _ = world.insert_one(entity, emitting);
-                    }
-                }
-                (None, _) => {
-                    let _ = world.remove_one::<crate::particles::Emitting>(entity);
-                }
-                _ => {}
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.light() != desc.light()) {
-            match desc.light() {
-                Some(light) => {
-                    let _ = world.insert_one(entity, LightSource(light));
-                }
-                None => {
-                    let _ = world.remove_one::<LightSource>(entity);
-                }
-            }
-            changed = true;
-        }
         if was.is_none_or(|(old, _)| old.inactive != desc.inactive) {
             set_active(world, entity, !desc.inactive);
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.animator() != desc.animator()) {
-            let _ = world.remove_one::<crate::motion::Moving>(entity);
-            if desc.animator().is_empty() {
-                let _ = world.remove_one::<crate::motion::Animates>(entity);
-            } else {
-                let _ = world.insert_one(entity, animates(desc));
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.sound() != desc.sound()) {
-            match &desc.sound() {
-                Some(sound) => {
-                    let _ = world.insert_one(entity, Sounding(sound.clone()));
-                }
-                None => {
-                    let _ = world.remove_one::<Sounding>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.footprints() != desc.footprints()) {
-            // Retuned, it starts a fresh trail: the old prints were made
-            // by the old settings.
-            match desc.footprints() {
-                Some(prints) => {
-                    let _ = world.insert_one(entity, crate::footprints::Trail::new(prints));
-                }
-                None => {
-                    let _ = world.remove_one::<crate::footprints::Trail>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.bends_grass() != desc.bends_grass()) {
-            if desc.bends_grass() > 0.0 {
-                let _ = world.insert_one(entity, BendsGrass(desc.bends_grass()));
-            } else {
-                let _ = world.remove_one::<BendsGrass>(entity);
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.render_texture() != desc.render_texture()) {
-            match &desc.render_texture() {
-                Some(picture) => {
-                    let _ = world.insert_one(entity, ToTexture(picture.clone()));
-                }
-                None => {
-                    let _ = world.remove_one::<ToTexture>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.post_volume() != desc.post_volume()) {
-            match desc.post_volume() {
-                Some(volume) => {
-                    let _ = world.insert_one(entity, PostVolumeBox(volume));
-                }
-                None => {
-                    let _ = world.remove_one::<PostVolumeBox>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.reflection_probe() != desc.reflection_probe()) {
-            match desc.reflection_probe() {
-                Some(probe) => {
-                    let _ = world.insert_one(entity, ProbeBox(probe));
-                }
-                None => {
-                    let _ = world.remove_one::<ProbeBox>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.camera() != desc.camera()) {
-            match desc.camera() {
-                Some(lens) => {
-                    let _ = world.insert_one(entity, CameraLens(lens));
-                }
-                None => {
-                    let _ = world.remove_one::<CameraLens>(entity);
-                }
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.layer() != desc.layer()) {
-            if desc.layer().is_empty() {
-                let _ = world.remove_one::<Layer>(entity);
-            } else {
-                let _ = world.insert_one(entity, Layer(desc.layer().clone()));
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.physics() != desc.physics()) {
-            if desc.physics().is_default() {
-                let _ = world.remove_one::<Props>(entity);
-            } else {
-                let _ = world.insert_one(entity, Props(desc.physics()));
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.joint() != desc.joint()) {
-            if desc.joint().is_none() {
-                let _ = world.remove_one::<Jointed>(entity);
-            } else {
-                let _ = world.insert_one(entity, Jointed(desc.joint()));
-            }
-            // A joint set anew is whole again.
-            let _ = world.remove_one::<JointBroken>(entity);
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.bone() != desc.bone()) {
-            if desc.bone().is_empty() {
-                let _ = world.remove_one::<OnBone>(entity);
-            } else {
-                let _ = world.insert_one(entity, OnBone(desc.bone().clone()));
-            }
-            changed = true;
-        }
-        if was.is_none_or(|(old, _)| old.joint_break() != desc.joint_break()) {
-            match desc.joint_break() {
-                Some(force) => {
-                    let _ = world.insert_one(entity, JointBreak(force));
-                }
-                None => {
-                    let _ = world.remove_one::<JointBreak>(entity);
-                }
-            }
             changed = true;
         }
         if was.is_none_or(|(_, old_parent)| old_parent != parent.map(|(id, _)| id)) {
@@ -1112,6 +797,28 @@ impl Patch<'_> {
                 }
             }
             changed = true;
+        }
+        // The module fields whose text differs, both ways: set, changed
+        // or taken off.
+        let differ: Vec<String> = match was {
+            None => Vec::new(),
+            Some((old, _)) => desc
+                .parts
+                .names()
+                .chain(old.parts.names())
+                .filter(|name| old.parts.raw(name) != desc.parts.raw(name))
+                .map(str::to_string)
+                .collect(),
+        };
+        let fields = match was {
+            None => Changed::All,
+            Some(_) => Changed::Only(&differ),
+        };
+        for dresser in dressers.iter_mut() {
+            if fields.any(dresser.parts()) {
+                dresser.dress(desc, entity, world, fields, &mut self.out.missing);
+                changed = true;
+            }
         }
         changed
     }

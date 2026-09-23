@@ -3095,3 +3095,67 @@ mod tests {
         assert!((hit.distance - 4.5).abs() < 0.05, "{}", hit.distance);
     }
 }
+
+/// The physics module's dresser ([`crate::world::Dress`]): how a line is
+/// solid — its body, its shape, what it is made of, its layer, its joint
+/// and when the joint breaks.
+pub struct PhysicsDress;
+
+impl crate::world::Dress for PhysicsDress {
+    fn parts(&self) -> &[&'static str] {
+        &["body", "collider", "physics", "layer", "joint", "joint_break"]
+    }
+
+    fn dress(
+        &mut self,
+        line: &crate::scene::EntityDesc,
+        entity: hecs::Entity,
+        world: &mut hecs::World,
+        changed: crate::world::Changed,
+        _: &mut Vec<crate::world::Unresolved>,
+    ) {
+        use crate::world::{JointBreak, JointBroken, Jointed, Layer, Props, Shape};
+        if changed.has("body") {
+            let _ = world.insert_one(entity, crate::world::Physics(line.body()));
+        }
+        if changed.has("collider") {
+            let _ = world.insert_one(entity, Shape(line.collider()));
+        }
+        if changed.has("physics") {
+            let props = line.physics();
+            if props.is_default() {
+                let _ = world.remove_one::<Props>(entity);
+            } else {
+                let _ = world.insert_one(entity, Props(props));
+            }
+        }
+        if changed.has("layer") {
+            let layer = line.layer();
+            if layer.is_empty() {
+                let _ = world.remove_one::<Layer>(entity);
+            } else {
+                let _ = world.insert_one(entity, Layer(layer));
+            }
+        }
+        if changed.has("joint") {
+            let joint = line.joint();
+            if joint.is_none() {
+                let _ = world.remove_one::<Jointed>(entity);
+            } else {
+                let _ = world.insert_one(entity, Jointed(joint));
+            }
+            // A joint set anew is whole again.
+            let _ = world.remove_one::<JointBroken>(entity);
+        }
+        if changed.has("joint_break") {
+            match line.joint_break() {
+                Some(force) => {
+                    let _ = world.insert_one(entity, JointBreak(force));
+                }
+                None => {
+                    let _ = world.remove_one::<JointBreak>(entity);
+                }
+            }
+        }
+    }
+}

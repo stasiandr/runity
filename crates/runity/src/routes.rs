@@ -229,3 +229,31 @@ mod tests {
         );
     }
 }
+
+/// The routes module's dresser ([`crate::world::Dress`]): a line's `route`,
+/// travelled from where it stands. Changed, it starts again.
+pub struct RouteDress;
+
+impl crate::world::Dress for RouteDress {
+    fn parts(&self) -> &[&'static str] {
+        &["route"]
+    }
+
+    fn dress(
+        &mut self,
+        line: &crate::scene::EntityDesc,
+        entity: hecs::Entity,
+        world: &mut hecs::World,
+        _: crate::world::Changed,
+        _: &mut Vec<crate::world::Unresolved>,
+    ) {
+        match line.route() {
+            Some(route) => {
+                let _ = world.insert_one(entity, Travelling::new(route, line.transform.position));
+            }
+            None => {
+                let _ = world.remove_one::<Travelling>(entity);
+            }
+        }
+    }
+}

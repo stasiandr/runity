@@ -668,7 +668,7 @@ impl LiveScene {
         let mut resolve = resolver(&mut self.meshes, library, gpu, renderer);
         let mut ignored = Vec::new();
         for (entity, desc) in wanting {
-            crate::world::dress(
+            crate::appearance::dress_look(
                 &desc,
                 entity,
                 world,

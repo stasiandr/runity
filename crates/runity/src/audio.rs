@@ -751,3 +751,31 @@ mod tests {
         assert!((gain_to_decibels(0.5).0 - -6.02).abs() < 0.01);
     }
 }
+
+/// The sound module's dresser ([`crate::world::Dress`]): the sound a line
+/// makes, played by [`Sources`].
+pub struct SoundDress;
+
+impl crate::world::Dress for SoundDress {
+    fn parts(&self) -> &[&'static str] {
+        &["sound"]
+    }
+
+    fn dress(
+        &mut self,
+        line: &crate::scene::EntityDesc,
+        entity: hecs::Entity,
+        world: &mut hecs::World,
+        _: crate::world::Changed,
+        _: &mut Vec<crate::world::Unresolved>,
+    ) {
+        match line.sound() {
+            Some(sound) => {
+                let _ = world.insert_one(entity, crate::world::Sounding(sound));
+            }
+            None => {
+                let _ = world.remove_one::<crate::world::Sounding>(entity);
+            }
+        }
+    }
+}
