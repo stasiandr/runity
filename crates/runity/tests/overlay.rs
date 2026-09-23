@@ -156,10 +156,7 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         mesh,
         transform: runity::glam::Mat4::from_translation(Vec3::new(0.0, 0.0, -4.0)),
         texture: runity::TextureHandle::WHITE,
-        material: runity::Material {
-            base_color: [1.0, 0.3, 0.0],
-            shading: runity::Shading::Unlit,
-        },
+        material: runity::Material::new(1.0, 0.3, 0.0).unlit(),
         pose: None,
     };
     let base = Frame {

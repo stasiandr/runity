@@ -155,8 +155,10 @@ fn an_unlit_material_ignores_the_sun_while_everything_else_follows_it() {
     let orange: Vec<(u32, u32)> = (0..HEIGHT)
         .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
         .filter(|&(x, y)| {
-            let p = morning.at(x, y);
-            p[0] > 180 && p[1] < 170 && p[2] < 110
+            // Red well over green well over blue: the ember glows, so its
+            // green is lifted too, but it stays the only thing this orange.
+            let p = morning.at(x, y).map(|c| c as i32);
+            p[0] > 200 && p[0] > p[1] + 40 && p[1] > p[2] + 40
         })
         .collect();
     assert!(!orange.is_empty(), "the ember should be visible");

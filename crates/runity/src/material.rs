@@ -1,14 +1,13 @@
-//! What a surface is made of — which here is very little, on purpose.
+//! What a surface is made of: URP's Lit material, with its names.
 //!
-//! `docs/design/07-look.md` asks for flat shading, no specular, colour
-//! instead of material: wood is not a wood texture, it is a flat brown on a
-//! log-shaped thing. A material is therefore a colour and a choice of whether
-//! the light reaches it at all.
-//!
-//! It is a type rather than a bare colour because the two shading modes have
-//! to be distinguishable at a glance in a scene file, and because everything
-//! that gets added later — a texture, a roughness, an emissive — has an
-//! obvious place to go without changing every call site.
+//! A colour, how metallic and how smooth (the metallic workflow), what it
+//! emits, how see-through it is and how it is blended, whether it is cut
+//! out, which faces are drawn, and whether it takes highlights, reflections
+//! and shadows. Everything past the colour defaults to what the valley
+//! asks for (`docs/design/07-look.md`): not metallic, not smooth — a matte
+//! surface, flat colour on a characteristic shape, which is what a
+//! material that says only its colour still looks like. Anything else is
+//! a line in the material's file away.
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
@@ -48,6 +47,85 @@ pub enum Shading {
     Grid,
 }
 
+/// Whether a surface hides what is behind it: URP's Surface Type.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub enum SurfaceType {
+    #[default]
+    Opaque,
+    /// Blended over what is behind it, drawn after everything solid, far
+    /// ones first.
+    Transparent,
+}
+
+/// How a transparent surface combines with what is behind it: URP's Blending
+/// Mode.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub enum Blend {
+    /// Glass, water, smoke: the surface over the background by its alpha.
+    #[default]
+    Alpha,
+    /// Alpha, with the colour already scaled by it: a reflection on glass
+    /// keeps its brightness where the glass is clear.
+    Premultiply,
+    /// Added: fire, sparks, glows.
+    Additive,
+    /// Multiplied into the background: stains, tinted glass.
+    Multiply,
+}
+
+/// Which faces are drawn: URP's Render Face.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
+pub enum RenderFace {
+    #[default]
+    Front,
+    /// The inside: a room seen from within a box.
+    Back,
+    /// Both: a leaf, a sheet of cloth, a flag.
+    Both,
+}
+
 /// A surface.
 #[derive(
     Debug,
@@ -68,14 +146,67 @@ pub struct Material {
     pub base_color: [f32; 3],
     #[serde(default)]
     pub shading: Shading,
+    /// 0 a dielectric (wood, stone, cloth, paint), 1 a metal.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub metallic: f32,
+    /// 0 matte, 1 a mirror. The highlight's sharpness and how much of the
+    /// sky it reflects.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub smoothness: f32,
+    /// Light the surface gives off, linear and times its intensity — past
+    /// 1.0 it blooms. An ember, a screen, a lit window.
+    #[serde(default, skip_serializing_if = "is_black")]
+    pub emission: [f32; 3],
+    /// How opaque, 0 to 1: only a [`SurfaceType::Transparent`] surface is
+    /// see-through by it; an opaque one uses it for `alpha_clip`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub alpha: f32,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub surface: SurfaceType,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub blend: Blend,
+    /// Alpha Clipping: pixels less opaque than this are not drawn at all —
+    /// a leaf cut out of a quad, a chain-link fence. 0 is off.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub alpha_clip: f32,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub render_face: RenderFace,
+    /// The sun's and the lamps' highlights on it.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub specular_highlights: bool,
+    /// The sky seen in it.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub environment_reflections: bool,
+    /// Shadows fall on it.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub receive_shadows: bool,
+}
+
+fn is_zero(x: &f32) -> bool {
+    *x == 0.0
+}
+fn one() -> f32 {
+    1.0
+}
+fn is_one(x: &f32) -> bool {
+    *x == 1.0
+}
+fn is_black(c: &[f32; 3]) -> bool {
+    *c == [0.0; 3]
+}
+fn yes() -> bool {
+    true
+}
+fn is_true(b: &bool) -> bool {
+    *b
+}
+fn is_default<T: Default + PartialEq>(x: &T) -> bool {
+    *x == T::default()
 }
 
 impl Default for Material {
     fn default() -> Self {
-        Self {
-            base_color: [0.8, 0.8, 0.8],
-            shading: Shading::Lit,
-        }
+        Self::new(0.8, 0.8, 0.8)
     }
 }
 
@@ -84,16 +215,29 @@ impl Material {
         Self {
             base_color: [r, g, b],
             shading: Shading::Lit,
+            metallic: 0.0,
+            smoothness: 0.0,
+            emission: [0.0; 3],
+            alpha: 1.0,
+            surface: SurfaceType::Opaque,
+            blend: Blend::Alpha,
+            alpha_clip: 0.0,
+            render_face: RenderFace::Front,
+            specular_highlights: true,
+            environment_reflections: true,
+            receive_shadows: true,
         }
+    }
+
+    /// Whether it is blended over what is behind it.
+    pub fn is_transparent(&self) -> bool {
+        self.surface == SurfaceType::Transparent
     }
 
     /// Build a material from the sRGB bytes a colour picker gives you.
     pub fn from_srgb(r: u8, g: u8, b: u8) -> Self {
         let channel = |byte: u8| srgb_to_linear(byte as f32 / 255.0);
-        Self {
-            base_color: [channel(r), channel(g), channel(b)],
-            shading: Shading::Lit,
-        }
+        Self::new(channel(r), channel(g), channel(b))
     }
 
     pub const fn unlit(mut self) -> Self {
@@ -121,17 +265,38 @@ impl From<&ArchivedMaterial> for Material {
     /// worth having. Meshes are borrowed because a mesh is megabytes; this is
     /// sixteen bytes.
     fn from(archived: &ArchivedMaterial) -> Self {
+        let v3 =
+            |c: &[rkyv::rend::f32_le; 3]| [c[0].to_native(), c[1].to_native(), c[2].to_native()];
         Self {
-            base_color: [
-                archived.base_color[0].to_native(),
-                archived.base_color[1].to_native(),
-                archived.base_color[2].to_native(),
-            ],
+            base_color: v3(&archived.base_color),
             shading: match archived.shading {
                 ArchivedShading::Unlit => Shading::Unlit,
                 ArchivedShading::Lit => Shading::Lit,
                 ArchivedShading::Grid => Shading::Grid,
             },
+            metallic: archived.metallic.to_native(),
+            smoothness: archived.smoothness.to_native(),
+            emission: v3(&archived.emission),
+            alpha: archived.alpha.to_native(),
+            surface: match archived.surface {
+                ArchivedSurfaceType::Opaque => SurfaceType::Opaque,
+                ArchivedSurfaceType::Transparent => SurfaceType::Transparent,
+            },
+            blend: match archived.blend {
+                ArchivedBlend::Alpha => Blend::Alpha,
+                ArchivedBlend::Premultiply => Blend::Premultiply,
+                ArchivedBlend::Additive => Blend::Additive,
+                ArchivedBlend::Multiply => Blend::Multiply,
+            },
+            alpha_clip: archived.alpha_clip.to_native(),
+            render_face: match archived.render_face {
+                ArchivedRenderFace::Front => RenderFace::Front,
+                ArchivedRenderFace::Back => RenderFace::Back,
+                ArchivedRenderFace::Both => RenderFace::Both,
+            },
+            specular_highlights: archived.specular_highlights,
+            environment_reflections: archived.environment_reflections,
+            receive_shadows: archived.receive_shadows,
         }
     }
 }
@@ -172,7 +337,13 @@ pub mod builtin {
     pub const BARK: Material = Material::new(0.06, 0.04, 0.02);
     pub const NEEDLE: Material = Material::new(0.04, 0.09, 0.05);
     pub const STONE: Material = Material::new(0.19, 0.20, 0.22);
-    pub const EMBER: Material = Material::new(1.00, 0.35, 0.10).unlit();
+    /// Unlit, and glowing: it gives off a little more light than it is
+    /// coloured, so it blooms at night and not at noon.
+    pub const EMBER: Material = {
+        let mut m = Material::new(1.00, 0.35, 0.10).unlit();
+        m.emission = [0.6, 0.2, 0.05];
+        m
+    };
     /// Light grey with the metre grid: what a greybox is built from.
     pub const GRID: Material = Material::new(0.45, 0.46, 0.48).grid();
 

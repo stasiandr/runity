@@ -29,7 +29,7 @@ use glam::{Mat4, Vec3};
 
 use crate::asset::{ArchivedMeshAsset, ArchivedTextureAsset};
 use crate::gpu::{Gpu, OffscreenTarget};
-use crate::material::{Material, Shading};
+use crate::material::{Blend, Material, RenderFace, Shading};
 
 /// A mesh that lives on the GPU. Opaque on purpose — the index is ours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -531,10 +531,66 @@ struct SkinVertex {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct InstanceRaw {
     model: [[f32; 4]; 4],
-    /// rgb is the base colour; w is 1.0 for an unlit surface, which the
-    /// shader uses to skip both the light and the fog.
+    /// rgb is the base colour; w is 0 lit, 1 unlit, 2 lit with the grid.
     color_and_shading: [f32; 4],
+    /// Metallic, smoothness, alpha, alpha-clip threshold.
+    surface: [f32; 4],
+    /// Emission, linear and times its intensity; `w` packs the switches
+    /// ([`FLAG_SPECULAR`] and the rest).
+    emission: [f32; 4],
 }
+
+/// Bits of [`InstanceRaw::emission`]'s `w`.
+const FLAG_SPECULAR: u32 = 1;
+const FLAG_REFLECTIONS: u32 = 2;
+const FLAG_SHADOWS: u32 = 4;
+const FLAG_PREMULTIPLY: u32 = 8;
+
+/// What the GPU is told about one draw.
+fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
+    let shading = match material.shading {
+        Shading::Lit => 0.0,
+        Shading::Unlit => 1.0,
+        Shading::Grid => 2.0,
+    };
+    let mut flags = 0;
+    if material.specular_highlights {
+        flags |= FLAG_SPECULAR;
+    }
+    if material.environment_reflections {
+        flags |= FLAG_REFLECTIONS;
+    }
+    if material.receive_shadows {
+        flags |= FLAG_SHADOWS;
+    }
+    if material.is_transparent() && material.blend == Blend::Premultiply {
+        flags |= FLAG_PREMULTIPLY;
+    }
+    InstanceRaw {
+        model: transform.to_cols_array_2d(),
+        color_and_shading: extend(material.color(), shading),
+        surface: [
+            material.metallic.clamp(0.0, 1.0),
+            material.smoothness.clamp(0.0, 1.0),
+            if material.is_transparent() || material.alpha_clip > 0.0 {
+                material.alpha.clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
+            material.alpha_clip.clamp(0.0, 1.0),
+        ],
+        emission: [
+            material.emission[0].max(0.0),
+            material.emission[1].max(0.0),
+            material.emission[2].max(0.0),
+            flags as f32,
+        ],
+    }
+}
+
+/// A group of draws of one mesh with one texture, and the pipeline they
+/// take — `None` in the shadow and overlay passes, which set their own.
+type BatchKey = (Option<Look>, MeshHandle, TextureHandle);
 
 struct GpuTexture {
     bind_group: wgpu::BindGroup,
@@ -697,11 +753,54 @@ impl ShaderFile {
     }
 }
 
+/// Which scene pipeline a draw takes: skinned or not, which faces, and —
+/// for a transparent surface — how it blends. Every combination is built
+/// when the renderer is, so no frame ever waits on a pipeline (DNA,
+/// postulate 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Look {
+    skinned: bool,
+    face: RenderFace,
+    /// `None` is opaque.
+    blend: Option<Blend>,
+}
+
+impl Look {
+    fn all() -> Vec<Look> {
+        let mut out = Vec::new();
+        for skinned in [false, true] {
+            for face in [RenderFace::Front, RenderFace::Back, RenderFace::Both] {
+                for blend in [
+                    None,
+                    Some(Blend::Alpha),
+                    Some(Blend::Premultiply),
+                    Some(Blend::Additive),
+                    Some(Blend::Multiply),
+                ] {
+                    out.push(Look {
+                        skinned,
+                        face,
+                        blend,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    fn of(material: &Material, skinned: bool) -> Look {
+        Look {
+            skinned,
+            face: material.render_face,
+            blend: material.is_transparent().then_some(material.blend),
+        }
+    }
+}
+
 /// Every pipeline the renderer draws with.
 struct Pipelines {
-    main: wgpu::RenderPipeline,
+    scene: std::collections::HashMap<Look, wgpu::RenderPipeline>,
     shadow: wgpu::RenderPipeline,
-    skinned: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
 }
@@ -713,6 +812,83 @@ struct Layouts<'a> {
     shadow: &'a wgpu::PipelineLayout,
     skinned: &'a wgpu::PipelineLayout,
     sky: &'a wgpu::PipelineLayout,
+}
+
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![
+    3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
+    7 => Float32x4, 10 => Float32x4, 11 => Float32x4
+];
+const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
+    wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
+
+fn vertex_buffers(skinned: bool) -> Vec<Option<wgpu::VertexBufferLayout<'static>>> {
+    let mut out = vec![
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &VERTEX_ATTRIBUTES,
+        }),
+        Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &INSTANCE_ATTRIBUTES,
+        }),
+    ];
+    if skinned {
+        out.push(Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<SkinVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &SKIN_ATTRIBUTES,
+        }));
+    }
+    out
+}
+
+/// URP's blending modes as blend states: what a transparent surface does
+/// to what is already there.
+fn blend_state(blend: Blend) -> wgpu::BlendState {
+    use wgpu::{BlendComponent as C, BlendFactor as F, BlendOperation::Add};
+    let over = |src| C {
+        src_factor: src,
+        dst_factor: F::OneMinusSrcAlpha,
+        operation: Add,
+    };
+    match blend {
+        Blend::Alpha => wgpu::BlendState {
+            color: over(F::SrcAlpha),
+            alpha: over(F::One),
+        },
+        Blend::Premultiply => wgpu::BlendState {
+            color: over(F::One),
+            alpha: over(F::One),
+        },
+        Blend::Additive => wgpu::BlendState {
+            color: C {
+                src_factor: F::SrcAlpha,
+                dst_factor: F::One,
+                operation: Add,
+            },
+            alpha: C {
+                src_factor: F::Zero,
+                dst_factor: F::One,
+                operation: Add,
+            },
+        },
+        Blend::Multiply => wgpu::BlendState {
+            color: C {
+                src_factor: F::Dst,
+                dst_factor: F::Zero,
+                operation: Add,
+            },
+            alpha: C {
+                src_factor: F::Zero,
+                dst_factor: F::One,
+                operation: Add,
+            },
+        },
+    }
 }
 
 /// Every pipeline the renderer draws with, from one shader module: at
@@ -727,91 +903,83 @@ fn build_pipelines(
     layouts: &Layouts,
 ) -> Pipelines {
     let format = crate::post::HDR_FORMAT;
-    let (pipeline_layout, shadow_pipeline_layout, skinned_layout) =
-        (layouts.main, layouts.shadow, layouts.skinned);
     let multisample = wgpu::MultisampleState {
         count: samples,
         ..Default::default()
     };
-    let pipeline = gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("runity::render"),
-            layout: Some(pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                        ],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![
-                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                            6 => Float32x4, 7 => Float32x4
-                        ],
-                    }),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                // Back faces are dropped, which is why the importer cares
-                // about winding: a model wound inside out disappears.
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample,
-            multiview_mask: None,
-            cache: None,
-        });
+    let scene_pipeline = |look: Look| {
+        let buffers = vertex_buffers(look.skinned);
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(if look.skinned {
+                    "runity::skinned"
+                } else {
+                    "runity::render"
+                }),
+                layout: Some(if look.skinned {
+                    layouts.skinned
+                } else {
+                    layouts.main
+                }),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(if look.skinned { "vs_skinned" } else { "vs" }),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some("fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: look.blend.map(blend_state),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    // Back faces are dropped unless a material asks for
+                    // them, which is why the importer cares about winding:
+                    // a model wound inside out disappears.
+                    cull_mode: match look.face {
+                        RenderFace::Front => Some(wgpu::Face::Back),
+                        RenderFace::Back => Some(wgpu::Face::Front),
+                        RenderFace::Both => None,
+                    },
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    // What is see-through does not hide what is drawn
+                    // after it; it is tested against the solid world only.
+                    depth_write_enabled: Some(look.blend.is_none()),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample,
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    let scene = Look::all()
+        .into_iter()
+        .map(|look| (look, scene_pipeline(look)))
+        .collect();
 
     // Depth only: no fragment stage at all, because nothing is written
     // but depth and a colour target would only cost fill.
-    let shadow_pipeline = gpu
+    let buffers = vertex_buffers(false);
+    let shadow = gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("runity::shadow"),
-            layout: Some(shadow_pipeline_layout),
+            layout: Some(layouts.shadow),
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs_shadow"),
                 compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                        ],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![
-                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                            6 => Float32x4, 7 => Float32x4
-                        ],
-                    }),
-                ],
+                buffers: &buffers,
             },
             fragment: None,
             primitive: wgpu::PrimitiveState {
@@ -839,89 +1007,19 @@ fn build_pipelines(
             cache: None,
         });
 
-    let skinned_pipeline = gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("runity::skinned"),
-            layout: Some(skinned_layout),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs_skinned"),
-                compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                        ],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![
-                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                            6 => Float32x4, 7 => Float32x4
-                        ],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<SkinVertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4],
-                    }),
-                ],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample,
-            multiview_mask: None,
-            cache: None,
-        });
-
-    // The same shader and the same vertex layout, with the depth test
-    // turned off and depth writes suppressed — so an overlay neither
-    // hides behind the scene nor blocks anything drawn after it.
-    let overlay_pipeline = gpu
+    // The same shader and the same vertex layout, onto the finished
+    // picture, with no depth at all — so an overlay neither hides behind
+    // the scene nor blocks anything drawn after it.
+    let overlay = gpu
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("runity::overlay"),
-            layout: Some(pipeline_layout),
+            layout: Some(layouts.main),
             vertex: wgpu::VertexState {
                 module: shader,
                 entry_point: Some("vs"),
                 compilation_options: Default::default(),
-                buffers: &[
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<crate::asset::Vertex>() as u64,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![
-                            0 => Float32x3, 1 => Float32x3, 2 => Float32x2
-                        ],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<InstanceRaw>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![
-                            3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
-                            6 => Float32x4, 7 => Float32x4
-                        ],
-                    }),
-                ],
+                buffers: &buffers,
             },
             fragment: Some(wgpu::FragmentState {
                 module: shader,
@@ -972,10 +1070,9 @@ fn build_pipelines(
         });
 
     Pipelines {
-        main: pipeline,
-        shadow: shadow_pipeline,
-        skinned: skinned_pipeline,
-        overlay: overlay_pipeline,
+        scene,
+        shadow,
+        overlay,
         sky,
     }
 }
@@ -1497,34 +1594,85 @@ impl Renderer {
     fn draw_batches<'pass>(
         &'pass self,
         pass: &mut wgpu::RenderPass<'pass>,
-        batches: &[((MeshHandle, TextureHandle), Vec<InstanceRaw>)],
+        batches: &[(BatchKey, Vec<InstanceRaw>)],
         base: u32,
         textured: bool,
     ) {
         let mut first = base;
-        for ((handle, texture), list) in batches {
+        let mut current: Option<Look> = None;
+        for ((look, handle, texture), list) in batches {
+            let count = list.len() as u32;
             let Some(mesh) = self.meshes.get(handle.0 as usize) else {
+                first += count;
                 continue;
             };
-            if textured {
-                // Falls back to white rather than skipping the draw: a
-                // missing texture should leave a flat-coloured object, not a
-                // hole where one used to be.
-                let bound = self
-                    .textures
-                    .get(texture.0 as usize)
-                    .or_else(|| self.textures.first());
-                if let Some(bound) = bound {
-                    pass.set_bind_group(1, &bound.bind_group, &[]);
+            if let Some(look) = look {
+                if current != Some(*look) {
+                    if let Some(pipeline) = self.pipelines.scene.get(look) {
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, &self.bind_group, &[]);
+                    }
+                    current = Some(*look);
                 }
+            }
+            if textured {
+                self.bind_texture(pass, *texture);
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_vertex_buffer(1, self.instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            let count = list.len() as u32;
             pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
             first += count;
         }
+    }
+
+    /// Falls back to white rather than skipping the draw: a missing texture
+    /// should leave a flat-coloured object, not a hole where one used to be.
+    fn bind_texture<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        texture: TextureHandle,
+    ) {
+        let bound = self
+            .textures
+            .get(texture.0 as usize)
+            .or_else(|| self.textures.first());
+        if let Some(bound) = bound {
+            pass.set_bind_group(1, &bound.bind_group, &[]);
+        }
+    }
+
+    /// One draw on its own: a skinned one (its own pose) or a transparent
+    /// one (its own place in the back-to-front order).
+    fn draw_single<'pass>(
+        &'pass self,
+        pass: &mut wgpu::RenderPass<'pass>,
+        look: Look,
+        mesh: MeshHandle,
+        texture: TextureHandle,
+        pose: u32,
+        instance: u32,
+    ) {
+        let Some(mesh) = self.meshes.get(mesh.0 as usize) else {
+            return;
+        };
+        let Some(pipeline) = self.pipelines.scene.get(&look) else {
+            return;
+        };
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        self.bind_texture(pass, texture);
+        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+        pass.set_vertex_buffer(1, self.instances.slice(..));
+        if look.skinned {
+            let Some(skin) = mesh.skin.as_ref() else {
+                return;
+            };
+            pass.set_bind_group(2, &self.pose_bind_group, &[pose * self.pose_stride as u32]);
+            pass.set_vertex_buffer(2, skin.slice(..));
+        }
+        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
     }
 
     /// The world-space box around everything being drawn.
@@ -1824,35 +1972,36 @@ impl Renderer {
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
 
-        // Draws are grouped by mesh and texture so that one mesh drawn a
-        // hundred times costs one call. A forest is the same tree over and
-        // over, so this is not a micro-optimisation, it is the difference
-        // between one draw and a thousand.
+        // Draws are grouped by pipeline, mesh and texture so that one mesh
+        // drawn a hundred times costs one call. A forest is the same tree
+        // over and over, so this is not a micro-optimisation, it is the
+        // difference between one draw and a thousand.
         //
-        // Two sets, because the shadow pass must not use the camera's
-        // frustum: something behind you can cast a shadow in front of you,
-        // and culling it leaves a hole in the ground where its shadow was.
+        // The shadow pass has its own set, because it must not use the
+        // camera's frustum: something behind you can cast a shadow in front
+        // of you, and culling it leaves a hole in the ground where its
+        // shadow was. What is see-through casts none.
+        //
+        // What is transparent is drawn after everything solid and the sky,
+        // one at a time, farthest first: blending is not commutative, and
+        // near glass drawn before far glass hides it.
         let planes = frustum_planes(frame.camera.view_projection(aspect));
-        let mut shadow_batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
-        let mut batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
-        let mut skinned_draws: Vec<(MeshHandle, TextureHandle, u32, InstanceRaw)> = Vec::new();
+        let mut shadow_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        let mut batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        let mut singles: Vec<(Look, MeshHandle, TextureHandle, u32, InstanceRaw)> = Vec::new();
+        let mut transparent: Vec<(f32, Look, MeshHandle, TextureHandle, u32, InstanceRaw)> =
+            Vec::new();
         let mut stats = FrameStats {
             submitted: frame.draws.len() as u32,
             ..Default::default()
         };
+        let eye = frame.camera.apparent_eye();
         for draw in &frame.draws {
-            let unlit = match draw.material.shading {
-                Shading::Lit => 0.0,
-                Shading::Unlit => 1.0,
-                Shading::Grid => 2.0,
-            };
-            let raw = InstanceRaw {
-                model: draw.transform.to_cols_array_2d(),
-                color_and_shading: extend(draw.material.color(), unlit),
-            };
-            let key = (draw.mesh, draw.texture);
-            push(&mut shadow_batches, key, raw);
-            stats.shadow_casters += 1;
+            let raw = instance_of(draw.transform, &draw.material);
+            if !draw.material.is_transparent() {
+                push(&mut shadow_batches, (None, draw.mesh, draw.texture), raw);
+                stats.shadow_casters += 1;
+            }
 
             let skinned = draw.pose.is_some()
                 && self
@@ -1870,23 +2019,60 @@ impl Renderer {
                 continue;
             }
             stats.drawn += 1;
-            if skinned {
+            let look = Look::of(&draw.material, skinned);
+            let pose = draw.pose.unwrap_or(0);
+            if draw.material.is_transparent() {
+                let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
+                transparent.push((distance, look, draw.mesh, draw.texture, pose, raw));
+            } else if skinned {
                 // Skinned draws are not batched: each one has its own pose,
                 // so two of them cannot share an instanced call anyway.
-                skinned_draws.push((draw.mesh, draw.texture, draw.pose.unwrap_or(0), raw));
+                singles.push((look, draw.mesh, draw.texture, pose, raw));
             } else {
-                push(&mut batches, key, raw);
+                push(&mut batches, (Some(look), draw.mesh, draw.texture), raw);
             }
         }
         self.stats = stats;
+        // Farthest first.
+        transparent.sort_by(|a, b| b.0.total_cmp(&a.0));
+        // One pipeline change per look rather than per mesh.
+        batches.sort_by_key(|((look, mesh, texture), _)| {
+            let look = look.expect("colour batches carry their look");
+            (
+                look.skinned,
+                look.face as u8,
+                look.blend.map(|b| b as u8),
+                mesh.0,
+                texture.0,
+            )
+        });
 
-        let shadow_total: u64 = shadow_batches.iter().map(|(_, l)| l.len() as u64).sum();
-        let total: u64 = shadow_total
-            + batches.iter().map(|(_, l)| l.len() as u64).sum::<u64>()
-            + skinned_draws.len() as u64
-            + frame.overlay_draws.len() as u64;
-        if total > self.instance_capacity {
-            self.instance_capacity = total.next_power_of_two();
+        // Overlays are not culled and cast no shadow: they are tools, not
+        // things in the world.
+        let mut overlay_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        for draw in &frame.overlay_draws {
+            push(
+                &mut overlay_batches,
+                (None, draw.mesh, draw.texture),
+                instance_of(draw.transform, &draw.material),
+            );
+        }
+
+        // Every set shares one buffer, one after another: shadow casters,
+        // batched colour draws, the single ones, the transparent ones,
+        // overlays.
+        let shadow_total: u32 = shadow_batches.iter().map(|(_, l)| l.len() as u32).sum();
+        let batched_total: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
+        let flat: Vec<InstanceRaw> = shadow_batches
+            .iter()
+            .chain(batches.iter())
+            .flat_map(|(_, l)| l.iter().copied())
+            .chain(singles.iter().map(|single| single.4))
+            .chain(transparent.iter().map(|t| t.5))
+            .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
+            .collect();
+        if flat.len() as u64 > self.instance_capacity {
+            self.instance_capacity = (flat.len() as u64).next_power_of_two();
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: self.instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
@@ -1894,36 +2080,6 @@ impl Renderer {
                 mapped_at_creation: false,
             });
         }
-        // Both sets share one buffer: the shadow pass's instances first, then
-        // the colour pass's, which is why the colour pass draws from
-        // `shadow_total` onward.
-        // Overlays are not culled and cast no shadow: they are tools, not
-        // things in the world.
-        let mut overlay_batches: Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)> = Vec::new();
-        for draw in &frame.overlay_draws {
-            let unlit = match draw.material.shading {
-                Shading::Lit => 0.0,
-                Shading::Unlit => 1.0,
-                Shading::Grid => 2.0,
-            };
-            push(
-                &mut overlay_batches,
-                (draw.mesh, draw.texture),
-                InstanceRaw {
-                    model: draw.transform.to_cols_array_2d(),
-                    color_and_shading: extend(draw.material.color(), unlit),
-                },
-            );
-        }
-
-        let flat_colour_count: u32 = batches.iter().map(|(_, l)| l.len() as u32).sum();
-        let flat: Vec<InstanceRaw> = shadow_batches
-            .iter()
-            .chain(batches.iter())
-            .flat_map(|(_, l)| l.iter().copied())
-            .chain(skinned_draws.iter().map(|(_, _, _, raw)| *raw))
-            .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
-            .collect();
         if !flat.is_empty() {
             gpu.queue
                 .write_buffer(&self.instances, 0, bytemuck::cast_slice(&flat));
@@ -2028,48 +2184,22 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipelines.main);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            self.draw_batches(&mut pass, &batches, shadow_total as u32, true);
-
-            if !skinned_draws.is_empty() {
-                pass.set_pipeline(&self.pipelines.skinned);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                let mut instance = shadow_total as u32 + flat_colour_count;
-                for (mesh_handle, texture, pose, _) in &skinned_draws {
-                    let Some(mesh) = self.meshes.get(mesh_handle.0 as usize) else {
-                        continue;
-                    };
-                    let Some(skin) = mesh.skin.as_ref() else {
-                        continue;
-                    };
-                    if let Some(bound) = self
-                        .textures
-                        .get(texture.0 as usize)
-                        .or_else(|| self.textures.first())
-                    {
-                        pass.set_bind_group(1, &bound.bind_group, &[]);
-                    }
-                    pass.set_bind_group(
-                        2,
-                        &self.pose_bind_group,
-                        &[*pose * self.pose_stride as u32],
-                    );
-                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.instances.slice(..));
-                    pass.set_vertex_buffer(2, skin.slice(..));
-                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);
-                    instance += 1;
-                }
+            self.draw_batches(&mut pass, &batches, shadow_total, true);
+            let mut instance = shadow_total + batched_total;
+            for (look, mesh, texture, pose, _) in &singles {
+                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance);
+                instance += 1;
             }
-
             // The sky last among what is solid: only where nothing was
             // drawn is it shaded at all.
             if frame.sky.mode == SkyMode::Procedural {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
+            }
+            for (_, look, mesh, texture, pose, _) in &transparent {
+                self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance);
+                instance += 1;
             }
         }
 
@@ -2103,18 +2233,15 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipelines.overlay);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            let base = shadow_total as u32 + flat_colour_count + skinned_draws.len() as u32;
+            let base =
+                shadow_total + batched_total + singles.len() as u32 + transparent.len() as u32;
             self.draw_batches(&mut pass, &overlay_batches, base, true);
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
 }
 
-fn push(
-    batches: &mut Vec<((MeshHandle, TextureHandle), Vec<InstanceRaw>)>,
-    key: (MeshHandle, TextureHandle),
-    raw: InstanceRaw,
-) {
+fn push(batches: &mut Vec<(BatchKey, Vec<InstanceRaw>)>, key: BatchKey, raw: InstanceRaw) {
     match batches.iter_mut().find(|(k, _)| *k == key) {
         Some((_, list)) => list.push(raw),
         None => batches.push((key, vec![raw])),

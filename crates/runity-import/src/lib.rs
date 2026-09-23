@@ -801,6 +801,42 @@ pub struct MaterialSource {
     /// The metre grid on it: a greybox surface. Lit, so not with `unlit`.
     #[serde(default)]
     pub grid: bool,
+    /// URP Lit's properties, with its names; what is not said is a matte
+    /// opaque surface (see [`Material`]).
+    #[serde(default)]
+    pub metallic: f32,
+    #[serde(default)]
+    pub smoothness: f32,
+    /// What it gives off, as a colour like `color`, times
+    /// `emission_intensity`: past white it blooms.
+    #[serde(default = "black")]
+    pub emission: Color,
+    #[serde(default = "one")]
+    pub emission_intensity: f32,
+    #[serde(default = "one")]
+    pub alpha: f32,
+    #[serde(default)]
+    pub surface: runity::material::SurfaceType,
+    #[serde(default)]
+    pub blend: runity::material::Blend,
+    #[serde(default)]
+    pub alpha_clip: f32,
+    #[serde(default)]
+    pub render_face: runity::material::RenderFace,
+    #[serde(default = "yes")]
+    pub specular_highlights: bool,
+    #[serde(default = "yes")]
+    pub environment_reflections: bool,
+    #[serde(default = "yes")]
+    pub receive_shadows: bool,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn black() -> Color {
+    Color::Linear([0.0; 3])
 }
 
 /// Read a `.rmat` and build a material asset from it.
@@ -829,6 +865,20 @@ pub fn material_from_ron(
                 (false, true) => Shading::Grid,
                 (false, false) => Shading::Lit,
             },
+            metallic: source.metallic,
+            smoothness: source.smoothness,
+            emission: source
+                .emission
+                .linear()?
+                .map(|c| c * source.emission_intensity.max(0.0)),
+            alpha: source.alpha,
+            surface: source.surface,
+            blend: source.blend,
+            alpha_clip: source.alpha_clip,
+            render_face: source.render_face,
+            specular_highlights: source.specular_highlights,
+            environment_reflections: source.environment_reflections,
+            receive_shadows: source.receive_shadows,
         },
     })
 }

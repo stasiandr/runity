@@ -53,6 +53,11 @@ struct VertexInput {
     @location(5) model_2: vec4<f32>,
     @location(6) model_3: vec4<f32>,
     @location(7) color_and_shading: vec4<f32>,
+    // metallic, smoothness, alpha, alpha-clip threshold
+    @location(10) surface: vec4<f32>,
+    // emission rgb; w packs the switches: 1 highlights, 2 reflections,
+    // 4 receives shadows, 8 premultiplied
+    @location(11) emission: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -63,6 +68,8 @@ struct VertexOutput {
     // 0 lit, 1 unlit, 2 lit with the metre grid.
     @location(3) shading: f32,
     @location(4) uv: vec2<f32>,
+    @location(5) surface: vec4<f32>,
+    @location(6) emission: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -115,6 +122,8 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv;
+    out.surface = in.surface;
+    out.emission = in.emission;
     return out;
 }
 
@@ -177,29 +186,99 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
     out.uv = in.uv;
+    out.surface = in.surface;
+    out.emission = in.emission;
     return out;
 }
 
+// URP's Lit, the metallic workflow, with URP's own terms: the diffuse and
+// specular colours from albedo and metallic, a GGX-shaped highlight
+// normalised the way URP's DirectBRDFSpecular is, and the environment's
+// reflection with URP's fresnel and roughness falloff. Light colours carry
+// no 1/pi, as in Unity: a white light of intensity one on white paper is
+// white.
+struct Brdf {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+    perceptual_roughness: f32,
+    roughness2: f32,
+    normalization: f32,
+    grazing: f32,
+};
+
+fn brdf(albedo: vec3<f32>, metallic: f32, smoothness: f32) -> Brdf {
+    var out: Brdf;
+    let one_minus_reflectivity = 0.96 - metallic * 0.96;
+    out.diffuse = albedo * one_minus_reflectivity;
+    out.specular = mix(vec3<f32>(0.04), albedo, metallic);
+    out.perceptual_roughness = 1.0 - smoothness;
+    let roughness = max(out.perceptual_roughness * out.perceptual_roughness, 0.0078125);
+    out.roughness2 = roughness * roughness;
+    out.normalization = roughness * 4.0 + 2.0;
+    out.grazing = clamp(smoothness + 1.0 - one_minus_reflectivity, 0.0, 1.0);
+    return out;
+}
+
+fn direct(b: Brdf, normal: vec3<f32>, to_light: vec3<f32>, to_eye: vec3<f32>, highlights: bool) -> vec3<f32> {
+    var color = b.diffuse;
+    if highlights {
+        let half_way = normalize(to_light + to_eye);
+        let n_h = max(dot(normal, half_way), 0.0);
+        let l_h = max(dot(to_light, half_way), 0.0);
+        let d = n_h * n_h * (b.roughness2 - 1.0) + 1.00001;
+        let term = b.roughness2 / ((d * d) * max(0.1, l_h * l_h) * b.normalization);
+        color = color + b.specular * term;
+    }
+    return color;
+}
+
+/// What the surroundings look like in a direction, blurred by roughness:
+/// the sky's gradient for a smooth surface, the hemisphere's average for a
+/// rough one. No sun in it: the sun is a direct light, counted once.
+fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let hemisphere = mix(frame.ground_color.rgb, frame.sky_color.rgb, direction.y * 0.5 + 0.5);
+    if frame.sky_zenith.w < 0.5 {
+        return hemisphere;
+    }
+    var sky: vec3<f32>;
+    if direction.y >= 0.0 {
+        sky = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(direction.y, 0.45));
+    } else {
+        sky = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-direction.y, 0.3));
+    }
+    return mix(sky * frame.sky_ground.w, hemisphere, perceptual_roughness);
+}
+
 @fragment
-fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(in.normal);
-    let to_sun = -normalize(frame.sun_direction.xyz);
-    let lambert = max(dot(normal, to_sun), 0.0) * sunlight(in.world_position, normal);
-
-    // Hemisphere ambient: a face turned up sees sky, one turned down sees
-    // bounce off the ground. A single constant here is what makes every
-    // shaded surface in a scene the same dead colour.
-    let sky_amount = normal.y * 0.5 + 0.5;
-    let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, sky_amount);
-
+fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
+    let alpha = in.surface.z * sampled.a;
+    // Alpha clipping: what is less opaque than the threshold is not drawn
+    // at all.
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    // A face seen from behind — a two-sided leaf — is lit from its own side.
+    let normal = normalize(in.normal) * select(-1.0, 1.0, front);
+    let flags = u32(in.emission.w + 0.5);
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
     let grid = f32(in.shading > 1.5);
 
-    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
     let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
-    var light = ambient + frame.sun_color.rgb * lambert;
-    // Point lights: facing it, and fading to nothing at its range —
-    // squared, so the edge of the pool is soft rather than a ring.
+    let to_eye = normalize(frame.camera_position.xyz - in.world_position);
+    let b = brdf(albedo, in.surface.x, in.surface.y);
+    let highlights = (flags & 1u) != 0u;
+
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    var shadow = 1.0;
+    if (flags & 4u) != 0u {
+        shadow = sunlight(in.world_position, normal);
+    }
+    var color = direct(b, normal, to_sun, to_eye, highlights)
+        * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow;
+
+    // Point and spot lights: facing it, and fading to nothing at its range
+    // — squared, so the edge of the pool is soft rather than a ring.
     let count = u32(frame.light_count.x);
     for (var i = 0u; i < count; i = i + 1u) {
         let at = frame.lights[i * 3u];
@@ -213,9 +292,23 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
         let along = dot(-toward, spot.xyz);
         let edge = spot.w + (1.0 - spot.w) * 0.1;
         let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
-        light = light + frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone;
+        color = color + direct(b, normal, toward, to_eye, highlights)
+            * frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone;
     }
-    var color = albedo * light;
+
+    // Hemisphere ambient: a face turned up sees sky, one turned down sees
+    // bounce off the ground. A single constant here is what makes every
+    // shaded surface in a scene the same dead colour.
+    let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5);
+    color = color + b.diffuse * ambient;
+    if (flags & 2u) != 0u {
+        let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
+        let fresnel = pow(1.0 - n_v, 4.0);
+        let reduction = 1.0 / (b.roughness2 + 1.0);
+        let reflected = environment(reflect(-to_eye, normal), b.perceptual_roughness);
+        color = color + reflected * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel);
+    }
+    color = color + in.emission.rgb;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
     color = mix(color, frame.fog_color.rgb, fog_amount(distance));
@@ -224,7 +317,11 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
-    return vec4<f32>(mix(color, albedo, unlit), 1.0);
+    var out = mix(color, albedo + in.emission.rgb, unlit);
+    if (flags & 8u) != 0u {
+        out = out * alpha;
+    }
+    return vec4<f32>(out, alpha);
 }
 
 /// The greybox surface: a line every metre and alternate metres a shade
