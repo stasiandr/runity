@@ -2583,3 +2583,91 @@ fn a_right_drag_looks_and_wasd_flies_without_touching_the_tools() {
     session.look(10.0, 0.0);
     assert!(!session.is_orthographic());
 }
+
+#[test]
+fn ctrl_shift_puts_the_selection_on_whatever_the_cursor_is_over() {
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let scene = SCENE.replace(
+        "        (\n            name: \"crate\",",
+        "        (name: \"table\", model: \"builtin:cube\", transform: (position: (4.0, 0.5, 0.0), scale: (2.0, 1.0, 2.0))),\n        (\n            name: \"crate\",",
+    );
+    let Some((mut session, _)) = open_with("surface", &scene) else {
+        return;
+    };
+    let (crate_id, table) = (id(&session, "crate"), id(&session, "table"));
+    session.select(Some(crate_id)).unwrap();
+    session.look_from(runity_editor::Side::Top);
+    let (w, h) = session.size();
+    let size = runity::glam::Vec2::new(w as f32, h as f32);
+    let over = |session: &Session, p: runity::glam::Vec3| {
+        let at = session.camera().screen_point(p, size).unwrap();
+        (at.x as u32, at.y as u32)
+    };
+
+    // Onto the table's top, by the bottom of the crate, lid and all.
+    let (x, y) = over(&session, runity::glam::Vec3::new(4.3, 1.0, 0.2));
+    assert!(session.place_on_surface(x, y).unwrap());
+    let (low, high) = session.world_bounds(crate_id).unwrap();
+    assert!((low.y - 1.0).abs() < 1e-3, "on the top: {low}");
+    let middle = (low + high) * 0.5;
+    assert!(
+        (middle.x - 4.3).abs() < 0.1 && (middle.z - 0.2).abs() < 0.1,
+        "{middle}"
+    );
+    let (table_low, _) = session.world_bounds(table).unwrap();
+    assert_eq!(table_low.y, 0.0, "the table did not move");
+
+    session.undo().unwrap();
+    assert!((session.world_bounds(crate_id).unwrap().0.y).abs() < 1e-3);
+
+    // By hand: a move handle grabbed, then Ctrl Shift and over the table.
+    session.focus_selected();
+    let (_, r) = grab_right_of_centre(&mut session).expect("a handle");
+    session.gizmo_end();
+    let grab = ((w / 2 + r) as f32, (h / 2) as f32);
+    let mut input = Input::new();
+    view_frame(&mut session, &mut input, grab, &[E::MouseDown(M::Left)]);
+    let (x, y) = over(&session, runity::glam::Vec3::new(4.0, 1.0, 0.0));
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        (x as f32, y as f32),
+        &[E::KeyDown(Key::LeftControl), E::KeyDown(Key::LeftShift)],
+    );
+    assert!(did.contains(&"place"), "{did:?}");
+    view_frame(
+        &mut session,
+        &mut input,
+        (x as f32, y as f32),
+        &[
+            E::MouseUp(M::Left),
+            E::KeyUp(Key::LeftControl),
+            E::KeyUp(Key::LeftShift),
+        ],
+    );
+    assert!((session.world_bounds(crate_id).unwrap().0.y - 1.0).abs() < 1e-3);
+    session.undo().unwrap();
+    assert!(
+        (session.world_bounds(crate_id).unwrap().0.y).abs() < 1e-3,
+        "the whole gesture is one step"
+    );
+
+    // End drops what is selected onto what is beneath it.
+    session
+        .set_transform(
+            crate_id,
+            runity::Transform {
+                position: runity::glam::Vec3::new(4.0, 5.0, 0.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let did = view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::KeyDown(Key::End)],
+    );
+    assert!(did.contains(&"drop to ground"), "{did:?}");
+    assert!((session.world_bounds(crate_id).unwrap().0.y - 1.0).abs() < 1e-3);
+}

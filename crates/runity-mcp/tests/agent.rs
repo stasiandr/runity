@@ -120,6 +120,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "set_field",
         "hide",
         "isolate",
+        "place",
     ] {
         assert!(names.contains(&expected), "{expected} in {names:?}");
     }
@@ -333,11 +334,17 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     let seen = agent.call("render", json!({ "from_game": true })).unwrap();
     assert_eq!(seen[0]["type"], "image");
     agent.text("delete_entity", json!({ "id": eye }));
-    let plan = agent.text("render", json!({ "view": "top" }));
+    let plan = agent.text(
+        "render",
+        json!({ "view": "top", "width": 64, "height": 64 }),
+    );
     assert!(
         plan.contains("eye (") && plan.contains("looking at"),
         "{plan}"
     );
+    let placed = agent.text("place", json!({ "ids": [wall], "x": 32, "y": 32 }));
+    assert_eq!(placed, "placed 1");
+    agent.text("undo", json!({}));
     let err = agent
         .call("render", json!({ "view": "sideways" }))
         .unwrap_err();

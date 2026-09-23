@@ -111,6 +111,7 @@ pub fn list() -> Vec<Value> {
             "by": { "type": "number", "description": "metres up (or down), or the height to flatten to" },
             "flatten": { "type": "boolean" },
         }), &["id", "at", "radius", "by"]),
+        tool("place", "Put entities on whatever a pixel of the last render shows — a table's top, a wall, a slope — by the bottom of their box, keeping their places relative to each other. One undo step. Pixels from the top left, as `pick` takes them.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["ids", "x", "y"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
         tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
@@ -526,6 +527,22 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(
                 "sculpted; the stroke is a line in the terrain's .rterrain",
             )])
+        }
+        "place" => {
+            let ids = id_list(args)?;
+            let (x, y) = (integer(args, "x")?, integer(args, "y")?);
+            let session = server.session()?;
+            for (i, id) in ids.iter().enumerate() {
+                if i == 0 {
+                    session.select(Some(*id)).map_err(|e| e.to_string())?;
+                } else {
+                    session.add_to_selection(*id).map_err(|e| e.to_string())?;
+                }
+            }
+            if !session.place_on_surface(x, y).map_err(|e| e.to_string())? {
+                return Err(format!("nothing to stand on at ({x}, {y})"));
+            }
+            Ok(vec![text(format!("placed {}", ids.len()))])
         }
         "hide" => {
             let ids = id_list(args)?;

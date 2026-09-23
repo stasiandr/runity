@@ -21,6 +21,7 @@ mod error;
 pub mod history;
 pub mod panels;
 mod scene_view;
+mod surface;
 mod views;
 mod visibility;
 
@@ -126,6 +127,8 @@ pub struct Session {
     marquee: Option<(runity::glam::Vec2, runity::glam::Vec2)>,
     /// How fast a flythrough goes, metres a second: the wheel sets it.
     fly_speed: f32,
+    /// What a surface drag lands on, built once when the gesture begins.
+    surface: Option<runity::PhysicsWorld>,
 }
 
 /// What [`Session::reload_scene`] found.
@@ -250,6 +253,7 @@ impl Session {
             isolated: Vec::new(),
             marquee: None,
             fly_speed: 6.0,
+            surface: None,
         })
     }
 
@@ -434,43 +438,7 @@ impl Session {
         if roots.is_empty() {
             return Ok(0);
         }
-        // Everything the drop moves, parts of instances included.
-        let moving: std::collections::HashSet<EntityId> = self
-            .instanced
-            .scene
-            .flatten()
-            .iter()
-            .filter(|(d, _)| {
-                self.instanced
-                    .owner_of(d.id)
-                    .is_some_and(|owner| roots.iter().any(|r| self.is_within(owner, *r)))
-            })
-            .map(|(d, _)| d.id)
-            .collect();
-
-        // A world where everything else is solid.
-        let mut ground = self.instanced.scene.clone();
-        fn solidify(entities: &mut [EntityDesc], moving: &std::collections::HashSet<EntityId>) {
-            for e in entities {
-                if moving.contains(&e.id) || e.body == runity::Body::Trigger {
-                    // A zone is not ground.
-                    e.body = runity::Body::None;
-                } else {
-                    e.body = runity::Body::Static;
-                    if e.collider == runity::scene::Collider::None {
-                        e.collider = runity::scene::Collider::Model;
-                    }
-                }
-                solidify(&mut e.children, moving);
-            }
-        }
-        solidify(&mut ground.entities, &moving);
-        let mut world = hecs::World::new();
-        runity::spawn_scene(&ground, &mut world, |_| Some(MeshHandle::TEST));
-        runity::physics::attach_scene_collision_meshes(&mut world, &ground, self.library.as_ref());
-        let mut physics = runity::PhysicsWorld::new(1.0 / 60.0);
-        physics.sync_from_world(&mut world);
-        physics.refresh_queries();
+        let physics = self.solid_without(&roots);
 
         let mut moves: Vec<(EntityId, f32)> = Vec::new();
         for root in &roots {
@@ -521,6 +489,46 @@ impl Session {
         }
         self.respawn();
         Ok(moves.len())
+    }
+
+    /// A physics world where everything is solid except these and what is
+    /// under them, parts of instances included: what a thing being put
+    /// down can land on. Triggers are zones, not ground.
+    pub(crate) fn solid_without(&self, roots: &[EntityId]) -> runity::PhysicsWorld {
+        let moving: std::collections::HashSet<EntityId> = self
+            .instanced
+            .scene
+            .flatten()
+            .iter()
+            .filter(|(d, _)| {
+                self.instanced
+                    .owner_of(d.id)
+                    .is_some_and(|owner| roots.iter().any(|r| self.is_within(owner, *r)))
+            })
+            .map(|(d, _)| d.id)
+            .collect();
+        let mut ground = self.instanced.scene.clone();
+        fn solidify(entities: &mut [EntityDesc], moving: &std::collections::HashSet<EntityId>) {
+            for e in entities {
+                if moving.contains(&e.id) || e.body == runity::Body::Trigger {
+                    e.body = runity::Body::None;
+                } else {
+                    e.body = runity::Body::Static;
+                    if e.collider == runity::scene::Collider::None {
+                        e.collider = runity::scene::Collider::Model;
+                    }
+                }
+                solidify(&mut e.children, moving);
+            }
+        }
+        solidify(&mut ground.entities, &moving);
+        let mut world = hecs::World::new();
+        runity::spawn_scene(&ground, &mut world, |_| Some(MeshHandle::TEST));
+        runity::physics::attach_scene_collision_meshes(&mut world, &ground, self.library.as_ref());
+        let mut physics = runity::PhysicsWorld::new(1.0 / 60.0);
+        physics.sync_from_world(&mut world);
+        physics.refresh_queries();
+        physics
     }
 
     /// Whether `id` is `ancestor` or under it in the document.
@@ -2556,6 +2564,7 @@ impl Session {
     pub fn gizmo_end(&mut self) {
         self.drag = None;
         self.drag_from = None;
+        self.surface = None;
     }
 
     // --- play mode ------------------------------------------------------

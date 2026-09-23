@@ -12,12 +12,14 @@
 //! | click | select what is under it; shift adds; empty space clears |
 //! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
+//! | Ctrl Shift + drag a move handle | onto whatever is under the cursor |
 //! | alt + drag | orbit |
 //! | right drag | look around; with W A S D Q E held, fly (shift: faster, wheel: speed) |
 //! | middle drag | pan |
 //! | wheel | zoom |
 //! | W / E / R | move / rotate / scale tool |
 //! | F | frame the selection |
+//! | End | down onto what is beneath |
 //! | H / Shift H | hide the selection / show it alone (again: all) |
 //! | Delete | delete the selection |
 //! | Ctrl D | duplicate |
@@ -75,9 +77,16 @@ impl Session {
         } else if input.mouse_held(MouseButton::Left)
             && self.is_dragging()
             && motion != runity::glam::Vec2::ZERO
-            && self.gizmo_drag(x, y)?
         {
-            did.push("drag");
+            // Ctrl Shift: onto whatever is under the cursor instead of
+            // along the handle.
+            if ctrl && shift && self.tool() == Tool::Move {
+                if self.surface_drag(x, y)? {
+                    did.push("place");
+                }
+            } else if self.gizmo_drag(x, y)? {
+                did.push("drag");
+            }
         }
         if let Some((from, _)) = self.marquee {
             self.marquee = Some((from, at));
@@ -180,6 +189,9 @@ impl Session {
             }
             if pressed(Key::F) && self.focus_selected() {
                 did.push("frame");
+            }
+            if pressed(Key::End) && self.drop_to_ground()? > 0 {
+                did.push("drop to ground");
             }
             if pressed(Key::H) && shift {
                 if self.isolated().is_empty() {
