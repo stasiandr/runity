@@ -338,6 +338,13 @@ impl Style {
         self
     }
 
+    /// Undo [`Style::center`]: children at the start again.
+    pub fn center_items_reset(mut self) -> Self {
+        self.layout.align_items = None;
+        self.layout.justify_content = None;
+        self
+    }
+
     pub fn space_between(mut self) -> Self {
         self.layout.justify_content = Some(taffy::JustifyContent::SPACE_BETWEEN);
         self

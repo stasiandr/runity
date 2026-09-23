@@ -185,6 +185,9 @@ pub struct Studio {
     profiler: Profiler,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
+    /// The Game view's width to height, or free.
+    aspect: Option<(u32, u32)>,
+    aspect_button: NodeId,
     /// The orientation gizmo in the view's corner: its six axes and its
     /// middle, and the camera it was last turned for.
     compass: Compass,
@@ -284,6 +287,23 @@ impl Studio {
         );
         let tab_scene = view_tab(&mut ui, view_tabs, "view scene", "hand", "Scene", true);
         let tab_game = view_tab(&mut ui, view_tabs, "view game", "camera", "Game", false);
+        let aspect_button = ui.add(
+            view_tabs,
+            Style::row()
+                .height(24.0)
+                .padding_x(SPACE_2)
+                .gap(4.0)
+                .center_items()
+                .radius(6.0)
+                .hover(HOVER),
+        );
+        ui.set_name(aspect_button, "aspect");
+        ui.add_text(
+            aspect_button,
+            Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+            "Free Aspect",
+        );
+        icon(&mut ui, aspect_button, "chevron-down", MUTED);
         spacer(&mut ui, view_tabs);
         let mut buttons = Vec::new();
         for (name, label, action) in [
@@ -428,6 +448,8 @@ impl Studio {
             settings,
             profiler,
             last_draw_ms: 0.0,
+            aspect: None,
+            aspect_button,
             compass,
             maximized: false,
             stroke: None,
@@ -651,6 +673,8 @@ impl Studio {
         }
         self.apply(requests);
 
+        // The Game view at a chosen shape: the view letterboxed in its frame.
+        self.fit_aspect();
         // The session draws at the Scene view's size, in pixels.
         let view = self.scene_rect();
         let scale = self.ui.viewport().2;
@@ -742,6 +766,55 @@ impl Studio {
                     .restyle(n, |s| if on { s.shown() } else { s.hidden() });
             }
         }
+    }
+
+    fn fit_aspect(&mut self) {
+        let wanted = if self.session.is_game_view() {
+            self.aspect
+        } else {
+            None
+        };
+        let label = match self.aspect {
+            None => "Free Aspect".to_string(),
+            Some((w, h)) => format!("{w}:{h}"),
+        };
+        if let Some(t) = self.ui.children(self.aspect_button).first().copied() {
+            self.ui.set_text(t, &label);
+        }
+        self.ui.paint();
+        let frame = self.ui.rect(self.view_frame);
+        let style = match wanted {
+            None => Style::default()
+                .fill()
+                .full_width()
+                .radius(RADIUS_MD)
+                .draggable()
+                .focusable(),
+            Some((w, h)) => {
+                let ratio = w as f32 / h as f32;
+                let (fw, fh) = (frame.width.max(1.0), frame.height.max(1.0));
+                let (vw, vh) = if fw / fh > ratio {
+                    (fh * ratio, fh)
+                } else {
+                    (fw, fw / ratio)
+                };
+                Style::default()
+                    .size(vw.floor(), vh.floor())
+                    .fixed()
+                    .radius(RADIUS_MD)
+                    .draggable()
+                    .focusable()
+            }
+        };
+        self.ui.set_style(self.viewport, style);
+        let centred = wanted.is_some();
+        self.ui.restyle(self.view_frame, |s| {
+            if centred {
+                s.center()
+            } else {
+                s.center_items_reset()
+            }
+        });
     }
 
     /// Turn the compass to the camera: each axis where it points on screen,
@@ -1338,6 +1411,22 @@ impl Studio {
             requests.keyboard_to_scene = true;
             return true;
         }
+        if node == self.aspect_button {
+            let r = self.ui.rect(node);
+            let items = [
+                ("Free Aspect", None),
+                ("16:9", Some((16, 9))),
+                ("16:10", Some((16, 10))),
+                ("4:3", Some((4, 3))),
+                ("1:1", Some((1, 1))),
+                ("9:16 (portrait)", Some((9, 16))),
+            ]
+            .into_iter()
+            .map(|(l, a)| MenuItem::new(l, Action::Aspect(a)))
+            .collect();
+            requests.menu = Some((items, r.x, r.y + r.height + 4.0));
+            return true;
+        }
         if node == self.tab_scene || node == self.tab_game {
             requests.action = Some(Action::GameView(node == self.tab_game));
             requests.keyboard_to_scene = true;
@@ -1590,6 +1679,37 @@ impl Studio {
                         self.navigation
                             .then(runity::navigation::NavSettings::default),
                     );
+                }
+                Action::FieldReset(field) => {
+                    for id in s.selection() {
+                        s.reset_field(id, &field).map_err(e)?;
+                    }
+                }
+                Action::FieldCopy(field) => {
+                    let id = s.selected().ok_or("nothing selected")?;
+                    let value = s
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == field))
+                        .map(|f| f.value)
+                        .ok_or("no such field")?;
+                    self.clipboard.set(value);
+                }
+                Action::FieldPaste(field) => {
+                    let value = self.clipboard.get().unwrap_or_default();
+                    let ids = s.selection();
+                    s.set_field_all(&ids, &field, value.trim()).map_err(e)?;
+                }
+                Action::FieldRemove(field) => {
+                    for id in s.selection() {
+                        match field.strip_prefix("components.") {
+                            Some(name) => s.set_component(id, name, None).map_err(e)?,
+                            None => s.reset_field(id, &field).map_err(e)?,
+                        }
+                    }
+                }
+                Action::Aspect(aspect) => {
+                    self.aspect = aspect;
+                    s.set_game_view(true);
                 }
                 Action::AddComponent(name) => {
                     // Described by the game: its shape's example. Written

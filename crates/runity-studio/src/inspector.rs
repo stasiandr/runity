@@ -89,6 +89,9 @@ enum Part {
     AddComponent,
     /// The list of the game's components.
     PickComponent,
+    /// A field's label: a click opens its menu — Reset, Copy, Paste,
+    /// Remove — as Unity's ⋮ on a component.
+    Label(String),
     /// The material's colour as `#rrggbb`.
     Hex,
     /// One of the colour's hue, saturation and value, 0 to 1.
@@ -569,8 +572,16 @@ impl Inspector {
         );
         let label = ui.add(
             line,
-            Style::row().width(84.0).fixed().gap(SPACE_2).center_items(),
+            Style::row()
+                .width(84.0)
+                .fixed()
+                .gap(SPACE_2)
+                .center_items()
+                .radius(RADIUS_SM)
+                .hover(HOVER),
         );
+        ui.set_name(label, format!("label {}", f.name));
+        self.parts.insert(label, Part::Label(f.name.clone()));
         if f.overridden {
             let dot = ui.add(
                 label,
@@ -675,6 +686,9 @@ impl Inspector {
                 .center_items(),
         );
         icon(ui, head, "component", ACCENT);
+        self.parts.insert(head, Part::Label(f.name.clone()));
+        ui.restyle(head, |s| s.hover(HOVER));
+        ui.set_name(head, format!("label {}", f.name));
         ui.add_text(
             head,
             Style::default()
@@ -1401,6 +1415,31 @@ impl Inspector {
                 }
                 self.built = false;
                 requests.refresh = true;
+            }
+            (Part::Label(field), Event::Click { .. }) => {
+                let mut items = vec![
+                    MenuItem::new("Reset", Action::FieldReset(field.clone())),
+                    MenuItem::new("Copy Value", Action::FieldCopy(field.clone())),
+                    MenuItem::new("Paste Value", Action::FieldPaste(field.clone())),
+                ];
+                let removable = field.starts_with("components.")
+                    || [
+                        "camera",
+                        "light",
+                        "particles",
+                        "route",
+                        "joint",
+                        "collider",
+                        "body",
+                        "physics",
+                    ]
+                    .contains(&field.as_str());
+                if removable {
+                    items.push(MenuItem::separator());
+                    items.push(MenuItem::new("Remove", Action::FieldRemove(field.clone())));
+                }
+                let (x, y) = ui.pointer();
+                requests.menu = Some((items, x, y));
             }
             (Part::PickComponent, Event::Click { .. }) => {
                 let mut names: Vec<String> = session.component_shapes().into_keys().collect();

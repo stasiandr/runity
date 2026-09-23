@@ -96,6 +96,14 @@ pub enum Action {
     SnapSettings,
     /// Show where a walker can go, or stop.
     ToggleNavigation,
+    /// One field of the selection: back to a new entity's, its value to
+    /// the clipboard, the clipboard's value into it, gone.
+    FieldReset(String),
+    FieldCopy(String),
+    FieldPaste(String),
+    FieldRemove(String),
+    /// The Game view's shape: free, or a width to height.
+    Aspect(Option<(u32, u32)>),
     /// A game component by name onto the selection.
     AddComponent(String),
     /// Blockout: a floor or a wall drawn as a Poly Shape in front of the view.

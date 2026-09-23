@@ -1122,3 +1122,61 @@ fn an_error_does_not_take_the_tab_but_the_status_line_leads_to_it() {
         "the Console is shown"
     );
 }
+
+#[test]
+fn a_fields_menu_resets_copies_pastes_and_removes() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    click(&mut s, "line crate");
+    click(&mut s, "label rotation");
+    click(&mut s, "menu Reset");
+    assert_eq!(
+        s.session.transform(crate_id).unwrap().rotation_deg,
+        runity::glam::Vec3::ZERO
+    );
+
+    click(&mut s, "label position");
+    click(&mut s, "menu Copy Value");
+    click(&mut s, "line boulder");
+    click(&mut s, "label position");
+    click(&mut s, "menu Paste Value");
+    assert_eq!(
+        s.session.transform(boulder).unwrap().position,
+        s.session.transform(crate_id).unwrap().position
+    );
+
+    s.session
+        .set_component(crate_id, "door", Some("()"))
+        .unwrap();
+    click(&mut s, "line crate");
+    click(&mut s, "label components.door");
+    click(&mut s, "menu Remove");
+    assert!(!s
+        .session
+        .inspect(crate_id)
+        .unwrap()
+        .iter()
+        .any(|f| f.name == "components.door"));
+}
+
+#[test]
+fn the_game_view_takes_a_shape() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    click(&mut s, "aspect");
+    click(&mut s, "menu 4:3");
+    assert!(s.session.is_game_view());
+    s.frame();
+    s.ui.paint();
+    let r = s.ui.rect(s.ui.find("scene view").unwrap());
+    assert!((r.width / r.height - 4.0 / 3.0).abs() < 0.02, "{r:?}");
+    let (w, h) = s.session.size();
+    assert!(
+        (w as f32 / h as f32 - 4.0 / 3.0).abs() < 0.02,
+        "the render follows: {w}x{h}"
+    );
+}
