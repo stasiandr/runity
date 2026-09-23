@@ -252,6 +252,11 @@ fn spawn_one(
     if let Some(light) = desc.light {
         let _ = world.insert_one(entity, LightSource(light));
     }
+    if let Some(emitter) = desc.particles {
+        if let Some(mesh) = resolve("builtin:cube") {
+            let _ = world.insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+        }
+    }
     dress(desc, entity, world, resolve, palette, missing);
     entity
 }
@@ -474,6 +479,30 @@ impl Patch<'_> {
         }
         if was.is_none_or(|(old, _)| old.collider != desc.collider) {
             let _ = world.insert_one(entity, Shape(desc.collider));
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.particles != desc.particles) {
+            let running = world
+                .get::<&mut crate::particles::Emitting>(entity)
+                .ok()
+                .map(|mut e| {
+                    if let Some(emitter) = desc.particles {
+                        // The knobs change; what is in the air stays.
+                        e.emitter = emitter;
+                    }
+                });
+            match (desc.particles, running) {
+                (Some(emitter), None) => {
+                    if let Some(mesh) = resolve("builtin:cube") {
+                        let _ = world
+                            .insert_one(entity, crate::particles::Emitting::new(emitter, mesh));
+                    }
+                }
+                (None, _) => {
+                    let _ = world.remove_one::<crate::particles::Emitting>(entity);
+                }
+                _ => {}
+            }
             changed = true;
         }
         if was.is_none_or(|(old, _)| old.light != desc.light) {
@@ -711,6 +740,14 @@ pub fn build_frame_where(
             pose,
         });
     }
+    for (emitting, line) in world
+        .query::<(&crate::particles::Emitting, Option<&SceneId>)>()
+        .iter()
+    {
+        if keep(line.map(|l| l.0)) {
+            draws.extend(emitting.draws());
+        }
+    }
     let lights = world
         .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
         .iter()
@@ -749,6 +786,7 @@ mod tests {
         EntityDesc {
             camera: None,
             light: None,
+            particles: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -774,6 +812,7 @@ mod tests {
                 .map(|(i, model)| EntityDesc {
                     camera: None,
                     light: None,
+                    particles: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),

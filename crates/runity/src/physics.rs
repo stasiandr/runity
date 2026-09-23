@@ -1202,6 +1202,7 @@ mod tests {
         EntityDesc {
             camera: None,
             light: None,
+            particles: None,
             layer: Default::default(),
             physics: Default::default(),
             joint: Default::default(),
@@ -1285,6 +1286,7 @@ mod tests {
             entities: vec![crate::EntityDesc {
                 camera: None,
                 light: None,
+                particles: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),

@@ -387,6 +387,47 @@ pub struct Light {
     pub range: f32,
 }
 
+/// Bits given off from an entity and falling away — sparks over a fire,
+/// dust from a cart, spray from a fountain: Unity's Particle System, the
+/// few knobs a greybox needs. `particles: (rate: 30.0, life: 0.8, speed:
+/// 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6,
+/// 0.2))`; they leave along the entity's up, within `spread_deg` of it,
+/// and shrink to nothing as they age.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Emitter {
+    /// How many a second.
+    #[serde(default = "emit_rate")]
+    pub rate: f32,
+    /// Seconds each lasts.
+    #[serde(default = "unit")]
+    pub life: f32,
+    /// Metres a second, leaving.
+    #[serde(default = "unit")]
+    pub speed: f32,
+    /// How far from straight up they may leave, degrees.
+    #[serde(default = "emit_spread")]
+    pub spread_deg: f32,
+    /// Metres across, new.
+    #[serde(default = "emit_size")]
+    pub size: f32,
+    /// Metres a second, every second, along y: negative falls, positive
+    /// rises like smoke.
+    #[serde(default)]
+    pub gravity: f32,
+    #[serde(default = "white")]
+    pub color: (f32, f32, f32),
+}
+
+fn emit_rate() -> f32 {
+    10.0
+}
+fn emit_spread() -> f32 {
+    15.0
+}
+fn emit_size() -> f32 {
+    0.1
+}
+
 fn white() -> (f32, f32, f32) {
     (1.0, 1.0, 1.0)
 }
@@ -480,6 +521,9 @@ pub struct EntityDesc {
     /// A light at this entity; see [`Light`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub light: Option<Light>,
+    /// Particles given off from this entity; see [`Emitter`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub particles: Option<Emitter>,
     /// The collision layer, by the name `layers.ron` gives it; empty is
     /// `default`. See [`crate::layers`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1084,6 +1128,7 @@ mod tests {
             entities: vec![EntityDesc {
                 camera: None,
                 light: None,
+                particles: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),
@@ -1106,6 +1151,7 @@ mod tests {
                 children: vec![EntityDesc {
                     camera: None,
                     light: None,
+                    particles: None,
                     layer: Default::default(),
                     physics: Default::default(),
                     joint: Default::default(),
@@ -1147,6 +1193,7 @@ mod tests {
             entities: vec![EntityDesc {
                 camera: None,
                 light: None,
+                particles: None,
                 layer: Default::default(),
                 physics: Default::default(),
                 joint: Default::default(),

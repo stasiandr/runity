@@ -42,6 +42,7 @@ pub mod merge;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
+pub mod particles;
 pub mod perf;
 #[cfg(feature = "physics")]
 pub mod physics;

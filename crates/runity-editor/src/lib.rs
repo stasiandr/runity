@@ -2288,6 +2288,9 @@ impl Session {
 
     /// Draw one frame into the session's image.
     pub fn render(&mut self) {
+        // Emitters play while they are looked at, as Unity previews them:
+        // a thirtieth of a second a frame drawn.
+        runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
         let scene = self.history.scene();
         let mut frame = Frame {
             camera: self.camera,

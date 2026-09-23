@@ -52,7 +52,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 15] = [
+pub const FIELDS: [&str; 16] = [
     "name",
     "model",
     "prefab",
@@ -67,6 +67,7 @@ pub const FIELDS: [&str; 15] = [
     "joint",
     "camera",
     "light",
+    "particles",
     "components.<name>",
 ];
 
@@ -242,6 +243,10 @@ impl Session {
             (
                 "light".into(),
                 desc.light.map_or("None".to_string(), |l| ron(&l)),
+            ),
+            (
+                "particles".into(),
+                desc.particles.map_or("None".to_string(), |p| ron(&p)),
             ),
         ];
         for (name, value) in &desc.components {
@@ -471,6 +476,13 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Light>(field, text)?)
+                }
+            }
+            "particles" => {
+                next.particles = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Emitter>(field, text)?)
                 }
             }
             other => {

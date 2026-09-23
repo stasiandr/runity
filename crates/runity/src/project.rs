@@ -754,6 +754,8 @@ impl shell::Game for Game {
                 self.ui.text(TextRun::new(20.0, at, 16.0, runity::glam::Vec4::ONE, line));
             }
         }
+        // Sparks and dust move on the frame's time: they are for the eye.
+        runity::particles::run_particles(&mut self.world, ctx.time.delta());
         let scene = self.live.scene();
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
