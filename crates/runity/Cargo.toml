@@ -12,9 +12,9 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 glyphon = "0.12.0"
 hecs = "0.11.0"
-kira = "0.12.4"
+kira = { version = "0.12.4", optional = true }
 pollster = "1.0.1"
-rapier3d = "0.26.1"
+rapier3d = { version = "0.26.1", optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -23,11 +23,24 @@ tracing = "0.1.44"
 wgpu = "30"
 winit = { version = "0.30.13", optional = true }
 
+# Built-in subsystems are features, so that switching one off is one line
+# and takes its dependencies out of the build with it (DNA, postulate 3).
+# This is the seam, not the module system: the manifest a module ships with
+# is still an open question in DNA.md, and features are what Cargo already
+# gives us until it is answered.
 [features]
-default = []
-# A plain desktop window, for running the game without a native shell. The
-# engine does not need it: on macOS the Swift editor owns the window, on iOS
-# and Android the platform does. This is the convenience path, not the
+default = ["physics"]
+# Solid bodies, from rapier. On by default — a battery — and off with
+# `default-features = false` for a game that has no use for it.
+physics = ["dep:rapier3d"]
+# Sound. Off by default and not because it is unfinished: the engine is
+# being built on greybox, and a mixer nobody is listening to is a
+# dependency, a device to open and a thing to keep compiling. `--features
+# audio` brings it back, and CI builds with it so it cannot rot.
+audio = ["dep:kira"]
+# A plain desktop window, for running the game without the editor. The
+# engine does not need it: the editor owns its own window, and on iOS and
+# Android the platform does. This is the convenience path, not the
 # architecture.
 desktop-shell = ["dep:winit"]
 

@@ -44,3 +44,13 @@ jobs:
         run: cargo clippy --workspace --all-targets --features desktop-shell -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # Sound is behind a feature and off by default — the engine is built on
+      # greybox and nobody is listening yet. Tested here anyway, with kira's
+      # mock backend, so that the day it is turned back on it still works.
+      - name: Test (audio)
+        run: cargo test --workspace --features runity/audio
+      # "Switching a subsystem off is one line" is only true while the engine
+      # still builds with it off. Checked here, because nothing else builds
+      # the engine bare and the first to notice would be a game that tried.
+      - name: Check (no optional subsystems)
+        run: cargo check -p runity --no-default-features

@@ -21,6 +21,7 @@ pub use hecs;
 pub mod animation;
 pub mod animator;
 pub mod asset;
+#[cfg(feature = "audio")]
 pub mod audio;
 pub mod builtin;
 pub mod edit;
@@ -29,6 +30,7 @@ pub mod gpu;
 pub mod input;
 pub mod library;
 pub mod material;
+#[cfg(feature = "physics")]
 pub mod physics;
 pub mod prefab;
 pub mod render;
@@ -46,6 +48,7 @@ pub use animator::{advance_animations, Animator, Playing};
 pub use asset::{
     AssetError, AssetId, Bounds, MaterialAsset, MeshAsset, SoundAsset, Submesh, Vertex,
 };
+#[cfg(feature = "audio")]
 pub use audio::{Audio, Falloff};
 pub use edit::History;
 pub use gizmo::{Drag, GizmoStyle, Handle};
@@ -55,7 +58,8 @@ pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
 pub use material::{Material, Shading};
-pub use physics::{BodyHandle, CharacterMove, CharacterSettings, PhysicsWorld, RayHit};
+#[cfg(feature = "physics")]
+pub use physics::{BodyHandle, PhysicsWorld, RayHit};
 pub use prefab::{instantiate, Instanced, Prefabs};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
@@ -66,6 +70,6 @@ pub use time::{Time, TimeSettings};
 pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use world::{
-    build_frame, captured_view, scene_camera, scene_lighting, spawn_scene, spawn_scene_with, Model, Posed,
-    SceneIndex, Shape, Surface, Textured,
+    build_frame, captured_view, scene_camera, scene_lighting, spawn_scene, spawn_scene_with, Model,
+    Posed, SceneIndex, Shape, Surface, Textured,
 };

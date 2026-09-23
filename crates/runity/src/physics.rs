@@ -11,10 +11,16 @@
 //! * **Transforms flow one way per body kind.** A dynamic body's position is
 //!   rapier's to own, and writing to it from the scene fights the solver. A
 //!   static body's is the scene's, and rapier only reads it.
+//!
+//! What is deliberately *not* here: a character controller. How a person
+//! walks — what counts as a step, when they are allowed to jump, how fast
+//! they slide — is a game's design, not an engine's, and the version that
+//! lived here was a guess at a game nobody has written yet. rapier's
+//! `KinematicCharacterController` is one `use` away for whoever needs it,
+//! and they will want their own numbers anyway.
 
 use glam::{Quat, Vec3};
 use hecs::World;
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
 use rapier3d::prelude::*;
 
 use crate::scene::{Body, Collider as ColliderShape};
@@ -31,45 +37,6 @@ pub struct RayHit {
 /// A collider, as a ray reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColliderRef(pub ColliderHandle);
-
-/// How a character treats the ground it walks on.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CharacterSettings {
-    /// Steepest slope that counts as walkable rather than a wall.
-    pub max_climb_angle_radians: f32,
-    /// Shallowest slope that a character slides back down.
-    pub min_slide_angle_radians: f32,
-    /// Tallest step to climb without jumping — a kerb, not a table.
-    pub step_height: f32,
-    /// Narrowest ledge worth stepping onto.
-    pub step_min_width: f32,
-    /// How far below the feet to look for ground before admitting to being
-    /// airborne. Without it, walking down a slope becomes a series of small
-    /// falls.
-    pub snap_to_ground: f32,
-}
-
-impl Default for CharacterSettings {
-    fn default() -> Self {
-        Self {
-            max_climb_angle_radians: 50f32.to_radians(),
-            min_slide_angle_radians: 55f32.to_radians(),
-            step_height: 0.35,
-            step_min_width: 0.15,
-            snap_to_ground: 0.35,
-        }
-    }
-}
-
-/// What a character actually managed to do.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CharacterMove {
-    /// The part of the requested motion the world allowed.
-    pub translation: Vec3,
-    /// Whether there is ground underfoot — which is what a jump has to ask
-    /// before it is allowed.
-    pub grounded: bool,
-}
 
 /// The handle rapier knows an entity by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,8 +211,8 @@ impl PhysicsWorld {
     /// The first thing a ray hits, as a point in the world and the distance
     /// to it.
     ///
-    /// This is what mouse picking in an editor is built from, and what a
-    /// character uses to ask how far the ground is.
+    /// This is what mouse picking in an editor is built from, and what
+    /// anything that needs to ask how far the ground is uses.
     pub fn cast_ray(&self, from: Vec3, direction: Vec3, max_distance: f32) -> Option<RayHit> {
         let direction = direction.normalize_or_zero();
         if direction.length_squared() < 0.5 {
@@ -271,66 +238,6 @@ impl PhysicsWorld {
             distance,
             collider: ColliderRef(collider),
         })
-    }
-
-    /// Move a character, sliding along whatever it meets.
-    ///
-    /// A character is not a rigid body, and this is the difference: a body is
-    /// pushed by impulses, so it skates on ice it never asked for, bounces
-    /// off a step and topples on contact with a crate. A controller goes
-    /// where it was told and then gives back the part of the motion the world
-    /// refuses.
-    pub fn move_character(
-        &self,
-        controller: &CharacterSettings,
-        shape: &ColliderShape,
-        position: Vec3,
-        desired: Vec3,
-        dt: f32,
-    ) -> CharacterMove {
-        let Some(collider) = build_collider(*shape, glam::Mat4::IDENTITY) else {
-            return CharacterMove {
-                translation: desired,
-                grounded: false,
-            };
-        };
-        let rapier_controller = KinematicCharacterController {
-            up: nalgebra::Unit::new_normalize(vector![0.0, 1.0, 0.0]),
-            // A small gap kept between the character and everything else.
-            // Touching exactly means the next frame starts in contact, and
-            // a solver that starts in contact jitters.
-            offset: CharacterLength::Absolute(0.01),
-            max_slope_climb_angle: controller.max_climb_angle_radians,
-            min_slope_slide_angle: controller.min_slide_angle_radians,
-            autostep: Some(CharacterAutostep {
-                max_height: CharacterLength::Absolute(controller.step_height),
-                min_width: CharacterLength::Absolute(controller.step_min_width),
-                // A crate should be pushed, not climbed.
-                include_dynamic_bodies: false,
-            }),
-            snap_to_ground: Some(CharacterLength::Absolute(controller.snap_to_ground)),
-            ..Default::default()
-        };
-
-        let movement = rapier_controller.move_shape(
-            dt,
-            &self.bodies,
-            &self.colliders,
-            &self.queries,
-            collider.shape(),
-            &Isometry::translation(position.x, position.y, position.z),
-            vector![desired.x, desired.y, desired.z],
-            QueryFilter::default(),
-            |_| {},
-        );
-        CharacterMove {
-            translation: Vec3::new(
-                movement.translation.x,
-                movement.translation.y,
-                movement.translation.z,
-            ),
-            grounded: movement.grounded,
-        }
     }
 
     /// Where a body is now, for tests and for anything that wants one
@@ -544,7 +451,8 @@ mod tests {
         assert_eq!(physics.body_count(), 2);
     }
 
-    /// A floor, a wall, and a low kerb, for a character to meet.
+    /// A floor, a wall, and a low kerb: something for a ray to find and for
+    /// a falling body to land on.
     fn obstacle_course() -> (PhysicsWorld, World) {
         let scene = Scene {
             entities: vec![
@@ -597,82 +505,9 @@ mod tests {
         (physics, world)
     }
 
-    fn person() -> ColliderShape {
-        ColliderShape::Capsule {
-            half_height: 0.6,
-            radius: 0.3,
-        }
-    }
-
-    /// The centre of a standing person: half-height plus radius above the
-    /// floor, so the capsule's foot is exactly on it. Starting lower buries
-    /// it in the ground and every test after that measures the wrong thing.
-    const FEET_ON_FLOOR: f32 = 0.9;
-
-    #[test]
-    fn a_character_slides_along_a_wall_instead_of_stopping_dead() {
-        let (physics, _) = obstacle_course();
-        let settings = CharacterSettings::default();
-        // Walking diagonally into the wall: the part along it should
-        // survive, the part into it should not.
-        // The wall spans x = 1.8 to 2.2 and the capsule's radius is 0.3, so
-        // standing at 1.4 leaves a tenth of a metre before contact. Standing
-        // further back would let the whole step through and prove nothing.
-        let moved = physics.move_character(
-            &settings,
-            &person(),
-            Vec3::new(1.4, FEET_ON_FLOOR, 0.0),
-            Vec3::new(0.5, 0.0, 0.5),
-            1.0 / 60.0,
-        );
-        assert!(
-            moved.translation.x < 0.4,
-            "the wall should eat most of the motion into it, got {}",
-            moved.translation.x
-        );
-        assert!(
-            moved.translation.z > 0.4,
-            "and none of the motion along it, got {}",
-            moved.translation.z
-        );
-    }
-
-    #[test]
-    fn a_character_steps_onto_a_kerb_but_not_onto_a_wall() {
-        let (physics, _) = obstacle_course();
-        let settings = CharacterSettings::default();
-
-        let onto_kerb = physics.move_character(
-            &settings,
-            &person(),
-            Vec3::new(-1.0, FEET_ON_FLOOR, 0.0),
-            Vec3::new(-0.4, 0.0, 0.0),
-            1.0 / 60.0,
-        );
-        assert!(
-            onto_kerb.translation.x < -0.3,
-            "a 0.2m kerb is a step, not an obstacle, got {}",
-            onto_kerb.translation.x
-        );
-
-        let into_wall = physics.move_character(
-            &settings,
-            &person(),
-            Vec3::new(1.4, FEET_ON_FLOOR, 0.0),
-            Vec3::new(0.4, 0.0, 0.0),
-            1.0 / 60.0,
-        );
-        assert!(
-            into_wall.translation.x < 0.2,
-            "a 2m wall is not a step, got {}",
-            into_wall.translation.x
-        );
-    }
-
     #[test]
     fn a_ray_finds_the_ground_and_reports_how_far_it_is() {
-        // What mouse picking is built from, and what a character asks before
-        // it admits to falling.
+        // What mouse picking is built from.
         let (physics, _) = obstacle_course();
         let hit = physics
             .cast_ray(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y, 100.0)
