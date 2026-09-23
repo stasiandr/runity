@@ -860,6 +860,8 @@ mod tests {
     fn blank() -> EntityDesc {
         EntityDesc {
             camera: None,
+            spline: None,
+            along: None,
             light: None,
             particles: None,
             route: None,
@@ -887,6 +889,8 @@ mod tests {
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
                     camera: None,
+                    spline: None,
+                    along: None,
                     light: None,
                     particles: None,
                     route: None,

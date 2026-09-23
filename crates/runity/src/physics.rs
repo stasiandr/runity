@@ -1250,6 +1250,8 @@ mod tests {
     fn entity(name: &str, y: f32, body: Body, collider: ColliderShape) -> EntityDesc {
         EntityDesc {
             camera: None,
+            spline: None,
+            along: None,
             light: None,
             particles: None,
             route: None,
@@ -1336,6 +1338,8 @@ mod tests {
         let scene = Scene {
             entities: vec![crate::EntityDesc {
                 camera: None,
+                spline: None,
+                along: None,
                 light: None,
                 particles: None,
                 route: None,

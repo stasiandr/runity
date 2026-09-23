@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use runity::edit::Face;
 use runity::gizmo::Tool;
+use runity::glam::Vec3;
 use runity::input::{Input, InputEvent, Key, MouseButton};
 use runity::EntityId;
 use runity_editor::console::Level;
@@ -276,6 +277,11 @@ pub struct Studio {
     foliage_stroke: Option<(Instant, usize)>,
     /// A new seed per dab, so two dabs on one spot do not place the same.
     foliage_seed: u64,
+    /// The selection's spline points, as handles over the view, and the
+    /// one being dragged: which entity and point, and how many undo steps
+    /// the drag has made, to be one.
+    spline_handles: Vec<NodeId>,
+    spline_drag: Option<(EntityId, usize, usize)>,
     /// Face mode: ProBuilder's face selection over the faces of boxes.
     faces: bool,
     faces_button: NodeId,
@@ -605,6 +611,8 @@ impl Studio {
             foliage_radius: 4.0,
             foliage_stroke: None,
             foliage_seed: 0,
+            spline_handles: Vec::new(),
+            spline_drag: None,
             faces: false,
             faces_button: faces,
             face_hover: None,
@@ -961,6 +969,7 @@ impl Studio {
         let t2 = Instant::now();
         self.session.render();
         self.camera_preview();
+        self.place_spline_handles();
         let t3 = Instant::now();
 
         self.poll_disk();
@@ -1177,7 +1186,7 @@ impl Studio {
             return;
         }
         self.compass.seen = Some(key);
-        use runity::glam::Vec3;
+
         let forward = (camera.target - camera.position).normalize_or_zero();
         let right = forward.cross(camera.up).normalize_or_zero();
         let up = right.cross(forward);
@@ -1402,6 +1411,119 @@ impl Studio {
                 self.session.say(Level::Error, e.to_string());
                 self.foliage_stroke = None;
             }
+        }
+    }
+
+    /// The selection's spline: its points as handles over the view, one
+    /// per point, where the camera sees them now.
+    fn place_spline_handles(&mut self) {
+        let points: Vec<Vec3> = self
+            .session
+            .selected()
+            .filter(|_| !self.session.is_playing() && !self.session.is_game_view())
+            .and_then(|id| {
+                let text = self
+                    .session
+                    .inspect(id)?
+                    .into_iter()
+                    .find(|f| f.name == "spline")?
+                    .value;
+                let spline: runity::Spline = runity::ron::from_str(&text).ok()?;
+                let world = self.session.world_matrix(id)?;
+                Some(
+                    spline
+                        .points
+                        .iter()
+                        .map(|p| world.transform_point3(*p))
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
+        let Some(frame) = self.ui.parent(self.face_box) else {
+            return;
+        };
+        while self.spline_handles.len() > points.len() {
+            let handle = self.spline_handles.pop().expect("more than none");
+            self.ui.remove(handle);
+        }
+        while self.spline_handles.len() < points.len() {
+            let i = self.spline_handles.len();
+            let handle = self.ui.add(
+                frame,
+                Style::row()
+                    .absolute(0.0, 0.0)
+                    .size(14.0, 14.0)
+                    .radius(3.0)
+                    .background(ACCENT)
+                    .border(2.0, TEXT)
+                    .draggable(),
+            );
+            self.ui.set_name(handle, format!("spline point {i}"));
+            self.spline_handles.push(handle);
+        }
+        let scale = self.ui.viewport().2;
+        for (handle, point) in self.spline_handles.clone().into_iter().zip(points) {
+            match self.session.screen_of(point) {
+                Some((x, y)) => {
+                    let (x, y) = (x / scale - 7.0, y / scale - 7.0);
+                    self.ui.restyle(handle, |s| s.shown().absolute(x, y));
+                }
+                None => self.ui.restyle(handle, |s| s.hidden()),
+            }
+        }
+    }
+
+    /// A spline point dragged: to the ground under the pointer, the fence's
+    /// own posts not counting. One drag is one undo step.
+    fn spline_handle_event(&mut self, i: usize, event: &Event) {
+        match event {
+            Event::Drag { x, y, .. } => {
+                let Some(id) = self.session.selected() else {
+                    return;
+                };
+                let view = self.ui.rect(self.viewport);
+                let scale = self.ui.viewport().2;
+                let (vx, vy) = ((x - view.x) * scale, (y - view.y) * scale);
+                let Some(at) =
+                    self.session
+                        .point_under_without(vx.max(0.0) as u32, vy.max(0.0) as u32, id)
+                else {
+                    return;
+                };
+                let (Some(world), Some(field)) = (
+                    self.session.world_matrix(id),
+                    self.session
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == "spline")),
+                ) else {
+                    return;
+                };
+                let Ok(mut spline) = runity::ron::from_str::<runity::Spline>(&field.value) else {
+                    return;
+                };
+                let Some(point) = spline.points.get_mut(i) else {
+                    return;
+                };
+                *point = world.inverse().transform_point3(at);
+                let Ok(text) = runity::ron::to_string(&spline) else {
+                    return;
+                };
+                if self.session.set_field(id, "spline", &text).is_ok() {
+                    let steps = match self.spline_drag {
+                        Some((who, point, steps)) if who == id && point == i => {
+                            self.session.squash_last(2);
+                            steps
+                        }
+                        _ => 1,
+                    };
+                    self.spline_drag = Some((id, i, steps));
+                }
+            }
+            Event::DragEnd { .. } => {
+                self.spline_drag = None;
+                self.refresh();
+            }
+            _ => {}
         }
     }
 
@@ -2012,6 +2134,10 @@ impl Studio {
     // --- events ----------------------------------------------------------
 
     fn dispatch(&mut self, node: NodeId, event: &Event, requests: &mut Requests) {
+        if let Some(i) = self.spline_handles.iter().position(|h| *h == node) {
+            self.spline_handle_event(i, event);
+            return;
+        }
         // Quick Search takes what is aimed at it.
         if let Some(q) = &self.search {
             let (field, overlay) = (q.field, q.overlay);
@@ -2936,6 +3062,40 @@ impl Studio {
                     );
                 }
                 Action::Float(panel) => self.float(panel),
+                Action::NewFence => {
+                    let what = s
+                        .selected()
+                        .and_then(|id| s.entity_model(id))
+                        .unwrap_or_else(|| "builtin:cylinder".to_string());
+                    let (w, h) = s.size();
+                    let at = s.point_under(w / 2, h / 2).unwrap_or(Vec3::ZERO);
+                    let fence = s.add_fence(&what, at, 1.0).map_err(e)?;
+                    s.select(Some(fence)).map_err(e)?;
+                    s.say(
+                        Level::Info,
+                        "a fence: drag its points in the view; Tools › Spline: Add Point makes it longer",
+                    );
+                }
+                Action::AddSplinePoint => {
+                    let id = s.selected().ok_or("select something with a spline")?;
+                    let text = s
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == "spline"))
+                        .map(|f| f.value)
+                        .filter(|v| v != "None")
+                        .ok_or("the selection has no spline")?;
+                    let mut spline: runity::Spline =
+                        runity::ron::from_str(&text).map_err(|e| e.to_string())?;
+                    let n = spline.points.len();
+                    let next = match n {
+                        0 => Vec3::ZERO,
+                        1 => spline.points[0] + Vec3::new(2.0, 0.0, 0.0),
+                        _ => spline.points[n - 1] + (spline.points[n - 1] - spline.points[n - 2]),
+                    };
+                    spline.points.push(next);
+                    let text = runity::ron::to_string(&spline).map_err(|e| e.to_string())?;
+                    s.set_field(id, "spline", &text).map_err(e)?;
+                }
                 Action::ToggleFoliage => {
                     self.foliage = !self.foliage;
                     self.foliage_stroke = None;

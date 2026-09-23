@@ -114,6 +114,11 @@ pub fn list() -> Vec<Value> {
             "erase": { "type": "boolean" },
             "seed": { "type": "integer" },
         }), &["what", "centre", "radius"]),
+        tool("fence", "Copies of a model along a line through points — a fence, a row of lamps, a colonnade — as one entity with a spline and a spacing. The copies are built from those two and rebuilt when either changes (set_field `spline` or `along`); the file keeps only the line. One undo step; returns the entity's id.", json!({
+            "what": { "type": "string", "description": "a model; builtin:cylinder makes posts" },
+            "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
+            "spacing": { "type": "number", "description": "metres between copies; 1 by default" },
+        }), &["what", "points"]),
         tool("history", "The commits that touched the open scene's file, newest first: commit, author, date, summary.", json!({}), &[]),
         tool("restore", "Put the open scene back as it was at a commit, as one undo step (render afterwards to look; undo to go back).", json!({ "commit": { "type": "string" } }), &["commit"]),
         tool("conflicts", "While git is merging the open scene with conflicts: each conflict in words, numbered. The file holds ours for each.", json!({}), &[]),
@@ -471,6 +476,55 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .get(group)
                 .map_or(0, |g| g.children.len());
             Ok(vec![text(format!("{group}: {placed} placed"))])
+        }
+        "fence" => {
+            let what = string(args, "what")?;
+            let points: Vec<Vec3> = args
+                .get("points")
+                .and_then(Value::as_array)
+                .ok_or("points is a list of [x, y, z]")?
+                .iter()
+                .map(|p| {
+                    let n: Vec<f32> = p
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(Value::as_f64)
+                                .map(|v| v as f32)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    match n.as_slice() {
+                        [x, y, z] => Ok(Vec3::new(*x, *y, *z)),
+                        _ => Err(format!("a point is [x, y, z], not {p}")),
+                    }
+                })
+                .collect::<Result<_, _>>()?;
+            if points.len() < 2 {
+                return Err("a fence needs at least two points".into());
+            }
+            let spacing = args.get("spacing").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+            let session = server.session()?;
+            let fence = session
+                .add_fence(&what, points[0], spacing)
+                .map_err(|e| e.to_string())?;
+            let local: Vec<Vec3> = points.iter().map(|p| *p - points[0]).collect();
+            let spline = runity::Spline {
+                points: local,
+                closed: false,
+            };
+            session
+                .set_field(
+                    fence,
+                    "spline",
+                    &runity::ron::to_string(&spline).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            session.squash_last(2);
+            let copies = session.spawned_count();
+            Ok(vec![text(format!(
+                "{fence}: fence of {what}, {copies} in the world now"
+            ))])
         }
         "paint_foliage" => {
             let what = string(args, "what")?;

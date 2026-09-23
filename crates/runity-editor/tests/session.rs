@@ -4564,3 +4564,48 @@ fn the_foliage_brush_plants_on_the_ground_keeps_its_spacing_and_erases() {
         .paint_foliage("no-such-model", Vec3::ZERO, 2.0, 1.0, false, false, 0)
         .is_err());
 }
+
+#[test]
+fn a_fence_grows_posts_along_its_spline_and_the_file_keeps_only_the_line() {
+    let Some((mut session, path)) = open_with("fence", r#"(entities: [])"#) else {
+        return;
+    };
+    let fence = session
+        .add_fence("builtin:cylinder", Vec3::ZERO, 1.0)
+        .unwrap();
+    assert_eq!(session.entity_count(), 1, "the file has the fence");
+    assert_eq!(
+        session.spawned_count(),
+        1 + 5,
+        "the world has posts at 0, 1, 2, 3, 4 m"
+    );
+    // A post is the fence's: clicking one selects the fence.
+    let rows = session.hierarchy();
+    let post = rows.iter().find(|r| r.name == "cylinder 3").unwrap();
+    assert_eq!(session.instanced_owner(post.id), fence);
+
+    session
+        .set_field(
+            fence,
+            "spline",
+            "(points: [(0.0, 0.0, 0.0), (8.0, 0.0, 0.0)])",
+        )
+        .unwrap();
+    assert_eq!(session.spawned_count(), 1 + 9);
+    session
+        .set_field(
+            fence,
+            "along",
+            r#"(model: "builtin:cylinder", spacing: 2.0)"#,
+        )
+        .unwrap();
+    assert_eq!(session.spawned_count(), 1 + 5);
+
+    session.save_scene(None).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("spline:"), "{text}");
+    assert!(
+        !text.contains("cylinder 3"),
+        "the posts are not in the file"
+    );
+}

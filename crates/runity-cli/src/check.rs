@@ -426,6 +426,15 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
         } else if !entity.model.is_empty() {
             check_model(&entity.model, &who, file, names, out);
         }
+        if let Some(along) = &entity.along {
+            check_model(
+                &along.model,
+                &format!("{who} (along its spline)"),
+                file,
+                names,
+                out,
+            );
+        }
         if let MaterialRef::Named(name) = &entity.material {
             check_material(name, &who, file, names, out);
         }

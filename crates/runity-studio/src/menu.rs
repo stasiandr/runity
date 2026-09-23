@@ -140,6 +140,10 @@ pub enum Action {
     KeepSimulation,
     /// The foliage brush: paint the chosen model onto the ground.
     ToggleFoliage,
+    /// A fence: copies of the selection's model (or posts) along a spline.
+    NewFence,
+    /// One more point at the end of the selection's spline.
+    AddSplinePoint,
     /// Line the selection up along an axis.
     Align(usize, runity_editor::Align),
 }
@@ -282,6 +286,8 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Sculpt Terrain (brush)", Action::ToggleSculpt),
                 item("Face Mode (drag a face)", Action::ToggleFaces),
                 item("Foliage Brush", Action::ToggleFoliage),
+                item("Spline: New Fence", Action::NewFence),
+                item("Spline: Add Point", Action::AddSplinePoint),
                 MenuItem::separator(),
                 item(
                     "Push Top +0.5",

@@ -321,6 +321,12 @@ fn expand(
             .children
             .push(expand(child, scope, prefabs, depth, problems, parts));
     }
+    // What a spline carries grows here, like a prefab's parts: the file
+    // keeps the spline and the spacing, everything downstream sees copies.
+    if let (Some(spline), Some(along)) = (&expanded.spline, &expanded.along) {
+        let grown = along.grow(id, spline);
+        expanded.children.extend(grown);
+    }
     expanded
 }
 

@@ -495,6 +495,9 @@ pub fn settle(
     let mut stack: Vec<&mut EntityDesc> = roots.iter_mut().collect();
     while let Some(desc) = stack.pop() {
         model(&mut desc.model, &mut changed);
+        if let Some(along) = desc.along.as_mut() {
+            model(&mut along.model, &mut changed);
+        }
         for part in desc.overrides.values_mut() {
             if let Some(link) = part.model.as_mut() {
                 model(link, &mut changed);

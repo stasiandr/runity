@@ -112,6 +112,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "problems",
         "push_face",
         "paint_foliage",
+        "fence",
         "array",
         "edits",
         "measure",
@@ -351,6 +352,11 @@ fn an_agent_renames_a_material_and_the_scene_follows() {
     );
     assert!(said.ends_with("planted"), "{said}");
     assert!(!said.starts_with("0 "), "{said}");
+    let said = agent.text(
+        "fence",
+        json!({ "what": "builtin:cylinder", "points": [[0.0, 0.0, 5.0], [6.0, 0.0, 5.0]], "spacing": 2.0 }),
+    );
+    assert!(said.contains("fence of builtin:cylinder"), "{said}");
     let err = agent
         .call("render", json!({ "from_game": true }))
         .unwrap_err();

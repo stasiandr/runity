@@ -50,7 +50,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "physics" => ron(&blank.physics),
         "joint" => ron(&blank.joint),
         "layer" => String::new(),
-        "camera" | "light" | "particles" | "route" => "None".into(),
+        "camera" | "light" | "particles" | "route" | "spline" | "along" => "None".into(),
         _ => return None,
     })
 }
@@ -293,6 +293,14 @@ impl Session {
             (
                 "route".into(),
                 desc.route.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "spline".into(),
+                desc.spline.as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "along".into(),
+                desc.along.as_ref().map_or("None".to_string(), ron),
             ),
         ];
         for (name, value) in &desc.components {
@@ -623,6 +631,20 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Light>(field, text)?)
+                }
+            }
+            "spline" => {
+                next.spline = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::Spline>(field, text)?)
+                }
+            }
+            "along" => {
+                next.along = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::Along>(field, text)?)
                 }
             }
             "route" => {

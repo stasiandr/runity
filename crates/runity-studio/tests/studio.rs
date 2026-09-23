@@ -2008,3 +2008,61 @@ fn the_foliage_brush_paints_the_selected_model_in_one_stroke() {
         .iter()
         .any(|l| l.text.contains("m across")));
 }
+
+#[test]
+fn a_fence_from_the_tools_menu_is_shaped_by_dragging_its_points() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "Tools", "Spline: New Fence");
+    let fence = s.session.selected().expect("the new fence is selected");
+    s.frame();
+    assert!(s.ui.find("spline point 0").is_some() && s.ui.find("spline point 1").is_some());
+    let posts = s.session.spawned_count();
+    let spline = |s: &Studio| -> runity::Spline {
+        let text = s
+            .session
+            .inspect(fence)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "spline")
+            .unwrap()
+            .value;
+        runity::ron::from_str(&text).unwrap()
+    };
+    let before = spline(&s).points[1];
+    let steps = s.session.undo_steps().len();
+
+    // The second point, dragged across the view: one step, and a longer
+    // fence has more posts.
+    s.ui.paint();
+    let handle = s.ui.rect(s.ui.find("spline point 1").unwrap());
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let (x, y) = handle.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    for i in 1..=5 {
+        let t = i as f32 / 5.0;
+        s.handle(&InputEvent::MouseMoved {
+            x: x + (view.x + view.width * 0.9 - x) * t,
+            y: y + 10.0 * t,
+        });
+        s.frame();
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let after = spline(&s).points[1];
+    assert!((after - before).length() > 1.0, "{before} -> {after}");
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "one drag, one step"
+    );
+    assert!(s.session.spawned_count() > posts, "longer, more posts");
+
+    menu(&mut s, "Tools", "Spline: Add Point");
+    s.frame();
+    assert_eq!(spline(&s).points.len(), 3);
+    assert!(s.ui.find("spline point 2").is_some());
+}

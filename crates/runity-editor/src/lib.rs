@@ -3172,6 +3172,72 @@ impl Session {
         Some((out, (to.0 - from.0, to.1 - from.1)))
     }
 
+    /// Where an entity is in the world, as a matrix: its transform and all
+    /// of its parents'.
+    pub fn world_matrix(&self, id: EntityId) -> Option<Mat4> {
+        self.instanced
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(desc, _)| desc.id == id)
+            .map(|(_, world)| world)
+    }
+
+    /// Where a point of the world is in the view, in pixels; `None` behind
+    /// the camera.
+    pub fn screen_of(&self, point: Vec3) -> Option<(f32, f32)> {
+        let (w, h) = self.size();
+        self.camera
+            .screen_point(point, runity::glam::Vec2::new(w as f32, h as f32))
+            .map(|p| (p.x, p.y))
+    }
+
+    /// What the view's pixel shows, not counting `without` and what is
+    /// under it: where a fence's point goes when dragged, rather than onto
+    /// the fence's own posts.
+    pub fn point_under_without(&self, x: u32, y: u32, without: EntityId) -> Option<Vec3> {
+        let (from, direction) = self.ray(x, y);
+        self.solid_without(&[without])
+            .cast_ray_with_normal(from, direction, self.camera.far, false)
+            .map(|(point, _, _)| point)
+    }
+
+    /// A fence: an entity at `at` with a spline two points long and copies
+    /// of `what` along it, `spacing` apart (docs/artist.md). One undo step.
+    pub fn add_fence(&mut self, what: &str, at: Vec3, spacing: f32) -> EditResult<EntityId> {
+        if !self.has_model(what) {
+            return Err(EditError::Scene(format!(
+                "no model `{what}` to set along a spline"
+            )));
+        }
+        let posts = what.starts_with("builtin:");
+        self.insert(
+            None,
+            EntityDesc {
+                name: "fence".into(),
+                transform: runity::Transform {
+                    position: at,
+                    ..Default::default()
+                },
+                spline: Some(runity::Spline {
+                    points: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+                    closed: false,
+                }),
+                along: Some(runity::Along {
+                    model: what.into(),
+                    spacing,
+                    // A builtin is a metre across: thin it to a post.
+                    scale: if posts {
+                        Vec3::new(0.15, 1.2, 0.15)
+                    } else {
+                        Vec3::ONE
+                    },
+                }),
+                ..Default::default()
+            },
+        )
+    }
+
     /// An entity's own model's box and where it is in the world.
     fn own_box(&self, id: EntityId) -> Option<((Vec3, Vec3), Mat4)> {
         self.instanced
@@ -3797,7 +3863,7 @@ impl Session {
     /// id in the prefab file.
     /// The document line an expanded line belongs to: itself, or the
     /// instance a part came with.
-    pub(crate) fn instanced_owner(&self, id: EntityId) -> EntityId {
+    pub fn instanced_owner(&self, id: EntityId) -> EntityId {
         self.instanced.owner_of(id).unwrap_or(id)
     }
 

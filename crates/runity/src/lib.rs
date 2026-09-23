@@ -102,7 +102,7 @@ pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
-pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
+pub use scene::{Along, Body, EntityDesc, Fog, Scene, Spline, Sun, Transform, View};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use tuned::Tuned;

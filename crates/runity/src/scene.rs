@@ -598,6 +598,16 @@ pub struct EntityDesc {
     /// A camera on this entity; see [`Lens`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub camera: Option<Lens>,
+    /// A curve through points, in this entity's space: a road, a fence
+    /// line, a pipe (docs/artist.md). What follows it is [`Along`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub spline: Option<Spline>,
+    /// Copies of a model set along this entity's spline, `spacing` apart:
+    /// Unreal's Construction Script for a fence. The file keeps the
+    /// spacing and the model; the copies are built when the scene is
+    /// expanded, and built again whenever either changes.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub along: Option<Along>,
     /// A light at this entity; see [`Light`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub light: Option<Light>,
@@ -1133,6 +1143,103 @@ pub struct BrokenLink {
     pub target: EntityId,
 }
 
+/// A curve through points, in its entity's space. Straight between the
+/// points for now; the points are what is edited.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Spline {
+    pub points: Vec<Vec3>,
+    /// Back from the last point to the first: a fence round a field.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
+}
+
+impl Spline {
+    /// Where things go along it, `spacing` apart from the first point, and
+    /// which way the curve runs there: `(position, direction)`.
+    pub fn stations(&self, spacing: f32) -> Vec<(Vec3, Vec3)> {
+        let spacing = spacing.max(0.05);
+        let mut points = self.points.clone();
+        if self.closed && points.len() > 2 {
+            points.push(points[0]);
+        }
+        let mut out = Vec::new();
+        // How far into the next segment the next station is.
+        let mut carry = 0.0;
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let length = (b - a).length();
+            if length < 1e-4 {
+                continue;
+            }
+            let direction = (b - a) / length;
+            let mut at = carry;
+            while at <= length + 1e-4 {
+                out.push((a + direction * at, direction));
+                at += spacing;
+                if out.len() >= 10_000 {
+                    return out;
+                }
+            }
+            carry = at - length;
+        }
+        out
+    }
+}
+
+/// What a spline carries: copies of a model, `spacing` apart, each turned
+/// to face along the curve.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Along {
+    pub model: crate::AssetLink,
+    #[serde(default = "one_metre")]
+    pub spacing: f32,
+    /// The copies' scale.
+    #[serde(default = "unit_scale", skip_serializing_if = "is_unit_scale")]
+    pub scale: Vec3,
+}
+
+fn one_metre() -> f32 {
+    1.0
+}
+
+fn unit_scale() -> Vec3 {
+    Vec3::ONE
+}
+
+fn is_unit_scale(v: &Vec3) -> bool {
+    *v == Vec3::ONE
+}
+
+impl Along {
+    /// The copies for a spline, as children of the entity carrying both:
+    /// named after the model and numbered, with IDs derived from the
+    /// carrier's and their number, so the same fence gives the same IDs.
+    pub fn grow(&self, carrier: EntityId, spline: &Spline) -> Vec<EntityDesc> {
+        let name = self.model.trim_start_matches("builtin:").to_string();
+        spline
+            .stations(self.spacing)
+            .into_iter()
+            .enumerate()
+            .map(|(i, (position, direction))| {
+                let mut transform = Transform {
+                    position,
+                    scale: self.scale,
+                    ..Default::default()
+                };
+                let yaw = (-direction.z).atan2(direction.x);
+                transform.set_rotation(glam::Quat::from_rotation_y(yaw));
+                EntityDesc {
+                    id: carrier.within(EntityId::from_raw(i as u64 + 1)),
+                    name: format!("{name} {}", i + 1),
+                    model: self.model.clone(),
+                    transform,
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+}
+
 impl Scene {
     /// Every [`crate::EntityRef`] in a component whose entity is not in the
     /// scene. Asked of an expanded scene, so that a link to a part of a
@@ -1280,6 +1387,8 @@ mod tests {
         let mut scene = Scene {
             entities: vec![EntityDesc {
                 camera: None,
+                spline: None,
+                along: None,
                 light: None,
                 particles: None,
                 route: None,
@@ -1305,6 +1414,8 @@ mod tests {
                 },
                 children: vec![EntityDesc {
                     camera: None,
+                    spline: None,
+                    along: None,
                     light: None,
                     particles: None,
                     route: None,
@@ -1348,6 +1459,8 @@ mod tests {
             fog: Fog::default(),
             entities: vec![EntityDesc {
                 camera: None,
+                spline: None,
+                along: None,
                 light: None,
                 particles: None,
                 route: None,
