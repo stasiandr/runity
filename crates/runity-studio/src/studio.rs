@@ -795,9 +795,8 @@ impl Studio {
         self.bottom.update_git(&mut self.ui, &mut self.session);
         // Two of the Project's pictures a frame, until it has them all.
         for (name, image) in self.bottom.wanted_pictures(2) {
-            match self.session.thumbnail(&name, 128) {
-                Ok(pixels) => self.pending_images.push((image, 128, pixels)),
-                Err(_) => {}
+            if let Ok(pixels) = self.session.thumbnail(&name, 128) {
+                self.pending_images.push((image, 128, pixels));
             }
             self.bottom.picture_ready(&mut self.ui, &name);
         }
