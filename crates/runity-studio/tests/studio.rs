@@ -1753,3 +1753,75 @@ fn face_mode_outlines_a_face_and_a_drag_pushes_it() {
     let (_, back) = s.session.world_bounds(crate_).unwrap();
     assert!((back.y - high.y).abs() < 1e-4);
 }
+
+#[test]
+fn a_panel_floats_in_a_window_of_its_own_and_docks_back() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    menu(&mut s, "Window", "Float the Inspector");
+    assert_eq!(
+        s.floating().into_iter().map(|(n, _)| n).collect::<Vec<_>>(),
+        ["inspector"]
+    );
+    assert!(s.ui.find("tab inspector").is_none(), "its tab is gone");
+    s.resize_float("inspector", 400.0, 500.0);
+    click(&mut s, "line boulder");
+
+    // The floating window's own pixels: its pointer is shifted to the frame.
+    s.ui.paint();
+    let frame = s.ui.rect(s.ui.find("float inspector").unwrap());
+    assert_eq!((frame.width, frame.height), (400.0, 500.0));
+    let name = s.ui.rect(s.ui.find("inspector name").unwrap());
+    let (x, y) = (name.center().0 - frame.x, name.center().1 - frame.y);
+    assert!(
+        x > 0.0 && x < 400.0 && y > 0.0 && y < 500.0,
+        "inside it: {x},{y}"
+    );
+    s.handle_float("inspector", &InputEvent::MouseMoved { x, y });
+    s.handle_float("inspector", &InputEvent::MouseDown(MouseButton::Left));
+    s.handle_float("inspector", &InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "big rock");
+    s.handle(&InputEvent::KeyDown(Key::Enter));
+    s.frame();
+    assert!(
+        s.session.find("big rock").is_some(),
+        "renamed from the floating window"
+    );
+
+    // Drawn from its corner: the panel's surface, not the main window's.
+    let target = runity::OffscreenTarget::new(s.session.gpu(), 400, 500);
+    let mut renderer = s.renderer(target.format());
+    let mut seen = u64::MAX;
+    s.draw_float(
+        "inspector",
+        &mut renderer,
+        &mut seen,
+        &target.ui_view(),
+        400,
+        500,
+    );
+    let pixels = target.read_rgba(s.session.gpu());
+    if let Ok(out) = std::env::var("RUNITY_FLOAT_SHOT") {
+        image::save_buffer(out, &pixels, 400, 500, image::ExtendedColorType::Rgba8).unwrap();
+    }
+    let at = |x: usize, y: usize| &pixels[(y * 400 + x) * 4..(y * 400 + x) * 4 + 3];
+    let surface = runity_studio::theme::SURFACE;
+    assert_eq!(
+        at(200, 480),
+        [surface.r, surface.g, surface.b],
+        "the panel's card"
+    );
+
+    // Closing its window docks it again.
+    s.close_float("inspector");
+    s.frame();
+    assert!(s.floating().is_empty());
+    assert!(s.ui.find("tab inspector").is_some());
+    assert!(s.ui.find("float inspector").is_none());
+}

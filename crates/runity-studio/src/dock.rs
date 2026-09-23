@@ -62,7 +62,7 @@ impl Panel {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Panel::Hierarchy => "Hierarchy",
             Panel::Inspector => "Inspector",
@@ -114,6 +114,8 @@ pub enum Docked {
     /// A tab was clicked or dragged: panels may have come on top or moved,
     /// and want bringing up to date.
     Handled,
+    /// A tab was right-clicked: its menu, at the pointer.
+    Menu(Panel),
 }
 
 pub struct Docks {
@@ -261,6 +263,42 @@ impl Docks {
         ui.restyle(hint, |s| if empty { s.shown() } else { s.hidden() });
     }
 
+    /// Take a panel out of its dock, tab and all: it is going to a window
+    /// of its own. Its content stays where it is until the caller moves it.
+    pub fn take(&mut self, ui: &mut Ui, panel: Panel) -> Option<NodeId> {
+        let from = self.dock_of(panel)?;
+        let at = self.docks[from]
+            .tabs
+            .iter()
+            .position(|(p, _)| *p == panel)?;
+        let (_, tab) = self.docks[from].tabs.remove(at);
+        ui.remove(tab);
+        if self.docks[from].active == Some(panel) {
+            self.docks[from].active = None;
+            if let Some((next, _)) = self.docks[from].tabs.first().copied() {
+                self.activate(ui, next);
+            }
+        }
+        self.show_empty(ui, from);
+        Some(self.roots[&panel])
+    }
+
+    /// Put a panel that was taken out back into dock `to`, on top there.
+    pub fn give_back(&mut self, ui: &mut Ui, panel: Panel, to: usize) {
+        if self.dock_of(panel).is_some() {
+            return;
+        }
+        self.put(ui, panel, to);
+        self.activate(ui, panel);
+        self.show_empty(ui, to);
+    }
+
+    /// Whether a panel shows: on top of its dock, or in a window of its
+    /// own (out of every dock).
+    pub fn is_showing(&self, panel: Panel) -> bool {
+        self.is_active(panel) || self.dock_of(panel).is_none()
+    }
+
     /// Move a panel to dock `to`, on top there.
     pub fn move_panel(&mut self, ui: &mut Ui, panel: Panel, to: usize) {
         let Some(from) = self.dock_of(panel) else {
@@ -297,6 +335,10 @@ impl Docks {
             .find(|(_, t)| *t == node)
             .map(|(p, _)| *p)?;
         match event {
+            Event::Click {
+                button: runity::input::MouseButton::Right,
+                ..
+            } => Some(Docked::Menu(panel)),
             Event::Click { .. } => {
                 self.activate(ui, panel);
                 Some(Docked::Handled)

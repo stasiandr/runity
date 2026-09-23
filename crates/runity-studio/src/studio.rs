@@ -15,7 +15,7 @@
 //! The Scene view is a node whose picture is the session's frame texture,
 //! on the same GPU device: no copy, on every platform (docs/ui.md).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Instant;
 
@@ -77,6 +77,25 @@ pub struct Requests {
     /// A Project entry was clicked: show it in the Inspector.
     pub inspect: Option<Asset>,
 }
+
+/// A panel torn off into a window of its own.
+///
+/// One UI tree serves every window: the panel moves into a frame far to
+/// the right of the main window, and the panel's window draws the tree
+/// from that frame's corner and feeds its pointer in shifted by as much.
+/// Focus, drags, menus and the panel's state are the one tree's, so
+/// nothing is copied between windows.
+struct Float {
+    panel: Panel,
+    frame: NodeId,
+    dock_button: NodeId,
+    origin: (f32, f32),
+}
+
+/// How far to the right of the main window floating frames begin, and how
+/// far apart they are.
+const FLOAT_X: f32 = 100_000.0;
+const FLOAT_STEP: f32 = 10_000.0;
 
 /// A face being dragged in face mode.
 struct FaceDrag {
@@ -256,6 +275,12 @@ pub struct Studio {
     face_hover: Option<(EntityId, Face)>,
     face_drag: Option<FaceDrag>,
     face_box: NodeId,
+    /// Panels in windows of their own.
+    floats: Vec<Float>,
+    /// Every picture given by pixels, kept for a window opened later, and
+    /// a number that changes whenever any picture does.
+    pictures: HashMap<ImageId, (u32, Vec<u8>)>,
+    picture_generation: u64,
     /// A stroke in progress: when the last dab landed, and for a flatten
     /// the height it flattens to.
     stroke: Option<(Instant, f32)>,
@@ -567,6 +592,9 @@ impl Studio {
             face_hover: None,
             face_drag: None,
             face_box,
+            floats: Vec::new(),
+            pictures: HashMap::new(),
+            picture_generation: 0,
             panels: [true; 3],
             last_input: Instant::now(),
             docks,
@@ -923,21 +951,21 @@ impl Studio {
                 ui: self.last_draw_ms,
             });
             let live = self.wants_frame();
-            if live && self.docks.is_active(Panel::Profiler) {
+            if live && self.docks.is_showing(Panel::Profiler) {
                 self.profiler.update(&mut self.ui);
             }
-            if self.docks.is_active(Panel::Animation) {
+            if self.docks.is_showing(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
             }
-            if self.docks.is_active(Panel::Screens) {
+            if self.docks.is_showing(Panel::Screens) {
                 self.screens.update(&mut self.ui, &self.session);
                 self.screens.draw(&self.session);
             }
-            if self.docks.is_active(Panel::Animator) {
+            if self.docks.is_showing(Panel::Animator) {
                 self.animator.update(&mut self.ui, &self.session);
             }
             self.fit_wide();
-            if self.docks.is_active(Panel::Settings) {
+            if self.docks.is_showing(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
             }
         }
@@ -1116,6 +1144,165 @@ impl Studio {
         if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
             self.ui.set_text(t, label);
         }
+    }
+
+    // --- floating windows ---------------------------------------------
+
+    /// Tear a panel off into a window of its own.
+    pub(crate) fn float(&mut self, panel: Panel) {
+        if self.floats.iter().any(|f| f.panel == panel) {
+            return;
+        }
+        let Some(root) = self.docks.take(&mut self.ui, panel) else {
+            return;
+        };
+        let used: Vec<f32> = self.floats.iter().map(|f| f.origin.0).collect();
+        let x = (0..)
+            .map(|i| FLOAT_X + i as f32 * FLOAT_STEP)
+            .find(|x| !used.contains(x))
+            .expect("there is always a free place");
+        let ui = &mut self.ui;
+        let frame = ui.add(
+            ui.root(),
+            Style::column()
+                .absolute(x, 0.0)
+                .size(420.0, 560.0)
+                .background(BG)
+                .padding(3.0),
+        );
+        ui.set_name(frame, format!("float {}", panel.name()));
+        let card = ui.add(
+            frame,
+            Style::column()
+                .full()
+                .background(SURFACE)
+                .radius(RADIUS_MD)
+                .clip(),
+        );
+        let strip = ui.add(
+            card,
+            Style::row()
+                .height(32.0)
+                .fixed()
+                .full_width()
+                .padding_x(SPACE_3)
+                .gap(SPACE_2)
+                .center_items(),
+        );
+        ui.add_text(strip, text(), panel.label());
+        spacer(ui, strip);
+        let dock_button = button(
+            ui,
+            strip,
+            &format!("dock {}", panel.name()),
+            "Dock back",
+            false,
+        );
+        let body = ui.add(card, Style::column().fill().full_width());
+        ui.move_to(root, body);
+        ui.restyle(root, |s| s.shown());
+        self.floats.push(Float {
+            panel,
+            frame,
+            dock_button,
+            origin: (x, 0.0),
+        });
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// Put a floating panel back under the view, and close its window.
+    pub(crate) fn dock_back(&mut self, panel: Panel) {
+        let Some(at) = self.floats.iter().position(|f| f.panel == panel) else {
+            return;
+        };
+        let float = self.floats.remove(at);
+        self.docks.give_back(&mut self.ui, panel, 2);
+        self.ui.remove(float.frame);
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// The panels in windows of their own, with their titles: what the
+    /// window code keeps a window open for.
+    pub fn floating(&self) -> Vec<(String, String)> {
+        self.floats
+            .iter()
+            .map(|f| {
+                (
+                    f.panel.name().to_string(),
+                    format!("{} — runity", f.panel.label()),
+                )
+            })
+            .collect()
+    }
+
+    fn float_of(&self, name: &str) -> Option<&Float> {
+        self.floats.iter().find(|f| f.panel.name() == name)
+    }
+
+    /// A floating panel's window was resized, in logical pixels.
+    pub fn resize_float(&mut self, name: &str, width: f32, height: f32) {
+        let Some(frame) = self.float_of(name).map(|f| f.frame) else {
+            return;
+        };
+        self.ui.restyle(frame, |s| s.size(width, height));
+    }
+
+    /// An event from a floating panel's window, pointer in its logical
+    /// pixels.
+    pub fn handle_float(&mut self, name: &str, event: &InputEvent) {
+        let Some((ox, oy)) = self.float_of(name).map(|f| f.origin) else {
+            return;
+        };
+        match event {
+            InputEvent::MouseMoved { x, y } => self.handle(&InputEvent::MouseMoved {
+                x: x + ox,
+                y: y + oy,
+            }),
+            other => self.handle(other),
+        }
+    }
+
+    /// Its window closed: the panel goes back to a dock.
+    pub fn close_float(&mut self, name: &str) {
+        if let Some(panel) = self.float_of(name).map(|f| f.panel) {
+            self.dock_back(panel);
+        }
+    }
+
+    /// Draw a floating panel's window. `seen` is the picture generation
+    /// this renderer has: pictures are given to it again when it is old.
+    pub fn draw_float(
+        &mut self,
+        name: &str,
+        renderer: &mut UiRenderer,
+        seen: &mut u64,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        let Some((ox, oy)) = self.float_of(name).map(|f| f.origin) else {
+            return;
+        };
+        if *seen != self.picture_generation {
+            *seen = self.picture_generation;
+            let gpu = self.session.gpu();
+            renderer.set_image(gpu, SCENE, self.session.frame_target().view());
+            if let Some(target) = self.session.preview_target() {
+                renderer.set_image(gpu, CAMERA_PREVIEW, target.view());
+            }
+            if let Some(target) = self.screens.target() {
+                renderer.set_image(gpu, screens::CANVAS, target.view());
+            }
+            for (image, (size, pixels)) in &self.pictures {
+                renderer.set_image_rgba(gpu, *image, *size, *size, pixels);
+            }
+        }
+        renderer.set_origin(ox, oy);
+        let ground = self.ui.tint(BG);
+        let gpu = self.session.gpu();
+        renderer.draw(gpu, view, width, height, &mut self.ui, Some(ground));
     }
 
     /// The pointer over the view in face mode: outline the face under it,
@@ -1345,7 +1532,7 @@ impl Studio {
 
     /// Tell the lower panels which of them are on top.
     fn sync_visible(&mut self) {
-        let on = |p| self.docks.is_active(p);
+        let on = |p| self.docks.is_showing(p);
         self.bottom.set_visible([
             on(Panel::Project),
             on(Panel::Console),
@@ -1511,22 +1698,27 @@ impl Studio {
                 self.session.frame_target().view(),
             );
             self.registered = Some(size);
+            self.picture_generation += 1;
         }
         if let Some(target) = self.session.preview_target() {
             let size = (target.width, target.height);
             if self.cam_registered != Some(size) {
                 renderer.set_image(self.session.gpu(), CAMERA_PREVIEW, target.view());
                 self.cam_registered = Some(size);
+                self.picture_generation += 1;
             }
         }
         if self.screens.new_target {
             if let Some(target) = self.screens.target() {
                 renderer.set_image(self.session.gpu(), screens::CANVAS, target.view());
                 self.screens.new_target = false;
+                self.picture_generation += 1;
             }
         }
         for (image, size, pixels) in self.pending_images.drain(..) {
             renderer.set_image_rgba(self.session.gpu(), image, size, size, &pixels);
+            self.pictures.insert(image, (size, pixels));
+            self.picture_generation += 1;
         }
         let started = Instant::now();
         let gpu = self.session.gpu();
@@ -1800,9 +1992,36 @@ impl Studio {
                 }
             }
         }
-        if let Some(Docked::Handled) = self.docks.event(&mut self.ui, node, event) {
-            self.sync_visible();
-            if !matches!(event, Event::Drag { .. }) {
+        match self.docks.event(&mut self.ui, node, event) {
+            Some(Docked::Handled) => {
+                self.sync_visible();
+                if !matches!(event, Event::Drag { .. }) {
+                    requests.refresh = true;
+                }
+                return;
+            }
+            Some(Docked::Menu(panel)) => {
+                let (x, y) = self.ui.pointer();
+                requests.menu = Some((
+                    vec![MenuItem::new(
+                        "Float in its own window",
+                        Action::Float(panel),
+                    )],
+                    x,
+                    y,
+                ));
+                return;
+            }
+            None => {}
+        }
+        if let Some(panel) = self
+            .floats
+            .iter()
+            .find(|f| f.dock_button == node)
+            .map(|f| f.panel)
+        {
+            if let Event::Click { .. } = event {
+                self.dock_back(panel);
                 requests.refresh = true;
             }
             return;
@@ -2607,6 +2826,12 @@ impl Studio {
                         Level::Info,
                         "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
                     );
+                }
+                Action::Float(panel) => self.float(panel),
+                Action::DockAll => {
+                    for panel in self.floats.iter().map(|f| f.panel).collect::<Vec<_>>() {
+                        self.dock_back(panel);
+                    }
                 }
                 Action::ToggleFaces => {
                     self.faces = !self.faces;
