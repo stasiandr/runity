@@ -176,3 +176,81 @@ fn a_sandstorm_hides_the_distance_in_sand_coloured_air() {
         "gone into sand-coloured air: {storm:?}"
     );
 }
+
+#[test]
+fn a_dust_wall_stands_upwind_behind_what_is_in_front_of_it() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    // A blue post twenty metres upwind, off to the side.
+    let post = Draw {
+        mesh: cube,
+        transform: Mat4::from_translation(Vec3::new(-20.0, 5.0, -4.0))
+            * Mat4::from_scale(Vec3::new(1.0, 10.0, 1.0)),
+        texture: TextureHandle::WHITE,
+        material: runity::Material {
+            shading: runity::material::Shading::Unlit,
+            ..Material::new(0.1, 0.2, 0.9)
+        },
+        pose: None,
+    };
+    let shoot = |renderer: &mut Renderer, wall: f32| {
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Physical,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            // Looking upwind (the wind blows along +x), a little up.
+            camera: Camera {
+                position: Vec3::new(0.0, 1.7, 0.0),
+                target: Vec3::new(-10.0, 3.0, 0.0),
+                ..Camera::default()
+            },
+            wind: runity::foliage::Wind {
+                direction: Vec3::X,
+                strength: 1.0,
+            },
+            shadows: ShadowSettings::OFF,
+            draws: vec![post],
+            weather: Weather {
+                dust_wall: wall,
+                dust_wall_distance: 400.0,
+                ..Default::default()
+            },
+            time: Some(0.0),
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        target.read_rgba(&gpu)
+    };
+    let clear = shoot(&mut renderer, 0.0);
+    let dusty = shoot(&mut renderer, 1.0);
+    let sky = |p: &[u8]| OffscreenTarget::pixel(p, SIZE, SIZE / 4, SIZE * 2 / 5);
+    assert!(
+        sky(&clear)[2] > sky(&clear)[0],
+        "a blue sky upwind: {:?}",
+        sky(&clear)
+    );
+    assert!(
+        sky(&dusty)[0] > sky(&dusty)[2],
+        "a wall of dust there: {:?}",
+        sky(&dusty)
+    );
+    // The post, twenty metres off, stands in front of the wall.
+    let post_at = |p: &[u8]| {
+        (0..SIZE)
+            .map(|x| OffscreenTarget::pixel(p, SIZE, x, SIZE / 2))
+            .find(|c| c[2] as i32 > c[0] as i32 + 100)
+    };
+    assert!(post_at(&clear).is_some(), "the post is there");
+    assert!(
+        post_at(&dusty).is_some(),
+        "and still blue in front of the wall"
+    );
+}

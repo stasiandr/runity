@@ -160,6 +160,19 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 // The last frame, resolved: what screen-space reflections read.
 @group(0) @binding(22) var last_frame: texture_2d<f32>;
 
+/// Whether any of the dust wall can lie between the eye and a point: the
+/// point is past where the ray enters the wall's side of its front (its
+/// bulges included).
+fn dust_can_reach(p: vec3<f32>) -> bool {
+    let w = select(vec2<f32>(1.0, 0.0), normalize(frame.foliage.wind.xy), length(frame.foliage.wind.xy) > 1e-4);
+    let eye = frame.camera_position.xyz;
+    let front = -frame.weather[1].w + 260.0;
+    if dot(eye.xz, w) < front {
+        return true;
+    }
+    return dot(p.xz, w) < front;
+}
+
 /// How deep, along the view, the prepass's depth at a pixel is.
 fn scene_view_depth(pixel: vec2<i32>) -> f32 {
     let d = textureLoad(scene_depth, pixel, 0);
@@ -1258,6 +1271,14 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
     var out = mix(color, albedo + emission, unlit);
+    // A dust wall between it and the eye (the cloud pass stopped there) —
+    // unless it stands nearer than where the wall can begin: the clouds'
+    // picture is a quarter of the frame, and a thin post in front of the
+    // wall must not take the wall's colour from the texel it shares.
+    if frame.weather[1].z > 0.0 && dust_can_reach(in.world_position) {
+        let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
+        out = out * c.a + c.rgb;
+    }
     out = through_air(out, in.clip_position.xy, length(in.world_position - frame.camera_position.xyz));
     out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
     if (flags & 8u) != 0u {
@@ -1543,7 +1564,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
     let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
     var sky = (color + sun) * frame.sky_ground.w;
-    if frame.clouds[0].x > 0.0 {
+    if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 {
         let c = textureSampleLevel(cloud_layer, fog_sampler, in.position.xy / frame.cluster_depth.zw, 0.0);
         sky = sky * c.a + c.rgb;
     }

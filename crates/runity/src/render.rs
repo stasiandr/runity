@@ -3015,6 +3015,10 @@ impl Renderer {
                 let seen = Frame {
                     camera: crate::reflections::face_camera(probe, face),
                     // The clouds' picture is the camera's, not the probe's.
+                    weather: crate::weather::Weather {
+                        dust_wall: 0.0,
+                        ..frame.weather
+                    },
                     sky: Sky {
                         clouds: crate::clouds::Clouds {
                             coverage: 0.0,
@@ -3062,7 +3066,7 @@ impl Renderer {
             self.rebind(gpu);
         }
         if probe.is_none()
-            && frame.sky.clouds.coverage > 0.0
+            && (frame.sky.clouds.coverage > 0.0 || frame.weather.dust_wall > 0.0)
             && self.clouds.resize(gpu, (width, height))
         {
             self.rebind(gpu);
@@ -3185,8 +3189,13 @@ impl Renderer {
             cascade_bias[i] = frame.shadows.normal_bias + texel;
         }
         // The fog as the weather leaves it: a sandstorm thickens both.
-        let volumetric = frame.weather.storm_fog(&frame.volumetric_fog);
-        let fog = frame.weather.storm_distance(&frame.fog);
+        let time = frame
+            .time
+            .unwrap_or_else(|| self.started.elapsed().as_secs_f32());
+        // The weather where the camera is: inside a dust wall, a storm.
+        let weather = frame.weather.at(frame.camera.position, &frame.wind, time);
+        let volumetric = weather.storm_fog(&frame.volumetric_fog);
+        let fog = weather.storm_distance(&frame.fog);
         // With a physical sky, the sun's colour and the light from all
         // round come from the air, not from the scene's picked colours.
         let physical = frame.sky.mode == SkyMode::Physical;
@@ -3204,6 +3213,13 @@ impl Renderer {
                 frame.lighting.ground_color,
             )
         };
+        // In a sandstorm the sun is a dim orange disc through the sand, and
+        // what light there is comes from the glowing air all round.
+        let storm = weather.sandstorm.clamp(0.0, 1.0);
+        let sun_light =
+            sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
+        let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
+        let ground_light = ground_light.lerp(Vec3::new(0.35, 0.25, 0.15), storm * 0.7);
         let foliage = crate::foliage::FoliageUniform::new(
             &frame.wind,
             &frame.benders,
@@ -3381,7 +3397,11 @@ impl Renderer {
             clear_color: extend(frame.clear_color, 1.0),
             foliage,
             air: [if physical { 1.0 } else { 0.0 }, frame.camera.far, 0.0, 0.0],
-            weather: frame.weather.uniform(),
+            weather: {
+                let mut u = weather.uniform();
+                u[1][3] = weather.dust_front(&frame.wind, time);
+                u
+            },
             previous_view_projection: self
                 .previous_view_projection
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
@@ -3765,29 +3785,6 @@ impl Renderer {
             );
         }
 
-        // The clouds, from where the camera stands.
-        if probe.is_none() && frame.sky.mode != SkyMode::Color && frame.sky.clouds.coverage > 0.0 {
-            let (shape, drift) = frame.sky.clouds.vectors(&frame.wind);
-            self.clouds.run(
-                gpu,
-                &mut encoder,
-                crate::clouds::CloudUniform {
-                    inverse_view_projection: frame
-                        .camera
-                        .view_projection(aspect)
-                        .inverse()
-                        .to_cols_array_2d(),
-                    eye: extend(frame.camera.position, foliage.wind[3]),
-                    to_sun: extend(to_sun, 1.0),
-                    sun: extend(sun_light, 0.0),
-                    ambient: extend(sky_light, 0.0),
-                    shape,
-                    drift,
-                    size: [0.0; 4],
-                },
-            );
-        }
-
         // The fog in the air, once every shadow it looks through is drawn.
         if volumetric.enabled {
             self.volumes.run(
@@ -3811,7 +3808,10 @@ impl Renderer {
             .any(|d| d.material.shading == Shading::Water);
         // So do screen-space reflections.
         let ssr_on = frame.screen_space_reflections.enabled && probe.is_none();
-        if ssao_on || lens_on || water_on || ssr_on {
+        // And the dust wall, to stand behind what is in front of it.
+        let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
+        let prepass_drawn = ssao_on || lens_on || water_on || ssr_on || wall_on;
+        if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("runity::prepass"),
@@ -3851,6 +3851,53 @@ impl Renderer {
                     &frame.ambient_occlusion,
                 );
             }
+        }
+
+        // The clouds and the dust wall, from where the camera stands, each
+        // ray stopped at what the prepass saw — so a wall of dust stands
+        // behind what is in front of it.
+        let dust_on = probe.is_none() && frame.weather.dust_wall > 0.0;
+        let clouds_on =
+            probe.is_none() && frame.sky.mode != SkyMode::Color && frame.sky.clouds.coverage > 0.0;
+        if clouds_on || dust_on {
+            let (mut shape, drift) = frame.sky.clouds.vectors(&frame.wind);
+            if !clouds_on {
+                shape[0] = 0.0;
+            }
+            let w = &weather;
+            let near = frame.camera.near.max(1e-3);
+            self.clouds.run(
+                gpu,
+                &mut encoder,
+                crate::clouds::CloudUniform {
+                    inverse_view_projection: frame
+                        .camera
+                        .view_projection(aspect)
+                        .inverse()
+                        .to_cols_array_2d(),
+                    eye: extend(frame.camera.position, foliage.wind[3]),
+                    to_sun: extend(to_sun, 1.0),
+                    sun: extend(sun_light, 0.0),
+                    ambient: extend(sky_light, 0.0),
+                    shape,
+                    drift,
+                    size: [0.0; 4],
+                    dust: [
+                        w.dust_wall.clamp(0.0, 1.0),
+                        w.dust_front(&frame.wind, time),
+                        w.dust_wall_height.max(10.0),
+                        if prepass_drawn { 1.0 } else { 0.0 },
+                    ],
+                    view_depth: crate::lights::view_of(&frame.camera).row(2).to_array(),
+                    depth_range: [
+                        near,
+                        frame.camera.far.max(near + 0.01),
+                        foliage.wind[0],
+                        foliage.wind[1],
+                    ],
+                },
+                &self.ssao.depth,
+            );
         }
 
         {
@@ -3904,7 +3951,7 @@ impl Renderer {
                 instance += 1;
             }
             // What falls, in front of it all.
-            if frame.weather.falling() {
+            if weather.falling() {
                 pass.set_pipeline(&self.pipelines.precipitation);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);

@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/haboob.ron",
+    id: Some("77283938a16dbaf272d82a6a27c1f32d"),
+)

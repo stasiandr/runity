@@ -1,0 +1,29 @@
+// Хабуб: стена пыли идёт по пустыне. Фронт в сотни метров высотой
+// клубится, как кучевые облака на земле, верха светлее, подножие темнее;
+// перед ним ещё чистый воздух. `weather: (dust_wall: 1.0)`, фронт
+// надвигается по ветру.
+(
+    view: (position: (0.0, 1.8, 0.0), target: (-60.0, 6.0, -8.0), fov_deg: 60.0),
+    sun: (hour: 15.5, intensity: 1.2),
+    sky: (mode: Physical, atmosphere: (mie: 3.0), clouds: (coverage: 0.75)),
+    fog: (color: (0.8, 0.72, 0.6), start: 400.0, end: 3000.0),
+    wind: (direction: (1.0, 0.0, 0.15), strength: 2.0),
+    weather: (dust_wall: 1.0, dust_wall_distance: 700.0, dust_wall_height: 380.0),
+    entities: [
+        (id: "e2db19a266727f4f", name: "ground", model: "builtin:plane", transform: (scale: (6000.0, 1.0, 6000.0)), material: (base_color: (0.78, 0.62, 0.42))),
+        (id: "57b853e27e54844f", name: "road", model: "builtin:plane", transform: (position: (-200.0, 0.01, 3.0), scale: (400.0, 1.0, 7.0)), material: (base_color: (0.12, 0.12, 0.13), smoothness: 0.3)),
+        (id: "b22c64799c1adf0f", name: "pole 0", model: "builtin:cube", transform: (position: (-8.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "a505221f73593106", name: "pole 1", model: "builtin:cube", transform: (position: (-38.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "e240cabbc10d6af5", name: "pole 2", model: "builtin:cube", transform: (position: (-68.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "061d28ea51652b1f", name: "pole 3", model: "builtin:cube", transform: (position: (-98.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "08d9c27d65fd42fc", name: "pole 4", model: "builtin:cube", transform: (position: (-128.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "8f20955fe0d64641", name: "pole 5", model: "builtin:cube", transform: (position: (-158.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "1e57461a96aa60a7", name: "pole 6", model: "builtin:cube", transform: (position: (-188.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "32fd344969ee2f3f", name: "pole 7", model: "builtin:cube", transform: (position: (-218.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "83eee431534e741e", name: "pole 8", model: "builtin:cube", transform: (position: (-248.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "0daef48dca9084d4", name: "pole 9", model: "builtin:cube", transform: (position: (-278.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "2e6d5294a2a9c7b7", name: "pole 10", model: "builtin:cube", transform: (position: (-308.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "5b9f0bf16c4318ed", name: "pole 11", model: "builtin:cube", transform: (position: (-338.0, 2.0, -6.0), scale: (0.12, 4.0, 0.12)), material: (base_color: (0.3, 0.28, 0.25))),
+        (id: "711296c9b078f9a2", name: "car", model: "builtin:cube", transform: (position: (-26.0, 0.8, 4.5), scale: (4.2, 1.4, 1.9)), material: (base_color: (0.9, 0.9, 0.92), smoothness: 0.8, metallic: 0.3)),
+    ],
+)

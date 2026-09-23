@@ -61,6 +61,13 @@ pub(crate) struct CloudUniform {
     pub shape: [f32; 4],
     pub drift: [f32; 4],
     pub size: [f32; 4],
+    /// The dust wall: how dense, its front's distance upwind now, its
+    /// height, 1 when there is a prepass depth to stop at.
+    pub dust: [f32; 4],
+    /// The camera view's third row: how deep a point is.
+    pub view_depth: [f32; 4],
+    /// Near, far.
+    pub depth_range: [f32; 4],
 }
 
 impl Clouds {
@@ -87,7 +94,7 @@ pub(crate) struct CloudRenderer {
     uniforms: wgpu::Buffer,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::ComputePipeline,
-    texture: Option<(wgpu::TextureView, wgpu::BindGroup, (u32, u32))>,
+    texture: Option<(wgpu::TextureView, (u32, u32))>,
     /// A clear sky, bound until there are clouds to show.
     blank: wgpu::TextureView,
 }
@@ -112,6 +119,16 @@ impl CloudRenderer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
                             min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
                         count: None,
                     },
@@ -202,7 +219,7 @@ impl CloudRenderer {
     /// remade, so what binds it must be too.
     pub(crate) fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) -> bool {
         let quarter = (size.0.div_ceil(4).max(1), size.1.div_ceil(4).max(1));
-        if self.texture.as_ref().is_some_and(|t| t.2 == quarter) {
+        if self.texture.as_ref().is_some_and(|t| t.1 == quarter) {
             return false;
         }
         let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -220,6 +237,21 @@ impl CloudRenderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.texture = Some((view, quarter));
+        true
+    }
+
+    pub(crate) fn run(
+        &self,
+        gpu: &Gpu,
+        encoder: &mut wgpu::CommandEncoder,
+        mut uniform: CloudUniform,
+        depth: &wgpu::TextureView,
+    ) {
+        let Some((view, size)) = &self.texture else {
+            return;
+        };
+        // Made here: the scene's depth it stops at is remade with the frame.
         let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("clouds"),
             layout: &self.layout,
@@ -230,23 +262,14 @@ impl CloudRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(depth),
                 },
             ],
         });
-        self.texture = Some((view, group, quarter));
-        true
-    }
-
-    pub(crate) fn run(
-        &self,
-        gpu: &Gpu,
-        encoder: &mut wgpu::CommandEncoder,
-        mut uniform: CloudUniform,
-    ) {
-        let Some((_, group, size)) = &self.texture else {
-            return;
-        };
         uniform.size = [size.0 as f32, size.1 as f32, 0.0, 0.0];
         gpu.queue
             .write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&uniform));
@@ -255,7 +278,7 @@ impl CloudRenderer {
             timestamp_writes: None,
         });
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, group, &[]);
+        pass.set_bind_group(0, &group, &[]);
         pass.dispatch_workgroups(size.0.div_ceil(8), size.1.div_ceil(8), 1);
     }
 }

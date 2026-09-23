@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Weather {
     /// Rain falling, 0 to 1.
@@ -35,6 +35,31 @@ pub struct Weather {
     /// A sandstorm, 0 to 1: the air thick with sand rolling on the wind,
     /// the distance gone, the sun a dim disc, grains flying past.
     pub sandstorm: f32,
+    /// A wall of dust coming over the land — a haboob: a front of billowing
+    /// sand hundreds of metres high, bright where the sun catches its tops,
+    /// dark at its foot, advancing on the wind. 0 to 1; clear air in front
+    /// of it. Marched with the clouds, stopped by what stands before it.
+    pub dust_wall: f32,
+    /// How far upwind of the scene's origin its front starts, metres.
+    pub dust_wall_distance: f32,
+    /// How high it towers, metres.
+    pub dust_wall_height: f32,
+}
+
+impl Default for Weather {
+    fn default() -> Self {
+        Self {
+            rain: 0.0,
+            wetness: 0.0,
+            puddles: 0.0,
+            snow: 0.0,
+            snowfall: 0.0,
+            sandstorm: 0.0,
+            dust_wall: 0.0,
+            dust_wall_distance: 900.0,
+            dust_wall_height: 350.0,
+        }
+    }
 }
 
 /// The colour of sand in the air.
@@ -45,13 +70,45 @@ impl Weather {
         let c = |x: f32| x.clamp(0.0, 1.0);
         [
             [c(self.wetness), c(self.puddles), c(self.snow), c(self.rain)],
-            [c(self.snowfall), c(self.sandstorm), 0.0, 0.0],
+            [c(self.snowfall), c(self.sandstorm), c(self.dust_wall), 0.0],
         ]
     }
 
     /// Whether anything falls: the pass over the frame is drawn only then.
     pub fn falling(&self) -> bool {
         self.rain > 0.0 || self.snowfall > 0.0 || self.sandstorm > 0.0
+    }
+
+    /// How fast the dust wall comes on, metres a second: with the wind.
+    pub fn dust_wall_speed(wind: &crate::foliage::Wind) -> f32 {
+        wind.strength.max(0.0) * 6.0
+    }
+
+    /// How far upwind of the origin the dust wall's front is at `time`:
+    /// it starts at `dust_wall_distance` and comes on with the wind, past
+    /// the origin and on.
+    pub fn dust_front(&self, wind: &crate::foliage::Wind, time: f32) -> f32 {
+        self.dust_wall_distance - Self::dust_wall_speed(wind) * time
+    }
+
+    /// The weather where the camera is. A dust wall that has reached the
+    /// camera has swallowed it: inside, the storm is all round — the sand
+    /// in the air, the grains flying past — as much as the camera is behind
+    /// the front, eased over a few dozen metres.
+    pub fn at(&self, eye: glam::Vec3, wind: &crate::foliage::Wind, time: f32) -> Weather {
+        if self.dust_wall <= 0.0 {
+            return *self;
+        }
+        let level = glam::Vec2::new(wind.direction.x, wind.direction.z).normalize_or(glam::Vec2::X);
+        let along = glam::Vec2::new(eye.x, eye.z).dot(level);
+        // The front's mean line; its bulges reach a little either side.
+        let inside = -self.dust_front(wind, time) - along;
+        let swallowed = ((inside + 40.0) / 120.0).clamp(0.0, 1.0);
+        let swallowed = swallowed * swallowed * (3.0 - 2.0 * swallowed);
+        Weather {
+            sandstorm: self.sandstorm.max(swallowed * self.dust_wall),
+            ..*self
+        }
     }
 
     /// The volumetric fog a sandstorm makes of the scene's: thick sandy
@@ -110,6 +167,39 @@ impl Weather {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dust_wall_comes_on_and_swallows_the_camera() {
+        let wind = crate::foliage::Wind {
+            direction: glam::Vec3::X,
+            strength: 2.0,
+        };
+        let wall = Weather {
+            dust_wall: 1.0,
+            dust_wall_distance: 600.0,
+            ..Default::default()
+        };
+        let eye = glam::Vec3::new(0.0, 1.7, 0.0);
+        assert_eq!(wall.dust_front(&wind, 0.0), 600.0);
+        assert_eq!(
+            wall.dust_front(&wind, 10.0),
+            480.0,
+            "twelve metres a second"
+        );
+        assert_eq!(
+            wall.at(eye, &wind, 0.0).sandstorm,
+            0.0,
+            "far off: clear air"
+        );
+        assert_eq!(
+            wall.at(eye, &wind, 60.0).sandstorm,
+            1.0,
+            "past it: inside the storm"
+        );
+        let arriving = wall.at(eye, &wind, 49.0).sandstorm;
+        assert!(arriving > 0.0 && arriving < 1.0, "arriving: {arriving}");
+        assert!(wall.at(eye, &wind, 60.0).falling(), "the sand flies");
+    }
 
     #[test]
     fn weather_reads_from_a_scene_line_and_is_clear_by_default() {
