@@ -30,6 +30,14 @@ fn shoot(
 ) -> Vec<u8> {
     let target = OffscreenTarget::new(gpu, SIZE, SIZE);
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 1.0, 5.0),
             target: Vec3::new(0.0, 1.0, 0.0),
@@ -47,6 +55,9 @@ fn shoot(
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
+        decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,

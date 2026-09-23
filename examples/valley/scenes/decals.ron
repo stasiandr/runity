@@ -1,0 +1,15 @@
+// Decals (`runity::decals`): marks pressed onto the courtyard's floor and
+// back wall — lit and shadowed as the stone they lie on. The floor's box
+// presses down, as a decal does unturned; the wall's is turned to face it.
+(
+    view: (position: (0.0, 2.4, 7.5), target: (0.0, 0.9, 0.0), fov_deg: 55.0),
+    sun: (hour: 15.0, intensity: 1.0),
+    entities: [
+        (id: "5e0b7a1c93d24f68", name: "floor", model: "builtin:plane", transform: (scale: (12.0, 1.0, 16.0)), material: (base_color: (0.47, 0.49, 0.51))),
+        (id: "a73c2e5d10f94b86", name: "red wall", model: "builtin:cube", transform: (position: (-4.0, 1.5, 0.0), scale: (0.3, 3.0, 8.0)), material: (base_color: (0.75, 0.12, 0.08))),
+        (id: "0c5f8d2b7e1a4396", name: "back wall", model: "builtin:cube", transform: (position: (0.0, 1.5, -4.0), scale: (8.0, 3.0, 0.3)), material: "white"),
+        (id: "e92d4b07a6c15f38", name: "crate", model: "builtin:cube", transform: (position: (1.8, 0.5, 0.5), scale: (1.0, 1.0, 1.0)), material: "bark"),
+        (id: "4b8e1f6a2d0c7953", name: "floor marks", transform: (position: (-0.6, 0.0, 1.2)), material: "marks", decal: (size: (4.0, 1.0, 2.0))),
+        (id: "d6a3095e8b2f1c74", name: "wall marks", transform: (position: (0.0, 1.6, -3.8), rotation_deg: (90.0, 0.0, 0.0)), material: "marks", decal: (size: (5.0, 1.0, 2.5))),
+    ],
+)

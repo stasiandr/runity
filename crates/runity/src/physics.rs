@@ -85,6 +85,19 @@ struct Built {
     layer: String,
 }
 
+/// The body an entity gets: what its line asks for — except that a
+/// dynamic body someone else simulates is kinematic here, moved to where
+/// its owner says. One solver per body (the dacha simulator's rule, DNA
+/// postulate 4): two machines each solving a crate would each be right
+/// about a different crate.
+fn solved(asked: Body, replica: bool) -> Body {
+    if replica && asked == Body::Dynamic {
+        Body::Kinematic
+    } else {
+        asked
+    }
+}
+
 /// What a line's `freeze_move` and `freeze_turn` hold still.
 fn locked(props: &crate::scene::BodyProps) -> LockedAxes {
     let mut out = LockedAxes::empty();
@@ -333,25 +346,28 @@ impl PhysicsWorld {
         let mut teleport: Vec<(hecs::Entity, RigidBodyHandle, glam::Mat4, Transform, Body)> =
             Vec::new();
         let mut live: std::collections::HashSet<RigidBodyHandle> = Default::default();
-        for (entity, handle, built, physics, shape, local, placed, mesh, props, layer) in world
-            .query::<(
-                hecs::Entity,
-                &BodyHandle,
-                &Built,
-                &Physics,
-                &Shape,
-                &Transform,
-                &WorldTransform,
-                Option<&CollisionMesh>,
-                Option<&Props>,
-                Option<&Layer>,
-            )>()
-            .iter()
+        for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
+            world
+                .query::<(
+                    hecs::Entity,
+                    &BodyHandle,
+                    &Built,
+                    &Physics,
+                    &Shape,
+                    &Transform,
+                    &WorldTransform,
+                    Option<&CollisionMesh>,
+                    Option<&Props>,
+                    Option<&Layer>,
+                    Option<&crate::net::Replica>,
+                )>()
+                .iter()
         {
+            let body = solved(physics.0, replica.is_some());
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
-            if built.body != physics.0
+            if built.body != body
                 || built.collider != shape.0
                 || built.mesh != mesh
                 || built.props != props
@@ -361,7 +377,7 @@ impl PhysicsWorld {
             } else {
                 live.insert(handle.0);
                 if built.local != *local {
-                    teleport.push((entity, handle.0, placed.0, *local, physics.0));
+                    teleport.push((entity, handle.0, placed.0, *local, body));
                 }
             }
         }
@@ -405,7 +421,7 @@ impl PhysicsWorld {
         }
 
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
-        for (entity, placed, physics, shape, local, existing, mesh, props, layer) in world
+        for (entity, placed, physics, shape, local, existing, mesh, props, layer, replica) in world
             .query::<(
                 hecs::Entity,
                 &WorldTransform,
@@ -416,15 +432,17 @@ impl PhysicsWorld {
                 Option<&CollisionMesh>,
                 Option<&Props>,
                 Option<&Layer>,
+                Option<&crate::net::Replica>,
             )>()
             .iter()
         {
+            let kind = solved(physics.0, replica.is_some());
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.clone()).unwrap_or_default();
             if existing.is_some() || physics.0 == Body::None {
                 continue;
             }
-            let dynamic = physics.0 == Body::Dynamic;
+            let dynamic = kind == Body::Dynamic;
             let Some(mut collider) = build_collider(shape.0, placed.0, mesh, dynamic) else {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
@@ -453,7 +471,7 @@ impl PhysicsWorld {
                 // a static crate included — not only what the solver moves.
                 collider.set_active_collision_types(ActiveCollisionTypes::all());
             }
-            let body = match physics.0 {
+            let body = match kind {
                 Body::Dynamic => RigidBodyBuilder::dynamic(),
                 Body::Kinematic | Body::Trigger => RigidBodyBuilder::kinematic_position_based(),
                 _ => RigidBodyBuilder::fixed(),
@@ -472,7 +490,7 @@ impl PhysicsWorld {
                 entity,
                 BodyHandle(handle),
                 Built {
-                    body: physics.0,
+                    body: kind,
                     collider: shape.0,
                     local: *local,
                     mesh: mesh.map_or(0, CollisionMesh::key),
@@ -674,17 +692,18 @@ impl PhysicsWorld {
     /// a fraction at a time.
     pub fn sync_to_world(&self, world: &mut World) {
         let mut moved: Vec<(hecs::Entity, glam::Mat4, Option<hecs::Entity>)> = Vec::new();
-        for (entity, handle, physics, placed, parent) in world
+        for (entity, handle, physics, placed, parent, replica) in world
             .query::<(
                 hecs::Entity,
                 &BodyHandle,
                 &Physics,
                 &WorldTransform,
                 Option<&Parent>,
+                Option<&crate::net::Replica>,
             )>()
             .iter()
         {
-            if physics.0 != Body::Dynamic {
+            if solved(physics.0, replica.is_some()) != Body::Dynamic {
                 continue;
             }
             let Some(body) = self.bodies.get(handle.0) else {
@@ -1254,6 +1273,8 @@ mod tests {
             along: None,
             light: None,
             particles: None,
+            reflection_probe: None,
+            decal: None,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -1342,6 +1363,8 @@ mod tests {
                 along: None,
                 light: None,
                 particles: None,
+                reflection_probe: None,
+                decal: None,
                 route: None,
                 layer: Default::default(),
                 physics: Default::default(),
@@ -1748,6 +1771,43 @@ mod tests {
         assert!(
             at.z > -0.5 && at.y < 1.5,
             "rolled down the modelled slope: {at:?}"
+        );
+    }
+
+    #[test]
+    fn a_body_someone_else_owns_is_moved_by_them_not_by_gravity() {
+        let (mut physics, mut world, ball) = dropped(3.0);
+        let _ = world.insert_one(ball, crate::net::Replica);
+        for _ in 0..30 {
+            physics.run(&mut world);
+        }
+        let y = world.get::<&Transform>(ball).unwrap().position.y;
+        assert!(
+            (y - 3.0).abs() < 1e-4,
+            "a replica hangs where its owner last put it: {y}"
+        );
+        // Its owner moved it: here it goes where they say.
+        world.get::<&mut Transform>(ball).unwrap().position.x = 2.0;
+        crate::world::apply_hierarchy(&mut world);
+        physics.run(&mut world);
+        physics.run(&mut world);
+        assert!(
+            (physics
+                .position(*world.get::<&BodyHandle>(ball).unwrap())
+                .unwrap()
+                .x
+                - 2.0)
+                .abs()
+                < 1e-3
+        );
+        // Handed to this peer: it is ours to drop.
+        let _ = world.remove_one::<crate::net::Replica>(ball);
+        for _ in 0..30 {
+            physics.run(&mut world);
+        }
+        assert!(
+            world.get::<&Transform>(ball).unwrap().position.y < 2.9,
+            "falls once it is ours"
         );
     }
 

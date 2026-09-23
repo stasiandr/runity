@@ -16,6 +16,14 @@ const SIZE: u32 = 32;
 fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 4] {
     let mesh = renderer.upload_mesh_owned(gpu, &builtin::cube(2.0));
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 0.0, 4.0),
             target: Vec3::ZERO,
@@ -30,6 +38,9 @@ fn centre(gpu: &Gpu, renderer: &mut Renderer, target: &OffscreenTarget) -> [u8; 
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
+        decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![Draw {
             mesh,
             transform: Mat4::IDENTITY,
@@ -55,7 +66,7 @@ fn an_edited_shader_draws_the_next_frame_and_a_broken_one_does_not_draw_at_all()
     let before = centre(&gpu, &mut renderer, &target);
 
     // Everything magenta: the edit someone makes to see that it took.
-    let ret = "    return vec4<f32>(mix(color, albedo, unlit), 1.0);";
+    let ret = "    return vec4<f32>(out, alpha);";
     assert!(SHADER.contains(ret), "the test knows where fs returns");
     let magenta = SHADER.replace(ret, "    return vec4<f32>(1.0, 0.0, 1.0, 1.0);");
     renderer.reload_shader(&gpu, &magenta).unwrap();

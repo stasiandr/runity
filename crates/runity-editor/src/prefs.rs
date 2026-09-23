@@ -29,6 +29,13 @@ pub(crate) struct Prefs {
     /// The Scene view's grid turned off. Written as what differs from the
     /// default, so a file from before the grid reads as "on".
     hide_grid: bool,
+    /// How many play when the game is started: Unity's Multiplayer Play
+    /// Mode players. Zero — a file from before — is one.
+    players: u32,
+    /// How bad the other players' link is made (`poor`, `awful`, or
+    /// `latency=80,loss=3`): the dacha simulator's Bad Link window, kept
+    /// per person, never in the project. Empty is a perfect one.
+    link: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -76,10 +83,47 @@ impl Session {
         prefs.last_scene = name;
         prefs.snap = (self.snap.meters, self.snap.degrees, self.snap.scale);
         prefs.hide_grid = !self.show_grid;
-        if let Ok(text) = runity::ron::ser::to_string_pretty(&prefs, Default::default()) {
-            let _ = std::fs::create_dir_all(path.parent().unwrap_or(&path));
-            let _ = std::fs::write(&path, text + "\n");
-        }
+        write_prefs(&path, &prefs);
+    }
+
+    /// How many players the game starts with: one, or up to
+    /// [`crate::MAX_PLAYERS`] windows playing together — Unity's
+    /// Multiplayer Play Mode. This person's choice, kept with the view.
+    pub fn players(&self) -> u32 {
+        self.read_prefs().players.clamp(1, crate::MAX_PLAYERS)
+    }
+
+    /// Play with `count` players from now on (1 to [`crate::MAX_PLAYERS`]);
+    /// what is kept is what `players` will say. Outside a project it is
+    /// not kept, and stays one.
+    pub fn set_players(&mut self, count: u32) -> u32 {
+        let Some(path) = self.prefs_path() else {
+            return 1;
+        };
+        let mut prefs = self.read_prefs();
+        prefs.players = count.clamp(1, crate::MAX_PLAYERS);
+        write_prefs(&path, &prefs);
+        prefs.players
+    }
+
+    /// How bad a link the other players play over — `poor`, `awful`,
+    /// `latency=80,jitter=10,loss=3,dup=1` — or empty for a perfect one.
+    pub fn link(&self) -> String {
+        self.read_prefs().link
+    }
+
+    /// Play the other players over a link this bad from the next start,
+    /// or a perfect one with `""`. Refuses what `RUNITY_LINK` would not
+    /// read.
+    pub fn set_link(&mut self, link: &str) -> crate::EditResult<()> {
+        runity::net::Conditions::parse(link).map_err(crate::EditError::Scene)?;
+        let Some(path) = self.prefs_path() else {
+            return Err(crate::EditError::NotInProject);
+        };
+        let mut prefs = self.read_prefs();
+        prefs.link = link.trim().to_string();
+        write_prefs(&path, &prefs);
+        Ok(())
     }
 
     /// Put the view back where this person left it in the open scene, and
@@ -111,5 +155,12 @@ impl Session {
         let prefs: Prefs = runity::ron::from_str(&text).ok()?;
         let path = project.root().join(&prefs.last_scene);
         (!prefs.last_scene.is_empty() && path.is_file()).then_some(path)
+    }
+}
+
+fn write_prefs(path: &std::path::Path, prefs: &Prefs) {
+    if let Ok(text) = runity::ron::ser::to_string_pretty(prefs, Default::default()) {
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
+        let _ = std::fs::write(path, text + "\n");
     }
 }

@@ -8,7 +8,7 @@
 //! p:campfire           an instance of the `campfire` prefab
 //! model:pine_large     draws that model
 //! body:dynamic         moved by physics (static, dynamic, kinematic, trigger, none)
-//! has:light            carries a light (camera, particles, route, joint, collider)
+//! has:light            carries a light (camera, particles, probe, decal, route, joint, collider)
 //! layer:debris         on that collision layer
 //! ```
 //!
@@ -46,12 +46,15 @@ enum Part {
     Light,
     Camera,
     Particles,
+    Probe,
+    Decal,
     Route,
     Joint,
     Collider,
 }
 
-const PARTS: &str = "has:light, has:camera, has:particles, has:route, has:joint or has:collider";
+const PARTS: &str =
+    "has:light, has:camera, has:particles, has:probe, has:decal, has:route, has:joint or has:collider";
 
 const PREFIXES: &str = "c: (component), m: (material), p: (prefab), model:, body:, has:, layer:";
 
@@ -88,6 +91,8 @@ impl std::str::FromStr for Query {
                             "light" => Part::Light,
                             "camera" => Part::Camera,
                             "particles" => Part::Particles,
+                            "probe" | "reflection_probe" => Part::Probe,
+                            "decal" => Part::Decal,
                             "route" => Part::Route,
                             "joint" => Part::Joint,
                             "collider" => Part::Collider,
@@ -125,6 +130,8 @@ impl Query {
                 Part::Light => desc.light.is_some(),
                 Part::Camera => desc.camera.is_some(),
                 Part::Particles => desc.particles.is_some(),
+                Part::Probe => desc.reflection_probe.is_some(),
+                Part::Decal => desc.decal.is_some(),
                 Part::Route => desc.route.is_some(),
                 Part::Joint => desc.joint != Joint::None,
                 Part::Collider => desc.collider != Collider::None,

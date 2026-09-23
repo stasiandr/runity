@@ -1,0 +1,19 @@
+// What a material can be, side by side — URP's Lit, with its names:
+// matte, smooth plastic, gold, chrome; glass (Transparent), a lamp that
+// emits past white and blooms, and tinted glass that multiplies what is
+// behind it. `scene_shot` this after touching the shader.
+(
+    view: (position: (0.0, 2.2, 7.5), target: (0.0, 1.0, 0.0), fov_deg: 50.0),
+    sun: (hour: 16.0, intensity: 1.4),
+    post: (bloom: (intensity: 0.6)),
+    entities: [
+        (id: "0d857ff63defec57", name: "ground", model: "builtin:plane", transform: (scale: (30.0, 1.0, 30.0)), material: "grass"),
+        (id: "e670a1ebdda743be", name: "matte", model: "builtin:sphere", transform: (position: (-3.3, 1.0, 0.0)), material: (base_color: (0.8, 0.2, 0.15))),
+        (id: "908a5d97557100cc", name: "plastic", model: "builtin:sphere", transform: (position: (-1.1, 1.0, 0.0)), material: (base_color: (0.8, 0.2, 0.15), smoothness: 0.85)),
+        (id: "de1db51f3ca47784", name: "gold", model: "builtin:sphere", transform: (position: (1.1, 1.0, 0.0)), material: (base_color: (1.0, 0.76, 0.33), metallic: 1.0, smoothness: 0.8)),
+        (id: "33a565c8477a247c", name: "chrome", model: "builtin:sphere", transform: (position: (3.3, 1.0, 0.0)), material: (base_color: (0.95, 0.95, 0.95), metallic: 1.0, smoothness: 0.97)),
+        (id: "375a3fc82e423382", name: "glass", model: "builtin:cube", transform: (position: (-1.5, 0.6, 2.2), scale: (1.2, 1.2, 0.2)), material: (base_color: (0.5, 0.8, 1.0), alpha: 0.35, surface: Transparent, smoothness: 0.95)),
+        (id: "5b24160cbf3b0cdc", name: "lamp", model: "builtin:cube", transform: (position: (1.5, 0.4, 2.2), scale: (0.8, 0.8, 0.8)), material: (base_color: (0.2, 0.2, 0.2), emission: (4.0, 2.5, 0.8))),
+        (id: "a8ebdf4ea02c6c08", name: "tinted", model: "builtin:cube", transform: (position: (0.0, 0.8, 3.0), scale: (0.8, 1.6, 0.1)), material: (base_color: (1.0, 0.4, 0.4), surface: Transparent, blend: Multiply)),
+    ],
+)

@@ -1,6 +1,6 @@
-// The valley's whole lighting model: one sun, hemisphere ambient, distance
-// fog. See `docs/design/07-look.md` — flat shading, no specular, colour
-// instead of material.
+// The scene's lighting: one sun, hemisphere ambient, point and spot lights,
+// distance fog, and the sky behind everything. Drawn in linear light into a
+// high-dynamic-range buffer; post.wgsl turns that into a picture.
 
 struct Frame {
     view_projection: mat4x4<f32>,
@@ -11,30 +11,138 @@ struct Frame {
     sky_color: vec4<f32>,
     ground_color: vec4<f32>,
     fog_color: vec4<f32>,
-    // start, end, unused, unused
+    // start, end, mode (0 linear, 1 exponential, 2 exponential squared),
+    // density
     fog_range: vec4<f32>,
     camera_position: vec4<f32>,
-    light_view_projection: mat4x4<f32>,
-    // depth bias, normal offset in world units, one texel in UV, on/off
+    // Each cascade's: world to its map's clip space.
+    light_view_projection: array<mat4x4<f32>, 4>,
+    // depth bias, normal offset in world units, one texel in UV, how many
+    // cascades there are (0: no shadows)
     shadow_params: vec4<f32>,
-    // Lights, three vectors each: position and range; colour; spot
-    // direction and the cosine of half its cone (-2: every way).
-    lights: array<vec4<f32>, 24>,
-    // How many are on, in x.
-    light_count: vec4<f32>,
+    // The camera view's third row: -dot(row, p) is how deep p is.
+    view_depth: vec4<f32>,
+    // Light cells across, down, deep; w how many lights there are.
+    clusters: vec4<f32>,
+    // near plane, ln(far / near), target width and height in pixels
+    cluster_depth: vec4<f32>,
+    // one texel of a lamp's shadow map, in UV
+    light_shadow: vec4<f32>,
+    inverse_view_projection: mat4x4<f32>,
+    // Zenith colour; w is 1 for a procedural sky.
+    sky_zenith: vec4<f32>,
+    // Horizon colour; w is the cosine of the sun disc's radius.
+    sky_horizon: vec4<f32>,
+    // Below the horizon; w is the sky's exposure.
+    sky_ground: vec4<f32>,
+    // Each cascade's sphere: centre, and radius squared.
+    cascade_spheres: array<vec4<f32>, 4>,
+    // Each cascade's offset along the normal.
+    cascade_bias: vec4<f32>,
+    // Each cascade's depth bias, in its own map's depth.
+    cascade_depth_bias: vec4<f32>,
+    // 1 when there is ambient occlusion to read; the share of the direct
+    // light it darkens too
+    ambient_occlusion: vec4<f32>,
+    // Hardware rays (ray.rs), 1 where asked and traced: sun shadows, lamp
+    // shadows, occlusion; w the tangent of the sun disc's radius
+    ray: vec4<f32>,
+    // rays to the sun, occlusion rays, occlusion reach in metres
+    ray_params: vec4<f32>,
+    // reflection probes: how many, their last mip
+    probe_params: vec4<f32>,
+    // each probe: centre and blend distance; half size and 1 for box
+    // projection
+    probes: array<vec4<f32>, 16>,
+    // each face's projection of a direction: +x, -x, +y, -y, +z, -z
+    probe_faces: array<mat4x4<f32>, 6>,
+    // volumetric fog: 1 when on, how far its cells reach, the near plane
+    volume: vec4<f32>,
+    // the air's colour, its density at the base height
+    fog_medium: vec4<f32>,
+    // base height, falloff per metre, anisotropy, the sky's share
+    fog_shape: vec4<f32>,
+    // the lamps' share
+    fog_lamps: vec4<f32>,
+    // behind everything, with a plain-colour sky
+    clear_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var shadow_map: texture_depth_2d;
+@group(0) @binding(1) var shadow_map: texture_depth_2d_array;
 // A comparison sampler: the hardware does the depth test and the bilinear
 // filter in one fetch, so every tap is already a 2x2 average.
 @group(0) @binding(2) var shadow_sampler: sampler_comparison;
+// Ambient occlusion, a texel per pixel (ssao.wgsl).
+@group(0) @binding(4) var occlusion: texture_2d<f32>;
+
+// Point and spot lights, Forward+ (lights.rs): every light the view sees,
+// and for each cell of a grid over the view — across, down and deep — the
+// run of `light_indices` naming those that reach into it.
+struct Light {
+    // position, range
+    position_range: vec4<f32>,
+    // colour times intensity; w its first shadow map, or -1
+    color_shadow: vec4<f32>,
+    // for a spot, which way and the cosine of half its cone; -2 every way
+    spot: vec4<f32>,
+};
+@group(0) @binding(6) var<storage, read> lights: array<Light>;
+// Per cell: its lights' run in light_indices (start, count), then its
+// decals' (start, count).
+@group(0) @binding(7) var<storage, read> light_cells: array<vec4<u32>>;
+@group(0) @binding(8) var<storage, read> light_indices: array<u32>;
+// The lamps' shadow maps: a spot's one, a point's six cube faces.
+@group(0) @binding(9) var light_shadow_map: texture_depth_2d_array;
+@group(0) @binding(10) var<uniform> light_views: array<mat4x4<f32>, 24>;
+// Reflection probes' pictures (reflections.rs): six layers a probe, a mip a
+// step rougher.
+@group(0) @binding(11) var probe_maps: texture_2d_array<f32>;
+@group(0) @binding(12) var probe_sampler: sampler;
+
+// Decals (decals.rs): pictures pressed down each box's -y onto what lies
+// in it, listed by the same cells as the lights.
+struct Decal {
+    world_to_box: mat4x4<f32>,
+    // linear colour, alpha
+    color: vec4<f32>,
+    // colour layer, normal layer (-1 none), normal scale, smoothness
+    maps: vec4<f32>,
+    axis_x: vec4<f32>,
+    axis_up: vec4<f32>,
+};
+@group(0) @binding(13) var<storage, read> decals: array<Decal>;
+@group(0) @binding(14) var decal_colours: texture_2d_array<f32>;
+@group(0) @binding(15) var decal_normals: texture_2d_array<f32>;
+
+// Volumetric fog (volume.rs): per cell of a grid over the view, the light
+// the air between the eye and the cell adds (rgb) and lets through (a).
+@group(0) @binding(16) var fog_volume: texture_3d<f32>;
+@group(0) @binding(17) var fog_sampler: sampler;
+// The compute passes that make it, in a group of their own.
+@group(3) @binding(0) var fog_scatter_out: texture_storage_3d<rgba16float, write>;
+@group(3) @binding(1) var fog_scatter_in: texture_3d<f32>;
+@group(3) @binding(2) var fog_integrated_out: texture_storage_3d<rgba16float, write>;
+const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
+
+// The shadow pass's one matrix: the cascade being drawn. Beside the frame
+// at binding 3, in the shadow pass's own group.
+struct Caster {
+    view_projection: mat4x4<f32>,
+};
+@group(0) @binding(3) var<uniform> caster: Caster;
 
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
 // untextured surface is its colour times one.
 @group(1) @binding(0) var surface_texture: texture_2d<f32>;
 @group(1) @binding(1) var surface_sampler: sampler;
+// URP Lit's other maps: normal (tangent space), mask (r metallic, g
+// occlusion, a smoothness) and emission. A surface without one binds a
+// neutral one: a flat normal, white.
+@group(1) @binding(2) var normal_map: texture_2d<f32>;
+@group(1) @binding(3) var mask_map: texture_2d<f32>;
+@group(1) @binding(4) var emission_map: texture_2d<f32>;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -45,6 +153,15 @@ struct VertexInput {
     @location(5) model_2: vec4<f32>,
     @location(6) model_3: vec4<f32>,
     @location(7) color_and_shading: vec4<f32>,
+    // metallic, smoothness, alpha, alpha-clip threshold
+    @location(10) surface: vec4<f32>,
+    // emission rgb; w packs the switches: 1 highlights, 2 reflections,
+    // 4 receives shadows, 8 premultiplied
+    @location(11) emission: vec4<f32>,
+    // tiling xy, offset zw
+    @location(12) uv_transform: vec4<f32>,
+    // normal scale, occlusion strength
+    @location(13) detail: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -55,6 +172,9 @@ struct VertexOutput {
     // 0 lit, 1 unlit, 2 lit with the metre grid.
     @location(3) shading: f32,
     @location(4) uv: vec2<f32>,
+    @location(5) surface: vec4<f32>,
+    @location(6) emission: vec4<f32>,
+    @location(7) detail: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -106,41 +226,148 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.normal = (model * (skinning * vec4<f32>(in.normal, 0.0))).xyz;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
-    out.uv = in.uv;
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
+    out.surface = in.surface;
+    out.emission = in.emission;
+    out.detail = in.detail;
     return out;
 }
 
-/// The depth-only pass, seen from the sun.
+/// The depth-only pass, seen from the sun, one cascade at a time.
 @vertex
 fn vs_shadow(in: VertexInput) -> @builtin(position) vec4<f32> {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
-    return frame.light_view_projection * model * vec4<f32>(in.position, 1.0);
+    return caster.view_projection * model * vec4<f32>(in.position, 1.0);
+}
+
+struct ClipOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    // alpha, threshold
+    @location(1) alpha: vec2<f32>,
+};
+
+/// The same, for what is cut out by its alpha: a leaf's shadow is a leaf.
+@vertex
+fn vs_shadow_clip(in: VertexInput) -> ClipOut {
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    var out: ClipOut;
+    out.position = caster.view_projection * model * vec4<f32>(in.position, 1.0);
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
+    out.alpha = in.surface.zw;
+    return out;
+}
+
+@fragment
+fn fs_shadow_clip(in: ClipOut) {
+    if in.alpha.x * textureSample(surface_texture, surface_sampler, in.uv).a < in.alpha.y {
+        discard;
+    }
+}
+
+// ray: stub begin
+// On a device that does not trace, nothing is in the way of any ray; the
+// frame never asks one there. ray.rs puts ray.wgsl in place of this.
+fn ray_visible(origin: vec3<f32>, direction: vec3<f32>, reach: f32) -> f32 {
+    return 1.0;
+}
+// ray: stub end
+
+/// Noise that differs pixel to pixel and hides its pattern well (Jimenez's
+/// interleaved gradient noise): what turns each pixel's handful of rays.
+fn pixel_noise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+struct Basis {
+    t: vec3<f32>,
+    b: vec3<f32>,
+};
+
+/// Two directions square to `n` and to each other.
+fn basis_of(n: vec3<f32>) -> Basis {
+    let other = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(n.y) > 0.9);
+    let t = normalize(cross(other, n));
+    return Basis(t, cross(n, t));
+}
+
+/// The sun by rays: a few towards points across its disc, so the shadow
+/// sharpens where it touches its caster and softens away from it.
+fn traced_sun(position: vec3<f32>, normal: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let count = max(u32(frame.ray_params.x), 1u);
+    let spread = frame.ray.w;
+    let frame_of = basis_of(to_sun);
+    let origin = position + normal * (0.01 + 0.001 * length(position - frame.camera_position.xyz));
+    let turn = pixel_noise(pixel) * 6.2831853;
+    var lit = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let r = sqrt((f32(i) + 0.5) / f32(count)) * spread;
+        let a = turn + f32(i) * 2.3999632;
+        let d = normalize(to_sun + (frame_of.t * cos(a) + frame_of.b * sin(a)) * r);
+        lit += ray_visible(origin, d, 1.0e4);
+    }
+    return lit / f32(count);
+}
+
+/// Occlusion by rays: short ones over the hemisphere, cosine-weighted; the
+/// share that reach `reach` without hitting anything.
+fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let count = max(u32(frame.ray_params.y), 1u);
+    let reach = frame.ray_params.z;
+    let frame_of = basis_of(normal);
+    let origin = position + normal * 0.01;
+    let n1 = pixel_noise(pixel);
+    let n2 = pixel_noise(pixel.yx + vec2<f32>(37.0, 11.0));
+    var open = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let u = fract((f32(i) + n1) / f32(count));
+        let phi = fract(f32(i) * 0.618034 + n2) * 6.2831853;
+        let r = sqrt(u);
+        let d = frame_of.t * (r * cos(phi)) + frame_of.b * (r * sin(phi)) + normal * sqrt(1.0 - u);
+        open += ray_visible(origin, d, reach);
+    }
+    return open / f32(count);
 }
 
 /// How much sun reaches a point: 1.0 in the open, 0.0 in full shadow.
+///
+/// From the first cascade whose sphere holds the point — the finest one
+/// that covers it — and fading out over the last tenth of the last one, so
+/// the shadow distance is not a line on the ground.
 fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
-    if frame.shadow_params.w < 0.5 {
+    let count = u32(frame.shadow_params.w + 0.5);
+    if count == 0u {
+        return 1.0;
+    }
+    var cascade = count;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let d = world_position - frame.cascade_spheres[i].xyz;
+        if dot(d, d) < frame.cascade_spheres[i].w {
+            cascade = i;
+            break;
+        }
+    }
+    if cascade == count {
+        // Past the shadow distance: lit, not shadowed. The opposite makes
+        // everything beyond it a wall of darkness.
         return 1.0;
     }
 
     // Offsetting along the normal before the lookup is what handles grazing
     // angles: there the depth error grows with the slope, and no constant
     // bias large enough to cover it is small enough to keep contact.
-    let offset = world_position + normal * frame.shadow_params.y;
-    let light_clip = frame.light_view_projection * vec4<f32>(offset, 1.0);
+    let offset = world_position + normal * frame.cascade_bias[cascade];
+    let light_clip = frame.light_view_projection[cascade] * vec4<f32>(offset, 1.0);
     let ndc = light_clip.xyz / light_clip.w;
 
     // Clip space is -1..1 across and 0..1 deep; the map is indexed 0..1 with
     // v running the other way.
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
     if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
-        // Outside the map is lit, not shadowed. The opposite choice makes
-        // everything beyond the fitted frustum go black, which reads as a
-        // wall of darkness at the edge of the scene.
         return 1.0;
     }
 
-    let reference = ndc.z - frame.shadow_params.x;
+    let reference = ndc.z - frame.cascade_depth_bias[cascade];
     let texel = frame.shadow_params.z;
     // Nine taps, each of them already a hardware 2x2, so the edge is soft
     // enough that the map's resolution stops being visible as stairs.
@@ -148,10 +375,205 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     for (var y = -1; y <= 1; y = y + 1) {
         for (var x = -1; x <= 1; x = x + 1) {
             let tap = uv + vec2<f32>(f32(x), f32(y)) * texel;
-            sum = sum + textureSampleCompare(shadow_map, shadow_sampler, tap, reference);
+            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, i32(cascade), reference);
+        }
+    }
+    let lit = sum / 9.0;
+
+    // The last cascade fades to lit over its outer tenth.
+    let last = frame.cascade_spheres[count - 1u];
+    let from_centre = length(world_position - last.xyz);
+    let radius = sqrt(last.w);
+    let fade = clamp((radius - from_centre) / (radius * 0.1), 0.0, 1.0);
+    return mix(1.0, lit, fade);
+}
+
+/// The light cell a fragment is in.
+fn light_cell(pixel: vec2<f32>, world_position: vec3<f32>) -> u32 {
+    let tiles = vec2<u32>(frame.clusters.xy);
+    let slices = u32(frame.clusters.z);
+    let across = min(vec2<u32>(pixel / frame.cluster_depth.zw * frame.clusters.xy), tiles - vec2<u32>(1u));
+    let depth = -dot(frame.view_depth, vec4<f32>(world_position, 1.0));
+    let t = log(max(depth, frame.cluster_depth.x) / frame.cluster_depth.x) / frame.cluster_depth.y;
+    let slice = min(u32(max(t, 0.0) * f32(slices)), slices - 1u);
+    return (slice * tiles.y + across.y) * tiles.x + across.x;
+}
+
+/// How much of a lamp reaches a point past what stands between them: its
+/// shadow map, a spot's one or the cube face of a point's six that looks
+/// the point's way. 1 for a lamp with none.
+fn lamp_shadow(light: Light, position: vec3<f32>, normal: vec3<f32>, distance_to: f32) -> f32 {
+    let first = light.color_shadow.w;
+    if first < 0.0 {
+        return 1.0;
+    }
+    var layer = u32(first + 0.5);
+    let point = light.spot.w < -1.5;
+    let d = position - light.position_range.xyz;
+    if point {
+        let a = abs(d);
+        if a.x >= a.y && a.x >= a.z {
+            layer += select(1u, 0u, d.x > 0.0);
+        } else if a.y >= a.z {
+            layer += select(3u, 2u, d.y > 0.0);
+        } else {
+            layer += select(5u, 4u, d.z > 0.0);
+        }
+    }
+    // How big one texel is where the point is: the map spreads over the
+    // cone, wider the farther from the lamp. Both offsets clear it.
+    let cos_half = select(light.spot.w, 0.7071, point);
+    let tan_half = sqrt(max(1.0 - cos_half * cos_half, 1e-4)) / max(cos_half, 1e-3);
+    let texel = 2.0 * distance_to * tan_half * frame.light_shadow.x;
+    let offset = position + normal * texel * 1.5;
+    let clip = light_views[layer] * vec4<f32>(offset, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0;
+    }
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        return 1.0;
+    }
+    // Compared a little nearer the lamp, in metres: its depth is a
+    // perspective one, so the bias is put back through the same curve.
+    let near = 0.05;
+    let far = light.position_range.w;
+    let z = max(clip.w - texel - 0.02, near);
+    let reference = far / (far - near) * (1.0 - near / z);
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let tap = uv + vec2<f32>(f32(x), f32(y)) * frame.light_shadow.x;
+            sum = sum + textureSampleCompareLevel(light_shadow_map, shadow_sampler, tap, i32(layer), reference);
         }
     }
     return sum / 9.0;
+}
+
+/// How deep, along the view, the fog grid's `t` (0 at the near plane, 1 at
+/// its far end) is: thin slices near, thick far.
+fn fog_depth(t: f32) -> f32 {
+    let near = frame.volume.z;
+    return near * pow(frame.volume.y / near, t);
+}
+
+/// The air's density at a point: thickest at the base height, thinning
+/// above it.
+fn fog_density(p: vec3<f32>) -> f32 {
+    let above = max(p.y - frame.fog_shape.x, 0.0);
+    return frame.fog_medium.w * exp(-frame.fog_shape.y * above);
+}
+
+/// Henyey–Greenstein: how much light turning by an angle of this cosine
+/// the air throws, for an anisotropy `g`.
+fn phase(cos_theta: f32, g: f32) -> f32 {
+    let g2 = g * g;
+    return (1.0 - g2) / (12.566371 * pow(max(1.0 + g2 - 2.0 * g * cos_theta, 1e-4), 1.5));
+}
+
+struct FogRay {
+    start: vec3<f32>,
+    direction: vec3<f32>,
+    // metres along the ray per metre of view depth
+    stretch: f32,
+    // the view depth at `start`
+    start_depth: f32,
+};
+
+/// The ray through a place on the screen (0..1 across).
+fn fog_ray(uv: vec2<f32>) -> FogRay {
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let a = frame.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
+    let b = frame.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
+    let start = a.xyz / a.w;
+    let direction = normalize(b.xyz / b.w - start);
+    let per_metre = max(-dot(frame.view_depth.xyz, direction), 1e-4);
+    return FogRay(start, direction, 1.0 / per_metre, -dot(frame.view_depth, vec4<f32>(start, 1.0)));
+}
+
+// What the air in each cell scatters towards the eye: the sun through its
+// cascades, the lamps of the cell's cluster through their maps, and the
+// sky from all round; its density in alpha.
+@compute @workgroup_size(4, 4, 4)
+fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
+    if any(id >= FOG_SIZE) {
+        return;
+    }
+    let cell = vec3<f32>(id) + 0.5;
+    let uv = cell.xy / vec2<f32>(FOG_SIZE.xy);
+    let ray = fog_ray(uv);
+    let depth = fog_depth(cell.z / f32(FOG_SIZE.z));
+    let p = ray.start + ray.direction * (depth - ray.start_depth) * ray.stretch;
+    let density = fog_density(p);
+    let to_eye = -ray.direction;
+    let g = frame.fog_shape.z;
+
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    var light = frame.sun_color.rgb * sunlight(p, vec3<f32>(0.0)) * phase(dot(-to_sun, to_eye), g);
+    // The sky's light, from every way at once.
+    light += mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * frame.fog_shape.w;
+
+    let cell_of = light_cells[light_cell(uv * frame.cluster_depth.zw, p)];
+    for (var n = 0u; n < cell_of.y; n = n + 1u) {
+        let lamp = lights[light_indices[cell_of.x + n]];
+        let to_lamp = lamp.position_range.xyz - p;
+        let distance_to = length(to_lamp);
+        let toward = to_lamp / max(distance_to, 1e-4);
+        let reach = clamp(1.0 - distance_to / lamp.position_range.w, 0.0, 1.0);
+        let spot = lamp.spot;
+        let edge = spot.w + (1.0 - spot.w) * 0.1;
+        let cone = select(smoothstep(spot.w, edge, dot(-toward, spot.xyz)), 1.0, spot.w < -1.5);
+        if reach * cone <= 0.0 {
+            continue;
+        }
+        let shadow = lamp_shadow(lamp, p, vec3<f32>(0.0), distance_to);
+        // Closer to a square law than the surfaces' soft pool: a lamp in
+        // mist is a glow round the lamp, not an even wash to its range.
+        let near_lamp = 1.0 / (1.0 + distance_to * distance_to);
+        light += lamp.color_shadow.rgb * reach * reach * near_lamp * cone * shadow
+            * phase(dot(-toward, to_eye), g) * frame.fog_lamps.x;
+    }
+    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * density, density));
+}
+
+// Each column front to back: what each cell adds, dimmed by what lies
+// before it, and what is let through so far (Frostbite's energy-
+// conserving step).
+@compute @workgroup_size(8, 8, 1)
+fn cs_fog_integrate(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= FOG_SIZE.x || id.y >= FOG_SIZE.y {
+        return;
+    }
+    let ray = fog_ray((vec2<f32>(id.xy) + 0.5) / vec2<f32>(FOG_SIZE.xy));
+    var added = vec3<f32>(0.0);
+    var through = 1.0;
+    var previous = frame.volume.z;
+    for (var z = 0u; z < FOG_SIZE.z; z = z + 1u) {
+        let far_edge = fog_depth(f32(z + 1u) / f32(FOG_SIZE.z));
+        let cell = textureLoad(fog_scatter_in, vec3<i32>(vec3<u32>(id.xy, z)), 0);
+        let extinction = max(cell.a, 1e-6);
+        let passed = exp(-extinction * (far_edge - previous) * ray.stretch);
+        added += through * (cell.rgb - cell.rgb * passed) / extinction;
+        through *= passed;
+        textureStore(fog_integrated_out, vec3<u32>(id.xy, z), vec4<f32>(added, through));
+        previous = far_edge;
+    }
+}
+
+/// A colour seen through the fog between it and the eye: dimmed by what
+/// the air takes, and the air's own light added.
+fn through_fog(color: vec3<f32>, pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    if frame.volume.x < 0.5 {
+        return color;
+    }
+    let uv = pixel / frame.cluster_depth.zw;
+    let near = frame.volume.z;
+    let t = log(max(depth, near) / near) / log(frame.volume.y / near);
+    // Each cell holds the sum to its far edge.
+    let w = clamp(t - 0.5 / f32(FOG_SIZE.z), 0.0, 1.0);
+    let fog = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, w), 0.0);
+    return color * fog.a + fog.rgb;
 }
 
 @vertex
@@ -168,57 +590,311 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
     out.base_color = in.color_and_shading.rgb;
     out.shading = in.color_and_shading.w;
-    out.uv = in.uv;
+    out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
+    out.surface = in.surface;
+    out.emission = in.emission;
+    out.detail = in.detail;
     return out;
 }
 
+// URP's Lit, the metallic workflow, with URP's own terms: the diffuse and
+// specular colours from albedo and metallic, a GGX-shaped highlight
+// normalised the way URP's DirectBRDFSpecular is, and the environment's
+// reflection with URP's fresnel and roughness falloff. Light colours carry
+// no 1/pi, as in Unity: a white light of intensity one on white paper is
+// white.
+struct Brdf {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+    perceptual_roughness: f32,
+    roughness2: f32,
+    normalization: f32,
+    grazing: f32,
+};
+
+fn brdf(albedo: vec3<f32>, metallic: f32, smoothness: f32) -> Brdf {
+    var out: Brdf;
+    let one_minus_reflectivity = 0.96 - metallic * 0.96;
+    out.diffuse = albedo * one_minus_reflectivity;
+    out.specular = mix(vec3<f32>(0.04), albedo, metallic);
+    out.perceptual_roughness = 1.0 - smoothness;
+    let roughness = max(out.perceptual_roughness * out.perceptual_roughness, 0.0078125);
+    out.roughness2 = roughness * roughness;
+    out.normalization = roughness * 4.0 + 2.0;
+    out.grazing = clamp(smoothness + 1.0 - one_minus_reflectivity, 0.0, 1.0);
+    return out;
+}
+
+fn direct(b: Brdf, normal: vec3<f32>, to_light: vec3<f32>, to_eye: vec3<f32>, highlights: bool) -> vec3<f32> {
+    var color = b.diffuse;
+    if highlights {
+        let half_way = normalize(to_light + to_eye);
+        let n_h = max(dot(normal, half_way), 0.0);
+        let l_h = max(dot(to_light, half_way), 0.0);
+        let d = n_h * n_h * (b.roughness2 - 1.0) + 1.00001;
+        let term = b.roughness2 / ((d * d) * max(0.1, l_h * l_h) * b.normalization);
+        color = color + b.specular * term;
+    }
+    return color;
+}
+
+/// What the surroundings look like in a direction, blurred by roughness:
+/// the sky's gradient for a smooth surface, the hemisphere's average for a
+/// rough one. No sun in it: the sun is a direct light, counted once.
+fn environment(direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let hemisphere = mix(frame.ground_color.rgb, frame.sky_color.rgb, direction.y * 0.5 + 0.5);
+    if frame.sky_zenith.w < 0.5 {
+        return hemisphere;
+    }
+    var sky: vec3<f32>;
+    if direction.y >= 0.0 {
+        sky = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(direction.y, 0.45));
+    } else {
+        sky = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-direction.y, 0.3));
+    }
+    return mix(sky * frame.sky_ground.w, hemisphere, perceptual_roughness);
+}
+
+/// A probe's picture the way `direction` looks, `lod` mips blurred.
+fn probe_picture(probe: u32, direction: vec3<f32>, lod: f32) -> vec3<f32> {
+    let a = abs(direction);
+    var face = 0u;
+    if a.x >= a.y && a.x >= a.z {
+        face = select(1u, 0u, direction.x > 0.0);
+    } else if a.y >= a.z {
+        face = select(3u, 2u, direction.y > 0.0);
+    } else {
+        face = select(5u, 4u, direction.z > 0.0);
+    }
+    let clip = frame.probe_faces[face] * vec4<f32>(direction, 1.0);
+    let ndc = clip.xy / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return textureSampleLevel(probe_maps, probe_sampler, uv, i32(probe * 6u + face), lod).rgb;
+}
+
+/// What a surface at `position` reflects along `direction`: the probes
+/// whose boxes hold it — bent to the box's walls where asked, fading out
+/// inside each box's edge, the first ones first — and the sky for what
+/// they leave.
+fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
+    let sky = environment(direction, perceptual_roughness);
+    let count = u32(frame.probe_params.x);
+    if count == 0u {
+        return sky;
+    }
+    // Unity's mip for a roughness: rougher reads blurrier, not linearly.
+    let lod = perceptual_roughness * (1.7 - 0.7 * perceptual_roughness) * frame.probe_params.y;
+    var sum = vec3<f32>(0.0);
+    var covered = 0.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let centre = frame.probes[i * 2u];
+        let extents = frame.probes[i * 2u + 1u];
+        let inside = extents.xyz - abs(position - centre.xyz);
+        let edge = min(inside.x, min(inside.y, inside.z));
+        if edge <= 0.0 {
+            continue;
+        }
+        let weight = clamp(edge / max(centre.w, 1e-3), 0.0, 1.0) * (1.0 - covered);
+        var look = direction;
+        if extents.w > 0.5 {
+            // Where the ray leaves the box, seen from the probe's centre.
+            let far_wall = (sign(direction) * extents.xyz + centre.xyz - position) / direction;
+            let leaves = min(far_wall.x, min(far_wall.y, far_wall.z));
+            look = position + direction * leaves - centre.xyz;
+        }
+        sum = sum + probe_picture(i, normalize(look), lod) * weight;
+        covered = covered + weight;
+        if covered > 0.999 {
+            break;
+        }
+    }
+    return sum + sky * (1.0 - covered);
+}
+
+/// A tangent-space normal from the map, turned into the world. The
+/// tangent frame is worked out from how position and UV change across the
+/// pixel (Schüler's cotangent frame), so meshes need no tangents stored.
+fn mapped_normal(geometric: vec3<f32>, world_position: vec3<f32>, uv: vec2<f32>, texel: vec3<f32>, scale: f32) -> vec3<f32> {
+    let dp1 = dpdx(world_position);
+    let dp2 = dpdy(world_position);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, geometric);
+    let dp1perp = cross(geometric, dp1);
+    // Screen y runs down here, where the cotangent frame was worked out
+    // with it up: that turns the frame round, the tangent to its right way
+    // and the bitangent to the image's up — UVs run down the image (its top
+    // row first) while a normal map's green points up it, so the turned
+    // bitangent is the one wanted.
+    let t = -(dp2perp * duv1.x + dp1perp * duv2.x);
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let size = max(dot(t, t), dot(b, b));
+    if size < 1e-12 {
+        return geometric;
+    }
+    let inverse = inverseSqrt(size);
+    var n = texel * 2.0 - 1.0;
+    n = vec3<f32>(n.xy * scale, n.z);
+    return normalize(t * inverse * n.x + b * inverse * n.y + geometric * n.z);
+}
+
 @fragment
-fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(in.normal);
-    let to_sun = -normalize(frame.sun_direction.xyz);
-    let lambert = max(dot(normal, to_sun), 0.0) * sunlight(in.world_position, normal);
-
-    // Hemisphere ambient: a face turned up sees sky, one turned down sees
-    // bounce off the ground. A single constant here is what makes every
-    // shaded surface in a scene the same dead colour.
-    let sky_amount = normal.y * 0.5 + 0.5;
-    let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, sky_amount);
-
+fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
+    let normal_texel = textureSample(normal_map, surface_sampler, in.uv).xyz;
+    let mask = textureSample(mask_map, surface_sampler, in.uv);
+    let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;
+    // A face seen from behind — a two-sided leaf — is lit from its own side.
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
+    // How the position changes across the pixel: what a decal's picture is
+    // filtered by, worked out here where every pixel still runs together.
+    let across = dpdx(in.world_position);
+    let down = dpdy(in.world_position);
+    let alpha = in.surface.z * sampled.a;
+    // Alpha clipping: what is less opaque than the threshold is not drawn
+    // at all.
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    let flags = u32(in.emission.w + 0.5);
     let unlit = f32(in.shading > 0.5 && in.shading < 1.5);
     let grid = f32(in.shading > 1.5);
 
-    let sampled = textureSample(surface_texture, surface_sampler, in.uv);
-    let albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
-    var light = ambient + frame.sun_color.rgb * lambert;
-    // Point lights: facing it, and fading to nothing at its range —
-    // squared, so the edge of the pool is soft rather than a ring.
-    let count = u32(frame.light_count.x);
-    for (var i = 0u; i < count; i = i + 1u) {
-        let at = frame.lights[i * 3u];
+    var albedo = in.base_color * sampled.rgb * mix(1.0, metre_grid(in.world_position, normal), grid);
+    var smoothness = in.surface.y * mask.a;
+    let cell = light_cells[light_cell(in.clip_position.xy, in.world_position)];
+
+    // Decals, before the light: what they paint is lit as the surface is.
+    for (var n = 0u; n < cell.w; n = n + 1u) {
+        let d = decals[light_indices[cell.z + n]];
+        let local = (d.world_to_box * vec4<f32>(in.world_position, 1.0)).xyz;
+        if any(abs(local) > vec3<f32>(0.5)) {
+            continue;
+        }
+        let up = d.axis_up.xyz;
+        // Only on what faces the way it is pressed, and fading towards the
+        // box's ends, so it neither smears down sides nor stops at a line.
+        var weight = d.color.a * smoothstep(0.1, 0.4, dot(geometric, up))
+            * (1.0 - smoothstep(0.35, 0.5, abs(local.y)));
+        let uv = vec2<f32>(local.x + 0.5, local.z + 0.5);
+        let duv_x = (d.world_to_box * vec4<f32>(across, 0.0)).xz;
+        let duv_y = (d.world_to_box * vec4<f32>(down, 0.0)).xz;
+        var paint = d.color.rgb;
+        if d.maps.x >= 0.0 {
+            let texel = textureSampleGrad(decal_colours, probe_sampler, uv, i32(d.maps.x), duv_x, duv_y);
+            paint = paint * texel.rgb;
+            weight = weight * texel.a;
+        }
+        albedo = mix(albedo, paint, weight);
+        smoothness = mix(smoothness, d.maps.w, weight);
+        if d.maps.y >= 0.0 {
+            var t = textureSampleGrad(decal_normals, probe_sampler, uv, i32(d.maps.y), duv_x, duv_y).xyz * 2.0 - 1.0;
+            t = vec3<f32>(t.xy * d.maps.z, t.z);
+            // Red along the box's x, green up the picture — its -z.
+            let x = d.axis_x.xyz;
+            let picture_up = normalize(cross(up, x));
+            let pressed = normalize(x * t.x + picture_up * t.y + up * max(t.z, 1e-3));
+            normal = normalize(mix(normal, pressed, weight));
+        }
+    }
+
+    let to_eye = normalize(frame.camera_position.xyz - in.world_position);
+    let b = brdf(albedo, in.surface.x * mask.r, smoothness);
+    let baked = mix(1.0, mask.g, in.detail.y);
+    let highlights = (flags & 1u) != 0u;
+
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    var shadow = 1.0;
+    if (flags & 4u) != 0u {
+        if frame.ray.x > 0.5 {
+            shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
+        } else {
+            shadow = sunlight(in.world_position, normal);
+        }
+    }
+    // Ambient occlusion darkens the light from all around, and a share of
+    // the direct light too (URP's Direct Lighting Strength).
+    var ao = 1.0;
+    if frame.ray.z > 0.5 && unlit < 0.5 {
+        ao = traced_occlusion(in.world_position, geometric, in.clip_position.xy);
+    } else if frame.ambient_occlusion.x > 0.5 && unlit < 0.5 {
+        ao = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0).r;
+    }
+    let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
+    var color = direct(b, normal, to_sun, to_eye, highlights)
+        * frame.sun_color.rgb * max(dot(normal, to_sun), 0.0) * shadow * direct_ao;
+
+    // Point and spot lights, those listed in this fragment's cell: facing
+    // it, and fading to nothing at its range — squared, so the edge of the
+    // pool is soft rather than a ring.
+    for (var n = 0u; n < cell.y; n = n + 1u) {
+        let light = lights[light_indices[cell.x + n]];
+        let at = light.position_range;
         let to_light = at.xyz - in.world_position;
         let distance_to = length(to_light);
         let toward = to_light / max(distance_to, 1e-4);
         let reach = clamp(1.0 - distance_to / at.w, 0.0, 1.0);
         let facing = max(dot(normal, toward), 0.0);
         // A spot: full inside the cone, fading over its last tenth.
-        let spot = frame.lights[i * 3u + 2u];
+        let spot = light.spot;
         let along = dot(-toward, spot.xyz);
         let edge = spot.w + (1.0 - spot.w) * 0.1;
         let cone = select(smoothstep(spot.w, edge, along), 1.0, spot.w < -1.5);
-        light = light + frame.lights[i * 3u + 1u].rgb * facing * reach * reach * cone;
+        // A lamp's shadow, by a ray to it — only where it lights at all.
+        // Or by its shadow map, where it has one.
+        var blocked = 1.0;
+        if reach * facing * cone > 0.0 && (flags & 4u) != 0u {
+            if frame.ray.y > 0.5 {
+                let start = in.world_position + geometric * 0.02;
+                blocked = ray_visible(start, toward, max(distance_to - 0.05, 0.0));
+            } else {
+                blocked = lamp_shadow(light, in.world_position, geometric, distance_to);
+            }
+        }
+        color = color + direct(b, normal, toward, to_eye, highlights)
+            * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * blocked;
     }
-    var color = albedo * light;
+
+    // Hemisphere ambient: a face turned up sees sky, one turned down sees
+    // bounce off the ground. A single constant here is what makes every
+    // shaded surface in a scene the same dead colour.
+    let ambient = mix(frame.ground_color.rgb, frame.sky_color.rgb, normal.y * 0.5 + 0.5);
+    color = color + b.diffuse * ambient * ao * baked;
+    if (flags & 2u) != 0u {
+        let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
+        let fresnel = pow(1.0 - n_v, 4.0);
+        let reduction = 1.0 / (b.roughness2 + 1.0);
+        let seen = reflected(in.world_position, reflect(-to_eye, normal), b.perceptual_roughness);
+        color = color + seen * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
+    }
+    let emission = in.emission.rgb * emitted;
+    color = color + emission;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
-    let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
-    let fog = clamp((distance - frame.fog_range.x) / span, 0.0, 1.0);
-    color = mix(color, frame.fog_color.rgb, fog);
+    color = mix(color, frame.fog_color.rgb, fog_amount(distance));
 
     // An unlit surface takes neither the light nor the fog: it is not a
     // surface the sun falls on, it is something that emits. Selecting with a
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
-    return vec4<f32>(mix(color, albedo, unlit), 1.0);
+    var out = mix(color, albedo + emission, unlit);
+    out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
+    if (flags & 8u) != 0u {
+        out = out * alpha;
+    }
+    return vec4<f32>(out, alpha);
+}
+
+/// The depth-and-normals prepass for ambient occlusion: the world normal of
+/// what is solid, cut out where the surface is.
+@fragment
+fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    let alpha = in.surface.z * textureSample(surface_texture, surface_sampler, in.uv).a;
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    return vec4<f32>(normalize(in.normal) * select(-1.0, 1.0, front), 1.0);
 }
 
 /// The greybox surface: a line every metre and alternate metres a shade
@@ -241,4 +917,63 @@ fn metre_grid(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     let cell = floor(plane);
     let checker = abs(cell.x + cell.y) % 2.0;
     return mix(1.0, 0.88, checker) * mix(1.0, 0.45, line);
+}
+
+/// How much fog stands between the eye and a point this far away.
+fn fog_amount(distance: f32) -> f32 {
+    let mode = u32(frame.fog_range.z + 0.5);
+    let density = frame.fog_range.w;
+    if mode == 1u {
+        return 1.0 - exp(-density * distance);
+    }
+    if mode == 2u {
+        let d = density * distance;
+        return 1.0 - exp(-d * d);
+    }
+    let span = max(frame.fog_range.y - frame.fog_range.x, 0.001);
+    return clamp((distance - frame.fog_range.x) / span, 0.0, 1.0);
+}
+
+struct SkyOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) ndc: vec2<f32>,
+};
+
+/// One triangle over the screen, on the far plane.
+@vertex
+fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
+    let x = f32((i << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(i & 2u) * 2.0 - 1.0;
+    var out: SkyOut;
+    out.position = vec4<f32>(x, y, 1.0, 1.0);
+    out.ndc = vec2<f32>(x, y);
+    return out;
+}
+
+/// URP's procedural skybox, simply: the horizon's colour rising into the
+/// zenith's, the ground below, and the sun — a disc far brighter than white,
+/// with a glow around it — where the light comes from.
+@fragment
+fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    if frame.sky_zenith.w < 0.5 {
+        // A plain colour, drawn only for the fog in front of it.
+        return vec4<f32>(through_fog(frame.clear_color.rgb, in.position.xy, frame.volume.y), 1.0);
+    }
+    let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
+    let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
+    let direction = normalize(far.xyz / far.w - near.xyz / near.w);
+    let up = direction.y;
+    var color: vec3<f32>;
+    if up >= 0.0 {
+        color = mix(frame.sky_horizon.rgb, frame.sky_zenith.rgb, pow(up, 0.45));
+    } else {
+        color = mix(frame.sky_horizon.rgb, frame.sky_ground.rgb, pow(-up, 0.3));
+    }
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    let facing = dot(direction, to_sun);
+    let radius = frame.sky_horizon.w;
+    let disc = smoothstep(radius, radius + (1.0 - radius) * 0.15, facing);
+    let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
+    let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
+    return vec4<f32>(through_fog((color + sun) * frame.sky_ground.w, in.position.xy, frame.volume.y), 1.0);
 }

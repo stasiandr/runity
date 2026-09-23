@@ -74,6 +74,15 @@ pub struct CameraLens(pub crate::scene::Lens);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightSource(pub crate::scene::Light);
 
+/// A decal pressed from an entity: its line's `decal`, and the material it
+/// presses.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pressing(pub crate::scene::Decal, pub Material);
+
+/// A reflection probe at an entity, from its line's `reflection_probe`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeBox(pub crate::scene::Probe);
+
 /// The collision layer's name, kept from the scene when not `default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer(pub String);
@@ -252,6 +261,9 @@ fn spawn_one(
     if let Some(light) = desc.light {
         let _ = world.insert_one(entity, LightSource(light));
     }
+    if let Some(probe) = desc.reflection_probe {
+        let _ = world.insert_one(entity, ProbeBox(probe));
+    }
     if let Some(route) = &desc.route {
         let _ = world.insert_one(
             entity,
@@ -277,6 +289,20 @@ pub(crate) fn dress(
     palette: &impl Fn(&str) -> Option<Material>,
     missing: &mut Vec<Unresolved>,
 ) {
+    match desc.decal {
+        Some(decal) => {
+            let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
+        }
+        None => {
+            let _ = world.remove_one::<Pressing>(entity);
+        }
+    }
+    // No model is nothing to draw — a probe, a decal, a light, an empty to
+    // hang children on — not a model that could not be found.
+    if desc.model.is_empty() {
+        let _ = world.remove::<(Model, Surface)>(entity);
+        return;
+    }
     match resolve(&desc.model) {
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
@@ -475,7 +501,9 @@ impl Patch<'_> {
             let _ = world.insert_one(entity, desc.transform);
             changed = true;
         }
-        if was.is_none_or(|(old, _)| old.model != desc.model || old.material != desc.material) {
+        if was.is_none_or(|(old, _)| {
+            old.model != desc.model || old.material != desc.material || old.decal != desc.decal
+        }) {
             dress(desc, entity, world, resolve, palette, &mut self.out.missing);
             changed = true;
         }
@@ -532,6 +560,17 @@ impl Patch<'_> {
                 }
                 None => {
                     let _ = world.remove_one::<LightSource>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.reflection_probe != desc.reflection_probe) {
+            match desc.reflection_probe {
+                Some(probe) => {
+                    let _ = world.insert_one(entity, ProbeBox(probe));
+                }
+                None => {
+                    let _ = world.remove_one::<ProbeBox>(entity);
                 }
             }
             changed = true;
@@ -661,6 +700,81 @@ pub fn scene_fog(fog: &crate::scene::Fog) -> FogSettings {
         color: glam::Vec3::from_array(fog.color),
         start: fog.start,
         end: fog.end,
+        mode: fog.mode,
+        density: fog.density,
+    }
+}
+
+/// Put on the GPU every texture the world's materials draw with — their
+/// base, normal, mask and emission maps — that is not there yet. What was
+/// uploaded is known to the renderer by asset id, so a frame's materials
+/// find their maps without anyone keeping handles. Says which maps the
+/// library does not have.
+pub fn upload_material_maps(
+    world: &World,
+    library: Option<&crate::Library>,
+    gpu: &crate::gpu::Gpu,
+    renderer: &mut crate::render::Renderer,
+) -> Vec<String> {
+    let mut wanted: Vec<crate::asset::AssetId> = world
+        .query::<&Surface>()
+        .iter()
+        .flat_map(|surface| surface.0.maps().collect::<Vec<_>>())
+        .chain(
+            world
+                .query::<&Pressing>()
+                .iter()
+                .flat_map(|p| p.1.maps().collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+        )
+        .filter(|id| renderer.texture_for(*id).is_none())
+        .collect();
+    wanted.sort();
+    wanted.dedup();
+    let mut missing = Vec::new();
+    for id in wanted {
+        match library.and_then(|l| l.texture(id)) {
+            Some(texture) => {
+                renderer.upload_texture(gpu, texture);
+            }
+            None => missing.push(format!(
+                "a material's map {id} is not in the library; re-import it"
+            )),
+        }
+    }
+    missing
+}
+
+/// Everything a scene says about how its frame looks — sun, fog, sky and
+/// post-processing — around what is in the world. What a game and the
+/// editor draw a scene with, so both show the same picture.
+pub fn scene_frame(world: &World, camera: Camera, scene: &crate::scene::Scene) -> Frame {
+    let mut frame = build_frame(
+        world,
+        camera,
+        scene_lighting(&scene.sun),
+        scene_fog(&scene.fog),
+    );
+    scene_look(&mut frame, scene);
+    frame
+}
+
+/// Put a scene's sky and post-processing on a frame built some other way.
+pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
+    if let Some(sky) = scene.sky {
+        frame.sky = sky;
+    }
+    if let Some(post) = scene.post {
+        frame.post = post;
+    }
+    if let Some(ambient_occlusion) = scene.ambient_occlusion {
+        frame.ambient_occlusion = ambient_occlusion;
+    }
+    if let Some(ray_tracing) = scene.ray_tracing {
+        frame.ray_tracing = ray_tracing;
+    }
+    if let Some(fog) = scene.volumetric_fog {
+        frame.volumetric_fog = fog;
     }
 }
 
@@ -835,19 +949,52 @@ pub fn build_frame_where(
                     let (_, turn, _) = placed.0.to_scale_rotation_translation();
                     (turn * glam::Vec3::Z, cone)
                 }),
+                shadows: l.shadows,
             }
+        })
+        .collect();
+    let reflection_probes = world
+        .query::<(&ProbeBox, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(probe, placed, _)| crate::reflections::ReflectionProbe {
+            position: placed.0.w_axis.truncate(),
+            extents: probe.0.size.abs() * 0.5,
+            box_projection: probe.0.box_projection,
+            blend_distance: probe.0.blend_distance,
+        })
+        .collect();
+    let decals = world
+        .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(pressing, placed, _)| crate::decals::Decal {
+            transform: placed.0 * glam::Mat4::from_scale(pressing.0.size),
+            material: pressing.1,
         })
         .collect();
     Frame {
         camera,
         lighting,
+        reflection_probes,
+        decals,
+        volumetric_fog: Default::default(),
         clear_color: fog.color,
+        // The horizon is the fog's colour, so the far hills fade into the
+        // sky rather than against it.
+        sky: crate::render::Sky {
+            horizon: fog.color.to_array(),
+            ..Default::default()
+        },
         fog,
         shadows: crate::render::ShadowSettings::default(),
         draws,
         overlay_draws: Vec::new(),
         lights,
         poses,
+        post: Default::default(),
+        ambient_occlusion: Default::default(),
+        ray_tracing: Default::default(),
     }
 }
 
@@ -864,6 +1011,8 @@ mod tests {
             along: None,
             light: None,
             particles: None,
+            reflection_probe: None,
+            decal: None,
             route: None,
             layer: Default::default(),
             physics: Default::default(),
@@ -893,6 +1042,8 @@ mod tests {
                     along: None,
                     light: None,
                     particles: None,
+                    reflection_probe: None,
+                    decal: None,
                     route: None,
                     layer: Default::default(),
                     physics: Default::default(),

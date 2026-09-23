@@ -42,6 +42,8 @@ fn entity_fields() -> Value {
         "camera": { "type": "string", "description": "RON: a camera on this entity, looking along its +z — (fov_deg: 60.0, priority: 0) — or None. Put it on a child of the player and it follows" },
         "layer": { "type": "string", "description": "collision layer by its name in layers.ron; empty is default" },
         "route": { "type": "string", "description": "RON: travels by itself — (points: [(0.0, 0.0, 0.0), (0.0, 4.0, 0.0)], speed: 1.5, ends: Back|Loop|Stop, smooth: true, pause: 1.0), points from where it stands; with a Kinematic body it carries what stands on it (a lift, a moving platform); or None" },
+        "decal": { "type": "string", "description": "RON: a decal's box, centred here and pressed down its -y — (size: (2.0, 1.0, 2.0)); the entity's material is the picture (base map, alpha, normal map) — or None" },
+        "reflection_probe": { "type": "string", "description": "RON: a reflection probe's box, centred here — (size: (8.0, 4.0, 8.0)); box_projection: false, blend_distance: 1.0 — what polished things in it reflect instead of the sky; or None" },
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
         "physics": { "type": "string", "description": "RON, only what differs: (friction: 0.5, bounce: 0.0, density: 1.0) — a ball is (bounce: 0.8), iron is (density: 8.0); freeze_turn: \"xz\" keeps it upright, freeze_move: \"y\" at its height" },
@@ -79,7 +81,7 @@ pub fn list() -> Vec<Value> {
         tool("open_prefab", "Prefab Mode: open prefabs/<name>.prefab as the document. Every tool then edits the prefab (a variant's part edits become its overrides) and save_scene writes the prefab file; open_scene goes back.", json!({ "name": { "type": "string" } }), &["name"]),
         tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
-        tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic, has:light|camera|particles|route|joint|collider, layer:debris; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
+        tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic, has:light|camera|particles|probe|decal|route|joint|collider, layer:debris; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
         tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides. With `ids`, for several at once: — where they disagree.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } } }), &[]),
         tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
@@ -136,7 +138,7 @@ pub fn list() -> Vec<Value> {
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
-        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running.", json!({}), &[]),
+        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, RUNITY_SCENE) in its own window. What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" } }), &[]),
         tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, and what was spawned at run time. The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
@@ -735,10 +737,25 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         }
         "start_game" => {
             let session = server.session()?;
+            if let Some(count) = args.get("players").and_then(|v| v.as_u64()) {
+                session.set_players(count as u32);
+            }
+            if let Some(link) = args.get("link").and_then(|v| v.as_str()) {
+                session.set_link(link).map_err(|e| e.to_string())?;
+            }
             session.start_game().map_err(|e| e.to_string())?;
-            Ok(vec![text(
-                "started; its output goes to the console as it comes",
-            )])
+            let players = session.players();
+            let link = session.link();
+            let over = if link.is_empty() {
+                String::new()
+            } else {
+                format!(", the others over a `{link}` link")
+            };
+            Ok(vec![text(if players > 1 {
+                format!("started with {players} players{over}; their output goes to the console as it comes")
+            } else {
+                "started; its output goes to the console as it comes".to_string()
+            })])
         }
         "game_state" => {
             let session = server.session()?;
@@ -1516,6 +1533,23 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
             None
         } else {
             Some(ron::from_str::<runity::scene::Route>(&route).map_err(|e| format!("route: {e}"))?)
+        };
+    }
+    if let Some(decal) = optional_string(args, "decal")? {
+        desc.decal = if decal.trim() == "None" {
+            None
+        } else {
+            Some(ron::from_str::<runity::scene::Decal>(&decal).map_err(|e| format!("decal: {e}"))?)
+        };
+    }
+    if let Some(probe) = optional_string(args, "reflection_probe")? {
+        desc.reflection_probe = if probe.trim() == "None" {
+            None
+        } else {
+            Some(
+                ron::from_str::<runity::scene::Probe>(&probe)
+                    .map_err(|e| format!("reflection_probe: {e}"))?,
+            )
         };
     }
     if let Some(particles) = optional_string(args, "particles")? {

@@ -18,6 +18,14 @@ fn shoot(
 ) -> Vec<u8> {
     let floor = renderer.upload_mesh_owned(gpu, &builtin::plane(1.0, 1));
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: Vec3::new(0.0, 10.0, 0.01),
             target: Vec3::ZERO,
@@ -37,6 +45,9 @@ fn shoot(
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::ZERO,
         lights,
+        reflection_probes: Vec::new(),
+        decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![Draw {
             mesh: floor,
             transform: Mat4::from_scale(Vec3::new(20.0, 1.0, 20.0)),
@@ -72,6 +83,7 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 3.0,
         spot: None,
+        shadows: false,
     };
     let lit = shoot(&gpu, &mut renderer, &target, vec![lamp]);
     let under = red(&lit, SIZE / 2, SIZE / 2);
@@ -86,6 +98,7 @@ fn a_lamp_lights_a_pool_under_it_and_nothing_past_its_range() {
         color: Vec3::new(3.0, 1.0, 0.3),
         range: 10.0,
         spot: Some((Vec3::NEG_Y, 30.0)),
+        shadows: false,
     };
     let lit = shoot(&gpu, &mut renderer, &target, vec![torch]);
     let under = red(&lit, SIZE / 2, SIZE / 2);

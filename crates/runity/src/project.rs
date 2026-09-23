@@ -611,8 +611,14 @@ const GAME: &str = r#"//! {name}.
 //! Components are files in `src/components/`, systems files in
 //! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
 //! `build.rs` finds them, and `step` below runs the systems in order.
+//!
+//! The game is played together by default: `party` is who else is in it.
+//! Alone it is a party of one. Started with several players — from the
+//! editor, or `runity run --players 4` — each window is one of them, and
+//! what each owns moves in the others' windows too.
 
 use runity::hecs::World;
+use runity::party::{Event, Party};
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
@@ -651,6 +657,8 @@ struct Game {
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
+    party: Party,
+    components: Components,
 }
 
 impl Game {
@@ -749,6 +757,43 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
+        // Played together: what the others own comes in, what this player
+        // owns goes out, and whatever they spawn is spawned here too.
+        let (live, gpu, renderer) = (&mut self.live, ctx.gpu, &mut *ctx.renderer);
+        let events = self.party.update(&mut self.world, &self.components, ctx.time.delta(), |world, prefab, at| {
+            live.spawn_prefab(prefab, at, None, world, gpu, renderer).ok().map(|i| i.root)
+        });
+        for event in events {
+            match event {
+                // The session plays another scene: go there, then say so.
+                Event::SceneRequired { scene } => {
+                    match self.live.switch(&scene, &mut self.world, ctx.gpu, ctx.renderer) {
+                        Ok((spawned, problems)) => {
+                            for line in spawned.lines().into_iter().chain(problems) {
+                                eprintln!("{line}");
+                            }
+                            self.start_physics(ctx);
+                        }
+                        Err(e) => eprintln!("{e}"),
+                    }
+                    self.party.ready_in(&scene);
+                }
+                Event::Welcomed => eprintln!("in the game as {}", self.party.name()),
+                Event::Joined { name, .. } => eprintln!("{} joined", name),
+                Event::Left { name, clean, .. } => {
+                    eprintln!("{} {}", name, if clean { "left" } else { "went quiet, and is gone" })
+                }
+                Event::HostLost { quit } => eprintln!(
+                    "the host {}; waiting for them to come back",
+                    if quit { "left" } else { "is not answering" }
+                ),
+                Event::HostBack => eprintln!("the host is back"),
+                Event::Rejected(why) => eprintln!("could not join: {why}"),
+                Event::ClaimLost { .. } | Event::Message { .. } => {}
+                Event::Silent { id, owner } => eprintln!("{id}: player {} stopped saying where it is", owner.0 + 1),
+                Event::Problem(why) => eprintln!("{why}"),
+            }
+        }
         // Started from the editor: tell it where things are.
         if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
             eprintln!("{problem}");
@@ -774,12 +819,9 @@ impl shell::Game for Game {
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view));
         let started = std::time::Instant::now();
-        let frame = runity::build_frame(
-            &self.world,
-            camera,
-            runity::scene_lighting(&scene.sun),
-            runity::scene_fog(&scene.fog),
-        );
+        // Everything the scene says about how it looks: sun, fog, sky and
+        // post-processing.
+        let frame = runity::world::scene_frame(&self.world, camera, scene);
         self.profile.record("frame", started.elapsed());
         frame
     }
@@ -808,8 +850,15 @@ fn main() -> anyhow::Result<()> {
     for problem in &problems {
         eprintln!("{problem}");
     }
+    // RUNITY_NET: host or join a game — alone without it, which is the
+    // same thing with nobody else in it.
+    let party = Party::from_env(&playing, &game_components()).map_err(anyhow::Error::msg)?;
+    let mut title = if settings.title.is_empty() { project_name } else { settings.title.clone() };
+    if !party.is_alone() {
+        title = format!("{title} — {}", party.name());
+    }
     let config = WindowConfig {
-        title: if settings.title.is_empty() { project_name } else { settings.title.clone() },
+        title,
         width: settings.width,
         height: settings.height,
         time: runity::TimeSettings {
@@ -845,6 +894,8 @@ fn main() -> anyhow::Result<()> {
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
+        party,
+        components: game_components(),
     };
     run(config, game)
 }
@@ -899,15 +950,18 @@ pub struct Spin {
 "#;
 
 /// The system a new project starts with.
-const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin`.
+const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin` and this player drives: what someone
+//! else drives turns on their machine and is shown turning here. Every
+//! system that simulates asks for `Owned`; alone, everything is.
 
 use runity::hecs::World;
+use runity::net::Owned;
 use runity::Transform;
 
 use crate::components::Spin;
 
 pub fn run(world: &mut World, seconds: f32) {
-    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>() {
+    for (transform, spin) in world.query_mut::<(&mut Transform, &Spin)>().with::<&Owned>() {
         transform.rotation_deg.y += spin.degrees_per_second * seconds;
     }
 }
@@ -931,7 +985,9 @@ pub fn component_file(name: &str) -> String {
 /// A new system's file: `runity add system NAME`.
 pub fn system_file(name: &str) -> String {
     format!(
-        "//! `{name}`.\n\
+        "//! `{name}`. What it changes, it changes only on what this player\n\
+         //! drives: query with `.with::<&runity::net::Owned>()` — alone,\n\
+         //! that is everything; together, the rest is someone else's to run.\n\
          \n\
          use runity::hecs::World;\n\
          \n\

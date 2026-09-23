@@ -103,6 +103,14 @@ fn a_source_model_becomes_a_frame() {
         ..FogSettings::default()
     };
     let frame = Frame {
+        // Counted in exact colours: no sky, no post-processing.
+        sky: runity::render::Sky {
+            mode: runity::render::SkyMode::Color,
+            ..Default::default()
+        },
+        post: runity::post::PostProcess::OFF,
+        ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+        ray_tracing: Default::default(),
         camera: Camera {
             position: runity::glam::Vec3::new(0.0, height * 0.55, height * 1.5),
             target: runity::glam::Vec3::new(0.0, height * 0.5, 0.0),
@@ -116,6 +124,9 @@ fn a_source_model_becomes_a_frame() {
         shadows: runity::ShadowSettings::OFF,
         clear_color: fog.color,
         lights: Vec::new(),
+        reflection_probes: Vec::new(),
+        decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![
             Draw {
                 mesh: handle,

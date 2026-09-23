@@ -50,7 +50,8 @@ pub fn default_text(field: &str) -> Option<String> {
         "physics" => ron(&blank.physics),
         "joint" => ron(&blank.joint),
         "layer" => String::new(),
-        "camera" | "light" | "particles" | "route" | "spline" | "along" => "None".into(),
+        "camera" | "light" | "particles" | "reflection_probe" | "decal" | "route" | "spline"
+        | "along" => "None".into(),
         _ => return None,
     })
 }
@@ -76,7 +77,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 17] = [
+pub const FIELDS: [&str; 19] = [
     "name",
     "model",
     "prefab",
@@ -92,6 +93,8 @@ pub const FIELDS: [&str; 17] = [
     "camera",
     "light",
     "particles",
+    "reflection_probe",
+    "decal",
     "route",
     "components.<name>",
 ];
@@ -118,6 +121,8 @@ fn take_field(
         "camera" => one.camera = from.camera.take(),
         "light" => one.light = from.light.take(),
         "particles" => one.particles = from.particles.take(),
+        "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
+        "decal" => one.decal = from.decal.take(),
         "route" => one.route = from.route.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
@@ -255,6 +260,8 @@ impl Session {
                 "camera" => o.camera.is_some(),
                 "light" => o.light.is_some(),
                 "particles" => o.particles.is_some(),
+                "reflection_probe" => o.reflection_probe.is_some(),
+                "decal" => o.decal.is_some(),
                 "route" => o.route.is_some(),
                 other => other
                     .strip_prefix("components.")
@@ -289,6 +296,15 @@ impl Session {
             (
                 "particles".into(),
                 desc.particles.map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "reflection_probe".into(),
+                desc.reflection_probe
+                    .map_or("None".to_string(), |p| ron(&p)),
+            ),
+            (
+                "decal".into(),
+                desc.decal.map_or("None".to_string(), |d| ron(&d)),
             ),
             (
                 "route".into(),
@@ -659,6 +675,20 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Emitter>(field, text)?)
+                }
+            }
+            "decal" => {
+                next.decal = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Decal>(field, text)?)
+                }
+            }
+            "reflection_probe" => {
+                next.reflection_probe = if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Probe>(field, text)?)
                 }
             }
             other => {
