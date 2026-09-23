@@ -43,6 +43,15 @@ struct Post {
     // Split Toning: shadows tint (w: balance), highlights tint
     split_shadows: vec4<f32>,
     split_highlights: vec4<f32>,
+    // Lens Distortion: centre (-1..1), x and y amounts; theta (or its
+    // inverse), sigma, 1/scale, intensity (x100)
+    distortion_axis: vec4<f32>,
+    distortion: vec4<f32>,
+    // Panini: the view's half extents, distance, crop zoom
+    panini: vec4<f32>,
+    // Lens flare: tint, intensity; ghosts, halo, streaks, dispersion
+    flare_tint: vec4<f32>,
+    flare: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -214,18 +223,106 @@ fn hash(p: vec2<f32>) -> f32 {
 }
 
 // Everything after bloom, in the order URP's uber pass does it.
+// Panini: where on the flat picture a point of the cylinder's lies —
+// URP's Panini_Generic, by the tangent-secant theorem.
+fn panini_uv(uv: vec2<f32>) -> vec2<f32> {
+    let d = post.panini.z;
+    if d <= 0.0 {
+        return uv;
+    }
+    let view_pos = (2.0 * uv - 1.0) * post.panini.xy * post.panini.w;
+    let view_dist = 1.0 + d;
+    let view_hyp_sq = view_pos.x * view_pos.x + view_dist * view_dist;
+    let isect_d = view_pos.x * d;
+    let isect_discrim = view_hyp_sq - isect_d * isect_d;
+    let cyl_dist_minus_d = (-isect_d * view_pos.x + view_dist * sqrt(isect_discrim)) / view_hyp_sq;
+    let cyl_dist = cyl_dist_minus_d + d;
+    let cyl_pos = view_pos * (cyl_dist / view_dist);
+    let proj = cyl_pos / (cyl_dist - d);
+    return proj / post.panini.xy * 0.5 + 0.5;
+}
+
+// Lens Distortion, URP's DistortUV: barrel by a tangent, pincushion by
+// an arctangent, about the centre.
+fn distort_uv(uv_in: vec2<f32>) -> vec2<f32> {
+    let intensity = post.distortion.w;
+    if abs(intensity) < 1e-3 {
+        return uv_in;
+    }
+    var uv = (uv_in - 0.5) * post.distortion.z + 0.5;
+    let ruv = post.distortion_axis.zw * (uv - 0.5 - post.distortion_axis.xy);
+    var ru = max(length(ruv), 1e-5);
+    if intensity > 0.0 {
+        let wu = ru * post.distortion.x;
+        ru = tan(wu) / (ru * post.distortion.y);
+    } else {
+        ru = (1.0 / ru) * post.distortion.x * atan(ru * post.distortion.y);
+    }
+    return uv + ruv * (ru - 1.0);
+}
+
+// The bloom where it is far past white: a flare is made of the few
+// brightest things, not of every lit wall.
+fn flare_source(at: vec2<f32>) -> vec3<f32> {
+    let c = textureSampleLevel(bloom_texture, linear_clamp, at, 0.0).rgb;
+    let over = max(luma(c) - 2.0, 0.0);
+    let share = over / max(luma(c), 1e-4);
+    return c * share * share;
+}
+
+// Screen-space lens flare from the bloom: ghosts of the bright spots
+// mirrored through the middle, a halo ring, and a horizontal streak
+// (Chapman's pseudo lens flare, with URP's knobs).
+fn lens_flare(uv: vec2<f32>) -> vec3<f32> {
+    if post.flare_tint.w <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    let flipped = vec2<f32>(1.0) - uv;
+    let ghost_step = (vec2<f32>(0.5) - flipped) * 0.37;
+    let spread = normalize(ghost_step + vec2<f32>(1e-5)) * post.flare.w * 0.01;
+    var sum = vec3<f32>(0.0);
+    for (var i = 0; i < 5; i = i + 1) {
+        let at = fract(flipped + ghost_step * f32(i));
+        let weight = pow(1.0 - clamp(length(vec2<f32>(0.5) - at) / 0.7071, 0.0, 1.0), 10.0);
+        sum += vec3<f32>(
+            flare_source(at + spread).r,
+            flare_source(at).g,
+            flare_source(at - spread).b,
+        ) * weight;
+    }
+    var color = sum * post.flare.x;
+    // The halo: a ring a fixed way out from the middle.
+    // Round whatever the screen's shape: the direction is taken in square
+    // units and put back.
+    let aspect = vec2<f32>(post.vignette.w, 1.0);
+    let halo_dir = normalize((ghost_step + vec2<f32>(1e-5)) * aspect) / aspect;
+    let halo_at = fract(flipped + halo_dir * 0.3);
+    let halo_weight = pow(1.0 - clamp(length(vec2<f32>(0.5) - halo_at) / 0.7071, 0.0, 1.0), 5.0);
+    color += flare_source(halo_at) * halo_weight * post.flare.y;
+    // The streak: the bloom smeared sideways.
+    var streak = vec3<f32>(0.0);
+    for (var i = -6; i <= 6; i = i + 1) {
+        let o = f32(i) / 6.0;
+        streak += flare_source(uv + vec2<f32>(o * 0.25, 0.0)) * (1.0 - abs(o));
+    }
+    color += streak / 7.0 * post.flare.z;
+    return color * post.flare_tint.rgb * post.flare_tint.w * 0.25;
+}
+
 @fragment
 fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
+    let uv = distort_uv(panini_uv(in.uv));
     // Chromatic aberration: red and blue sampled a little apart along the
     // line from the centre, as a cheap lens fails to focus them together.
-    let from_centre = in.uv - vec2<f32>(0.5);
+    let from_centre = uv - vec2<f32>(0.5);
     let fringe = from_centre * dot(from_centre, from_centre) * post.b.z * 0.1;
     var color = vec3<f32>(
-        textureSampleLevel(source, linear_clamp, in.uv - fringe, 0.0).r,
-        textureSampleLevel(source, linear_clamp, in.uv, 0.0).g,
-        textureSampleLevel(source, linear_clamp, in.uv + fringe, 0.0).b,
+        textureSampleLevel(source, linear_clamp, uv - fringe, 0.0).r,
+        textureSampleLevel(source, linear_clamp, uv, 0.0).g,
+        textureSampleLevel(source, linear_clamp, uv + fringe, 0.0).b,
     );
-    color += textureSampleLevel(bloom_texture, linear_clamp, in.uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
+    color += textureSampleLevel(bloom_texture, linear_clamp, uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
+    color += lens_flare(uv);
 
     color *= post.a.x;
     color = white_balance(color);

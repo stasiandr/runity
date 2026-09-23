@@ -174,6 +174,98 @@ impl Default for SplitToning {
     }
 }
 
+/// A cheap lens bending the picture: barrel (positive) or pincushion
+/// (negative). URP's Lens Distortion.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LensDistortion {
+    /// -1 to 1; 0 is off.
+    pub intensity: f32,
+    /// How much of it along x and along y, 0 to 1.
+    pub x_multiplier: f32,
+    pub y_multiplier: f32,
+    /// Where the bend is centred, 0 to 1 across the screen.
+    pub center: [f32; 2],
+    /// Zooms in (above 1) to hide the edges the bend pulls in.
+    pub scale: f32,
+}
+
+impl LensDistortion {
+    pub const OFF: LensDistortion = LensDistortion {
+        intensity: 0.0,
+        x_multiplier: 1.0,
+        y_multiplier: 1.0,
+        center: [0.5, 0.5],
+        scale: 1.0,
+    };
+}
+
+impl Default for LensDistortion {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
+/// A wide view kept from stretching at its sides: a cylinder's
+/// projection, as a painter's. URP's Panini Projection.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaniniProjection {
+    /// 0 (plain perspective) to 1 (a full cylinder).
+    pub distance: f32,
+    /// 0 to 1: how much to zoom so no edge is left empty.
+    pub crop_to_fit: f32,
+}
+
+impl PaniniProjection {
+    pub const OFF: PaniniProjection = PaniniProjection {
+        distance: 0.0,
+        crop_to_fit: 1.0,
+    };
+}
+
+impl Default for PaniniProjection {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
+/// Ghosts of what is bright, mirrored through the middle of the frame, a
+/// halo and a streak — what light scattered inside a lens makes. URP's
+/// Screen Space Lens Flare: it is made from the bloom, so bloom must be on.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LensFlare {
+    /// 0 is off.
+    pub intensity: f32,
+    pub tint: [f32; 3],
+    /// The ghosts mirrored through the middle.
+    pub ghosts: f32,
+    /// The ring around the middle.
+    pub halo: f32,
+    /// The horizontal streak through each bright thing (anamorphic).
+    pub streaks: f32,
+    /// Red and blue apart in the ghosts, 0 to 1.
+    pub chromatic_aberration: f32,
+}
+
+impl LensFlare {
+    pub const OFF: LensFlare = LensFlare {
+        intensity: 0.0,
+        tint: [1.0, 1.0, 1.0],
+        ghosts: 1.0,
+        halo: 0.2,
+        streaks: 0.5,
+        chromatic_aberration: 0.5,
+    };
+}
+
+impl Default for LensFlare {
+    fn default() -> Self {
+        Self::OFF
+    }
+}
+
 /// Everything done to a frame after it is drawn, with URP's names and
 /// ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -218,6 +310,9 @@ pub struct PostProcess {
     pub depth_of_field: crate::lens::DepthOfField,
     /// Camera Motion Blur, off unless asked ([`crate::lens`]).
     pub motion_blur: crate::lens::MotionBlur,
+    pub lens_distortion: LensDistortion,
+    pub panini_projection: PaniniProjection,
+    pub lens_flare: LensFlare,
 }
 
 impl Default for PostProcess {
@@ -244,6 +339,9 @@ impl Default for PostProcess {
             dithering: true,
             depth_of_field: crate::lens::DepthOfField::OFF,
             motion_blur: crate::lens::MotionBlur::OFF,
+            lens_distortion: LensDistortion::OFF,
+            panini_projection: PaniniProjection::OFF,
+            lens_flare: LensFlare::OFF,
         }
     }
 }
@@ -302,6 +400,9 @@ impl PostProcess {
         dithering: false,
         depth_of_field: crate::lens::DepthOfField::OFF,
         motion_blur: crate::lens::MotionBlur::OFF,
+        lens_distortion: LensDistortion::OFF,
+        panini_projection: PaniniProjection::OFF,
+        lens_flare: LensFlare::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -386,6 +487,52 @@ impl PostProcess {
             },
             depth_of_field: self.depth_of_field.lerp(&other.depth_of_field, t),
             motion_blur: self.motion_blur.lerp(&other.motion_blur, t),
+            lens_distortion: LensDistortion {
+                intensity: f(
+                    self.lens_distortion.intensity,
+                    other.lens_distortion.intensity,
+                ),
+                x_multiplier: f(
+                    self.lens_distortion.x_multiplier,
+                    other.lens_distortion.x_multiplier,
+                ),
+                y_multiplier: f(
+                    self.lens_distortion.y_multiplier,
+                    other.lens_distortion.y_multiplier,
+                ),
+                center: [
+                    f(
+                        self.lens_distortion.center[0],
+                        other.lens_distortion.center[0],
+                    ),
+                    f(
+                        self.lens_distortion.center[1],
+                        other.lens_distortion.center[1],
+                    ),
+                ],
+                scale: f(self.lens_distortion.scale, other.lens_distortion.scale),
+            },
+            panini_projection: PaniniProjection {
+                distance: f(
+                    self.panini_projection.distance,
+                    other.panini_projection.distance,
+                ),
+                crop_to_fit: f(
+                    self.panini_projection.crop_to_fit,
+                    other.panini_projection.crop_to_fit,
+                ),
+            },
+            lens_flare: LensFlare {
+                intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
+                tint: v3(self.lens_flare.tint, other.lens_flare.tint),
+                ghosts: f(self.lens_flare.ghosts, other.lens_flare.ghosts),
+                halo: f(self.lens_flare.halo, other.lens_flare.halo),
+                streaks: f(self.lens_flare.streaks, other.lens_flare.streaks),
+                chromatic_aberration: f(
+                    self.lens_flare.chromatic_aberration,
+                    other.lens_flare.chromatic_aberration,
+                ),
+            },
         }
     }
 }
@@ -411,6 +558,30 @@ pub fn white_balance_coefficients(temperature: f32, tint: f32) -> Vec3 {
     };
     let w1 = Vec3::new(0.949_237, 1.035_42, 1.087_28);
     w1 / lms(x, y)
+}
+
+/// URP's Panini constants: the view's extents at unit distance, the
+/// distance, and how far to zoom so the edges are covered. Nothing for an
+/// orthographic camera (`fov` 0), which has no perspective to unbend.
+fn panini_params(p: &PaniniProjection, fov_y_degrees: f32, aspect: f32) -> [f32; 4] {
+    if p.distance <= 0.0 || fov_y_degrees <= 0.0 {
+        return [1.0, 1.0, 0.0, 1.0];
+    }
+    let d = p.distance.clamp(0.0, 1.0);
+    let half = (fov_y_degrees.to_radians() * 0.5).tan();
+    let view = [half * aspect, half];
+    // Where the view's corner lands on the cylinder.
+    let view_distance = 1.0 + d;
+    let hypotenuse = (view[0] * view[0] + 1.0).sqrt();
+    let cylinder_minus_d = 1.0 / hypotenuse;
+    let cylinder = cylinder_minus_d + d;
+    let crop = [
+        view[0] * cylinder_minus_d * (view_distance / cylinder),
+        view[1] * cylinder_minus_d * (view_distance / cylinder),
+    ];
+    let scale = (crop[0] / view[0]).min(crop[1] / view[1]);
+    let zoom = 1.0 + (scale.clamp(0.0, 1.0) - 1.0) * p.crop_to_fit.clamp(0.0, 1.0);
+    [view[0], view[1], d, zoom]
 }
 
 /// The post shader, as compiled in.
@@ -447,6 +618,16 @@ struct PostUniform {
     /// Split toning's shadows tint; `w` the balance, -1 to 1.
     split_shadows: [f32; 4],
     split_highlights: [f32; 4],
+    /// Lens Distortion: centre (−1..1), x and y amounts.
+    distortion_axis: [f32; 4],
+    /// Lens Distortion: theta (or its inverse), sigma, 1/scale, intensity.
+    distortion: [f32; 4],
+    /// Panini: the view's half extents (tangents), distance, crop scale.
+    panini: [f32; 4],
+    /// Lens flare: tint, intensity.
+    flare_tint: [f32; 4],
+    /// Lens flare: ghosts, halo, streaks, chromatic aberration.
+    flare: [f32; 4],
 }
 
 /// One uniform slot per pass of a frame, at the device's alignment.
@@ -512,6 +693,9 @@ pub(crate) struct PostRenderer {
     /// Whether the output format encodes sRGB itself.
     output_srgb: bool,
     started: std::time::Instant,
+    /// The camera's vertical field of view, 0 for an orthographic one:
+    /// what Panini unbends.
+    pub(crate) fov_y_degrees: f32,
 }
 
 impl PostRenderer {
@@ -638,6 +822,7 @@ impl PostRenderer {
             size: (0, 0),
             output_srgb: output.is_srgb(),
             started: std::time::Instant::now(),
+            fov_y_degrees: 0.0,
         }
     }
 
@@ -905,6 +1090,41 @@ impl PostRenderer {
                 (s.split_toning.balance / 100.0).clamp(-1.0, 1.0),
             ),
             split_highlights: v4(s.split_toning.highlights, 0.0),
+            distortion_axis: {
+                let d = &s.lens_distortion;
+                [
+                    d.center[0] * 2.0 - 1.0,
+                    d.center[1] * 2.0 - 1.0,
+                    d.x_multiplier.clamp(0.0, 1.0).max(1e-4),
+                    d.y_multiplier.clamp(0.0, 1.0).max(1e-4),
+                ]
+            },
+            distortion: {
+                // URP's own constants for the bend.
+                let d = &s.lens_distortion;
+                let intensity = d.intensity.clamp(-1.0, 1.0);
+                let amount = 1.6 * (intensity * 100.0).abs().max(1.0);
+                let theta = amount.min(160.0).to_radians();
+                let sigma = 2.0 * (theta * 0.5).tan();
+                [
+                    if intensity >= 0.0 { theta } else { 1.0 / theta },
+                    sigma,
+                    1.0 / d.scale.clamp(0.01, 5.0),
+                    intensity * 100.0,
+                ]
+            },
+            panini: panini_params(
+                &s.panini_projection,
+                self.fov_y_degrees,
+                w as f32 / h.max(1) as f32,
+            ),
+            flare_tint: v4(s.lens_flare.tint, s.lens_flare.intensity.max(0.0)),
+            flare: [
+                s.lens_flare.ghosts.max(0.0),
+                s.lens_flare.halo.max(0.0),
+                s.lens_flare.streaks.max(0.0),
+                s.lens_flare.chromatic_aberration.clamp(0.0, 1.0),
+            ],
         }
     }
 }

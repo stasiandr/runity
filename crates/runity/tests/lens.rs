@@ -179,3 +179,137 @@ fn motion_blur_smears_an_edge_the_camera_turns_across() {
     assert!(still <= 2, "without blur the edge is sharp: {still} px");
     assert!(blurred >= 4, "turning, it smears: {blurred} px");
 }
+
+/// Vertical white bars across the view, at `post`.
+fn bars(post: PostProcess, fov: f32) -> Vec<u8> {
+    let gpu = Gpu::headless_blocking(false).unwrap();
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    let draws = (-10..=10)
+        .map(|i| {
+            white(
+                cube,
+                Mat4::from_translation(Vec3::new(i as f32 * 0.8, 0.0, -5.0))
+                    * Mat4::from_scale(Vec3::new(0.3, 20.0, 0.3)),
+            )
+        })
+        .collect();
+    let camera = Camera {
+        position: Vec3::ZERO,
+        target: Vec3::new(0.0, 0.0, -1.0),
+        fov_y_degrees: fov,
+        ..Camera::default()
+    };
+    renderer.render(&gpu, &target, &frame(camera, draws, post));
+    target.read_rgba(&gpu)
+}
+
+/// Columns that differ between two pictures along a row.
+fn differing(a: &[u8], b: &[u8], row: u32) -> Vec<u32> {
+    (0..SIZE)
+        .filter(|&x| {
+            let p = OffscreenTarget::pixel(a, SIZE, x, row)[0] as i32;
+            let q = OffscreenTarget::pixel(b, SIZE, x, row)[0] as i32;
+            (p - q).abs() > 60
+        })
+        .collect()
+}
+
+#[test]
+fn lens_distortion_and_panini_bend_the_edges_and_leave_the_middle() {
+    if Gpu::headless_blocking(false).is_err() {
+        eprintln!("skipping: no adapter");
+        return;
+    }
+    let straight = bars(plain(), 90.0);
+    let barrel = bars(
+        PostProcess {
+            lens_distortion: runity::post::LensDistortion {
+                intensity: 0.6,
+                ..Default::default()
+            },
+            ..plain()
+        },
+        90.0,
+    );
+    let panini = bars(
+        PostProcess {
+            panini_projection: runity::post::PaniniProjection {
+                distance: 1.0,
+                crop_to_fit: 1.0,
+            },
+            ..plain()
+        },
+        90.0,
+    );
+    for (name, bent) in [("distortion", &barrel), ("panini", &panini)] {
+        let changed = differing(&straight, bent, SIZE / 2);
+        assert!(changed.len() >= 4, "{name} moves the bars: {changed:?}");
+        let middle = SIZE / 2 - 2..SIZE / 2 + 2;
+        assert!(
+            changed.iter().all(|x| !middle.contains(x)),
+            "{name} leaves the middle where it was: {changed:?}"
+        );
+    }
+    assert_eq!(bars(plain(), 90.0), straight, "the same frame twice");
+}
+
+#[test]
+fn a_lens_flare_throws_a_ghost_across_the_middle() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let sphere = renderer.upload_mesh_owned(&gpu, &builtin::sphere(0.5, 16, 8));
+    // A very bright light up and to the left.
+    let sun = Draw {
+        material: Material {
+            shading: Shading::Unlit,
+            emission: [40.0, 40.0, 40.0],
+            ..Material::new(1.0, 1.0, 1.0)
+        },
+        ..white(sphere, Mat4::from_translation(Vec3::new(-1.6, 1.6, -5.0)))
+    };
+    let camera = Camera {
+        position: Vec3::ZERO,
+        target: Vec3::new(0.0, 0.0, -1.0),
+        ..Camera::default()
+    };
+    let bloom = runity::post::Bloom {
+        intensity: 1.0,
+        ..Default::default()
+    };
+    let shoot = |renderer: &mut Renderer, post: PostProcess| {
+        renderer.render(&gpu, &target, &frame(camera, vec![sun], post));
+        target.read_rgba(&gpu)
+    };
+    let without = shoot(&mut renderer, PostProcess { bloom, ..plain() });
+    let with = shoot(
+        &mut renderer,
+        PostProcess {
+            bloom,
+            lens_flare: runity::post::LensFlare {
+                intensity: 1.0,
+                streaks: 0.0,
+                ..Default::default()
+            },
+            ..plain()
+        },
+    );
+    // Mirrored through the middle: down and to the right.
+    let sum = |p: &[u8]| -> u32 {
+        (SIZE * 5 / 8..SIZE * 7 / 8)
+            .flat_map(|y| (SIZE * 5 / 8..SIZE * 7 / 8).map(move |x| (x, y)))
+            .map(|(x, y)| OffscreenTarget::pixel(p, SIZE, x, y)[1] as u32)
+            .sum()
+    };
+    assert!(
+        sum(&with) > sum(&without) + 200,
+        "a ghost opposite the light: {} -> {}",
+        sum(&without),
+        sum(&with)
+    );
+}

@@ -3153,6 +3153,10 @@ impl Renderer {
                 orthographic: frame.camera.ortho.is_some(),
             },
         );
+        self.post.fov_y_degrees = match frame.camera.ortho {
+            Some(_) => 0.0,
+            None => frame.camera.fov_y_degrees,
+        };
         self.post.run(
             gpu,
             &mut encoder,
