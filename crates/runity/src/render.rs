@@ -497,6 +497,8 @@ pub struct Frame {
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
     /// Pictures pressed onto what lies in their boxes ([`crate::decals`]).
     pub decals: Vec<crate::decals::Decal>,
+    /// Light seen in the air ([`crate::volume`]); off by default.
+    pub volumetric_fog: crate::volume::VolumetricFog,
     /// Skinning matrices, one entry per animated thing on screen. Held here
     /// rather than on each draw so that two draws sharing a skeleton share
     /// one upload.
@@ -520,6 +522,7 @@ impl Default for Frame {
             lights: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
+            volumetric_fog: crate::volume::VolumetricFog::OFF,
             poses: Vec::new(),
         }
     }
@@ -589,6 +592,16 @@ struct FrameUniform {
     probes: [[f32; 4]; crate::reflections::MAX_PROBES * 2],
     /// Each face's projection of a direction.
     probe_faces: [[[f32; 4]; 4]; 6],
+    /// Volumetric fog: 1 when on, how far its cells reach, the near plane.
+    volume: [f32; 4],
+    /// The air's colour and its density at the base height.
+    fog_medium: [f32; 4],
+    /// Base height, falloff per metre, anisotropy, the sky's share.
+    fog_shape: [f32; 4],
+    /// The lamps' share.
+    fog_lamps: [f32; 4],
+    /// What is behind everything with a plain-colour sky.
+    clear_color: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -799,6 +812,13 @@ pub struct Renderer {
     shadow_clip_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
     sky_layout: wgpu::PipelineLayout,
+    fog_inject_layout: wgpu::PipelineLayout,
+    fog_integrate_layout: wgpu::PipelineLayout,
+    /// Volumetric fog's grid.
+    volumes: crate::volume::Volumes,
+    /// The frame's bind group with the fog left out, for the passes that
+    /// make the fog.
+    fog_bind_group: wgpu::BindGroup,
 }
 
 /// Where the scene is drawn before post-processing turns it into a picture.
@@ -974,6 +994,9 @@ struct Pipelines {
     prepass: std::collections::HashMap<(bool, RenderFace), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
+    /// Volumetric fog: what each cell scatters, and the sums along the view.
+    fog_inject: wgpu::ComputePipeline,
+    fog_integrate: wgpu::ComputePipeline,
 }
 
 /// The layouts the pipelines are built against, kept to rebuild them when
@@ -984,6 +1007,8 @@ struct Layouts<'a> {
     shadow_clip: &'a wgpu::PipelineLayout,
     skinned: &'a wgpu::PipelineLayout,
     sky: &'a wgpu::PipelineLayout,
+    fog_inject: &'a wgpu::PipelineLayout,
+    fog_integrate: &'a wgpu::PipelineLayout,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -1328,6 +1353,17 @@ fn build_pipelines(
             cache: None,
         });
 
+    let compute = |layout: &wgpu::PipelineLayout, entry: &str| {
+        gpu.device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(entry),
+                layout: Some(layout),
+                module: shader,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+    };
     Pipelines {
         scene,
         shadow,
@@ -1335,6 +1371,8 @@ fn build_pipelines(
         prepass,
         overlay,
         sky,
+        fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
+        fog_integrate: compute(layouts.fog_integrate, "cs_fog_integrate"),
     }
 }
 
@@ -1390,6 +1428,8 @@ impl Renderer {
                 shadow_clip: &self.shadow_clip_layout,
                 skinned: &self.skinned_layout,
                 sky: &self.sky_layout,
+                fog_inject: &self.fog_inject_layout,
+                fog_integrate: &self.fog_integrate_layout,
             },
         );
         if let Some(error) = pollster::block_on(scope.pop()) {
@@ -1550,6 +1590,29 @@ impl Renderer {
                 count: None,
             },
         ]);
+        // Volumetric fog, summed eye to cell, and how it is filtered.
+        frame_entries.extend([
+            wgpu::BindGroupLayoutEntry {
+                binding: 16,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 17,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ]);
+        // The fog's compute passes read the frame as the lit shader does.
+        for entry in &mut frame_entries {
+            entry.visibility |= wgpu::ShaderStages::COMPUTE;
+        }
         // The scene as rays see it, on a device that traces.
         if gpu.ray_tracing {
             frame_entries.push(wgpu::BindGroupLayoutEntry {
@@ -1617,10 +1680,13 @@ impl Renderer {
             (crate::decals::MAX_DECALS * std::mem::size_of::<crate::decals::GpuDecal>()) as u64,
         );
         let decal_atlases = crate::decals::DecalAtlases::new(gpu);
+        let volumes = crate::volume::Volumes::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                fog: &volumes.integrated,
+                fog_sampler: &volumes.sampler,
                 decals: &decal_buffer,
                 decal_colours: decal_atlases.colour_view(),
                 decal_normals: decal_atlases.normal_view(),
@@ -1787,6 +1853,18 @@ impl Renderer {
                 bind_group_layouts: &[Some(&layout)],
                 immediate_size: 0,
             });
+        let fog_layout = |label, second: &wgpu::BindGroupLayout| {
+            gpu.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    // Group 3: the render pipelines' groups 1 and 2 (maps,
+                    // poses) share the one shader module.
+                    bind_group_layouts: &[Some(&layout), None, None, Some(second)],
+                    immediate_size: 0,
+                })
+        };
+        let fog_inject_layout = fog_layout("runity::fog inject", &volumes.inject_layout);
+        let fog_integrate_layout = fog_layout("runity::fog integrate", &volumes.integrate_layout);
         let samples = sample_count(gpu);
         let pipelines = build_pipelines(
             gpu,
@@ -1799,6 +1877,8 @@ impl Renderer {
                 shadow_clip: &shadow_clip_layout,
                 skinned: &skinned_layout,
                 sky: &sky_layout,
+                fog_inject: &fog_inject_layout,
+                fog_integrate: &fog_integrate_layout,
             },
         );
 
@@ -1810,6 +1890,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
             pipelines,
             layout,
@@ -1862,7 +1943,12 @@ impl Renderer {
             shadow_clip_layout,
             skinned_layout,
             sky_layout,
+            fog_inject_layout,
+            fog_integrate_layout,
+            volumes,
+            fog_bind_group,
         };
+        renderer.rebind(gpu);
 
         // Handle 0 is always the white pixel, so `TextureHandle::WHITE` is a
         // constant rather than something every caller has to be handed.
@@ -1876,11 +1962,24 @@ impl Renderer {
     /// While probes are being baked their pictures are left out of it:
     /// they are being drawn.
     fn rebind(&mut self, gpu: &Gpu) {
+        self.bind_group = self.frame_group(gpu, false);
+        self.fog_bind_group = self.frame_group(gpu, true);
+    }
+
+    /// The frame's bind group; with `making_fog`, the fog's grid left out,
+    /// for the passes that fill it.
+    fn frame_group(&self, gpu: &Gpu, making_fog: bool) -> wgpu::BindGroup {
         let baking = self.reflections.baking;
-        self.bind_group = frame_bind_group(
+        frame_bind_group(
             gpu,
             &self.layout,
             &FrameInputs {
+                fog: if making_fog {
+                    &self.volumes.blank
+                } else {
+                    &self.volumes.integrated
+                },
+                fog_sampler: &self.volumes.sampler,
                 decals: &self.decal_buffer,
                 decal_colours: self.decal_atlases.colour_view(),
                 decal_normals: self.decal_atlases.normal_view(),
@@ -1901,7 +2000,7 @@ impl Renderer {
                 light_views: &self.light_view_buffer,
                 light_shadow_map: &self.light_shadow_map,
             },
-        );
+        )
     }
 
     /// Upload a mesh straight out of an imported asset.
@@ -2804,6 +2903,31 @@ impl Renderer {
             probe_faces: std::array::from_fn(|f| {
                 crate::reflections::face_matrix(f).to_cols_array_2d()
             }),
+            volume: {
+                let v = &frame.volumetric_fog;
+                let near = frame.camera.near.max(1e-3);
+                [
+                    if v.enabled { 1.0 } else { 0.0 },
+                    v.distance.max(near * 2.0),
+                    near,
+                    0.0,
+                ]
+            },
+            fog_medium: {
+                let v = &frame.volumetric_fog;
+                [v.color[0], v.color[1], v.color[2], v.density.max(0.0)]
+            },
+            fog_shape: {
+                let v = &frame.volumetric_fog;
+                [
+                    v.base_height,
+                    v.height_falloff.max(0.0),
+                    v.anisotropy.clamp(-0.95, 0.95),
+                    v.ambient.max(0.0),
+                ]
+            },
+            fog_lamps: [frame.volumetric_fog.lamps.max(0.0), 0.0, 0.0, 0.0],
+            clear_color: extend(frame.clear_color, 1.0),
         };
         gpu.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -3114,6 +3238,16 @@ impl Renderer {
             }
         }
 
+        // The fog in the air, once every shadow it looks through is drawn.
+        if frame.volumetric_fog.enabled {
+            self.volumes.run(
+                &mut encoder,
+                &self.fog_bind_group,
+                &self.pipelines.fog_inject,
+                &self.pipelines.fog_integrate,
+            );
+        }
+
         // Ambient occlusion: the solid things' depth and normals, and the
         // occlusion made from them, before the lit pass reads it.
         let traced_occlusion = traced && frame.ray_tracing.ambient_occlusion;
@@ -3201,8 +3335,9 @@ impl Renderer {
                 instance += 1;
             }
             // The sky last among what is solid: only where nothing was
-            // drawn is it shaded at all.
-            if frame.sky.mode == SkyMode::Procedural {
+            // drawn is it shaded at all. A plain colour needs no pass —
+            // unless there is fog in the air in front of it.
+            if frame.sky.mode == SkyMode::Procedural || frame.volumetric_fog.enabled {
                 pass.set_pipeline(&self.pipelines.sky);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.draw(0..3, 0..1);
@@ -3394,6 +3529,8 @@ struct FrameInputs<'a> {
     decals: &'a wgpu::Buffer,
     decal_colours: &'a wgpu::TextureView,
     decal_normals: &'a wgpu::TextureView,
+    fog: &'a wgpu::TextureView,
+    fog_sampler: &'a wgpu::Sampler,
 }
 
 fn frame_bind_group(
@@ -3434,6 +3571,11 @@ fn frame_bind_group(
         buffer(13, inputs.decals),
         view(14, inputs.decal_colours),
         view(15, inputs.decal_normals),
+        view(16, inputs.fog),
+        wgpu::BindGroupEntry {
+            binding: 17,
+            resource: wgpu::BindingResource::Sampler(inputs.fog_sampler),
+        },
     ];
     if let Some(rays) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

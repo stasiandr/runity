@@ -79,6 +79,7 @@ pub mod timers;
 pub mod tuned;
 pub mod ui;
 pub mod ui_render;
+pub mod volume;
 pub mod widgets;
 pub mod world;
 

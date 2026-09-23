@@ -56,6 +56,16 @@ struct Frame {
     probes: array<vec4<f32>, 16>,
     // each face's projection of a direction: +x, -x, +y, -y, +z, -z
     probe_faces: array<mat4x4<f32>, 6>,
+    // volumetric fog: 1 when on, how far its cells reach, the near plane
+    volume: vec4<f32>,
+    // the air's colour, its density at the base height
+    fog_medium: vec4<f32>,
+    // base height, falloff per metre, anisotropy, the sky's share
+    fog_shape: vec4<f32>,
+    // the lamps' share
+    fog_lamps: vec4<f32>,
+    // behind everything, with a plain-colour sky
+    clear_color: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -104,6 +114,16 @@ struct Decal {
 @group(0) @binding(13) var<storage, read> decals: array<Decal>;
 @group(0) @binding(14) var decal_colours: texture_2d_array<f32>;
 @group(0) @binding(15) var decal_normals: texture_2d_array<f32>;
+
+// Volumetric fog (volume.rs): per cell of a grid over the view, the light
+// the air between the eye and the cell adds (rgb) and lets through (a).
+@group(0) @binding(16) var fog_volume: texture_3d<f32>;
+@group(0) @binding(17) var fog_sampler: sampler;
+// The compute passes that make it, in a group of their own.
+@group(3) @binding(0) var fog_scatter_out: texture_storage_3d<rgba16float, write>;
+@group(3) @binding(1) var fog_scatter_in: texture_3d<f32>;
+@group(3) @binding(2) var fog_integrated_out: texture_storage_3d<rgba16float, write>;
+const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 
 // The shadow pass's one matrix: the cascade being drawn. Beside the frame
 // at binding 3, in the shadow pass's own group.
@@ -431,6 +451,131 @@ fn lamp_shadow(light: Light, position: vec3<f32>, normal: vec3<f32>, distance_to
     return sum / 9.0;
 }
 
+/// How deep, along the view, the fog grid's `t` (0 at the near plane, 1 at
+/// its far end) is: thin slices near, thick far.
+fn fog_depth(t: f32) -> f32 {
+    let near = frame.volume.z;
+    return near * pow(frame.volume.y / near, t);
+}
+
+/// The air's density at a point: thickest at the base height, thinning
+/// above it.
+fn fog_density(p: vec3<f32>) -> f32 {
+    let above = max(p.y - frame.fog_shape.x, 0.0);
+    return frame.fog_medium.w * exp(-frame.fog_shape.y * above);
+}
+
+/// Henyey–Greenstein: how much light turning by an angle of this cosine
+/// the air throws, for an anisotropy `g`.
+fn phase(cos_theta: f32, g: f32) -> f32 {
+    let g2 = g * g;
+    return (1.0 - g2) / (12.566371 * pow(max(1.0 + g2 - 2.0 * g * cos_theta, 1e-4), 1.5));
+}
+
+struct FogRay {
+    start: vec3<f32>,
+    direction: vec3<f32>,
+    // metres along the ray per metre of view depth
+    stretch: f32,
+    // the view depth at `start`
+    start_depth: f32,
+};
+
+/// The ray through a place on the screen (0..1 across).
+fn fog_ray(uv: vec2<f32>) -> FogRay {
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let a = frame.inverse_view_projection * vec4<f32>(ndc, 0.0, 1.0);
+    let b = frame.inverse_view_projection * vec4<f32>(ndc, 1.0, 1.0);
+    let start = a.xyz / a.w;
+    let direction = normalize(b.xyz / b.w - start);
+    let per_metre = max(-dot(frame.view_depth.xyz, direction), 1e-4);
+    return FogRay(start, direction, 1.0 / per_metre, -dot(frame.view_depth, vec4<f32>(start, 1.0)));
+}
+
+// What the air in each cell scatters towards the eye: the sun through its
+// cascades, the lamps of the cell's cluster through their maps, and the
+// sky from all round; its density in alpha.
+@compute @workgroup_size(4, 4, 4)
+fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
+    if any(id >= FOG_SIZE) {
+        return;
+    }
+    let cell = vec3<f32>(id) + 0.5;
+    let uv = cell.xy / vec2<f32>(FOG_SIZE.xy);
+    let ray = fog_ray(uv);
+    let depth = fog_depth(cell.z / f32(FOG_SIZE.z));
+    let p = ray.start + ray.direction * (depth - ray.start_depth) * ray.stretch;
+    let density = fog_density(p);
+    let to_eye = -ray.direction;
+    let g = frame.fog_shape.z;
+
+    let to_sun = -normalize(frame.sun_direction.xyz);
+    var light = frame.sun_color.rgb * sunlight(p, vec3<f32>(0.0)) * phase(dot(-to_sun, to_eye), g);
+    // The sky's light, from every way at once.
+    light += mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * frame.fog_shape.w;
+
+    let cell_of = light_cells[light_cell(uv * frame.cluster_depth.zw, p)];
+    for (var n = 0u; n < cell_of.y; n = n + 1u) {
+        let lamp = lights[light_indices[cell_of.x + n]];
+        let to_lamp = lamp.position_range.xyz - p;
+        let distance_to = length(to_lamp);
+        let toward = to_lamp / max(distance_to, 1e-4);
+        let reach = clamp(1.0 - distance_to / lamp.position_range.w, 0.0, 1.0);
+        let spot = lamp.spot;
+        let edge = spot.w + (1.0 - spot.w) * 0.1;
+        let cone = select(smoothstep(spot.w, edge, dot(-toward, spot.xyz)), 1.0, spot.w < -1.5);
+        if reach * cone <= 0.0 {
+            continue;
+        }
+        let shadow = lamp_shadow(lamp, p, vec3<f32>(0.0), distance_to);
+        // Closer to a square law than the surfaces' soft pool: a lamp in
+        // mist is a glow round the lamp, not an even wash to its range.
+        let near_lamp = 1.0 / (1.0 + distance_to * distance_to);
+        light += lamp.color_shadow.rgb * reach * reach * near_lamp * cone * shadow
+            * phase(dot(-toward, to_eye), g) * frame.fog_lamps.x;
+    }
+    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * density, density));
+}
+
+// Each column front to back: what each cell adds, dimmed by what lies
+// before it, and what is let through so far (Frostbite's energy-
+// conserving step).
+@compute @workgroup_size(8, 8, 1)
+fn cs_fog_integrate(@builtin(global_invocation_id) id: vec3<u32>) {
+    if id.x >= FOG_SIZE.x || id.y >= FOG_SIZE.y {
+        return;
+    }
+    let ray = fog_ray((vec2<f32>(id.xy) + 0.5) / vec2<f32>(FOG_SIZE.xy));
+    var added = vec3<f32>(0.0);
+    var through = 1.0;
+    var previous = frame.volume.z;
+    for (var z = 0u; z < FOG_SIZE.z; z = z + 1u) {
+        let far_edge = fog_depth(f32(z + 1u) / f32(FOG_SIZE.z));
+        let cell = textureLoad(fog_scatter_in, vec3<i32>(vec3<u32>(id.xy, z)), 0);
+        let extinction = max(cell.a, 1e-6);
+        let passed = exp(-extinction * (far_edge - previous) * ray.stretch);
+        added += through * (cell.rgb - cell.rgb * passed) / extinction;
+        through *= passed;
+        textureStore(fog_integrated_out, vec3<u32>(id.xy, z), vec4<f32>(added, through));
+        previous = far_edge;
+    }
+}
+
+/// A colour seen through the fog between it and the eye: dimmed by what
+/// the air takes, and the air's own light added.
+fn through_fog(color: vec3<f32>, pixel: vec2<f32>, depth: f32) -> vec3<f32> {
+    if frame.volume.x < 0.5 {
+        return color;
+    }
+    let uv = pixel / frame.cluster_depth.zw;
+    let near = frame.volume.z;
+    let t = log(max(depth, near) / near) / log(frame.volume.y / near);
+    // Each cell holds the sum to its far edge.
+    let w = clamp(t - 0.5 / f32(FOG_SIZE.z), 0.0, 1.0);
+    let fog = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, w), 0.0);
+    return color * fog.a + fog.rgb;
+}
+
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
@@ -734,6 +879,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // mix rather than branching keeps both paths on the same instruction
     // stream, which matters because the two are interleaved in one draw.
     var out = mix(color, albedo + emission, unlit);
+    out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
     if (flags & 8u) != 0u {
         out = out * alpha;
     }
@@ -809,6 +955,10 @@ fn vs_sky(@builtin(vertex_index) i: u32) -> SkyOut {
 /// with a glow around it — where the light comes from.
 @fragment
 fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
+    if frame.sky_zenith.w < 0.5 {
+        // A plain colour, drawn only for the fog in front of it.
+        return vec4<f32>(through_fog(frame.clear_color.rgb, in.position.xy, frame.volume.y), 1.0);
+    }
     let near = frame.inverse_view_projection * vec4<f32>(in.ndc, 0.0, 1.0);
     let far = frame.inverse_view_projection * vec4<f32>(in.ndc, 1.0, 1.0);
     let direction = normalize(far.xyz / far.w - near.xyz / near.w);
@@ -825,5 +975,5 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let disc = smoothstep(radius, radius + (1.0 - radius) * 0.15, facing);
     let glow = pow(max(facing, 0.0), 256.0) * 0.6 + pow(max(facing, 0.0), 16.0) * 0.08;
     let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
-    return vec4<f32>((color + sun) * frame.sky_ground.w, 1.0);
+    return vec4<f32>(through_fog((color + sun) * frame.sky_ground.w, in.position.xy, frame.volume.y), 1.0);
 }

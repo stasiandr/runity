@@ -126,6 +126,7 @@ fn a_source_model_becomes_a_frame() {
         lights: Vec::new(),
         reflection_probes: Vec::new(),
         decals: Vec::new(),
+        volumetric_fog: Default::default(),
         draws: vec![
             Draw {
                 mesh: handle,

@@ -1221,6 +1221,10 @@ pub struct Scene {
     /// device does not trace.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub ray_tracing: Option<crate::ray::RayTracing>,
+    /// Light seen in the air: `volumetric_fog: (enabled: true, density:
+    /// 0.05)`. See [`crate::volume`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub volumetric_fog: Option<crate::volume::VolumetricFog>,
     #[serde(default)]
     pub entities: Vec<EntityDesc>,
 }
@@ -1421,6 +1425,7 @@ mod tests {
             sky: None,
             ambient_occlusion: None,
             ray_tracing: None,
+            volumetric_fog: None,
             post: Some(crate::post::PostProcess {
                 saturation: -30.0,
                 ..Default::default()
