@@ -277,8 +277,10 @@ impl Patched {
 /// recolours the wall beside it; a component the game added is never
 /// touched; an entity the game spawned itself is not the file's to remove.
 ///
-/// Lines new in `after` are spawned. Lines gone from it are despawned, and
-/// so is everything parented to them, game-spawned or not — what hangs off
+/// Lines new in `after` are spawned. Lines `before` had and `after` does
+/// not are despawned — only those, so scenes loaded side by side into one
+/// world leave each other alone — and
+/// with them everything parented to them, game-spawned or not — what hangs off
 /// a thing goes with it. A line the world has but `before` lacks is treated
 /// as changed in every field.
 ///
@@ -317,9 +319,11 @@ pub fn patch_scene(
     }
     let Patch { kept, mut out, .. } = patch;
 
+    // Only lines this scene had: a world can hold several scenes, and a line
+    // another scene spawned is not this one's to remove.
     let mut doomed: HashSet<hecs::Entity> = live
         .iter()
-        .filter(|(id, _)| !kept.contains(*id))
+        .filter(|(id, _)| !kept.contains(*id) && old.contains_key(*id))
         .map(|(_, entity)| *entity)
         .collect();
     loop {
@@ -1024,5 +1028,24 @@ mod tests {
         assert_eq!(done.missing.len(), 1);
         assert_eq!(done.missing[0].model, "gone");
         assert!(world.get::<&Model>(entity(&world, "d")).is_err());
+    }
+
+    #[test]
+    fn two_scenes_in_one_world_leave_each_other_alone() {
+        let village = scene(DOOR);
+        let forest = scene(r#"(entities: [(id: "f1", name: "oak", model: "m")])"#);
+        let mut world = spawned(&village);
+        spawn_scene(&forest, &mut world, |_| Some(MeshHandle::TEST));
+
+        // The village reloads with the wall gone: the forest is not its.
+        let smaller = scene(r#"(entities: [(id: "d", name: "door", model: "m")])"#);
+        let done = patch(&village, &smaller, &mut world);
+        assert_eq!(done.despawned, 1, "{done:?}");
+        entity(&world, "f1");
+
+        // And the village unloads alone.
+        let done = patch(&smaller, &Scene::default(), &mut world);
+        assert_eq!(done.despawned, 1);
+        entity(&world, "f1");
     }
 }

@@ -273,6 +273,16 @@ impl LiveScene {
         })
     }
 
+    /// Take this scene out of a world: every entity its lines spawned, and
+    /// whatever hangs off them. Other scenes in the world, and what the game
+    /// spawned on its own, stay. With [`LiveScene::open`] and
+    /// [`LiveScene::spawn`] it is how a game changes level, or streams one
+    /// area out while another comes in: each scene its own `LiveScene`,
+    /// side by side in one world, each reloading only its own lines.
+    pub fn unload(&self, world: &mut World) -> usize {
+        crate::patch_scene(&self.current, &Scene::default(), world, |_| None, |_| None).despawned
+    }
+
     /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
     /// frame with the frame's delta.
     pub fn poll(
