@@ -76,6 +76,7 @@ impl Lobby {
     }
 
     /// The lobby this player is in, once Steam has made or joined it.
+    #[cfg(test)]
     pub fn id(&self) -> Option<u64> {
         self.steam.as_ref()?.lobby()
     }

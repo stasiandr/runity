@@ -583,7 +583,11 @@ impl Peer {
             scene.view = view;
         }
         let camera = runity::scene_camera(&scene.view);
-        let frame = runity::world::scene_frame(&self.world, camera, &scene);
+        let mut frame = runity::world::scene_frame(&self.world, camera, &scene);
+        if self.view.is_some() {
+            // As the tour does: in focus where it looks.
+            frame.post.depth_of_field.focus_distance = camera.target.distance(camera.position);
+        }
         r.overlay.draw_pictures(&r.gpu, &mut r.renderer, &frame);
         r.renderer.render(&r.gpu, &r.target, &frame);
         let mut ui = runity::ui::Ui::new();
@@ -941,6 +945,15 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
     assert!(flat < 0.7, "in hand: {cook_at} / {item_at}");
 }
 
+/// The camera's tour file reads, and has somewhere to go.
+#[test]
+fn the_camera_tour_loads() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    assert!(tour.shots.len() >= 2 && tour.travel > 0.0);
+}
+
+/// Frames from the camera's tour, as the lobby shows it: target/shots/tour_*.png.
 #[test]
 #[ignore = "pictures to look at"]
 fn close_ups() {
@@ -948,18 +961,43 @@ fn close_ups() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
+    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
-    k.open();
-    k.stand(0, TOMATOES, Vec3::Z);
-    k.grab(0);
     k.seconds(0.5);
-    for (name, at, target) in [
-        ("close_front", Vec3::new(0.0, 3.0, 7.0), Vec3::new(0.0, 0.8, 0.0)),
-        ("close_back", Vec3::new(1.0, 3.0, -1.0), Vec3::new(-2.0, 0.8, 3.5)),
-        ("close_left", Vec3::new(-1.0, 2.5, 0.0), Vec3::new(-4.5, 0.8, -1.0)),
-        ("close_window", Vec3::new(-1.5, 3.2, 0.5), Vec3::new(-1.5, 0.6, 4.0)),
-    ] {
-        k.view = Some(runity::scene::View { position: at, target, fov_deg: 55.0 });
-        k.shot(&mut front, name);
+    let leg = tour.hold + tour.travel;
+    for i in 0..tour.shots.len() * 2 {
+        // At each shot, and halfway to the next.
+        let time = (i / 2) as f32 * leg + if i % 2 == 0 { tour.hold * 0.5 } else { tour.hold + tour.travel * 0.5 };
+        let (at, look) = tour.at(time).unwrap();
+        k.view = Some(runity::scene::View { position: at, target: look, fov_deg: 50.0 });
+        k.shot(&mut front, &format!("tour_{i:02}"));
+    }
+}
+
+/// The whole tour as frames, for a video: target/shots/tour/NNNN.png.
+#[test]
+#[ignore = "pictures to look at"]
+fn tour_frames() {
+    let Some(render) = Render::new(960, 540) else { return };
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
+    front.phase = crate::front::Phase::Kitchen;
+    let tour: runity::Tuned<crate::flyby::Tour> = runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let _ = std::fs::remove_dir_all(root.join("target/shots/tour"));
+    std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
+    let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
+    k.seconds(0.5);
+    let rest = runity::scene_camera(&k.live.scene().view);
+    let mut flyby = crate::flyby::Flyby::default();
+    let fps = 20.0;
+    let lap = (tour.hold + tour.travel) * tour.shots.len() as f32;
+    let frames = ((lap + 3.0) * fps) as usize;
+    for i in 0..frames {
+        // In from the room's view, round once, and back as the doors open.
+        let touring = (i as f32) < (lap + 1.5) * fps;
+        let camera = flyby.camera(&tour, touring, 1.0 / fps, rest);
+        k.frame();
+        k.view = Some(runity::scene::View { position: camera.position, target: camera.target, fov_deg: camera.fov_y_degrees });
+        k.shot(&mut front, &format!("tour/{i:04}"));
     }
 }

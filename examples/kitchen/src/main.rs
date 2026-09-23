@@ -55,6 +55,9 @@ mod session;
 /// Steam: the lobby, invites, and the session over Steam's networking.
 mod lobby;
 
+/// The camera's tour of the kitchen while players gather.
+mod flyby;
+
 /// The kitchen's sounds, from what changes in it.
 mod noise;
 
@@ -72,6 +75,9 @@ struct Game {
     live: LiveScene,
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
+    /// The camera's tour while players gather, from `tuning/flyby.ron`.
+    tour: Tuned<flyby::Tour>,
+    flyby: flyby::Flyby,
     layers: Tuned<runity::layers::Layers>,
     /// The menu, the HUD, the results.
     front: front::Front,
@@ -452,10 +458,25 @@ impl shell::Game for Game {
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view));
+        // While players gather — joining, or in the kitchen before the doors
+        // open — the camera tours it.
+        if let Some(Err(problem)) = self.tour.poll(ctx.time.delta()) {
+            eprintln!("{problem}");
+        }
+        let touring = match self.front.phase {
+            front::Phase::Menu => false,
+            front::Phase::Joining => true,
+            front::Phase::Kitchen => !front::round_of(&self.world).is_some_and(|r| r.open),
+        };
+        let camera = self.flyby.camera(&self.tour, touring, ctx.time.delta(), camera);
         let started = std::time::Instant::now();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
-        let frame = runity::world::scene_frame(&self.world, camera, scene);
+        let mut frame = runity::world::scene_frame(&self.world, camera, scene);
+        if self.flyby.flying() {
+            // Close up, the lens focuses on what it looks at.
+            frame.post.depth_of_field.focus_distance = camera.target.distance(camera.position);
+        }
         self.profile.record("frame", started.elapsed());
         // The scene's sounds, heard from where the camera is; the
         // kitchen's, from what changed in it.
@@ -534,6 +555,8 @@ fn main() -> anyhow::Result<()> {
     }
     let tuning = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/world.ron"))
         .map_err(anyhow::Error::msg)?;
+    let tour = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/flyby.ron"))
+        .map_err(anyhow::Error::msg)?;
     let layers = Tuned::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
         .map_err(anyhow::Error::msg)?;
     let mut front = front::Front::load(&runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "ui"))
@@ -582,6 +605,8 @@ fn main() -> anyhow::Result<()> {
         live,
         actions,
         tuning,
+        tour,
+        flyby: flyby::Flyby::default(),
         layers,
         front,
         scene: playing.clone(),
