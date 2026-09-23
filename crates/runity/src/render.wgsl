@@ -998,13 +998,14 @@ struct Weathered {
 
 /// A surface as the weather leaves it: darker and shinier wet, still water
 /// in the level patches, snow on what faces up.
-fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>) -> Weathered {
+fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: vec3<f32>, position: vec3<f32>, pixel: vec2<f32>, is_sand: bool) -> Weathered {
     var out = Weathered(albedo, smoothness, normal, 1.0);
     let w = frame.weather[0];
     // Sand the wind has laid: on what faces up, thick in corners and
     // crevices (where the light from all round cannot get in either), and
-    // against what faces into the wind — ragged at its edges.
-    let drifted = frame.weather[2].x;
+    // against what faces into the wind — ragged at its edges. Not on sand
+    // itself: it is what the drift is made of.
+    let drifted = select(frame.weather[2].x, 0.0, is_sand);
     if drifted > 0.0 {
         var tucked = 0.0;
         if frame.ambient_occlusion.x > 0.5 {
@@ -1549,7 +1550,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     }
 
     // The weather on it: wet, under water, under snow.
-    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position, in.clip_position.xy);
+    let weather = weathered(albedo, smoothness, normal, geometric, in.world_position, in.clip_position.xy, is_sand);
     albedo = weather.albedo;
     smoothness = weather.smoothness;
     normal = weather.normal;
@@ -2087,8 +2088,21 @@ fn night_sky(d: vec3<f32>) -> vec3<f32> {
     let b = dot(d, across);
     let band = exp(-b * b / 0.045);
     let lumps = cloud_noise(d * 9.0) * 0.6 + cloud_noise(d * 23.0) * 0.4;
-    let lanes = 1.0 - 0.75 * smoothstep(0.5, 0.75, cloud_noise(d * 14.0 + 5.0)) * exp(-b * b / 0.006);
-    light += vec3<f32>(0.8, 0.83, 1.0) * band * (0.2 + lumps) * lanes * 0.12;
+    let lanes = 1.0 - 0.6 * smoothstep(0.5, 0.75, cloud_noise(d * 14.0 + 5.0)) * exp(-b * b / 0.006);
+    // The Milky Way: a crowd of faint stars, thick in the band and thinned
+    // by its dust lanes, over a glow of the ones too faint to tell apart —
+    // grain, not smoke. It shows only once the sky is truly dark.
+    let fine = uv * 640.0;
+    let fine_key = vec3<f32>(floor(fine), face * 29.0 + 3.0);
+    var crowd = 0.0;
+    if cloud_hash(fine_key) > 1.0 - 0.3 * band * lanes {
+        let at = vec2<f32>(cloud_hash(fine_key + 2.3), cloud_hash(fine_key + 4.1)) * 0.6 + 0.2;
+        let off = fract(fine) - at;
+        crowd = exp(-dot(off, off) * 60.0) * (0.3 + cloud_hash(fine_key + 8.9)) * 0.1;
+    }
+    let glow = band * (0.35 + 0.65 * lumps) * lanes * 0.045;
+    let dark = frame.night.x * frame.night.x;
+    light += vec3<f32>(0.8, 0.83, 1.0) * (crowd + glow) * dark;
     return light * smoothstep(0.0, 0.25, d.y);
 }
 
