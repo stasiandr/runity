@@ -814,6 +814,91 @@ impl PhysicsWorld {
         found
     }
 
+    /// The rapier body behind an entity, once it has been built.
+    fn body_of(&self, world: &World, entity: hecs::Entity) -> Option<RigidBodyHandle> {
+        world.get::<&BodyHandle>(entity).ok().map(|h| h.0)
+    }
+
+    /// How fast an entity's body moves, metres per second. `None` before
+    /// its body is built, or when it has none.
+    pub fn velocity(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let v = body.linvel();
+        Some(Vec3::new(v.x, v.y, v.z))
+    }
+
+    /// Set how fast a body moves — Unity's `Rigidbody.velocity`. `false`
+    /// when the entity has no body yet.
+    pub fn set_velocity(&mut self, world: &World, entity: hecs::Entity, velocity: Vec3) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        body.set_linvel(vector![velocity.x, velocity.y, velocity.z], true);
+        true
+    }
+
+    /// A kick, all at once, in newton-seconds: a jump, a thrown crate, an
+    /// explosion's shove. Heavier bodies move less for the same kick.
+    /// Unity's `AddForce(…, ForceMode.Impulse)`.
+    pub fn add_impulse(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        body.apply_impulse(vector![impulse.x, impulse.y, impulse.z], true);
+        true
+    }
+
+    /// A push for the coming step, in newtons: wind, a thruster, a current.
+    /// Call it every step it pushes. Unity's `AddForce`.
+    pub fn add_force(&mut self, world: &World, entity: hecs::Entity, force: Vec3) -> bool {
+        let dt = self.parameters.dt;
+        self.add_impulse(world, entity, force * dt)
+    }
+
+    /// Where a ball of `radius` moving from `from` along `direction` first
+    /// touches something — Unity's `SphereCast`: will a body this wide fit
+    /// through, where does a thrown thing land. Triggers are looked
+    /// through. The hit's point is where the ball's centre is then.
+    pub fn sphere_cast(
+        &self,
+        from: Vec3,
+        radius: f32,
+        direction: Vec3,
+        max_distance: f32,
+    ) -> Option<RayHit> {
+        let direction = direction.normalize_or_zero();
+        if direction.length_squared() < 0.5 {
+            return None;
+        }
+        let ball = Ball::new(radius.max(1e-4));
+        let at = Isometry::translation(from.x, from.y, from.z);
+        let (collider, hit) = self.queries.cast_shape(
+            &self.bodies,
+            &self.colliders,
+            &at,
+            &vector![direction.x, direction.y, direction.z],
+            &ball,
+            rapier3d::parry::query::ShapeCastOptions {
+                max_time_of_impact: max_distance,
+                stop_at_penetration: true,
+                ..Default::default()
+            },
+            QueryFilter::default().exclude_sensors(),
+        )?;
+        Some(RayHit {
+            point: from + direction * hit.time_of_impact,
+            distance: hit.time_of_impact,
+            collider: ColliderRef(collider),
+            entity: self.entity_of(collider),
+        })
+    }
+
     /// Bring ray queries up to date with the bodies, without a step: after
     /// [`PhysicsWorld::sync_from_world`], before asking where things are.
     pub fn refresh_queries(&mut self) {
@@ -1928,5 +2013,73 @@ mod tests {
         };
         assert!(throw(false) > 0.5, "tunnelled: {}", throw(false));
         assert!(throw(true) < 0.0, "stopped at the wall: {}", throw(true));
+    }
+
+    #[test]
+    fn a_game_throws_kicks_and_pushes_bodies_and_a_ball_is_cast_through_a_gap() {
+        let (mut physics, mut world, scene) = scene_world(
+            r#"(entities: [
+                (name: "crate", model: "m", body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)),
+                 transform: (position: (0.0, 5.0, 0.0)), physics: (gravity: 0.0)),
+                (name: "heavy", model: "m", body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)),
+                 transform: (position: (5.0, 5.0, 0.0)), physics: (gravity: 0.0, density: 4.0)),
+                (name: "post", model: "m", body: Static, collider: Box(half: (0.1, 3.0, 0.1)),
+                 transform: (position: (0.0, 0.0, -5.0))),
+            ])"#,
+        );
+        let (light, heavy) = (
+            by_id(&world, scene.entities[0].id),
+            by_id(&world, scene.entities[1].id),
+        );
+        assert!(
+            !physics.add_impulse(&world, light, Vec3::X),
+            "no body before the first sync"
+        );
+        physics.sync_from_world(&mut world);
+
+        assert!(physics.set_velocity(&world, light, Vec3::new(0.0, 0.0, 3.0)));
+        run_for(&mut physics, &mut world, 60);
+        let z = world.get::<&WorldTransform>(light).unwrap().0.w_axis.z;
+        assert!((z - 3.0).abs() < 0.05, "3 m/s for a second: {z}");
+
+        // The same kick moves the heavy one a quarter as fast.
+        physics.add_impulse(&world, light, Vec3::new(2.0, 0.0, 0.0));
+        physics.add_impulse(&world, heavy, Vec3::new(2.0, 0.0, 0.0));
+        let (a, b) = (
+            physics.velocity(&world, light).unwrap().x,
+            physics.velocity(&world, heavy).unwrap().x,
+        );
+        assert!((a / b - 4.0).abs() < 0.01, "{a} vs {b}");
+
+        // A force, every step for a second, is its impulse spread out.
+        let before = physics.velocity(&world, heavy).unwrap().y;
+        for _ in 0..60 {
+            physics.add_force(&world, heavy, Vec3::new(0.0, 4.0, 0.0));
+            run_for(&mut physics, &mut world, 1);
+        }
+        let after = physics.velocity(&world, heavy).unwrap().y;
+        let mass = physics
+            .bodies
+            .get(world.get::<&BodyHandle>(heavy).unwrap().0)
+            .unwrap()
+            .mass();
+        assert!(
+            ((after - before) - 4.0 / mass).abs() < 0.01,
+            "{before} -> {after}, mass {mass}"
+        );
+
+        // A ball cast at the post: a thin one passes beside it, a wide one hits.
+        physics.refresh_queries();
+        let from = Vec3::new(0.4, 0.0, 0.0);
+        assert!(
+            physics.sphere_cast(from, 0.2, Vec3::NEG_Z, 10.0).is_none(),
+            "fits past"
+        );
+        let hit = physics
+            .sphere_cast(from, 0.5, Vec3::NEG_Z, 10.0)
+            .expect("too wide");
+        // 0.3 m to the side of the post's edge, so it touches when 0.4 m in
+        // front of its face at z = -4.9: the centre is then at z = -4.5.
+        assert!((hit.distance - 4.5).abs() < 0.05, "{}", hit.distance);
     }
 }
