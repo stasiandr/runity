@@ -302,6 +302,10 @@ pub struct PostProcess {
     /// multisampling the scene is already drawn with: it catches what MSAA
     /// cannot — edges inside a texture, the alpha-cut leaf.
     pub fxaa: bool,
+    /// Temporal antialiasing ([`crate::taa`]): on by default, as HDRP's —
+    /// what multisampling leaves crawling (thin grass, glints, ripples,
+    /// shadow steps) settles over a few frames.
+    pub taa: bool,
     /// A little noise, below a step of the screen's precision, so a gentle
     /// gradient — a sky, a lit wall — does not show its steps as bands.
     /// URP's camera Dithering.
@@ -338,6 +342,7 @@ impl Default for PostProcess {
             chromatic_aberration: 0.0,
             film_grain: 0.0,
             fxaa: false,
+            taa: true,
             dithering: true,
             depth_of_field: crate::lens::DepthOfField::OFF,
             motion_blur: crate::lens::MotionBlur::OFF,
@@ -400,6 +405,7 @@ impl PostProcess {
         chromatic_aberration: 0.0,
         film_grain: 0.0,
         fxaa: false,
+        taa: false,
         dithering: false,
         depth_of_field: crate::lens::DepthOfField::OFF,
         motion_blur: crate::lens::MotionBlur::OFF,
@@ -484,6 +490,7 @@ impl PostProcess {
             chromatic_aberration: f(self.chromatic_aberration, other.chromatic_aberration),
             film_grain: f(self.film_grain, other.film_grain),
             fxaa: if half { other.fxaa } else { self.fxaa },
+            taa: if half { other.taa } else { self.taa },
             dithering: if half {
                 other.dithering
             } else {
