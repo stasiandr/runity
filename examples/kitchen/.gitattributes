@@ -6,19 +6,7 @@
 scenes/**/*.ron merge=runity
 prefabs/**/*.prefab merge=runity
 
-# Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
-# .rmat, .rimport, .obj, .gltf) stay in git, where a diff means something.
-*.png   filter=lfs diff=lfs merge=lfs -text lockable
-*.jpg   filter=lfs diff=lfs merge=lfs -text lockable
-*.jpeg  filter=lfs diff=lfs merge=lfs -text lockable
-*.tga   filter=lfs diff=lfs merge=lfs -text lockable
-*.bmp   filter=lfs diff=lfs merge=lfs -text lockable
-*.exr   filter=lfs diff=lfs merge=lfs -text lockable
-*.hdr   filter=lfs diff=lfs merge=lfs -text lockable
-*.psd   filter=lfs diff=lfs merge=lfs -text lockable
-*.wav   filter=lfs diff=lfs merge=lfs -text lockable
-*.ogg   filter=lfs diff=lfs merge=lfs -text lockable
-*.glb   filter=lfs diff=lfs merge=lfs -text lockable
-*.bin   filter=lfs diff=lfs merge=lfs -text lockable
-*.fbx   filter=lfs diff=lfs merge=lfs -text lockable
-*.blend filter=lfs diff=lfs merge=lfs -text lockable
+# Binary sources (models, textures, sounds) are plain git here, like the
+# rest of the engine's repository, which does not use Git LFS: they are a
+# few megabytes, and LFS is off for this repository on GitHub. A project of
+# your own from `runity new` stores them in LFS.
