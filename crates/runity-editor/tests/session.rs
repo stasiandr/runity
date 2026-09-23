@@ -4609,3 +4609,35 @@ fn a_fence_grows_posts_along_its_spline_and_the_file_keeps_only_the_line() {
         "the posts are not in the file"
     );
 }
+
+#[test]
+fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
+    let Some((mut session, _)) = open("background") else {
+        return;
+    };
+    // Whatever the new project's starter assets needed, done first.
+    session.reload_assets();
+    let project = session.project().unwrap().clone();
+    std::fs::write(
+        project.materials().join("slate.rmat"),
+        "(color: \"#445566\")\n",
+    )
+    .unwrap();
+
+    // The first poll starts the update and returns at once.
+    assert_eq!(session.poll_assets(), None, "started, not waited for");
+    let started = std::time::Instant::now();
+    let done = loop {
+        if let Some(n) = session.poll_assets() {
+            break n;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(done, 1, "the new material");
+    assert!(!session.importing());
+    assert!(session.palette().iter().any(|(name, _)| name == "slate"));
+}

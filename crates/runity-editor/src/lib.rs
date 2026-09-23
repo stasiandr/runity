@@ -89,6 +89,13 @@ pub struct Session {
     library_dir: Option<PathBuf>,
     /// Where `.rmat` sources go: the project's `materials/`.
     material_dir: Option<PathBuf>,
+    /// A library update running beside the frame ([`Session::poll_assets`]):
+    /// a `.blend` takes Blender a second or more, and the editor keeps
+    /// drawing meanwhile.
+    syncing: Option<(
+        std::thread::JoinHandle<Vec<runity_import::Reimported>>,
+        std::time::Instant,
+    )>,
     /// Prefabs a scene's instances name: the project's `prefabs/`.
     prefabs: runity::Prefabs,
     /// Where those came from, so the editor can write a new one back.
@@ -295,6 +302,7 @@ impl Session {
             library: None,
             library_dir: None,
             material_dir: None,
+            syncing: None,
             prefabs: runity::Prefabs::new(),
             prefab_dir: None,
             instanced: runity::Instanced::default(),
@@ -2555,31 +2563,88 @@ impl Session {
             .map(|(point, _, _)| point)
     }
 
+    /// [`Session::reload_assets`] without waiting: the update runs on a
+    /// thread of its own, and a later call picks up what it did. What a
+    /// window calls every half second, so that saving a `.blend` — which
+    /// Blender takes a second or more to read — does not stop the frame.
+    /// `Some(n)` when an update finished, with how many assets it rebuilt.
+    pub fn poll_assets(&mut self) -> Option<usize> {
+        let Some(project) = self.project.clone() else {
+            let n = self.reload_assets();
+            return (n > 0).then_some(n);
+        };
+        match self.syncing.take() {
+            Some((job, _)) if job.is_finished() => {
+                let synced = job.join().unwrap_or_default();
+                Some(self.apply_synced(synced))
+            }
+            Some(running) => {
+                self.syncing = Some(running);
+                None
+            }
+            None => {
+                self.syncing = Some((
+                    std::thread::spawn(move || runity_import::sync(&project)),
+                    std::time::Instant::now(),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Whether a library update is running in the background.
+    pub fn importing(&self) -> bool {
+        self.importing_for().is_some()
+    }
+
+    /// How long the library update running in the background has taken so
+    /// far: a window says so once it is long enough to notice.
+    pub fn importing_for(&self) -> Option<std::time::Duration> {
+        self.syncing
+            .as_ref()
+            .filter(|(job, _)| !job.is_finished())
+            .map(|(_, started)| started.elapsed())
+    }
+
+    /// Take in what a library update did: its failures said, and the
+    /// library and prefabs read again if anything was rebuilt.
+    fn apply_synced(&mut self, synced: Vec<runity_import::Reimported>) -> usize {
+        let changed = synced.iter().filter(|r| r.result.is_ok()).count();
+        for failed in &synced {
+            if let Err(e) = &failed.result {
+                self.console.say(
+                    console::Level::Error,
+                    format!("{}: {e}", failed.source.display()),
+                );
+            }
+        }
+        if changed > 0 {
+            self.solids = None;
+            // A scene source (a glTF level, a .blend) rebuilds a prefab too.
+            if let Some(project) = &self.project {
+                self.prefabs = runity::Prefabs::of(project).0;
+            }
+            // New and moved assets are files the open library has never
+            // seen, so it is read again rather than refreshed.
+            let _ = self.reopen_library();
+        }
+        changed
+    }
+
     pub fn reload_assets(&mut self) -> usize {
         self.solids = None;
         // In a project the sources are the truth: whatever changed, moved
         // or appeared in `assets/` and `materials/` is rebuilt first, and the
         // library read again if anything was. Without one there are no
         // sources to look at, only a library to re-read.
-        if let Some(project) = &self.project {
-            let synced = runity_import::sync(project);
-            let changed = synced.iter().filter(|r| r.result.is_ok()).count();
-            for failed in &synced {
-                if let Err(e) = &failed.result {
-                    self.console.say(
-                        console::Level::Error,
-                        format!("{}: {e}", failed.source.display()),
-                    );
-                }
+        if let Some(project) = self.project.clone() {
+            // One update at a time: one already running is waited for.
+            let mut changed = 0;
+            if let Some((job, _)) = self.syncing.take() {
+                changed += self.apply_synced(job.join().unwrap_or_default());
             }
-            if changed > 0 {
-                // A scene source (a glTF level) rebuilds a prefab too.
-                self.prefabs = runity::Prefabs::of(project).0;
-                // New and moved assets are files the open library has never
-                // seen, so it is read again rather than refreshed.
-                let _ = self.reopen_library();
-            }
-            return changed;
+            let synced = runity_import::sync(&project);
+            return changed + self.apply_synced(synced);
         }
         let Some(library) = self.library.as_mut() else {
             return 0;

@@ -267,6 +267,8 @@ pub struct Studio {
     maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
+    /// A long background import has been announced.
+    import_said: bool,
     /// The foliage brush (docs/artist.md): on, what it paints, how big it
     /// is, and the stroke under way — when the last dab was and how many
     /// undo steps the stroke has made, to be one.
@@ -605,6 +607,7 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            import_said: false,
             foliage: false,
             foliage_button: foliage,
             foliage_what: None,
@@ -1840,12 +1843,24 @@ impl Studio {
             Ok(_) => {}
             Err(e) => self.session.say(Level::Error, e.to_string()),
         }
-        let n = self.session.reload_assets();
-        if n > 0 {
-            self.session.say(
-                Level::Info,
-                format!("{n} assets changed on disk and were reloaded"),
-            );
+        if let Some(n) = self.session.poll_assets() {
+            self.import_said = false;
+            if n > 0 {
+                self.session.say(
+                    Level::Info,
+                    format!("{n} assets changed on disk and were reloaded"),
+                );
+            }
+        } else if !self.import_said
+            && self
+                .session
+                .importing_for()
+                .is_some_and(|t| t.as_secs_f32() > 1.0)
+        {
+            // A .blend being read by Blender: the view keeps going.
+            self.import_said = true;
+            self.session
+                .say(Level::Info, "importing changed assets in the background…");
         }
     }
 
