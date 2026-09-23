@@ -2049,6 +2049,19 @@ impl Session {
     /// The tree needs this to say so: an instance is one row whose insides
     /// belong to a file, and a row that looks like every other row hides the
     /// difference until someone tries to move a stone and moves twelve.
+    /// Whether a model by this name exists: builtin, imported, or a Poly
+    /// Shape — what a new asset's name must not clash with.
+    pub fn has_model(&self, name: &str) -> bool {
+        self.bounds_of(name).is_some()
+    }
+
+    /// The model an entity draws, when it draws one of its own.
+    pub fn entity_model(&self, id: EntityId) -> Option<String> {
+        self.line(id)
+            .map(|l| l.model.clone())
+            .filter(|m| !m.is_empty())
+    }
+
     pub fn entity_prefab(&self, id: EntityId) -> Option<String> {
         self.history
             .scene()

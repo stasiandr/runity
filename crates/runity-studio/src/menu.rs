@@ -74,6 +74,17 @@ pub enum Action {
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,
+    /// Blockout: a floor or a wall drawn as a Poly Shape in front of the view.
+    PolyFloor,
+    PolyWall,
+    /// Push one face of the selection out (or in) by metres.
+    PushFace(runity::edit::Face, f32),
+    /// Copies of the selection in a row along X, its own width apart.
+    Array(usize),
+    /// The selection's model or prefab scattered around the view's centre.
+    Scatter,
+    /// Line the selection up along an axis.
+    Align(usize, runity_editor::Align),
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -188,6 +199,51 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Grid", Action::ToggleGrid),
                 item("Colliders", Action::ToggleColliders),
                 item("Snap", Action::ToggleSnap),
+            ],
+        ),
+        (
+            "Tools",
+            vec![
+                item("Poly Shape: Floor", Action::PolyFloor),
+                item("Poly Shape: Wall", Action::PolyWall),
+                MenuItem::separator(),
+                item(
+                    "Push Top +0.5",
+                    Action::PushFace(runity::edit::Face::PosY, 0.5),
+                ),
+                item(
+                    "Pull Top −0.5",
+                    Action::PushFace(runity::edit::Face::PosY, -0.5),
+                ),
+                item(
+                    "Push Right +0.5",
+                    Action::PushFace(runity::edit::Face::PosX, 0.5),
+                ),
+                item(
+                    "Push Left +0.5",
+                    Action::PushFace(runity::edit::Face::NegX, 0.5),
+                ),
+                item(
+                    "Push Front +0.5",
+                    Action::PushFace(runity::edit::Face::PosZ, 0.5),
+                ),
+                item(
+                    "Push Back +0.5",
+                    Action::PushFace(runity::edit::Face::NegZ, 0.5),
+                ),
+                MenuItem::separator(),
+                item("Array: 4 copies along X", Action::Array(4)),
+                item("Scatter 20 around the view", Action::Scatter),
+                MenuItem::separator(),
+                item(
+                    "Align X centres",
+                    Action::Align(0, runity_editor::Align::Center),
+                ),
+                item("Align bottoms", Action::Align(1, runity_editor::Align::Min)),
+                item(
+                    "Align Z centres",
+                    Action::Align(2, runity_editor::Align::Center),
+                ),
             ],
         ),
         (

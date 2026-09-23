@@ -19,6 +19,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "p
 runity = { version = "0.1.0", path = "../runity", features = ["desktop-shell"] }
 runity-cli = { version = "0.1.0", path = "../runity-cli" }
 runity-editor = { version = "0.1.0", path = "../runity-editor" }
+runity-import = { version = "0.1.0", path = "../runity-import" }
 runity-ui = { version = "0.1.0", path = "../runity-ui" }
 wgpu = "30"
 winit = "0.30.13"

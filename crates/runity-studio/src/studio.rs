@@ -1378,6 +1378,62 @@ impl Studio {
                     s.drop_asset(&name, w / 2, h / 2).map_err(e)?;
                 }
                 Action::ClearConsole => s.clear_console(),
+                Action::PolyFloor | Action::PolyWall => {
+                    let standing = action == Action::PolyWall;
+                    let base = if standing { "wall" } else { "floor" };
+                    // A name no asset has yet: floor, floor_2, floor_3…
+                    let mut name = base.to_string();
+                    let mut n = 1;
+                    while s.has_model(&name) {
+                        n += 1;
+                        name = format!("{base}_{n}");
+                    }
+                    let source = runity_import::poly::PolySource {
+                        points: if standing {
+                            vec![(-2.0, 0.0), (2.0, 0.0), (2.0, 3.0), (-2.0, 3.0)]
+                        } else {
+                            vec![(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
+                        },
+                        height: if standing { 0.2 } else { 0.2 },
+                        standing,
+                        holes: Vec::new(),
+                    };
+                    let at = s.camera().target;
+                    s.poly_shape(&name, &source, at).map_err(e)?;
+                }
+                Action::PushFace(face, metres) => {
+                    let ids = s.selection();
+                    if ids.is_empty() {
+                        return Err("select something to push a face of".into());
+                    }
+                    for id in ids {
+                        s.push_face(id, face, metres).map_err(e)?;
+                    }
+                }
+                Action::Array(count) => {
+                    let id = s.selected().ok_or("select something to repeat")?;
+                    let width = s
+                        .world_bounds(id)
+                        .map(|(lo, hi)| (hi.x - lo.x).max(0.1))
+                        .unwrap_or(1.0);
+                    s.array(id, count, runity::glam::Vec3::new(width, 0.0, 0.0))
+                        .map_err(e)?;
+                }
+                Action::Scatter => {
+                    let id = s
+                        .selected()
+                        .ok_or("select something to scatter copies of")?;
+                    let what = s
+                        .entity_prefab(id)
+                        .or_else(|| s.entity_model(id))
+                        .ok_or("the selection has no model or prefab to scatter")?;
+                    let centre = s.camera().target;
+                    s.scatter(None, &what, centre, &runity::edit::Scatter::default())
+                        .map_err(e)?;
+                }
+                Action::Align(axis, to) => {
+                    s.align_selection(axis, to).map_err(e)?;
+                }
             }
             Ok(())
         }

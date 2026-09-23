@@ -463,3 +463,32 @@ fn an_asset_clicked_in_the_project_is_shown_in_the_inspector() {
     assert!(s.ui.find("asset preview").is_none());
     assert!(s.ui.find("position x").is_some());
 }
+
+fn menu(s: &mut Studio, bar: &str, entry: &str) {
+    click(s, &format!("menu bar {bar}"));
+    click(s, &format!("menu {entry}"));
+}
+
+#[test]
+fn blockout_from_the_tools_menu() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let count = s.session.entity_count();
+    menu(&mut s, "Tools", "Poly Shape: Floor");
+    assert_eq!(s.session.entity_count(), count + 1, "a floor");
+    let floor = s.session.selected().unwrap();
+    let (lo, hi) = s.session.world_bounds(floor).unwrap();
+    menu(&mut s, "Tools", "Push Top +0.5");
+    let (_, hi2) = s.session.world_bounds(floor).unwrap();
+    assert!((hi2.y - hi.y - 0.5).abs() < 0.05, "{hi:?} -> {hi2:?}");
+    let _ = lo;
+    menu(&mut s, "Tools", "Array: 4 copies along X");
+    assert_eq!(s.session.entity_count(), count + 5);
+    click(&mut s, "line crate");
+    menu(&mut s, "Tools", "Scatter 20 around the view");
+    assert!(
+        s.session.entity_count() >= count + 5 + 20,
+        "scattered crates"
+    );
+}
