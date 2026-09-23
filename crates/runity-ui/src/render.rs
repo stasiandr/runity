@@ -13,7 +13,8 @@
 use std::collections::HashMap;
 
 use glyphon::{
-    Cache, ColorMode, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Buffer, Cache, ColorMode, ContentType, CustomGlyph, Metrics, RasterizeCustomGlyphRequest,
+    RasterizedCustomGlyph, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
 use runity::gpu::Gpu;
@@ -60,6 +61,10 @@ pub struct UiRenderer {
     viewport: Viewport,
     swash: SwashCache,
     images: HashMap<ImageId, wgpu::BindGroup>,
+    /// The text area an icon hangs from: icons have no text.
+    empty: Buffer,
+    /// Icons parsed so far, by number.
+    svgs: HashMap<u16, resvg::usvg::Tree>,
     /// What is on the GPU: the UI's revision and the target's size.
     uploaded: Option<(u64, u32, u32)>,
 }
@@ -209,6 +214,8 @@ impl UiRenderer {
             viewport,
             swash: SwashCache::new(),
             images: HashMap::new(),
+            empty: Buffer::new_empty(Metrics::new(1.0, 1.0)),
+            svgs: HashMap::new(),
             uploaded: None,
         }
     }
@@ -279,7 +286,7 @@ impl UiRenderer {
                 rects: start..end,
                 pictures,
                 text: i,
-                has_text: !layer.texts.is_empty(),
+                has_text: !layer.texts.is_empty() || !layer.icons.is_empty(),
             });
         }
         if shapes.len() as u64 > self.capacity {
@@ -307,33 +314,84 @@ impl UiRenderer {
             ));
         }
         let (fonts, buffers) = ui.text_parts();
+        let bounds_of = |clip: Rect| {
+            let c = physical(clip, scale);
+            TextBounds {
+                left: c[0].floor() as i32,
+                top: c[1].floor() as i32,
+                right: (c[0] + c[2]).ceil() as i32,
+                bottom: (c[1] + c[3]).ceil() as i32,
+            }
+        };
+        let color = |c: crate::Color| glyphon::Color::rgba(c.r, c.g, c.b, c.a);
+        // Icons are glyphon's custom glyphs: one per icon, in a text area
+        // of its own so that it is clipped on its own.
+        let icon_glyphs: Vec<Vec<[CustomGlyph; 1]>> = layers
+            .iter()
+            .map(|layer| {
+                layer
+                    .icons
+                    .iter()
+                    .map(|icon| {
+                        [CustomGlyph {
+                            id: icon.icon,
+                            left: 0.0,
+                            top: 0.0,
+                            width: icon.rect.width,
+                            height: icon.rect.height,
+                            color: Some(color(icon.color)),
+                            snap_to_physical_pixel: true,
+                            metadata: 0,
+                        }]
+                    })
+                    .collect()
+            })
+            .collect();
+        let Self {
+            texts,
+            atlas,
+            viewport,
+            swash,
+            empty,
+            svgs,
+            ..
+        } = self;
         for (i, layer) in layers.iter().enumerate() {
-            let areas = layer.texts.iter().filter_map(|t| {
-                let buffer = buffers.get(t.node)?;
-                let clip = physical(t.clip, scale);
-                Some(TextArea {
-                    buffer,
-                    left: t.x * scale,
-                    top: t.y * scale,
-                    scale,
-                    bounds: TextBounds {
-                        left: clip[0].floor() as i32,
-                        top: clip[1].floor() as i32,
-                        right: (clip[0] + clip[2]).ceil() as i32,
-                        bottom: (clip[1] + clip[3]).ceil() as i32,
-                    },
-                    default_color: glyphon::Color::rgba(t.color.r, t.color.g, t.color.b, t.color.a),
-                    custom_glyphs: &[],
+            let mut areas: Vec<TextArea> = layer
+                .texts
+                .iter()
+                .filter_map(|t| {
+                    Some(TextArea {
+                        buffer: buffers.get(t.node)?,
+                        left: t.x * scale,
+                        top: t.y * scale,
+                        scale,
+                        bounds: bounds_of(t.clip),
+                        default_color: color(t.color),
+                        custom_glyphs: &[],
+                    })
                 })
-            });
-            if let Err(e) = self.texts[i].prepare(
+                .collect();
+            for (icon, glyph) in layer.icons.iter().zip(&icon_glyphs[i]) {
+                areas.push(TextArea {
+                    buffer: empty,
+                    left: icon.rect.x * scale,
+                    top: icon.rect.y * scale,
+                    scale,
+                    bounds: bounds_of(icon.clip),
+                    default_color: color(icon.color),
+                    custom_glyphs: glyph,
+                });
+            }
+            if let Err(e) = texts[i].prepare_with_custom(
                 &gpu.device,
                 &gpu.queue,
                 fonts,
-                &mut self.atlas,
-                &self.viewport,
+                atlas,
+                viewport,
                 areas,
-                &mut self.swash,
+                swash,
+                |request| rasterize_icon(svgs, request),
             ) {
                 eprintln!("runity-ui: text did not fit the atlas: {e}");
             }
@@ -419,4 +477,30 @@ impl UiRenderer {
         }
         gpu.queue.submit(Some(encoder.finish()));
     }
+}
+
+/// Draw an icon at the size the atlas asks for, as a mask the glyph's
+/// colour fills.
+fn rasterize_icon(
+    svgs: &mut HashMap<u16, resvg::usvg::Tree>,
+    request: RasterizeCustomGlyphRequest,
+) -> Option<RasterizedCustomGlyph> {
+    if !svgs.contains_key(&request.id) {
+        let (_, data) = crate::icons::ICONS.get(request.id as usize)?;
+        let tree = resvg::usvg::Tree::from_data(data, &Default::default()).ok()?;
+        svgs.insert(request.id, tree);
+    }
+    let svg = svgs.get(&request.id)?;
+    let size = svg.size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(request.width as u32, request.height as u32)?;
+    let transform = resvg::usvg::Transform::from_scale(
+        request.width as f32 / size.width(),
+        request.height as f32 / size.height(),
+    )
+    .post_translate(request.x_bin.as_float(), request.y_bin.as_float());
+    resvg::render(svg, transform, &mut pixmap.as_mut());
+    Some(RasterizedCustomGlyph {
+        data: pixmap.pixels().iter().map(|p| p.alpha()).collect(),
+        content_type: ContentType::Mask,
+    })
 }

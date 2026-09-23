@@ -6894,6 +6894,7 @@ dependencies = [
  "glyphon",
  "image",
  "pollster 1.0.1",
+ "resvg 0.45.1",
  "runity",
  "taffy 0.14.0",
  "wgpu 30.0.1",

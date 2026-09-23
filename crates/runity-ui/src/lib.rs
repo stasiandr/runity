@@ -18,6 +18,8 @@
 //!
 //! `docs/ui.md` is the card this implements.
 
+mod field;
+mod icons;
 pub mod render;
 mod style;
 
@@ -29,6 +31,7 @@ use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
 use runity::input::{InputEvent, Key, MouseButton};
 use taffy::{AvailableSpace, TaffyTree};
 
+pub use field::Clipboard;
 pub use style::{Color, Look, Sense, Style, TextStyle};
 
 /// The font every UI is set in unless told otherwise: Inter, shipped with
@@ -66,7 +69,7 @@ impl Rect {
         (self.x + self.width / 2.0, self.y + self.height / 2.0)
     }
 
-    fn intersect(&self, other: &Rect) -> Rect {
+    pub(crate) fn intersect(&self, other: &Rect) -> Rect {
         let x = self.x.max(other.x);
         let y = self.y.max(other.y);
         let right = (self.x + self.width).min(other.x + other.width);
@@ -143,6 +146,13 @@ pub enum Event {
         x: f32,
         y: f32,
     },
+    /// A text field's text as it is being typed.
+    Changed(String),
+    /// A text field was committed: Enter, Tab, or the keyboard going
+    /// elsewhere after a change.
+    Submit(String),
+    /// Escape in a text field: it went back to what it said before.
+    Cancel,
 }
 
 /// A text run's shaped lines, kept between frames.
@@ -168,6 +178,11 @@ struct Node {
     keyed: HashMap<u64, NodeId>,
     /// Starts a new layer: drawn over everything before it, text and all.
     layer: bool,
+    /// An icon, by its number in the built-in set.
+    icon: Option<u16>,
+    /// What makes it a text field: the caret, the selection, what it said
+    /// when it got the keyboard.
+    field: Option<field::FieldState>,
 }
 
 impl Node {
@@ -182,6 +197,8 @@ impl Node {
             clip: Rect::EVERYWHERE,
             keyed: HashMap::new(),
             layer: false,
+            icon: None,
+            field: None,
         }
     }
 }
@@ -223,6 +240,16 @@ pub struct Layer {
     pub rects: Vec<RectPaint>,
     pub images: Vec<ImagePaint>,
     pub texts: Vec<TextPaint>,
+    pub icons: Vec<IconPaint>,
+}
+
+/// An icon, where to draw it and in what colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IconPaint {
+    pub icon: u16,
+    pub rect: Rect,
+    pub clip: Rect,
+    pub color: Color,
 }
 
 /// A pointer press that may become a click or a drag.
@@ -262,6 +289,7 @@ pub struct Ui {
     ctrl: bool,
     alt: bool,
     command: bool,
+    clipboard: Box<dyn Clipboard>,
 }
 
 /// How far a press moves before it is a drag rather than a click.
@@ -316,6 +344,7 @@ impl Ui {
             ctrl: false,
             alt: false,
             command: false,
+            clipboard: Box::new(field::LocalClipboard::default()),
         }
     }
 
@@ -375,6 +404,42 @@ impl Ui {
         let id = self.add(parent, style);
         self.set_text(id, text);
         id
+    }
+
+    /// A one-line text field showing `text`. Typing into it is handled
+    /// here — caret, selection, clipboard, Home and End — and reported as
+    /// [`Event::Changed`] while typing, [`Event::Submit`] on Enter, Tab or
+    /// leaving it changed, [`Event::Cancel`] on Escape.
+    pub fn add_field(&mut self, parent: NodeId, style: Style, text: &str) -> NodeId {
+        let style = style.focusable().nowrap();
+        let id = self.add(parent, style);
+        self.node_mut(id).field = Some(field::FieldState::default());
+        self.set_text(id, text);
+        id
+    }
+
+    /// A built-in icon by name (`"play"`, `"move-3d"`), drawn in the
+    /// node's text colour at the node's size. `None` for a name the set
+    /// does not have.
+    pub fn add_icon(&mut self, parent: NodeId, style: Style, name: &str) -> NodeId {
+        let id = self.add(parent, style);
+        self.set_icon(id, name);
+        id
+    }
+
+    /// Show an icon, or change which one.
+    pub fn set_icon(&mut self, id: NodeId, name: &str) {
+        let icon = icons::find(name);
+        debug_assert!(icon.is_some(), "no icon called {name:?}");
+        if self.node(id).icon != icon {
+            self.node_mut(id).icon = icon;
+            self.paint_dirty = true;
+        }
+    }
+
+    /// The names of the built-in icons.
+    pub fn icon_names() -> impl Iterator<Item = &'static str> {
+        icons::ICONS.iter().map(|(n, _)| *n)
     }
 
     /// A new node that shows a picture, stretched to its box.
@@ -626,8 +691,12 @@ impl Ui {
             self.layers.push(Layer::default());
             self.order.clear();
             self.paint_node(NodeId(self.root), 0.0, 0.0, Rect::EVERYWHERE, 1.0);
-            self.layers
-                .retain(|l| !(l.rects.is_empty() && l.texts.is_empty() && l.images.is_empty()));
+            self.layers.retain(|l| {
+                !(l.rects.is_empty()
+                    && l.texts.is_empty()
+                    && l.images.is_empty()
+                    && l.icons.is_empty())
+            });
             self.paint_dirty = false;
             self.revision += 1;
         }
@@ -693,6 +762,9 @@ impl Ui {
             look.border
         };
         let image = node.image;
+        let icon = node.icon;
+        let is_field = node.field.is_some();
+        let focused = self.focused == Some(id);
         let has_text = node.text.is_some();
         let text_color = node.style.text.color;
         let scroll = node.scroll;
@@ -715,14 +787,32 @@ impl Ui {
                 radius: look.radius,
             });
         }
+        if let Some(icon) = icon {
+            layer.icons.push(IconPaint {
+                icon,
+                rect,
+                clip,
+                color: fade(text_color),
+            });
+        }
         if has_text {
             let pad = &layout.padding;
             let border_w = &layout.border;
+            let x = rect.x + pad.left + border_w.left;
+            let y = rect.y + pad.top + border_w.top;
+            let inner = Rect {
+                x,
+                y: rect.y,
+                width: layout.content_box_width(),
+                height: rect.height,
+            };
+            let offset = self.paint_field(id, x, y, inner, clip, focused);
+            let layer = self.layers.last_mut().expect("there is always a layer");
             layer.texts.push(TextPaint {
                 node: id,
-                x: rect.x + pad.left + border_w.left,
-                y: rect.y + pad.top + border_w.top,
-                clip: clip.intersect(&rect),
+                x: x - offset,
+                y,
+                clip: clip.intersect(&if is_field { inner } else { rect }),
                 color: fade(text_color),
             });
         }
@@ -796,10 +886,12 @@ impl Ui {
             return;
         }
         if let Some(old) = self.focused {
+            self.field_blur(old);
             self.events.push((old, Event::Blur));
         }
         self.focused = id;
         if let Some(new) = id {
+            self.field_focus(new);
             self.events.push((new, Event::Focus));
         }
         self.paint_dirty = true;
@@ -848,8 +940,12 @@ impl Ui {
                     if !press.dragging && moved > DRAG_SLOP {
                         press.dragging = true;
                     }
-                    if press.dragging {
-                        let node = press.node;
+                }
+                if let Some(press) = self.press {
+                    let node = press.node;
+                    if press.dragging && self.node(node).field.is_some() {
+                        self.field_drag(node, *x);
+                    } else if press.dragging {
                         self.events.push((
                             node,
                             Event::Drag {
@@ -889,6 +985,10 @@ impl Ui {
                     ));
                     let focus = self.sensing(node, |s| s.focus);
                     self.focus(focus);
+                    if self.node(node).field.is_some() {
+                        let extend = self.shift;
+                        self.field_press(node, x, extend);
+                    }
                     self.paint_dirty = true;
                 }
                 true
@@ -919,6 +1019,9 @@ impl Ui {
                         _ => 1,
                     };
                     self.last_click = Some((press.node, now, count));
+                    if count >= 2 && self.node(press.node).field.is_some() {
+                        self.field_select_all(press.node);
+                    }
                     self.events.push((
                         press.node,
                         Event::Click {
@@ -950,6 +1053,11 @@ impl Ui {
             }
             InputEvent::KeyDown(key) => {
                 self.set_modifier(*key, true);
+                if let Some(node) = self.focused.filter(|f| self.node(*f).field.is_some()) {
+                    if self.field_key(node, *key) {
+                        return true;
+                    }
+                }
                 match self.focused {
                     Some(node) => {
                         self.events.push((node, Event::KeyDown(*key)));
@@ -969,6 +1077,10 @@ impl Ui {
                 }
             }
             InputEvent::Text(text) => match self.focused {
+                Some(node) if self.node(node).field.is_some() => {
+                    self.field_type(node, text);
+                    true
+                }
                 Some(node) => {
                     self.events.push((node, Event::Text(text.clone())));
                     true

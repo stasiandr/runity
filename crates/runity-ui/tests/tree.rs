@@ -259,3 +259,77 @@ fn a_thousand_lines_lay_out_once_and_then_cost_nothing() {
     assert!(idle.as_micros() < 50, "an idle frame took {idle:?}");
     eprintln!("1000 lines: first paint {first:?}, idle {idle:?}");
 }
+
+#[test]
+fn a_field_types_selects_pastes_and_commits() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let field = ui.add_field(root, Style::row().size(200.0, 24.0).padding_x(6.0), "2.5");
+    let other = ui.add(root, Style::row().size(50.0, 24.0).focusable());
+    ui.click(field);
+    assert_eq!(ui.focused(), Some(field));
+    ui.events();
+
+    // Select all, type over it: the selection goes, the typing stays.
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    ui.handle(&InputEvent::KeyDown(Key::A));
+    ui.handle(&InputEvent::KeyUp(Key::A));
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert_eq!(ui.field_selection(field), 0..3);
+    ui.handle(&InputEvent::Text("7".into()));
+    ui.handle(&InputEvent::Text("ё".into()));
+    assert_eq!(ui.text(field), Some("7ё"));
+    // Backspace takes one character, not one byte.
+    ui.handle(&InputEvent::KeyDown(Key::Backspace));
+    assert_eq!(ui.text(field), Some("7"));
+    let events = ui.events();
+    assert!(
+        events.contains(&(field, Event::Changed("7".into()))),
+        "{events:?}"
+    );
+    assert!(
+        !events.iter().any(|(_, e)| matches!(e, Event::KeyDown(_))),
+        "a field's keys are the field's"
+    );
+
+    // Copy, paste twice.
+    ui.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    for key in [Key::A, Key::C, Key::Right, Key::V, Key::V] {
+        ui.handle(&InputEvent::KeyDown(key));
+    }
+    ui.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert_eq!(ui.text(field), Some("777"));
+
+    // Enter commits; Escape goes back to what was committed.
+    ui.handle(&InputEvent::KeyDown(Key::Enter));
+    assert!(ui.events().contains(&(field, Event::Submit("777".into()))));
+    ui.handle(&InputEvent::Text("8".into()));
+    ui.handle(&InputEvent::KeyDown(Key::Escape));
+    assert_eq!(ui.text(field), Some("777"));
+    assert_eq!(ui.focused(), None);
+
+    // Leaving it changed is a commit too.
+    ui.click(field);
+    ui.handle(&InputEvent::Text("9".into()));
+    ui.click(other);
+    let events = ui.events();
+    assert!(
+        events
+            .iter()
+            .any(|(n, e)| *n == field && matches!(e, Event::Submit(t) if t.contains('9'))),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn every_icon_has_a_name_and_a_node_shows_one() {
+    assert!(Ui::icon_names().count() > 50);
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let play = ui.add_icon(root, Style::default().size(14.0, 14.0), "play");
+    let layers = ui.paint().to_vec();
+    assert!(layers
+        .iter()
+        .any(|l| l.icons.iter().any(|i| i.rect.width == 14.0)));
+    let _ = play;
+}

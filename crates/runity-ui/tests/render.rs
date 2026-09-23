@@ -83,6 +83,36 @@ fn panel(ui: &mut Ui) {
             .background(TEXT.alpha(16)),
     );
     ui.set_name(divider, "divider");
+    let tools = ui.add(card, Style::row().gap(4.0).height(26.0).fixed());
+    for name in ["move-3d", "rotate-3d", "scale-3d", "play", "eye", "lock"] {
+        let b = ui.add(
+            tools,
+            Style::row()
+                .size(26.0, 26.0)
+                .center()
+                .radius(8.0)
+                .border(1.0, TEXT.alpha(16)),
+        );
+        ui.add_icon(
+            b,
+            Style::default().size(14.0, 14.0).text_color(TEXT.alpha(70)),
+            name,
+        );
+    }
+    let field = ui.add_field(
+        card,
+        Style::row()
+            .height(24.0)
+            .fixed()
+            .padding_x(6.0)
+            .radius(8.0)
+            .background(BG)
+            .border(1.0, ACCENT)
+            .text_size(12.5),
+        "Position 2.6",
+    );
+    ui.set_name(field, "field");
+    ui.focus(Some(field));
     let button = ui.add(
         card,
         Style::row()
@@ -107,7 +137,7 @@ fn panel(ui: &mut Ui) {
 #[test]
 fn a_nocturne_panel_draws_as_the_design_file_says() {
     let Some(gpu) = gpu() else { return };
-    let (w, h) = (480u32, 240u32);
+    let (w, h) = (480u32, 300u32);
     let scale = 1.0;
     let target = OffscreenTarget::new(&gpu, w, h);
     // What the Scene view would be: another texture on the same device,

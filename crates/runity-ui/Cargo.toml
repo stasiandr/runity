@@ -16,6 +16,7 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = "0.32"
 glyphon = "0.12.0"
 runity = { version = "0.1.0", path = "../runity", default-features = false }
+resvg = { version = "0.45", default-features = false }
 taffy = "0.14"
 wgpu = "30"
 

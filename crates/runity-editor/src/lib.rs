@@ -98,6 +98,9 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
+    /// Whether [`Session::render`] reads the frame back into `pixels`. A
+    /// window on the same device shows the texture itself and turns this off.
+    readback: bool,
     /// Which entity the gizmo is on.
     ///
     /// By ID, so it survives edits to everything else. When it was an index
@@ -283,6 +286,7 @@ impl Session {
             uploaded: Vec::new(),
             camera: Camera::default(),
             pixels: Vec::new(),
+            readback: true,
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
@@ -2633,7 +2637,32 @@ impl Session {
             ));
         }
         self.renderer.render(&self.gpu, &self.target, &frame);
-        self.pixels = self.target.read_rgba(&self.gpu);
+        if self.readback {
+            self.pixels = self.target.read_rgba(&self.gpu);
+        }
+    }
+
+    /// Stop (or start) reading each frame back into memory. A window that
+    /// shares this session's GPU shows [`Session::frame_target`] directly;
+    /// the readback is then a stall for nothing. `frame_pixels` is empty
+    /// while it is off.
+    pub fn set_readback(&mut self, readback: bool) {
+        self.readback = readback;
+        if !readback {
+            self.pixels = Vec::new();
+        }
+    }
+
+    /// The GPU the session renders with: a window that wants to show the
+    /// frame without a copy makes its surface on this one.
+    pub fn gpu(&self) -> &Gpu {
+        &self.gpu
+    }
+
+    /// The texture the Scene view is drawn into. Recreated by
+    /// [`Session::resize`], so a window looks it up again after one.
+    pub fn frame_target(&self) -> &OffscreenTarget {
+        &self.target
     }
 
     /// What the game would look through: the camera on an entity of the
