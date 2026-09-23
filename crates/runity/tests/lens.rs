@@ -313,3 +313,86 @@ fn a_lens_flare_throws_a_ghost_across_the_middle() {
         sum(&with)
     );
 }
+
+#[test]
+fn hot_air_shimmers_far_off_and_mirrors_the_sky_at_the_horizon() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let plane = renderer.upload_mesh_owned(&gpu, &builtin::plane(1.0, 1));
+    // Brown ground to the horizon under a blue sky, looking level.
+    let ground = Draw {
+        material: Material {
+            shading: Shading::Unlit,
+            ..Material::new(0.5, 0.3, 0.1)
+        },
+        ..white(plane, Mat4::from_scale(Vec3::new(2000.0, 1.0, 2000.0)))
+    };
+    let shoot = |renderer: &mut Renderer, heat: runity::lens::HeatHaze, time: f32| {
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Procedural,
+                zenith: [0.1, 0.3, 0.9],
+                horizon: [0.2, 0.5, 1.0],
+                sun_size: 0.0,
+                ..Default::default()
+            },
+            post: PostProcess {
+                heat_haze: heat,
+                ..plain()
+            },
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            camera: Camera {
+                // High enough that just below the horizon is 150 m off.
+                position: Vec3::new(0.0, 5.0, 0.0),
+                target: Vec3::new(0.0, 5.0, -10.0),
+                ..Camera::default()
+            },
+            shadows: ShadowSettings::OFF,
+            draws: vec![ground],
+            time: Some(time),
+            fog: runity::render::FogSettings {
+                start: 5000.0,
+                end: 6000.0,
+                ..Default::default()
+            },
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        target.read_rgba(&gpu)
+    };
+    // Just below the horizon: the middle row is the horizon.
+    let low = |p: &[u8]| OffscreenTarget::pixel(p, SIZE, SIZE / 2, SIZE / 2 + 2);
+    let clear = shoot(&mut renderer, runity::lens::HeatHaze::OFF, 0.0);
+    let mirage = shoot(
+        &mut renderer,
+        runity::lens::HeatHaze {
+            mirage: 1.0,
+            ..runity::lens::HeatHaze::OFF
+        },
+        0.0,
+    );
+    assert!(
+        low(&clear)[0] > low(&clear)[2],
+        "brown ground there: {:?}",
+        low(&clear)
+    );
+    assert!(
+        low(&mirage)[2] > low(&mirage)[0],
+        "the sky mirrored there: {:?}",
+        low(&mirage)
+    );
+
+    let shimmer = runity::lens::HeatHaze {
+        intensity: 1.0,
+        ..runity::lens::HeatHaze::OFF
+    };
+    let a = shoot(&mut renderer, shimmer, 0.0);
+    let b = shoot(&mut renderer, shimmer, 0.7);
+    assert_ne!(a, b, "the air moves");
+    let near = |p: &[u8]| OffscreenTarget::pixel(p, SIZE, SIZE / 2, SIZE - 2);
+    assert_eq!(near(&a), near(&clear), "and not at your feet");
+}

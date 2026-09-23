@@ -198,8 +198,8 @@ fn fs_heat_haze(in: Varyings) -> @location(0) vec4<f32> {
     let below = -direction.y;
     let ground = f32(textureLoad(depth, clamp(vec2<i32>(in.uv * lens.size.xy), vec2<i32>(0), vec2<i32>(lens.size.xy) - vec2<i32>(1)), 0) < 1.0);
     if lens.heat.y > 0.0 && below > 0.0 && ground > 0.5 {
-        let mirage = lens.heat.y * smoothstep(start * 2.0, start * 6.0 + 1.0, far_off)
-            * (1.0 - smoothstep(0.0, 0.05, below));
+        let mirage = lens.heat.y * smoothstep(start * 1.5, start * 4.0 + 1.0, far_off)
+            * (1.0 - smoothstep(0.01, 0.09, below));
         if mirage > 0.0 {
             // The same way, turned up across the horizon.
             let up = normalize(vec3<f32>(direction.x, below, direction.z));
