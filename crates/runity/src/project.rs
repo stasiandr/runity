@@ -290,6 +290,34 @@ impl Project {
         self.root.join(PREFABS)
     }
 
+    /// Make `scenes/NAME.ron`: Unity's File → New Scene, for a greybox — a
+    /// ground with the metre grid on it, solid, and the default sun and
+    /// view. Refuses a name already taken rather than overwrite a level.
+    pub fn new_scene(&self, name: &str) -> Result<PathBuf, String> {
+        valid_name(name)?;
+        let path = self.scenes().join(format!("{name}.ron"));
+        if path.exists() {
+            return Err(format!("scenes/{name}.ron is already there"));
+        }
+        std::fs::create_dir_all(self.scenes()).map_err(|e| e.to_string())?;
+        std::fs::write(&path, blank_scene()).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(path)
+    }
+
+    /// The project's scenes by name, sorted: `main`, `level_2`.
+    pub fn scene_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = std::fs::read_dir(self.scenes())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "ron"))
+            .filter_map(|p| Some(p.file_stem()?.to_string_lossy().into_owned()))
+            .collect();
+        out.sort();
+        out
+    }
+
     pub fn materials(&self) -> PathBuf {
         self.root.join(MATERIALS)
     }
@@ -671,7 +699,9 @@ impl shell::Game for Game {
 
 fn main() -> anyhow::Result<()> {
     // `data/` beside the executable in a build, the project in development.
-    let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "scenes/main.ron");
+    // `runity run --scene cave` plays scenes/cave.ron.
+    let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| "main".into());
+    let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{}.ron", playing));
     let (live, problems) = LiveScene::open(&scene)?;
     let live = live.with_components(game_components());
     for problem in &problems {
@@ -999,6 +1029,19 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
 
 /// The scene a new project opens to: ground to stand on and one thing on
 /// it, so the first frame shows that everything works.
+/// A new scene: somewhere to stand, and nothing else.
+fn blank_scene() -> String {
+    format!(
+        "(
+    entities: [
+        (id: \"{}\", name: \"ground\", model: \"builtin:plane\", transform: (scale: (40.0, 1.0, 40.0)), material: \"grid\", body: Static, collider: Box(half: (0.5, 0.05, 0.5))),
+    ],
+)
+",
+        crate::EntityId::fresh()
+    )
+}
+
 fn starter_scene() -> String {
     let (ground, cube, crate_) = (
         crate::EntityId::fresh(),
@@ -1025,6 +1068,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("runity-project-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_new_scene_is_ground_to_stand_on_and_never_overwrites_a_level() {
+        let root = temp("new-scene");
+        let project = Project::create(&root, "moss").unwrap();
+        let path = project.new_scene("cave").unwrap();
+        let scene = crate::Scene::load(&path).unwrap();
+        assert_eq!(scene.entities.len(), 1);
+        assert_eq!(scene.entities[0].name, "ground");
+        assert_eq!(project.scene_names(), ["cave", "main"]);
+        // The game picks the scene by name at run time, not the project's
+        // name baked in by the template.
+        let main = std::fs::read_to_string(root.join("src/main.rs")).unwrap();
+        assert!(main.contains("format!(\"scenes/{}.ron\", playing)"), "{main}");
+        let e = project.new_scene("main").unwrap_err();
+        assert!(e.contains("already there"), "{e}");
+        assert!(project.new_scene("Cave Two").is_err());
     }
 
     #[test]

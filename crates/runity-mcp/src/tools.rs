@@ -69,6 +69,7 @@ pub fn list() -> Vec<Value> {
     vec![
         tool("new_project", "Make a runity project (standard layout, starter scene, game crate) and open its scene.", json!({ "path": { "type": "string" }, "name": { "type": "string" } }), &["path"]),
         tool("open_scene", "Open a scene file; its project's prefabs, materials and library come with it.", json!({ "path": { "type": "string" } }), &["path"]),
+        tool("new_scene", "Make scenes/<name>.ron in the open project — a ground with the metre grid, solid — and open it. Save the open scene first if it has changes. Lists the project's scenes.", json!({ "name": { "type": "string", "description": "snake_case, like level_2" } }), &["name"]),
         tool("open_prefab", "Prefab Mode: open prefabs/<name>.prefab as the document. Every tool then edits the prefab (a variant's part edits become its overrides) and save_scene writes the prefab file; open_scene goes back.", json!({ "name": { "type": "string" } }), &["name"]),
         tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
@@ -562,6 +563,19 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 return Err(format!("nothing to stand on at ({x}, {y})"));
             }
             Ok(vec![text(format!("placed {}", ids.len()))])
+        }
+        "new_scene" => {
+            let name = string(args, "name")?;
+            let session = server.session()?;
+            let path = session.new_scene(&name).map_err(|e| e.to_string())?;
+            let names = session
+                .project()
+                .map(|p| p.scene_names().join(", "))
+                .unwrap_or_default();
+            Ok(vec![text(format!(
+                "opened {}; scenes: {names}",
+                path.display()
+            ))])
         }
         "hide" => {
             let ids = id_list(args)?;

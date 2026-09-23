@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! runity new <folder> [--name NAME] [--engine-path PATH]
-//! runity run   [PROJECT] [--hot] [--release]  the game
+//! runity run   [PROJECT] [--hot] [--release] [--scene NAME]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
@@ -14,7 +14,7 @@
 //! runity assets [PROJECT]                 every asset, and how much it is used
 //! runity delete FILE                      remove an asset nothing uses
 //! runity duplicate FROM TO                copy an asset as a new one
-//! runity add component|system NAME [PROJECT]  a new file where it goes
+//! runity add component|system|scene NAME [PROJECT]  a new file where it goes
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -33,10 +33,10 @@ runity new <folder> [--name NAME] [--engine-path PATH]
     Make a project: the standard layout, a scene, and a game crate.
     The game depends on the engine from git, or from a local checkout
     of runity's crates/runity with --engine-path.
-runity run [PROJECT] [--hot] [--release]
-    Run the game. Scenes, prefabs, assets, shaders and tuning reload while
-    it runs; with --hot, so does its own Rust (under `dx serve --hotpatch`,
-    from `cargo install dioxus-cli`).
+runity run [PROJECT] [--hot] [--release] [--scene NAME]
+    Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
+    assets, shaders and tuning reload while it runs; with --hot, so does its
+    own Rust (under `dx serve --hotpatch`, from `cargo install dioxus-cli`).
 runity sync [PROJECT]
     Build library/ from assets/ and materials/: changed sources by content
     hash, moved ones found by it, new ones imported, sidecars written.
@@ -73,6 +73,8 @@ runity add component NAME [PROJECT]
     `components: { \"NAME\": (...) }`; build.rs registers it.
 runity add system NAME [PROJECT]
     Write src/systems/NAME.rs and run it last in `step` in src/main.rs.
+runity add scene NAME [PROJECT]
+    Write scenes/NAME.ron: a ground with the metre grid, to build on.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -99,18 +101,25 @@ fn run() -> Result<ExitCode> {
         "run" => {
             let mut at: Vec<String> = Vec::new();
             let (mut hot, mut release) = (false, false);
-            for arg in &rest {
+            let mut scene: Option<String> = None;
+            let mut args = rest.iter();
+            while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--hot" => hot = true,
                     "--release" => release = true,
+                    "--scene" => scene = Some(args.next().context("--scene wants a name")?.clone()),
                     other if other.starts_with('-') => bail!("unknown option {other}"),
                     other => at.push(other.to_string()),
                 }
             }
             let project = find(&at)?;
             let dx = runity_cli::run::on_path("dx");
-            let status =
-                runity_cli::run::command(&project, hot, release, dx.as_deref())?.status()?;
+            let mut command = runity_cli::run::command(&project, hot, release, dx.as_deref())?;
+            if let Some(name) = scene {
+                let name = runity_cli::run::scene(&project, &name)?;
+                command.env(runity_cli::run::SCENE_VAR, name);
+            }
+            let status = command.status()?;
             Ok(if status.success() {
                 ExitCode::SUCCESS
             } else {
@@ -349,7 +358,7 @@ fn merge(rest: &[String]) -> Result<ExitCode> {
 
 fn add(rest: &[String]) -> Result<ExitCode> {
     let [what, name, at @ ..] = rest else {
-        bail!("runity add component|system NAME [PROJECT]");
+        bail!("runity add component|system|scene NAME [PROJECT]");
     };
     let project = find(at)?;
     match what.as_str() {
@@ -375,7 +384,11 @@ fn add(rest: &[String]) -> Result<ExitCode> {
                 );
             }
         }
-        other => bail!("runity add component|system NAME — not `{other}`"),
+        "scene" => {
+            let file = project.new_scene(name).map_err(anyhow::Error::msg)?;
+            println!("wrote {}", project.relative(&file).unwrap_or_default());
+        }
+        other => bail!("runity add component|system|scene NAME — not `{other}`"),
     }
     Ok(ExitCode::SUCCESS)
 }

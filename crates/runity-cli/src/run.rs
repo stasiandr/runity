@@ -1,4 +1,5 @@
-//! `runity run [--hot]`: the game, from its project, in one command.
+//! `runity run [--hot] [--scene NAME]`: the game, from its project, in one
+//! command, on `scenes/main.ron` or the scene named.
 //!
 //! Plain, it is `cargo run` in the project: scenes, prefabs, assets,
 //! shaders and numbers already reload while it runs. With `--hot` the game
@@ -64,6 +65,25 @@ pub fn command(project: &Project, hot: bool, release: bool, dx: Option<&Path>) -
     Ok(command)
 }
 
+/// What the game reads to know which scene to open: `main` without it.
+pub const SCENE_VAR: &str = "RUNITY_SCENE";
+
+/// Check that the project has `scenes/NAME.ron`, for `--scene NAME`, and
+/// say which ones it has when not.
+pub fn scene(project: &Project, name: &str) -> Result<String> {
+    let names = project.scene_names();
+    if names.iter().any(|n| n == name) {
+        return Ok(name.to_string());
+    }
+    let near = runity::spelling::closest(name, names.iter().map(String::as_str))
+        .map(|n| format!(" — did you mean `{n}`?"))
+        .unwrap_or_default();
+    bail!(
+        "no scenes/{name}.ron{near} (there are: {})",
+        names.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +92,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("runity-run-{name}"));
         let _ = std::fs::remove_dir_all(&root);
         Project::create(&root, name).unwrap()
+    }
+
+    #[test]
+    fn a_scene_to_play_is_one_the_project_has() {
+        let project = project("scene");
+        assert_eq!(scene(&project, "main").unwrap(), "main");
+        let e = scene(&project, "mian").unwrap_err().to_string();
+        assert!(e.contains("did you mean `main`?"), "{e}");
     }
 
     fn args(command: &Command) -> Vec<String> {

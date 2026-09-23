@@ -1563,6 +1563,17 @@ impl Session {
         Ok(true)
     }
 
+    /// File → New Scene: make `scenes/NAME.ron` in the open project — a
+    /// ground to stand on — and open it. What was open is not saved first;
+    /// save it before, as Unity asks.
+    pub fn new_scene(&mut self, name: &str) -> EditResult<PathBuf> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        let path = project.new_scene(name).map_err(EditError::Scene)?;
+        self.open_scene(&path)?;
+        Ok(path)
+    }
+
     /// Drag a line of the Hierarchy: under `new_parent` (or at the top),
     /// `index`-th among its new siblings (`None`: last). It stays where it
     /// is in the world, as a Hierarchy drag does in Unity — its local

@@ -518,3 +518,32 @@ fn the_scene_and_the_project_files_are_readable_resources() {
     let message = outside["error"]["message"].as_str().unwrap_or("");
     assert!(message.contains("outside the project"), "{outside}");
 }
+
+#[test]
+fn an_agent_starts_a_new_level_in_the_same_project() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("runity-mcp-new-scene");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    let opened = agent.text("new_scene", json!({ "name": "cave" }));
+    assert!(
+        opened.contains("cave.ron") && opened.contains("scenes: cave, main"),
+        "{opened}"
+    );
+    let tree = agent.text("scene_tree", json!({}));
+    assert!(
+        tree.contains("\"ground\"") && !tree.contains("\"cube\""),
+        "{tree}"
+    );
+    let err = agent
+        .call("new_scene", json!({ "name": "main" }))
+        .unwrap_err();
+    assert!(err.contains("already there"), "{err}");
+}
