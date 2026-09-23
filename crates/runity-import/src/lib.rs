@@ -1056,6 +1056,9 @@ pub struct MaterialSource {
     /// Sand: wind ripples, glinting grains, drifting sand in a gale.
     #[serde(default)]
     pub sand: bool,
+    /// Clay: mud in the wet, cracking as it dries.
+    #[serde(default)]
+    pub clay: bool,
     /// For water: metres one sees down through it.
     #[serde(default = "clear_water")]
     pub clarity: f32,
@@ -1486,6 +1489,7 @@ pub fn material_from_ron(
             } else {
                 0.0
             },
+            clay: source.clay,
         },
     })
 }

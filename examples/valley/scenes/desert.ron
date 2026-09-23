@@ -2,7 +2,8 @@
 // полуденным солнцем —
 // сцена для пустынных эффектов (марево и мираж, песчаная буря, следы,
 // рябь на дюнах, перекати-поле по ветру) и крытый проезд, из которого
-// выходят на солнце (автоэкспозиция).
+// выходят на солнце (автоэкспозиция), и такыр — глина, что трескается,
+// высыхая после дождя.
 (
     view: (position: (0.0, 1.7, 8.0), target: (0.0, 1.2, -40.0), fov_deg: 55.0),
     ambient_occlusion: (bounce: 1.0),
@@ -25,5 +26,6 @@
         (id: "3e9a51c07bd2f846", name: "passage left", model: "builtin:cube", transform: (position: (-41.8, 1.7, 22.0), scale: (0.6, 3.4, 14.0)), material: (base_color: (0.58, 0.5, 0.42)), body: Static, collider: Model),
         (id: "b27c0d4e91a6f385", name: "passage right", model: "builtin:cube", transform: (position: (-38.2, 1.7, 22.0), scale: (0.6, 3.4, 14.0)), material: (base_color: (0.58, 0.5, 0.42)), body: Static, collider: Model),
         (id: "05f8e3a2c6d19b74", name: "passage roof", model: "builtin:cube", transform: (position: (-40.0, 3.6, 22.0), scale: (4.2, 0.4, 14.0)), material: (base_color: (0.58, 0.5, 0.42)), body: Static, collider: Model),
+        (id: "b6f0c2e8a4d17935", name: "takyr", model: "builtin:plane", transform: (position: (24.0, 0.03, 2.0), scale: (26.0, 1.0, 26.0)), material: (base_color: (0.74, 0.54, 0.37), clay: true)),
     ],
 )

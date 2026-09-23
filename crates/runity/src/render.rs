@@ -817,6 +817,8 @@ const FLAG_PREMULTIPLY: u32 = 8;
 const FLAG_SCREEN: u32 = 16;
 /// The same, flipped across: a mirror's.
 const FLAG_MIRROR: u32 = 32;
+/// Clay: mud when wet, cracking as it dries ([`Material::clay`]).
+const FLAG_CLAY: u32 = 64;
 
 /// What the GPU is told about one draw.
 fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
@@ -836,6 +838,9 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
     }
     if material.receive_shadows {
         flags |= FLAG_SHADOWS;
+    }
+    if material.clay {
+        flags |= FLAG_CLAY;
     }
     if material.is_transparent() && material.blend == Blend::Premultiply {
         flags |= FLAG_PREMULTIPLY;

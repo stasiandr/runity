@@ -278,6 +278,11 @@ pub struct Material {
     /// For [`Shading::Water`]: how much foam where it meets the shore, 0 to 1.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub foam: f32,
+    /// Clay: dark, smooth mud while wet; as it dries (the weather's
+    /// `drying`), lighter, in patches, and cracking into curling plates.
+    /// Dry clay with no weather at all is cracked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clay: bool,
 }
 
 fn no_tiling() -> [f32; 2] {
@@ -352,6 +357,7 @@ impl Material {
             offset: [0.0, 0.0],
             wind: 0.0,
             translucency: 0.0,
+            clay: false,
             clarity: 0.0,
             foam: 0.0,
         }
@@ -471,6 +477,7 @@ impl From<&ArchivedMaterial> for Material {
             translucency: archived.translucency.to_native(),
             clarity: archived.clarity.to_native(),
             foam: archived.foam.to_native(),
+            clay: archived.clay,
         }
     }
 }
