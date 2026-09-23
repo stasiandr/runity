@@ -496,6 +496,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 range: b.f32("m_Range").unwrap_or(10.0),
                 cone_deg: (kind == 0).then(|| b.f32("m_SpotAngle").unwrap_or(30.0)),
                 shadows: b["m_Shadows"].i64("m_Type").unwrap_or(0) != 0,
+                flare: 0.0,
             });
         }
         "Camera" => {

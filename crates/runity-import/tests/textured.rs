@@ -56,6 +56,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         shadows: ShadowSettings::OFF,
         clear_color: Vec3::new(0.0, 0.0, 0.0),
         lights: Vec::new(),
+        flares: Vec::new(),
         reflection_probes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),

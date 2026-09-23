@@ -52,6 +52,10 @@ struct Post {
     // Lens flare: tint, intensity; ghosts, halo, streaks, dispersion
     flare_tint: vec4<f32>,
     flare: vec4<f32>,
+    // Lamps' own flares: count; each one's uv, intensity; its colour
+    lamp_count: vec4<f32>,
+    lamps: array<vec4<f32>, 8>,
+    lamp_colors: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -309,6 +313,45 @@ fn lens_flare(uv: vec2<f32>) -> vec3<f32> {
     return color * post.flare_tint.rgb * post.flare_tint.w * 0.25;
 }
 
+// A soft round spot on the picture, round whatever its shape.
+fn spot(uv: vec2<f32>, at: vec2<f32>, radius: f32) -> f32 {
+    let d = (uv - at) * vec2<f32>(post.vignette.w, 1.0);
+    let x = clamp(1.0 - length(d) / radius, 0.0, 1.0);
+    return x * x;
+}
+
+// Each lamp's own flare (Unity's Lens Flare SRP component): a glow round
+// it, a thin ring, and ghosts along the line through the middle of the
+// picture. Seen only as much as the lamp is: the bloom where it stands is
+// bright when it is in sight and dark behind a wall.
+fn lamp_flares(uv: vec2<f32>) -> vec3<f32> {
+    var color = vec3<f32>(0.0);
+    let count = i32(post.lamp_count.x);
+    for (var i = 0; i < count; i = i + 1) {
+        let lamp = post.lamps[i];
+        let at = lamp.xy;
+        let seen_at = clamp(at, vec2<f32>(0.0), vec2<f32>(1.0));
+        let seen = clamp(luma(textureSampleLevel(bloom_texture, linear_clamp, seen_at, 0.0).rgb) * 0.5, 0.0, 1.0);
+        // Fading as it leaves the picture.
+        let edge = clamp(min(min(at.x, at.y), min(1.0 - at.x, 1.0 - at.y)) * 5.0 + 1.0, 0.0, 1.0);
+        let strength = lamp.z * seen * edge;
+        if strength <= 0.0 {
+            continue;
+        }
+        let tint = post.lamp_colors[i].rgb;
+        var f = spot(uv, at, 0.12) * 0.6 + spot(uv, at, 0.03) * 1.5;
+        let ring = (uv - at) * vec2<f32>(post.vignette.w, 1.0);
+        f += 0.06 * clamp(1.0 - abs(length(ring) - 0.2) / 0.01, 0.0, 1.0);
+        let axis = vec2<f32>(0.5) - at;
+        f += spot(uv, at + axis * 0.6, 0.03) * 0.5;
+        f += spot(uv, at + axis * 1.2, 0.06) * 0.3;
+        f += spot(uv, at + axis * 1.6, 0.02) * 0.6;
+        f += spot(uv, at + axis * 2.1, 0.09) * 0.2;
+        color += tint * f * strength;
+    }
+    return color;
+}
+
 @fragment
 fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     let uv = distort_uv(panini_uv(in.uv));
@@ -323,6 +366,7 @@ fn fs_composite(in: Varyings) -> @location(0) vec4<f32> {
     );
     color += textureSampleLevel(bloom_texture, linear_clamp, uv, 0.0).rgb * post.a.y * post.bloom_tint.rgb;
     color += lens_flare(uv);
+    color += lamp_flares(uv);
 
     color *= post.a.x;
     color = white_balance(color);

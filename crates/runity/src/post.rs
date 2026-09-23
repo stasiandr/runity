@@ -590,6 +590,9 @@ pub const SHADER: &str = include_str!("post.wgsl");
 /// The high-dynamic-range format the scene is drawn in.
 pub(crate) const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+/// The most lamps with a flare of their own in one picture.
+pub const FLARES: usize = 8;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PostUniform {
@@ -628,6 +631,11 @@ struct PostUniform {
     flare_tint: [f32; 4],
     /// Lens flare: ghosts, halo, streaks, chromatic aberration.
     flare: [f32; 4],
+    /// Lamps' own flares: how many, then each one's place on the picture
+    /// (uv) and brightness, and its colour.
+    lamp_count: [f32; 4],
+    lamps: [[f32; 4]; FLARES],
+    lamp_colors: [[f32; 4]; FLARES],
 }
 
 /// One uniform slot per pass of a frame, at the device's alignment.
@@ -696,6 +704,9 @@ pub(crate) struct PostRenderer {
     /// The camera's vertical field of view, 0 for an orthographic one:
     /// what Panini unbends.
     pub(crate) fov_y_degrees: f32,
+    /// Lamps' flares this frame, on the picture: `[u, v, intensity, _]`
+    /// and colour.
+    pub(crate) flares: Vec<([f32; 4], [f32; 4])>,
 }
 
 impl PostRenderer {
@@ -823,6 +834,7 @@ impl PostRenderer {
             output_srgb: output.is_srgb(),
             started: std::time::Instant::now(),
             fov_y_degrees: 0.0,
+            flares: Vec::new(),
         }
     }
 
@@ -1125,6 +1137,9 @@ impl PostRenderer {
                 s.lens_flare.streaks.max(0.0),
                 s.lens_flare.chromatic_aberration.clamp(0.0, 1.0),
             ],
+            lamp_count: [self.flares.len() as f32, 0.0, 0.0, 0.0],
+            lamps: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.0)),
+            lamp_colors: std::array::from_fn(|i| self.flares.get(i).map_or([0.0; 4], |f| f.1)),
         }
     }
 }

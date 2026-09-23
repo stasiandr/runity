@@ -1101,6 +1101,20 @@ pub fn build_frame_where(
             }
         })
         .collect();
+    let flares = world
+        .query::<(&LightSource, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(light, _, line)| light.0.flare > 0.0 && keep(line.map(|l| l.0)))
+        .map(|(light, placed, _)| {
+            let l = light.0;
+            let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+            crate::render::Flare {
+                position: placed.0.w_axis.truncate(),
+                color: glam::Vec3::new(linear(l.color.0), linear(l.color.1), linear(l.color.2)),
+                intensity: l.flare,
+            }
+        })
+        .collect();
     let reflection_probes = world
         .query::<(&ProbeBox, &WorldTransform, Option<&SceneId>)>()
         .iter()
@@ -1139,6 +1153,7 @@ pub fn build_frame_where(
         draws,
         overlay_draws: Vec::new(),
         lights,
+        flares,
         poses,
         post: Default::default(),
         ambient_occlusion: Default::default(),

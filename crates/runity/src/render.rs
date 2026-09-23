@@ -492,6 +492,9 @@ pub struct Frame {
     pub overlay_draws: Vec<Draw>,
     /// Point lights besides the sun.
     pub lights: Vec<PointLight>,
+    /// Lamps with a lens flare of their own: where each is, its colour
+    /// and how bright its flare. Drawn by the post pass.
+    pub flares: Vec<Flare>,
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
@@ -520,6 +523,7 @@ impl Default for Frame {
             draws: Vec::new(),
             overlay_draws: Vec::new(),
             lights: Vec::new(),
+            flares: Vec::new(),
             reflection_probes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
@@ -626,6 +630,15 @@ pub struct PointLight {
     pub spot: Option<(Vec3, f32)>,
     /// Casts shadows, if a shadow map is left for it ([`crate::lights`]).
     pub shadows: bool,
+}
+
+/// A lamp's own lens flare, in the world.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Flare {
+    pub position: Vec3,
+    /// Linear.
+    pub color: Vec3,
+    pub intensity: f32,
 }
 
 /// One vertex's binding to the skeleton, in its own buffer.
@@ -3373,6 +3386,25 @@ impl Renderer {
                 orthographic: frame.camera.ortho.is_some(),
             },
         );
+        self.post.flares = frame
+            .flares
+            .iter()
+            .filter_map(|f| {
+                let clip = view_projection * f.position.extend(1.0);
+                if clip.w <= 1e-4 {
+                    return None;
+                }
+                let ndc = clip.truncate() / clip.w;
+                let uv = glam::Vec2::new(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+                // A little way off the picture still throws its ghosts in.
+                if uv.min_element() < -0.2 || uv.max_element() > 1.2 || ndc.z > 1.0 {
+                    return None;
+                }
+                let hue = f.color / f.color.max_element().max(1e-4);
+                Some(([uv.x, uv.y, f.intensity, 0.0], hue.extend(0.0).to_array()))
+            })
+            .take(crate::post::FLARES)
+            .collect();
         self.post.fov_y_degrees = match frame.camera.ortho {
             Some(_) => 0.0,
             None => frame.camera.fov_y_degrees,

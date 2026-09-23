@@ -455,6 +455,11 @@ pub struct Light {
     /// nearest lamps the camera sees get them first.
     #[serde(default = "yes_look", skip_serializing_if = "is_true")]
     pub shadows: bool,
+    /// A lens flare on the lamp itself — a glow round it and ghosts
+    /// across the picture — this bright, gone when something hides the
+    /// lamp. Unity's Lens Flare (SRP) component. 0 is none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flare: f32,
 }
 
 /// A box whose surroundings polished things in it reflect — URP's baked
