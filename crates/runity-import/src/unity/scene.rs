@@ -142,6 +142,19 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         body_object,
     };
 
+    // A stripped object stands for a part of a prefab instance: which
+    // part, as the prefab's source names it.
+    let stripped_source: HashMap<i64, (i64, String)> = docs
+        .iter()
+        .filter(|d| d.stripped)
+        .filter_map(|d| {
+            let r = d.body.reference("m_CorrespondingSourceObject")?;
+            Some((d.file_id, (r.file_id, r.guid?)))
+        })
+        .collect();
+    let part_of_stripped = |id: i64| stripped_source.get(&id).cloned();
+    // What hangs on a part of an instance rather than on the instance.
+    let mut on_part: HashMap<i64, (i64, String)> = HashMap::new();
     // Every entity, and its parent entity.
     let mut entities: BTreeMap<i64, EntityDesc> = BTreeMap::new();
     let mut parent: HashMap<i64, i64> = HashMap::new();
@@ -178,6 +191,9 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     if let Some(p) = entity_of_transform(father.file_id) {
                         parent.insert(*go, p);
                     }
+                    if let Some(part) = part_of_stripped(father.file_id) {
+                        on_part.insert(*go, part);
+                    }
                 }
                 for (i, child) in d.body.list("m_Children").iter().enumerate() {
                     if let Some(c) =
@@ -194,6 +210,10 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 };
                 if let Some(p) = into {
                     parent.insert(d.file_id, p);
+                }
+                let father = d.body["m_Modification"].reference("m_TransformParent");
+                if let Some(part) = father.and_then(|r| part_of_stripped(r.file_id)) {
+                    on_part.insert(d.file_id, part);
                 }
                 entities.insert(d.file_id, desc);
             }
@@ -215,16 +235,44 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
     }
     // Components added to a prefab instance's parts in this file land on
     // the instance: runity's instance is one line.
+    // Components added to a part go on that part, as an override of it;
+    // on the prefab's root, on the instance line itself.
     for d in docs.iter().filter(|d| d.class == GAME_OBJECT && d.stripped) {
-        if let Some(instance) = d.body.reference("m_PrefabInstance") {
-            let added = components.get(&d.file_id).map_or(0, Vec::len);
-            if added > 0 {
-                if let Some(desc) = entities.get_mut(&instance.file_id) {
-                    for c in components.get(&d.file_id).into_iter().flatten() {
-                        component(desc, c, &refs, report);
-                    }
+        let Some(instance) = d.body.reference("m_PrefabInstance") else {
+            continue;
+        };
+        let added = components.get(&d.file_id).into_iter().flatten();
+        let part = part_of_stripped(d.file_id).and_then(|(fid, guid)| {
+            let of = parts.of(unity, &guid, 0);
+            of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root)
+        });
+        let Some(desc) = entities.get_mut(&instance.file_id) else {
+            continue;
+        };
+        match part {
+            None => {
+                for c in added {
+                    component(desc, c, &refs, report);
                 }
             }
+            Some(key) => {
+                let mut given = EntityDesc::default();
+                for c in added {
+                    component(&mut given, c, &refs, report);
+                }
+                let change = runity::scene::Override::between(&EntityDesc::default(), &given);
+                if !change.is_empty() {
+                    desc.overrides.entry(key).or_default().merge(change);
+                }
+            }
+        }
+    }
+    // Hung on a part: the part's key, where it is not the prefab's root.
+    for (child, (fid, guid)) in on_part {
+        let of = parts.of(unity, &guid, 0);
+        let key = of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root);
+        if let (Some(key), Some(desc)) = (key, entities.get_mut(&child)) {
+            desc.in_part = Some(key);
         }
     }
 
@@ -1442,6 +1490,26 @@ PrefabInstance:
     m_RemovedComponents:
     - {fileID: 202, guid: ppp, type: 3}
   m_SourcePrefab: {fileID: 100100000, guid: ppp, type: 3}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 201, guid: ppp, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 200, guid: ppp, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  locked: 1
+--- !u!1 &910
+GameObject:
+  m_Name: Moth
+--- !u!4 &911
+Transform:
+  m_GameObject: {fileID: 910}
+  m_Father: {fileID: 901}
 ";
         let mut report = Report::default();
         let roots = convert_file(&unity, scene, &mut report);
@@ -1452,6 +1520,10 @@ PrefabInstance:
         let t = bulb.transform.expect("the bulb moved");
         assert_eq!(t.position, Vec3::new(1.0, 2.0, 0.0), "x said, y as the prefab has it");
         assert_eq!(bulb.removed, ["light"]);
+        assert!(bulb.components.contains_key("door"), "added to the bulb, not the lamp");
+        assert!(lamp.components.is_empty());
+        let moth = lamp.children.iter().find(|c| c.name == "Moth").expect("under the lamp");
+        assert_eq!(moth.in_part, Some(entity_id(200)), "on the bulb");
     }
 
     #[test]

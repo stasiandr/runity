@@ -865,6 +865,12 @@ pub struct EntityDesc {
     /// see [`RenderTexture`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_texture: Option<RenderTexture>,
+    /// Under which part of its parent's prefab it goes, when its parent is
+    /// a prefab instance: the part's key, as `overrides` names parts. A
+    /// scene's torch in the hand of a placed statue. Absent is under the
+    /// instance itself.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub in_part: Option<crate::id::EntityId>,
     /// The graph in `animators/` that moves it and the things under it,
     /// with the clips in `clips/` (see [`crate::motion`]): Unity's Animator
     /// on a GameObject.
@@ -1841,6 +1847,7 @@ mod tests {
                 render_texture: None,
                 sound: None,
                 animator: String::new(),
+                in_part: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),
@@ -1877,6 +1884,7 @@ mod tests {
                     render_texture: None,
                     sound: None,
                     animator: String::new(),
+                    in_part: None,
                     inactive: false,
                     overrides: Default::default(),
                     components: Default::default(),
@@ -1939,6 +1947,7 @@ mod tests {
                 render_texture: None,
                 sound: None,
                 animator: String::new(),
+                in_part: None,
                 inactive: false,
                 overrides: Default::default(),
                 components: Default::default(),

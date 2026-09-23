@@ -365,9 +365,36 @@ fn expand(
     // scope as itself: a kettle put beside a campfire in the scene is the
     // scene's, not the campfire's.
     for child in &desc.children {
-        expanded
-            .children
-            .push(expand(child, scope, prefabs, depth, problems, parts));
+        let grown = expand(child, scope, prefabs, depth, problems, parts);
+        // One the scene hung on a part of the prefab goes under that part.
+        let under = child.in_part.filter(|_| !desc.prefab.is_empty()).and_then(|key| {
+            let scoped = id.within(key);
+            // Looked for twice: the borrow checker cannot yet see that the
+            // first look's borrow ends when it finds nothing.
+            if find_mut(&mut expanded.children, scoped).is_some() {
+                find_mut(&mut expanded.children, scoped)
+            } else {
+                find_by_key(&mut expanded.children, parts, id, key)
+            }
+        });
+        match under {
+            Some(part) => part.children.push(grown),
+            None => {
+                if let Some(key) = child.in_part.filter(|k| *k != id && !desc.prefab.is_empty()) {
+                    let root_key = prefabs.find(&desc.prefab).map(|(_, t)| t.id);
+                    if Some(key) != root_key {
+                        problems.push(Problem {
+                            entity_name: child.name.clone(),
+                            prefab: desc.prefab.to_string(),
+                            reason: format!(
+                                "hung on part {key}, which the prefab does not have (any more?): under the instance instead"
+                            ),
+                        });
+                    }
+                }
+                expanded.children.push(grown);
+            }
+        }
     }
     // What a spline carries grows here, like a prefab's parts: the file
     // keeps the spline and the spacing, everything downstream sees copies.
@@ -409,7 +436,13 @@ fn scoped_links(desc: &EntityDesc, instance: EntityId) -> EntityDesc {
             out.joint = out.joint.with_to(instance.within(to));
         }
     }
-    for value in out.components.values_mut() {
+    // Its components, and those its overrides give its prefab's parts:
+    // both written in this file.
+    let overridden = out
+        .overrides
+        .values_mut()
+        .flat_map(|o| o.components.values_mut());
+    for value in out.components.values_mut().chain(overridden) {
         let text = value.get_ron();
         let links = crate::EntityRef::find_in(text);
         if links.is_empty() {
@@ -837,6 +870,85 @@ mod tests {
         let fire = done.scene.get("a1".parse().unwrap()).unwrap();
         assert!(fire.inactive, "switched off in this instance");
         assert_eq!(fire.name, "fire");
+    }
+
+    #[test]
+    fn a_link_an_override_gives_a_part_in_a_prefab_is_the_instances() {
+        let mut prefabs = with_campfire();
+        let ember = prefabs
+            .find(&crate::AssetLink::named("campfire"))
+            .unwrap()
+            .1
+            .children[0]
+            .id;
+        prefabs.insert(
+            "yard",
+            ron::from_str(&format!(
+                r#"(id: "00000000000000b0", name: "yard", model: "", children: [
+                    (id: "00000000000000b1", name: "fire", model: "", prefab: "campfire",
+                     overrides: {{ "{ember}": (components: {{"warms": (who: EntityRef("00000000000000b2"))}}) }}),
+                    (id: "00000000000000b2", name: "bench", model: "builtin:cube"),
+                ])"#
+            ))
+            .unwrap(),
+        );
+        let scene = parse(r#"(entities: [(id: "00000000000000a1", name: "home", model: "", prefab: "yard")])"#);
+        let done = instantiate(&scene, &prefabs);
+        let bench = done.scene.flatten().into_iter().find(|(e, _)| e.name == "bench").unwrap().0.id;
+        let warms = done
+            .scene
+            .flatten()
+            .into_iter()
+            .find(|(e, _)| e.name == "ember")
+            .unwrap()
+            .0
+            .components["warms"]
+            .get_ron()
+            .to_string();
+        assert!(warms.contains(&bench.to_string()), "{warms} names this yard's bench {bench}");
+    }
+
+    #[test]
+    fn a_scene_hangs_a_thing_on_a_part_of_a_placed_prefab() {
+        let mut prefabs = Prefabs::new();
+        prefabs.insert(
+            "statue",
+            ron::from_str(
+                r#"(id: "00000000000000e0", name: "statue", model: "builtin:cube", children: [
+                    (id: "00000000000000e1", name: "arm", model: "builtin:cube", children: [
+                        (id: "00000000000000e2", name: "hand", model: "builtin:cube"),
+                    ]),
+                ])"#,
+            )
+            .unwrap(),
+        );
+        let scene = parse(
+            r#"(entities: [(id: "00000000000000a1", name: "statue", model: "", prefab: "statue", children: [
+                (id: "00000000000000a2", name: "torch", model: "builtin:cube", in_part: "00000000000000e2"),
+                (id: "00000000000000a3", name: "plaque", model: "builtin:cube"),
+                (id: "00000000000000a4", name: "lost", model: "builtin:cube", in_part: "00000000000000ff"),
+            ])])"#,
+        );
+        let done = instantiate(&scene, &prefabs);
+        let path_of = |name: &str| -> Vec<String> {
+            fn walk(e: &[EntityDesc], name: &str, trail: &mut Vec<String>) -> bool {
+                for x in e {
+                    trail.push(x.name.clone());
+                    if x.name == name || walk(&x.children, name, trail) {
+                        return true;
+                    }
+                    trail.pop();
+                }
+                false
+            }
+            let mut trail = Vec::new();
+            walk(&done.scene.entities, name, &mut trail);
+            trail
+        };
+        assert_eq!(path_of("torch"), ["statue", "arm", "hand", "torch"]);
+        assert_eq!(path_of("plaque"), ["statue", "plaque"]);
+        assert_eq!(path_of("lost"), ["statue", "lost"], "under the instance, and said");
+        assert!(done.problems.iter().any(|p| p.entity_name == "lost"), "{:?}", done.problems);
     }
 
     #[test]
