@@ -97,18 +97,20 @@ fn three_lines_in_a_scene_become_three_of_the_same_thing() {
 
     // Everything a prefab brought belongs to the instance that brought it,
     // and the kettle — which has its own line in the scene — does not.
-    let flat = instanced.scene.flatten();
-    let kettle = flat.iter().position(|(e, _)| e.name == "kettle").unwrap();
-    let a_stone = flat.iter().position(|(e, _)| e.name == "stone n").unwrap();
+    let owner_name = |name: &str| {
+        let expanded = instanced.scene.find(name).unwrap().id;
+        let owner = instanced.owner_of(expanded).expect("an owner");
+        document.get(owner).unwrap().name.clone()
+    };
     assert_eq!(
-        instanced.source[kettle], 4,
+        owner_name("kettle"),
+        "kettle",
         "the kettle is its own entry in the document"
     );
-    let owner = document.flatten()[instanced.source[a_stone]].0;
-    assert!(
-        !owner.prefab.is_empty(),
-        "a stone points back at an instance, not at some other entity: {}",
-        owner.name
+    assert_eq!(
+        owner_name("stone n"),
+        "west fire",
+        "a stone points back at the instance that brought it"
     );
 }
 

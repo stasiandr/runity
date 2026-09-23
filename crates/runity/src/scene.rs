@@ -10,6 +10,7 @@ use std::path::Path;
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
+use crate::id::EntityId;
 use crate::material::Material;
 
 /// Position, rotation and scale, in the form a person can edit.
@@ -102,6 +103,15 @@ pub enum Body {
 /// One thing in the valley.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EntityDesc {
+    /// Who this is, for as long as it exists: what an edit, a selection, an
+    /// undo, a merge and a network message all point at. First in the block
+    /// so that every entity in a diff starts with its identity.
+    ///
+    /// Optional in the file: an entity written without one — by hand, or by
+    /// an agent — gets one when the scene loads, and keeps it from the first
+    /// save on. See [`crate::id`].
+    #[serde(default, skip_serializing_if = "EntityId::is_unassigned")]
+    pub id: EntityId,
     /// Shown in the editor's tree; not required to be unique.
     pub name: String,
     /// Path under the asset root, e.g. `models/pine_large.obj`.
@@ -334,6 +344,27 @@ impl Default for View {
     }
 }
 
+/// Mint IDs for a subtree: unassigned ones, and ones already in `seen`.
+pub(crate) fn assign_ids(
+    entities: &mut [EntityDesc],
+    seen: &mut std::collections::HashSet<EntityId>,
+) -> usize {
+    let mut minted = 0;
+    for entity in entities {
+        if entity.id.is_unassigned() || seen.contains(&entity.id) {
+            let mut id = EntityId::fresh();
+            while seen.contains(&id) {
+                id = EntityId::fresh();
+            }
+            entity.id = id;
+            minted += 1;
+        }
+        seen.insert(entity.id);
+        minted += assign_ids(&mut entity.children, seen);
+    }
+    minted
+}
+
 /// A whole scene, as it sits on disk.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Scene {
@@ -364,6 +395,9 @@ impl Scene {
     }
 
     /// The first entity with this name, at any depth.
+    ///
+    /// For people and tests. Names are not unique; anything that has to hit
+    /// the same entity twice holds its [`EntityId`] and uses [`Scene::get`].
     pub fn find(&self, name: &str) -> Option<&EntityDesc> {
         self.flatten()
             .into_iter()
@@ -371,11 +405,66 @@ impl Scene {
             .map(|(e, _)| e)
     }
 
+    /// The entity with this ID, at any depth.
+    pub fn get(&self, id: EntityId) -> Option<&EntityDesc> {
+        fn walk(entities: &[EntityDesc], id: EntityId) -> Option<&EntityDesc> {
+            entities
+                .iter()
+                .find_map(|e| (e.id == id).then_some(e).or_else(|| walk(&e.children, id)))
+        }
+        walk(&self.entities, id)
+    }
+
+    /// The entity with this ID, at any depth, to change.
+    pub fn get_mut(&mut self, id: EntityId) -> Option<&mut EntityDesc> {
+        fn walk(entities: &mut [EntityDesc], id: EntityId) -> Option<&mut EntityDesc> {
+            for entity in entities {
+                if entity.id == id {
+                    return Some(entity);
+                }
+                if let Some(found) = walk(&mut entity.children, id) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(&mut self.entities, id)
+    }
+
+    /// Every entity's ID, in the order [`Scene::flatten`] walks them — which
+    /// is the order an editor's tree shows them in.
+    pub fn ids(&self) -> Vec<EntityId> {
+        self.flatten().into_iter().map(|(e, _)| e.id).collect()
+    }
+
+    /// Give every entity without an ID one, and every entity whose ID is
+    /// already taken a new one. Returns how many were minted.
+    ///
+    /// Called on load, so nothing downstream ever sees an entity it cannot
+    /// name. A repeated ID is re-minted rather than trusted: it comes from a
+    /// block copy-pasted by hand or a merge gone strange, and two entities
+    /// answering to one name is how an edit lands on the wrong thing. The
+    /// first one in the file keeps it.
+    pub fn assign_ids(&mut self) -> usize {
+        assign_ids(&mut self.entities, &mut std::collections::HashSet::new())
+    }
+
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        Ok(ron::from_str(&text)?)
+        // The path goes into the message: ron says where in the file and what
+        // it expected, and without the file that is half an answer.
+        let mut scene: Scene =
+            ron::from_str(&text).map_err(|e| anyhow::anyhow!("{}:{e}", path.display()))?;
+        let minted = scene.assign_ids();
+        if minted > 0 {
+            tracing::debug!(
+                "{}: gave {minted} entities an id; they are written on the next save",
+                path.display()
+            );
+        }
+        Ok(scene)
     }
 
     /// Write the scene back out, pretty-printed so that a diff is readable.
@@ -405,8 +494,9 @@ mod tests {
         // while because struct names were on and an untagged enum cannot
         // match a named struct — a file that saved cleanly and would not
         // reopen.
-        let scene = Scene {
+        let mut scene = Scene {
             entities: vec![EntityDesc {
+                id: Default::default(),
                 name: "crate".into(),
                 model: "builtin:cube".into(),
                 prefab: String::new(),
@@ -421,6 +511,7 @@ mod tests {
                     half: Vec3::splat(0.5),
                 },
                 children: vec![EntityDesc {
+                    id: Default::default(),
                     name: "lid".into(),
                     model: "builtin:cube".into(),
                     prefab: String::new(),
@@ -433,6 +524,10 @@ mod tests {
             }],
             ..Default::default()
         };
+        // IDs as a loaded scene would have them: code-built entities start
+        // unassigned, and a round trip would otherwise compare minted IDs
+        // against zeros.
+        scene.assign_ids();
         let dir = std::env::temp_dir().join("runity-scene-full");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("full.ron");
@@ -442,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_scene_survives_a_round_trip_through_the_file() {
-        let scene = Scene {
+        let mut scene = Scene {
             view: View::default(),
             sun: Sun {
                 hour: 17.5,
@@ -450,6 +545,7 @@ mod tests {
             },
             fog: Fog::default(),
             entities: vec![EntityDesc {
+                id: Default::default(),
                 name: "pine".into(),
                 model: "models/pine_large.obj".into(),
                 prefab: String::new(),
@@ -464,11 +560,95 @@ mod tests {
                 children: Vec::new(),
             }],
         };
+        scene.assign_ids();
         let dir = std::env::temp_dir().join("runity-scene-test");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("scene.ron");
         scene.save(&path).unwrap();
         assert_eq!(Scene::load(&path).unwrap(), scene);
+    }
+
+    #[test]
+    fn saving_a_scene_twice_writes_the_same_bytes() {
+        // DNA, postulate 2: a save with no changes is a zero diff. IDs,
+        // field order and number formatting all have to be deterministic for
+        // that, and any one of them drifting shows up as noise in every
+        // commit an editor makes.
+        let dir = std::env::temp_dir().join("runity-scene-zero-diff");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scene.ron");
+        std::fs::write(
+            &path,
+            r#"(entities: [
+                (name: "crate", model: "builtin:cube",
+                 transform: (position: (0.1, 0.2, 0.3), rotation_deg: (0.0, 33.3, 0.0)),
+                 children: [(name: "lid", model: "builtin:cube")]),
+                (name: "rock", model: "builtin:sphere", material: "stone"),
+            ])"#,
+        )
+        .unwrap();
+
+        let first = Scene::load(&path).unwrap();
+        first.save(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        Scene::load(&path).unwrap().save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn an_entity_written_without_an_id_gets_one_and_keeps_it() {
+        // A person or an agent writing a scene by hand should not have to
+        // invent IDs. The first load gives them, the first save writes them,
+        // and from then on they are the entity's.
+        let dir = std::env::temp_dir().join("runity-scene-ids");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("scene.ron");
+        std::fs::write(
+            &path,
+            r#"(entities: [(name: "a", model: "m", children: [(name: "b", model: "m")])])"#,
+        )
+        .unwrap();
+
+        let scene = Scene::load(&path).unwrap();
+        let ids = scene.ids();
+        assert!(ids.iter().all(|id| !id.is_unassigned()), "{ids:?}");
+        scene.save(&path).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("id: \""));
+        assert_eq!(Scene::load(&path).unwrap().ids(), ids, "and keeps them");
+    }
+
+    #[test]
+    fn a_repeated_id_is_re_minted_and_the_first_keeps_it() {
+        // A block copy-pasted by hand, or a merge gone strange. Two entities
+        // answering to one ID is how an edit lands on the wrong one.
+        let mut scene: Scene = ron::from_str(
+            r#"(entities: [
+                (id: "a1", name: "first", model: "m"),
+                (id: "a1", name: "pasted", model: "m"),
+            ])"#,
+        )
+        .unwrap();
+        assert_eq!(scene.assign_ids(), 1);
+        assert_eq!(scene.find("first").unwrap().id, "a1".parse().unwrap());
+        assert_ne!(
+            scene.find("pasted").unwrap().id,
+            scene.find("first").unwrap().id
+        );
+    }
+
+    #[test]
+    fn an_entity_is_found_by_id_at_any_depth() {
+        let mut scene: Scene = ron::from_str(
+            r#"(entities: [(id: "1", name: "a", model: "m", children: [(id: "2", name: "b", model: "m")])])"#,
+        )
+        .unwrap();
+        let deep = "2".parse().unwrap();
+        assert_eq!(scene.get(deep).map(|e| e.name.as_str()), Some("b"));
+        scene.get_mut(deep).unwrap().name = "renamed".into();
+        assert_eq!(scene.find("renamed").unwrap().id, deep);
+        assert!(scene.get(crate::EntityId::from_raw(3)).is_none());
     }
 
     #[test]

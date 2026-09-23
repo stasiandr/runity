@@ -24,9 +24,10 @@
 //! by a path through the prefab — and it should be designed then, against a
 //! real scene that needs it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::id::EntityId;
 use crate::scene::{Body, Collider, EntityDesc, MaterialRef, Scene};
 
 /// What a prefab file is called.
@@ -85,8 +86,12 @@ impl Prefabs {
     pub fn read(path: impl AsRef<Path>) -> Result<(String, EntityDesc), String> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let desc: EntityDesc =
-            ron::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut desc: EntityDesc =
+            ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
+        // The same rule as a scene: an entity without an ID gets one, and a
+        // repeated one is re-minted, so every part of an instance has an
+        // identity to be scoped.
+        crate::scene::assign_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -104,7 +109,8 @@ impl Prefabs {
         std::fs::write(path.as_ref(), text).map_err(|e| e.to_string())
     }
 
-    pub fn insert(&mut self, name: impl Into<String>, desc: EntityDesc) {
+    pub fn insert(&mut self, name: impl Into<String>, mut desc: EntityDesc) {
+        crate::scene::assign_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
         self.by_name.insert(name.into(), desc);
     }
 
@@ -136,17 +142,25 @@ pub struct Instanced {
     /// Everything downstream — spawning, culling, rendering — sees only
     /// this, and so knows nothing about prefabs at all.
     pub scene: Scene,
-    /// For each entity in `scene.flatten()`, which entity of the *source*
-    /// scene's `flatten()` it belongs to.
+    /// For every entity in `scene`, the entity of the *document* it belongs
+    /// to.
     ///
-    /// Anything that came out of a prefab points at the instance that
-    /// brought it in, because that is the thing the document can select,
-    /// move and delete. Without this an editor could tell you a stone was
-    /// clicked and have nothing to do about it.
-    pub source: Vec<usize>,
+    /// A document entity belongs to itself. Anything that came out of a
+    /// prefab belongs to the instance that brought it in, because that is
+    /// the thing the document can select, move and delete. Without this an
+    /// editor could tell you a stone was clicked and have nothing to do
+    /// about it.
+    pub owner: HashMap<EntityId, EntityId>,
     /// Instances whose prefab could not be expanded, and why. Reported
     /// rather than logged: the editor wants to show this next to the entity.
     pub problems: Vec<Problem>,
+}
+
+impl Instanced {
+    /// The document entity an expanded one belongs to.
+    pub fn owner_of(&self, id: EntityId) -> Option<EntityId> {
+        self.owner.get(&id).copied()
+    }
 }
 
 /// An instance that could not be expanded.
@@ -169,93 +183,91 @@ const MAX_DEPTH: usize = 8;
 /// The source scene is untouched: the document keeps its references, so
 /// saving it writes the references back rather than the expansion. Nothing
 /// downstream has to know a prefab existed.
+///
+/// Every entity a prefab brings gets the ID [`EntityId::within`] gives it —
+/// its ID in the prefab file, scoped to the instance — so the same stone in
+/// two campfires is two entities, and each keeps its identity for as long as
+/// the instance and the prefab do.
 pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
-    let mut out = Instanced {
-        scene: Scene {
-            view: scene.view,
-            sun: scene.sun,
-            fog: scene.fog,
-            entities: Vec::new(),
-        },
-        source: Vec::new(),
-        problems: Vec::new(),
+    let mut problems = Vec::new();
+    let entities = scene
+        .entities
+        .iter()
+        .map(|desc| expand(desc, None, prefabs, 0, &mut problems))
+        .collect();
+    let expanded = Scene {
+        view: scene.view,
+        sun: scene.sun,
+        fog: scene.fog,
+        entities,
     };
-    // The document's flatten index, advanced in the same pre-order flatten
-    // uses, so that what comes out lines up with what an editor lists.
-    let mut document_index = 0usize;
-    let mut entities = Vec::new();
-    for desc in &scene.entities {
-        entities.push(expand(
-            desc,
-            prefabs,
-            &mut document_index,
-            0,
-            &mut out.source,
-            &mut out.problems,
-        ));
+
+    // Who owns what, read off the result: a document entity owns itself,
+    // and anything else belongs to its nearest ancestor that is in the
+    // document. Derived IDs are not document IDs, so this lands every part
+    // of a prefab on the instance that brought it.
+    let document: HashSet<EntityId> = scene.ids().into_iter().collect();
+    let mut owner = HashMap::new();
+    fn walk(
+        entities: &[EntityDesc],
+        current: Option<EntityId>,
+        document: &HashSet<EntityId>,
+        owner: &mut HashMap<EntityId, EntityId>,
+    ) {
+        for entity in entities {
+            let mine = if document.contains(&entity.id) {
+                Some(entity.id)
+            } else {
+                current
+            };
+            if let Some(mine) = mine {
+                owner.insert(entity.id, mine);
+            }
+            walk(&entity.children, mine, document, owner);
+        }
     }
-    out.scene.entities = entities;
-    out
+    walk(&expanded.entities, None, &document, &mut owner);
+
+    Instanced {
+        scene: expanded,
+        owner,
+        problems,
+    }
 }
 
-/// Expand one entity, appending a source index for it and everything under
-/// it in the order `flatten` will produce.
+/// Expand one entity and everything under it.
+///
+/// `scope` is `None` for an entity of the document, which keeps its own ID,
+/// and the instance's ID for an entity out of a prefab file, whose ID is
+/// scoped to it.
 fn expand(
     desc: &EntityDesc,
+    scope: Option<EntityId>,
     prefabs: &Prefabs,
-    document_index: &mut usize,
     depth: usize,
-    source: &mut Vec<usize>,
     problems: &mut Vec<Problem>,
 ) -> EntityDesc {
-    let own_index = *document_index;
-    *document_index += 1;
-    source.push(own_index);
-
-    let mut expanded = match resolve(desc, prefabs, depth, problems) {
-        Some(from_prefab) => from_prefab,
-        None => EntityDesc {
-            children: Vec::new(),
-            ..desc.clone()
-        },
+    let id = match scope {
+        None => desc.id,
+        Some(instance) => instance.within(desc.id),
     };
-
-    // Whatever the prefab brought with it belongs to the instance: it has no
-    // entry in the document, so it cannot be selected or moved on its own.
-    let inherited = std::mem::take(&mut expanded.children);
-    let mut children = Vec::with_capacity(inherited.len() + desc.children.len());
-    for child in &inherited {
-        children.push(claim(child, own_index, source));
-    }
-    // The instance's own children do have document entries, and keep them.
-    for child in &desc.children {
-        children.push(expand(
-            child,
-            prefabs,
-            document_index,
-            depth,
-            source,
-            problems,
-        ));
-    }
-    expanded.children = children;
-    expanded.prefab = String::new();
-    expanded
-}
-
-/// Take a subtree that came out of a prefab and mark all of it as belonging
-/// to one instance.
-fn claim(desc: &EntityDesc, owner: usize, source: &mut Vec<usize>) -> EntityDesc {
-    source.push(owner);
-    EntityDesc {
-        children: desc
-            .children
-            .iter()
-            .map(|child| claim(child, owner, source))
-            .collect(),
-        prefab: String::new(),
+    // An instance becomes what its prefab holds, children and all; anything
+    // else is itself, with its children still to come.
+    let mut expanded = resolve(desc, id, prefabs, depth, problems).unwrap_or_else(|| EntityDesc {
+        children: Vec::new(),
         ..desc.clone()
+    });
+    expanded.id = id;
+    expanded.prefab = String::new();
+    // Its own children come after whatever the prefab brought, in the same
+    // scope as itself: a kettle put beside a campfire in the scene is the
+    // scene's, not the campfire's.
+    for child in &desc.children {
+        expanded
+            .children
+            .push(expand(child, scope, prefabs, depth, problems));
     }
+    expanded
 }
 
 /// What an instance stands for, with the instance's own overrides on top.
@@ -265,6 +277,7 @@ fn claim(desc: &EntityDesc, owner: usize, source: &mut Vec<usize>) -> EntityDesc
 /// hole where the thing should be, which is more useful than no scene.
 fn resolve(
     desc: &EntityDesc,
+    id: EntityId,
     prefabs: &Prefabs,
     depth: usize,
     problems: &mut Vec<Problem>,
@@ -289,22 +302,16 @@ fn resolve(
         return None;
     };
 
-    // A prefab that is itself built out of prefabs: expanded here, so that a
-    // shelter made of walls is one thing to place.
-    let mut nested_source = Vec::new();
-    let mut index = 0usize;
-    let mut root = expand(
-        template,
-        prefabs,
-        &mut index,
-        depth + 1,
-        &mut nested_source,
-        problems,
-    );
+    // Everything in the prefab is scoped to this instance. A prefab that is
+    // itself built out of prefabs is expanded on the way, so a shelter made
+    // of walls is one thing to place.
+    let mut root = expand(template, Some(id), prefabs, depth + 1, problems);
 
-    // The instance's own overrides. Name and placement always, because that
-    // is what placing a thing *is*. The rest only when the scene said
-    // something: a default here means "unspecified", not "plain grey".
+    // The instance *is* the prefab's root, so it keeps the instance's ID.
+    // Its own overrides: name and placement always, because that is what
+    // placing a thing is. The rest only when the scene said something: a
+    // default here means "unspecified", not "plain grey".
+    root.id = id;
     root.name = desc.name.clone();
     root.transform = desc.transform;
     if desc.material != MaterialRef::default() {
@@ -325,8 +332,15 @@ mod tests {
     use crate::scene::Transform;
     use glam::Vec3;
 
+    /// A scene as `Scene::load` would hand it over: parsed, with IDs.
+    fn parse(text: &str) -> Scene {
+        let mut scene: Scene = ron::from_str(text).unwrap();
+        scene.assign_ids();
+        scene
+    }
+
     fn campfire() -> EntityDesc {
-        ron::from_str(
+        let mut desc: EntityDesc = ron::from_str(
             r#"(
                 name: "campfire",
                 model: "builtin:plane",
@@ -339,7 +353,9 @@ mod tests {
                 ],
             )"#,
         )
-        .unwrap()
+        .unwrap();
+        crate::scene::assign_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
+        desc
     }
 
     fn with_campfire() -> Prefabs {
@@ -349,7 +365,7 @@ mod tests {
     }
 
     fn scene_with_two_fires() -> Scene {
-        ron::from_str(
+        parse(
             r#"(entities: [
                 (name: "ground", model: "builtin:plane"),
                 (name: "north fire", model: "", prefab: "campfire",
@@ -358,7 +374,18 @@ mod tests {
                  transform: (position: (0.0, 0.0, 10.0))),
             ])"#,
         )
-        .unwrap()
+    }
+
+    /// Which document entity owns each expanded one, by name, in tree order.
+    fn owners(document: &Scene, done: &Instanced) -> Vec<String> {
+        done.scene
+            .flatten()
+            .iter()
+            .map(|(e, _)| {
+                let owner = done.owner_of(e.id).expect("every entity has an owner");
+                document.get(owner).unwrap().name.clone()
+            })
+            .collect()
     }
 
     #[test]
@@ -401,20 +428,57 @@ mod tests {
         // The editor has to be able to answer "what did I just click on"
         // with something the document can move. A stone that came out of a
         // prefab has no entry of its own, so the answer is the fire.
-        let done = instantiate(&scene_with_two_fires(), &with_campfire());
-        assert_eq!(done.source, vec![0, 1, 1, 1, 2, 2, 2]);
+        let scene = scene_with_two_fires();
+        let done = instantiate(&scene, &with_campfire());
+        assert_eq!(
+            owners(&scene, &done),
+            [
+                "ground",
+                "north fire",
+                "north fire",
+                "north fire",
+                "south fire",
+                "south fire",
+                "south fire"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_stone_in_two_fires_is_two_entities_and_keeps_being_them() {
+        // Each part of an instance has an identity of its own — what an
+        // override or a network message will point at — and it does not
+        // change between two expansions of the same scene.
+        let scene = scene_with_two_fires();
+        let prefabs = with_campfire();
+        let stones = |done: &Instanced| -> Vec<EntityId> {
+            done.scene
+                .flatten()
+                .iter()
+                .filter(|(e, _)| e.name == "stone")
+                .map(|(e, _)| e.id)
+                .collect()
+        };
+        let first = stones(&instantiate(&scene, &prefabs));
+        assert_eq!(first.len(), 2);
+        assert_ne!(first[0], first[1], "two stones, two identities");
+        assert_eq!(first, stones(&instantiate(&scene, &prefabs)), "and stable");
+
+        // The instance itself keeps the document's ID: it *is* that line.
+        let north = scene.find("north fire").unwrap().id;
+        let done = instantiate(&scene, &prefabs);
+        assert_eq!(done.scene.find("north fire").unwrap().id, north);
     }
 
     #[test]
     fn an_instance_places_and_recolours_without_touching_the_prefab() {
-        let scene: Scene = ron::from_str(
+        let scene = parse(
             r#"(entities: [(
                 name: "cold fire", model: "", prefab: "campfire",
                 material: "stone", body: Static,
                 transform: (position: (3.0, 0.0, 0.0), scale: (2.0, 2.0, 2.0)),
             )])"#,
-        )
-        .unwrap();
+        );
         let prefabs = with_campfire();
         let done = instantiate(&scene, &prefabs);
         let root = &done.scene.entities[0];
@@ -437,13 +501,12 @@ mod tests {
         // Those do have entries in the document, so they stay selectable —
         // which is the difference between "part of the prefab" and "put
         // there beside it".
-        let scene: Scene = ron::from_str(
+        let scene = parse(
             r#"(entities: [(
                 name: "fire", model: "", prefab: "campfire",
                 children: [(name: "kettle", model: "builtin:sphere")],
             )])"#,
-        )
-        .unwrap();
+        );
         let done = instantiate(&scene, &with_campfire());
         let names: Vec<&str> = done
             .scene
@@ -453,8 +516,8 @@ mod tests {
             .collect();
         assert_eq!(names, ["fire", "ember", "stone", "kettle"]);
         assert_eq!(
-            done.source,
-            vec![0, 0, 0, 1],
+            owners(&scene, &done),
+            ["fire", "fire", "fire", "kettle"],
             "the kettle is its own entry; the prefab's parts are the fire's"
         );
     }
@@ -471,14 +534,20 @@ mod tests {
             )
             .unwrap(),
         );
-        let scene: Scene =
-            ron::from_str(r#"(entities: [(name: "camp", model: "", prefab: "camp")])"#).unwrap();
+        let scene = parse(r#"(entities: [(name: "camp", model: "", prefab: "camp")])"#);
         let done = instantiate(&scene, &prefabs);
         assert!(done.problems.is_empty(), "{:?}", done.problems);
         assert_eq!(done.scene.flatten().len(), 4, "camp, fire, ember, stone");
-        assert!(
-            done.source.iter().all(|i| *i == 0),
+        assert_eq!(
+            owners(&scene, &done),
+            ["camp"; 4],
             "all of it belongs to the one instance in the document"
+        );
+        let ids = done.scene.ids();
+        assert_eq!(
+            ids.iter().collect::<HashSet<_>>().len(),
+            ids.len(),
+            "and nesting did not give two parts one identity"
         );
     }
 
@@ -496,29 +565,27 @@ mod tests {
             )
             .unwrap(),
         );
-        let scene: Scene =
-            ron::from_str(r#"(entities: [(name: "s", model: "", prefab: "snake")])"#).unwrap();
+        let scene = parse(r#"(entities: [(name: "s", model: "", prefab: "snake")])"#);
         let done = instantiate(&scene, &prefabs);
         assert!(!done.problems.is_empty(), "it should complain");
         assert!(done.problems[0].reason.contains("itself"));
         assert!(done.scene.flatten().len() < 64, "and it stopped");
-        assert_eq!(done.source.len(), done.scene.flatten().len());
+        assert_eq!(owners(&scene, &done), vec!["s"; done.scene.flatten().len()]);
     }
 
     #[test]
     fn a_missing_prefab_leaves_a_hole_rather_than_refusing_the_scene() {
-        let scene: Scene = ron::from_str(
+        let scene = parse(
             r#"(entities: [
                 (name: "ground", model: "builtin:plane"),
                 (name: "ghost", model: "", prefab: "not_here"),
             ])"#,
-        )
-        .unwrap();
+        );
         let done = instantiate(&scene, &Prefabs::new());
         assert_eq!(done.problems.len(), 1);
         assert_eq!(done.problems[0].entity_name, "ghost");
         assert_eq!(done.scene.flatten().len(), 2, "the scene still opens");
-        assert_eq!(done.source, vec![0, 1]);
+        assert_eq!(owners(&scene, &done), ["ground", "ghost"]);
     }
 
     #[test]
@@ -527,12 +594,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("campfire.{EXTENSION}"));
-        Prefabs::save(&campfire(), &path).unwrap();
+        let fire = campfire();
+        Prefabs::save(&fire, &path).unwrap();
 
         let (prefabs, problems) = Prefabs::open(&dir).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(prefabs.names(), vec!["campfire"]);
-        assert_eq!(prefabs.get("campfire"), Some(&campfire()));
+        assert_eq!(prefabs.get("campfire"), Some(&fire), "IDs and all");
     }
 
     #[test]
@@ -550,7 +618,7 @@ mod tests {
 
     #[test]
     fn a_scene_with_no_prefabs_is_the_same_scene() {
-        let scene = Scene {
+        let mut scene = Scene {
             entities: vec![EntityDesc {
                 name: "rock".into(),
                 model: "builtin:sphere".into(),
@@ -562,8 +630,9 @@ mod tests {
             }],
             ..Scene::default()
         };
+        scene.assign_ids();
         let done = instantiate(&scene, &Prefabs::new());
         assert_eq!(done.scene, scene);
-        assert_eq!(done.source, vec![0]);
+        assert_eq!(owners(&scene, &done), ["rock"]);
     }
 }

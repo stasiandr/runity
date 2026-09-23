@@ -5,6 +5,7 @@
 // Это обычное поддерево сущностей, ровно такое же, как в сцене. Экземпляр в
 // сцене задаёт имя, место и, если надо, материал; всё остальное отсюда.
 (
+    id: "582a449ef922af74",
     name: "campfire",
     model: "builtin:plane",
     transform: (scale: (1.4, 1.0, 1.4)),
@@ -12,14 +13,15 @@
     children: [
         // Единственное неосвещаемое: это свет, а не поверхность.
         (
+            id: "3d94e10581077d8c",
             name: "ember",
             model: "builtin:sphere",
             transform: (position: (0.0, 0.18, 0.0), scale: (0.34, 0.22, 0.34)),
             material: "ember",
         ),
-        (name: "stone n", model: "builtin:cube", transform: (position: (0.0, 0.1, -0.62), scale: (0.34, 0.22, 0.26)), material: "stone"),
-        (name: "stone s", model: "builtin:cube", transform: (position: (0.0, 0.1, 0.62), scale: (0.34, 0.22, 0.26)), material: "stone"),
-        (name: "stone e", model: "builtin:cube", transform: (position: (0.62, 0.1, 0.0), scale: (0.26, 0.22, 0.34)), material: "stone"),
-        (name: "stone w", model: "builtin:cube", transform: (position: (-0.62, 0.1, 0.0), scale: (0.26, 0.22, 0.34)), material: "stone"),
+        (id: "4f499cd9c12483ee", name: "stone n", model: "builtin:cube", transform: (position: (0.0, 0.1, -0.62), scale: (0.34, 0.22, 0.26)), material: "stone"),
+        (id: "a003eec59c5d989b", name: "stone s", model: "builtin:cube", transform: (position: (0.0, 0.1, 0.62), scale: (0.34, 0.22, 0.26)), material: "stone"),
+        (id: "ceae93e40b010415", name: "stone e", model: "builtin:cube", transform: (position: (0.62, 0.1, 0.0), scale: (0.26, 0.22, 0.34)), material: "stone"),
+        (id: "fc764557156a098b", name: "stone w", model: "builtin:cube", transform: (position: (-0.62, 0.1, 0.0), scale: (0.26, 0.22, 0.34)), material: "stone"),
     ],
 )

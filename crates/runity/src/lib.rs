@@ -27,6 +27,7 @@ pub mod builtin;
 pub mod edit;
 pub mod gizmo;
 pub mod gpu;
+pub mod id;
 pub mod input;
 pub mod library;
 pub mod material;
@@ -53,6 +54,7 @@ pub use audio::{Audio, Falloff};
 pub use edit::History;
 pub use gizmo::{Drag, GizmoStyle, Handle};
 pub use gpu::{Gpu, GpuError, OffscreenTarget};
+pub use id::EntityId;
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
@@ -71,5 +73,5 @@ pub use ui::{Quad, TextRun, Ui};
 pub use ui_render::UiRenderer;
 pub use world::{
     build_frame, captured_view, scene_camera, scene_lighting, spawn_scene, spawn_scene_with, Model,
-    Posed, SceneIndex, Shape, Surface, Textured,
+    Posed, SceneId, Shape, Surface, Textured,
 };

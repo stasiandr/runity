@@ -44,15 +44,15 @@ pub struct Textured(pub crate::render::TextureHandle);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldTransform(pub glam::Mat4);
 
-/// Which row of the scene an entity came from.
+/// Which entity of the scene this one was spawned from.
 ///
-/// The index into `scene.flatten()`, in the order the scene was walked. It
-/// is what lets anything holding an entity answer "which line in the file is
-/// this" — an editor's selection, a message about a missing model, a tool
-/// that wants to write a change back. Without it the only way back to the
-/// scene is to guess from a position.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SceneIndex(pub usize);
+/// The [`EntityId`](crate::EntityId) of its line in the file. It is what
+/// lets anything holding an entity answer "which line in the file is this" —
+/// an editor's selection, a message about a missing model, a tool writing a
+/// change back — and it keeps answering correctly when lines are added or
+/// removed above it, which a position in the file would not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SceneId(pub crate::id::EntityId);
 
 /// What an entity is attached to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,7 +106,6 @@ pub fn spawn_scene_with(
     palette: impl Fn(&str) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut missing = Vec::new();
-    let mut index = 0;
     for desc in &scene.entities {
         spawn_subtree(
             desc,
@@ -115,7 +114,6 @@ pub fn spawn_scene_with(
             world,
             &mut resolve,
             &palette,
-            &mut index,
             &mut missing,
         );
     }
@@ -127,7 +125,6 @@ pub fn spawn_scene_with(
 /// A child whose model is missing still spawns, because its own children may
 /// be fine and dropping the branch would move them. It just gets nothing to
 /// draw.
-#[allow(clippy::too_many_arguments)]
 fn spawn_subtree(
     desc: &crate::scene::EntityDesc,
     parent: Option<hecs::Entity>,
@@ -135,20 +132,15 @@ fn spawn_subtree(
     world: &mut World,
     resolve: &mut impl FnMut(&str) -> Option<MeshHandle>,
     palette: &impl Fn(&str) -> Option<Material>,
-    index: &mut usize,
     missing: &mut Vec<Unresolved>,
 ) {
     let world_matrix = parent_matrix * desc.transform.matrix();
-    // Pre-order, which is the order `flatten` walks in — the two have to
-    // agree, or an index means one entity here and another there.
-    let scene_index = SceneIndex(*index);
-    *index += 1;
     let entity = world.spawn((
         desc.transform,
         WorldTransform(world_matrix),
         Physics(desc.body),
         Shape(desc.collider),
-        scene_index,
+        SceneId(desc.id),
     ));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
@@ -171,7 +163,6 @@ fn spawn_subtree(
             world,
             resolve,
             palette,
-            index,
             missing,
         );
     }
@@ -316,6 +307,7 @@ mod tests {
     /// An entity with nothing set, for `..blank()` in the tests below.
     fn blank() -> EntityDesc {
         EntityDesc {
+            id: Default::default(),
             name: String::new(),
             model: "m".into(),
             prefab: String::new(),
@@ -333,6 +325,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, model)| EntityDesc {
+                    id: Default::default(),
                     name: format!("thing {i}"),
                     model: (*model).into(),
                     prefab: String::new(),

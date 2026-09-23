@@ -25,7 +25,9 @@ use runity::gizmo::{self, Drag, GizmoStyle, Handle, Motion, Tool};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, FogSettings, Frame, Lighting, MeshHandle};
 use runity::scene::MaterialRef;
-use runity::{builtin, EntityDesc, Gpu, Library, Material, OffscreenTarget, Renderer, Scene};
+use runity::{
+    builtin, EntityDesc, EntityId, Gpu, Library, Material, OffscreenTarget, Renderer, Scene,
+};
 
 pub use error::EditError;
 
@@ -67,8 +69,13 @@ pub struct Session {
     uploaded: Vec<(String, MeshHandle)>,
     camera: Camera,
     pixels: Vec<u8>,
-    /// Which entity the gizmo is on, by flattened index.
-    selected: Option<usize>,
+    /// Which entity the gizmo is on.
+    ///
+    /// By ID, so it survives edits to everything else. When it was an index
+    /// it had to be dropped after every delete, reparent and undo, because a
+    /// position in a list that had changed shape pointed at whatever slid
+    /// into the gap.
+    selected: Option<EntityId>,
     gizmo_style: GizmoStyle,
     /// Which handles are shown and what a drag does with them.
     tool: Tool,
@@ -194,6 +201,7 @@ impl Session {
         self.prefabs = prefabs;
         self.history.replace(scene);
         self.scene_path = Some(path);
+        // Another document's IDs mean nothing here.
         self.selected = None;
         self.drag = None;
         self.respawn();
@@ -227,24 +235,34 @@ impl Session {
         self.history.scene().flatten().len()
     }
 
+    /// Every entity, in the order the tree shows them: depth first, parents
+    /// before their children.
+    pub fn entities(&self) -> Vec<EntityId> {
+        self.history.scene().ids()
+    }
+
+    /// The first entity with this name. For people and tests; anything that
+    /// has to find the same entity twice keeps its ID.
+    pub fn find(&self, name: &str) -> Option<EntityId> {
+        self.history.scene().find(name).map(|e| e.id)
+    }
+
     /// One entity's name.
-    pub fn entity_name(&self, index: usize) -> Option<String> {
-        let flat = self.history.scene().flatten();
-        flat.get(index).map(|(desc, _)| desc.name.clone())
+    pub fn entity_name(&self, id: EntityId) -> Option<String> {
+        self.history.scene().get(id).map(|e| e.name.clone())
     }
 
     /// An entity's local transform — the one the file holds.
-    pub fn transform(&self, index: usize) -> Option<runity::Transform> {
-        let flat = self.history.scene().flatten();
-        flat.get(index).map(|(desc, _)| desc.transform)
+    pub fn transform(&self, id: EntityId) -> Option<runity::Transform> {
+        self.history.scene().get(id).map(|e| e.transform)
     }
 
     /// Set an entity's local transform, as one undoable step.
-    pub fn set_transform(&mut self, index: usize, transform: runity::Transform) -> EditResult<()> {
+    pub fn set_transform(&mut self, id: EntityId, transform: runity::Transform) -> EditResult<()> {
         // Recorded: a value typed into an inspector is one undoable edit. A
         // drag is not, because `gizmo_begin` already took the snapshot that
         // covers the whole gesture.
-        let desc = self.edit_entity(index)?;
+        let desc = self.edit_entity(id)?;
         desc.transform = transform;
         // Respawned rather than patched in place: a moved parent moves its
         // children, and keeping two ways to apply that is how they drift.
@@ -259,37 +277,22 @@ impl Session {
     /// while play is running, the simulation — have had their say. An
     /// inspector that showed only the local one would say a falling crate is
     /// still four metres up.
-    pub fn world_position(&self, index: usize) -> Option<Vec3> {
-        let mut best: Option<(usize, Vec3)> = None;
-        for (scene_index, placed) in self
-            .world
-            .query::<(&runity::SceneIndex, &runity::world::WorldTransform)>()
+    pub fn world_position(&self, id: EntityId) -> Option<Vec3> {
+        // The entity spawned for that line. For an instance it is the
+        // prefab's root, which keeps the instance's ID: the line stands for
+        // the whole thing, and the root is where the whole thing is.
+        self.world
+            .query::<(&runity::SceneId, &runity::world::WorldTransform)>()
             .iter()
-        {
-            // The first spawned entity belonging to that row is the answer:
-            // for an instance that is the prefab's root, which is the thing
-            // the row stands for.
-            let row = self
-                .instanced
-                .source
-                .get(scene_index.0)
-                .copied()
-                .unwrap_or(scene_index.0);
-            if row != index {
-                continue;
-            }
-            if best.is_none_or(|(first, _)| scene_index.0 < first) {
-                best = Some((scene_index.0, placed.0.w_axis.truncate()));
-            }
-        }
-        best.map(|(_, position)| position)
+            .find(|(scene_id, _)| scene_id.0 == id)
+            .map(|(_, placed)| placed.0.w_axis.truncate())
     }
 
     // --- editing, and taking it back ------------------------------------
 
     /// Add an entity with a model, under `parent` or at the top. Returns its
-    /// index.
-    pub fn add(&mut self, parent: Option<usize>, model: &str) -> EditResult<usize> {
+    /// ID.
+    pub fn add(&mut self, parent: Option<EntityId>, model: &str) -> EditResult<EntityId> {
         let desc = EntityDesc {
             name: "entity".into(),
             model: model.to_string(),
@@ -299,36 +302,40 @@ impl Session {
     }
 
     /// Delete an entity and everything under it.
-    pub fn delete(&mut self, index: usize) -> EditResult<()> {
+    pub fn delete(&mut self, id: EntityId) -> EditResult<()> {
         self.refuse_while_playing()?;
-        runity::edit::remove(self.history.edit(), index).ok_or(EditError::NoEntity(index))?;
-        // The selection is an index into a list that just changed shape.
-        // Keeping it would point the gizmo at whatever slid into the gap.
-        self.selected = None;
-        self.drag = None;
-        self.respawn();
+        self.require(id)?;
+        runity::edit::remove(self.history.edit(), id);
+        self.after_structural_change();
         Ok(())
     }
 
-    /// Copy an entity beside itself. Returns the copy's index.
-    pub fn duplicate(&mut self, index: usize) -> EditResult<usize> {
+    /// Copy an entity beside itself. Returns the copy's ID.
+    pub fn duplicate(&mut self, id: EntityId) -> EditResult<EntityId> {
         self.refuse_while_playing()?;
-        let copy = runity::edit::duplicate(self.history.edit(), index)
-            .ok_or(EditError::NoEntity(index))?;
+        self.require(id)?;
+        let copy =
+            runity::edit::duplicate(self.history.edit(), id).ok_or(EditError::NoEntity(id))?;
         self.respawn();
         Ok(copy)
     }
 
     /// Move an entity under another, or to the top. Refuses to make
     /// something its own ancestor, and says `false` when it did.
-    pub fn reparent(&mut self, index: usize, new_parent: Option<usize>) -> EditResult<bool> {
+    pub fn reparent(&mut self, id: EntityId, new_parent: Option<EntityId>) -> EditResult<bool> {
         self.refuse_while_playing()?;
-        let moved = runity::edit::reparent(self.history.edit(), index, new_parent);
-        if moved {
-            self.selected = None;
-            self.respawn();
+        self.require(id)?;
+        if let Some(parent) = new_parent {
+            self.require(parent)?;
         }
-        Ok(moved)
+        // Checked on a copy first, so a refused move costs no undo step.
+        let mut trial = self.history.scene().clone();
+        if !runity::edit::reparent(&mut trial, id, new_parent) {
+            return Ok(false);
+        }
+        *self.history.edit() = trial;
+        self.after_structural_change();
+        Ok(true)
     }
 
     /// Step back. `false` when there is nothing to undo.
@@ -336,9 +343,7 @@ impl Session {
         self.refuse_while_playing()?;
         let stepped = self.history.undo();
         if stepped {
-            self.selected = None;
-            self.drag = None;
-            self.respawn();
+            self.after_structural_change();
         }
         Ok(stepped)
     }
@@ -348,9 +353,7 @@ impl Session {
         self.refuse_while_playing()?;
         let stepped = self.history.redo();
         if stepped {
-            self.selected = None;
-            self.drag = None;
-            self.respawn();
+            self.after_structural_change();
         }
         Ok(stepped)
     }
@@ -370,9 +373,11 @@ impl Session {
     /// Resolved rather than raw: an entity naming `stone` reports the colour
     /// `stone` actually is, so an inspector's swatch shows what is on screen
     /// rather than the word. [`Session::material_name`] tells the two apart.
-    pub fn material(&self, index: usize) -> Option<Material> {
-        let flat = self.history.scene().flatten();
-        flat.get(index).map(|(desc, _)| self.resolve_material(desc))
+    pub fn material(&self, id: EntityId) -> Option<Material> {
+        self.history
+            .scene()
+            .get(id)
+            .map(|desc| self.resolve_material(desc))
     }
 
     /// Give an entity a colour of its own.
@@ -382,20 +387,19 @@ impl Session {
     /// [`Session::set_material_name`] — a separate call, because the
     /// difference between "this rock is a bit greener" and "this rock is
     /// moss" is a difference the scene file has to keep.
-    pub fn set_material(&mut self, index: usize, material: Material) -> EditResult<()> {
+    pub fn set_material(&mut self, id: EntityId, material: Material) -> EditResult<()> {
         // One undoable step, like a value typed into an inspector. A drag
         // along a colour slider that wants to be one step takes its own
         // snapshot the way a gizmo drag does.
-        self.edit_entity(index)?.material = MaterialRef::Inline(material);
+        self.edit_entity(id)?.material = MaterialRef::Inline(material);
         self.respawn();
         Ok(())
     }
 
     /// The name of the material an entity points at, or `None` when it
     /// carries its own colour.
-    pub fn material_name(&self, index: usize) -> Option<String> {
-        let flat = self.history.scene().flatten();
-        match flat.get(index).map(|(desc, _)| &desc.material) {
+    pub fn material_name(&self, id: EntityId) -> Option<String> {
+        match self.history.scene().get(id).map(|desc| &desc.material) {
             Some(MaterialRef::Named(name)) => Some(name.clone()),
             _ => None,
         }
@@ -409,11 +413,11 @@ impl Session {
     /// scene format already treats a name nothing answers to as a visible
     /// mistake rather than a failure. An empty name is refused: clearing the
     /// link means giving the entity a colour.
-    pub fn set_material_name(&mut self, index: usize, name: &str) -> EditResult<()> {
+    pub fn set_material_name(&mut self, id: EntityId, name: &str) -> EditResult<()> {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
-        self.edit_entity(index)?.material = MaterialRef::Named(name.to_string());
+        self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
         self.respawn();
         Ok(())
     }
@@ -450,7 +454,7 @@ impl Session {
     /// every other scene can use. Writes a `.rmat` source into `materials/`
     /// beside the scene and imports it, so the thing the editor produced is
     /// the same kind of file a person would have written.
-    pub fn save_material(&mut self, index: usize, name: &str) -> EditResult<()> {
+    pub fn save_material(&mut self, id: EntityId, name: &str) -> EditResult<()> {
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
@@ -460,7 +464,7 @@ impl Session {
             .material_dir
             .clone()
             .ok_or(EditError::NoSceneDirectory)?;
-        let material = self.material(index).ok_or(EditError::NoEntity(index))?;
+        let material = self.material(id).ok_or(EditError::NoEntity(id))?;
 
         // Written as sRGB hex, which is what the format is for: the file
         // that comes out is one a person can read and edit, not a dump of
@@ -486,7 +490,7 @@ impl Session {
             .map_err(|e| EditError::Import(format!("{e:#}")))?;
         self.reopen_library()?;
 
-        self.edit_entity(index)?.material = MaterialRef::Named(name.to_string());
+        self.edit_entity(id)?.material = MaterialRef::Named(name.to_string());
         self.respawn();
         Ok(())
     }
@@ -525,16 +529,17 @@ impl Session {
     /// The tree needs this to say so: an instance is one row whose insides
     /// belong to a file, and a row that looks like every other row hides the
     /// difference until someone tries to move a stone and moves twelve.
-    pub fn entity_prefab(&self, index: usize) -> Option<String> {
-        let flat = self.history.scene().flatten();
-        flat.get(index)
-            .map(|(desc, _)| desc.prefab.clone())
+    pub fn entity_prefab(&self, id: EntityId) -> Option<String> {
+        self.history
+            .scene()
+            .get(id)
+            .map(|desc| desc.prefab.clone())
             .filter(|name| !name.is_empty())
     }
 
     /// Place an instance of a prefab, under `parent` or at the top. Returns
-    /// its index.
-    pub fn add_instance(&mut self, parent: Option<usize>, prefab: &str) -> EditResult<usize> {
+    /// its ID.
+    pub fn add_instance(&mut self, parent: Option<EntityId>, prefab: &str) -> EditResult<EntityId> {
         if self.prefabs.get(prefab).is_none() {
             // Refused, unlike an unknown material name. A colour that does
             // not resolve shows grey and can be fixed by typing; an instance
@@ -556,7 +561,7 @@ impl Session {
     /// times, and the reason it is one call rather than "save it, then
     /// retype it as an instance": doing it by hand leaves the scene holding
     /// a copy that drifts from the file the moment either changes.
-    pub fn make_prefab(&mut self, index: usize, name: &str) -> EditResult<()> {
+    pub fn make_prefab(&mut self, id: EntityId, name: &str) -> EditResult<()> {
         self.refuse_while_playing()?;
         if name.is_empty() {
             return Err(EditError::EmptyName("a prefab"));
@@ -567,15 +572,14 @@ impl Session {
         // something that already contains an instance writes what it stands
         // for rather than a reference the new file's neighbours may not
         // have.
+        // The instance root keeps the document's ID, so this is the whole
+        // expanded subtree of the line being turned into a prefab.
         let desc = self
             .instanced
             .scene
-            .flatten()
-            .iter()
-            .zip(&self.instanced.source)
-            .find(|(_, source)| **source == index)
-            .map(|((desc, _), _)| (*desc).clone())
-            .ok_or(EditError::NoEntity(index))?;
+            .get(id)
+            .cloned()
+            .ok_or(EditError::NoEntity(id))?;
 
         std::fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{name}.{}", runity::prefab::EXTENSION));
@@ -585,7 +589,7 @@ impl Session {
         // The entity becomes an instance: its children now live in the
         // file, and leaving a copy of them in the scene is how the two start
         // to drift.
-        let entity = self.edit_entity(index)?;
+        let entity = self.edit_entity(id)?;
         entity.prefab = name.to_string();
         entity.model = String::new();
         entity.children.clear();
@@ -682,15 +686,15 @@ impl Session {
     /// around, and anything small enough to be hard to see is also too small
     /// to fly to.
     pub fn focus_selected(&mut self) -> bool {
-        let Some(index) = self.selected else {
+        let Some(id) = self.selected else {
             return false;
         };
-        let Some(target) = self.world_position(index) else {
+        let Some(target) = self.world_position(id) else {
             return false;
         };
         // How big the thing is, so a boulder and a pebble both end up
         // filling the frame rather than one of them being a dot.
-        let radius = self.selected_radius(index).max(0.05);
+        let radius = self.selected_radius(id).max(0.05);
         let half_fov = (self.camera.fov_y_degrees * 0.5).to_radians().max(1e-3);
         // A little further than the geometry needs, so the thing is framed
         // rather than touching the edges.
@@ -765,44 +769,41 @@ impl Session {
     /// The entity under a point in the image.
     ///
     /// Tested against bounding boxes, against the expanded scene, and
-    /// answered with a document index: clicking a stone that came out of a
+    /// answered with a document entity: clicking a stone that came out of a
     /// prefab selects the fire that brought it, because the fire is the
     /// thing the document can move. A triangle-exact pick is better and
     /// much slower, and for a box the difference only shows on thin
     /// diagonal geometry.
-    pub fn pick(&self, x: u32, y: u32) -> Option<usize> {
+    pub fn pick(&self, x: u32, y: u32) -> Option<EntityId> {
         let (near, direction) = self.ray(x, y);
-        let mut best: Option<(f32, usize)> = None;
-        for (index, (desc, world)) in self.instanced.scene.flatten().iter().enumerate() {
+        let mut best: Option<(f32, EntityId)> = None;
+        for (desc, world) in self.instanced.scene.flatten() {
             let Some(bounds) = self.bounds_of(&desc.model) else {
                 continue;
             };
-            if let Some(distance) = ray_box(near, direction, bounds, *world) {
-                let owner = self.instanced.source.get(index).copied().unwrap_or(index);
+            let Some(owner) = self.instanced.owner_of(desc.id) else {
+                continue;
+            };
+            if let Some(distance) = ray_box(near, direction, bounds, world) {
                 if best.is_none_or(|(closest, _)| distance < closest) {
                     best = Some((distance, owner));
                 }
             }
         }
-        best.map(|(_, index)| index)
+        best.map(|(_, id)| id)
     }
 
     /// Put the gizmo on an entity, or clear the selection with `None`.
-    pub fn select(&mut self, index: Option<usize>) -> EditResult<()> {
-        match index {
-            None => {
-                self.selected = None;
-                self.drag = None;
-            }
-            Some(index) if index >= self.entity_count() => {
-                return Err(EditError::NoEntity(index));
-            }
-            Some(index) => self.selected = Some(index),
+    pub fn select(&mut self, id: Option<EntityId>) -> EditResult<()> {
+        if let Some(id) = id {
+            self.require(id)?;
         }
+        self.selected = id;
+        self.drag = None;
         Ok(())
     }
 
-    pub fn selected(&self) -> Option<usize> {
+    pub fn selected(&self) -> Option<EntityId> {
         self.selected
     }
 
@@ -872,7 +873,7 @@ impl Session {
         // One snapshot for the whole gesture: everything until the next one
         // undoes as a single step, however many frames the drag lasts.
         self.history.snapshot();
-        self.drag_from = self.selected.and_then(|index| self.transform(index));
+        self.drag_from = self.selected.and_then(|id| self.transform(id));
         self.drag = Some(gizmo::begin_for(self.tool, origin, handle, from, direction));
         Ok(Some(handle))
     }
@@ -880,7 +881,7 @@ impl Session {
     /// Move the held handle to follow a point. `false` without a grab.
     pub fn gizmo_drag(&mut self, x: u32, y: u32) -> EditResult<bool> {
         self.refuse_while_playing()?;
-        let (Some(drag), Some(index)) = (self.drag, self.selected) else {
+        let (Some(drag), Some(id)) = (self.drag, self.selected) else {
             return Ok(false);
         };
         let (from, direction) = self.ray(x, y);
@@ -890,13 +891,16 @@ impl Session {
         // is its local one. The difference is the parent's transform, and
         // applying the move in world space without undoing it drags a child
         // out of its parent by however much the parent is offset.
-        let parent = self.parent_matrix(index);
+        let parent = self.parent_matrix(id);
         let started = self.drag_from;
         let snap = self.snap;
         // Untracked: the snapshot for this gesture was taken at
         // `gizmo_begin`.
-        let desc = runity::edit::nth_mut(self.history.scene_mut_untracked(), index)
-            .ok_or(EditError::NoEntity(index))?;
+        let desc = self
+            .history
+            .scene_mut_untracked()
+            .get_mut(id)
+            .ok_or(EditError::NoEntity(id))?;
         match motion {
             Motion::Position(moved) => {
                 // Snapped in local space, which is the space the file holds
@@ -1015,26 +1019,48 @@ impl Session {
         }
     }
 
-    /// The entity at `index`, for an edit that is one undoable step.
-    fn edit_entity(&mut self, index: usize) -> EditResult<&mut EntityDesc> {
-        self.refuse_while_playing()?;
-        if index >= self.entity_count() {
-            // Checked before `edit` takes a snapshot, so a call with a bad
-            // index does not leave an empty step on the undo stack.
-            return Err(EditError::NoEntity(index));
+    /// That the document has an entity with this ID.
+    fn require(&self, id: EntityId) -> EditResult<()> {
+        match self.history.scene().get(id) {
+            Some(_) => Ok(()),
+            None => Err(EditError::NoEntity(id)),
         }
-        runity::edit::nth_mut(self.history.edit(), index).ok_or(EditError::NoEntity(index))
     }
 
-    fn insert(&mut self, parent: Option<usize>, desc: EntityDesc) -> EditResult<usize> {
+    /// The entity with `id`, for an edit that is one undoable step.
+    fn edit_entity(&mut self, id: EntityId) -> EditResult<&mut EntityDesc> {
         self.refuse_while_playing()?;
-        if let Some(parent) = parent.filter(|p| *p >= self.entity_count()) {
-            return Err(EditError::NoEntity(parent));
+        // Checked before `edit` takes a snapshot, so a call with an ID that
+        // is not there does not leave an empty step on the undo stack.
+        self.require(id)?;
+        self.history
+            .edit()
+            .get_mut(id)
+            .ok_or(EditError::NoEntity(id))
+    }
+
+    fn insert(&mut self, parent: Option<EntityId>, desc: EntityDesc) -> EditResult<EntityId> {
+        self.refuse_while_playing()?;
+        if let Some(parent) = parent {
+            self.require(parent)?;
         }
-        let index = runity::edit::add(self.history.edit(), parent, desc)
-            .ok_or(EditError::NoEntity(parent.unwrap_or(0)))?;
+        let id = runity::edit::add(self.history.edit(), parent, desc)
+            .expect("the parent was checked a line above");
         self.respawn();
-        Ok(index)
+        Ok(id)
+    }
+
+    /// After anything that can remove entities: keep the selection if what
+    /// it names is still there, which by ID it usually is.
+    fn after_structural_change(&mut self) {
+        if let Some(id) = self.selected {
+            if self.history.scene().get(id).is_none() {
+                self.selected = None;
+            }
+        }
+        self.drag = None;
+        self.drag_from = None;
+        self.respawn();
     }
 
     /// Rebuild the world from the scene.
@@ -1086,17 +1112,17 @@ impl Session {
         desc.material_from(|name| self.library.as_ref()?.material_by_name(name))
     }
 
-    /// How big the thing at a document index is, as a radius around it.
+    /// How big a document entity is, as a radius around it.
     ///
     /// Measured over the expanded subtree, so focusing on a campfire frames
     /// the ring of stones rather than the patch of earth under it.
-    fn selected_radius(&self, index: usize) -> f32 {
-        let Some(centre) = self.world_position(index) else {
+    fn selected_radius(&self, id: EntityId) -> f32 {
+        let Some(centre) = self.world_position(id) else {
             return 0.0;
         };
         let mut radius: f32 = 0.0;
-        for (i, (desc, world)) in self.instanced.scene.flatten().iter().enumerate() {
-            if self.instanced.source.get(i).copied().unwrap_or(i) != index {
+        for (desc, world) in self.instanced.scene.flatten() {
+            if self.instanced.owner_of(desc.id) != Some(id) {
                 continue;
             }
             let Some((low, high)) = self.bounds_of(&desc.model) else {
@@ -1136,19 +1162,26 @@ impl Session {
 
     /// Where the gizmo sits: the selected entity's world position.
     fn selected_origin(&self) -> Option<Vec3> {
-        let index = self.selected?;
-        let flat = self.history.scene().flatten();
-        let (_, world) = flat.get(index)?;
+        let id = self.selected?;
+        let (_, world) = self.placed(id)?;
         Some(world.w_axis.truncate())
     }
 
     /// The transform an entity's parents impose on it.
-    fn parent_matrix(&self, index: usize) -> Mat4 {
-        let flat = self.history.scene().flatten();
-        let Some((desc, world)) = flat.get(index) else {
+    fn parent_matrix(&self, id: EntityId) -> Mat4 {
+        let Some((desc, world)) = self.placed(id) else {
             return Mat4::IDENTITY;
         };
-        *world * desc.transform.matrix().inverse()
+        world * desc.transform.matrix().inverse()
+    }
+
+    /// An entity of the document and where its parents put it.
+    fn placed(&self, id: EntityId) -> Option<(&EntityDesc, Mat4)> {
+        self.history
+            .scene()
+            .flatten()
+            .into_iter()
+            .find(|(desc, _)| desc.id == id)
     }
 
     fn bounds_of(&self, model: &str) -> Option<(Vec3, Vec3)> {

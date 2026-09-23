@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut session = Session::offscreen(640, 400)?;
     session.open_scene(&scene)?;
     session.set_camera(Vec3::new(2.6, 2.2, 4.2), Vec3::new(0.0, 0.5, 0.0));
-    session.select(Some(1))?;
+    session.select(session.find("crate"))?;
     session.render();
 
     let (width, height) = session.size();

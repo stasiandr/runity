@@ -15,6 +15,7 @@
         // The ground. Without it nothing has anywhere to stand and every
         // object floats, which was most of what looked wrong before.
         (
+            id: "285277708f42c5cd",
             name: "ground",
             model: "builtin:plane",
             transform: (scale: (120.0, 1.0, 120.0)),
@@ -23,14 +24,15 @@
 
         // A row of cones marching away from the camera: the same object at
         // four distances, so fog has to show its work.
-        (name: "tree near",   model: "builtin:cone", transform: (position: (-2.2, 0.0,  1.0), scale: (1.6, 3.2, 1.6)), material: "needle"),
-        (name: "tree mid",    model: "builtin:cone", transform: (position: ( 1.8, 0.0, -6.0), scale: (1.8, 4.0, 1.8)), material: "needle"),
-        (name: "tree far",    model: "builtin:cone", transform: (position: (-4.0, 0.0, -22.0), scale: (2.0, 4.6, 2.0)), material: "needle"),
-        (name: "tree furthest", model: "builtin:cone", transform: (position: ( 5.0, 0.0, -48.0), scale: (2.2, 5.0, 2.2)), material: "needle"),
+        (id: "0bea9a71729ac90f", name: "tree near",   model: "builtin:cone", transform: (position: (-2.2, 0.0,  1.0), scale: (1.6, 3.2, 1.6)), material: "needle"),
+        (id: "4eebf9513e698bff", name: "tree mid",    model: "builtin:cone", transform: (position: ( 1.8, 0.0, -6.0), scale: (1.8, 4.0, 1.8)), material: "needle"),
+        (id: "8a36f9521a6a74ac", name: "tree far",    model: "builtin:cone", transform: (position: (-4.0, 0.0, -22.0), scale: (2.0, 4.6, 2.0)), material: "needle"),
+        (id: "cce8d3772ba8fe1f", name: "tree furthest", model: "builtin:cone", transform: (position: ( 5.0, 0.0, -48.0), scale: (2.2, 5.0, 2.2)), material: "needle"),
 
         // A box, because flat faces at right angles are where hemisphere
         // ambient is easiest to read: three faces, three different values.
         (
+            id: "2e7ef17762ca70f9",
             name: "crate",
             model: "builtin:cube",
             transform: (position: (2.6, 0.5, 2.0), rotation_deg: (0.0, 24.0, 0.0)),
@@ -40,6 +42,7 @@
 
         // A sphere, which is where a bad normal shows up first.
         (
+            id: "8f74bd001ecbe5b1",
             name: "boulder",
             model: "builtin:sphere",
             transform: (position: (-1.4, 0.55, 3.4), scale: (1.1, 1.1, 1.1)),
@@ -53,6 +56,7 @@
         // out at its parent's feet has to be rotated into place — which is
         // what tells a hierarchy apart from an offset.
         (
+            id: "1e0a82d8db467066",
             name: "campfire",
             model: "builtin:plane",
             transform: (position: (0.7, 0.01, 3.0), rotation_deg: (0.0, 35.0, 0.0), scale: (1.4, 1.0, 1.4)),
@@ -61,15 +65,16 @@
                 // The one unlit thing in the scene. It should stay the same
                 // colour at dawn and at midnight, and fog should not touch it.
                 (
+                    id: "d752ecd915d0644c",
                     name: "ember",
                     model: "builtin:sphere",
                     transform: (position: (0.0, 0.18, 0.0), scale: (0.24, 0.24, 0.24)),
                     material: "ember",
                 ),
-                (name: "stone north", model: "builtin:cube", transform: (position: ( 0.0, 0.06, -0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
-                (name: "stone south", model: "builtin:cube", transform: (position: ( 0.0, 0.06,  0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
-                (name: "stone east",  model: "builtin:cube", transform: (position: ( 0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
-                (name: "stone west",  model: "builtin:cube", transform: (position: (-0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (id: "18293ab721aa5b84", name: "stone north", model: "builtin:cube", transform: (position: ( 0.0, 0.06, -0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (id: "5e9ee53d50da5ec1", name: "stone south", model: "builtin:cube", transform: (position: ( 0.0, 0.06,  0.42), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (id: "7a88527a14c31080", name: "stone east",  model: "builtin:cube", transform: (position: ( 0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
+                (id: "3208c50d6bf64c99", name: "stone west",  model: "builtin:cube", transform: (position: (-0.42, 0.06, 0.0), scale: (0.18, 0.12, 0.18)), material: "stone"),
             ],
         ),
     ],

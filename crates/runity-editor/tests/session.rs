@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use runity::gizmo::{Handle, Tool};
 use runity::glam::Vec3;
-use runity::{Material, Transform};
+use runity::{EntityId, Material, Transform};
 use runity_editor::{EditError, Session, Snap};
 
 const SCENE: &str = r#"(
@@ -62,6 +62,13 @@ fn transform(position: [f32; 3], rotation_deg: [f32; 3], scale: [f32; 3]) -> Tra
     }
 }
 
+/// An entity's ID, by name — what a person clicking in the tree would get.
+fn id(session: &Session, name: &str) -> EntityId {
+    session
+        .find(name)
+        .unwrap_or_else(|| panic!("no {name} in the scene"))
+}
+
 /// Sweep outward from the middle of the view for a handle, rather than
 /// guessing a pixel: where the handles land depends on the projection, and
 /// a test that hard-codes that is testing arithmetic it does not own.
@@ -83,8 +90,13 @@ fn a_scene_opens_and_lists_its_entities_including_children() {
         return;
     };
     assert_eq!(session.entity_count(), 3, "ground, crate, lid");
-    assert_eq!(session.entity_name(1).as_deref(), Some("crate"));
-    assert_eq!(session.entity_name(3), None, "and nothing past the end");
+    let names: Vec<String> = session
+        .entities()
+        .into_iter()
+        .map(|id| session.entity_name(id).unwrap())
+        .collect();
+    assert_eq!(names, ["ground", "crate", "lid"], "in tree order");
+    assert_eq!(session.entity_name(EntityId::fresh()), None);
 }
 
 #[test]
@@ -92,9 +104,10 @@ fn a_transform_round_trips_and_reaches_the_file() {
     let Some((mut session, path)) = open("transform") else {
         return;
     };
+    let crate_id = id(&session, "crate");
     let wanted = transform([1.0, 2.0, 3.0], [0.0, 45.0, 0.0], [2.0, 2.0, 2.0]);
-    session.set_transform(1, wanted).unwrap();
-    assert_eq!(session.transform(1), Some(wanted));
+    session.set_transform(crate_id, wanted).unwrap();
+    assert_eq!(session.transform(crate_id), Some(wanted));
 
     session.save_scene(None).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
@@ -119,9 +132,12 @@ fn an_edit_to_an_entity_that_is_not_there_says_which() {
     let Some((mut session, _)) = open("missing") else {
         return;
     };
-    let err = session.set_transform(9, Transform::default()).unwrap_err();
-    assert_eq!(err, EditError::NoEntity(9));
-    assert!(err.to_string().contains('9'), "{err}");
+    let nobody = EntityId::fresh();
+    let err = session
+        .set_transform(nobody, Transform::default())
+        .unwrap_err();
+    assert_eq!(err, EditError::NoEntity(nobody));
+    assert!(err.to_string().contains(&nobody.to_string()), "{err}");
     assert!(
         !session.can_undo(),
         "a refused edit must not leave an empty step on the undo stack"
@@ -165,8 +181,9 @@ fn the_gizmo_moves_the_thing_it_is_on_and_writes_it_to_the_scene() {
     assert_eq!(session.selected(), None);
     assert_eq!(session.gizmo_hover(96, 64), None);
 
-    session.select(Some(1)).unwrap();
-    assert_eq!(session.selected(), Some(1), "the crate");
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    assert_eq!(session.selected(), Some(crate_id));
 
     let height = session.size().1;
     let width = session.size().0;
@@ -174,12 +191,12 @@ fn the_gizmo_moves_the_thing_it_is_on_and_writes_it_to_the_scene() {
         .find(|x| session.gizmo_begin(*x, height / 2).unwrap().is_some())
         .expect("an arm crosses the middle of the view");
 
-    let before = session.transform(1).unwrap();
+    let before = session.transform(crate_id).unwrap();
 
     // Grabbing and not moving must not move anything.
     assert!(session.gizmo_drag(grab_x, height / 2).unwrap());
     assert_eq!(
-        session.transform(1).unwrap(),
+        session.transform(crate_id).unwrap(),
         before,
         "a grab on its own is not a move"
     );
@@ -188,7 +205,7 @@ fn the_gizmo_moves_the_thing_it_is_on_and_writes_it_to_the_scene() {
     assert!(session.gizmo_drag(grab_x + 30, height / 2).unwrap());
     session.gizmo_end();
 
-    let after = session.transform(1).unwrap();
+    let after = session.transform(crate_id).unwrap();
     assert_ne!(after.position, before.position, "the crate moved");
     assert_eq!(
         (after.rotation_deg, after.scale),
@@ -212,16 +229,17 @@ fn dragging_a_child_keeps_it_in_its_parent() {
         return;
     };
     session.set_camera(Vec3::new(0.0, 1.5, 6.0), Vec3::new(0.0, 1.0, 0.0));
-    session.select(Some(2)).unwrap();
+    let lid = id(&session, "lid");
+    session.select(Some(lid)).unwrap();
 
     let (width, height) = session.size();
     let Some(grab_x) = (0..width).find(|x| session.gizmo_begin(*x, height / 2).unwrap().is_some())
     else {
         return;
     };
-    let before = session.transform(2).unwrap();
+    let before = session.transform(lid).unwrap();
     assert!(session.gizmo_drag(grab_x, height / 2).unwrap());
-    let after = session.transform(2).unwrap();
+    let after = session.transform(lid).unwrap();
 
     // The crate sits at y = 0.5 and the lid at y = 0.6 above it. A drag
     // that does not undo the parent would rewrite the lid's local y as 1.1.
@@ -258,13 +276,18 @@ fn editing_and_undoing_round_trips() {
     assert!(!session.can_undo(), "nothing yet");
 
     let added = session.add(None, "builtin:sphere").unwrap();
-    assert_eq!(added, 3, "appended at the top level");
+    assert_eq!(
+        session.entities().last(),
+        Some(&added),
+        "appended at the top level"
+    );
     assert_eq!(session.entity_count(), 4);
     assert!(session.can_undo());
 
-    // Duplicating the crate copies its child too.
-    let copy = session.duplicate(1).unwrap();
-    assert!(copy > 0);
+    // Duplicating the crate copies its child too, as new things.
+    let crate_id = id(&session, "crate");
+    let copy = session.duplicate(crate_id).unwrap();
+    assert_ne!(copy, crate_id);
     assert_eq!(session.entity_count(), 6);
 
     assert!(session.undo().unwrap());
@@ -286,8 +309,9 @@ fn a_whole_drag_undoes_in_one_step() {
         return;
     };
     session.set_camera(Vec3::new(0.0, 1.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
-    session.select(Some(1)).unwrap();
-    let before = session.transform(1).unwrap();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    let before = session.transform(crate_id).unwrap();
 
     let (width, height) = session.size();
     let Some(grab_x) = (0..width).find(|x| session.gizmo_begin(*x, height / 2).unwrap().is_some())
@@ -298,11 +322,11 @@ fn a_whole_drag_undoes_in_one_step() {
         session.gizmo_drag(grab_x + step, height / 2).unwrap();
     }
     session.gizmo_end();
-    assert_ne!(session.transform(1).unwrap(), before, "it moved");
+    assert_ne!(session.transform(crate_id).unwrap(), before, "it moved");
 
     assert!(session.undo().unwrap());
     assert_eq!(
-        session.transform(1).unwrap(),
+        session.transform(crate_id).unwrap(),
         before,
         "one undo restores the whole gesture"
     );
@@ -316,27 +340,58 @@ fn reparenting_refuses_to_make_a_loop() {
     };
     // The lid is the crate's child; putting the crate under the lid would
     // make a cycle, and a cycle in a scene tree is unrecoverable.
-    assert!(!session.reparent(1, Some(2)).unwrap());
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
+    assert!(!session.reparent(crate_id, Some(lid)).unwrap());
     assert_eq!(session.entity_count(), 3);
+    assert!(!session.can_undo(), "a refused move costs no undo step");
 
-    // Moving the lid to the top level is fine.
-    assert!(session.reparent(2, None).unwrap());
+    // Moving the lid to the top level is fine, and it is still the lid.
+    assert!(session.reparent(lid, None).unwrap());
     assert_eq!(session.entity_count(), 3);
+    assert_eq!(session.entity_name(lid).as_deref(), Some("lid"));
 }
 
 #[test]
-fn deleting_clears_a_selection_that_would_otherwise_point_at_a_stranger() {
-    let Some((mut session, _)) = open("delete") else {
+fn a_selection_survives_edits_to_everything_else() {
+    // By ID, a selection points at the same thing after a delete elsewhere,
+    // a reparent or an undo. When it was a position in a list it had to be
+    // dropped after every one of those, or it would point at whatever slid
+    // into the gap.
+    let Some((mut session, _)) = open("selection") else {
         return;
     };
-    session.select(Some(1)).unwrap();
-    session.delete(1).unwrap();
-    assert_eq!(
-        session.selected(),
-        None,
-        "an index into a list that changed shape points at whatever slid into the gap"
+    let (ground, crate_id, lid) = (
+        id(&session, "ground"),
+        id(&session, "crate"),
+        id(&session, "lid"),
     );
-    assert_eq!(session.entity_count(), 1, "the lid went too");
+    session.select(Some(lid)).unwrap();
+
+    session.delete(ground).unwrap();
+    assert_eq!(session.selected(), Some(lid), "a delete elsewhere");
+    assert!(session.reparent(lid, None).unwrap());
+    assert_eq!(session.selected(), Some(lid), "a reparent of it");
+    assert!(session.undo().unwrap());
+    assert!(session.undo().unwrap());
+    assert_eq!(session.selected(), Some(lid), "two undos");
+
+    // Deleting what is selected does clear it, and takes the children too.
+    session.delete(crate_id).unwrap();
+    assert_eq!(session.selected(), None, "the lid went with the crate");
+    assert_eq!(session.entity_count(), 1);
+}
+
+#[test]
+fn the_ids_a_scene_is_saved_with_are_the_ids_it_opens_with() {
+    // What makes an ID worth having: a selection, a message or a merge
+    // that names an entity today names the same one after a save.
+    let Some((mut session, path)) = open("ids") else {
+        return;
+    };
+    let before = session.entities();
+    session.save_scene(None).unwrap();
+    session.open_scene(&path).unwrap();
+    assert_eq!(session.entities(), before);
 }
 
 #[test]
@@ -347,14 +402,15 @@ fn a_colour_can_be_tuned_on_one_object_and_taken_back() {
     let Some((mut session, path)) = open("material") else {
         return;
     };
-    let before = session.material(1).unwrap();
+    let crate_id = id(&session, "crate");
+    let before = session.material(crate_id).unwrap();
     assert_eq!(before, Material::default(), "the default grey, lit");
 
     let wanted = Material::new(0.31, 0.12, 0.05);
-    session.set_material(1, wanted).unwrap();
-    assert_eq!(session.material(1), Some(wanted));
+    session.set_material(crate_id, wanted).unwrap();
+    assert_eq!(session.material(crate_id), Some(wanted));
     assert_eq!(
-        session.material_name(1),
+        session.material_name(crate_id),
         None,
         "a tuned colour belongs to the object, not to a name"
     );
@@ -369,7 +425,7 @@ fn a_colour_can_be_tuned_on_one_object_and_taken_back() {
 
     assert!(session.undo().unwrap());
     assert_eq!(
-        session.material(1),
+        session.material(crate_id),
         Some(before),
         "one step, all the way back"
     );
@@ -380,13 +436,14 @@ fn an_entity_can_be_pointed_at_the_palette_and_reports_what_it_became() {
     let Some((mut session, path)) = open("palette") else {
         return;
     };
-    session.set_material_name(1, "stone").unwrap();
-    assert_eq!(session.material_name(1).as_deref(), Some("stone"));
+    let crate_id = id(&session, "crate");
+    session.set_material_name(crate_id, "stone").unwrap();
+    assert_eq!(session.material_name(crate_id).as_deref(), Some("stone"));
 
     // The colour reported is the colour stone is, not the word: an
     // inspector's swatch has to match what is on screen.
     assert_eq!(
-        session.material(1),
+        session.material(crate_id),
         Some(runity::material::builtin::STONE),
         "the name should resolve to a colour"
     );
@@ -400,11 +457,11 @@ fn an_entity_can_be_pointed_at_the_palette_and_reports_what_it_became() {
 
     // An empty name is refused: clearing a link means giving a colour.
     assert!(matches!(
-        session.set_material_name(1, ""),
+        session.set_material_name(crate_id, ""),
         Err(EditError::EmptyName(_))
     ));
     assert_eq!(
-        session.material_name(1).as_deref(),
+        session.material_name(crate_id).as_deref(),
         Some("stone"),
         "nothing changed"
     );
@@ -442,16 +499,19 @@ fn the_palette_offers_the_builtins_and_the_librarys_own() {
         "one new name, and `stone` listed once rather than twice"
     );
 
-    session.set_material_name(1, "stone").unwrap();
-    let reported = session.material(1).unwrap();
+    let crate_id = id(&session, "crate");
+    session.set_material_name(crate_id, "stone").unwrap();
+    let reported = session.material(crate_id).unwrap();
     assert!(
         reported.base_color[0] > 0.8 && reported.base_color[1] < 0.01,
         "the project's stone, not the engine's: {reported:?}"
     );
 
-    session.set_material_name(1, "builtin:stone").unwrap();
+    session
+        .set_material_name(crate_id, "builtin:stone")
+        .unwrap();
     assert_eq!(
-        session.material(1),
+        session.material(crate_id),
         Some(runity::material::builtin::STONE),
         "and the engine's is still reachable"
     );
@@ -526,7 +586,8 @@ fn a_thing_arranged_once_becomes_a_thing_placed_many_times() {
     // The crate has a lid, so it is a two-entity arrangement: exactly the
     // kind of thing that should stop being copied by hand.
     assert_eq!(session.entity_count(), 3);
-    session.make_prefab(1, "crate").unwrap();
+    let crate_id = id(&session, "crate");
+    session.make_prefab(crate_id, "crate").unwrap();
 
     // The scene now holds one row where there were two, and it says what it
     // is an instance of.
@@ -535,7 +596,7 @@ fn a_thing_arranged_once_becomes_a_thing_placed_many_times() {
         2,
         "the lid lives in the prefab file now"
     );
-    assert_eq!(session.entity_prefab(1).as_deref(), Some("crate"));
+    assert_eq!(session.entity_prefab(crate_id).as_deref(), Some("crate"));
     let written = path.parent().unwrap().join("prefabs/crate.prefab");
     assert!(
         written.exists(),
@@ -587,16 +648,17 @@ fn clicking_something_a_prefab_brought_selects_the_instance() {
     // The lid sits above the crate, so a ray through the upper middle finds
     // the lid first. Before it is a prefab, that is its own entity.
     let (x, y) = (96u32, 52u32);
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
     assert_eq!(
         session.pick(x, y),
-        Some(2),
+        Some(lid),
         "the lid, which has its own row"
     );
 
-    session.make_prefab(1, "crate").unwrap();
+    session.make_prefab(crate_id, "crate").unwrap();
     assert_eq!(
         session.pick(x, y),
-        Some(1),
+        Some(crate_id),
         "the same pixel now finds the instance, not a part of it"
     );
 }
@@ -609,7 +671,8 @@ fn the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step() {
     // Looking down at the crate from above, so the flat Y ring is the one
     // facing the camera and the one a ray can cross.
     session.set_camera(Vec3::new(0.0, 8.0, 0.01), Vec3::new(0.0, 0.5, 0.0));
-    session.select(Some(1)).unwrap();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
     session.set_tool(Tool::Rotate);
     assert_eq!(session.tool(), Tool::Rotate);
 
@@ -622,7 +685,7 @@ fn the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step() {
     assert!(session.gizmo_drag(width / 2, height / 2 + radius).unwrap());
     session.gizmo_end();
 
-    let turned = session.transform(1).unwrap();
+    let turned = session.transform(crate_id).unwrap();
     assert!(
         (turned.rotation_deg.y.abs() - 90.0).abs() < 5.0,
         "a quarter turn around the ring should be about ninety degrees, got {}",
@@ -633,7 +696,7 @@ fn the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step() {
 
     // The whole gesture is one step, like a move drag.
     assert!(session.undo().unwrap());
-    let back = session.transform(1).unwrap().rotation_deg.y;
+    let back = session.transform(crate_id).unwrap().rotation_deg.y;
     assert!(back.abs() < 1e-3, "back to where it started: {back}");
 
     // And what is written is the local rotation, which is what reopens.
@@ -650,7 +713,8 @@ fn the_scale_tool_stretches_one_axis_and_leaves_the_rest() {
         return;
     };
     session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
-    session.select(Some(1)).unwrap();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
     session.set_tool(Tool::Scale);
 
     let (handle, radius) = grab_right_of_centre(&mut session).expect("an arm to grab");
@@ -663,7 +727,7 @@ fn the_scale_tool_stretches_one_axis_and_leaves_the_rest() {
         .unwrap());
     session.gizmo_end();
 
-    let stretched = session.transform(1).unwrap();
+    let stretched = session.transform(crate_id).unwrap();
     assert!(
         stretched.scale.x > 1.2,
         "x should have grown, got {}",
@@ -700,7 +764,8 @@ fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
 
     // Where it is in the world, which during play is not what the document
     // says.
-    let height = |session: &Session| session.world_position(1).unwrap().y;
+    let crate_id = id(&session, "crate");
+    let height = |session: &Session| session.world_position(crate_id).unwrap().y;
     assert!(
         (height(&session) - 4.0).abs() < 1e-3,
         "it starts up in the air"
@@ -725,14 +790,16 @@ fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
 
     // The document never moved: play is a preview, not an edit.
     assert!(
-        (session.transform(1).unwrap().position.y - 4.0).abs() < 1e-3,
+        (session.transform(crate_id).unwrap().position.y - 4.0).abs() < 1e-3,
         "the file still says 4"
     );
     assert!(!session.can_undo(), "and nothing to undo");
 
     // Editing while playing is refused rather than thrown away later, and
     // the refusal says why.
-    let err = session.set_transform(1, Transform::default()).unwrap_err();
+    let err = session
+        .set_transform(crate_id, Transform::default())
+        .unwrap_err();
     assert_eq!(err, EditError::Playing);
     assert!(err.to_string().contains("playing"), "{err}");
 
@@ -742,10 +809,12 @@ fn pressing_play_drops_the_crate_and_stopping_puts_it_back() {
     assert_eq!(session.step(0.1), 0, "and stopped");
 
     // Editing works again, and stopping did not cost a step of real history.
-    session.set_transform(1, Transform::default()).unwrap();
+    session
+        .set_transform(crate_id, Transform::default())
+        .unwrap();
     assert!(session.can_undo());
     assert!(session.undo().unwrap());
-    assert!((session.transform(1).unwrap().position.y - 4.0).abs() < 1e-3);
+    assert!((session.transform(crate_id).unwrap().position.y - 4.0).abs() < 1e-3);
 }
 
 #[test]
@@ -753,7 +822,8 @@ fn a_drag_with_snapping_on_lands_on_the_grid() {
     let Some((mut session, _)) = open("snap") else {
         return;
     };
-    session.select(Some(1)).unwrap();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
     let grid = Snap {
         meters: 0.5,
         degrees: 15.0,
@@ -772,7 +842,7 @@ fn a_drag_with_snapping_on_lands_on_the_grid() {
         .unwrap());
     session.gizmo_end();
 
-    let x = session.transform(1).unwrap().position;
+    let x = session.transform(crate_id).unwrap().position;
     assert!(x.x != 0.0, "it should have moved at all: {x}");
     assert!(
         (x.x / 0.5 - (x.x / 0.5).round()).abs() < 1e-4,
@@ -804,12 +874,13 @@ fn focusing_frames_the_selection_whatever_size_it_is() {
         "nothing selected, nothing to focus"
     );
 
-    session.select(Some(1)).unwrap();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
     assert!(session.focus_selected());
     let camera = session.camera();
     assert_eq!(
         Some(camera.target),
-        session.world_position(1),
+        session.world_position(crate_id),
         "it looks at the thing"
     );
     let distance = (camera.position - camera.target).length();
@@ -821,7 +892,7 @@ fn focusing_frames_the_selection_whatever_size_it_is() {
     // The big one is framed from further away, which is the whole point of
     // sizing it from what is selected.
     session
-        .set_transform(1, transform([0.0, 5.0, 0.0], [0.0; 3], [10.0; 3]))
+        .set_transform(crate_id, transform([0.0, 5.0, 0.0], [0.0; 3], [10.0; 3]))
         .unwrap();
     assert!(session.focus_selected());
     let camera = session.camera();
@@ -842,9 +913,10 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
     session.set_library(&library).unwrap();
 
     // Tune a colour on one object, the way a slider would.
+    let crate_id = id(&session, "crate");
     let wanted = Material::new(0.31, 0.12, 0.05);
-    session.set_material(1, wanted).unwrap();
-    session.save_material(1, "clay").unwrap();
+    session.set_material(crate_id, wanted).unwrap();
+    session.save_material(crate_id, "clay").unwrap();
 
     // What came out is a file a person could have written.
     let source = path.parent().unwrap().join("materials/clay.rmat");
@@ -857,8 +929,8 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
 
     // The entity now names it, and still draws the colour — to within the
     // eight bits a hex code has.
-    assert_eq!(session.material_name(1).as_deref(), Some("clay"));
-    let drawn = session.material(1).unwrap();
+    assert_eq!(session.material_name(crate_id).as_deref(), Some("clay"));
+    let drawn = session.material(crate_id).unwrap();
     for axis in 0..3 {
         assert!(
             (drawn.base_color[axis] - wanted.base_color[axis]).abs() < 0.005,
@@ -883,7 +955,7 @@ fn a_tuned_colour_becomes_a_material_every_scene_can_name() {
         .set_modified(later)
         .unwrap();
     assert_eq!(session.reload_assets(), 1);
-    let after = session.material(1).unwrap();
+    let after = session.material(crate_id).unwrap();
     assert!(
         after.base_color[2] > after.base_color[0],
         "warm clay should have become cool: {after:?}"

@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use runity::EntityId;
+
 /// Why a session refused or failed to do something.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditError {
@@ -16,8 +18,8 @@ pub enum EditError {
     /// allowed and thrown away on stop, which is the version people lose an
     /// hour to.
     Playing,
-    /// No entity at this index in the document.
-    NoEntity(usize),
+    /// No entity with this ID in the document.
+    NoEntity(EntityId),
     /// A name that has to be something was empty.
     EmptyName(&'static str),
     /// Saving with no path given and no file the scene came from.
@@ -45,7 +47,7 @@ impl fmt::Display for EditError {
             EditError::Playing => {
                 f.write_str("stop playing first — an edit made in play mode is an edit you lose")
             }
-            EditError::NoEntity(index) => write!(f, "no entity at index {index}"),
+            EditError::NoEntity(id) => write!(f, "no entity with id {id} in the scene"),
             EditError::EmptyName(what) => write!(f, "{what} needs a name"),
             EditError::NoPath => f.write_str("no path to save to, and the scene has no file yet"),
             EditError::NoLibrary => f.write_str("no library — call set_library first"),

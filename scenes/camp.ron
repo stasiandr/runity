@@ -10,6 +10,7 @@
     fog: (color: (0.62, 0.68, 0.74), start: 20.0, end: 120.0),
     entities: [
         (
+            id: "5cb7dd5af41540fa",
             name: "ground",
             model: "builtin:plane",
             transform: (scale: (120.0, 1.0, 120.0)),
@@ -18,13 +19,14 @@
 
         // Один и тот же костёр, расставленный по-разному. Имя и место — от
         // экземпляра, всё остальное — от префаба.
-        (name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.01, 0.0))),
-        (name: "east fire", model: "", prefab: "campfire", transform: (position: (3.2, 0.01, 0.0), rotation_deg: (0.0, 35.0, 0.0))),
+        (id: "876b198bbedf5219", name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.01, 0.0))),
+        (id: "79c8ecaf7992dda2", name: "east fire", model: "", prefab: "campfire", transform: (position: (3.2, 0.01, 0.0), rotation_deg: (0.0, 35.0, 0.0))),
 
         // Третий — потухший: экземпляр переопределяет материал корня, не
         // трогая префаб. Уголёк при этом остаётся угольком: глубже корня
         // переопределений пока нет, и это сказано вслух в prefab.rs.
         (
+            id: "c44de981a70fc440",
             name: "cold fire",
             model: "",
             prefab: "campfire",
@@ -33,7 +35,7 @@
             children: [
                 // А вот это — не часть префаба, а вещь, поставленная рядом:
                 // у неё своя строчка в сцене, её можно выделить и подвинуть.
-                (name: "kettle", model: "builtin:sphere", transform: (position: (0.9, 0.22, 0.5), scale: (0.28, 0.28, 0.28)), material: "stone"),
+                (id: "5732038f02281156", name: "kettle", model: "builtin:sphere", transform: (position: (0.9, 0.22, 0.5), scale: (0.28, 0.28, 0.28)), material: "stone"),
             ],
         ),
     ],
