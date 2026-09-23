@@ -217,7 +217,13 @@ Steam) жил на runity. Порядок — по риску: сначала т
 
 ## 4. Сервисы и сборка
 
-- [ ] Steam: голос, достижения, аватары, rich presence, пути под Auto-Cloud
+- [x] Steam: достижения (`unlock`, `unlocked`, `relock`), статистика
+      (`set_stat`), аватары (`avatar`, 64×64 RGBA), rich presence
+      (`set_presence`), пути под Auto-Cloud (`auto_cloud_roots` — те же
+      папки, что `player_prefs::user_dir`). Проверено сборкой, не вживую:
+      нужен запущенный Steam
+- [ ] Голос Steam: в `steamworks` 0.13 нет обёртки ISteamUser voice — через
+      `steamworks-sys` или свой захват микрофона (и голос рядом, раздел 3)
 - [ ] Отчёты о падениях (Sentry), аналитика (GameAnalytics), Discord rich
       presence
 - [ ] Сборка под Steam: депо Windows и macOS, универсальный бинарь macOS с
