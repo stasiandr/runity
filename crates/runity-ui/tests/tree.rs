@@ -476,3 +476,17 @@ fn an_input_method_composes_in_place_and_commits_once() {
         .events()
         .contains(&(field, Event::Changed("ab日本".into()))));
 }
+
+#[test]
+fn asking_about_a_removed_node_is_an_answer_not_a_crash() {
+    let mut ui = Ui::new();
+    let root = ui.root();
+    let gone = ui.add_text(root, Style::default(), "here a moment");
+    ui.remove(gone);
+    assert_eq!(ui.parent(gone), None);
+    assert_eq!(ui.name(gone), None);
+    assert_eq!(ui.text(gone), None);
+    assert!(ui.children(gone).is_empty());
+    assert_eq!(ui.rect(gone).width, 0.0);
+    assert!(!ui.is_field(gone));
+}

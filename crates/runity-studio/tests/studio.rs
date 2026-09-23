@@ -1280,3 +1280,30 @@ fn a_sound_is_listed_in_the_project_to_listen_to() {
     press(&mut s, "asset beep", MouseButton::Right);
     assert!(s.ui.find("menu Play").is_some() && s.ui.find("menu Stop").is_some());
 }
+
+#[test]
+fn quick_search_finds_things_in_the_scene_the_project_and_the_menus() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    shortcut(&mut s, Key::K);
+    assert!(s.ui.find("search field").is_some());
+    type_text(&mut s, "boulder");
+    s.frame();
+    let dump = s.ui.dump();
+    assert!(
+        dump.contains("in the scene") && dump.contains("in the project"),
+        "{dump}"
+    );
+    // Enter goes to the first: the boulder in the scene.
+    key(&mut s, Key::Enter);
+    assert_eq!(s.session.selected(), s.session.find("boulder"));
+    assert!(s.ui.find("search field").is_none());
+
+    // A menu entry by its name.
+    shortcut(&mut s, Key::K);
+    type_text(&mut s, "game view");
+    s.frame();
+    click(&mut s, "result Game View");
+    assert!(s.session.is_game_view());
+}

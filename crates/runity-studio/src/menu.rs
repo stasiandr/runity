@@ -104,6 +104,8 @@ pub enum Action {
     FieldRemove(String),
     /// The Game view's shape: free, or a width to height.
     Aspect(Option<(u32, u32)>),
+    /// Open Quick Search.
+    Search,
     /// Listen to a sound asset, or stop.
     PlaySound(String),
     StopSound,
@@ -237,6 +239,8 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
         (
             "View",
             vec![
+                item("Search…", Action::Search).key(key!("⌘K", "Ctrl+K")),
+                MenuItem::separator(),
                 item("Scene View", Action::GameView(false)),
                 item("Game View", Action::GameView(true)),
                 MenuItem::separator(),

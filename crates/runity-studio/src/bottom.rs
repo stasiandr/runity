@@ -34,7 +34,7 @@ pub enum Asset {
 }
 
 impl Asset {
-    fn icon(&self) -> &'static str {
+    pub fn icon(&self) -> &'static str {
         match self {
             Asset::Scene(_) => "mountain",
             Asset::Prefab(_) => "package",
@@ -44,7 +44,7 @@ impl Asset {
         }
     }
 
-    fn label(&self) -> String {
+    pub fn label(&self) -> String {
         match self {
             Asset::Scene(p) => p
                 .file_stem()
@@ -271,6 +271,23 @@ impl Bottom {
 
     /// What the project has, in the order a person looks for it.
     fn assets(&self, ui: &Ui, session: &Session) -> Vec<Asset> {
+        let mut out = all_assets(session);
+        let query = ui
+            .text(self.search)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase();
+        if !query.is_empty() {
+            out.retain(|a| a.label().to_lowercase().contains(&query));
+        }
+        out
+    }
+}
+
+/// Everything the project has, in the order a person looks for it: scenes,
+/// prefabs, models, sounds, materials.
+pub fn all_assets(session: &Session) -> Vec<Asset> {
+    {
         let mut out = Vec::new();
         if let Some(project) = session.project() {
             let dir = project.root().join("scenes");
@@ -311,17 +328,11 @@ impl Bottom {
                 .into_iter()
                 .map(|(n, _)| Asset::Material(n)),
         );
-        let query = ui
-            .text(self.search)
-            .unwrap_or_default()
-            .trim()
-            .to_lowercase();
-        if !query.is_empty() {
-            out.retain(|a| a.label().to_lowercase().contains(&query));
-        }
         out
     }
+}
 
+impl Bottom {
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         // Project
         let assets = self.assets(ui, session);

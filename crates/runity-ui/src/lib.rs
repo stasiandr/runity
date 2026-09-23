@@ -531,7 +531,7 @@ impl Ui {
     }
 
     pub fn name(&self, id: NodeId) -> Option<&str> {
-        self.node(id).name.as_deref()
+        self.tree.get_node_context(id.0)?.name.as_deref()
     }
 
     /// Remove a node and everything under it.
@@ -589,6 +589,9 @@ impl Ui {
     }
 
     pub fn children(&self, id: NodeId) -> Vec<NodeId> {
+        if !self.exists(id) {
+            return Vec::new();
+        }
         self.tree
             .children(id.0)
             .unwrap_or_default()
@@ -597,7 +600,12 @@ impl Ui {
             .collect()
     }
 
+    /// The node's parent; `None` for the root and for a node removed since
+    /// — events about it can still be on their way.
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        if !self.exists(id) {
+            return None;
+        }
         self.tree.parent(id.0).map(NodeId)
     }
 
@@ -683,7 +691,11 @@ impl Ui {
     }
 
     pub fn text(&self, id: NodeId) -> Option<&str> {
-        self.node(id).text.as_ref().map(|t| t.string.as_str())
+        self.tree
+            .get_node_context(id.0)?
+            .text
+            .as_ref()
+            .map(|t| t.string.as_str())
     }
 
     /// Set a node's text. The same text again costs nothing.
@@ -952,7 +964,10 @@ impl Ui {
 
     /// Where a node was drawn, after the last [`Ui::paint`].
     pub fn rect(&self, id: NodeId) -> Rect {
-        self.node(id).rect
+        self.tree
+            .get_node_context(id.0)
+            .map(|n| n.rect)
+            .unwrap_or_default()
     }
 
     /// How tall a node's text is as laid out: its lines times the line

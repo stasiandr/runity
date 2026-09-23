@@ -96,6 +96,22 @@ struct Prompt {
     ask: Ask,
 }
 
+/// What a Quick Search line leads to.
+#[derive(Debug, Clone)]
+enum Hit {
+    Entity(runity::EntityId),
+    Asset(Asset),
+    Action(Action),
+}
+
+/// Quick Search: one field over the scene, the project and the menus.
+struct Search {
+    overlay: NodeId,
+    field: NodeId,
+    list: NodeId,
+    hits: Vec<(NodeId, Hit)>,
+}
+
 /// An open menu: its overlay, and what each line does.
 struct Popup {
     overlay: NodeId,
@@ -232,6 +248,7 @@ pub struct Studio {
     lower: NodeId,
     popup: Option<Popup>,
     prompt: Option<Prompt>,
+    search: Option<Search>,
     /// Where a walker can go is shown.
     navigation: bool,
     seen: Option<Stamp>,
@@ -518,6 +535,7 @@ impl Studio {
             lower,
             popup: None,
             prompt: None,
+            search: None,
             navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
@@ -688,6 +706,11 @@ impl Studio {
                         self.refresh();
                         return;
                     }
+                }
+                let (_, ctrl, _, command) = self.ui.modifiers();
+                if *key == Key::K && (ctrl || command) {
+                    self.open_search();
+                    return;
                 }
                 if *key == Key::Space && self.ui.modifiers().0 {
                     self.run(Action::Maximize);
@@ -1415,6 +1438,49 @@ impl Studio {
     // --- events ----------------------------------------------------------
 
     fn dispatch(&mut self, node: NodeId, event: &Event, requests: &mut Requests) {
+        // Quick Search takes what is aimed at it.
+        if let Some(q) = &self.search {
+            let (field, overlay) = (q.field, q.overlay);
+            let hit = q
+                .hits
+                .iter()
+                .find(|(n, _)| *n == node)
+                .map(|(_, h)| h.clone());
+            match event {
+                Event::Changed(text) if node == field => {
+                    let text = text.clone();
+                    self.fill_search(&text);
+                    return;
+                }
+                Event::Submit(_) if node == field => {
+                    let first = self
+                        .search
+                        .as_ref()
+                        .and_then(|q| q.hits.first())
+                        .map(|(_, h)| h.clone());
+                    self.close_search();
+                    if let Some(h) = first {
+                        self.go_to(h, requests);
+                    }
+                    return;
+                }
+                Event::Cancel if node == field => {
+                    self.close_search();
+                    return;
+                }
+                Event::Click { .. } if hit.is_some() => {
+                    self.close_search();
+                    self.go_to(hit.expect("checked"), requests);
+                    return;
+                }
+                Event::Click { .. } if node == overlay => {
+                    self.close_search();
+                    return;
+                }
+                _ if node == field => return,
+                _ => {}
+            }
+        }
         // A dialog takes everything aimed at it.
         if let Some(p) = &self.prompt {
             let (field, ok, cancel, overlay) = (p.field, p.ok, p.cancel, p.overlay);
@@ -1790,6 +1856,7 @@ impl Studio {
                             .then(runity::navigation::NavSettings::default),
                     );
                 }
+                Action::Search => self.open_search(),
                 Action::PlaySound(name) => {
                     let sound = s
                         .sound(&name)
@@ -2260,6 +2327,154 @@ impl Studio {
     }
 
     // --- menus -----------------------------------------------------------
+
+    /// Quick Search: a field over the window, results as it is typed.
+    fn open_search(&mut self) {
+        self.close_search();
+        self.close_popup();
+        let root = self.ui.root();
+        let (w, h, _) = self.ui.viewport();
+        let overlay = self.ui.add(
+            root,
+            Style::column()
+                .absolute(0.0, 0.0)
+                .size(w, h)
+                .padding(80.0)
+                .center_items()
+                .background(NEUTRAL_900.alpha(40))
+                .clickable(),
+        );
+        self.ui.set_layer(overlay, true);
+        self.ui.set_name(overlay, "search overlay");
+        let panel = self.ui.add(
+            overlay,
+            Style::column()
+                .width(560.0)
+                .padding(SPACE_3)
+                .gap(SPACE_2)
+                .radius(RADIUS_LG)
+                .background(SURFACE)
+                .border(1.0, NEUTRAL_500)
+                .clickable(),
+        );
+        let field = self.ui.add_field(
+            panel,
+            field_style().full_width().height(32.0).text_size(14.0),
+            "",
+        );
+        self.ui.set_name(field, "search field");
+        self.ui
+            .set_placeholder(field, "Search the scene, the project and the menus");
+        let list = self.ui.add(panel, Style::column().full_width().gap(2.0));
+        self.ui.set_name(list, "search results");
+        self.ui.focus(Some(field));
+        self.search = Some(Search {
+            overlay,
+            field,
+            list,
+            hits: Vec::new(),
+        });
+        self.fill_search("");
+    }
+
+    fn close_search(&mut self) {
+        if let Some(q) = self.search.take() {
+            self.ui.remove(q.overlay);
+            self.ui.focus(Some(self.viewport));
+        }
+    }
+
+    /// The results for what is typed: entities (by the Hierarchy's search,
+    /// `c:` and `m:` and all), then assets, then menu entries, a dozen at most.
+    fn fill_search(&mut self, typed: &str) {
+        let Some(q) = &self.search else { return };
+        let list = q.list;
+        let query = typed.trim().to_lowercase();
+        let mut hits: Vec<(String, &'static str, Hit)> = Vec::new();
+        if !query.is_empty() {
+            let ids = self.session.search(typed.trim()).unwrap_or_default();
+            for id in ids.into_iter().take(6) {
+                let name = self.session.entity_name(id).unwrap_or_default();
+                hits.push((name, "box", Hit::Entity(id)));
+            }
+            for asset in crate::bottom::all_assets(&self.session) {
+                if asset.label().to_lowercase().contains(&query) {
+                    hits.push((asset.label(), asset.icon(), Hit::Asset(asset)));
+                }
+                if hits.len() >= 9 {
+                    break;
+                }
+            }
+            for (_, items) in menu::menu_bar() {
+                for item in items {
+                    if let Some(action) = item.action {
+                        if item.label.to_lowercase().contains(&query) {
+                            hits.push((item.label.clone(), "chevron-right", Hit::Action(action)));
+                        }
+                    }
+                }
+            }
+        }
+        hits.truncate(12);
+        self.ui.clear(list);
+        let mut nodes = Vec::new();
+        for (i, (label, glyph, hit)) in hits.into_iter().enumerate() {
+            let row = self.ui.add(
+                list,
+                Style::row()
+                    .full_width()
+                    .height(28.0)
+                    .fixed()
+                    .padding_x(SPACE_3)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .hover(ACCENT.alpha(16))
+                    .background(if i == 0 {
+                        ACCENT_900
+                    } else {
+                        runity_ui::Color::TRANSPARENT
+                    }),
+            );
+            self.ui.set_name(row, format!("result {label}"));
+            icon(
+                &mut self.ui,
+                row,
+                glyph,
+                if i == 0 { ACCENT } else { MUTED },
+            );
+            self.ui.add_text(row, text().fill(), &label);
+            let kind = match &hit {
+                Hit::Entity(_) => "in the scene",
+                Hit::Asset(_) => "in the project",
+                Hit::Action(_) => "menu",
+            };
+            self.ui.add_text(
+                row,
+                Style::default().text_size(11.0).text_color(MUTED).nowrap(),
+                kind,
+            );
+            nodes.push((row, hit));
+        }
+        if let Some(q) = &mut self.search {
+            q.hits = nodes;
+        }
+    }
+
+    /// Go where a result leads.
+    fn go_to(&mut self, hit: Hit, requests: &mut Requests) {
+        match hit {
+            Hit::Entity(id) => {
+                let _ = self.session.select(Some(id));
+                self.session.focus_selected();
+                requests.refresh = true;
+            }
+            Hit::Asset(Asset::Scene(path)) => requests.action = Some(Action::OpenScene(path)),
+            Hit::Asset(Asset::Prefab(name)) => requests.action = Some(Action::OpenPrefab(name)),
+            Hit::Asset(asset) => requests.inspect = Some(asset),
+            Hit::Action(action) => requests.action = Some(action),
+        }
+    }
 
     /// Ask for a line of text in a dialog; what it is for says what the
     /// answer does.
