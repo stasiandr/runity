@@ -8,6 +8,8 @@
 //! runity build [PROJECT] [--out DIR] [--debug]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! runity git-setup [PROJECT]             turn the driver on in this clone
+//! runity rename FROM TO                   move an asset, and what names it
+//! runity uses FILE                        every line that names an asset
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -41,6 +43,14 @@ runity git-setup [PROJECT]
     by entity and field, and conflicts are said in words.
 runity merge BASE OURS THEIRS [PATH]
     The driver git calls; writes the merge over OURS. Exits 1 on conflict.
+runity rename FROM TO
+    Rename or move an asset source — a model, texture or sound in assets/,
+    a .rmat, a .prefab — with its .rimport, and rewrite every scene and
+    prefab line that named it. Refused when the new name already means
+    something.
+runity uses FILE
+    Every scene and prefab line that names FILE: what a rename changes,
+    and whether deleting it breaks anything.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -68,6 +78,8 @@ fn run() -> Result<ExitCode> {
         "rebuild-time" => rebuild_time(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),
+        "rename" => rename(&rest),
+        "uses" => uses(&rest),
         "git-setup" => {
             let project = find(&rest)?;
             for line in runity_cli::merge::git_setup(project.root())? {
@@ -242,6 +254,54 @@ fn merge(rest: &[String]) -> Result<ExitCode> {
     } else {
         ExitCode::FAILURE
     })
+}
+
+fn rename(rest: &[String]) -> Result<ExitCode> {
+    let [from, to] = rest else {
+        bail!("runity rename FROM TO");
+    };
+    // Paths as typed, from wherever the command was run; the project is
+    // the one the file is in.
+    let from = std::path::absolute(from)?;
+    let to = std::path::absolute(to)?;
+    let project = Project::find(&from).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let done = runity_import::rename::rename(&project, &from, &to)?;
+    println!("{} -> {}", done.from, done.to);
+    if let Some((old, new)) = &done.reference {
+        println!("scenes said {old}, now {new}");
+    }
+    for (file, count) in &done.rewritten {
+        println!("  {file}: {count} rewritten");
+    }
+    let mut failed = 0;
+    for item in &done.synced {
+        if let Err(e) = &item.result {
+            failed += 1;
+            eprintln!("warning: {e}");
+        }
+    }
+    Ok(if failed > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+fn uses(rest: &[String]) -> Result<ExitCode> {
+    let [file] = rest else {
+        bail!("runity uses FILE");
+    };
+    let file = std::path::absolute(file)?;
+    let project = Project::find(&file).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let found = runity_import::rename::usages(&project, &file)?;
+    for usage in &found {
+        println!("{usage}");
+    }
+    let shown = project
+        .relative(&file)
+        .unwrap_or_else(|| file.display().to_string());
+    println!("{shown}: named {} times", found.len());
+    Ok(ExitCode::SUCCESS)
 }
 
 fn build(rest: &[String]) -> Result<ExitCode> {

@@ -1402,6 +1402,54 @@ impl Session {
         Ok(())
     }
 
+    // --- renaming assets ------------------------------------------------
+
+    /// Rename or move an asset source, and every reference to it with it:
+    /// the project's scenes and prefabs on disk, and the open scene — its
+    /// unsaved edits and its undo history included, so undo cannot bring
+    /// back a name that no longer means anything.
+    ///
+    /// Paths are relative to the project root, or absolute. What was
+    /// rewritten comes back, file by file.
+    pub fn rename_asset(
+        &mut self,
+        from: impl AsRef<Path>,
+        to: impl AsRef<Path>,
+    ) -> EditResult<runity_import::rename::Renamed> {
+        self.refuse_while_playing()?;
+        let project = self.project.clone().ok_or(EditError::NotInProject)?;
+        let renamed = runity_import::rename::rename(&project, from.as_ref(), to.as_ref())
+            .map_err(|e| EditError::Import(format!("{e:#}")))?;
+        if let Some((old, new)) = &renamed.reference {
+            self.history.rewrite_all(|scene| {
+                runity::refs::rewrite_scene(scene, old, new.name());
+            });
+            // The file on disk was rewritten the same way; what the session
+            // last saw there is brought along, so the next reload does not
+            // mistake its own rename for someone else's edit.
+            if let Some(path) = &self.scene_path {
+                if let Some((seen, stamps)) = &mut self.on_disk {
+                    runity::refs::rewrite_scene(seen, old, new.name());
+                    *stamps = runity::live::stamps(path, Some(&project));
+                }
+            }
+        }
+        self.prefabs = runity::Prefabs::of(&project).0;
+        self.reopen_library()?;
+        Ok(renamed)
+    }
+
+    /// Every line in the project that names this file: what a rename would
+    /// change, and the answer to "can I delete this?".
+    pub fn asset_usages(
+        &self,
+        file: impl AsRef<Path>,
+    ) -> EditResult<Vec<runity_import::rename::Usage>> {
+        let project = self.project.as_ref().ok_or(EditError::NotInProject)?;
+        runity_import::rename::usages(project, file.as_ref())
+            .map_err(|e| EditError::Import(format!("{e:#}")))
+    }
+
     // --- the library ----------------------------------------------------
 
     /// Import a source file: drag-and-drop.

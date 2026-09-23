@@ -44,6 +44,7 @@ pub mod perf;
 pub mod physics;
 pub mod prefab;
 pub mod project;
+pub mod refs;
 pub mod render;
 mod ron_text;
 pub mod scene;

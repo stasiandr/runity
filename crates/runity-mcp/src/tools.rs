@@ -112,6 +112,8 @@ pub fn list() -> Vec<Value> {
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
         tool("pick", "The entity under a pixel of the last render.", json!({ "x": { "type": "integer" }, "y": { "type": "integer" } }), &["x", "y"]),
         tool("import", "Import a source file (.gltf .glb .obj .png .jpg .tga .bmp .wav .rmat) into the project.", json!({ "source": { "type": "string" } }), &["source"]),
+        tool("rename_asset", "Rename or move an asset source (model, texture, sound in assets/, .rmat in materials/, .prefab in prefabs/), its .rimport with it, and rewrite every scene and prefab line that named it. Paths relative to the project root. Refused, with the reason, when the new name already means something.", json!({ "from": { "type": "string" }, "to": { "type": "string" } }), &["from", "to"]),
+        tool("usages", "Every scene and prefab line that names an asset file: what a rename would change, and whether it is safe to delete.", json!({ "file": { "type": "string", "description": "relative to the project root, e.g. materials/stone.rmat" } }), &["file"]),
         tool("reload", "Pick up files changed on disk: the scene, prefabs, and assets rebuilt from changed sources.", json!({}), &[]),
         tool("check", "Everything in the project that does not resolve, with file, entity and the fix.", json!({}), &[]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed.", simulate, &["seconds"]),
@@ -464,6 +466,43 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 let _ = write!(out, "\nwarning: {warning}");
             }
             Ok(vec![text(out)])
+        }
+        "rename_asset" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            let done = server
+                .session()?
+                .rename_asset(&from, &to)
+                .map_err(|e| e.to_string())?;
+            let mut out = format!("{} -> {}", done.from, done.to);
+            match &done.reference {
+                Some((old, new)) => {
+                    let _ = write!(out, "\nscenes said {old}, now {new}");
+                }
+                None => out.push_str("\nno scene names it by a different name now"),
+            }
+            for (file, count) in &done.rewritten {
+                let _ = write!(out, "\n  {file}: {count} rewritten");
+            }
+            for failed in done.synced.iter().filter_map(|r| r.result.as_ref().err()) {
+                let _ = write!(out, "\nwarning: {failed}");
+            }
+            Ok(vec![text(out)])
+        }
+        "usages" => {
+            let file = string(args, "file")?;
+            let found = server
+                .session()?
+                .asset_usages(&file)
+                .map_err(|e| e.to_string())?;
+            Ok(vec![text(if found.is_empty() {
+                format!("nothing names {file}")
+            } else {
+                found
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })])
         }
         "reload" => {
             let session = server.session()?;

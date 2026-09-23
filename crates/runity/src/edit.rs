@@ -106,6 +106,19 @@ impl History {
         self.future.last().map(|after| describe(&self.scene, after))
     }
 
+    /// Change the scene and every state it has been in, the same way,
+    /// without recording a step.
+    ///
+    /// For a change that is not an edit of this scene but a fact about the
+    /// world around it — an asset renamed on disk. Undo afterwards must not
+    /// bring back the old name: it would restore a reference to a file that
+    /// is no longer there.
+    pub fn rewrite_all(&mut self, mut change: impl FnMut(&mut Scene)) {
+        change(&mut self.scene);
+        self.past.iter_mut().for_each(&mut change);
+        self.future.iter_mut().for_each(&mut change);
+    }
+
     /// Replace the scene entirely, as opening a file does. Clears both
     /// stacks: undoing across an open would put a different document's
     /// entities into this one.

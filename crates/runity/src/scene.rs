@@ -138,7 +138,8 @@ pub struct EntityDesc {
     pub id: EntityId,
     /// Shown in the editor's tree; not required to be unique.
     pub name: String,
-    /// Path under the asset root, e.g. `models/pine_large.obj`. May be left
+    /// A model in `assets/` by file stem — `pine_large` for
+    /// `assets/models/pine_large.obj` — or a builtin, `builtin:cone`. May be left
     /// out of the file: a group, or a prefab instance, draws nothing itself.
     #[serde(default)]
     pub model: String,

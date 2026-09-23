@@ -1661,3 +1661,58 @@ fn sculpting_a_terrain_writes_a_readable_line_and_reshapes_it_at_once() {
     let y = session.transform(crate_id).unwrap().position.y;
     assert!((y - 3.1).abs() < 0.15, "on the raised ground: {y}");
 }
+
+#[test]
+fn renaming_a_material_keeps_the_open_scene_and_its_undo_pointing_at_it() {
+    let text = r#"(
+    entities: [
+        (name: "ground", model: "builtin:plane", material: "clay"),
+        (name: "crate", model: "builtin:cube", transform: (position: (0.0, 0.5, 0.0)), material: "clay"),
+    ],
+)"#;
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    let path = scene_file("rename", text);
+    let root = root_of(&path);
+    std::fs::write(root.join("materials/clay.rmat"), "(color: \"#b4643c\")\n").unwrap();
+    runity_import::sync(&runity::Project::open(&root).unwrap());
+    session.open_scene(&path).unwrap();
+    let crate_id = id(&session, "crate");
+    let clay = session.material(crate_id).unwrap();
+
+    // An unsaved edit, so there is something to undo across the rename.
+    session.rename(crate_id, "box").unwrap();
+    let used = session.asset_usages("materials/clay.rmat").unwrap();
+    assert_eq!(used.len(), 2, "{used:?}");
+
+    let done = session
+        .rename_asset("materials/clay.rmat", "materials/terracotta.rmat")
+        .unwrap();
+    assert_eq!(done.rewritten, [("scenes/scene.ron".to_string(), 2)]);
+    assert_eq!(
+        session.material_name(crate_id).as_deref(),
+        Some("terracotta")
+    );
+    assert_eq!(session.material(crate_id), Some(clay), "drawn the same");
+    assert_eq!(
+        session.entity_name(crate_id).as_deref(),
+        Some("box"),
+        "the edit kept"
+    );
+    assert_eq!(
+        session.reload_scene().unwrap(),
+        SceneReload::Unchanged,
+        "its own rewrite is not someone else's edit"
+    );
+
+    session.undo().unwrap();
+    assert_eq!(session.entity_name(crate_id).as_deref(), Some("crate"));
+    assert_eq!(
+        session.material_name(crate_id).as_deref(),
+        Some("terracotta"),
+        "undo does not bring back a name that is gone"
+    );
+    session.save_scene(None).unwrap();
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("clay"));
+}

@@ -236,3 +236,58 @@ fn an_agent_builds_a_scene_looks_at_it_checks_it_and_saves_it() {
     assert!(saved.contains("Dynamic"), "{saved}");
     assert_eq!(agent.text("check", json!({})), "clean");
 }
+
+#[test]
+fn an_agent_renames_a_material_and_the_scene_follows() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("runity-mcp-rename");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    std::fs::write(root.join("materials/clay.rmat"), "(color: \"#b4643c\")\n").unwrap();
+    agent.text("reload", json!({}));
+    let id = agent.text(
+        "add_entity",
+        json!({ "name": "pot", "model": "builtin:sphere", "material": "clay" }),
+    );
+    agent.text("save_scene", json!({}));
+
+    let used = agent.text("usages", json!({ "file": "materials/clay.rmat" }));
+    assert!(used.contains(&format!("`pot` ({id}) material")), "{used}");
+
+    let said = agent.text(
+        "rename_asset",
+        json!({ "from": "materials/clay.rmat", "to": "materials/terracotta.rmat" }),
+    );
+    assert!(
+        said.contains("scenes said material `clay`, now material `terracotta`"),
+        "{said}"
+    );
+    let tree = agent.text("scene_tree", json!({}));
+    assert!(tree.contains("material=terracotta"), "{tree}");
+    let findings = agent.text("check", json!({}));
+    assert!(!findings.contains("terracotta"), "{findings}");
+
+    // Onto a name the builtins already answer to, with a line using it.
+    agent.text(
+        "add_entity",
+        json!({ "name": "ember", "model": "builtin:cube", "material": "ember" }),
+    );
+    agent.text("save_scene", json!({}));
+    let refused = agent
+        .call(
+            "rename_asset",
+            json!({ "from": "materials/terracotta.rmat", "to": "materials/ember.rmat" }),
+        )
+        .unwrap_err();
+    assert!(
+        refused.contains("material `ember` is already named by 1 line(s)"),
+        "{refused}"
+    );
+}

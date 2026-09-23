@@ -75,6 +75,59 @@ pub fn dependencies(path: &Path) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
+/// The heightmap a terrain names, as written: relative to the terrain.
+pub fn heightmap(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    ron::from_str::<TerrainSource>(&text).ok()?.heightmap
+}
+
+/// Point a terrain at another heightmap, changing that one string in the
+/// file and nothing else — the comments and the line of edits a brush left
+/// stay as they were.
+pub fn set_heightmap(path: &Path, to: &str) -> Result<()> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
+    let (start, end) = heightmap_literal(&text)
+        .with_context(|| format!("{} has no `heightmap: \"…\"` to change", path.display()))?;
+    let changed = format!("{}{to:?}{}", &text[..start], &text[end..]);
+    let read: TerrainSource =
+        ron::from_str(&changed).with_context(|| format!("{}", path.display()))?;
+    ensure!(
+        read.heightmap.as_deref() == Some(to),
+        "{}: the heightmap did not change to {to:?}",
+        path.display()
+    );
+    std::fs::write(path, changed).with_context(|| format!("{}", path.display()))?;
+    Ok(())
+}
+
+/// Where the string after `heightmap:` sits in the text, quotes included.
+/// Not in a comment: a line's `//` hides everything after it.
+fn heightmap_literal(text: &str) -> Option<(usize, usize)> {
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        let code = line.split("//").next().unwrap_or("");
+        if let Some(key) = code.find("heightmap") {
+            let rest = code[key + "heightmap".len()..].trim_start();
+            if let Some(value) = rest.strip_prefix(':') {
+                let value = value.trim_start();
+                if value.starts_with('"') {
+                    let start = offset + (code.len() - value.len());
+                    let mut escaped = false;
+                    for (i, c) in value.char_indices().skip(1) {
+                        match c {
+                            '\\' if !escaped => escaped = true,
+                            '"' if !escaped => return Some((start, start + i + 1)),
+                            _ => escaped = false,
+                        }
+                    }
+                }
+            }
+        }
+        offset += line.len();
+    }
+    None
+}
+
 /// A greyscale image, sampled smoothly anywhere in `[0, 1]²`.
 struct Heightmap {
     width: u32,
