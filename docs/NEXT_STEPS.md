@@ -269,9 +269,9 @@ Steam) жил на runity. Порядок — по риску: сначала т
         `leave_lobby`, `open_friends`, `run_callbacks`. Kitchen Rush играет
         по сети через лобби Spacewar: хост создаёт, друзья входят по
         приглашению, уровень стартует хост (`examples/kitchen/src/lobby.rs`)
-  - [ ] Steam-транспорт проверен вживую: живой тест
-        `cargo test -- --ignored steam` в кухне (нужен запущенный Steam),
-        потом партия на двух аккаунтах
+  - [x] Вживую (2026-09-24): Spacewar поднимается, Steam создаёт лобби
+        для кухни — `cargo test -- --ignored steam` в `examples/kitchen`
+  - [ ] Партия на двух аккаунтах: приглашение, вход, кадры через Steam
 - [x] Сейвы: надгробия удалённых объектов сцены (`gone`), ротация
       (`SaveGame::write_rotating`: 3 сейва и копия на восстановление,
       `read_newest` находит новейший читаемый)
