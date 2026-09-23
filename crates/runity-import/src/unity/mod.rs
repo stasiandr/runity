@@ -25,6 +25,7 @@ pub struct Report {
     pub prefabs: usize,
     pub materials: usize,
     pub textures: usize,
+    pub sounds: usize,
     pub models: usize,
     pub animators: usize,
     /// What was left behind, by kind, with how many times: a component
@@ -44,8 +45,14 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} scenes, {} prefabs, {} materials, {} textures, {} models, {} animators",
-            self.scenes, self.prefabs, self.materials, self.textures, self.models, self.animators
+            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators",
+            self.scenes,
+            self.prefabs,
+            self.materials,
+            self.textures,
+            self.sounds,
+            self.models,
+            self.animators
         )?;
         if !self.skipped.is_empty() {
             writeln!(f, "left behind:")?;
@@ -87,6 +94,26 @@ pub struct Unity {
 }
 
 /// The kind a Unity file becomes in runity, by its extension.
+/// The assets of `kind` the project's scenes and prefabs name by GUID —
+/// what their components link to, beyond what materials use.
+fn referenced(unity: &Unity, kind: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for which in ["scene", "prefab"] {
+        for (_, path) in unity.of_kind(which) {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            for part in text.split("guid: ").skip(1) {
+                let guid: String = part.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if unity.named(&guid).is_some_and(|(k, _)| k == kind) {
+                    out.insert(guid);
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn kind_of(path: &Path) -> Option<&'static str> {
     let extension = path.extension()?.to_string_lossy().to_lowercase();
     Some(match extension.as_str() {
@@ -246,9 +273,11 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         )?;
     }
 
-    // Textures first, and only those materials use: a project's Assets/
-    // holds many a picture nothing draws.
-    let (used, data_only) = material::textures_used(&unity);
+    // Textures first, and only those materials — or the scenes' and
+    // prefabs' components — use: a project's Assets/ holds many a picture
+    // nothing draws.
+    let (mut used, data_only) = material::textures_used(&unity);
+    used.extend(referenced(&unity, "texture"));
     let textures = project.assets().join("textures");
     for guid in &used {
         let (Some(path), Some(name)) = (unity.guids.get(guid), unity.names.get(guid)) else {
@@ -287,6 +316,25 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             settings.srgb = false;
             let _ = settings.save(crate::sidecar_for(&to));
         }
+    }
+
+    // Sounds the scenes and prefabs name: short ones decoded on sync, long
+    // ones kept compressed to stream.
+    let sounds = project.assets().join("sounds");
+    for guid in referenced(&unity, "sound") {
+        let (Some(path), Some(name)) = (unity.guids.get(&guid), unity.names.get(&guid)) else {
+            continue;
+        };
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        std::fs::create_dir_all(&sounds)?;
+        if let Err(e) = std::fs::copy(path, sounds.join(format!("{name}.{extension}"))) {
+            report.errors.push(format!("{}: {e}", path.display()));
+            continue;
+        }
+        report.sounds += 1;
     }
 
     let mut shaders: std::collections::BTreeMap<String, PathBuf> = Default::default();
