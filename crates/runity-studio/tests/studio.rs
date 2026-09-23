@@ -1554,3 +1554,96 @@ fn a_theme_file_recolours_the_running_editor() {
     std::fs::remove_file(&file).unwrap();
     assert!(wait(&mut s, &|s| has(s, surface)));
 }
+
+#[test]
+fn the_animator_edits_a_graph_and_keeps_its_comments() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("animators/hero.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"// The hero.
+(
+    start: "idle",
+    states: {
+        "idle": (clip: "idle"), // standing
+        "walk": (clip: "walk"),
+    },
+    transitions: [
+        (from: "idle", to: "walk", when: [Above("speed", 0.1)]),
+    ],
+)
+"#,
+    )
+    .unwrap();
+    let read = || -> runity::animgraph::Graph {
+        runity::ron::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap()
+    };
+
+    click(&mut s, "tab animator");
+    click(&mut s, "animator wide");
+    s.frame();
+    click(&mut s, "animator hero");
+    assert!(s.ui.find("state idle").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("transition 0").is_some(), "an arrow idle → walk");
+
+    // A box dragged moves, and the file does not change for it.
+    let before = std::fs::read_to_string(&file).unwrap();
+    s.ui.paint();
+    let walk = s.ui.rect(s.ui.find("state walk").unwrap());
+    let (x, y) = walk.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x: x + 20.0, y });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved {
+        x: x + 60.0,
+        y: y + 80.0,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    s.ui.paint();
+    let moved = s.ui.rect(s.ui.find("state walk").unwrap());
+    assert!(
+        (moved.x - walk.x - 60.0).abs() < 2.0,
+        "{walk:?} -> {moved:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert!(
+        dir.join(".runity/animators.ron").exists(),
+        "where boxes stand is kept"
+    );
+
+    // Walk is chosen by the press: back to idle, on a condition.
+    click(&mut s, "to idle");
+    fill(&mut s, "animator field when", r#"Below("speed", 0.1)"#);
+    let g = read();
+    assert_eq!(g.transitions.len(), 2);
+    assert_eq!(g.transitions[1].from, "walk");
+    assert_eq!(
+        g.transitions[1].when,
+        vec![runity::animgraph::Condition::Below("speed".into(), 0.1)]
+    );
+
+    // A new state, renamed, made the start.
+    click(&mut s, "animator add state");
+    fill(&mut s, "animator field name", "jump");
+    click(&mut s, "animator start");
+    click(&mut s, "animator looping");
+    let g = read();
+    assert_eq!(g.start, "jump");
+    assert!(!g.states["jump"].looping);
+
+    // An arrow chosen and deleted.
+    click(&mut s, "transition 0 head");
+    click(&mut s, "animator delete");
+    assert_eq!(read().transitions.len(), 1);
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("// The hero."), "{text}");
+    assert!(text.contains("// standing"));
+}

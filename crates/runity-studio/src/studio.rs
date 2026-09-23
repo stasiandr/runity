@@ -28,6 +28,7 @@ use runity_ui::{Event, ImageId, NodeId, Style, Ui};
 
 use runity_ui::Clipboard as _;
 
+use crate::animator::Animator;
 use crate::bottom::{Asset, Bottom};
 use crate::clipboard::SystemClipboard;
 use crate::dock::{Docked, Docks, Panel};
@@ -204,6 +205,7 @@ pub struct Studio {
     profiler: Profiler,
     animation: Animation,
     screens: Screens,
+    animator: Animator,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The sound device, opened the first time a sound is listened to, and
@@ -491,6 +493,8 @@ impl Studio {
         roots.insert(Panel::Animation, animation.root);
         let screens = Screens::new(&mut ui, lower);
         roots.insert(Panel::Screens, screens.root);
+        let animator = Animator::new(&mut ui, lower);
+        roots.insert(Panel::Animator, animator.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -519,6 +523,7 @@ impl Studio {
             profiler,
             animation,
             screens,
+            animator,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -859,6 +864,9 @@ impl Studio {
                 self.screens.update(&mut self.ui, &self.session);
                 self.screens.draw(&self.session);
             }
+            if self.docks.is_active(Panel::Animator) {
+                self.animator.update(&mut self.ui, &self.session);
+            }
             self.fit_wide();
             if self.docks.is_active(Panel::Settings) {
                 self.settings.update(&mut self.ui, &self.session);
@@ -885,9 +893,9 @@ impl Studio {
     /// The UI Builder over the whole window below the toolbar, or back in
     /// its dock.
     fn fit_wide(&mut self) {
-        let wide = self.screens.wide
-            && self.docks.is_active(Panel::Screens)
-            && self.docks.dock_of(Panel::Screens) == Some(2);
+        let under = |panel| self.docks.is_active(panel) && self.docks.dock_of(panel) == Some(2);
+        let wide = (self.screens.wide && under(Panel::Screens))
+            || (self.animator.wide && under(Panel::Animator));
         let split = self.splits[1];
         match (wide, self.lower_before_wide) {
             (true, _) => {
@@ -1652,6 +1660,9 @@ impl Studio {
                 .event(&mut self.ui, &mut self.session, node, event, requests);
         } else if self.settings.owns(&self.ui, node) {
             self.settings
+                .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.animator.owns(&self.ui, node) {
+            self.animator
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.screens.owns(&self.ui, node) {
             self.screens
