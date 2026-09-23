@@ -2,6 +2,7 @@
 //! call the same code the command line does.
 
 pub mod check;
+pub mod merge;
 pub mod rebuild;
 
 pub use check::{check, Finding, Severity};

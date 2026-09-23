@@ -5,6 +5,8 @@
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
+//! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
+//! runity git-setup [PROJECT]             turn the driver on in this clone
 //! ```
 //!
 //! PROJECT is any path inside a project; the current folder by default.
@@ -29,6 +31,11 @@ runity sync [PROJECT]
 runity check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
+runity git-setup [PROJECT]
+    Turn on the scene merge driver in this clone: scenes and prefabs merge
+    by entity and field, and conflicts are said in words.
+runity merge BASE OURS THEIRS [PATH]
+    The driver git calls; writes the merge over OURS. Exits 1 on conflict.
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
@@ -54,6 +61,14 @@ fn run() -> Result<ExitCode> {
         "sync" => sync(&find(&rest)?),
         "check" => check(&find(&rest)?),
         "rebuild-time" => rebuild_time(&rest),
+        "merge" => merge(&rest),
+        "git-setup" => {
+            let project = find(&rest)?;
+            for line in runity_cli::merge::git_setup(project.root())? {
+                println!("{line}");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         "" | "-h" | "--help" | "help" => {
             println!("{HELP}");
             Ok(ExitCode::SUCCESS)
@@ -193,4 +208,32 @@ fn rebuild_time(rest: &[String]) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn merge(rest: &[String]) -> Result<ExitCode> {
+    let [base, ours, theirs, path @ ..] = rest else {
+        bail!("runity merge BASE OURS THEIRS [PATH]");
+    };
+    let path = path.first().map(PathBuf::from);
+    let outcome = runity_cli::merge::merge_files(
+        base.as_ref(),
+        ours.as_ref(),
+        theirs.as_ref(),
+        path.as_deref(),
+    )?;
+    let name = path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ours.clone());
+    for conflict in &outcome.conflicts {
+        eprintln!("runity merge: {name}: {conflict}");
+    }
+    if outcome.conflicts.is_empty() && !outcome.by_lines {
+        eprintln!("runity merge: {name}: merged by entity");
+    }
+    Ok(if outcome.conflicts.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    })
 }

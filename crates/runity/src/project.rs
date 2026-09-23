@@ -274,6 +274,15 @@ const GITIGNORE: &str = "\
 /target/
 ";
 
+/// The `.gitattributes` lines that send scenes and prefabs to `runity
+/// merge`, for a project made before they were in the template.
+pub const MERGE_ATTRIBUTES: &str = "\
+# Scenes and prefabs merge by entity and field, not by line. The driver is
+# `runity merge`; `runity git-setup` turns it on in a clone.
+scenes/**/*.ron merge=runity
+prefabs/**/*.prefab merge=runity
+";
+
 /// The name Cargo will accept for a project called `name`.
 fn crate_name(name: &str) -> String {
     let mut out: String = name
@@ -459,6 +468,11 @@ const GITATTRIBUTES: &str = "\
 # Text as LF on every machine: .rimport stores a hash of the source's bytes.
 * text=auto eol=lf
 
+# Scenes and prefabs merge by entity and field, not by line. The driver is
+# `runity merge`; `runity git-setup` turns it on in a clone.
+scenes/**/*.ron merge=runity
+prefabs/**/*.prefab merge=runity
+
 # Binary sources: stored in LFS, lockable. Text sources (.ron, .prefab,
 # .rmat, .rimport, .obj, .gltf) stay in git, where a diff means something.
 *.png   filter=lfs diff=lfs merge=lfs -text lockable
@@ -498,6 +512,10 @@ Cargo.toml   the game crate; src/main.rs is the game
 * `runity check` says what does not resolve — a model, a material or a
   prefab nobody has, a repeated id, a stale sidecar — with the file and the
   entity. Run it after editing scenes; it exits non-zero on errors.
+* `runity git-setup`, once per clone, turns on the merge driver: scenes
+  and prefabs then merge by entity and field, and a real conflict is
+  reported in words (\"both changed the position of `tree`\") with ours
+  kept and the file still loading.
 * `runity sync` builds `library/` from the sources. After adding, changing
   or moving a source, run it and commit the `.rimport` it writes beside the
   source. Never edit a sidecar's `hash` or `id` by hand: the hash is how a

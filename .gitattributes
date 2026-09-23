@@ -1,3 +1,8 @@
 # Text as LF on every machine: a .rimport stores a hash of its source's
 # bytes, and a CRLF checkout would change every one of them.
 * text=auto eol=lf
+
+# The example project's scenes and prefabs merge by entity and field.
+# `cargo run -p runity-cli -- git-setup examples/valley` turns the driver on.
+examples/valley/scenes/**/*.ron merge=runity
+examples/valley/prefabs/**/*.prefab merge=runity

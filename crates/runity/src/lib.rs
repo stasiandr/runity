@@ -33,6 +33,7 @@ pub mod input;
 pub mod library;
 pub mod live;
 pub mod material;
+pub mod merge;
 #[cfg(feature = "physics")]
 pub mod physics;
 pub mod prefab;
