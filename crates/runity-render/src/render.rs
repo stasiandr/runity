@@ -2329,7 +2329,7 @@ impl Renderer {
     /// Over the prepass's depth ([`Renderer::depth_prepassed`]), a solid
     /// look takes its equal-depth pipeline.
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
-        let map = if self.depth_prepassed && look.blend.is_none() {
+        let map = if self.depth_prepassed && look.blend.is_none() && !self.cuts(look) {
             &self.pipelines.prepassed
         } else {
             &self.pipelines.scene
@@ -2340,6 +2340,16 @@ impl Renderer {
                 ..look
             })
         })
+    }
+
+    /// Whether a look's own shader cuts its surface out (`discard`): the
+    /// prepass, which does not run it, would lay the whole of it, so it is
+    /// left out there and drawn over the prepass's depth as a see-through
+    /// thing is, by its own test.
+    fn cuts(&self, look: Look) -> bool {
+        look.shader
+            .and_then(|id| self.material_shaders.get(&id))
+            .is_some_and(|s| s.contains("discard"))
     }
 
     /// Give materials whose `shader` is `id` their own `surface` function
@@ -3836,6 +3846,10 @@ impl Renderer {
                     continue;
                 }
             }
+            if prepass && look.is_some_and(|l| self.cuts(l)) {
+                first += count;
+                continue;
+            }
             if let Some(look) = look {
                 if current != Some(*look) {
                     let pipeline = if prepass {
@@ -3932,6 +3946,9 @@ impl Renderer {
         let Some(mesh) = self.mesh(mesh) else {
             return;
         };
+        if prepass && self.cuts(look) {
+            return;
+        }
         let pipeline = if prepass {
             self.pipelines
                 .prepass

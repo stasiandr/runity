@@ -578,6 +578,11 @@ pub fn convert_with(
         if let Some(how) = declared(&written, "screen_map") {
             fields.push(format!("screen_map: {how}"));
         }
+        // What the engine already does for it, in `.rmat` fields: grass
+        // sways by the standard shader's wind rather than its own.
+        if let Some(own) = declared(&written, "material") {
+            fields.push(own);
+        }
         // Every texture it sets that the shader reads, by the name the
         // shader reads it by; the written shader's `// runity:textures`
         // line picks which go in its slots.
