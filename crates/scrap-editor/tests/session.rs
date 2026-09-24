@@ -6063,6 +6063,8 @@ fn entities_with_a_component_are_a_table_of_its_fields() {
         .set_cell("c:door", &crate_id.to_string(), "name", "gate")
         .unwrap();
     assert_eq!(session.entity_name(crate_id).as_deref(), Some("gate"));
+}
+
 const WIRED: &str = r#"(
     entities: [
         (id: "f1", name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
