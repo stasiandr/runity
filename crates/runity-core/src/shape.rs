@@ -44,6 +44,12 @@ pub enum Shape {
     /// untagged enum: a material by name, or one spelled out. Serde asks
     /// nothing that says so; a type says it itself ([`crate::parts::Part::shape`]).
     OneOf(Vec<Shape>),
+    /// An entity of the scene by its bare id (`to: "4f1c…"`), where
+    /// [`Shape::Entity`] is a component's `EntityRef("4f1c…")`.
+    EntityId,
+    /// An asset by its ID alone, of the kind its field's name says — a
+    /// material's `base_map` a texture, its `shader` a shader.
+    AssetId(String),
 }
 
 /// The shape of `T` as the value of a field called `field`: a link to an
@@ -58,6 +64,22 @@ pub fn of_field<'de, T: Deserialize<'de>>(field: &'static str) -> Shape {
 std::thread_local! {
     /// The name of the field being traced: what a link in it is a link to.
     static FIELD: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// What text read by a visitor expecting `expecting` is: an entity's id, an
+/// asset's, or text.
+fn text_shape(expecting: &str) -> Shape {
+    if expecting == crate::id::ID_EXPECTING {
+        Shape::EntityId
+    } else if expecting == crate::asset::ID_EXPECTING {
+        Shape::AssetId(
+            crate::links::kind_of_field(FIELD.get())
+                .unwrap_or("asset")
+                .to_string(),
+        )
+    } else {
+        Shape::Text
+    }
 }
 
 /// A visitor's `expecting`, as text.
@@ -132,6 +154,9 @@ impl Shape {
             ),
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
             Shape::OneOf(shapes) => shapes.first().map(Shape::example).unwrap_or_default(),
+            // No entity: the id no entity has.
+            Shape::EntityId => "\"0\"".into(),
+            Shape::AssetId(_) => "\"0\"".into(),
             Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
             Shape::Asset(kind) => {
                 let name = crate::links::LINK_KINDS
@@ -169,7 +194,13 @@ impl Shape {
         };
         match (self, value) {
             (
-                Shape::Any | Shape::Enum(_) | Shape::Entity | Shape::Asset(_) | Shape::OneOf(_),
+                Shape::Any
+                | Shape::Enum(_)
+                | Shape::Entity
+                | Shape::Asset(_)
+                | Shape::OneOf(_)
+                | Shape::EntityId
+                | Shape::AssetId(_),
                 _,
             ) => {}
             (Shape::Bool, V::Bool(_)) => {}
@@ -259,7 +290,8 @@ impl fmt::Display for Shape {
                 let shapes: Vec<String> = shapes.iter().map(ToString::to_string).collect();
                 write!(f, "{}", shapes.join(" or "))
             }
-            Shape::Entity => write!(f, "entity"),
+            Shape::Entity | Shape::EntityId => write!(f, "entity"),
+            Shape::AssetId(kind) => write!(f, "{kind} id"),
             Shape::Asset(kind) => write!(f, "{kind}"),
         }
     }
@@ -326,13 +358,24 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         deserialize_char => Shape::Char, visit_char('a');
         // `0`, not nothing: text a type parses further — an entity's or an
         // asset's id — reads it, and the trace goes on past it.
-        deserialize_str => Shape::Text, visit_str("0");
-        deserialize_string => Shape::Text, visit_string("0".to_string());
+
         deserialize_bytes => Shape::Any, visit_bytes(&[]);
         deserialize_byte_buf => Shape::Any, visit_byte_buf(Vec::new());
         deserialize_unit => Shape::Unit, visit_unit();
         deserialize_identifier => Shape::Text, visit_str("");
         deserialize_ignored_any => Shape::Any, visit_unit();
+    }
+
+    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
+        *self.out = text_shape(&Expecting(&visitor).to_string());
+        // `1`, not nothing: an entity's or an asset's id reads it, and the
+        // trace goes on past it.
+        visitor.visit_str("1")
+    }
+
+    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
+        *self.out = text_shape(&Expecting(&visitor).to_string());
+        visitor.visit_string("1".to_string())
     }
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
@@ -793,6 +836,24 @@ mod tests {
             Shape::Option(Box::new(Shape::Asset("sound".into())))
         );
         assert_eq!(fields[2].1, Shape::Float, "traced on past the links");
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Joint {
+            to: crate::EntityId,
+            base_map: Option<crate::asset::AssetId>,
+            name: String,
+        }
+        assert_eq!(
+            of::<Joint>(),
+            Shape::Struct(vec![
+                ("to".into(), Shape::EntityId),
+                (
+                    "base_map".into(),
+                    Shape::Option(Box::new(Shape::AssetId("texture".into())))
+                ),
+                ("name".into(), Shape::Text),
+            ])
+        );
         assert_eq!(
             of_field::<crate::AssetLink>("material"),
             Shape::Asset("material".into())

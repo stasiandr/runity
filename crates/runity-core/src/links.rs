@@ -305,9 +305,12 @@ pub fn kind_of_field(field: &str) -> Option<&'static str> {
         "material" => "material",
         "clip" | "sound" => "sound",
         "prefab" => "prefab",
-        "texture" => "texture",
+        "texture" | "textures" => "texture",
         "scene" => "scene",
         "animator" => "animator",
+        "shader" => "shader",
+        // A material's maps: `base_map`, `normal_map`…
+        map if map.ends_with("_map") => "texture",
         _ => return None,
     })
 }

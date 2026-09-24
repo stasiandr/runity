@@ -5024,3 +5024,66 @@ fn a_field_that_names_an_asset_says_which_kind() {
     assert_eq!(session.assets_of_kind("animator"), vec!["door".to_string()]);
     assert!(session.link_exists("animator", &runity::AssetLink::named("door")));
 }
+
+#[test]
+fn a_picker_lists_textures_entities_and_bones_by_name() {
+    let Some((mut session, path)) = open("pickers") else {
+        return;
+    };
+    let root = root_of(&path);
+    let assets = root.join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let valley = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/valley");
+    std::fs::copy(
+        valley.join("assets/textures/marks.png"),
+        assets.join("marks.png"),
+    )
+    .unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runity-import/tests/fixtures/skinned_banner.gltf"),
+        assets.join("banner.gltf"),
+    )
+    .unwrap();
+    session.reload_assets();
+
+    // Textures by name, each with the ID a material keeps, and back.
+    let textures = session.asset_ids_of_kind("texture");
+    let (name, texture) = textures
+        .iter()
+        .find(|(n, _)| n.contains("marks"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the texture imported: {textures:?}"));
+    assert_eq!(session.asset_name_of_id("texture", texture), Some(name.clone()));
+    assert_eq!(session.texture_picture(&name, 16).unwrap().len(), 16 * 16 * 4);
+    // A shader by its file.
+    std::fs::create_dir_all(root.join("shaders")).unwrap();
+    std::fs::write(root.join("shaders/water.wgsl"), "").unwrap();
+    assert_eq!(
+        session.asset_ids_of_kind("shader"),
+        vec![("water".to_string(), runity::asset::shader_id("water"))]
+    );
+
+    // Entities with where they are.
+    let lid = id(&session, "lid");
+    let choice = session
+        .entity_choices()
+        .into_iter()
+        .find(|c| c.id == lid)
+        .unwrap();
+    assert_eq!((choice.name.as_str(), choice.path.as_str()), ("lid", "crate"));
+
+    // A bone of the parent's skeleton.
+    let model = session
+        .assets()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.kind == "model" && a.name.contains("banner"))
+        .unwrap()
+        .name;
+    let banner = session.add(None, &model).unwrap();
+    let flag = session.add(Some(banner), "builtin:cube").unwrap();
+    let bones = session.bone_names(flag);
+    assert!(!bones.is_empty(), "the banner's skeleton");
+    assert!(session.bone_names(banner).is_empty(), "no parent, no bones");
+}

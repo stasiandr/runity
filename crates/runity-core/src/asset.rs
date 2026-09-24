@@ -204,10 +204,23 @@ impl serde::Serialize for AssetId {
     }
 }
 
+/// What an [`AssetId`] says it expects: how [`crate::shape`] knows a field
+/// holds an asset by its ID alone (a material's `base_map`).
+pub const ID_EXPECTING: &str = "an asset id: up to 32 hex digits";
+
 impl<'de> serde::Deserialize<'de> for AssetId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <String as serde::Deserialize>::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
+        struct Text;
+        impl serde::de::Visitor<'_> for Text {
+            type Value = AssetId;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(ID_EXPECTING)
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<AssetId, E> {
+                text.parse().map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(Text)
     }
 }
 

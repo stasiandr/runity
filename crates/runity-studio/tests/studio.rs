@@ -2107,11 +2107,11 @@ fn an_entity_field_is_picked_from_the_scene_and_a_gone_target_is_named() {
     click(&mut s, "line boulder");
     let picker = s.ui.find("door switch").unwrap();
     let label = s.ui.children(picker)[1];
-    assert_eq!(s.ui.text(label), Some("None (entity)"));
+    assert_eq!(s.ui.text(label), Some("None (Entity)"));
 
     // The picker lists the scene; crate is chosen.
     click(&mut s, "door switch");
-    click(&mut s, "menu crate");
+    click(&mut s, "object crate");
     let value = s
         .session
         .inspect(boulder)
@@ -2881,4 +2881,153 @@ fn an_inline_materials_shading_is_a_list_from_the_engine() {
         .value;
     assert!(material.contains("shading:Unlit"), "{material}");
     assert!(material.contains("base_color:(0.5,0.4,0.3)"), "the rest kept: {material}");
+}
+
+fn field_value(s: &Studio, id: runity::EntityId, field: &str) -> String {
+    s.session
+        .inspect(id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == field)
+        .unwrap()
+        .value
+}
+
+#[test]
+fn a_materials_map_is_a_texture_picked_by_name() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    s.session.reload_assets();
+    let (texture, id) = s
+        .session
+        .asset_ids_of_kind("texture")
+        .into_iter()
+        .find(|(n, _)| n.contains("marks"))
+        .expect("the valley's textures imported");
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(crate_id, "material", "(base_color: (0.5, 0.4, 0.3))")
+        .unwrap();
+    click(&mut s, "line crate");
+    let map = s.ui.find("material base_map").expect("the base map's field");
+    assert!(!s.ui.is_field(map), "picked, not typed");
+    assert_eq!(s.ui.text(s.ui.children(map)[1]), Some("None (Texture)"));
+
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "material base_map");
+    type_text(&mut s, "marks");
+    s.frame();
+    click(&mut s, &format!("object {texture}"));
+    let material = field_value(&s, crate_id, "material");
+    assert!(
+        material.contains(&format!("base_map:Some(\"{}\")", id.as_hex())),
+        "{material}"
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+    // The name shown, never the ID.
+    let map = s.ui.find("material base_map").unwrap();
+    assert_eq!(s.ui.text(s.ui.children(map)[1]), Some(texture.as_str()));
+    assert!(!s.ui.dump().contains(&id.as_hex()), "the ID is not shown");
+}
+
+#[test]
+fn a_joints_other_body_is_an_entity_picked_dragged_or_clicked_in_the_view() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    let ground = s.session.find("ground").unwrap();
+    s.session
+        .set_field(crate_id, "joint", "Ball(anchor: (0.0, 0.0, 0.0))")
+        .unwrap();
+    click(&mut s, "line crate");
+    let to = s.ui.find("joint to").expect("the joint's other body");
+    assert!(!s.ui.is_field(to));
+    assert_eq!(s.ui.text(s.ui.children(to)[1]), Some("None (Entity)"));
+
+    // Picked from the list, where each line says where it is.
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "joint to");
+    assert!(s.ui.find("object crate").is_none(), "not itself");
+    type_text(&mut s, "ground");
+    s.frame();
+    key(&mut s, Key::Enter);
+    assert!(field_value(&s, crate_id, "joint").contains(&ground.to_string()));
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+
+    // A line dragged from the Hierarchy: linked, and not moved.
+    drag_tile_onto(&mut s, "line boulder", "joint to");
+    assert!(
+        field_value(&s, crate_id, "joint").contains(&boulder.to_string()),
+        "{}",
+        field_value(&s, crate_id, "joint")
+    );
+    assert!(s
+        .session
+        .hierarchy()
+        .iter()
+        .any(|r| r.id == boulder && r.depth == 0));
+
+    // A Project tile is no entity: nothing changes.
+    let before = field_value(&s, crate_id, "joint");
+    find_in_project(&mut s, "sphere");
+    drag_tile_onto(&mut s, "asset sphere", "joint to");
+    assert_eq!(field_value(&s, crate_id, "joint"), before);
+
+    // The eyedropper: the next click in the Scene view picks.
+    click(&mut s, "joint to in scene");
+    let at = s.session.transform(ground).unwrap().position + runity::glam::Vec3::new(4.0, 0.0, 6.0);
+    let (px, py) = s.session.screen_of(at).expect("in view");
+    s.ui.paint();
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    let scale = s.ui.viewport().2;
+    let (x, y) = (view.x + px / scale, view.y + py / scale);
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    assert!(
+        field_value(&s, crate_id, "joint").contains(&ground.to_string()),
+        "the ground, clicked: {}",
+        field_value(&s, crate_id, "joint")
+    );
+    assert_eq!(s.session.selection(), vec![crate_id], "the selection stays");
+}
+
+#[test]
+fn a_bone_is_picked_from_the_parents_skeleton() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let assets = dir.join("assets");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../runity-import/tests/fixtures/skinned_banner.gltf"),
+        assets.join("banner.gltf"),
+    )
+    .unwrap();
+    s.session.reload_assets();
+    let model = s
+        .session
+        .assets()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.kind == "model" && a.name.contains("banner"))
+        .unwrap()
+        .name;
+    let banner = s.session.add(None, &model).unwrap();
+    let flag = s.session.add(Some(banner), "builtin:cube").unwrap();
+    s.session.set_field(flag, "bone", "nowhere").unwrap();
+    s.session.select(Some(flag)).unwrap();
+    s.frame();
+    let bones = s.session.bone_names(flag);
+    let bone = s.ui.find("bone").expect("the bone's field");
+    assert!(!s.ui.is_field(bone));
+    click(&mut s, "bone");
+    let first = &bones[0];
+    assert!(s.ui.find(&format!("object {first}")).is_some(), "the skeleton's bones: {bones:?}\n{}", s.ui.dump().lines().filter(|l| l.contains("object")).collect::<Vec<_>>().join("\n"));
+    click(&mut s, &format!("object {first}"));
+    assert_eq!(&field_value(&s, flag, "bone"), first);
 }

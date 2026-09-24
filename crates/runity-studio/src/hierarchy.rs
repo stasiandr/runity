@@ -285,6 +285,15 @@ impl Hierarchy {
         self.shown.iter().find(|r| r.id == id)
     }
 
+    /// The entity a line of the list stands for: what a line dragged onto
+    /// an Inspector field links it to.
+    pub fn line_entity(&self, node: NodeId) -> Option<EntityId> {
+        match self.parts.get(&node) {
+            Some(Part::Line(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// Whether `node` is this panel's.
     pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
         node == self.search

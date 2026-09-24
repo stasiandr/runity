@@ -32,6 +32,7 @@ mod import_settings;
 pub use import_settings::IMPORT_FIELDS;
 pub mod history;
 pub mod panels;
+pub mod pickers;
 pub mod prefs;
 mod scene_view;
 mod surface;

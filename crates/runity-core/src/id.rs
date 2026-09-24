@@ -142,11 +142,24 @@ impl Serialize for EntityId {
     }
 }
 
+/// What an [`EntityId`] read from text says it expects: how
+/// [`crate::shape`] knows a field holds one — a link to an entity.
+pub const ID_EXPECTING: &str = "an entity id: up to sixteen hex digits";
+
 impl<'de> Deserialize<'de> for EntityId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Text;
+        impl serde::de::Visitor<'_> for Text {
+            type Value = EntityId;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(ID_EXPECTING)
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<EntityId, E> {
+                text.parse().map_err(E::custom)
+            }
+        }
         if deserializer.is_human_readable() {
-            let text = String::deserialize(deserializer)?;
-            text.parse().map_err(serde::de::Error::custom)
+            deserializer.deserialize_str(Text)
         } else {
             u64::deserialize(deserializer).map(EntityId)
         }

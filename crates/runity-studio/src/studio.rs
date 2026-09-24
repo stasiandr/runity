@@ -783,6 +783,21 @@ impl Studio {
                     self.foliage_dab(vx, vy);
                 }
             }
+            // An Inspector field's eyedropper takes the next click in the
+            // view: what is under it goes in the field.
+            InputEvent::MouseDown(MouseButton::Left)
+                if over_view && self.inspector.picking_in_scene() =>
+            {
+                let (px, py) = self.ui.pointer();
+                let (vx, vy) = to_view(px, py);
+                let hit = self.session.pick(vx as u32, vy as u32);
+                self.inspector.pick_in_scene(&mut self.session, hit);
+                self.refresh();
+            }
+            InputEvent::KeyDown(Key::Escape) if self.inspector.picking_in_scene() => {
+                self.inspector.cancel_pick();
+                self.refresh();
+            }
             // The foliage brush takes the left button; Alt still orbits.
             InputEvent::MouseDown(MouseButton::Left)
                 if over_view && self.foliage && !self.ui.modifiers().2 =>
@@ -2105,7 +2120,16 @@ impl Studio {
         // one a dragged entry would land in lit.
         self.inspector.set_pictures(self.bottom.pictures());
         self.inspector.update(&mut self.ui, s);
-        let dragged = self.bottom.dragged(&self.ui);
+        let dragged = self
+            .bottom
+            .dragged(&self.ui)
+            .map(crate::inspector::Dragged::Asset)
+            .or_else(|| {
+                let line = self.ui.dragging()?;
+                self.hierarchy
+                    .line_entity(line)
+                    .map(crate::inspector::Dragged::Entity)
+            });
         self.inspector.hover_drop(&mut self.ui, dragged.as_ref());
         let t3 = Instant::now();
         self.update_toolbar();
@@ -2404,6 +2428,18 @@ impl Studio {
             return;
         }
         if self.hierarchy.owns(&self.ui, node) {
+            // A line let go on an Inspector field that links an entity:
+            // linked there, and not moved in the tree.
+            if let (Event::DragEnd { .. }, Some(id)) = (event, self.hierarchy.line_entity(node)) {
+                if self.inspector.drop_on(
+                    &mut self.ui,
+                    &mut self.session,
+                    &crate::inspector::Dragged::Entity(id),
+                ) {
+                    requests.refresh = true;
+                    return;
+                }
+            }
             self.hierarchy
                 .event(&mut self.ui, &mut self.session, node, event, requests);
         } else if self.inspector.owns(node) {
@@ -2590,10 +2626,11 @@ impl Studio {
     /// it landed; a material, onto what it landed on.
     fn drop_asset(&mut self, asset: Asset) {
         // Onto an Inspector field that names an asset: set there if it fits.
-        if self
-            .inspector
-            .drop_asset(&mut self.ui, &mut self.session, &asset)
-        {
+        if self.inspector.drop_on(
+            &mut self.ui,
+            &mut self.session,
+            &crate::inspector::Dragged::Asset(asset.clone()),
+        ) {
             self.refresh();
             return;
         }

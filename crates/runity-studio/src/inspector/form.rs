@@ -430,16 +430,31 @@ impl Inspector {
         let shape = one_of(shape, node);
         let name = cx.name(&place.path);
         let mixed = !unknown && cx.mixed(&place.path, node);
-        // A link to an asset: Unity's object field, never its name typed.
-        if let Some(Shape::Asset(kind)) = shape {
-            if let Some(linked) = super::object::linked_name(&cx.text[node.span.clone()]) {
-                let target = super::object::ObjectRef {
-                    slot: super::object::Slot::Form(place.clone()),
-                    kind: kind.clone(),
-                };
-                self.object_field(ui, line, &name, target, Some(&linked), mixed, false);
-                return;
-            }
+        // A link to an asset or an entity: Unity's object field, never its
+        // name or its id typed. `None` in an option is the field naming
+        // nothing.
+        use super::object::{Holds, ObjectRef, Slot};
+        let holds = match shape {
+            Some(Shape::Asset(kind)) => Some((kind.as_str(), Holds::Link)),
+            Some(Shape::AssetId(kind)) => Some((kind.as_str(), Holds::AssetId)),
+            Some(Shape::Entity) => Some(("entity", Holds::EntityRef)),
+            Some(Shape::EntityId) => Some(("entity", Holds::EntityId)),
+            _ => None,
+        };
+        if let Some((kind, holds)) = holds {
+            let mut target = ObjectRef::new(Slot::Form(place.clone()), kind, holds);
+            target.optional = optional;
+            let text = &cx.text[node.span.clone()];
+            let shown = if optional && text.trim() == "None" {
+                super::object::Shown {
+                    name: Some(String::new()),
+                    missing: false,
+                }
+            } else {
+                self.shown(session, &target, text)
+            };
+            self.object_field(ui, session, line, &name, target, shown, mixed);
+            return;
         }
         let key = place
             .path

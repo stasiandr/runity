@@ -22,7 +22,8 @@ mod object;
 mod tree;
 
 pub use form::Place;
-use object::{ObjectRef, Slot};
+pub use object::Dragged;
+use object::{Holds, ObjectRef, Slot};
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -40,7 +41,8 @@ pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
-const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
+// The material last: written out in full, its parts are many lines.
+const OBJECT: [&str; 6] = ["model", "prefab", "animator", "bone", "bends_grass", "material"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
 const PARTS: [&str; 32] = [
@@ -221,6 +223,7 @@ fn object_kind(f: &Field) -> Option<&'static str> {
         "prefab" => "prefab",
         "animator" => "animator",
         "material" => "material",
+        "bone" => "bone",
         _ => return None,
     })
 }
@@ -292,6 +295,9 @@ enum Part {
     /// The arrow beside an object field: show the asset, by kind and
     /// name, in the Project.
     Ping(String, String),
+    /// An entity field's eyedropper: the next click in the Scene view
+    /// picks what goes in it.
+    PickInScene(ObjectRef),
     /// The object picker's search, and one of its entries.
     PickSearch,
     PickEntry(usize),
@@ -394,8 +400,8 @@ enum Popover {
         root: NodeId,
         list: NodeId,
         target: ObjectRef,
-        names: Vec<String>,
-        hits: Vec<Option<String>>,
+        choices: Vec<object::Choice>,
+        hits: Vec<Option<object::Choice>>,
         at: usize,
     },
 }
@@ -444,8 +450,6 @@ enum SubKind {
     Number,
     Text,
     Enum(Vec<String>),
-    /// A link to another entity: a picker, as Unity's object field.
-    Entity,
     Raw,
 }
 
@@ -584,6 +588,10 @@ pub struct Inspector {
     pictures: HashMap<String, runity_ui::ImageId>,
     /// The object field lit for what is dragged over it.
     drop_lit: Option<NodeId>,
+    /// The entity field whose eyedropper is on.
+    picking: Option<ObjectRef>,
+    /// Textures' small pictures, made as they are first shown.
+    texture_pictures: object::TexturePictures,
     more_button: NodeId,
     /// Which groups of a form are folded or opened, by their node name.
     folds: HashMap<String, bool>,
@@ -625,6 +633,8 @@ impl Inspector {
             objects: Vec::new(),
             pictures: HashMap::new(),
             drop_lit: None,
+            picking: None,
+            texture_pictures: HashMap::new(),
             more_button,
             folds: HashMap::new(),
             stand_ins: HashMap::new(),
@@ -1176,30 +1186,31 @@ impl Inspector {
                 }
             }
             None if object_kind(f).is_some() => {
-                let kind = object_kind(f).unwrap_or_default().to_string();
-                let target = ObjectRef {
-                    slot: Slot::Field(f.name.clone()),
-                    kind: kind.clone(),
-                };
-                let mixed = f.value == MIXED;
-                // A material written out in full is no asset: `None`, and
-                // its parts under it.
-                let inline = f.name == "material" && !mixed && tree::parse(&f.value)
-                    .is_some_and(|n| !matches!(n.kind, tree::Kind::Text(_)));
-                let name = if mixed || inline {
-                    None
-                } else if f.name == "material" {
-                    object::linked_name(&f.value)
+                let kind = object_kind(f).unwrap_or_default();
+                // A material is a link; the rest a name as it is.
+                let holds = if f.name == "material" {
+                    Holds::Link
                 } else {
-                    Some(f.value.clone())
+                    Holds::Name
                 };
-                let missing = name.as_deref().is_some_and(|n| {
-                    !n.is_empty()
-                        && !session.link_exists(&kind, &runity::AssetLink::named(n))
-                        && !(kind == "material" && session.palette().iter().any(|(p, _)| p == n))
-                });
-                let value = if inline { None } else { Some(name.as_deref().unwrap_or("")) };
-                self.object_field(ui, line, &f.name, target, value, mixed, missing);
+                let target = ObjectRef::new(Slot::Field(f.name.clone()), kind, holds);
+                let mixed = f.value == MIXED;
+                // A material written out in full is no asset: `Inline`, and
+                // its parts under it.
+                let inline = f.name == "material"
+                    && !mixed
+                    && tree::parse(&f.value).is_some_and(|n| {
+                        matches!(n.kind, tree::Kind::Struct { .. } | tree::Kind::Unit)
+                    });
+                let shown = if inline || mixed {
+                    object::Shown {
+                        name: None,
+                        missing: false,
+                    }
+                } else {
+                    self.shown(session, &target, &f.value)
+                };
+                self.object_field(ui, session, line, &f.name, target, shown, mixed);
                 if inline {
                     self.entity_form_parts(ui, session, f);
                 }
@@ -1332,23 +1343,18 @@ impl Inspector {
                 Shape::Int | Shape::Float => SubKind::Number,
                 Shape::Text => SubKind::Text,
                 Shape::Enum(variants) => SubKind::Enum(variants.clone()),
-                Shape::Entity => SubKind::Entity,
-                Shape::Asset(kind) => {
-                    // Unity's object field: the asset by name, or None; red
-                    // when there is none by that name or ID.
-                    let link = runity::refs::links_in(&value)
-                        .into_iter()
-                        .next()
-                        .map(|(_, l)| l);
-                    let name = link.as_ref().map(|l| l.to_string()).unwrap_or_default();
-                    let missing = link
-                        .as_ref()
-                        .is_some_and(|l| !l.is_empty() && !session.link_exists(kind, l));
-                    let target = ObjectRef {
-                        slot: Slot::Sub(component.to_string(), key.clone()),
-                        kind: kind.clone(),
+                Shape::Entity | Shape::Asset(_) => {
+                    // Unity's object field: the entity or the asset by
+                    // name, or None; red when it is gone.
+                    let (kind, holds) = match kind {
+                        Shape::Asset(kind) => (kind.as_str(), Holds::Typed),
+                        _ => ("entity", Holds::EntityRef),
                     };
-                    self.object_field(ui, line, &format!("{component} {key}"), target, Some(&name), false, missing);
+                    let target =
+                        ObjectRef::new(Slot::Sub(component.to_string(), key.clone()), kind, holds);
+                    let shown = self.shown(session, &target, &value);
+                    let name = format!("{component} {key}");
+                    self.object_field(ui, session, line, &name, target, shown, false);
                     continue;
                 }
                 _ => SubKind::Raw,
@@ -1400,46 +1406,6 @@ impl Inspector {
                             .hover(HOVER),
                     );
                     ui.add_text(pick, text().fill(), &value);
-                    icon(ui, pick, "chevron-down", MUTED);
-                    pick
-                }
-                SubKind::Entity => {
-                    // The linked entity by name, or None; a menu to pick.
-                    let target = runity::EntityRef::find_in(&value).first().copied();
-                    let (label, known) = match target {
-                        Some(id) => match session.entity_name(id) {
-                            Some(name) => (name, true),
-                            None => (format!("missing {id}"), false),
-                        },
-                        None => ("None (entity)".to_string(), true),
-                    };
-                    let pick = ui.add(
-                        line,
-                        Style::row()
-                            .fill()
-                            .height(22.0)
-                            .padding_x(6.0)
-                            .gap(SPACE_2)
-                            .center_items()
-                            .radius(6.0)
-                            .border(1.0, if known { DIVIDER } else { ERROR })
-                            .hover(HOVER)
-                            .clickable(),
-                    );
-                    icon(
-                        ui,
-                        pick,
-                        "crosshair",
-                        if target.is_some() { ACCENT } else { MUTED },
-                    );
-                    ui.add_text(
-                        pick,
-                        text()
-                            .fill()
-                            .nowrap()
-                            .text_color(if known { TEXT } else { ERROR }),
-                        &label,
-                    );
                     icon(ui, pick, "chevron-down", MUTED);
                     pick
                 }
@@ -1998,13 +1964,24 @@ impl Inspector {
                 let r = ui.rect(field);
                 self.open_object_picker(ui, session, target, r);
             }
+            (Part::PickInScene(target), Event::Click { .. }) => {
+                // On, or off again.
+                self.picking = if self.picking.as_ref() == Some(&target) {
+                    None
+                } else {
+                    session.say(
+                        Level::Info,
+                        "click what it links to in the Scene view; Esc stops",
+                    );
+                    Some(target)
+                };
+                self.built = false;
+                requests.refresh = true;
+            }
             (Part::Ping(kind, name), Event::Click { .. }) => {
                 requests.ping = crate::bottom::all_assets(session).into_iter().find(|a| {
-                    let fits = ObjectRef {
-                        slot: Slot::Field(String::new()),
-                        kind: kind.clone(),
-                    }
-                    .takes(a);
+                    let fits = ObjectRef::new(Slot::Field(String::new()), &kind, Holds::Name)
+                        .takes(&Dragged::Asset(a.clone()));
                     fits && (a.label() == name
                         || matches!(a, crate::bottom::Asset::Model(n, _) | crate::bottom::Asset::Material(n) | crate::bottom::Asset::Prefab(n) | crate::bottom::Asset::Sound(n, _) if *n == name))
                 });
@@ -2132,38 +2109,6 @@ impl Inspector {
             ) => {
                 self.set_sub(session, &component, &key, if on { "false" } else { "true" });
                 requests.refresh = true;
-            }
-            (
-                Part::Sub {
-                    component,
-                    key,
-                    kind: SubKind::Entity,
-                },
-                Event::Click { .. },
-            ) => {
-                // Unity's object picker: None, then every entity of the
-                // scene but the ones being edited, by the hierarchy's order.
-                let link = |id: Option<runity::EntityId>| {
-                    let value = format!(
-                        "{}({:?})",
-                        runity::EntityRef::NAME,
-                        id.map(|id| id.to_string()).unwrap_or_default()
-                    );
-                    Action::SetSub(component.clone(), key.clone(), value)
-                };
-                let mut items = vec![MenuItem::new("None", link(None)), MenuItem::separator()];
-                for row in session.hierarchy() {
-                    if self.showing.contains(&row.id) {
-                        continue;
-                    }
-                    let indent = "  ".repeat(row.depth);
-                    items.push(MenuItem::new(
-                        &format!("{indent}{}", row.name),
-                        link(Some(row.id)),
-                    ));
-                }
-                let r = ui.rect(node);
-                requests.menu = Some((items, r.x, r.y + r.height));
             }
             (
                 Part::Sub {
