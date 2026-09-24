@@ -13,6 +13,7 @@ pub mod animator;
 pub mod animgraph;
 pub mod graph_text;
 pub mod motion;
+pub mod tween;
 
 pub use animator::{advance_animations, Animator, Playing};
 pub use scrap_geometry::animation::Posed;
@@ -32,7 +33,7 @@ pub fn systems(player_loop: &mut scrap_core::player_loop::PlayerLoop) {
 #[allow(unused_imports)]
 use scrap_core::{id, impl_parts, project, ron_edit, spelling, AssetLink, Transform};
 #[allow(unused_imports)]
-use scrap_geometry::animation;
+use scrap_geometry::{animation, ease};
 
 /// The scene's lines, with this module's fields and geometry's beside the
 /// core's.

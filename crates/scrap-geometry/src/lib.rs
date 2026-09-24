@@ -6,6 +6,7 @@
 
 pub mod animation;
 pub mod builtin;
+pub mod ease;
 pub mod field;
 pub mod line;
 pub mod sdf;
@@ -13,6 +14,7 @@ pub mod mesh_asset;
 pub mod terrain;
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Posed, Skeleton};
+pub use ease::Ease;
 pub use line::{GeometryLine, GeometryOverride, ModelRef};
 
 // The core, under the names this module's code knows it by.

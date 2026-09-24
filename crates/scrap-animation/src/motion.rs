@@ -21,7 +21,9 @@
 //!
 //! Positions are metres and turns degrees, in scrap's space and the order
 //! a line's `rotation` has (Y, then X, then Z); a transform track is keyed
-//! linearly, what it does not key stays where the scene put it. `Active`
+//! linearly — or on a curve between every two keys, with the track's
+//! `ease: OutBack` ([`crate::ease::Ease`]) — and what it does not key
+//! stays where the scene put it. `Active`
 //! is a switch, on from a key above one half to the next key; `Volume` is its sound's,
 //! `ParticleRate` its particles'.
 
@@ -71,6 +73,13 @@ pub struct Track {
     pub what: Property,
     /// (seconds, value), in time order.
     pub keys: Vec<(f32, f32)>,
+    /// The curve from each key to the next: straight by default.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub ease: crate::ease::Ease,
+}
+
+fn is_linear(ease: &crate::ease::Ease) -> bool {
+    *ease == crate::ease::Ease::Linear
 }
 
 /// A clip of tracks.
@@ -92,6 +101,11 @@ impl Motion {
 
 /// The value of keys at a time: linear between, held past either end.
 pub fn sample(keys: &[(f32, f32)], time: f32) -> Option<f32> {
+    sample_eased(keys, time, crate::ease::Ease::Linear)
+}
+
+/// The value of keys at a time, on `ease` from each key to the next.
+pub fn sample_eased(keys: &[(f32, f32)], time: f32, ease: crate::ease::Ease) -> Option<f32> {
     let first = keys.first()?;
     if time <= first.0 {
         return Some(first.1);
@@ -104,7 +118,7 @@ pub fn sample(keys: &[(f32, f32)], time: f32) -> Option<f32> {
             } else {
                 1.0
             };
-            return Some(v0 + (v1 - v0) * f);
+            return Some(ease.lerp(v0, v1, f));
         }
     }
     keys.last().map(|k| k.1)
@@ -142,7 +156,7 @@ pub struct Moving {
     joints: Vec<hecs::Entity>,
     /// Per clip, in the animator's order: the tracks that are not a place.
     #[allow(clippy::type_complexity)]
-    others: Vec<Vec<(hecs::Entity, Property, Vec<(f32, f32)>)>>,
+    others: Vec<Vec<(hecs::Entity, Property, Vec<(f32, f32)>, crate::ease::Ease)>>,
 }
 
 impl std::fmt::Debug for Moving {
@@ -311,7 +325,7 @@ pub fn attach(
                 };
                 match track.what {
                     Property::Active | Property::Volume | Property::ParticleRate => {
-                        other.push((target, track.what, track.keys.clone()));
+                        other.push((target, track.what, track.keys.clone(), track.ease));
                     }
                     _ => by_path.entry(track.path.as_str()).or_default().push(track),
                 }
@@ -375,10 +389,15 @@ pub fn attach(
     problems
 }
 
+/// Samples baked between two keys of a track on a curve: the skeleton's
+/// channels are straight between their samples.
+const EASED_SAMPLES: usize = 16;
+
 /// A joint's channels from its tracks: every axis a track does not key
-/// holds the rest's value.
+/// holds the rest's value. A track on a curve is baked into samples
+/// between its keys.
 fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<Channel> {
-    let find = |what: Property| tracks.iter().find(|t| t.what == what).map(|t| &t.keys);
+    let find = |what: Property| tracks.iter().find(|t| t.what == what);
     let mut out = Vec::new();
     for (axes, path) in [
         ([Property::X, Property::Y, Property::Z], Part::Translation),
@@ -391,14 +410,25 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
             Part::Scale,
         ),
     ] {
-        let keyed: Vec<Option<&Vec<(f32, f32)>>> = axes.iter().map(|a| find(*a)).collect();
+        let keyed: Vec<Option<&&Track>> = axes.iter().map(|a| find(*a)).collect();
         if keyed.iter().all(Option::is_none) {
             continue;
         }
         let mut times: Vec<f32> = keyed
             .iter()
             .flatten()
-            .flat_map(|k| k.iter().map(|(t, _)| *t))
+            .flat_map(|track| {
+                let eased = track.ease != crate::ease::Ease::Linear;
+                track
+                    .keys
+                    .windows(2)
+                    .flat_map(move |pair| {
+                        let (t0, t1) = (pair[0].0, pair[1].0);
+                        let n = if eased { EASED_SAMPLES } else { 1 };
+                        (0..n).map(move |i| t0 + (t1 - t0) * i as f32 / n as f32)
+                    })
+                    .chain(track.keys.iter().map(|(t, _)| *t))
+            })
             .collect();
         times.sort_by(f32::total_cmp);
         times.dedup();
@@ -410,7 +440,9 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
         let mut values = Vec::new();
         for t in &times {
             let v = Vec3::from_array(std::array::from_fn(|i| {
-                keyed[i].and_then(|k| sample(k, *t)).unwrap_or(base[i])
+                keyed[i]
+                    .and_then(|k| sample_eased(&k.keys, *t, k.ease))
+                    .unwrap_or(base[i])
             }));
             match path {
                 Part::Rotation => {
@@ -463,11 +495,12 @@ pub fn run_with(
             } else {
                 playing.time.min(length)
             };
-            for (target, what, keys) in moving.others.get(playing.clip).into_iter().flatten() {
+            for (target, what, keys, ease) in moving.others.get(playing.clip).into_iter().flatten()
+            {
                 let value = if *what == Property::Active {
                     step(keys, time)
                 } else {
-                    sample(keys, time)
+                    sample_eased(keys, time, *ease)
                 };
                 if let Some(v) = value {
                     others.push((*target, *what, v));
@@ -648,6 +681,40 @@ mod tests {
             "where the scene put it"
         );
         assert!(crate::world::is_active(&world, glow), "lit halfway through");
+    }
+
+    #[test]
+    fn a_track_on_a_curve_eases_between_its_keys_and_a_straight_one_is_written_as_before() {
+        let track: Track =
+            ron::from_str(r#"(what: Y, keys: [(0.0, 0.0), (1.0, 10.0)], ease: InQuad)"#).unwrap();
+        assert_eq!(sample_eased(&track.keys, 0.5, track.ease), Some(2.5));
+        assert_eq!(
+            sample(&track.keys, 0.5),
+            Some(5.0),
+            "straight when not asked"
+        );
+        let channels = channels_for(0, &[&track], &crate::Transform::default());
+        let channel = &channels[0];
+        let i = channel
+            .times
+            .iter()
+            .position(|t| *t == 0.5)
+            .expect("baked between the keys");
+        assert!(
+            (channel.values[i * 3 + 1] - 2.5).abs() < 1e-5,
+            "{:?}",
+            channel.values
+        );
+        assert_eq!(channel.times.last(), Some(&1.0));
+
+        let plain: Track = ron::from_str(r#"(what: Y, keys: [(0.0, 0.0), (1.0, 10.0)])"#).unwrap();
+        assert_eq!(plain.ease, crate::ease::Ease::Linear);
+        assert!(
+            !ron::to_string(&plain).unwrap().contains("ease"),
+            "no new field in old files"
+        );
+        let channels = channels_for(0, &[&plain], &crate::Transform::default());
+        assert_eq!(channels[0].times, [0.0, 1.0], "keys only");
     }
 }
 

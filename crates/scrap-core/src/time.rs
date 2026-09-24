@@ -8,6 +8,14 @@
 //!
 //! Mixing them is the classic bug: physics stepped by a variable delta gives
 //! a different answer at 144 Hz than at 60, and a replay stops replaying.
+//!
+//! Game code turns the clock from the world, where its systems are: slow
+//! motion ([`set_scale`]) and a hit-stop ([`hit_stop`], the whole world
+//! still for a few hundredths of a second, as a heavy blow lands). What a
+//! system asked is carried to the clock by whoever owns the loop
+//! ([`sync`]), which also leaves the frame's unscaled delta in the world
+//! ([`unscaled_delta`]) for what must not slow with it — a camera's blend,
+//! its shake (docs/feel.md).
 
 use std::time::Duration;
 
@@ -50,6 +58,10 @@ impl Default for TimeSettings {
 pub struct Time {
     settings: TimeSettings,
     delta: f32,
+    unscaled_delta: f32,
+    /// Real seconds of hit-stop still to come: the world is still for
+    /// them, whatever the scale.
+    frozen: f32,
     elapsed: f32,
     frame: u64,
     step: u64,
@@ -70,6 +82,8 @@ impl Time {
         Self {
             settings,
             delta: 0.0,
+            unscaled_delta: 0.0,
+            frozen: 0.0,
             elapsed: 0.0,
             frame: 0,
             step: 0,
@@ -117,7 +131,12 @@ impl Time {
     /// for headless work where wall-clock time is the wrong clock entirely.
     pub fn advance(&mut self, raw_delta: f32) {
         let capped = raw_delta.clamp(0.0, MAX_FRAME_DELTA);
-        self.delta = capped * self.settings.scale;
+        self.unscaled_delta = capped;
+        // A hit-stop eats real time first: the part of the frame it covers
+        // is no time at all for the world, the rest runs as scaled.
+        let still = self.frozen.min(capped);
+        self.frozen -= still;
+        self.delta = (capped - still) * self.settings.scale;
         self.elapsed += self.delta;
         self.frame += 1;
         self.accumulator += self.delta;
@@ -127,6 +146,42 @@ impl Time {
     /// Seconds the last frame took, after scaling.
     pub fn delta(&self) -> f32 {
         self.delta
+    }
+
+    /// Seconds the last frame took in the real world: before the scale and
+    /// a hit-stop, after the clamp. For what must not slow with the world —
+    /// a camera's blend and shake, a pause menu's animation.
+    pub fn unscaled_delta(&self) -> f32 {
+        self.unscaled_delta
+    }
+
+    /// Set how fast the world runs from now on: 1 is real time, 0.2 slow
+    /// motion, 0 paused. Negative is 0.
+    pub fn set_scale(&mut self, scale: f32) {
+        self.settings.scale = scale.max(0.0);
+    }
+
+    /// Hold the world still for `seconds` of real time, from the next
+    /// frame: no steps, no frame time, whatever the scale; then it goes on
+    /// at the scale it had. A second hit-stop while one lasts makes it last
+    /// as long as the longer of the two, not their sum.
+    pub fn hit_stop(&mut self, seconds: f32) {
+        self.frozen = self.frozen.max(seconds.max(0.0));
+    }
+
+    /// Real seconds of hit-stop left.
+    pub fn frozen(&self) -> f32 {
+        self.frozen
+    }
+
+    /// Do what the game asked of the clock ([`TimeAsk`]).
+    pub fn ask(&mut self, asked: TimeAsk) {
+        if let Some(scale) = asked.scale {
+            self.set_scale(scale);
+        }
+        if asked.hit_stop > 0.0 {
+            self.hit_stop(asked.hit_stop);
+        }
     }
 
     /// Seconds since the clock started, after scaling.
@@ -193,9 +248,187 @@ impl Time {
     }
 }
 
+/// What game code asked of the clock since the loop last looked: a new
+/// scale, a hit-stop. Asked in the world ([`set_scale`], [`hit_stop`]) or
+/// on the shell's context, done by [`Time::ask`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TimeAsk {
+    /// The scale from now on, if asked; the last asked wins.
+    pub scale: Option<f32>,
+    /// Real seconds to hold the world still; the longest asked wins.
+    pub hit_stop: f32,
+}
+
+impl TimeAsk {
+    /// Both asks as one: `later`'s scale if it has one, the longer stop.
+    pub fn and(self, later: TimeAsk) -> TimeAsk {
+        TimeAsk {
+            scale: later.scale.or(self.scale),
+            hit_stop: self.hit_stop.max(later.hit_stop),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.scale.is_none() && self.hit_stop <= 0.0
+    }
+}
+
+/// The clock as the world's systems see it: one entity carries it, the
+/// loop writes it ([`sync`]). What the systems asked waits in it until
+/// then. Not saved and not sent: a peer's clock is its own (docs/feel.md,
+/// «Сеть»).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WorldClock {
+    /// The last frame's real seconds ([`Time::unscaled_delta`]).
+    pub unscaled_delta: f32,
+    /// How fast the world runs ([`TimeSettings::scale`]).
+    pub scale: f32,
+    /// Real seconds of hit-stop left.
+    pub frozen: f32,
+    /// Asked by systems since the loop last looked.
+    pub asked: TimeAsk,
+}
+
+fn clock_mut(world: &mut hecs::World) -> hecs::RefMut<'_, WorldClock> {
+    let found = world
+        .query::<(hecs::Entity, &WorldClock)>()
+        .iter()
+        .next()
+        .map(|(e, _)| e);
+    let entity = found.unwrap_or_else(|| {
+        world.spawn((WorldClock {
+            scale: 1.0,
+            ..Default::default()
+        },))
+    });
+    world
+        .get::<&mut WorldClock>(entity)
+        .expect("just found or made")
+}
+
+/// The world's clock, if the loop has written one.
+pub fn clock(world: &hecs::World) -> Option<WorldClock> {
+    world.query::<&WorldClock>().iter().next().copied()
+}
+
+/// Ask the loop for slow motion from game code: 1 is real time, 0.2 slow
+/// motion, 0 paused — from the next frame, until asked again.
+pub fn set_scale(world: &mut hecs::World, scale: f32) {
+    clock_mut(world).asked.scale = Some(scale);
+}
+
+/// Ask the loop for a hit-stop from game code: the whole world still for
+/// `seconds` of real time, from the next frame (Feel's Freeze Frame;
+/// 0.05–0.15 s for a blow). A camera's shake and blend keep moving.
+pub fn hit_stop(world: &mut hecs::World, seconds: f32) {
+    let mut clock = clock_mut(world);
+    clock.asked.hit_stop = clock.asked.hit_stop.max(seconds);
+}
+
+/// The last frame's real seconds, as the loop left them in the world;
+/// `None` when nothing writes the world's clock.
+pub fn unscaled_delta(world: &hecs::World) -> Option<f32> {
+    clock(world).map(|c| c.unscaled_delta)
+}
+
+/// The loop's half: leave `time` in the world for its systems, and take
+/// what they asked of it — for the loop to do with [`Time::ask`], or with
+/// the shell's `Context::ask_time`. Once a frame, before the frame's
+/// systems; and after the fixed steps, whose asks it also takes.
+pub fn sync(world: &mut hecs::World, time: &Time) -> TimeAsk {
+    let mut clock = clock_mut(world);
+    clock.unscaled_delta = time.unscaled_delta();
+    clock.scale = time.settings().scale;
+    clock.frozen = time.frozen();
+    std::mem::take(&mut clock.asked)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_motion_slows_the_world_and_not_the_real_clock() {
+        let mut time = Time::new(TimeSettings {
+            fixed_delta: 0.05,
+            ..Default::default()
+        });
+        time.set_scale(0.25);
+        time.advance(0.2);
+        assert!((time.delta() - 0.05).abs() < 1e-6);
+        assert_eq!(
+            time.unscaled_delta(),
+            0.2,
+            "the real frame is still a fifth of a second"
+        );
+        assert_eq!(steps(&mut time), 1);
+        time.set_scale(-3.0);
+        assert_eq!(time.settings().scale, 0.0, "backwards is stopped");
+    }
+
+    #[test]
+    fn a_hit_stop_holds_the_world_for_real_seconds_then_lets_it_go_at_its_scale() {
+        // Powers of two, so the sums are exact.
+        let mut time = Time::new(TimeSettings {
+            fixed_delta: 1.0 / 64.0,
+            max_steps_per_frame: 100,
+            scale: 0.5,
+        });
+        time.hit_stop(0.125);
+        time.hit_stop(0.0625);
+        assert_eq!(time.frozen(), 0.125, "the longer stop, not the sum");
+        let mut world_seconds = 0.0;
+        let mut stepped = Vec::new();
+        for _ in 0..4 {
+            time.advance(0.0625);
+            world_seconds += time.delta();
+            stepped.push(steps(&mut time));
+            assert_eq!(time.unscaled_delta(), 0.0625, "real time goes on");
+        }
+        // A quarter of a real second: an eighth still, an eighth at half speed.
+        assert_eq!(world_seconds, 0.0625);
+        assert_eq!(stepped, [0, 0, 2, 2], "no steps while still");
+        assert_eq!(time.frozen(), 0.0);
+        assert_eq!(time.settings().scale, 0.5, "the scale it had");
+    }
+
+    #[test]
+    fn game_code_asks_the_clock_through_the_world() {
+        let mut world = hecs::World::new();
+        let mut time = Time::default();
+        assert_eq!(unscaled_delta(&world), None, "nothing writes the clock yet");
+        set_scale(&mut world, 0.3);
+        hit_stop(&mut world, 0.08);
+        hit_stop(&mut world, 0.02);
+        time.advance(0.1);
+        let asked = sync(&mut world, &time);
+        assert_eq!(
+            asked,
+            TimeAsk {
+                scale: Some(0.3),
+                hit_stop: 0.08
+            }
+        );
+        assert_eq!(unscaled_delta(&world), Some(0.1));
+        time.ask(asked);
+        assert_eq!(sync(&mut world, &time), TimeAsk::default(), "taken once");
+        assert_eq!(time.settings().scale, 0.3);
+        assert_eq!(time.frozen(), 0.08);
+        time.advance(0.05);
+        assert_eq!(time.delta(), 0.0, "still");
+        assert_eq!(world.len(), 1, "one entity keeps the clock");
+        let later = TimeAsk {
+            scale: Some(1.0),
+            hit_stop: 0.0,
+        };
+        assert_eq!(
+            asked.and(later),
+            TimeAsk {
+                scale: Some(1.0),
+                hit_stop: 0.08
+            }
+        );
+    }
 
     #[test]
     fn the_host_says_the_time_and_only_the_difference_counts() {

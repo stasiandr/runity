@@ -73,6 +73,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
                     path: path.clone(),
                     what,
                     keys,
+                    ease: Default::default(),
                 });
             }
         }
@@ -117,6 +118,7 @@ fn from_yaml(b: &Yaml, report: &mut Report) -> Motion {
             path: c.str("path").unwrap_or("").to_string(),
             what,
             keys,
+            ease: Default::default(),
         });
     }
     if !b.list("m_PPtrCurves").is_empty() {

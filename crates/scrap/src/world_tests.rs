@@ -621,6 +621,7 @@ mod tests {
                 priority: 1,
                 ortho: Some(8.0),
                 follow: None,
+                blend: None,
             }),
             WorldTransform(glam::Mat4::IDENTITY),
         ));
@@ -645,7 +646,11 @@ mod tests {
                 offset: glam::Vec3::new(0.0, 3.0, -6.0),
                 damping: 0.3,
                 look: true,
+                look_damping: 0.0,
+                look_offset: glam::Vec3::ZERO,
+                dead_zone: 0.0,
             }),
+            blend: None,
         };
         world.spawn((
             CameraLens(lens),

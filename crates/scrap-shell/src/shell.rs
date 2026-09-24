@@ -58,7 +58,7 @@ use crate::gpu::Gpu;
 use crate::input::{Input, InputEvent, Key, MouseButton};
 use crate::render::{Frame, Renderer};
 use crate::surface::{Surface, SurfaceError};
-use crate::time::{Time, TimeSettings};
+use crate::time::{Time, TimeAsk, TimeSettings};
 
 /// What the window is called and how big it starts.
 #[derive(Debug, Clone)]
@@ -119,6 +119,7 @@ pub struct Context<'a> {
     pub loop_times: &'a scrap_core::perf::Profiler,
     quit: bool,
     capture: Option<bool>,
+    asked: TimeAsk,
 }
 
 /// What a fixed step is handed: the clock and the input, no renderer — a
@@ -130,12 +131,20 @@ pub struct StepContext<'a> {
     pub input: &'a Input,
     pub size: (u32, u32),
     quit: bool,
+    asked: TimeAsk,
 }
 
 impl StepContext<'_> {
     /// Ask the loop to stop after this frame.
     pub fn quit(&mut self) {
         self.quit = true;
+    }
+
+    /// Ask the clock for slow motion or a hit-stop ([`TimeAsk`]) — what the
+    /// world's systems asked, from `scrap::time::sync`. Done before the
+    /// next frame.
+    pub fn ask_time(&mut self, asked: TimeAsk) {
+        self.asked = self.asked.and(asked);
     }
 }
 
@@ -151,6 +160,13 @@ impl Context<'_> {
     /// call to the game returns.
     pub fn capture_cursor(&mut self, on: bool) {
         self.capture = Some(on);
+    }
+
+    /// Ask the clock for slow motion or a hit-stop ([`TimeAsk`]) — what the
+    /// world's systems asked, from `scrap::time::sync`. Done before the
+    /// next frame.
+    pub fn ask_time(&mut self, asked: TimeAsk) {
+        self.asked = self.asked.and(asked);
     }
 
     pub fn aspect(&self) -> f32 {
@@ -397,6 +413,7 @@ impl<G: Game> Shell<G> {
             loop_times,
             quit: false,
             capture: None,
+            asked: TimeAsk::default(),
         }
     }
 }
@@ -428,9 +445,12 @@ fn run_steps<G: Game>(game: &mut G, time: &mut Time, input: &Input, size: (u32, 
             input,
             size,
             quit: false,
+            asked: TimeAsk::default(),
         };
         hot(|| game.step(&mut ctx));
         quit |= ctx.quit;
+        let asked = ctx.asked;
+        time.ask(asked);
     }
     quit
 }
@@ -531,6 +551,8 @@ impl<G: Game> Shell<G> {
             hot(|| game.patched(&mut ctx));
             quit |= ctx.quit;
             wanted = ctx.capture.or(wanted);
+            let asked = ctx.asked;
+            self.time.ask(asked);
         }
         if !self.stepped_ahead {
             let start = Instant::now();
@@ -546,6 +568,8 @@ impl<G: Game> Shell<G> {
         let frame = hot(|| game.frame(&mut ctx));
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
+        let asked = ctx.asked;
+        self.time.ask(asked);
         self.loop_times.record("frame", start.elapsed());
         if let Some(on) = wanted.filter(|on| *on != self.captured) {
             set_captured(&state.window, on);

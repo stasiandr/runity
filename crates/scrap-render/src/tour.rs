@@ -121,8 +121,7 @@ impl Tour {
 
 /// Slow at both ends.
 fn smooth(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
+    crate::ease::Ease::Smooth.at(t)
 }
 
 /// The curve through `b` and `c`, bent by their neighbours.
