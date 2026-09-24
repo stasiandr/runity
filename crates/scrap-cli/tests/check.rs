@@ -429,6 +429,104 @@ fn a_dialogue_that_does_not_join_up_is_found() {
 }
 
 #[test]
+fn dialogues_cases_flags_and_quests_are_checked_together() {
+    let project = project("dialogue-flow");
+    let root = project.root();
+    write(
+        &root.join("dialogues/harbour/captain.ron"),
+        r#"(start: "hello", lines: {
+            "hello": (text: "Ahoy.", when: [Is("met")], else: "first", next: "ask"),
+            "first": (text: "New here?", set: ["met", "waved"], next: "ask"),
+            "ask": (text: "Help me?", choices: [
+                (text: "Yes", to: "thanks", add: {"trust": 1}),
+                (text: "Pay", to: "thanks", when: [Var("coins", Ge, 3)]),
+            ]),
+            "thanks": (text: "Good."),
+            "thanks": (text: "Good!"),
+        })"#,
+    );
+    write(
+        &root.join("dialogues/harbour/captain.cases.ron"),
+        r#"(cases: [
+            (name: "first time", steps: [At("first"), Next("ask"), Choose("Yes", "thanks")]),
+            (name: "pays", steps: [Next("ask"), Choose("Pay", "thanks")]),
+        ])"#,
+    );
+    write(
+        &root.join("quests/help.ron"),
+        r#"(stages: [(name: "ask", done_when: [Var("trust", Ge, 1)]), (name: "ask", done_when: [])])"#,
+    );
+    let findings = check(&project);
+    let lines: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    let file = "dialogues/harbour/captain.ron";
+    let twice = one_containing(&lines, "`thanks` is written twice");
+    assert!(
+        twice.starts_with("error") && twice.contains(file),
+        "{twice}"
+    );
+    let case = one_containing(&lines, "case `pays`");
+    assert!(
+        case.contains("captain.cases.ron") && case.contains("“Pay” is not on offer"),
+        "{case}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("case `first time`")),
+        "{lines:#?}"
+    );
+    // Coins are read and nothing sets them; waved is set and nothing reads
+    // it; trust is read by the quest, met by the captain himself.
+    let coins = one_containing(&lines, "`coins` is read and nothing sets it");
+    assert!(
+        coins.starts_with("warning") && coins.contains(file),
+        "{coins}"
+    );
+    one_containing(&lines, "`waved` is set and nothing reads it");
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("`trust`") || l.contains("`met`")),
+        "{lines:#?}"
+    );
+    one_containing(&lines, "stage `ask` is named twice");
+    one_containing(&lines, "stage `ask` has no done_when");
+    // The game's code saying a flag's name counts as reading it.
+    write(
+        &root.join("src/talk.rs"),
+        r#"fn f() { let _ = "waved"; let _ = "coins"; }"#,
+    );
+    let lines: Vec<String> = check(&project).iter().map(ToString::to_string).collect();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("`waved`") || l.contains("`coins`")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn the_dialogues_lines_are_written_as_a_sheet_per_language() {
+    let project = project("dialogue-lines");
+    let root = project.root();
+    write(
+        &root.join("dialogues/chef.ron"),
+        r#"(start: "hello", lines: {"hello": (speaker: "@chef", text: "@chef.hello")})"#,
+    );
+    write(
+        &root.join("strings/en.ron"),
+        r#"{"chef": "Chef", "chef.hello": "Morning"}"#,
+    );
+    write(
+        &root.join("strings/ru.ron"),
+        r#"{"chef": "Шеф", "chef.hello": "Утро"}"#,
+    );
+    let out = root.join("build/lines");
+    let written = scrap_cli::lines::export(&project, &out).unwrap();
+    assert_eq!(written.len(), 2, "{written:?}");
+    let ru = std::fs::read_to_string(out.join("ru.csv")).unwrap();
+    assert_eq!(ru, "id,speaker,key,text\nchef/hello,Шеф,chef.hello,Утро\n");
+}
+
+#[test]
 fn an_animators_cases_are_played_by_check() {
     let project = project("animator-cases");
     write(

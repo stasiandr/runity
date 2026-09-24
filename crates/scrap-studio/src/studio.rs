@@ -1473,6 +1473,8 @@ impl Studio {
             Some(Panel::Screens)
         } else if self.animator.wide && under(Panel::Animator) {
             Some(Panel::Animator)
+        } else if self.dialogues.wide && under(Panel::Dialogues) {
+            Some(Panel::Dialogues)
         } else {
             None
         };

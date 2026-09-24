@@ -1512,7 +1512,8 @@ input.ron    actions by name (\"jump\"), and the keys for each
 tuning/      the game's numbers, RON, typed in code with scrap::Tuned
 ui/          the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
 strings/     the game's words, one file per language; a screen says `@key`
-dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue)
+dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue); <name>.cases.ron played by check
+quests/      rows of stages done by the dialogues' flags (scrap::quest)
 animators/   which animation plays when: states and transitions, RON (scrap::animgraph)
 clips/       clips that move things, not bones — a line's `animator` plays them (scrap::motion)
 shaders/     materials' own looks: one WGSL `surface` function a file

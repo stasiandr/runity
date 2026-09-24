@@ -799,3 +799,87 @@ fn an_agent_balances_records_in_a_table() {
         "comments stay: {world}"
     );
 }
+
+#[test]
+fn an_agent_writes_plays_and_renames_in_a_dialogue() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-dialogue");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    // A dialogue made a line at a time; the first is its start.
+    agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "hello", "entry": "(speaker: \"Trader\", text: \"Buying?\", choices: [(text: \"Yes\", to: \"sold\", when: [Var(\"coins\", Ge, 3)], add: {\"coins\": -3}), (text: \"No\", to: \"bye\")])" }),
+    );
+    let said = agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "sold", "entry": "(text: \"Done.\", event: \"sold\")" }),
+    );
+    assert!(said.contains("leads to `bye`"), "{said}");
+    agent.text(
+        "dialogue_line",
+        json!({ "name": "trader", "line": "bye", "entry": "(text: \"Bye.\")" }),
+    );
+    let file = root.join("dialogues/trader.ron");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("start: \"hello\""), "{text}");
+    assert!(
+        text.contains("        \"bye\": (text: \"Bye.\"),"),
+        "a line a line: {text}"
+    );
+    let read = agent.text("dialogue", json!({ "name": "trader" }));
+    assert!(
+        read.contains("answer 1: “Yes” → sold if coins ≥ 3"),
+        "{read}"
+    );
+    assert!(!read.contains("problem"), "{read}");
+
+    // Played without the game: poor, then with coins.
+    let poor = agent.text(
+        "dialogue_play",
+        json!({ "name": "trader", "answers": ["Yes"] }),
+    );
+    assert!(poor.contains("answers on offer: “No”"), "{poor}");
+    assert!(poor.contains("“Yes” is not on offer"), "{poor}");
+    let rich = agent.text(
+        "dialogue_play",
+        json!({ "name": "trader", "answers": ["Yes"], "vars": { "coins": 5 } }),
+    );
+    assert!(
+        rich.contains("tells `sold`") && rich.contains("coins = 2"),
+        "{rich}"
+    );
+
+    // Cases follow a rename; check plays them.
+    std::fs::write(
+        root.join("dialogues/trader.cases.ron"),
+        "(cases: [(name: \"buys\", vars: {\"coins\": 3}, steps: [Choose(\"Yes\", \"sold\"), Told(\"sold\")])])\n",
+    )
+    .unwrap();
+    agent.text(
+        "dialogue_rename",
+        json!({ "name": "trader", "from": "sold", "to": "done" }),
+    );
+    let cases = std::fs::read_to_string(root.join("dialogues/trader.cases.ron")).unwrap();
+    assert!(cases.contains("Choose(\"Yes\", \"done\")"), "{cases}");
+    assert!(agent
+        .text("dialogue", json!({ "name": "trader" }))
+        .contains("cases: 1 of 1 pass"));
+    let err = agent
+        .call("dialogue", json!({ "name": "tradr" }))
+        .unwrap_err();
+    assert!(err.contains("did you mean `trader`"), "{err}");
+
+    let wrote = agent.text("export_lines", json!({}));
+    assert!(wrote.contains("build/lines/en.csv"), "{wrote}");
+    let sheet = std::fs::read_to_string(root.join("build/lines/en.csv")).unwrap();
+    assert!(sheet.contains("trader/hello,Trader,,Buying?"), "{sheet}");
+    assert!(sheet.contains("trader/hello/1,,,Yes"), "{sheet}");
+}
