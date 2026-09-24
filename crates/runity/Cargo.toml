@@ -32,6 +32,13 @@ wgpu = "30"
 winit = { version = "0.30.13", optional = true }
 gilrs = { version = "0.11", optional = true }
 
+# MetalFX, Apple's upscaler (`runity::upscale`): reached through wgpu's
+# Metal handles, so only on Apple's systems.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3.2"
+objc2-metal-fx = { version = "0.3.2", features = ["MTLFXSpatialScaler", "MTLFXTemporalScaler"] }
+
 # Built-in subsystems are features, so that switching one off is one line
 # and takes its dependencies out of the build with it (DNA, postulate 3).
 # This is the seam, not the module system: the manifest a module ships with

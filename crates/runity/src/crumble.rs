@@ -264,9 +264,11 @@ fn bring_down(world: &mut hecs::World, entity: hecs::Entity) {
                     * (0.4 + 0.6 * height)
                     * (0.6 + 0.6 * r(8))
                     + Vec3::Y * settings.burst.max(0.0) * 0.3 * r(9);
-                let mut solid = crate::scene::BodyProps::default();
-                solid.density = 1.8;
-                solid.friction = 0.8;
+                let solid = crate::scene::BodyProps {
+                    density: 1.8,
+                    friction: 0.8,
+                    ..Default::default()
+                };
                 let mut placed_block = Transform {
                     position,
                     scale: size,

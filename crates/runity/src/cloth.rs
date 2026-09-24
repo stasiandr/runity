@@ -186,6 +186,8 @@ impl ClothState {
         let gravity = Vec3::new(0.0, -9.81, 0.0);
         let normals = self.normals();
         let catch = self.cloth.catch.max(0.0);
+        // Four arrays side by side, one point in each.
+        #[allow(clippy::needless_range_loop)]
         for k in 0..self.now.len() {
             if self.pinned[k] {
                 continue;
@@ -264,9 +266,9 @@ impl ClothState {
         let count = w * h;
         let mut vertices = Vec::with_capacity(count * 2);
         for side in [1.0f32, -1.0] {
-            for k in 0..count {
-                let p = back.transform_point3(self.now[k]);
-                let n = (back.transform_vector3(normals[k]) / turn).normalize_or(Vec3::Z) * side;
+            for (k, (now, normal)) in self.now.iter().zip(&normals).enumerate().take(count) {
+                let p = back.transform_point3(*now);
+                let n = (back.transform_vector3(*normal) / turn).normalize_or(Vec3::Z) * side;
                 let (i, j) = (k % w, k / w);
                 vertices.push(crate::asset::Vertex {
                     position: p.to_array(),

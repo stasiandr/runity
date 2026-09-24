@@ -1006,6 +1006,9 @@ pub struct Renderer {
     ssao: crate::ssao::SsaoRenderer,
     /// Temporal antialiasing's history ([`crate::taa`]).
     taa: crate::taa::Taa,
+    /// Drawing at fewer pixels and making the picture up
+    /// ([`crate::upscale`]).
+    upscaler: crate::upscale::Upscaler,
     /// Drawing a camera's picture for a texture, not the screen: no
     /// antialiasing history is touched.
     picturing: bool,
@@ -2792,6 +2795,7 @@ impl Renderer {
             decal_atlases,
             ssao,
             taa: crate::taa::Taa::new(gpu),
+            upscaler: crate::upscale::Upscaler::new(gpu),
             picturing: false,
             metered_at: None,
             clipmap: None,
@@ -3674,6 +3678,13 @@ impl Renderer {
         self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
     }
 
+    /// What made the last frame up to the screen's size, and the share of
+    /// its width it was drawn at ([`crate::upscale`]); nothing when it was
+    /// drawn at the screen's own size.
+    pub fn upscaled(&self) -> Option<(crate::upscale::Used, f32)> {
+        self.upscaler.used.map(|u| (u, self.upscaler.scale))
+    }
+
     /// The frame as a stroke of lightning lights it, when one is coming
     /// down now; and the bolt for the sky to draw.
     fn lightning(&mut self, frame: &Frame) -> Option<Frame> {
@@ -3963,9 +3974,23 @@ impl Renderer {
         probe: Option<u32>,
     ) {
         let aspect = width as f32 / height.max(1) as f32;
-        // The screen's frame timed, when asked: not a probe's face or a
-        // picture's.
-        let timed = self.timing && probe.is_none() && view.is_some() && !self.picturing;
+        // Upscaled: the screen's own view drawn at fewer pixels, up to the
+        // lens, and made up to `output` before post.
+        let output = (width, height);
+        let upscaling = frame.post.upscaling;
+        let screen = probe.is_none() && view.is_some() && !self.picturing;
+        let scaling = upscaling.enabled && frame.post.enabled && screen;
+        let (width, height) = if scaling {
+            self.upscaler.render_size(&upscaling, output)
+        } else {
+            output
+        };
+        if !scaling {
+            self.upscaler.used = None;
+        }
+        // The screen's frame timed, when asked — or when dynamic resolution
+        // needs the GPU's time: not a probe's face or a picture's.
+        let timed = (self.timing || (scaling && upscaling.dynamic.enabled)) && screen;
         if timed {
             // Made the first time it is wanted: a renderer that is never
             // timed never holds a query set.
@@ -3988,14 +4013,31 @@ impl Renderer {
         // Temporal antialiasing: the screen's own view only, moved a
         // fraction of a pixel each frame it has a history to blend into.
         let taa_on = frame.post.taa && probe.is_none() && view.is_some() && !self.picturing;
-        if taa_on {
+        // MetalFX temporal takes TAA's place: its jitter, its history.
+        let temporal = scaling && self.upscaler.temporal(&upscaling, taa_on);
+        // At the screen's own size only MetalFX temporal has anything to
+        // do: it is the antialiasing then.
+        let upscale_on = temporal || (scaling && (width, height) != output);
+        if scaling && !upscale_on {
+            self.upscaler.used = None;
+        }
+        let taa_run = taa_on && !temporal;
+        if temporal {
+            self.upscaler.follow(
+                frame.camera.position,
+                (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
+            );
+        }
+        if taa_run {
             self.taa.resize(gpu, (width, height));
             self.taa.follow(
                 frame.camera.position,
                 (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
             );
         }
-        let jitter = if taa_on {
+        let jitter = if temporal {
+            self.upscaler.jitter((width, height))
+        } else if taa_run {
             self.taa.jitter()
         } else {
             glam::Vec2::ZERO
@@ -5297,7 +5339,7 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
-        let picture = if taa_on {
+        let picture = if taa_run {
             self.taa.run(
                 gpu,
                 &mut encoder,
@@ -5367,15 +5409,24 @@ impl Renderer {
         post.auto_exposure.compensation -= 1.6 * night;
         let most = post.auto_exposure.max_ev;
         post.auto_exposure.max_ev = most + (most.min(1.0) - most) * night;
-        self.post.run(
-            gpu,
-            &mut encoder,
-            lensed.unwrap_or(picture),
-            view,
-            (width, height),
-            &post,
-            metered,
-        );
+        let picture = lensed.unwrap_or(picture);
+        let picture = if upscale_on {
+            self.upscaler.run(
+                gpu,
+                &mut encoder,
+                &upscaling,
+                temporal,
+                picture,
+                &self.ssao.depth,
+                (width, height),
+                output,
+                [drawn, view_projection, previous],
+                jitter,
+            )
+        } else {
+            picture
+        };
+        self.post.run(gpu, &mut encoder, picture, view, output, &post, metered);
 
         // Tools go on the finished picture: no tonemapper, bloom or
         // vignette touches a handle's colour.
@@ -5401,6 +5452,10 @@ impl Renderer {
             let base =
                 shadow_total + batched_total + singles.len() as u32 + transparent.len() as u32;
             self.draw_batches(&mut pass, &overlay_batches, base, true);
+        }
+        if scaling {
+            let ms = self.timer.as_ref().and_then(|t| t.frame_ms());
+            self.upscaler.adjust(&upscaling, ms);
         }
         let timer = self.timer.as_mut().filter(|_| timed);
         match timer {

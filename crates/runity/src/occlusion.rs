@@ -160,6 +160,10 @@ pub(crate) struct CullBatch {
     pub count: u32,
 }
 
+/// The pyramid, its size, a view of each level to write, and one of all
+/// of them to read.
+type Pyramid = (wgpu::Texture, (u32, u32), Vec<wgpu::TextureView>, wgpu::TextureView);
+
 pub(crate) struct Occlusion {
     hiz_first: wgpu::ComputePipeline,
     hiz_down: wgpu::ComputePipeline,
@@ -167,7 +171,7 @@ pub(crate) struct Occlusion {
     cull: wgpu::ComputePipeline,
     cull_layout: wgpu::BindGroupLayout,
     /// The pyramid, its size, and a view of each level.
-    pyramid: Option<(wgpu::Texture, (u32, u32), Vec<wgpu::TextureView>, wgpu::TextureView)>,
+    pyramid: Option<Pyramid>,
     blank: wgpu::TextureView,
     /// The view the pyramid was drawn with, when it holds a frame.
     made_with: Option<Mat4>,
