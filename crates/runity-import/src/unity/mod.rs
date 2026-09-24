@@ -468,6 +468,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         if let Some(fog) = look::fog(&text) {
             scene.set_part(&fog);
         }
+        scene.set_part_opt(look::sky(&text).as_ref());
         scene.set_part_opt((look::post(&unity, &text, &mut report)).as_ref());
         let name = &unity.names[guid];
         scene
