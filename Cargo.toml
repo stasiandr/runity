@@ -28,6 +28,7 @@ members = [
     "crates/runity-net",
     "crates/runity-overlay",
     "crates/runity-physics",
+    "crates/runity-render",
     "crates/runity-reports",
     "crates/runity-routes",
     "crates/runity-spline",

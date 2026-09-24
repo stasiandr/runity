@@ -1,0 +1,87 @@
+//! The 3D render (DNA, "Видеокарта — модуль `gpu`": `render` stands on
+//! it): a line's look (`model`'s material, `camera`, `light`, `particles`,
+//! …) dressed onto its entity ([`appearance::LookDress`]), a frame built
+//! from the world ([`world_look::build_frame`]) and drawn — materials and
+//! lights, shadows, sky and fog, post-processing, reflections, particles,
+//! terrain, foliage — with the gizmos an editor draws over it.
+//!
+//! It stands on the core, geometry (the meshes it uploads) and the GPU,
+//! and draws the overlay's UI where the world shows it. The render path is
+//! one (DNA, postulate 7); its passes are switched, not swapped.
+
+pub mod appearance;
+pub mod atmosphere;
+pub mod clouds;
+pub mod decals;
+pub mod exposure;
+pub mod floaters;
+pub mod foliage;
+pub mod footprints;
+pub mod gizmo;
+pub mod lens;
+pub mod lights;
+pub mod look;
+pub mod material;
+pub mod moods;
+pub mod particles;
+pub mod post;
+pub mod ray;
+pub mod reflections;
+pub mod render;
+pub mod ssao;
+pub mod taa;
+pub mod terrain;
+pub mod tour;
+pub mod volume;
+pub mod weather;
+pub mod world_look;
+
+pub use material::{Material, Shading};
+pub use render::{
+    Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
+};
+pub use world_look::build_frame;
+
+// The core, geometry, the GPU and the overlay, under the names this
+// module's code knows them by.
+#[allow(unused_imports)]
+use runity_core::{defaults, id, impl_parts, input, library, AssetLink, Library, Tuned};
+#[allow(unused_imports)]
+use runity_geometry::{animation, builtin};
+#[allow(unused_imports)]
+use runity_gpu::{gpu, surface};
+#[allow(unused_imports)]
+use runity_overlay::{ui, ui_render};
+
+/// The scene's lines, with this module's fields and geometry's beside the
+/// core's.
+#[allow(unused_imports)]
+mod scene {
+    pub use crate::look::*;
+    pub use runity_core::scene::*;
+    pub use runity_geometry::line::*;
+}
+
+/// The world, with this module's components beside the core's.
+#[allow(unused_imports)]
+mod world {
+    pub use crate::world_look::*;
+    pub use runity_core::world::*;
+}
+
+/// The core's archive with geometry's formats and this module's.
+#[allow(unused_imports)]
+mod asset {
+    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset};
+    pub use runity_core::asset::*;
+    pub use runity_geometry::mesh_asset::*;
+}
+
+/// The traits that read a line's fields.
+#[allow(unused_imports)]
+mod prelude {
+    pub use crate::look::{LookLine, LookOverride, SceneLook};
+    pub use crate::material::MaterialLibrary;
+    pub use runity_geometry::line::{GeometryLine, GeometryOverride};
+    pub use runity_geometry::mesh_asset::{MeshLibrary, TextureLibrary};
+}

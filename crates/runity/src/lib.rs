@@ -22,7 +22,7 @@ pub use runity_core::impl_parts;
 
 pub use runity_input::actions;
 pub use runity_geometry::animation;
-pub mod appearance;
+pub use runity_render::appearance;
 pub use runity_animation::animator;
 pub use runity_animation::animgraph;
 /// The asset archive as the core has it: its header, its ID.
@@ -38,24 +38,24 @@ pub mod asset {
     pub use crate::mesh_asset::*;
     pub use crate::sound::{ArchivedSoundAsset, SoundAsset, LONG_SOUND_SECONDS};
 }
-pub mod atmosphere;
+pub use runity_render::atmosphere;
 #[cfg(feature = "audio")]
 pub use runity_audio::audio;
 #[cfg(feature = "physics")]
 pub use runity_net::bench;
 pub use runity_geometry::builtin;
-pub mod clouds;
+pub use runity_render::clouds;
 pub use runity_core::components;
 pub use runity_core::crash;
-pub mod decals;
+pub use runity_render::decals;
 pub use runity_dialogue::dialogue;
 #[cfg(feature = "discord")]
 pub use runity_discord::discord;
 pub use runity_core::edit;
-pub mod exposure;
-pub mod floaters;
-pub mod foliage;
-pub mod footprints;
+pub use runity_render::exposure;
+pub use runity_render::floaters;
+pub use runity_render::foliage;
+pub use runity_render::footprints;
 pub mod gizmo;
 pub use runity_gpu::gpu;
 pub use runity_animation::graph_text;
@@ -63,14 +63,14 @@ pub use runity_core::id;
 pub use runity_core::input;
 pub use runity_net::lan;
 pub use runity_core::layers;
-pub mod lens;
+pub use runity_render::lens;
 pub use runity_core::library;
 pub use runity_core::links;
-pub mod lights;
+pub use runity_render::lights;
 pub mod live;
-pub mod material;
+pub use runity_render::material;
 pub use runity_core::merge;
-pub mod moods;
+pub use runity_render::moods;
 /// Clips that move a scene's things: the animation module's, with the
 /// sound and particles a clip turns written by the modules that own them.
 pub mod motion {
@@ -97,22 +97,22 @@ pub mod motion {
 #[cfg(feature = "navigation")]
 pub use runity_navigation::navigation;
 pub use runity_net::net;
-pub mod particles;
+pub use runity_render::particles;
 pub use runity_core::parts;
 pub use runity_net::party;
 pub use runity_core::perf;
 #[cfg(feature = "physics")]
 pub use runity_physics::physics;
 pub use runity_core::player_prefs;
-pub mod post;
+pub use runity_render::post;
 pub use runity_core::prefab;
 pub use runity_core::project;
 pub mod query;
-pub mod ray;
-pub mod reflections;
+pub use runity_render::ray;
+pub use runity_render::reflections;
 pub mod refs;
 pub use runity_net::relay;
-pub mod render;
+pub use runity_render::render;
 #[cfg(feature = "reports")]
 pub use runity_reports::reports;
 pub use runity_core::ron_edit;
@@ -143,7 +143,7 @@ pub mod save {
 pub use runity_core::scene as scene_core;
 pub use runity_physics::body;
 pub use runity_core::defaults;
-pub mod look;
+pub use runity_render::look;
 pub use runity_audio::sound;
 pub use runity_spline::spline;
 mod scene_tests;
@@ -197,25 +197,25 @@ pub use runity_core::shape;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
 pub use runity_core::spelling;
-pub mod ssao;
+pub use runity_render::ssao;
 #[cfg(feature = "steam")]
 pub use runity_steam::steam;
 pub use runity_core::strings;
 pub use runity_gpu::surface;
-pub mod taa;
-pub mod terrain;
+pub use runity_render::taa;
+pub use runity_render::terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
-pub mod tour;
+pub use runity_render::tour;
 pub use runity_core::tuned;
 pub use runity_overlay::ui;
 pub use runity_overlay::ui_render;
-pub mod volume;
-pub mod weather;
+pub use runity_render::volume;
+pub use runity_render::weather;
 pub use runity_overlay::widgets;
 /// The world as the core has it: hierarchy, identity, spawning.
 pub use runity_core::world as world_core;
-pub mod world_look;
+pub use runity_render::world_look;
 pub use runity_physics::bodies;
 pub mod spawning;
 mod world_tests;

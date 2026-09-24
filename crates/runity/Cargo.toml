@@ -10,6 +10,7 @@ repository.workspace = true
 runity-animation = { path = "../runity-animation" }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
+runity-render = { path = "../runity-render" }
 runity-steam = { path = "../runity-steam", optional = true }
 runity-net = { path = "../runity-net" }
 runity-navigation = { path = "../runity-navigation", optional = true }

@@ -3052,6 +3052,7 @@ dependencies = [
  "runity-net",
  "runity-overlay",
  "runity-physics",
+ "runity-render",
  "runity-reports",
  "runity-routes",
  "runity-spline",
@@ -3257,6 +3258,24 @@ dependencies = [
  "runity-geometry",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "hecs",
+ "pollster 1.0.1",
+ "rkyv",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-gpu",
+ "runity-overlay",
+ "serde",
+ "wgpu",
 ]
 
 [[package]]

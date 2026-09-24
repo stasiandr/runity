@@ -403,3 +403,100 @@ impl PhysicsOverride for Override {
         self.part()
     }
 }
+
+/// Segments round a ring of an outline.
+const OUTLINE_RING: usize = 24;
+
+impl Collider {
+    /// This collider as line segments — the shape physics sees, at the
+    /// sizes the physics world builds (sphere radius by the largest scale,
+    /// capsule and cylinder by the larger of x and z) — in the frame it
+    /// returns: `placed` without its scale. What an editor draws over the
+    /// model, so a box half a metre off is seen and not walked into. A
+    /// `Model` collider has no outline here; it is the model.
+    pub fn outline(&self, placed: glam::Mat4) -> (Vec<(Vec3, Vec3)>, glam::Mat4) {
+        use glam::Mat4;
+        let (scale, rotation, translation) = placed.to_scale_rotation_translation();
+        // Placed without scale: sizes below are already scaled, as physics
+        // scales them.
+        let frame = Mat4::from_rotation_translation(rotation, translation);
+        let mut segments: Vec<(Vec3, Vec3)> = Vec::new();
+        fn circle(out: &mut Vec<(Vec3, Vec3)>, centre: Vec3, u: Vec3, v: Vec3, radius: f32) {
+            let step = std::f32::consts::TAU / OUTLINE_RING as f32;
+            for i in 0..OUTLINE_RING {
+                let (a, b) = (i as f32 * step, (i + 1) as f32 * step);
+                out.push((
+                    centre + (u * a.cos() + v * a.sin()) * radius,
+                    centre + (u * b.cos() + v * b.sin()) * radius,
+                ));
+            }
+        }
+        let box_edges = |h: Vec3| -> Vec<(Vec3, Vec3)> {
+            let corner = |x: f32, y: f32, z: f32| Vec3::new(x * h.x, y * h.y, z * h.z);
+            let mut edges = Vec::new();
+            for (a, b) in [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)] {
+                edges.push((corner(-1.0, a, b), corner(1.0, a, b)));
+                edges.push((corner(a, -1.0, b), corner(a, 1.0, b)));
+                edges.push((corner(a, b, -1.0), corner(a, b, 1.0)));
+            }
+            edges
+        };
+        // A ramp: high at the back (−z), down to nothing at the front.
+        let ramp_edges = |h: Vec3| -> Vec<(Vec3, Vec3)> {
+            let c = |x: f32, y: f32, z: f32| Vec3::new(x * h.x, y * h.y, z * h.z);
+            vec![
+                (c(-1.0, -1.0, -1.0), c(1.0, -1.0, -1.0)),
+                (c(1.0, -1.0, -1.0), c(1.0, -1.0, 1.0)),
+                (c(1.0, -1.0, 1.0), c(-1.0, -1.0, 1.0)),
+                (c(-1.0, -1.0, 1.0), c(-1.0, -1.0, -1.0)),
+                (c(-1.0, -1.0, -1.0), c(-1.0, 1.0, -1.0)),
+                (c(1.0, -1.0, -1.0), c(1.0, 1.0, -1.0)),
+                (c(-1.0, 1.0, -1.0), c(1.0, 1.0, -1.0)),
+                (c(-1.0, 1.0, -1.0), c(-1.0, -1.0, 1.0)),
+                (c(1.0, 1.0, -1.0), c(1.0, -1.0, 1.0)),
+            ]
+        };
+        match self {
+            Collider::None | Collider::Model => return (Vec::new(), frame),
+            Collider::Box { half, center } => {
+                let c = center * scale;
+                segments.extend(
+                    box_edges(half * scale)
+                        .into_iter()
+                        .map(|(a, b)| (a + c, b + c)),
+                );
+            }
+            Collider::Stairs { half, .. } => {
+                segments.extend(box_edges(half * scale));
+            }
+            Collider::Ramp { half } => segments.extend(ramp_edges(half * scale)),
+            Collider::Sphere { radius } => {
+                let r = radius * scale.max_element();
+                circle(&mut segments, Vec3::ZERO, Vec3::X, Vec3::Y, r);
+                circle(&mut segments, Vec3::ZERO, Vec3::Y, Vec3::Z, r);
+                circle(&mut segments, Vec3::ZERO, Vec3::Z, Vec3::X, r);
+            }
+            Collider::Capsule {
+                half_height,
+                radius,
+            }
+            | Collider::Cylinder {
+                half_height,
+                radius,
+            } => {
+                let (h, r) = (half_height * scale.y, radius * scale.x.max(scale.z));
+                circle(&mut segments, Vec3::Y * h, Vec3::X, Vec3::Z, r);
+                circle(&mut segments, -Vec3::Y * h, Vec3::X, Vec3::Z, r);
+                for side in [Vec3::X, -Vec3::X, Vec3::Z, -Vec3::Z] {
+                    segments.push((side * r - Vec3::Y * h, side * r + Vec3::Y * h));
+                }
+                if matches!(self, Collider::Capsule { .. }) {
+                    // The caps, as half-rings over the top and under the bottom.
+                    circle(&mut segments, Vec3::Y * h, Vec3::X, Vec3::Y, r);
+                    circle(&mut segments, -Vec3::Y * h, Vec3::Z, Vec3::Y, r);
+                }
+            }
+        }
+        (segments, frame)
+    }
+}
