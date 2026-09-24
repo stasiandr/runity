@@ -22,6 +22,9 @@ pub struct Passes {
     /// small dark where things meet (`ShadowSettings::contact`).
     pub contact_shadows: bool,
     pub ambient_occlusion: bool,
+    /// Light under the surface (`Material::subsurface`): the wrap past the
+    /// lit edge and the light through what is thin.
+    pub subsurface: bool,
     pub screen_space_reflections: bool,
     /// Probes baked and reflected.
     pub reflection_probes: bool,
@@ -56,6 +59,7 @@ impl Passes {
         shadows: true,
         contact_shadows: true,
         ambient_occlusion: true,
+        subsurface: true,
         screen_space_reflections: true,
         reflection_probes: true,
         volumetric_fog: true,
@@ -74,6 +78,7 @@ impl Passes {
         shadows: false,
         contact_shadows: false,
         ambient_occlusion: false,
+        subsurface: false,
         screen_space_reflections: false,
         reflection_probes: false,
         volumetric_fog: false,
@@ -106,6 +111,11 @@ impl Passes {
         }
         if !self.ambient_occlusion {
             frame.ambient_occlusion.enabled = false;
+        }
+        if !self.subsurface {
+            for draw in &mut frame.draws {
+                draw.material.subsurface = [0.0; 3];
+            }
         }
         if !self.screen_space_reflections {
             frame.screen_space_reflections.enabled = false;

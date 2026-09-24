@@ -287,6 +287,16 @@ pub struct Material {
     /// Dry clay with no weather at all is cracked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub clay: bool,
+    /// Light scattered under the surface — skin, wax, a leaf, marble — as
+    /// the colour it comes out (linear); black is none. It carries past the
+    /// edge of the lit side, tinted, and through what is thin enough
+    /// toward the sun: an ear, a petal, a fingertip against the light.
+    #[serde(default, skip_serializing_if = "is_black")]
+    pub subsurface: [f32; 3],
+    /// How far light travels under it, metres, before it is gone: a few
+    /// millimetres for skin, a centimetre or two for wax.
+    #[serde(default = "subsurface_reach", skip_serializing_if = "is_subsurface_reach")]
+    pub subsurface_radius: f32,
 }
 
 fn no_tiling() -> [f32; 2] {
@@ -362,6 +372,8 @@ impl Material {
             wind: 0.0,
             translucency: 0.0,
             clay: false,
+            subsurface: [0.0; 3],
+            subsurface_radius: 0.01,
             clarity: 0.0,
             foam: 0.0,
         }
@@ -482,8 +494,21 @@ impl From<&ArchivedMaterial> for Material {
             clarity: archived.clarity.to_native(),
             foam: archived.foam.to_native(),
             clay: archived.clay,
+            subsurface: [
+                archived.subsurface[0].to_native(),
+                archived.subsurface[1].to_native(),
+                archived.subsurface[2].to_native(),
+            ],
+            subsurface_radius: archived.subsurface_radius.to_native(),
         }
     }
+}
+
+fn subsurface_reach() -> f32 {
+    0.01
+}
+fn is_subsurface_reach(r: &f32) -> bool {
+    *r == 0.01
 }
 
 /// One channel, sRGB to linear, both in `0..=1`.

@@ -75,8 +75,9 @@ pub fn compute(label: &'static str) -> Option<wgpu::ComputePassTimestampWrites<'
 /// A renderer's timer: its timestamps, where they are read back, and the
 /// averages so far.
 pub struct GpuTimer {
-    /// Made once and kept for the process: a pass's descriptor borrows it,
-    /// and the passes find it through the thread-local.
+    /// Leaked for as long as the timer lives, so a pass's descriptor can
+    /// borrow it through the thread-local; given back when the timer is
+    /// dropped (it holds its device, and every buffer on it, alive).
     set: &'static wgpu::QuerySet,
     resolve: wgpu::Buffer,
     read: wgpu::Buffer,
@@ -239,5 +240,22 @@ impl GpuTimer {
             .iter()
             .map(|(l, t, _)| (l.to_string(), *t))
             .collect()
+    }
+}
+
+impl Drop for GpuTimer {
+    fn drop(&mut self) {
+        // No pass can still be borrowing the set: a frame's passes are
+        // recorded between `begin` and `end` on this thread, and whatever
+        // frame was left open is closed here first.
+        CURRENT.with(|current| {
+            let mut current = current.borrow_mut();
+            if current.as_ref().is_some_and(|f| std::ptr::eq(f.set, self.set)) {
+                *current = None;
+            }
+        });
+        // SAFETY: `set` came from `Box::leak` in `new`, and nothing else
+        // refers to it now.
+        drop(unsafe { Box::from_raw(self.set as *const wgpu::QuerySet as *mut wgpu::QuerySet) });
     }
 }

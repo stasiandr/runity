@@ -110,6 +110,12 @@ impl Gpu {
             && std::env::var_os(MESH_SHADERS_VAR).is_some();
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        // An instance's numbers take seventeen vertex attributes: its
+        // light under the surface is the seventeenth.
+        required_limits.max_vertex_attributes = required_limits
+            .max_vertex_attributes
+            .max(17)
+            .min(adapter.limits().max_vertex_attributes);
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
             // The lit shader reads one storage buffer more when it traces:
