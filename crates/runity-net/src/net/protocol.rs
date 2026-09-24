@@ -36,9 +36,11 @@ pub const TRANSFORM: BlobId = 0;
 /// state. Opaque to the server.
 pub type Blob = (BlobId, Vec<u8>);
 
-/// One entity in a snapshot: its whole networked state. Whole, always —
-/// a component missing from an owner's entry is one it no longer has, and
-/// the server says so to everyone ([`ToClient::ComponentsRemoved`]).
+/// One entity in a snapshot: its whole networked state — or, in a
+/// `partial` snapshot, only what changed of it lately (docs/netsim.md,
+/// «Трафик»). In a whole one, a component missing from an owner's entry
+/// is one it no longer has, and the server says so to everyone
+/// ([`ToClient::ComponentsRemoved`]); a partial one only adds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     /// Who it is — or nought, when [`Entry::short`] says.
@@ -101,11 +103,13 @@ pub enum ToServer {
     /// I want to drive this.
     OwnershipRequest { epoch: u32, id: EntityId },
     /// What mine are like, at my tick. `settle`: the last word before
-    /// they go quiet, sent reliably.
+    /// they go quiet, sent reliably. `partial`: the entries carry only
+    /// what changed.
     Snapshot {
         epoch: u32,
         tick: u64,
         settle: bool,
+        partial: bool,
         entries: Vec<Entry>,
     },
     /// Something that happened once, for everyone (or one peer).
@@ -179,6 +183,7 @@ pub enum ToClient {
         owner: PeerId,
         tick: u64,
         settle: bool,
+        partial: bool,
         entries: Vec<Entry>,
     },
     Rpc {

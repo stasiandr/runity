@@ -709,8 +709,33 @@ fn ten_chains_swinging_at_once_keep_within_the_budget_and_none_is_left_behind() 
 #[ignore]
 fn traffic() {
     use std::sync::atomic::Ordering::Relaxed;
-    fn measure(name: &str, scene: Scene, pawns: &[u64], claims: &[u64], mut game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer)) {
+    fn measure(name: &str, scene: Scene, pawns: &[u64], claims: &[u64], game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer)) {
+        measure_tagged(name, scene, pawns, claims, None, game)
+    }
+    /// A game's own networked component, as a player's might be: a name
+    /// and health that seldom change.
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct Tag {
+        name: String,
+        health: u32,
+    }
+    fn measure_tagged(
+        name: &str,
+        scene: Scene,
+        pawns: &[u64],
+        claims: &[u64],
+        tag: Option<u64>,
+        mut game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer),
+    ) {
         let mut session = Session::new(&scene, 2, Conditions::GOOD, 1);
+        if let Some(id) = tag {
+            session.components.register_networked::<Tag>("tag");
+            for p in &mut session.peers {
+                if let Some(e) = p.entity(id) {
+                    let _ = p.world.insert_one(e, Tag { name: "Valentina the Unready".into(), health: 100 });
+                }
+            }
+        }
         for p in &mut session.peers {
             for id in pawns {
                 if let Some(e) = p.entity(*id) {
@@ -767,7 +792,7 @@ fn traffic() {
             }
         }
     });
-    measure("runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], |t, _, p| {
+    let run = |t: usize, _: usize, p: &mut runity::netsim::bench::Peer| {
         let Some(e) = p.entity(RUNNER) else { return };
         if p.world.get::<&runity::net::Owned>(e).is_err() {
             return;
@@ -777,6 +802,8 @@ fn traffic() {
             tr.position = Vec3::new(angle.cos() * 3.0, 0.8, angle.sin() * 3.0);
             tr.set_rotation(runity::glam::Quat::from_rotation_y(-angle));
         }
-    });
+    };
+    measure("runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], run);
+    measure_tagged("tagged runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], Some(RUNNER), run);
     measure("ragdoll", person(), &[PERSON], &[PERSON], |_, _, _| {});
 }

@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::link::{Ended, Link, LinkEvent, Mode};
-use super::protocol::{self, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
+use super::protocol::{self, Blob, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
 use super::PeerId;
 use crate::id::EntityId;
 
@@ -367,9 +367,10 @@ impl Server {
             ToServer::Snapshot {
                 tick,
                 settle,
+                partial,
                 entries,
                 ..
-            } => self.snapshot(peer, tick, settle, entries),
+            } => self.snapshot(peer, tick, settle, partial, entries),
         }
     }
 
@@ -520,7 +521,7 @@ impl Server {
         }
     }
 
-    fn snapshot(&mut self, peer: PeerId, tick: u64, settle: bool, entries: Vec<Entry>) {
+    fn snapshot(&mut self, peer: PeerId, tick: u64, settle: bool, partial: bool, entries: Vec<Entry>) {
         let mut forward = Vec::new();
         let mut removed = Vec::new();
         for mut entry in entries {
@@ -548,10 +549,11 @@ impl Server {
                 continue;
             }
             held.tick = Some(tick);
+            // A whole entry names all it has; a partial one only adds.
             let names: Vec<BlobId> = held
                 .blobs
                 .keys()
-                .filter(|n| !entry.blobs.iter().any(|(m, _)| m == *n))
+                .filter(|n| !partial && !entry.blobs.iter().any(|(m, _)| m == *n))
                 .cloned()
                 .collect();
             for name in &names {
@@ -591,6 +593,7 @@ impl Server {
                     owner: peer,
                     tick,
                     settle,
+                    partial,
                     entries: forward,
                 },
                 Some(peer),
@@ -818,6 +821,7 @@ mod tests {
             epoch: 1,
             tick,
             settle: false,
+            partial: false,
             entries: vec![Entry::new(id(n), vec![(HP, vec![value])])],
         }
     }
@@ -921,6 +925,30 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_snapshot_adds_and_removes_nothing() {
+        let mut rig = Rig::all_in(2);
+        rig.say(0, vec![snapshot(1, 4, 1)]);
+        rig.run();
+        let partial = |tick: u64, blobs: Vec<Blob>, partial: bool| ToServer::Snapshot {
+            epoch: 1,
+            tick,
+            settle: false,
+            partial,
+            entries: vec![Entry::new(id(4), blobs)],
+        };
+        const MANA: BlobId = 2;
+        rig.say(0, vec![partial(2, vec![(MANA, vec![7])], true)]);
+        let heard = rig.run();
+        assert!(!heard[1].iter().any(|m| matches!(m, ToClient::ComponentsRemoved { .. })), "{heard:?}");
+        assert!(heard[1].iter().any(|m| matches!(m, ToClient::Snapshot { partial: true, .. })), "passed on as partial");
+        assert_eq!(rig.server.entities[&id(4)].blobs.len(), 2, "both held");
+        // A whole one without health removes it.
+        rig.say(0, vec![partial(3, vec![(MANA, vec![7])], false)]);
+        let heard = rig.run();
+        assert!(heard[1].contains(&ToClient::ComponentsRemoved { id: id(4), tick: 3, names: vec![HP] }));
+    }
+
+    #[test]
     fn a_stale_snapshot_is_dropped_and_a_missing_component_is_a_removed_one() {
         let mut rig = Rig::all_in(2);
         rig.say(0, vec![snapshot(5, 4, 1)]);
@@ -933,6 +961,7 @@ mod tests {
                 epoch: 1,
                 tick: 6,
                 settle: true,
+                partial: false,
                 entries: vec![Entry::new(id(4), vec![])],
             }],
         );
@@ -966,6 +995,7 @@ mod tests {
                 epoch: 1,
                 tick: 2,
                 settle: false,
+                partial: false,
                 entries: vec![Entry::new(id(4), vec![(HP, vec![2])]).shortened(1), Entry::new(id(9), vec![]).shortened(77)],
             }],
         );
