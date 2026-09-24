@@ -29,6 +29,15 @@ impl Session {
             .collect()
     }
 
+    /// The joints of the skeleton of the model an entity draws, by name;
+    /// empty for a model with no skin. What a layer's mask and a line's
+    /// `ik` name.
+    pub fn joints(&self, id: EntityId) -> Vec<String> {
+        self.skin_of(id)
+            .map(|skin| skin.skeleton.joints.into_iter().map(|j| j.name).collect())
+            .unwrap_or_default()
+    }
+
     fn skin_of(&self, id: EntityId) -> Option<scrap::asset::MeshSkin> {
         let model = self.entity_model(id)?;
         self.library.as_ref()?.mesh_by_name(&model)?.skin_owned()

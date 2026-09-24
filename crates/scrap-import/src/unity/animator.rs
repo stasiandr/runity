@@ -263,6 +263,8 @@ pub fn convert(unity: &Unity, path: &Path) -> Result<String> {
         start,
         states,
         transitions,
+        // Layers and their Avatar Masks do not come over yet.
+        layers: Vec::new(),
     };
     let pretty = ron::ser::PrettyConfig::new().depth_limit(3);
     Ok(format!(

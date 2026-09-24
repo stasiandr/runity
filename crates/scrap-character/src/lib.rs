@@ -10,7 +10,8 @@
 
 pub mod body;
 pub mod crawler;
-pub mod ik;
+/// IK lives in geometry: the animated skeleton bends its limbs by it too.
+pub use scrap_geometry::ik;
 pub mod matching;
 pub mod ragdoll;
 

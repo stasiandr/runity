@@ -1,5 +1,6 @@
 //! Inverse kinematics: where the joints of a limb go for its end to reach
-//! a point.
+//! a point. Points in, points out: the ragdoll and the crawler bend
+//! capsules by it, the animation module an animated skeleton's joints.
 //!
 //! * [`two_bone`] — a thigh and a shin, an upper arm and a forearm: solved
 //!   exactly by the law of cosines, the middle joint bending toward a

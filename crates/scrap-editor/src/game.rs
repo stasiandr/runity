@@ -542,6 +542,17 @@ impl Session {
             .filter(|a| !a.is_empty())
     }
 
+    /// The last transitions the running game says an entity's graph
+    /// took, oldest first: the base graph's as `#12 idle → walk (…)`, a
+    /// layer's with its name before, `arms: #14 none → wave (…)`.
+    pub fn game_animator_trail(&self, id: scrap::EntityId) -> Vec<String> {
+        self.game_state()
+            .and_then(|s| s.diagnostics)
+            .and_then(|d| d.animators.into_iter().find(|(e, _)| *e == id))
+            .map(|(_, trail)| trail)
+            .unwrap_or_default()
+    }
+
     /// Every player's report while a game started from here runs: player
     /// 1 (the host) first, then each other window, as `(player, report)`.
     /// What the network inspector and the world diff read.

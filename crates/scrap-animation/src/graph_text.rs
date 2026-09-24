@@ -3,7 +3,7 @@
 //! under it, and an edit rewriting only the entries it changed. What the
 //! Animator window and the agent's graph tools both write with.
 
-use crate::animgraph::{Condition, Graph, State, Transition, ANY};
+use crate::animgraph::{Condition, Graph, Layer, LayerBlend, State, Transition, ANY};
 use crate::ron_edit::{self as patch, Change};
 
 pub fn number(n: f32) -> String {
@@ -56,6 +56,11 @@ pub fn conditions(when: &[Condition]) -> String {
 /// the defaults, on one line, and the transitions leaving it one to a line
 /// under it.
 pub fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
+    state_entry_at(name, s, exits, "        ")
+}
+
+/// [`state_entry`] for a state whose entry starts at `indent`.
+pub fn state_entry_at(name: &str, s: &State, exits: &[&Transition], indent: &str) -> String {
     let mut fields = Vec::new();
     if (s.blend.is_empty() && s.directional.is_empty()) || !s.clip.is_empty() {
         fields.push(format!("clip: {}", quote(&s.clip)));
@@ -93,7 +98,7 @@ pub fn state_entry(name: &str, s: &State, exits: &[&Transition]) -> String {
         fields.push(format!("time_from: {}", quote(p)));
     }
     if !exits.is_empty() {
-        fields.push(format!("transitions: {}", exit_list(exits, "        ")));
+        fields.push(format!("transitions: {}", exit_list(exits, indent)));
     }
     format!("{}: ({})", quote(name), fields.join(", "))
 }
@@ -118,6 +123,54 @@ pub fn exit_list(exits: &[&Transition], indent: &str) -> String {
         out += &format!("{indent}    {},\n", exit_entry(t));
     }
     out + indent + "]"
+}
+
+/// A layer's entry in the `layers` list, which stands at four spaces:
+/// its name, mask and weight on the first line, then its states one to an
+/// entry, as the base graph's are written.
+pub fn layer_entry(layer: &Layer) -> String {
+    let mut head = vec![format!("name: {}", quote(&layer.name))];
+    if !layer.mask.is_empty() {
+        let names: Vec<String> = layer.mask.iter().map(|n| quote(n)).collect();
+        head.push(format!("mask: [{}]", names.join(", ")));
+    }
+    if layer.blend == LayerBlend::Additive {
+        head.push("blend: Additive".into());
+    }
+    if layer.weight != 1.0 {
+        head.push(format!("weight: {}", number(layer.weight)));
+    }
+    if let Some(p) = &layer.weight_from {
+        head.push(format!("weight_from: {}", quote(p)));
+    }
+    head.push(format!("start: {}", quote(&layer.graph.start)));
+    let mut out = format!("({},\n            states: {{\n", head.join(", "));
+    for (name, state) in &layer.graph.states {
+        out += &format!(
+            "                {},\n",
+            state_entry_at(
+                name,
+                state,
+                &leaving(&layer.graph, name),
+                "                "
+            )
+        );
+    }
+    out += "            },\n";
+    let any = leaving(&layer.graph, ANY);
+    if !any.is_empty() {
+        out += &format!("            any: {},\n", exit_list(&any, "            "));
+    }
+    out + "        )"
+}
+
+/// The whole `layers` list, for a file that has none yet.
+pub fn layer_list(layers: &[Layer]) -> String {
+    let mut out = String::from("[\n");
+    for layer in layers {
+        out += &format!("        {},\n", layer_entry(layer));
+    }
+    out + "    ]"
 }
 
 pub fn leaving<'a>(graph: &'a Graph, from: &str) -> Vec<&'a Transition> {
@@ -195,6 +248,52 @@ pub fn patched(old: &str, graph: &Graph) -> Option<String> {
         let span = patch::value_span(&text, at)?;
         text.replace_range(span, &quote(&graph.start));
     }
+    if was.layers != graph.layers {
+        text = patched_layers(text, &was, graph)?;
+    }
     let check: Graph = ron::from_str(&text).ok()?;
     (check == *graph).then_some(text)
+}
+
+/// The `layers` list with each changed layer's entry written again, a
+/// gone one taken out and a new one added at the end: two people changing
+/// different layers change different entries.
+fn patched_layers(text: String, was: &Graph, graph: &Graph) -> Option<String> {
+    if graph.layers.is_empty() {
+        return patch::set_field(&text, "layers", None);
+    }
+    let Some(open) = patch::value_start(&text, "layers") else {
+        return patch::set_field(&text, "layers", Some(&layer_list(&graph.layers)));
+    };
+    #[derive(serde::Deserialize)]
+    struct Named {
+        name: String,
+    }
+    let found = patch::items(&text, open)?;
+    let names: Vec<String> = found
+        .items
+        .iter()
+        .map(|r| {
+            ron::from_str::<Named>(&text[r.clone()])
+                .map(|n| n.name)
+                .unwrap_or_default()
+        })
+        .collect();
+    let find = |g: &Graph, name: &str| g.layers.iter().find(|l| l.name == name).cloned();
+    let mut changes = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        match find(graph, name) {
+            None => changes.push(Change::Remove(i)),
+            Some(l) if find(was, name).as_ref() != Some(&l) => {
+                changes.push(Change::Replace(i, layer_entry(&l)))
+            }
+            Some(_) => {}
+        }
+    }
+    for layer in &graph.layers {
+        if !names.contains(&layer.name) {
+            changes.push(Change::Append(layer_entry(layer)));
+        }
+    }
+    patch::apply(&text, open, &changes)
 }

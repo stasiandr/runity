@@ -1,12 +1,14 @@
 //! Geometry: what a model is made of, before anything draws it — vertices
 //! and submeshes, textures, the built-in shapes, a line's model and
-//! terrain, and a rigged model's skeleton and clips as data. The render module uploads them, physics
+//! terrain, a rigged model's skeleton and clips as data, and the
+//! IK that bends a limb toward a point ([`ik`]). The render module uploads them, physics
 //! makes colliders of them, animation plays the clips; none of that is
 //! here (docs/modules.md).
 
 pub mod animation;
 pub mod builtin;
 pub mod field;
+pub mod ik;
 pub mod line;
 pub mod sdf;
 pub mod mesh_asset;

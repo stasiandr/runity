@@ -12,6 +12,7 @@
 pub mod animator;
 pub mod animgraph;
 pub mod graph_text;
+pub mod ik;
 pub mod motion;
 
 pub use animator::{advance_animations, Animator, Playing};
@@ -22,10 +23,30 @@ pub use scrap_geometry::animation::Posed;
 /// the engine, which hands their sound and particle tracks to the modules
 /// that own them ([`motion::run_with`]).
 pub fn systems(player_loop: &mut scrap_core::player_loop::PlayerLoop) {
-    player_loop.add(scrap_core::player_loop::Phase::FixedUpdate, "animation", |world, seconds| {
-        animgraph::run_controllers(world);
-        advance_animations(world, seconds);
-    });
+    systems_on(player_loop, |_| Box::new(ik::no_ground));
+}
+
+/// A probe of the ground under a point, made for one step from the world.
+pub type GroundOf = fn(&hecs::World) -> ik::Probe;
+
+/// [`systems`], the feet of skeletons with IK put on the ground `ground`
+/// finds: the engine hands in the scene's colliders
+/// ([`animator::advance_animations_on`]).
+pub fn systems_on(player_loop: &mut scrap_core::player_loop::PlayerLoop, ground: GroundOf) {
+    player_loop.add(
+        scrap_core::player_loop::Phase::FixedUpdate,
+        "animation",
+        move |world, seconds| {
+            animgraph::run_controllers(world);
+            let feet = world.query::<&ik::Ik>().iter().any(|ik| !ik.feet.is_off());
+            if feet {
+                let probe = ground(world);
+                animator::advance_animations_on(world, seconds, &*probe);
+            } else {
+                advance_animations(world, seconds);
+            }
+        },
+    );
 }
 
 // The core and geometry, under the names this module's code knows them by.
@@ -33,6 +54,7 @@ pub fn systems(player_loop: &mut scrap_core::player_loop::PlayerLoop) {
 use scrap_core::{id, impl_parts, project, ron_edit, spelling, AssetLink, Transform};
 #[allow(unused_imports)]
 use scrap_geometry::animation;
+use scrap_geometry::ik as geometry_ik;
 
 /// The scene's lines, with this module's fields and geometry's beside the
 /// core's.

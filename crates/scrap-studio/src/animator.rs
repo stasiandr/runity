@@ -16,6 +16,12 @@
 //! Every change is written at once, and only where it changed: a state's
 //! entry with the transitions that leave it, Any State's list, the start
 //! (see [`scrap::ron_edit`]). Comments stay, and the diff is the change.
+//!
+//! A graph with layers shows a row of them over the side: Base and each
+//! layer by name. Choosing one shows its own graph on the canvas, with its
+//! mask and weight, and edits go into that layer's entry. While the game
+//! runs, the box lit is where that layer is, and its last transitions are
+//! listed under the fields.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -55,6 +61,8 @@ enum Part {
     More(&'static str),
     /// Take back one change since the last commit, by its place in the list.
     Revert(usize),
+    /// Show a layer's graph, by its name; `None` the base graph.
+    Layer(Option<String>),
 }
 
 pub struct Animator {
@@ -89,6 +97,10 @@ pub struct Animator {
     /// against. `None` outside git, or for a file not yet committed.
     head: Option<Graph>,
     asked: std::time::Instant,
+    /// The layer shown, by name; `None` is the base graph.
+    layer: Option<String>,
+    /// The shown graph's last transitions in the running game.
+    trail: Vec<String>,
 }
 
 impl Animator {
@@ -163,6 +175,8 @@ impl Animator {
             live: None,
             head: None,
             asked: std::time::Instant::now(),
+            layer: None,
+            trail: Vec::new(),
         }
     }
 
@@ -239,6 +253,7 @@ impl Animator {
                     .and_then(|t| scrap::ron::from_str(&t).ok());
                 self.open = Some((path, graph));
                 self.chosen = None;
+                self.layer = None;
                 self.pan = (0.0, 0.0);
                 self.list(ui, session);
                 self.show(ui, session);
@@ -265,7 +280,7 @@ impl Animator {
             .retain(|_, p| matches!(p, Part::File(_) | Part::New | Part::Wide | Part::Canvas));
         ui.clear(self.canvas);
         ui.clear(self.side);
-        let Some((_, graph)) = self.open.clone() else {
+        let Some(graph) = self.graph().cloned() else {
             ui.add_text(
                 self.side,
                 Style::default().text_size(12.0).text_color(MUTED),
@@ -324,11 +339,59 @@ impl Animator {
             return;
         }
         self.asked = std::time::Instant::now();
-        let live = session.selected().and_then(|id| session.game_animator(id));
+        let id = session.selected();
+        // The game says `walk; arms: wave`: the shown layer's part.
+        let live = id
+            .and_then(|id| session.game_animator(id))
+            .and_then(|said| {
+                let (base, layers) = scrap::animgraph::read_animator_state(&said);
+                match &self.layer {
+                    None => Some(base),
+                    Some(layer) => layers.into_iter().find(|(l, _)| l == layer).map(|(_, s)| s),
+                }
+            });
         if live != self.live {
             self.live = live;
             self.restyle_boxes(ui);
         }
+        let prefix = self.layer.as_ref().map(|l| format!("{l}: "));
+        let trail: Vec<String> = id
+            .map(|id| session.game_animator_trail(id))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|p| match &prefix {
+                None => p.starts_with('#').then_some(p),
+                Some(pre) => p.strip_prefix(pre.as_str()).map(str::to_string),
+            })
+            .collect();
+        if trail != self.trail {
+            self.trail = trail;
+            self.side_again(ui, session);
+        }
+    }
+
+    /// The side built again for what is chosen now.
+    fn side_again(&mut self, ui: &mut Ui, session: &Session) {
+        let Some(graph) = self.graph().cloned() else {
+            return;
+        };
+        self.parts.retain(|n, p| {
+            !matches!(
+                p,
+                Part::Field(_)
+                    | Part::Start
+                    | Part::Looping
+                    | Part::Delete
+                    | Part::To(_)
+                    | Part::AddState
+                    | Part::More(_)
+                    | Part::Revert(_)
+                    | Part::Layer(_)
+            ) && !(matches!(p, Part::Edge(_))
+                && ui.parent(*n).is_some_and(|parent| parent == self.side))
+        });
+        ui.clear(self.side);
+        self.show_side(ui, session, &graph);
     }
 
     fn restyle_boxes(&mut self, ui: &mut Ui) {
@@ -352,27 +415,12 @@ impl Animator {
             return;
         }
         self.chosen = chosen;
-        let Some(graph) = self.graph().cloned() else {
+        if self.graph().is_none() {
             return;
-        };
+        }
         self.restyle_boxes(ui);
         self.draw_edges(ui);
-        self.parts.retain(|n, p| {
-            !matches!(
-                p,
-                Part::Field(_)
-                    | Part::Start
-                    | Part::Looping
-                    | Part::Delete
-                    | Part::To(_)
-                    | Part::AddState
-                    | Part::More(_)
-                    | Part::Revert(_)
-            ) && !(matches!(p, Part::Edge(_))
-                && ui.parent(*n).is_some_and(|parent| parent == self.side))
-        });
-        ui.clear(self.side);
-        self.show_side(ui, session, &graph);
+        self.side_again(ui, session);
     }
 
     /// The arrows again, from where the boxes stand now.
@@ -451,17 +499,32 @@ impl Animator {
 
     fn show_side(&mut self, ui: &mut Ui, session: &Session, graph: &Graph) {
         let side = self.side;
-        // What will not work, first.
+        let whole = self
+            .open
+            .as_ref()
+            .map(|(_, g)| g.clone())
+            .unwrap_or_default();
+        self.layer_row(ui, &whole);
+        // What will not work, first: the whole graph's, its layers' too,
+        // and the masks against the selected model's skeleton.
         let clips: Vec<String> = session
             .selected()
             .map(|id| session.clips(id).into_iter().map(|(n, _)| n).collect())
             .unwrap_or_default();
         let clip_refs: Vec<&str> = clips.iter().map(String::as_str).collect();
-        let problems: Vec<String> = graph
+        let joints: Vec<String> = session
+            .selected()
+            .map(|id| session.joints(id))
+            .unwrap_or_default();
+        let joint_refs: Vec<&str> = joints.iter().map(String::as_str).collect();
+        let mut problems: Vec<String> = whole
             .problems(&clip_refs)
             .into_iter()
             .filter(|p| !clips.is_empty() || !p.contains("the model does not have"))
             .collect();
+        if !joints.is_empty() {
+            problems.extend(whole.mask_problems(&joint_refs));
+        }
         for p in problems.iter().take(3) {
             ui.add_text(side, Style::default().text_size(11.5).text_color(ERROR), p);
         }
@@ -610,6 +673,55 @@ impl Animator {
                 let delete = button(ui, side, "animator delete", "Delete", false);
                 self.parts.insert(delete, Part::Delete);
             }
+        }
+        // Where the running game's graph went last, and why.
+        if !self.trail.is_empty() {
+            ui.add_text(side, caption(), "IN THE GAME");
+            let from = self.trail.len().saturating_sub(6);
+            for passage in &self.trail[from..] {
+                ui.add_text(
+                    side,
+                    Style::default().text_size(11.0).text_color(MUTED).mono(),
+                    passage,
+                );
+            }
+        }
+    }
+
+    /// The graph's layers, to choose which is shown — none for a graph
+    /// with only its base — and the shown one's mask and weight.
+    fn layer_row(&mut self, ui: &mut Ui, whole: &Graph) {
+        if whole.layers.is_empty() {
+            return;
+        }
+        ui.add_text(self.side, caption(), "LAYERS");
+        let row = ui.add(self.side, Style::row().full_width().gap(3.0).wrap());
+        let names = std::iter::once(None).chain(whole.layers.iter().map(|l| Some(l.name.clone())));
+        for name in names {
+            let label = name.clone().unwrap_or_else(|| "Base".into());
+            let on = name == self.layer;
+            let b = button(ui, row, &format!("animator layer {label}"), &label, on);
+            self.parts.insert(b, Part::Layer(name));
+        }
+        if let Some(layer) = whole
+            .layers
+            .iter()
+            .find(|l| Some(&l.name) == self.layer.as_ref())
+        {
+            let mask = if layer.mask.is_empty() {
+                "the whole body".to_string()
+            } else {
+                layer.mask.join(", ")
+            };
+            let weight = match &layer.weight_from {
+                Some(p) => format!("{} × {p}", number(layer.weight)),
+                None => number(layer.weight),
+            };
+            ui.add_text(
+                self.side,
+                Style::default().text_size(11.5).text_color(MUTED),
+                &format!("{:?} over {mask}, weight {weight}", layer.blend),
+            );
         }
     }
 
@@ -779,6 +891,16 @@ impl Animator {
                 }
                 self.show(ui, session);
             }
+            Part::Layer(name) if click => {
+                if name != self.layer {
+                    self.layer = name;
+                    self.chosen = None;
+                    self.live = None;
+                    self.trail.clear();
+                    self.pan = (0.0, 0.0);
+                    self.show(ui, session);
+                }
+            }
             Part::Revert(i) if click => {
                 let Some(graph) = self.graph().cloned() else {
                     return;
@@ -811,8 +933,17 @@ impl Animator {
         }
     }
 
+    /// The graph shown: the base, or the chosen layer's.
     fn graph(&self) -> Option<&Graph> {
-        self.open.as_ref().map(|(_, g)| g)
+        let whole = self.open.as_ref().map(|(_, g)| g)?;
+        match &self.layer {
+            None => Some(whole),
+            Some(name) => whole
+                .layers
+                .iter()
+                .find(|l| l.name == *name)
+                .map(|l| &l.graph),
+        }
     }
 
     /// A field of the chosen state or transition, typed.
@@ -921,21 +1052,40 @@ impl Animator {
 
     /// What differs from the last commit's graph, if there is one.
     fn changes(&self, graph: &Graph) -> Vec<scrap::animgraph::Change> {
-        self.head
-            .as_ref()
-            .map(|head| scrap::animgraph::diff(head, graph))
-            .unwrap_or_default()
+        let Some(head) = self.head.as_ref() else {
+            return Vec::new();
+        };
+        match &self.layer {
+            None => scrap::animgraph::diff(head, graph),
+            // A layer new since the commit: all of it is new.
+            Some(name) => {
+                let was = head.layers.iter().find(|l| l.name == *name);
+                scrap::animgraph::diff(&was.map(|l| l.graph.clone()).unwrap_or_default(), graph)
+            }
+        }
     }
 
     /// Change the graph and write it.
     fn edit(&mut self, session: &mut Session, change: impl FnOnce(&mut Graph)) {
-        let Some((path, graph)) = self.open.as_mut() else {
+        let layer = self.layer.clone();
+        let Some((path, whole)) = self.open.as_mut() else {
+            return;
+        };
+        let shown = match &layer {
+            None => Some(&mut *whole),
+            Some(name) => whole
+                .layers
+                .iter_mut()
+                .find(|l| l.name == *name)
+                .map(|l| &mut l.graph),
+        };
+        let Some(graph) = shown else {
             return;
         };
         change(graph);
         graph.normalize();
         let old = std::fs::read_to_string(&*path).unwrap_or_default();
-        let text = write(&old, graph);
+        let text = write(&old, whole);
         if text != old {
             if let Err(e) = std::fs::write(&*path, text) {
                 session.say(Level::Error, format!("{}: {e}", path.display()));
