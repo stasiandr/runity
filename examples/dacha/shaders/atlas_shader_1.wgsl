@@ -1,47 +1,26 @@
 // From Assets/Content/Art/Materials/Atlas_Shader 1.shadergraph (URP Lit).
-// The atlas colour (UV0) overlaid with a greyscale grunge texture projected
-// triplanar at 25%; optionally tops lightened toward white ("Up Vecto?")
-// and a faint near-camera pulse in emission ("Blink?").
-// Port: the grunge texture (JB_HPBase_FlameRake_BW) is procedural value
-// noise; projection uses world position, not object position (Translate
-// and Rotation are zero in every material, so only that differs). The
-// blink's scene-depth falloff is dropped. The two toggles come from the
-// material (M_Atlas_Triplanar_01 1 has Up Vecto?, M_Atlas_Triplanar_Blink_01
-// has Blink?); the other values are the graph's defaults, which the three
-// materials share.
+// The atlas colour (UV0) overlaid with a greyscale grunge texture
+// (_Triplanar_Texture, JB_HPBase_FlameRake_BW) projected triplanar at 25%;
+// optionally lerped toward a second triplanar texture (_Up_Vector_Texture)
+// on tops ("Up Vecto?") and a faint near-camera pulse in emission ("Blink?").
+// Port: the atlas is the material's base map (the graph's Sample Texture 2D
+// holds SM_Refrigerator_1_TXTR, the same picture as the base map
+// T_SM_Refrigerator_1_TXTR). Both triplanar textures are read from the
+// material with the graph's tiling and blend; the projection uses world
+// position, not object position (Translate and Rotation are zero in every
+// material, so only that differs). The blink's scene-depth falloff is
+// dropped. The two toggles come from the material (M_Atlas_Triplanar_01 1
+// has Up Vecto?, with T_Road_01_D_2 as its up texture;
+// M_Atlas_Triplanar_Blink_01 has Blink?); the other values are the graph's
+// defaults, which the three materials share. An unset up texture reads
+// white, as in Unity.
 // runity:params _Up_Vecto _Blink
+// runity:textures _Triplanar_Texture _Up_Vector_Texture
 
 const ATLAS_TILING: f32 = 0.31;
 const ATLAS_BLEND: f32 = 1.0;
 const ATLAS_TRIPLANAR_INT: f32 = 0.25;
 const ATLAS_SMOOTHNESS: f32 = 0.426; // _Roughtnes, wired to Smoothness
-
-fn atlas_hash(p: vec2<f32>) -> f32 {
-    let q = fract(p * vec2<f32>(123.34, 456.21));
-    let r = q + dot(q, q + 45.32);
-    return fract(r.x * r.y);
-}
-
-fn atlas_noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
-    let a = atlas_hash(i);
-    let b = atlas_hash(i + vec2<f32>(1.0, 0.0));
-    let c = atlas_hash(i + vec2<f32>(0.0, 1.0));
-    let d = atlas_hash(i + vec2<f32>(1.0, 1.0));
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-}
-
-// Stand-in for the grunge texture: sharp-edged grey patches, sRGB mean
-// about 0.4 like the original, returned linear.
-fn atlas_grunge(uv: vec2<f32>) -> f32 {
-    let p = uv * 6.0;
-    let n = atlas_noise(p) * 0.6 + atlas_noise(p * 2.3 + 7.1) * 0.3 + atlas_noise(p * 5.1 + 3.7) * 0.1;
-    let patches = floor(n * 5.0) / 4.0;
-    let srgb = clamp(0.15 + patches * 0.5, 0.0, 1.0);
-    return pow(srgb, 2.2);
-}
 
 fn atlas_overlay(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
     let low = 2.0 * base * blend;
@@ -49,19 +28,30 @@ fn atlas_overlay(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
     return select(high, low, base <= vec3<f32>(0.5));
 }
 
+// Unity's Triplanar node: the texture seen along each axis, weighted by
+// how much the normal faces it.
+fn atlas_triplanar(in: SurfaceIn, slot: u32, p: vec3<f32>, w: vec3<f32>) -> vec3<f32> {
+    let x = texture_at(in, slot, p.zy).rgb;
+    let y = texture_at(in, slot, p.xz).rgb;
+    let z = texture_at(in, slot, p.xy).rgb;
+    return x * w.x + y * w.y + z * w.z;
+}
+
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
     let p = in.world_position * ATLAS_TILING;
     var w = pow(abs(in.normal), vec3<f32>(ATLAS_BLEND));
     w = w / max(w.x + w.y + w.z, 1e-5);
-    let tri = atlas_grunge(p.zy) * w.x + atlas_grunge(p.xz) * w.y + atlas_grunge(p.xy) * w.z;
-    var color = mix(out.albedo, atlas_overlay(out.albedo, vec3<f32>(tri)), ATLAS_TRIPLANAR_INT);
+    // Both projections are read on every pixel: a texture is read where
+    // all pixels run together, and the toggle below only picks.
+    let grunge = atlas_triplanar(in, 0u, p, w);
+    let up_texture = atlas_triplanar(in, 1u, p, w);
+    var color = mix(out.albedo, atlas_overlay(out.albedo, grunge), ATLAS_TRIPLANAR_INT);
     if in.params[0].x > 0.5 {
-        // The up texture is unset in the material, so it samples white.
         let mid = pow(0.5, 2.2);
         let up = clamp(dot(in.normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0, 1.0);
         let t = ((up - mid) * 2.73 + mid) * 0.2;
-        color = mix(color, vec3<f32>(1.0), t);
+        color = mix(color, up_texture, t);
     }
     o.albedo = color;
     o.metallic = 0.0;
