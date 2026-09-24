@@ -30,6 +30,10 @@ pub enum Shape {
     Struct(Vec<(String, Shape)>),
     /// Every variant's name.
     Enum(Vec<String>),
+    /// An enum some of whose variants hold something — `Crate(Food)`,
+    /// `Box(half: …)` — each variant with what it holds (`Unit` for a
+    /// bare one). An enum of bare names only is [`Shape::Enum`].
+    Tagged(Vec<(String, Shape)>),
     /// Serde asks nothing that says: raw RON, a value of any shape.
     Any,
     /// A link to another entity of the scene ([`crate::EntityRef`]): what
@@ -91,14 +95,126 @@ impl<'de, V: Visitor<'de>> fmt::Display for Expecting<'_, V> {
     }
 }
 
-/// The shape of `T`.
+/// The shape of `T`: every enum in it with what each of its variants
+/// holds, found by tracing `T` again with that variant chosen (a trace
+/// takes one variant of each enum, the first, as a value can hold only
+/// one).
 pub fn of<'de, T: Deserialize<'de>>() -> Shape {
+    let (mut shape, mut sites) = trace::<T>(Vec::new());
+    let mut done: Vec<Vec<String>> = Vec::new();
+    // Enums inside a variant's content are found when that variant is
+    // traced; their own variants are traced with it chosen.
+    let mut i = 0;
+    while i < sites.len() && i < SITES_AT_MOST {
+        let site = sites[i].clone();
+        i += 1;
+        if done.contains(&site.path) {
+            continue;
+        }
+        done.push(site.path.clone());
+        let mut contents = Vec::new();
+        for variant in &site.variants {
+            let mut steer = site.steer.clone();
+            steer.push((site.path.clone(), variant.clone()));
+            let (_, found) = trace::<T>(steer.clone());
+            let content = CAUGHT
+                .with(|c| c.borrow_mut().take())
+                .unwrap_or(Shape::Unit);
+            for mut nested in found {
+                if nested.path.len() > site.path.len() && nested.path.starts_with(&site.path) {
+                    nested.steer = steer.clone();
+                    sites.push(nested);
+                }
+            }
+            contents.push((variant.clone(), content));
+        }
+        if contents.iter().any(|(_, c)| *c != Shape::Unit) {
+            replace_at(&mut shape, &site.path, Shape::Tagged(contents));
+        }
+    }
+    shape
+}
+
+/// Enums a trace looks into, at most: a type that holds itself stops.
+const SITES_AT_MOST: usize = 64;
+
+/// An enum met in a trace: where, its variants, and the variants chosen
+/// on the way there.
+#[derive(Clone)]
+struct Site {
+    path: Vec<String>,
+    variants: Vec<String>,
+    steer: Vec<(Vec<String>, String)>,
+}
+
+std::thread_local! {
+    /// Where in the value the trace is: field names, item places, the
+    /// variant whose content it is in.
+    static PATH: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Which variant to take at which enum, instead of the first.
+    static STEER: std::cell::RefCell<Vec<(Vec<String>, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The enums met.
+    static SITES: std::cell::RefCell<Vec<Site>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// What the last steered variant held.
+    static CAUGHT: std::cell::RefCell<Option<Shape>> = const { std::cell::RefCell::new(None) };
+}
+
+/// One trace of `T`, the variants in `steer` taken: its shape, and the
+/// enums it met.
+fn trace<'de, T: Deserialize<'de>>(steer: Vec<(Vec<String>, String)>) -> (Shape, Vec<Site>) {
+    let saved = (
+        PATH.with(|p| std::mem::take(&mut *p.borrow_mut())),
+        STEER.with(|s| std::mem::replace(&mut *s.borrow_mut(), steer)),
+        SITES.with(|s| std::mem::take(&mut *s.borrow_mut())),
+    );
+    CAUGHT.with(|c| c.borrow_mut().take());
     let mut out = Shape::Any;
     let _ = T::deserialize(Tracer {
         out: &mut out,
         depth: 0,
     });
-    out
+    let sites = SITES.with(|s| std::mem::replace(&mut *s.borrow_mut(), saved.2));
+    PATH.with(|p| *p.borrow_mut() = saved.0);
+    STEER.with(|s| *s.borrow_mut() = saved.1);
+    (out, sites)
+}
+
+/// Run `f` a step further into the value.
+fn at<R>(step: impl Into<String>, f: impl FnOnce() -> R) -> R {
+    PATH.with(|p| p.borrow_mut().push(step.into()));
+    let r = f();
+    PATH.with(|p| p.borrow_mut().pop());
+    r
+}
+
+/// `shape` with what is at `path` — steps as the trace takes them —
+/// replaced by `with`.
+fn replace_at(shape: &mut Shape, path: &[String], with: Shape) {
+    let Some((step, rest)) = path.split_first() else {
+        *shape = with;
+        return;
+    };
+    match shape {
+        Shape::Option(inner) => replace_at(inner, path, with),
+        Shape::Struct(fields) => {
+            if let Some((_, s)) = fields.iter_mut().find(|(k, _)| k == step) {
+                replace_at(s, rest, with);
+            }
+        }
+        Shape::List(item) => replace_at(item, rest, with),
+        Shape::Tuple(items) => {
+            if let Some(s) = step.parse::<usize>().ok().and_then(|i| items.get_mut(i)) {
+                replace_at(s, rest, with);
+            }
+        }
+        Shape::Map(_, value) => replace_at(value, rest, with),
+        Shape::Tagged(variants) => {
+            if let Some((_, s)) = variants.iter_mut().find(|(v, _)| v == step) {
+                replace_at(s, rest, with);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// What each variant of the enum `T` holds, by name: `Unit` for a bare
@@ -106,20 +222,11 @@ pub fn of<'de, T: Deserialize<'de>>() -> Shape {
 /// enum. [`Shape::Enum`] names the variants only; this is what an editor
 /// needs to switch a value to another variant with fields to fill in.
 pub fn variants_of<'de, T: Deserialize<'de>>() -> Vec<(String, Shape)> {
-    let Shape::Enum(names) = of::<T>() else {
-        return Vec::new();
-    };
-    names
-        .into_iter()
-        .map(|name| {
-            let mut content = Shape::Unit;
-            let _ = T::deserialize(Picker {
-                name: &name,
-                content: &mut content,
-            });
-            (name, content)
-        })
-        .collect()
+    match of::<T>() {
+        Shape::Tagged(variants) => variants,
+        Shape::Enum(names) => names.into_iter().map(|n| (n, Shape::Unit)).collect(),
+        _ => Vec::new(),
+    }
 }
 
 impl Shape {
@@ -153,6 +260,14 @@ impl Shape {
                     .join(", ")
             ),
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
+            Shape::Tagged(variants) => match variants.first() {
+                Some((name, Shape::Unit)) => name.clone(),
+                Some((name, content @ (Shape::Struct(_) | Shape::Tuple(_)))) => {
+                    format!("{name}{}", content.example())
+                }
+                Some((name, content)) => format!("{name}({})", content.example()),
+                None => String::new(),
+            },
             Shape::OneOf(shapes) => shapes.first().map(Shape::example).unwrap_or_default(),
             // No entity: the id no entity has.
             Shape::EntityId => "\"0\"".into(),
@@ -200,7 +315,8 @@ impl Shape {
                 | Shape::Asset(_)
                 | Shape::OneOf(_)
                 | Shape::EntityId
-                | Shape::AssetId(_),
+                | Shape::AssetId(_)
+                | Shape::Tagged(_),
                 _,
             ) => {}
             (Shape::Bool, V::Bool(_)) => {}
@@ -286,6 +402,17 @@ impl fmt::Display for Shape {
                 write!(f, "({})", fields.join(", "))
             }
             Shape::Enum(variants) => write!(f, "{}", variants.join(" | ")),
+            Shape::Tagged(variants) => {
+                let variants: Vec<String> = variants
+                    .iter()
+                    .map(|(v, s)| match s {
+                        Shape::Unit => v.clone(),
+                        Shape::Struct(_) | Shape::Tuple(_) => format!("{v}{s}"),
+                        s => format!("{v}({s})"),
+                    })
+                    .collect();
+                write!(f, "{}", variants.join(" | "))
+            }
             Shape::OneOf(shapes) => {
                 let shapes: Vec<String> = shapes.iter().map(ToString::to_string).collect();
                 write!(f, "{}", shapes.join(" or "))
@@ -507,10 +634,33 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         visitor: V,
     ) -> Result<V::Value, Stop> {
         *self.out = Shape::Enum(variants.iter().map(|v| v.to_string()).collect());
-        let first = variants.first().copied().unwrap_or("");
+        let path = PATH.with(|p| p.borrow().clone());
+        let steered = STEER.with(|s| {
+            s.borrow()
+                .iter()
+                .find(|(p, _)| *p == path)
+                .map(|(_, v)| v.clone())
+        });
+        if self.depth <= DEPTH {
+            SITES.with(|s| {
+                s.borrow_mut().push(Site {
+                    path: path.clone(),
+                    variants: variants.iter().map(|v| v.to_string()).collect(),
+                    steer: Vec::new(),
+                })
+            });
+        }
+        // The steered one when this is the enum being looked into, and
+        // what it holds caught: the steering's last step is its site.
+        let catch = STEER.with(|s| s.borrow().last().is_some_and(|(p, _)| *p == path));
+        let name = steered
+            .and_then(|v| variants.iter().find(|n| **n == v).copied())
+            .or(variants.first().copied())
+            .unwrap_or("");
         visitor.visit_enum(Variant {
-            name: first,
+            name,
             depth: self.depth + 1,
+            catch,
         })
     }
 }
@@ -538,9 +688,10 @@ impl<'de> de::SeqAccess<'de> for Items<'_> {
             self.shapes.len() - self.left
         };
         self.left -= 1;
-        seed.deserialize(Tracer {
-            out: &mut self.shapes[index],
-            depth: self.depth,
+        let out = &mut self.shapes[index];
+        let depth = self.depth;
+        at(index.to_string(), || {
+            seed.deserialize(Tracer { out, depth })
         })
         .map(Some)
     }
@@ -599,9 +750,9 @@ impl<'de> de::MapAccess<'de> for Fields<'_> {
         let index = self.next;
         self.next += 1;
         let before = FIELD.replace(self.names[index]);
-        let value = seed.deserialize(Tracer {
-            out: &mut self.shapes[index],
-            depth: self.depth,
+        let (out, depth) = (&mut self.shapes[index], self.depth);
+        let value = at(self.names[index], || {
+            seed.deserialize(Tracer { out, depth })
         });
         FIELD.set(before);
         value
@@ -611,6 +762,21 @@ impl<'de> de::MapAccess<'de> for Fields<'_> {
 struct Variant {
     name: &'static str,
     depth: usize,
+    /// What it holds is what a steered trace looks for.
+    catch: bool,
+}
+
+impl Variant {
+    /// Trace what the variant holds, a step in by its name; keep it when
+    /// it is what the trace is for.
+    fn content<R>(&self, f: impl FnOnce(&mut Shape) -> R) -> R {
+        let mut content = Shape::Unit;
+        let r = at(self.name, || f(&mut content));
+        if self.catch {
+            CAUGHT.with(|c| *c.borrow_mut() = Some(content));
+        }
+        r
+    }
 }
 
 impl<'de> de::EnumAccess<'de> for Variant {
@@ -625,120 +791,23 @@ impl<'de> de::EnumAccess<'de> for Variant {
 impl<'de> de::VariantAccess<'de> for Variant {
     type Error = Stop;
     fn unit_variant(self) -> Result<(), Stop> {
-        Ok(())
+        self.content(|_| Ok(()))
     }
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Stop> {
-        let mut ignored = Shape::Any;
-        seed.deserialize(Tracer {
-            out: &mut ignored,
-            depth: self.depth,
-        })
+        let depth = self.depth;
+        self.content(|out| seed.deserialize(Tracer { out, depth }))
     }
     fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Stop> {
-        let mut ignored = Shape::Any;
-        Tracer {
-            out: &mut ignored,
-            depth: self.depth,
-        }
-        .deserialize_tuple(len, visitor)
+        let depth = self.depth;
+        self.content(|out| Tracer { out, depth }.deserialize_tuple(len, visitor))
     }
     fn struct_variant<V: Visitor<'de>>(
         self,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Stop> {
-        let mut ignored = Shape::Any;
-        Tracer {
-            out: &mut ignored,
-            depth: self.depth,
-        }
-        .deserialize_struct("", fields, visitor)
-    }
-}
-
-// --- one variant of an enum, traced -----------------------------------
-
-/// Asked for an enum, answers with the variant `name` and traces what it
-/// holds into `content`; asked for anything else, stops.
-struct Picker<'a> {
-    name: &'a str,
-    content: &'a mut Shape,
-}
-
-impl<'de> Deserializer<'de> for Picker<'_> {
-    type Error = Stop;
-
-    fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Stop> {
-        Err(Stop("not an enum".into()))
-    }
-
-    fn deserialize_enum<V: Visitor<'de>>(
-        self,
-        _: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Stop> {
-        let name = variants
-            .iter()
-            .find(|v| **v == self.name)
-            .copied()
-            .ok_or_else(|| Stop(format!("no variant `{}`", self.name)))?;
-        visitor.visit_enum(Picked {
-            name,
-            content: self.content,
-        })
-    }
-
-    serde::forward_to_deserialize_any! {
-        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
-        bytes byte_buf option unit unit_struct newtype_struct seq tuple
-        tuple_struct map struct identifier ignored_any
-    }
-}
-
-struct Picked<'a> {
-    name: &'static str,
-    content: &'a mut Shape,
-}
-
-impl<'de> de::EnumAccess<'de> for Picked<'_> {
-    type Error = Stop;
-    type Variant = Self;
-    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Stop> {
-        let value = seed.deserialize(self.name.into_deserializer())?;
-        Ok((value, self))
-    }
-}
-
-impl<'de> de::VariantAccess<'de> for Picked<'_> {
-    type Error = Stop;
-    fn unit_variant(self) -> Result<(), Stop> {
-        *self.content = Shape::Unit;
-        Ok(())
-    }
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Stop> {
-        seed.deserialize(Tracer {
-            out: self.content,
-            depth: 1,
-        })
-    }
-    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Stop> {
-        Tracer {
-            out: self.content,
-            depth: 1,
-        }
-        .deserialize_tuple(len, visitor)
-    }
-    fn struct_variant<V: Visitor<'de>>(
-        self,
-        fields: &'static [&'static str],
-        visitor: V,
-    ) -> Result<V::Value, Stop> {
-        Tracer {
-            out: self.content,
-            depth: 1,
-        }
-        .deserialize_struct("", fields, visitor)
+        let depth = self.depth;
+        self.content(|out| Tracer { out, depth }.deserialize_struct("", fields, visitor))
     }
 }
 
@@ -807,12 +876,21 @@ mod tests {
             ["open_angle", "locked", "kind", "name", "tags", "hinge"]
         );
         assert_eq!(fields[0].1, Shape::Float);
-        assert_eq!(fields[2].1, Shape::Enum(vec!["Wood".into(), "Iron".into()]));
+        assert_eq!(
+            fields[2].1,
+            Shape::Tagged(vec![
+                ("Wood".into(), Shape::Unit),
+                (
+                    "Iron".into(),
+                    Shape::Struct(vec![("weight".into(), Shape::Float)])
+                ),
+            ])
+        );
         assert_eq!(fields[3].1, Shape::Option(Box::new(Shape::Text)));
         assert_eq!(fields[4].1, Shape::List(Box::new(Shape::Text)));
         assert_eq!(
             shape.to_string(),
-            "(open_angle: number, locked: bool, kind: Wood | Iron, name: text or None, tags: [text], hinge: (number, number, number))"
+            "(open_angle: number, locked: bool, kind: Wood | Iron(weight: number), name: text or None, tags: [text], hinge: (number, number, number))"
         );
         let example = shape.example();
         assert!(ron::from_str::<Door>(&example).is_ok(), "{example}");
@@ -858,6 +936,51 @@ mod tests {
             of_field::<crate::AssetLink>("material"),
             Shape::Asset("material".into())
         );
+    }
+
+    #[test]
+    fn an_enum_inside_a_variant_says_its_own_variants() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        enum Food {
+            Cabbage,
+            Tomato,
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        enum Kind {
+            Counter,
+            Crate(Food),
+            Oven { heat: Heat },
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        enum Heat {
+            Low,
+            High(f32),
+        }
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Station {
+            kind: Kind,
+        }
+        let food = Shape::Enum(vec!["Cabbage".into(), "Tomato".into()]);
+        let heat = Shape::Tagged(vec![
+            ("Low".into(), Shape::Unit),
+            ("High".into(), Shape::Float),
+        ]);
+        assert_eq!(
+            of::<Station>(),
+            Shape::Struct(vec![(
+                "kind".into(),
+                Shape::Tagged(vec![
+                    ("Counter".into(), Shape::Unit),
+                    ("Crate".into(), food),
+                    ("Oven".into(), Shape::Struct(vec![("heat".into(), heat)])),
+                ])
+            )])
+        );
+        assert_eq!(of::<Station>().example(), "(kind: Counter)");
     }
 
     #[test]

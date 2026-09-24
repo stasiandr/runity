@@ -5145,6 +5145,9 @@ fn a_picker_lists_textures_entities_and_bones_by_name() {
     let bones = session.bone_names(flag);
     assert!(!bones.is_empty(), "the banner's skeleton");
     assert!(session.bone_names(banner).is_empty(), "no parent, no bones");
+}
+
+#[test]
 fn an_inactive_line_and_what_is_under_it_are_off_in_the_hierarchy() {
     let Some((mut session, _)) = open("hierarchy-inactive") else {
         return;

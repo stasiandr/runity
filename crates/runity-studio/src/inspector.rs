@@ -1194,8 +1194,14 @@ impl Inspector {
                     self.shown(session, &target, &f.value)
                 };
                 self.object_field(ui, session, line, &f.name, target, shown, mixed);
+                // Its parts are many lines: folded until opened.
                 if inline {
-                    self.entity_form_parts(ui, session, f);
+                    let open = self.is_open("material parts", false);
+                    let arrow = self.fold_arrow(ui, line, "material parts", open, true);
+                    ui.set_name(arrow, "fold material");
+                    if open {
+                        self.entity_form_parts(ui, session, f);
+                    }
                 }
             }
             None if self.is_form(f) => self.entity_form(ui, session, line, f),
@@ -1325,7 +1331,11 @@ impl Inspector {
                 Shape::Bool => SubKind::Bool(value == "true"),
                 Shape::Int | Shape::Float => SubKind::Number,
                 Shape::Text => SubKind::Text,
-                Shape::Enum(variants) => SubKind::Enum(variants.clone()),
+                // A bare name: a list. One holding something — `Crate(Cabbage)`
+                // — is a form of its own (below).
+                Shape::Enum(variants) if !value.trim_end().ends_with(')') => {
+                    SubKind::Enum(variants.clone())
+                }
                 Shape::Entity | Shape::Asset(_) => {
                     // Unity's object field: the entity or the asset by
                     // name, or None; red when it is gone.

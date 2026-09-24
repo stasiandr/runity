@@ -3092,6 +3092,8 @@ fn an_inline_materials_shading_is_a_list_from_the_engine() {
         .set_field(crate_id, "material", "(base_color: (0.5, 0.4, 0.3))")
         .unwrap();
     click(&mut s, "line crate");
+    assert!(s.ui.find("material shading").is_none(), "folded at first");
+    click(&mut s, "fold material");
     let shading = s.ui.find("material shading").expect("a shading list");
     assert!(!s.ui.is_field(shading), "picked, not typed");
     click(&mut s, "material shading");
@@ -3137,6 +3139,7 @@ fn a_materials_map_is_a_texture_picked_by_name() {
         .set_field(crate_id, "material", "(base_color: (0.5, 0.4, 0.3))")
         .unwrap();
     click(&mut s, "line crate");
+    click(&mut s, "fold material");
     let map = s.ui.find("material base_map").expect("the base map's field");
     assert!(!s.ui.is_field(map), "picked, not typed");
     assert_eq!(s.ui.text(s.ui.children(map)[1]), Some("None (Texture)"));
@@ -3902,4 +3905,59 @@ fn a_custom_accent_recolours_the_accent_and_its_ramp() {
         preset_rgb("nocturne", "ACCENT")
     );
     assert!(s.theme().user.tokens.is_empty());
+}
+
+#[test]
+fn a_components_enum_with_a_payload_picks_its_variant_and_what_it_holds() {
+    use runity::shape::Shape;
+    let Some((mut s, dir)) = studio() else { return };
+    // The kitchen's station: `kind: Crate(Cabbage)`, a crate of a food.
+    let food = Shape::Enum(vec!["Cabbage".into(), "Tomato".into()]);
+    let shapes: std::collections::BTreeMap<String, Shape> = [(
+        "station".to_string(),
+        Shape::Struct(vec![(
+            "kind".into(),
+            Shape::Tagged(vec![
+                ("Counter".into(), Shape::Unit),
+                ("Crate".into(), food),
+            ]),
+        )]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::create_dir_all(dir.join(runity::project::SHAPES).parent().unwrap()).unwrap();
+    std::fs::write(
+        dir.join(runity::project::SHAPES),
+        runity::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_component(crate_id, "station", Some("(kind: Crate(Cabbage))"))
+        .unwrap();
+    click(&mut s, "line crate");
+    let value = |s: &Studio| field_value(s, crate_id, "components.station");
+
+    // The variant a list, what it holds a list under it.
+    let kind = s.ui.find("station kind").expect("the variant's list");
+    assert!(!s.ui.is_field(kind));
+    assert!(s.ui.dump().contains("\"Crate\""));
+    let payload = s.ui.find("station kind 0").expect("what the crate holds");
+    assert!(!s.ui.is_field(payload), "a list, not text");
+
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "station kind 0");
+    click(&mut s, "menu Tomato");
+    assert!(value(&s).contains("Crate(Tomato)"), "{}", value(&s));
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+
+    click(&mut s, "station kind");
+    assert!(s.ui.find("menu Counter").is_some());
+    click(&mut s, "menu Counter");
+    assert!(value(&s).contains("kind: Counter"), "{}", value(&s));
+    assert!(s.ui.find("station kind 0").is_none(), "a counter holds nothing");
+
+    click(&mut s, "station kind");
+    click(&mut s, "menu Crate");
+    assert!(value(&s).contains("Crate(Cabbage)"), "{}", value(&s));
 }

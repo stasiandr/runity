@@ -483,8 +483,15 @@ impl Inspector {
         target: ObjectRef,
         at: runity_ui::Rect,
     ) {
-        let (ground, card) =
-            self.popover_card(ui, at.x, at.y + at.height + 4.0, at.width.max(260.0));
+        // Under the field, or over it when there is no room under it.
+        let (_, h, _) = ui.viewport();
+        let below = at.y + at.height + 4.0;
+        let y = if below + 360.0 > h {
+            (at.y - 364.0).max(8.0)
+        } else {
+            below
+        };
+        let (ground, card) = self.popover_card(ui, at.x, y, at.width.max(260.0));
         ui.set_name(card, "object picker");
         let head = ui.add(card, Style::row().full_width().gap(SPACE_2).center_items());
         icon(ui, head, glyph(&target.kind), ACCENT);
@@ -549,7 +556,7 @@ impl Inspector {
         );
         *hits = offered.clone();
         *at = (*at).min(offered.len().saturating_sub(1));
-        let (list, chosen, kind) = (*list, *at, target.kind.clone());
+        let (list, chosen, kind, target_holds) = (*list, *at, target.kind.clone(), target.holds);
         ui.clear(list);
         let mut rows = Vec::new();
         for (i, hit) in offered.iter().enumerate() {
@@ -579,7 +586,15 @@ impl Inspector {
             // Pictures for what is near the top: a texture's is drawn when
             // first shown.
             let picture = match hit {
-                Some(c) if i < 40 => self.picture_of(session, &kind, &c.key),
+                // A picture is asked for by name: an ID's entry by its label.
+                Some(c) if i < 40 => {
+                    let by = if target_holds == Holds::AssetId {
+                        &c.label
+                    } else {
+                        &c.key
+                    };
+                    self.picture_of(session, &kind, by)
+                }
                 _ => None,
             };
             match picture {

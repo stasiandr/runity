@@ -428,6 +428,18 @@ impl Inspector {
     ) {
         let (shape, optional) = unwrap_option(shape);
         let shape = one_of(shape, node);
+        // An enum in a value: its variants, with what each holds when the
+        // shape says (`Crate(Food)`), bare names when it only names them.
+        let named: Vec<(String, Shape)>;
+        let variants = match shape {
+            _ if !variants.is_empty() => variants,
+            Some(Shape::Tagged(v)) => v.as_slice(),
+            Some(Shape::Enum(names)) => {
+                named = names.iter().map(|n| (n.clone(), Shape::Unit)).collect();
+                named.as_slice()
+            }
+            _ => variants,
+        };
         let name = cx.name(&place.path);
         let mixed = !unknown && cx.mixed(&place.path, node);
         // A link to an asset or an entity: Unity's object field, never its
@@ -661,7 +673,13 @@ impl Inspector {
                     self.parts
                         .insert(pick, Part::Form(place.clone(), Control::Choose(choices)));
                 }
-                let inner = content.as_ref().or(shape);
+                // What the variant holds, as the shape says; nothing to go
+                // by for a variant it only names.
+                let inner = if variants.is_empty() {
+                    shape
+                } else {
+                    content.as_ref().filter(|c| **c != Shape::Unit)
+                };
                 match &node.kind {
                     Kind::Tuple { items, .. }
                         if items.len() == 1
@@ -669,18 +687,34 @@ impl Inspector {
                                 .as_ref()
                                 .is_none_or(|c| !matches!(c, Shape::Tuple(_))) =>
                     {
-                        // A newtype: its one value's lines under it.
+                        // A newtype: its one value — a group's lines under
+                        // it, or one line by the variant's name
+                        // (`Crate: Cabbage`).
                         let one = place.at(Step::At(0));
-                        self.form_children(
-                            ui,
-                            session,
-                            cx,
-                            &one,
-                            &items[0],
-                            inner,
-                            depth + 1,
-                            unknown,
-                        );
+                        if is_group(&items[0]) {
+                            self.form_children(
+                                ui,
+                                session,
+                                cx,
+                                &one,
+                                &items[0],
+                                inner,
+                                depth + 1,
+                                unknown,
+                            );
+                        } else {
+                            self.form_line(
+                                ui,
+                                session,
+                                cx,
+                                one,
+                                n,
+                                &items[0],
+                                inner,
+                                depth + 1,
+                                unknown,
+                            );
+                        }
                     }
                     _ => {
                         self.form_children(ui, session, cx, &place, node, inner, depth + 1, unknown)
@@ -1035,12 +1069,12 @@ impl Inspector {
         );
     }
 
-    fn is_open(&self, key: &str, default: bool) -> bool {
+    pub(super) fn is_open(&self, key: &str, default: bool) -> bool {
         self.folds.get(key).copied().unwrap_or(default)
     }
 
     /// The arrow before a group's label: a click folds it or opens it.
-    fn fold_arrow(
+    pub(super) fn fold_arrow(
         &mut self,
         ui: &mut Ui,
         parent: NodeId,
