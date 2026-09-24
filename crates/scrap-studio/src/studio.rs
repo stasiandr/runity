@@ -327,6 +327,7 @@ pub struct Studio {
     screens: Screens,
     animator: Animator,
     dialogues: crate::dialogues::Dialogues,
+    table: crate::table::Table,
     /// The network inspector, the world diff, the saves, the systems.
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
@@ -681,6 +682,8 @@ impl Studio {
         roots.insert(Panel::Animator, animator.root);
         let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
         roots.insert(Panel::Dialogues, dialogues.root);
+        let table = crate::table::Table::new(&mut ui, lower);
+        roots.insert(Panel::Table, table.root);
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -739,6 +742,7 @@ impl Studio {
             screens,
             animator,
             dialogues,
+            table,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -1419,7 +1423,7 @@ impl Studio {
             });
             let live = self.wants_frame();
             if live && self.docks.is_showing(Panel::Profiler) {
-                self.profiler.update(&mut self.ui);
+                self.profiler.update(&mut self.ui, &self.session);
             }
             if self.docks.is_showing(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
@@ -1433,6 +1437,9 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Dialogues) {
                 self.dialogues.update(&mut self.ui, &self.session);
+            }
+            if self.docks.is_showing(Panel::Table) {
+                self.table.update(&mut self.ui, &self.session);
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
@@ -2712,12 +2719,13 @@ impl Studio {
     fn sync_visible(&mut self) {
         self.show_panels();
         let on = |p| self.docks.is_showing(p);
-        self.bottom.set_visible([
+        let visible = [
             on(Panel::Project),
             on(Panel::Console),
             on(Panel::History),
             on(Panel::Git),
-        ]);
+        ];
+        self.bottom.set_visible(&mut self.ui, &self.session, visible);
     }
 
     fn layout_text_after_paint(&mut self) -> String {
@@ -2964,7 +2972,11 @@ impl Studio {
 
     /// Bring every panel up to date now, whatever the stamp says.
     pub fn refresh(&mut self) {
-        self.seen = None;
+        // What the frame would do for a stamp it has not seen, done now
+        // and once: the stamp is taken as seen, so the frame does not do
+        // it all again.
+        self.inspector.clear_asset();
+        self.seen = Some(Stamp::of(&self.session));
         self.update_panels(false);
     }
 
@@ -3306,11 +3318,10 @@ impl Studio {
             }
         }
         match self.docks.event(&mut self.ui, node, event) {
+            // Nothing the panels show changed: the one come on top is
+            // brought up to date by `sync_visible`, if it needs to be.
             Some(Docked::Handled) => {
                 self.sync_visible();
-                if !matches!(event, Event::Drag { .. }) {
-                    requests.refresh = true;
-                }
                 return;
             }
             Some(Docked::Maximize(panel)) => {
@@ -3390,6 +3401,9 @@ impl Studio {
         } else if self.dialogues.owns(&self.ui, node) {
             self.dialogues
                 .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.table.owns(&self.ui, node) {
+            self.table
+                .event(&mut self.ui, &mut self.session, node, event);
         } else if self.screens.owns(&self.ui, node) {
             self.screens
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -3397,6 +3411,8 @@ impl Studio {
             self.animation
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.profiler.owns(&self.ui, node) {
+            self.profiler
+                .event(&mut self.ui, &mut self.session, node, event);
         } else if self.bottom.owns(&self.ui, node) {
             self.bottom
                 .event(&mut self.ui, &mut self.session, node, event, requests);

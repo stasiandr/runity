@@ -80,6 +80,9 @@ pub(super) enum Control {
     Push(String),
     /// A list item's trash.
     Pop,
+    /// A number from 0 to 1's track: where it is pressed or dragged to is
+    /// the value.
+    Slide,
 }
 
 /// What a form is being laid out for.
@@ -509,10 +512,13 @@ impl Inspector {
                     unknown,
                 );
             }
+            Kind::Number if shape == Some(&Shape::Fraction) => {
+                self.fraction_slider(ui, session, cx, line, place, node, &name, mixed, unknown);
+            }
             Kind::Number => {
                 let whole = match shape {
                     Some(Shape::Int) => true,
-                    Some(Shape::Float) => false,
+                    Some(Shape::Float | Shape::Fraction) => false,
                     _ => !cx.text[node.span.clone()].contains(['.', 'e', 'E', 'i', 'N']),
                 };
                 let shown = if unknown {
@@ -1387,6 +1393,46 @@ impl Inspector {
         });
     }
 
+    /// A number from 0 to 1 as Unity's slider: a track to press or drag
+    /// along, and its box beside it to type into.
+    #[allow(clippy::too_many_arguments)]
+    fn fraction_slider(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        cx: &Cx,
+        line: NodeId,
+        place: Place,
+        node: &Node,
+        name: &str,
+        mixed: bool,
+        unknown: bool,
+    ) {
+        let value = self
+            .number_at(session, &place)
+            .or_else(|| cx.text[node.span.clone()].parse().ok())
+            .unwrap_or(0.0);
+        let track = super::slider_track(ui, line, value, mixed);
+        ui.set_name(track, format!("slide {name}"));
+        self.parts
+            .insert(track, Part::Form(place.clone(), Control::Slide));
+        let shown = if unknown {
+            String::new()
+        } else if mixed {
+            MIXED.to_string()
+        } else {
+            trim_number(&cx.text[node.span.clone()])
+        };
+        let b = ui.add_field(line, super::slider_box(), &shown);
+        if unknown {
+            ui.set_placeholder(b, &trim_number(&format!("{value}")));
+        }
+        ui.set_name(b, name.to_string());
+        self.form_nodes.insert(place.clone(), b);
+        self.parts
+            .insert(b, Part::Form(place, Control::Number { whole: false }));
+    }
+
     /// Everything a form's control does when used.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn form_event(
@@ -1435,6 +1481,24 @@ impl Inspector {
                 requests.refresh = true;
             }
             (Control::Text | Control::Name | Control::Number { .. }, Event::Cancel) => {
+                self.built = false;
+                requests.refresh = true;
+            }
+            (Control::Slide, Event::Press { x, .. } | Event::Drag { x, .. }) => {
+                if matches!(event, Event::Press { .. }) {
+                    session.begin_gesture();
+                    self.scrubbing = Some((0.0, 0.0));
+                }
+                let value = super::slide_to(ui, node, *x);
+                self.set_leaf(session, &place, &format!("{value:?}"));
+                if let Some(b) = self.form_nodes.get(&place) {
+                    ui.set_text(*b, &trim_number(&format!("{value}")));
+                }
+            }
+            (Control::Slide, Event::Release { .. }) => {
+                if self.scrubbing.take().is_some() {
+                    session.end_gesture();
+                }
                 self.built = false;
                 requests.refresh = true;
             }

@@ -38,6 +38,7 @@ mod player;
 pub mod prefs;
 mod scene_view;
 mod surface;
+pub mod table;
 mod thumbnail;
 pub use thumbnail::MATERIAL_PICTURE;
 mod views;
@@ -89,6 +90,9 @@ pub struct Session {
     target: OffscreenTarget,
     world: hecs::World,
     history: scrap::edit::History,
+    /// Cells set in tuning files, oldest first: what
+    /// [`Session::undo_cell`] takes back (`table`).
+    cell_edits: Vec<table::CellEdit>,
     scene_path: Option<PathBuf>,
     /// The project the open scene is in. Where prefabs, materials and the
     /// library are is the project's to say, so the editor finds exactly what
@@ -333,6 +337,7 @@ impl Session {
             target,
             world: hecs::World::new(),
             history: scrap::edit::History::new(Scene::default(), 64),
+            cell_edits: Vec::new(),
             scene_path: None,
             project: None,
             library: None,
@@ -1225,12 +1230,13 @@ impl Session {
     /// the same conflicts `scrap merge` reported — with the values, so each
     /// can be shown and settled here instead of in a text editor.
     pub fn merge_conflicts(&mut self) -> EditResult<Vec<scrap::merge::Conflict>> {
-        let stages = (
-            self.scene_at(":1"),
-            self.scene_at(":2"),
-            self.scene_at(":3"),
-        );
-        let (Ok(base), Ok(ours), Ok(theirs)) = stages else {
+        // One stage at a time: with no merge the first is missing, and
+        // each asked is a `git` run.
+        let stages = self.scene_at(":1").and_then(|base| {
+            let ours = self.scene_at(":2")?;
+            Ok((base, ours, self.scene_at(":3")?))
+        });
+        let Ok((base, ours, theirs)) = stages else {
             self.merge = None;
             return Ok(Vec::new());
         };
@@ -3740,6 +3746,16 @@ impl Session {
     /// `SCRAP_GPU_TIMES` is set (see `Renderer::gpu_times`).
     pub fn gpu_times(&self) -> Vec<(String, f32)> {
         self.renderer.gpu_times()
+    }
+
+    /// Time each pass of the Scene view on the GPU, or stop: the
+    /// Profiler's switch for [`Self::gpu_times`]. Off costs nothing.
+    pub fn profile_gpu(&mut self, on: bool) {
+        self.renderer.profile_gpu(on);
+    }
+
+    pub fn profiling_gpu(&self) -> bool {
+        self.renderer.profiling_gpu()
     }
 
     /// The GPU the session renders with: a window that wants to show the

@@ -19,6 +19,10 @@ pub enum Shape {
     Bool,
     Int,
     Float,
+    /// A number from 0 to 1 — an amount, a share, an opacity: what an
+    /// editor draws as a slider. Serde cannot tell it from any number; the
+    /// type says so itself ([`with_fractions`]).
+    Fraction,
     Char,
     Text,
     Unit,
@@ -217,6 +221,50 @@ fn replace_at(shape: &mut Shape, path: &[String], with: Shape) {
     }
 }
 
+/// `shape` with the numbers at `paths` said to be 0 to 1
+/// ([`Shape::Fraction`]). A path is field names with dots between —
+/// `rain`, `bloom.scatter` — stepping through an option, a list's items,
+/// every variant of an enum and every shape of an untagged one, so
+/// `angle` is the `angle` of whichever variant has one.
+///
+/// A path that names no number is a typo in the type's declaration: it
+/// panics in a debug build, where every part's shape is traced by a test.
+pub fn with_fractions(mut shape: Shape, paths: &[&str]) -> Shape {
+    for path in paths {
+        let steps: Vec<&str> = path.split('.').collect();
+        let found = mark_fraction(&mut shape, &steps);
+        debug_assert!(found, "`{path}` is no number of {shape}");
+    }
+    shape
+}
+
+fn mark_fraction(shape: &mut Shape, steps: &[&str]) -> bool {
+    match shape {
+        Shape::Float if steps.is_empty() => {
+            *shape = Shape::Fraction;
+            true
+        }
+        Shape::Fraction if steps.is_empty() => true,
+        Shape::Option(inner) | Shape::List(inner) => mark_fraction(inner, steps),
+        Shape::Struct(fields) => {
+            let Some((step, rest)) = steps.split_first() else {
+                return false;
+            };
+            fields
+                .iter_mut()
+                .find(|(k, _)| k == step)
+                .is_some_and(|(_, s)| mark_fraction(s, rest))
+        }
+        Shape::Tagged(variants) => variants
+            .iter_mut()
+            .fold(false, |found, (_, s)| mark_fraction(s, steps) | found),
+        Shape::OneOf(shapes) => shapes
+            .iter_mut()
+            .fold(false, |found, s| mark_fraction(s, steps) | found),
+        _ => false,
+    }
+}
+
 /// What each variant of the enum `T` holds, by name: `Unit` for a bare
 /// one, the fields of one written `Box(half: …)`. Empty when `T` is not an
 /// enum. [`Shape::Enum`] names the variants only; this is what an editor
@@ -236,7 +284,7 @@ impl Shape {
         match self {
             Shape::Bool => "false".into(),
             Shape::Int => "0".into(),
-            Shape::Float => "0.0".into(),
+            Shape::Float | Shape::Fraction => "0.0".into(),
             Shape::Char => "'a'".into(),
             Shape::Text => "\"\"".into(),
             Shape::Unit | Shape::Any => "()".into(),
@@ -323,8 +371,9 @@ impl Shape {
             (Shape::Bool, _) => wrong(out, "true or false"),
             (Shape::Int, V::Number(n)) if n.into_f64().fract() == 0.0 => {}
             (Shape::Int, _) => wrong(out, "a whole number"),
-            (Shape::Float, V::Number(_)) => {}
+            (Shape::Float | Shape::Fraction, V::Number(_)) => {}
             (Shape::Float, _) => wrong(out, "a number"),
+            (Shape::Fraction, _) => wrong(out, "a number from 0 to 1"),
             (Shape::Text, V::String(_)) => {}
             (Shape::Text, _) => wrong(out, "text in quotes"),
             (Shape::Option(inner), V::Option(Some(v))) => inner.check(v, at, out),
@@ -357,6 +406,16 @@ impl Shape {
                     }
                 }
             }
+            (Shape::Map(_, item), V::Map(map)) => {
+                for (key, v) in map.iter() {
+                    let key = match key {
+                        V::String(key) => format!("\"{key}\""),
+                        _ => "…".to_string(),
+                    };
+                    item.check(v, &format!("{at}[{key}]"), out);
+                }
+            }
+            (Shape::Map(_, _), _) => wrong(out, "a map {..}"),
             (Shape::Struct(fields), V::Unit) if fields.is_empty() => {}
             (Shape::Struct(_), V::Unit) => {}
             (Shape::Struct(_), _) => wrong(out, "(field: value, …)"),
@@ -386,6 +445,7 @@ impl fmt::Display for Shape {
             Shape::Bool => write!(f, "bool"),
             Shape::Int => write!(f, "whole number"),
             Shape::Float => write!(f, "number"),
+            Shape::Fraction => write!(f, "number 0 to 1"),
             Shape::Char => write!(f, "char"),
             Shape::Text => write!(f, "text"),
             Shape::Unit => write!(f, "()"),
@@ -996,6 +1056,40 @@ mod tests {
             ]
         );
         assert!(variants_of::<Door>().is_empty(), "not an enum");
+    }
+
+    #[test]
+    fn a_type_says_which_of_its_numbers_go_from_0_to_1() {
+        let shape = with_fractions(of::<Door>(), &["open_angle", "kind.weight"]);
+        let Shape::Struct(fields) = &shape else {
+            panic!("{shape:?}");
+        };
+        assert_eq!(fields[0].1, Shape::Fraction);
+        assert_eq!(
+            fields[2].1,
+            Shape::Tagged(vec![
+                ("Wood".into(), Shape::Unit),
+                (
+                    "Iron".into(),
+                    Shape::Struct(vec![("weight".into(), Shape::Fraction)])
+                ),
+            ]),
+            "through every variant that has it"
+        );
+        assert!(shape.to_string().starts_with("(open_angle: number 0 to 1,"));
+        assert!(ron::from_str::<Door>(&shape.example()).is_ok());
+    }
+
+    #[test]
+    fn a_fraction_that_names_nothing_is_a_typo() {
+        // Not by a panic: `crash`'s test owns the panic hook meanwhile.
+        let mut shape = of::<Door>();
+        assert!(!mark_fraction(&mut shape, &["open_angel"]));
+        assert!(
+            !mark_fraction(&mut shape, &["locked"]),
+            "a flag is no number"
+        );
+        assert!(mark_fraction(&mut shape, &["open_angle"]));
     }
 
     #[test]

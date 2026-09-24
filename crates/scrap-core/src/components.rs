@@ -62,6 +62,9 @@ pub struct Components {
     saved: BTreeMap<String, Write>,
     /// What each looks like, read off its `Deserialize`.
     shapes: BTreeMap<String, fn() -> crate::shape::Shape>,
+    /// What each file in `tuning/` is read as, by its name there
+    /// (`enemies` for `tuning/enemies.ron`).
+    tuning: BTreeMap<String, fn() -> crate::shape::Shape>,
     /// Simulations' states that go over the network as their own bytes
     /// rather than a component's RON (docs/netsim.md): a rope's particles.
     states: BTreeMap<String, (GatherState, TakeState)>,
@@ -137,18 +140,53 @@ impl Components {
             .collect()
     }
 
+    /// Say that the game reads `tuning/<file>.ron` as `T` — a struct, or a
+    /// map of records `{ "goblin": (…), "orc": (…) }` read as
+    /// `BTreeMap<String, Enemy>`. What lets the editor's Table show its
+    /// columns and `scrap check` find a misspelt field in it, without
+    /// linking the game (docs/tables.md).
+    pub fn register_tuning<T: DeserializeOwned>(&mut self, file: &str) -> &mut Self {
+        self.tuning.insert(
+            file.to_string(),
+            crate::shape::of::<T> as fn() -> crate::shape::Shape,
+        );
+        self
+    }
+
+    /// What each registered tuning file is read as, by its name in
+    /// `tuning/`.
+    pub fn tuning_shapes(&self) -> BTreeMap<String, crate::shape::Shape> {
+        self.tuning
+            .iter()
+            .map(|(name, shape)| (name.clone(), shape()))
+            .collect()
+    }
+
     /// Write [`Components::shapes`] where the editor and `scrap check`
     /// read them: `library/components.ron` in a project
-    /// ([`crate::project::SHAPES`]). Built from the game's code, like the
-    /// rest of `library/`, so it is not committed.
+    /// ([`crate::project::SHAPES`]), and beside it `tuning.ron` with
+    /// [`Components::tuning_shapes`] ([`crate::project::TUNING_SHAPES`]).
+    /// Built from the game's code, like the rest of `library/`, so it is
+    /// not committed.
     pub fn write_shapes(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
         let path = path.as_ref();
-        let text = ron::ser::to_string_pretty(&self.shapes(), ron::ser::PrettyConfig::new())
-            .map_err(|e| e.to_string())?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let write = |path: &std::path::Path,
+                     shapes: BTreeMap<String, crate::shape::Shape>|
+         -> Result<(), String> {
+            let text = ron::ser::to_string_pretty(&shapes, ron::ser::PrettyConfig::new())
+                .map_err(|e| e.to_string())?;
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            }
+            std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+        };
+        write(path, self.shapes())?;
+        let tuning = path.with_file_name(crate::project::TUNING_SHAPES_FILE);
+        if self.tuning.is_empty() {
+            let _ = std::fs::remove_file(tuning);
+            return Ok(());
         }
-        std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+        write(&tuning, self.tuning_shapes())
     }
 
     /// Say that `name` means `T`, and that it is networked: its value on

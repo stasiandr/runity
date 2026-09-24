@@ -10,10 +10,13 @@
 //! the person's and not the project's — colours, keys, tools — is
 //! Preferences (`crate::preferences`), a window of its own.
 //!
-//! **Profiler** is what a frame of the editor costs, as Unity's Profiler
-//! shows a frame of the game: the last seconds as bars, each split into
-//! the Scene view's input, the render, the panels and the UI, with the
-//! slowest and the median beside them.
+//! **Profiler** is what a frame costs, as Unity's Profiler shows it (DNA,
+//! postulate 6): the editor's last seconds as bars, each split into the
+//! Scene view's input, the render, the panels and the UI, under lines at
+//! the 60 and 30 fps budgets, hitches tinted, the frame under the pointer
+//! spelled out; then tables — each part's median, p99, worst and hitches,
+//! the running game's systems as it reports them, and the Scene view's
+//! passes on the GPU when timing is switched on. Pause holds it still.
 
 use std::path::PathBuf;
 
@@ -263,21 +266,175 @@ impl FrameCost {
     fn total(&self) -> f32 {
         self.input + self.render + self.panels + self.ui
     }
+
+    /// The parts as the legend lists them, then the whole frame.
+    fn parts(&self) -> [f32; 5] {
+        [self.input, self.render, self.panels, self.ui, self.total()]
+    }
 }
 
 /// How many frames the Profiler keeps.
 const FRAMES: usize = 120;
+/// A bar's width and the gap after it: where the pointer is, as a frame.
+const BAR: f32 = 4.0;
+const BAR_GAP: f32 = 1.0;
+/// A table's names: wide enough for "scene input".
+const NAME: f32 = 84.0;
+/// A table's number column.
+const CELL: f32 = 56.0;
+/// The budget lines: 60 and 30 frames a second.
+const BUDGETS: [f32; 2] = [1000.0 / 60.0, 1000.0 / 30.0];
+/// How often the running game's report is read from disk: it writes one
+/// about twice a second.
+const GAME_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The parts' names, as the legend and the table say them.
+const PARTS: [&str; 4] = ["scene input", "render", "panels", "UI"];
 
 pub struct Profiler {
     pub root: NodeId,
+    chart: NodeId,
     bars: NodeId,
+    /// Each budget's line and its label, over the bars.
+    budgets: Vec<(NodeId, NodeId)>,
     summary: NodeId,
-    frames: Vec<FrameCost>,
+    detail: NodeId,
+    pause: NodeId,
+    gpu: NodeId,
+    /// The editor table's number cells: a row per part, then the frame.
+    part_cells: Vec<Vec<NodeId>>,
+    systems_title: NodeId,
+    systems_note: NodeId,
+    systems: NodeId,
+    passes_title: NodeId,
+    passes_note: NodeId,
+    passes: NodeId,
+    frames: std::collections::VecDeque<FrameCost>,
+    /// The same frames by part, for the median, p99 and hitches.
+    times: Vec<scrap::FrameTimes>,
+    paused: bool,
+    /// The game's systems as it last reported them, and when that was read.
+    game: Vec<(String, f32, f32)>,
+    game_read: Option<std::time::Instant>,
 }
 
 /// The parts' colours: the three accents of the gizmo and a neutral.
 fn part_colors() -> [scrap_ui::Color; 4] {
     [AXIS_Y, AXIS_Z, ACCENT, NEUTRAL_500]
+}
+
+/// Small numbers in the tables and over the chart.
+fn small() -> Style {
+    Style::default().text_size(11.0).text_color(MUTED).nowrap()
+}
+
+/// A table's word when it has no rows: wrapped, it may be long.
+fn note() -> Style {
+    Style::default()
+        .text_size(11.0)
+        .text_color(MUTED)
+        .full_width()
+        .padding_x(SPACE_1)
+}
+
+/// A table of the Profiler: its title and column heads, and a body for
+/// its rows. Returns the section, the title's text and the body.
+fn table(
+    ui: &mut Ui,
+    parent: NodeId,
+    name: &str,
+    title: &str,
+    heads: &[&str],
+) -> (NodeId, NodeId, NodeId) {
+    // As wide as its columns: a narrow panel wraps the tables instead.
+    let wide = NAME + 20.0 + heads.len() as f32 * (CELL + SPACE_2);
+    let section = ui.add(parent, Style::column().fill().min_width(wide).gap(2.0));
+    ui.set_name(section, format!("profiler {name}"));
+    let head = ui.add(
+        section,
+        Style::row()
+            .full_width()
+            .height(20.0)
+            .fixed()
+            .center_items()
+            .gap(SPACE_2),
+    );
+    let title = ui.add_text(head, caption().fill().min_width(NAME), title);
+    ui.set_name(title, format!("profiler {name} title"));
+    for h in heads {
+        let c = cell(ui, head, h);
+        ui.restyle(c, |_| caption());
+    }
+    let body = ui.add(section, Style::column().full_width().gap(1.0));
+    ui.set_name(body, format!("profiler {name} rows"));
+    (section, title, body)
+}
+
+/// A number, right-aligned in a column of its own.
+fn cell(ui: &mut Ui, row: NodeId, value: &str) -> NodeId {
+    let c = ui.add(row, Style::row().width(CELL).fixed().center_items());
+    spacer(ui, c);
+    ui.add_text(c, small().mono(), value)
+}
+
+/// A table's line: a swatch (or a gap where one would be), the name, and
+/// `cells` numbers.
+fn table_row(
+    ui: &mut Ui,
+    parent: NodeId,
+    swatch: Option<scrap_ui::Color>,
+    name: &str,
+    cells: usize,
+) -> (NodeId, Vec<NodeId>) {
+    let row = ui.add(
+        parent,
+        Style::row()
+            .full_width()
+            .height(20.0)
+            .fixed()
+            .padding_x(SPACE_1)
+            .gap(SPACE_2)
+            .center_items()
+            .radius(RADIUS_SM)
+            .hover(HOVER),
+    );
+    ui.add(
+        row,
+        Style::row()
+            .size(8.0, 8.0)
+            .fixed()
+            .radius(2.0)
+            .background(swatch.unwrap_or(scrap_ui::Color::TRANSPARENT)),
+    );
+    ui.add_text(row, text().fill().min_width(NAME).text_size(11.5), name);
+    let cells = (0..cells).map(|_| cell(ui, row, "")).collect();
+    (row, cells)
+}
+
+fn ms(v: f32) -> String {
+    format!("{v:.2}")
+}
+
+fn duration_ms(d: std::time::Duration) -> f32 {
+    d.as_secs_f32() * 1e3
+}
+
+/// The chart's top: 33 ms, doubled until all but the slowest few frames
+/// fit — one frame that built a pipeline should not flatten the rest; it
+/// is cut at the top, and pointing at it reads its number.
+fn chart_top(frames: &std::collections::VecDeque<FrameCost>) -> f32 {
+    let mut totals: Vec<f32> = frames.iter().map(FrameCost::total).collect();
+    totals.sort_by(f32::total_cmp);
+    let tall = totals
+        .get((totals.len() as f32 * 0.95) as usize)
+        .or(totals.last())
+        .copied()
+        .unwrap_or(0.0);
+    let mut top = BUDGETS[1];
+    while top < tall * 1.05 && top < 1000.0 {
+        top *= 2.0;
+    }
+    top
 }
 
 impl Profiler {
@@ -292,10 +449,7 @@ impl Profiler {
         );
         ui.set_name(root, "profiler");
         let legend = ui.add(root, Style::row().full_width().gap(SPACE_4).center_items());
-        for (label, color) in ["scene input", "render", "panels", "UI"]
-            .into_iter()
-            .zip(part_colors())
-        {
+        for (label, color) in PARTS.into_iter().zip(part_colors()) {
             let item = ui.add(legend, Style::row().gap(SPACE_1).center_items());
             ui.add(
                 item,
@@ -308,48 +462,153 @@ impl Profiler {
             );
         }
         spacer(ui, legend);
-        let summary = ui.add_text(
-            legend,
-            Style::default().text_size(11.0).text_color(MUTED).nowrap(),
-            "",
-        );
+        let summary = ui.add_text(legend, small(), "");
         ui.set_name(summary, "profiler summary");
-        let bars = ui.add(
+        let gpu = button(ui, legend, "profiler gpu", "GPU timing", false);
+        let pause = button(ui, legend, "profiler pause", "Pause", false);
+        let chart = ui.add(
             root,
-            Style::row()
+            Style::column()
                 .fill()
+                .min_height(60.0)
                 .full_width()
-                .gap(1.0)
                 .radius(RADIUS_SM)
                 .background(BG)
                 .clip(),
         );
+        ui.set_name(chart, "profiler chart");
+        let bars = ui.add(chart, Style::row().fill().full_width().gap(BAR_GAP));
         ui.set_name(bars, "profiler bars");
-        let _ = &bars;
+        let budgets = BUDGETS
+            .iter()
+            .map(|budget| {
+                let line = ui.add(
+                    chart,
+                    Style::row()
+                        .absolute(0.0, 0.0)
+                        .full_width()
+                        .height(1.0)
+                        .fixed()
+                        .background(DIVIDER),
+                );
+                let label = ui.add_text(
+                    chart,
+                    small()
+                        .absolute(SPACE_2, 0.0)
+                        .padding_x(SPACE_1)
+                        .radius(RADIUS_SM)
+                        .background(BG.alpha(80)),
+                    &format!("{budget:.1} ms · {:.0} fps", 1000.0 / budget),
+                );
+                (line, label)
+            })
+            .collect();
+        let detail = ui.add_text(root, small(), "");
+        ui.set_name(detail, "profiler detail");
+        let tables = ui.add(root, Style::row().full_width().wrap().gap(SPACE_6));
+        let (_, _, editor) = table(
+            ui,
+            tables,
+            "editor",
+            "EDITOR FRAME, MS",
+            &["median", "p99", "worst", "hitches"],
+        );
+        let colors = part_colors();
+        let mut part_cells = Vec::new();
+        for (i, name) in PARTS.into_iter().chain(["frame"]).enumerate() {
+            let (row, cells) = table_row(ui, editor, colors.get(i).copied(), name, 4);
+            ui.set_name(row, format!("profiler part {name}"));
+            part_cells.push(cells);
+        }
+        let (systems_section, systems_title, systems) = table(
+            ui,
+            tables,
+            "systems",
+            "GAME SYSTEMS, MS",
+            &["median", "worst"],
+        );
+        let systems_note = ui.add_text(systems_section, note(), "");
+        ui.set_name(systems_note, "profiler systems note");
+        let (passes_section, passes_title, passes) =
+            table(ui, tables, "passes", "GPU PASSES, MS", &["ms", "share"]);
+        let passes_note = ui.add_text(passes_section, note(), "");
+        ui.set_name(passes_note, "profiler passes note");
         Self {
             root,
+            chart,
             bars,
+            budgets,
             summary,
-            frames: Vec::new(),
+            detail,
+            pause,
+            gpu,
+            part_cells,
+            systems_title,
+            systems_note,
+            systems,
+            passes_title,
+            passes_note,
+            passes,
+            frames: std::collections::VecDeque::with_capacity(FRAMES),
+            times: (0..5).map(|_| scrap::FrameTimes::new(FRAMES)).collect(),
+            paused: false,
+            game: Vec::new(),
+            game_read: None,
         }
     }
 
+    /// Keep a frame's cost — unless paused, when the chart holds still to
+    /// be read.
     pub fn record(&mut self, cost: FrameCost) {
-        self.frames.push(cost);
-        if self.frames.len() > FRAMES {
-            self.frames.remove(0);
+        if self.paused {
+            return;
+        }
+        if self.frames.len() == FRAMES {
+            self.frames.pop_front();
+        }
+        self.frames.push_back(cost);
+        for (times, part) in self.times.iter_mut().zip(cost.parts()) {
+            times.record(std::time::Duration::from_secs_f32(part.max(0.0) / 1e3));
         }
     }
 
-    /// Draw the bars: taller is slower, 33 ms is the top.
-    pub fn update(&mut self, ui: &mut Ui) {
+    /// Draw it all: the bars (taller is slower, the budgets as lines), the
+    /// frame under the pointer, and the three tables.
+    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        let summary = self.times[4].summary();
+        self.chart(ui, summary.map(|s| duration_ms(s.median)));
+        self.editor_table(ui);
+        match summary {
+            Some(s) => ui.set_text(
+                self.summary,
+                &format!(
+                    "median {:.1} ms · p99 {:.1} · worst {:.1} · {} hitches / {} frames",
+                    duration_ms(s.median),
+                    duration_ms(s.p99),
+                    duration_ms(s.worst),
+                    s.hitches,
+                    s.frames
+                ),
+            ),
+            None => ui.set_text(self.summary, ""),
+        }
+        self.systems_table(ui, session);
+        self.passes_table(ui, session);
+        set_button_primary(ui, self.pause, self.paused);
+        set_button_primary(ui, self.gpu, session.profiling_gpu());
+        if let Some(label) = ui.children(self.pause).first().copied() {
+            ui.set_text(label, if self.paused { "Resume" } else { "Pause" });
+        }
+    }
+
+    fn chart(&mut self, ui: &mut Ui, median: Option<f32>) {
         let keys: Vec<usize> = (0..self.frames.len()).collect();
         let colors = part_colors();
         ui.sync_children(
             self.bars,
             &keys,
             |ui, bars, _| {
-                let bar = ui.add(bars, Style::column().width(4.0).full_height().fixed());
+                let bar = ui.add(bars, Style::column().width(BAR).full_height().fixed());
                 ui.add(bar, Style::row().fill());
                 for c in colors {
                     ui.add(
@@ -361,9 +620,28 @@ impl Profiler {
             },
             |_, _, _| {},
         );
-        let height = ui.rect(self.bars).height.max(1.0);
-        let scale = height / 33.0;
-        for (bar, cost) in ui.children(self.bars).into_iter().zip(self.frames.clone()) {
+        let area = ui.rect(self.bars);
+        let height = area.height.max(1.0);
+        let top = chart_top(&self.frames);
+        let scale = height / top;
+        // The frame under the pointer, if it is over the chart.
+        let (px, py) = ui.pointer();
+        let chart = ui.rect(self.chart);
+        let over = (px >= chart.x
+            && px < chart.x + chart.width
+            && py >= chart.y
+            && py < chart.y + chart.height)
+            .then(|| ((px - area.x) / (BAR + BAR_GAP)).floor())
+            .filter(|i| *i >= 0.0)
+            .map(|i| i as usize)
+            .filter(|i| *i < self.frames.len());
+        let hitch = median.map_or(f32::INFINITY, |m| m * 2.0);
+        for (i, (bar, cost)) in ui
+            .children(self.bars)
+            .into_iter()
+            .zip(self.frames.iter().copied())
+            .enumerate()
+        {
             let kids = ui.children(bar);
             // Top to bottom as the legend reads.
             for (node, ms) in kids[1..]
@@ -373,24 +651,196 @@ impl Profiler {
                 let h = (ms * scale).min(height);
                 ui.restyle(*node, |s| s.height(h));
             }
+            // A hitch — longer than twice the median — is what a person
+            // feels: tinted, so the eye finds it.
+            let ground = if over == Some(i) {
+                TEXT.alpha(20)
+            } else if cost.total() > hitch {
+                ERROR.alpha(28)
+            } else {
+                scrap_ui::Color::TRANSPARENT
+            };
+            ui.restyle(bar, |s| s.background(ground));
         }
-        if !self.frames.is_empty() {
-            let mut totals: Vec<f32> = self.frames.iter().map(FrameCost::total).collect();
-            totals.sort_by(|a, b| a.total_cmp(b));
-            let median = totals[totals.len() / 2];
-            let worst = *totals.last().unwrap();
-            ui.set_text(
-                self.summary,
-                &format!(
-                    "median {median:.1} ms · worst {worst:.1} ms · {} frames",
-                    totals.len()
-                ),
-            );
+        // A label a line too close to the next one's would overlap it: the
+        // lower budget goes unlabelled then.
+        let ys: Vec<f32> = BUDGETS
+            .iter()
+            .map(|b| (height - b * scale).max(0.0))
+            .collect();
+        for (i, (line, label)) in self.budgets.iter().enumerate() {
+            let y = ys[i];
+            let crowded = ys.get(i + 1).is_some_and(|next| y - next < 16.0);
+            ui.restyle(*line, |s| s.absolute(0.0, y));
+            ui.restyle(*label, |s| {
+                let s = s.absolute(SPACE_2, (y - 14.0).max(0.0));
+                if crowded {
+                    s.hidden()
+                } else {
+                    s.shown()
+                }
+            });
         }
+        let detail = match over.and_then(|i| Some((i, self.frames.get(i)?))) {
+            Some((i, cost)) => format!(
+                "{} frames ago: {:.2} ms — scene input {:.2} · render {:.2} · panels {:.2} · UI {:.2}",
+                self.frames.len() - 1 - i,
+                cost.total(),
+                cost.input,
+                cost.render,
+                cost.panels,
+                cost.ui
+            ),
+            None if self.paused => "Paused: point at a bar to read its frame.".to_string(),
+            None => format!("Top of the chart: {top:.0} ms. Point at a bar to read its frame."),
+        };
+        ui.set_text(self.detail, &detail);
+    }
+
+    fn editor_table(&mut self, ui: &mut Ui) {
+        for (cells, times) in self.part_cells.iter().zip(&self.times) {
+            let values = match times.summary() {
+                Some(s) => [
+                    ms(duration_ms(s.median)),
+                    ms(duration_ms(s.p99)),
+                    ms(duration_ms(s.worst)),
+                    s.hitches.to_string(),
+                ],
+                None => Default::default(),
+            };
+            for (cell, value) in cells.iter().zip(values) {
+                ui.set_text(*cell, &value);
+            }
+        }
+    }
+
+    /// What the game started from here says its systems cost, read from
+    /// its report every half a second.
+    fn systems_table(&mut self, ui: &mut Ui, session: &Session) {
+        if !session.is_game_running() {
+            self.game.clear();
+            self.game_read = None;
+        } else if !self.paused && self.game_read.is_none_or(|t| t.elapsed() >= GAME_EVERY) {
+            self.game_read = Some(std::time::Instant::now());
+            if let Some(systems) = session
+                .game_state()
+                .and_then(|s| s.diagnostics)
+                .map(|d| d.systems)
+            {
+                self.game = systems;
+            }
+        }
+        let note = if !session.is_game_running() {
+            "Run the game (Play ▸ Run Game) to see what its systems cost."
+        } else if self.game.is_empty() {
+            "Waiting for the game's first report…"
+        } else {
+            ""
+        };
+        ui.set_text(self.systems_note, note);
+        let total: f32 = self.game.iter().map(|(_, median, _)| median).sum();
+        ui.set_text(
+            self.systems_title,
+            &if self.game.is_empty() {
+                "GAME SYSTEMS, MS".to_string()
+            } else {
+                format!("GAME SYSTEMS · {total:.2}")
+            },
+        );
+        let names: Vec<String> = self.game.iter().map(|(n, _, _)| n.clone()).collect();
+        let game = &self.game;
+        let fill = |ui: &mut Ui, row: NodeId, name: &String| {
+            let Some((_, median, worst)) = game.iter().find(|(n, _, _)| n == name) else {
+                return;
+            };
+            let cells: Vec<NodeId> = ui
+                .children(row)
+                .into_iter()
+                .skip(2)
+                .filter_map(|c| ui.children(c).get(1).copied())
+                .collect();
+            for (cell, v) in cells.into_iter().zip([median, worst]) {
+                ui.set_text(cell, &ms(*v));
+            }
+        };
+        ui.sync_children(
+            self.systems,
+            &names,
+            |ui, parent, name| {
+                let (row, _) = table_row(ui, parent, None, name, 2);
+                ui.set_name(row, format!("profiler system {name}"));
+                fill(ui, row, name);
+                row
+            },
+            |ui, row, name| fill(ui, row, name),
+        );
+    }
+
+    /// Each pass of the Scene view on the GPU, while timing is on.
+    fn passes_table(&mut self, ui: &mut Ui, session: &Session) {
+        let on = session.profiling_gpu();
+        let passes = if on { session.gpu_times() } else { Vec::new() };
+        let note = if !on {
+            "Off. GPU timing reads back a query set each frame; turn it on above."
+        } else if passes.is_empty() {
+            "Waiting for the GPU — or this device has no timestamps."
+        } else {
+            ""
+        };
+        ui.set_text(self.passes_note, note);
+        let total: f32 = passes.iter().map(|(_, t)| t).sum();
+        ui.set_text(
+            self.passes_title,
+            &if passes.is_empty() {
+                "GPU PASSES, MS".to_string()
+            } else {
+                format!("GPU PASSES · {total:.2}")
+            },
+        );
+        let names: Vec<String> = passes.iter().map(|(n, _)| n.clone()).collect();
+        let fill = |ui: &mut Ui, row: NodeId, name: &String| {
+            let Some((_, t)) = passes.iter().find(|(n, _)| n == name) else {
+                return;
+            };
+            let cells: Vec<NodeId> = ui
+                .children(row)
+                .into_iter()
+                .skip(2)
+                .filter_map(|c| ui.children(c).get(1).copied())
+                .collect();
+            let share = if total > 0.0 { t / total * 100.0 } else { 0.0 };
+            for (cell, v) in cells.into_iter().zip([ms(*t), format!("{share:.0}%")]) {
+                ui.set_text(cell, &v);
+            }
+        };
+        ui.sync_children(
+            self.passes,
+            &names,
+            |ui, parent, name| {
+                let (row, _) = table_row(ui, parent, None, name, 2);
+                ui.set_name(row, format!("profiler pass {name}"));
+                fill(ui, row, name);
+                row
+            },
+            |ui, row, name| fill(ui, row, name),
+        );
     }
 
     pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
         ancestor(ui, node, self.root)
+    }
+
+    pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
+        let Event::Click { .. } = event else { return };
+        if node == self.pause {
+            self.paused = !self.paused;
+        } else if node == self.gpu {
+            let on = !session.profiling_gpu();
+            session.profile_gpu(on);
+        } else {
+            return;
+        }
+        self.update(ui, session);
     }
 }
 

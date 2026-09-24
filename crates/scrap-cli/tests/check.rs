@@ -520,3 +520,36 @@ fn the_modules_scrap_ron_lists_and_what_cargo_builds_are_held_together() {
     assert_eq!(features, ["desktop-shell", "physics"]);
     assert!(errors(&check(&project)).is_empty());
 }
+
+#[test]
+fn a_tuning_record_that_does_not_fit_the_game_s_type_is_found() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Enemy {
+        hp: u32,
+        #[serde(default)]
+        speed: f32,
+    }
+    let project = project("tuning-records");
+    let mut components = scrap::Components::new();
+    components.register_tuning::<std::collections::BTreeMap<String, Enemy>>("enemies");
+    components
+        .write_shapes(project.root().join(scrap::project::SHAPES))
+        .unwrap();
+    let file = project.root().join("tuning/enemies.ron");
+    write(
+        &file,
+        r#"{ "goblin": (hp: 10, speed: 2.5), "orc": (hp: 30) }"#,
+    );
+    assert!(errors(&check(&project)).is_empty(), "the records fit");
+    write(
+        &file,
+        r#"{ "goblin": (hp: 10, sped: 2.5), "orc": (hp: "lots") }"#,
+    );
+    let found = errors(&check(&project));
+    let typo = one_containing(&found, "record `goblin`");
+    assert!(typo.contains("tuning/enemies.ron"), "{typo}");
+    assert!(typo.contains("did you mean `speed`?"), "{typo}");
+    let wrong = one_containing(&found, "record `orc`");
+    assert!(wrong.contains("whole number"), "{wrong}");
+}

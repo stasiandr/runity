@@ -26,7 +26,7 @@ impl Default for Floats {
 }
 
 scrap_core::impl_parts! {
-    Floats => "floats";
+    Floats => "floats", fractions ["share"];
 }
 
 /// How a line floats, read off it.

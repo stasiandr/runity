@@ -39,8 +39,13 @@ pub trait Part: Serialize + DeserializeOwned {
     where
         Self: Sized,
     {
-        crate::shape::of_field::<Self>(Self::NAME)
+        crate::shape::with_fractions(crate::shape::of_field::<Self>(Self::NAME), Self::FRACTIONS)
     }
+
+    /// Its numbers that go from 0 to 1, as paths into the value — `rain`,
+    /// `bloom.scatter` ([`crate::shape::with_fractions`]): an editor draws
+    /// each as a slider.
+    const FRACTIONS: &'static [&'static str] = &[];
 }
 
 /// A field some module of this build reads: its name, and how to tell
@@ -222,21 +227,25 @@ pub fn to_text<T: Serialize>(value: &T) -> String {
 }
 
 /// Declare a module's fields: each type, the name it has on a line, and —
-/// optionally — which value is what an absent field means. Also gives the
-/// module `pub fn part_kinds()`, its fields for `check`.
+/// optionally — which value is what an absent field means, what its value
+/// looks like when a trace cannot tell, and which of its numbers go from
+/// 0 to 1. Also gives the module `pub fn part_kinds()`, its fields for
+/// `check`.
 ///
 /// ```ignore
 /// impl_parts! {
 ///     Body => "body", default if |b| *b == Body::None;
 ///     Light => "light";
+///     Weather => "weather", fractions ["rain", "wetness"];
 /// }
 /// ```
 #[macro_export]
 macro_rules! impl_parts {
-    ($($ty:ty => $name:literal $(, default if $default:expr)? $(, shape $shape:expr)?;)*) => {
+    ($($ty:ty => $name:literal $(, default if $default:expr)? $(, shape $shape:expr)? $(, fractions [$($fraction:literal),* $(,)?])?;)*) => {
         $(
             impl $crate::parts::Part for $ty {
                 const NAME: &'static str = $name;
+                $(const FRACTIONS: &'static [&'static str] = &[$($fraction),*];)?
                 $(fn is_default(&self) -> bool {
                     let check: fn(&Self) -> bool = $default;
                     check(self)

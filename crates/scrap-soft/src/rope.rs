@@ -102,7 +102,7 @@ impl Default for Rope {
 }
 
 scrap_core::impl_parts! {
-    Rope => "rope";
+    Rope => "rope", fractions ["stiffness"];
 }
 
 /// The rope of a line, read off it.

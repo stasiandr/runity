@@ -202,9 +202,38 @@ pub fn check(project: &Project) -> Vec<Finding> {
         ));
     }
 
-    for path in files(&project.root().join(scrap::project::TUNING), "ron") {
+    // The numbers are RON, and fit what the game reads them as when it
+    // has said (library/tuning.ron): a misspelt field of one record is
+    // named with the record and the nearest field there is.
+    let tuning = project.root().join(scrap::project::TUNING);
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
+        std::fs::read_to_string(project.root().join(scrap::project::TUNING_SHAPES))
+            .ok()
+            .and_then(|text| ron::from_str(&text).ok())
+            .unwrap_or_default();
+    for path in files(&tuning, "ron") {
         let file = relative(project, &path);
-        let _: Option<ron::Value> = parse(&path, &file, &mut out);
+        let Some(_) = parse::<ron::Value>(&path, &file, &mut out) else {
+            continue;
+        };
+        let name = path
+            .strip_prefix(&tuning)
+            .unwrap_or(&path)
+            .with_extension("")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let (Some(shape), Ok(text)) = (shapes.get(&name), std::fs::read_to_string(&path)) else {
+            continue;
+        };
+        for (record, problem) in scrap::records::problems(Some(shape), &text) {
+            out.push(error(
+                &file,
+                match record {
+                    Some(record) => format!("record `{record}`: {problem}"),
+                    None => problem,
+                },
+            ));
+        }
     }
 
     // The modules scrap.ron lists hold together, and Cargo.toml builds

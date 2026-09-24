@@ -88,7 +88,7 @@ impl Default for Cloth {
 }
 
 scrap_core::impl_parts! {
-    Cloth => "cloth";
+    Cloth => "cloth", fractions ["stiffness"];
 }
 
 /// The cloth of a line, read off it.

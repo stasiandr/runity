@@ -86,7 +86,7 @@ impl Default for Ragdoll {
 }
 
 scrap_core::impl_parts! {
-    Ragdoll => "ragdoll";
+    Ragdoll => "ragdoll", fractions ["strength"];
 }
 
 /// The ragdoll of a line, read off it.

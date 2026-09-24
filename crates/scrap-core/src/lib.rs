@@ -43,6 +43,7 @@ pub mod player_loop;
 pub mod player_prefs;
 pub mod prefab;
 pub mod project;
+pub mod records;
 pub mod ron_edit;
 #[doc(hidden)]
 pub mod ron_text;

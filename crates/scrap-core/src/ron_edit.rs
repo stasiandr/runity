@@ -19,7 +19,7 @@ pub struct Items {
 }
 
 /// Skip a string starting at `i` (on its `"`): the index after it.
-fn skip_string(b: &[u8], mut i: usize) -> usize {
+pub(crate) fn skip_string(b: &[u8], mut i: usize) -> usize {
     i += 1;
     while i < b.len() && b[i] != b'"' {
         i += if b[i] == b'\\' { 2 } else { 1 };
@@ -28,7 +28,7 @@ fn skip_string(b: &[u8], mut i: usize) -> usize {
 }
 
 /// Skip a comment starting at `i`, if one does: the index after it.
-fn skip_comment(text: &str, i: usize) -> Option<usize> {
+pub(crate) fn skip_comment(text: &str, i: usize) -> Option<usize> {
     let b = text.as_bytes();
     match (b.get(i), b.get(i + 1)) {
         (Some(b'/'), Some(b'/')) => Some(text[i..].find('\n').map_or(b.len(), |n| i + n)),
