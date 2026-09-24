@@ -21,6 +21,10 @@ const RECT_TRANSFORM: u32 = 224;
 const PREFAB_INSTANCE: u32 = 1001;
 /// The fileID Unity gives a model's root GameObject, in every model.
 const MODEL_ROOT: i64 = 919132149155446097;
+/// And its root's Transform: what a placed model's move, turn and scale
+/// name. Any other of a model's transforms is a node inside it, which a
+/// model brought over whole has no part for.
+const MODEL_ROOT_TRANSFORM: i64 = -8679921383154817045;
 
 /// An entity's ID from a Unity fileID: the same object, the same ID, every
 /// time the file is imported (docs/unity-import.md).
@@ -728,6 +732,7 @@ impl Parts {
         if unity.named(guid).is_some_and(|(kind, _)| kind == "model") {
             let root = entity_id(MODEL_ROOT);
             out.keys.insert(MODEL_ROOT, root);
+            out.keys.insert(MODEL_ROOT_TRANSFORM, root);
             out.root = Some(root);
         }
         let text = unity
@@ -932,12 +937,14 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
                 desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                    let model = piece(refs.unity, model, &desc.name);
                     desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
                 }
             }
@@ -1297,6 +1304,28 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
     (kind == "model").then(|| name.to_string())
 }
 
+/// Which mesh of a model a renderer on `object` draws, in that object's
+/// frame: the piece named as the object is (Unity's "(1)" copies aside),
+/// or a model's only piece. The whole model, in its root's frame, when it
+/// cannot tell — or has no pieces converted.
+fn piece(unity: &Unity, model: String, object: &str) -> String {
+    let Some(pieces) = unity.pieces.get(&model) else {
+        return model;
+    };
+    let bare = object.trim_end_matches(|c: char| c == ')' || c.is_ascii_digit());
+    let bare = bare.strip_suffix(" (").unwrap_or(object).trim();
+    for name in [object, bare] {
+        let wanted = super::piece_name(name);
+        if pieces.iter().any(|p| *p == wanted) {
+            return format!("{model}@{wanted}");
+        }
+    }
+    match pieces.as_slice() {
+        [only] => format!("{model}@{only}"),
+        _ => model,
+    }
+}
+
 /// Fields a MonoBehaviour's document has that are Unity's, not the game's.
 const UNITY_FIELDS: [&str; 10] = [
     "m_ObjectHideFlags",
@@ -1569,6 +1598,7 @@ mod tests {
 
     fn unity() -> Unity {
         Unity {
+            pieces: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
@@ -1763,6 +1793,18 @@ ParticleSystemRenderer:
         assert_eq!(items[0]["count"].as_i64(), Some(4));
         assert_eq!(yaml::number(&body["rideSeconds"]), Some(12.5));
         assert_eq!(body["volume"]["fileID"].as_i64(), Some(9));
+    }
+
+    #[test]
+    fn a_renderer_draws_the_piece_of_a_model_named_as_its_object() {
+        let mut unity = unity();
+        unity.pieces.insert("level".into(), vec!["Sand".into(), "Rock_2".into()]);
+        unity.pieces.insert("sheet".into(), vec!["Cube_054".into()]);
+        assert_eq!(piece(&unity, "level".into(), "Sand (3)"), "level@Sand");
+        assert_eq!(piece(&unity, "level".into(), "Rock.2"), "level@Rock_2");
+        assert_eq!(piece(&unity, "level".into(), "Tree"), "level", "not one of its pieces: the whole");
+        assert_eq!(piece(&unity, "sheet".into(), "SM_Sheet_01 (7)"), "sheet@Cube_054", "its only piece");
+        assert_eq!(piece(&unity, "crate".into(), "Crate"), "crate", "no pieces converted");
     }
 
     #[test]
