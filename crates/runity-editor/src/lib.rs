@@ -36,6 +36,7 @@ pub mod prefs;
 mod scene_view;
 mod surface;
 mod thumbnail;
+pub use thumbnail::MATERIAL_PICTURE;
 mod views;
 mod visibility;
 

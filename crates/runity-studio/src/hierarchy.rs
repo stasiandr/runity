@@ -9,7 +9,7 @@
 //! the Scene view's clicks off it, a line dropped on another becomes its
 //! child, a right click opens the context menu, F2 renames.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use runity::EntityId;
 use runity_editor::panels::Row;
@@ -56,6 +56,10 @@ pub struct Hierarchy {
     anchor: Option<EntityId>,
     /// The accent line that shows where a dragged line will land.
     indicator: NodeId,
+    /// Entities not as the last commit has them: a dot at their line's end.
+    marks: HashSet<EntityId>,
+    /// The line under the pointer: its eye and lock show.
+    hovered: Option<EntityId>,
 }
 
 /// Where a dragged line lands, relative to the line under the pointer.
@@ -126,6 +130,8 @@ impl Hierarchy {
             parts: HashMap::new(),
             renaming: None,
             followed: None,
+            marks: HashSet::new(),
+            hovered: None,
         }
     }
 
@@ -192,6 +198,8 @@ impl Hierarchy {
             let same = before.get(&row.id).is_some_and(|b| *b == row) && renaming.is_none();
             if !same {
                 update_line(ui, line, row, renaming);
+                show_tools(ui, line, row, self.hovered == Some(row.id));
+                show_mark(ui, line, self.marks.contains(&row.id));
             }
         }
         if let Some((id, field)) = renaming {
@@ -207,6 +215,45 @@ impl Hierarchy {
                 ui.scroll_to(self.list, line);
             }
         }
+    }
+
+    /// Mark the lines of entities not as committed, and unmark the rest.
+    pub fn set_marks(&mut self, ui: &mut Ui, marks: &HashSet<EntityId>) {
+        if *marks == self.marks {
+            return;
+        }
+        for (id, line) in &self.lines {
+            let now = marks.contains(id);
+            if now != self.marks.contains(id) {
+                show_mark(ui, *line, now);
+            }
+        }
+        self.marks = marks.clone();
+    }
+
+    /// Show the eye and the lock of the line under the pointer, and put the
+    /// last one's away unless they are set: Unity's quiet Hierarchy, where
+    /// what is hidden or locked stands out because nothing else shows.
+    pub fn hover(&mut self, ui: &mut Ui) {
+        let mut at = ui.hovered();
+        let mut over = None;
+        while let Some(node) = at {
+            if let Some(Part::Line(id)) = self.parts.get(&node) {
+                over = Some(*id);
+                break;
+            }
+            at = ui.parent(node);
+        }
+        if over == self.hovered {
+            return;
+        }
+        for (id, on) in [(self.hovered, false), (over, true)] {
+            let Some(id) = id else { continue };
+            if let (Some(line), Some(row)) = (self.line_of(id), self.row(id).cloned()) {
+                show_tools(ui, line, &row, on);
+            }
+        }
+        self.hovered = over;
     }
 
     /// Start renaming a line: its label becomes a field.
@@ -629,6 +676,7 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
     ui.add(line, Style::row().fixed());
     // 4: eye and lock, shown on hover or when set
     let tools = ui.add(line, Style::row().fixed().center_items());
+    // 5: the dot of what is not committed, after them
     for glyph in ["eye", "lock-open"] {
         let b = ui.add(
             tools,
@@ -640,7 +688,37 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
         );
         icon(ui, b, glyph, TEXT.alpha(30));
     }
+    let dot = ui.add(
+        line,
+        Style::row()
+            .size(6.0, 6.0)
+            .fixed()
+            .radius(3.0)
+            .background(ACCENT_400)
+            .opacity(0.0),
+    );
+    ui.set_name(dot, format!("mark {}", row.name));
     line
+}
+
+/// The eye and the lock of a line: each shown when it is set — hidden,
+/// locked — or while the pointer is on the line; the rest of the time
+/// nothing, so the lines that are hidden or locked are the ones that show.
+fn show_tools(ui: &mut Ui, line: NodeId, row: &Row, hovered: bool) {
+    let kids = ui.children(line);
+    let tools = ui.children(kids[4]);
+    let eye = hovered || row.hidden;
+    let lock = hovered || row.locked;
+    ui.restyle(tools[0], |s| s.opacity(if eye { 1.0 } else { 0.0 }));
+    ui.restyle(tools[1], |s| s.opacity(if lock { 1.0 } else { 0.0 }));
+}
+
+/// The dot at a line's end: its entity is not as the last commit has it.
+fn show_mark(ui: &mut Ui, line: NodeId, marked: bool) {
+    let kids = ui.children(line);
+    if let Some(dot) = kids.get(5) {
+        ui.restyle(*dot, |s| s.opacity(if marked { 1.0 } else { 0.0 }));
+    }
 }
 
 fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId, NodeId)>) {
@@ -728,7 +806,7 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
         (None, true) => ui.clear(slot),
         _ => {}
     }
-    // Eye and lock: faint unless set.
+    // Eye and lock: strong when set, faint while only hovered.
     let tools = ui.children(kids[4]);
     let eye = ui.children(tools[0])[0];
     let lock = ui.children(tools[1])[0];
@@ -736,6 +814,9 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
     ui.restyle(eye, |s| {
         s.text_color(if row.hidden { LABEL } else { TEXT.alpha(22) })
     });
+    if let Some(dot) = kids.get(5) {
+        ui.set_name(*dot, format!("mark {}", row.name));
+    }
     ui.set_icon(lock, if row.locked { "lock" } else { "lock-open" });
     ui.restyle(lock, |s| {
         s.text_color(if row.locked { LABEL } else { TEXT.alpha(22) })

@@ -25,6 +25,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
     let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
     let mut renderer = studio.renderer(target.format());
+    for what in ["builtin:cube", "material:bark", "builtin:sphere"] {
+        let t = Instant::now();
+        let ok = studio.session.thumbnail(what, 128).is_ok();
+        println!("thumbnail {what}: {:.1} ms ({ok})", t.elapsed().as_secs_f64() * 1e3);
+    }
+    let t = Instant::now();
+    let ok = studio.session.scene_thumbnail(&scene, 128, 128).is_ok();
+    println!("scene thumbnail: {:.1} ms ({ok})", t.elapsed().as_secs_f64() * 1e3);
     let presets = [None, Some(Quality::High), Some(Quality::Medium), Some(Quality::Low)];
     for preset in presets {
         studio.session.set_quality(preset);

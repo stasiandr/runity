@@ -75,6 +75,11 @@ pub struct Bottom {
     kind: &'static str,
     grid: NodeId,
     entries: HashMap<NodeId, Asset>,
+    /// Each tile's files, absolute: the asset's own and, for a model, its
+    /// import settings beside it.
+    tile_files: HashMap<NodeId, Vec<PathBuf>>,
+    /// Files not as committed (see `git_marks`): their tiles get a dot.
+    marks: std::collections::HashSet<PathBuf>,
     // Console
     counts: [NodeId; 3],
     filters: [NodeId; 3],
@@ -170,7 +175,8 @@ impl Bottom {
         ui.set_name(search, "project search");
         ui.set_placeholder(search, "Search assets");
         spacer(ui, bar);
-        let big_toggle = crate::theme::icon_button(ui, bar, "project pictures", "image", false);
+        // Pictures by default, as Unity's Project shows its assets.
+        let big_toggle = crate::theme::icon_button(ui, bar, "project pictures", "image", true);
         // What kind to show: Unity's type filter.
         let kinds = ui.add(
             bar,
@@ -266,12 +272,14 @@ impl Bottom {
             search,
             kind_chips,
             kind: "All",
-            big: false,
+            big: true,
             big_toggle,
             thumbs: HashMap::new(),
             next_image: 1000,
             grid,
             entries: HashMap::new(),
+            tile_files: HashMap::new(),
+            marks: Default::default(),
             counts,
             filters,
             clear,
@@ -316,6 +324,23 @@ impl Bottom {
                         ui.restyle(child, |s| s.hidden());
                     }
                 }
+            }
+        }
+    }
+
+    /// The files not as committed: their tiles show a dot.
+    pub fn set_marks(&mut self, ui: &mut Ui, marks: std::collections::HashSet<PathBuf>) {
+        if marks != self.marks {
+            self.marks = marks;
+            self.show_marks(ui);
+        }
+    }
+
+    fn show_marks(&self, ui: &mut Ui) {
+        for (tile, files) in &self.tile_files {
+            let on = files.iter().any(|f| self.marks.contains(f));
+            if let Some(dot) = ui.children(*tile).last().copied() {
+                ui.restyle(dot, |s| s.opacity(if on { 1.0 } else { 0.0 }));
             }
         }
     }
@@ -456,6 +481,7 @@ impl Bottom {
                     ui.set_name(tile, format!("asset {}", asset.label()));
                     icon(ui, tile, asset.icon(), tint);
                     ui.add_text(tile, text().fill(), &asset.label());
+                    mark_dot(ui, tile, &asset.label(), 158.0, 10.0);
                     return tile;
                 }
                 // A card: the picture, the name under it.
@@ -483,11 +509,10 @@ impl Bottom {
                         .radius(RADIUS_SM)
                         .background(BG),
                 );
-                // Models and prefabs get their picture (drawn a few a frame,
-                // see Bottom::wanted_pictures); until then, and for the rest,
-                // their icon.
+                // Everything but a sound gets its picture (drawn a few a
+                // frame, see Bottom::wanted_pictures); until then, its icon.
                 let mut drawn = false;
-                if let Asset::Model(name, _) | Asset::Prefab(name) = asset {
+                if let Some(name) = picture_key(asset) {
                     let (id, ready) = *thumbs.entry(name.clone()).or_insert_with(|| {
                         *next_image += 1;
                         (ImageId(*next_image), false)
@@ -520,12 +545,28 @@ impl Bottom {
                         .max_width(84.0),
                     &asset.label(),
                 );
+                mark_dot(ui, tile, &asset.label(), 80.0, 6.0);
                 tile
             },
             |_, _, _| {},
         );
         self.entries.clear();
+        self.tile_files.clear();
+        let root = session.project().map(|p| p.root().to_path_buf());
         for (tile, asset) in ui.children(self.grid).into_iter().zip(assets) {
+            if let (Some(root), Some(file)) = (&root, asset_file(&asset, session)) {
+                let file = root.join(file);
+                let mut files = vec![file.with_extension(format!(
+                    "{}.rimport",
+                    file.extension().map(|e| e.to_string_lossy()).unwrap_or_default()
+                ))];
+                files.insert(0, file);
+                let files = files
+                    .into_iter()
+                    .map(|f| f.canonicalize().unwrap_or(f))
+                    .collect();
+                self.tile_files.insert(tile, files);
+            }
             let current = matches!(&asset, Asset::Scene(p) if Some(p) == open.as_ref());
             ui.restyle(tile, |s| {
                 if current {
@@ -537,6 +578,7 @@ impl Bottom {
             });
             self.entries.insert(tile, asset);
         }
+        self.show_marks(ui);
 
         for (chip, kind) in &self.kind_chips {
             let on = *kind == self.kind;
@@ -1066,3 +1108,33 @@ fn asset_menu(asset: &Asset, session: &Session) -> Vec<crate::menu::MenuItem> {
     }
     items
 }
+
+/// The dot on a tile whose file is not as committed, in its corner: out of
+/// the tile's flow, shown by [`Bottom::show_marks`].
+fn mark_dot(ui: &mut Ui, tile: NodeId, label: &str, x: f32, y: f32) {
+    let dot = ui.add(
+        tile,
+        Style::row()
+            .absolute(x, y)
+            .size(6.0, 6.0)
+            .radius(3.0)
+            .background(ACCENT_400)
+            .opacity(0.0),
+    );
+    ui.set_name(dot, format!("asset mark {label}"));
+}
+
+/// What a Project entry's picture is asked for by: the model's or prefab's
+/// name, a material's with `Session::thumbnail`'s prefix, a scene's path
+/// after `scene:`. A sound has none.
+fn picture_key(asset: &Asset) -> Option<String> {
+    match asset {
+        Asset::Model(name, _) | Asset::Prefab(name) => Some(name.clone()),
+        Asset::Material(name) => Some(format!("{}{name}", runity_editor::MATERIAL_PICTURE)),
+        Asset::Scene(path) => Some(format!("{SCENE_PICTURE}{}", path.display())),
+        Asset::Sound(..) => None,
+    }
+}
+
+/// Before a scene's path in a picture's name.
+pub const SCENE_PICTURE: &str = "scene:";

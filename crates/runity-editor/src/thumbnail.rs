@@ -10,6 +10,10 @@ use runity::{EntityDesc, OffscreenTarget, Scene};
 
 use crate::{EditError, EditResult, Session};
 
+/// What [`Session::thumbnail`] takes before a material's name, for its
+/// picture on a ball: `material:bark`.
+pub const MATERIAL_PICTURE: &str = "material:";
+
 impl Session {
     /// A `size`-pixel square picture, RGBA, of a prefab or a model by the
     /// name scenes use (`campfire`, `builtin:cone`, `rock`), alone on a
@@ -21,7 +25,16 @@ impl Session {
             name: what.to_string(),
             ..Default::default()
         };
-        if self.prefabs.get(what).is_some() {
+        if let Some(material) = what.strip_prefix(MATERIAL_PICTURE) {
+            // A material on a ball, as Unity previews one.
+            if !self.palette().iter().any(|(n, _)| n == material) {
+                return Err(EditError::Scene(format!(
+                    "no material named `{material}` to picture"
+                )));
+            }
+            line.set_part(&runity::scene::ModelRef("builtin:sphere".into()));
+            line.set_part(&runity::scene::MaterialRef::Named(material.into()));
+        } else if self.prefabs.get(what).is_some() {
             line.prefab = what.into();
         } else if self.bounds_of(what).is_some() {
             line.set_part(&runity::scene::ModelRef(what.into()));
@@ -95,6 +108,7 @@ impl Session {
             |link| library?.material_link(link),
         );
         runity::world::apply_hierarchy(&mut world);
+        let _ = runity::world::upload_material_maps(&world, library, gpu, renderer);
         let backdrop = Vec3::new(0.32, 0.33, 0.36);
         let mut frame = runity::build_frame(
             &world,
@@ -113,6 +127,71 @@ impl Session {
         // glow bleeding from the asset onto its backdrop.
         frame.post.bloom.intensity = 0.0;
         let target = OffscreenTarget::new(&self.gpu, size, size);
+        self.renderer.render(&self.gpu, &target, &frame);
+        Ok(target.read_rgba(&self.gpu))
+    }
+}
+
+impl Session {
+    /// A `width` × `height` picture, RGBA, of the scene in `path` as its
+    /// own view looks at it, lit and fogged as it asks: the Project's
+    /// picture of a scene. The open document and the view do not change.
+    pub fn scene_thumbnail(
+        &mut self,
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+    ) -> EditResult<Vec<u8>> {
+        let (width, height) = (width.clamp(16, 1024), height.clamp(16, 1024));
+        let mut scene = crate::load_document(path)?;
+        runity::refs::settle(&mut scene.entities, self.library.as_ref(), &self.prefabs);
+        let expanded = runity::instantiate(&scene, &self.prefabs).scene;
+        let mut world = hecs::World::new();
+        let renderer = &mut self.renderer;
+        let gpu = &self.gpu;
+        let library = self.library.as_ref();
+        let uploaded = &mut self.uploaded;
+        runity::spawn_scene_with(
+            &expanded,
+            &mut world,
+            |name| {
+                if let Some(found) = uploaded.iter().find(|(n, _)| **n == **name) {
+                    return Some(found.1);
+                }
+                let handle = if let Some(mesh) = runity::builtin::by_name(name) {
+                    renderer.upload_mesh_owned(gpu, &mesh)
+                } else {
+                    renderer.upload_mesh(gpu, library?.mesh_by_name(name)?)
+                };
+                uploaded.push((name.to_string(), handle));
+                Some(handle)
+            },
+            |link| library?.material_link(link),
+        );
+        runity::world::apply_hierarchy(&mut world);
+        let _ = runity::world::upload_material_maps(&world, library, gpu, renderer);
+        let camera = runity::scene_camera(&scene.view());
+        let mut frame = runity::render::Frame {
+            lighting: runity::scene_lighting(&scene.sun()),
+            fog: runity::scene_fog(&scene.fog()),
+            clear_color: Vec3::from_array(scene.fog().color),
+            sky: runity::render::Sky {
+                horizon: scene.fog().color,
+                ..Default::default()
+            },
+            ..runity::build_frame(
+                &world,
+                camera,
+                runity::render::Lighting::default(),
+                FogSettings::default(),
+            )
+        };
+        runity::world::scene_look(&mut frame, &scene);
+        // A still picture: nothing to smooth over frames, nothing to adapt.
+        frame.post.taa = false;
+        frame.post.fxaa = true;
+        frame.post.auto_exposure.enabled = false;
+        let target = OffscreenTarget::new(&self.gpu, width, height);
         self.renderer.render(&self.gpu, &target, &frame);
         Ok(target.read_rgba(&self.gpu))
     }

@@ -64,6 +64,16 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
+/// Frames, a little apart, until the Project has drawn its pictures: it
+/// draws them only once nothing has happened for a moment.
+fn draw_pictures(s: &mut Studio) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while s.bottom_pictures_pending() > 0 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.frame();
+    }
+}
+
 /// Click the node with this name, as a pointer would, and let a frame go.
 fn click(studio: &mut Studio, name: &str) {
     press(studio, name, MouseButton::Left);
@@ -355,9 +365,9 @@ fn snap_and_views_from_the_corner() {
     assert_eq!(s.session.snap().meters, 0.0);
     click(&mut s, "snap");
     assert_eq!(s.session.snap().meters, 0.25);
-    click(&mut s, "view top");
+    click(&mut s, "compass top");
     assert!(s.session.is_orthographic());
-    click(&mut s, "view persp");
+    click(&mut s, "compass middle");
     assert!(!s.session.is_orthographic());
 }
 
@@ -465,6 +475,9 @@ fn a_big_scene_stays_quick() {
     s.refresh();
     s.frame();
     let first = t.elapsed();
+    // What is measured is the editor at rest, not the Project's pictures
+    // being drawn once.
+    draw_pictures(&mut s);
     // Idle: nothing changed.
     let t = std::time::Instant::now();
     for _ in 0..10 {
@@ -1007,6 +1020,50 @@ fn the_hierarchy_collapses_and_expands_every_line_at_once() {
 }
 
 #[test]
+fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    // Line → [arrow, icon, name, tag, tools[eye, lock], dot].
+    let tools = |s: &Studio, name: &str| -> (f32, f32) {
+        let line = s.ui.find(name).unwrap();
+        let tools = s.ui.children(s.ui.children(line)[4]);
+        (
+            s.ui.style(tools[0]).look.opacity,
+            s.ui.style(tools[1]).look.opacity,
+        )
+    };
+    assert_eq!(tools(&s, "line crate"), (0.0, 0.0), "quiet");
+    let (x, y) = s.ui.rect(s.ui.find("line crate").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(tools(&s, "line crate"), (1.0, 1.0), "under the pointer");
+    assert_eq!(tools(&s, "line boulder"), (0.0, 0.0));
+    // Hidden: its eye stays when the pointer leaves.
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.set_hidden(&[crate_id], true).unwrap();
+    s.refresh();
+    let (x, y) = s.ui.rect(s.ui.find("line boulder").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(tools(&s, "line crate"), (1.0, 0.0), "the eye of what is hidden");
+}
+
+#[test]
+fn the_project_shows_pictures_of_scenes_and_materials_by_default() {
+    let Some((mut s, _dir)) = studio() else { return };
+    draw_pictures(&mut s);
+    s.ui.paint();
+    assert!(
+        s.ui.find("asset first-light").is_some() && s.bottom_pictures_pending() == 0,
+        "every picture drawn: {} left",
+        s.bottom_pictures_pending()
+    );
+    let scene = s.ui.dump();
+    assert!(scene.contains("thumb scene:"), "a scene's picture");
+    assert!(scene.contains("thumb material:"), "a material's picture");
+}
+
+#[test]
 fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
     let Some((mut s, _dir)) = studio() else {
         return;
@@ -1488,10 +1545,7 @@ fn the_project_shows_pictures_of_models_and_prefabs() {
         return;
     };
     click(&mut s, "kind Prefabs");
-    click(&mut s, "project pictures");
-    for _ in 0..4 {
-        s.frame();
-    }
+    draw_pictures(&mut s);
     assert!(
         s.ui.dump().contains("#thumb campfire"),
         "a card with a picture"

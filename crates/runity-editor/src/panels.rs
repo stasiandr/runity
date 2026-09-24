@@ -289,6 +289,31 @@ impl Session {
         }
     }
 
+    /// The entities of the open document that are not as `committed` has
+    /// them — the scene's text at git's `HEAD`, `None` when it was never
+    /// committed — with unsaved edits counted: the Hierarchy's dots. An
+    /// entity counts when anything of its own changed, or its parent; a
+    /// child that changed marks the child, not the line above it.
+    pub fn changed_since(&self, committed: Option<&str>) -> std::collections::HashSet<EntityId> {
+        let mut then: Option<runity::Scene> =
+            committed.and_then(|text| runity::ron::from_str(text).ok());
+        // Settled as the open document was (docs/refs.md): a link the file
+        // names without its ID is the same link, not a change.
+        if let Some(then) = &mut then {
+            runity::refs::settle(&mut then.entities, self.library.as_ref(), &self.prefabs);
+        }
+        let mut own = std::collections::HashMap::new();
+        if let Some(then) = &then {
+            own_lines(&then.entities, None, &mut own);
+        }
+        let mut now = std::collections::HashMap::new();
+        own_lines(&self.scene().entities, None, &mut now);
+        now.into_iter()
+            .filter(|(id, line)| own.get(id) != Some(line))
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     /// The Inspector for one entity: its fields as text.
     pub fn inspect(&self, id: EntityId) -> Option<Vec<Field>> {
         let desc = self.line(id)?;
@@ -1074,4 +1099,19 @@ fn find_desc(entities: &[EntityDesc], id: EntityId) -> Option<&EntityDesc> {
             find_desc(&e.children, id)
         }
     })
+}
+
+/// Each entity without its children, and the one it hangs under: what
+/// [`Session::changed_since`] compares.
+fn own_lines(
+    entities: &[EntityDesc],
+    parent: Option<EntityId>,
+    out: &mut std::collections::HashMap<EntityId, (EntityDesc, Option<EntityId>)>,
+) {
+    for e in entities {
+        let mut line = e.clone();
+        line.children = Vec::new();
+        out.insert(e.id, (line, parent));
+        own_lines(&e.children, Some(e.id), out);
+    }
 }

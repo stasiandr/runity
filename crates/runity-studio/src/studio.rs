@@ -314,6 +314,8 @@ pub struct Studio {
     polled: Instant,
     toolbar: Toolbar,
     hierarchy: Hierarchy,
+    /// What git has not got yet: the Hierarchy's and the Project's dots.
+    git: crate::git_marks::GitMarks,
     inspector: Inspector,
     bottom: Bottom,
     status: Status,
@@ -418,39 +420,6 @@ impl Studio {
         icon(&mut ui, aspect_button, "chevron-down", MUTED);
         spacer(&mut ui, view_tabs);
         let mut buttons = Vec::new();
-        for (name, label, action) in [
-            ("view persp", "Persp", Action::Perspective),
-            ("view top", "Top", Action::View(runity_editor::Side::Top)),
-            (
-                "view front",
-                "Front",
-                Action::View(runity_editor::Side::Front),
-            ),
-            (
-                "view right",
-                "Right",
-                Action::View(runity_editor::Side::Right),
-            ),
-        ] {
-            let b = ui.add(
-                view_tabs,
-                Style::row()
-                    .height(24.0)
-                    .padding_x(SPACE_2)
-                    .center()
-                    .radius(6.0)
-                    .hover(HOVER)
-                    .pressed(PRESSED),
-            );
-            ui.set_name(b, name);
-            ui.add_text(
-                b,
-                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
-                label,
-            );
-            buttons.push((b, action));
-        }
-        separator(&mut ui, view_tabs);
         let snap = icon_button(&mut ui, view_tabs, "snap", "magnet", false);
         buttons.push((snap, Action::ToggleSnap));
         let colliders = icon_button(&mut ui, view_tabs, "colliders", "box", false);
@@ -660,6 +629,7 @@ impl Studio {
             polled: Instant::now(),
             toolbar,
             hierarchy,
+            git: crate::git_marks::GitMarks::new(),
             inspector,
             bottom,
             status,
@@ -999,12 +969,30 @@ impl Studio {
         // a drag there moves here while it happens.
         self.session.poll_blender();
         self.bottom.update_git(&mut self.ui, &mut self.session);
-        // Two of the Project's pictures a frame, until it has them all.
-        for (name, image) in self.bottom.wanted_pictures(2) {
-            if let Ok(pixels) = self.session.thumbnail(&name, 128) {
-                self.pending_images.push((image, 128, pixels));
+        // The Project's pictures, in frames nobody is waiting on: none
+        // while the person is doing something or the document or the
+        // selection just changed, and a few milliseconds' worth at most —
+        // each is drawn and read back whole, and a click must not wait
+        // for a picture of a scene.
+        let calm = self.last_input.elapsed() > Duration::from_millis(250)
+            && self.seen.as_ref().is_some_and(|seen| *seen == Stamp::of(&self.session));
+        if calm {
+            let start = Instant::now();
+            for (name, image) in self.bottom.wanted_pictures(4) {
+                if start.elapsed() > Duration::from_millis(6) {
+                    break;
+                }
+                let pixels = match name.strip_prefix(crate::bottom::SCENE_PICTURE) {
+                    Some(path) => self
+                        .session
+                        .scene_thumbnail(std::path::Path::new(path), 128, 128),
+                    None => self.session.thumbnail(&name, 128),
+                };
+                if let Ok(pixels) = pixels {
+                    self.pending_images.push((image, 128, pixels));
+                }
+                self.bottom.picture_ready(&mut self.ui, &name);
             }
-            self.bottom.picture_ready(&mut self.ui, &name);
         }
         if let Some(job) = &self.job {
             if let Ok(result) = job.try_recv() {
@@ -1016,6 +1004,18 @@ impl Studio {
             }
         }
         self.update_tooltip();
+        self.hierarchy.hover(&mut self.ui);
+        if self.git.poll(&self.session) {
+            self.hierarchy.set_marks(&mut self.ui, &self.git.entities);
+            let mut files = self.git.files.clone();
+            // The open scene, edited and not saved, is not committed either.
+            if !self.git.entities.is_empty() {
+                if let Some(p) = self.session.scene_path().and_then(|p| p.canonicalize().ok()) {
+                    files.insert(p);
+                }
+            }
+            self.bottom.set_marks(&mut self.ui, files);
+        }
         self.turn_compass();
 
         let t4 = Instant::now();
@@ -1274,25 +1274,53 @@ impl Studio {
         let right = forward.cross(camera.up).normalize_or_zero();
         let up = right.cross(forward);
         let (c, reach) = (COMPASS / 2.0, COMPASS / 2.0 - 11.0);
-        for (i, (node, _)) in self.compass.axes.clone().into_iter().enumerate() {
-            let axis = [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z][i];
-            let x = c + axis.dot(right) * reach;
-            let y = c - axis.dot(up) * reach;
-            let away = axis.dot(forward) > 0.1;
-            let size = if i < 3 { 20.0 } else { 14.0 };
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z];
+        let at = |axis: Vec3| (c + axis.dot(right) * reach, c - axis.dot(up) * reach);
+        // Each positive axis's line, from the middle out to its dot.
+        for (i, beads) in self.compass.beads.clone().into_iter().enumerate() {
+            let (x, y) = at(axes[i]);
+            let away = axes[i].dot(forward) > 0.1;
+            for (k, bead) in beads.into_iter().enumerate() {
+                let t = (k as f32 + 1.0) / (BEADS as f32 + 1.0) * 0.8;
+                let (bx, by) = (c + (x - c) * t, c + (y - c) * t);
+                self.ui.restyle(bead, |s| {
+                    s.absolute(bx - 1.5, by - 1.5)
+                        .opacity(if away { 0.35 } else { 0.9 })
+                });
+            }
+        }
+        // The dots, the nearer over the farther: put back in the dial from
+        // the farthest.
+        let mut order: Vec<usize> = (0..6).collect();
+        order.sort_by(|a, b| axes[*b].dot(forward).total_cmp(&axes[*a].dot(forward)));
+        for i in order {
+            let (node, _) = self.compass.axes[i];
+            let depth = axes[i].dot(forward);
+            let (x, y) = at(axes[i]);
+            let size = if i < 3 { 18.0 } else { 12.0 };
+            // An axis along the view sits in the middle, on the switch:
+            // the view already looks from it, so it goes.
+            let along = depth.abs() > 0.95;
             self.ui.restyle(node, |s| {
-                s.absolute(x - size / 2.0, y - size / 2.0)
-                    .opacity(if away { 0.45 } else { 1.0 })
+                let s = s
+                    .absolute(x - size / 2.0, y - size / 2.0)
+                    .opacity(if depth > 0.1 { 0.5 } else { 1.0 });
+                if along {
+                    s.hidden()
+                } else {
+                    s.shown()
+                }
             });
+            self.ui.move_to(node, self.compass.dial);
         }
+        // The switch over every axis: always there to click.
+        self.ui.move_to(self.compass.middle, self.compass.dial);
         let label = if camera.ortho.is_some() {
-            "iso"
+            "Iso"
         } else {
-            "persp"
+            "Persp"
         };
-        if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
-            self.ui.set_text(t, label);
-        }
+        self.ui.set_text(self.compass.label, label);
     }
 
     // --- floating windows ---------------------------------------------
@@ -3881,10 +3909,13 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
         "foliage" => "Foliage brush: paint the model chosen in Project; Shift erases, [ ] size",
-        "view persp" => "Perspective view",
-        "view top" => "Look down from above",
-        "view front" => "Look from the front",
-        "view right" => "Look from the right",
+        "compass middle" => "Perspective or isometric",
+        "compass right" => "Look from the right (+X)",
+        "compass top" => "Look down from above (+Y)",
+        "compass front" => "Look from the front (+Z)",
+        "compass left" => "Look from the left (−X)",
+        "compass bottom" => "Look up from below (−Y)",
+        "compass back" => "Look from the back (−Z)",
         "view scene" => "The Scene view: edit (double-click: over the whole window)",
         "view game" => "The Game view: what the game's camera sees (double-click: over the whole window)",
         "hierarchy expand all" => "Expand all (Alt click an arrow: all under it)",
@@ -3901,9 +3932,19 @@ const COMPASS: f32 = 84.0;
 struct Compass {
     /// +X, +Y, +Z, −X, −Y, −Z, and the side each looks from.
     axes: Vec<(NodeId, runity_editor::Side)>,
+    /// The dial the axes stand on: what they are put in, back to front.
+    dial: NodeId,
+    /// Each positive axis's line from the middle, as beads.
+    beads: [Vec<NodeId>; 3],
+    /// The middle: a click switches perspective and orthographic.
     middle: NodeId,
+    /// Which of the two, under the dial.
+    label: NodeId,
     seen: Option<(runity::glam::Vec3, runity::glam::Vec3, bool)>,
 }
+
+/// Beads on each axis's line.
+const BEADS: usize = 7;
 
 /// Unity's scene gizmo: the axes as the camera sees them, in the view's
 /// top right corner. A click on an axis looks from it; the label under it
@@ -3917,11 +3958,20 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
             .full_width()
             .height(COMPASS + 30.0),
     );
-    let pad = ui.add(holder, Style::row().fill());
-    let _ = pad;
-    let dial = ui.add(
+    ui.add(holder, Style::row().fill());
+    let column = ui.add(
         holder,
-        Style::row().size(COMPASS, COMPASS + 22.0).margin(4.0),
+        Style::column().margin(4.0).gap(2.0).center_items(),
+    );
+    // A disc under the axes, so they read as one thing to turn the view
+    // by, lit when the pointer is on it.
+    let dial = ui.add(
+        column,
+        Style::row()
+            .size(COMPASS, COMPASS)
+            .radius(COMPASS / 2.0)
+            .background(NEUTRAL_900.alpha(28))
+            .hover(NEUTRAL_900.alpha(60)),
     );
     ui.set_layer(dial, true);
     ui.set_name(dial, "compass");
@@ -3930,23 +3980,36 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
         runity_ui::Color::hex(0x8cc26b),
         runity_ui::Color::hex(0x6f9be5),
     ];
+    let beads = colors.map(|color| {
+        (0..BEADS)
+            .map(|_| {
+                ui.add(
+                    dial,
+                    Style::row()
+                        .absolute(0.0, 0.0)
+                        .size(3.0, 3.0)
+                        .radius(1.5)
+                        .background(color),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
     let middle = ui.add(
         dial,
         Style::row()
-            .absolute(COMPASS / 2.0 - 18.0, COMPASS + 2.0)
-            .size(36.0, 18.0)
-            .radius(9.0)
-            .center()
-            .background(NEUTRAL_900.alpha(80))
-            .hover(NEUTRAL_800),
+            .absolute(COMPASS / 2.0 - 7.0, COMPASS / 2.0 - 7.0)
+            .size(14.0, 14.0)
+            .radius(7.0)
+            .background(NEUTRAL_800)
+            .border(1.0, NEUTRAL_500)
+            .hover_border(TEXT)
+            .clickable(),
     );
     ui.set_name(middle, "compass middle");
-    // Under the dial, as Unity's Persp label: an axis pointing at the
-    // camera sits in the middle and would cover it there.
-    ui.add_text(
-        middle,
+    let label = ui.add_text(
+        column,
         Style::default().text_size(9.5).text_color(LABEL).nowrap(),
-        "persp",
+        "Persp",
     );
     let sides = [
         Side::Right,
@@ -3959,7 +4022,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
     let mut axes = Vec::new();
     for (i, side) in sides.into_iter().enumerate() {
         let positive = i < 3;
-        let size = if positive { 20.0 } else { 14.0 };
+        let size = if positive { 18.0 } else { 12.0 };
         let color = colors[i % 3];
         let dot = ui.add(
             dial,
@@ -3968,7 +4031,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
                 .size(size, size)
                 .radius(size / 2.0)
                 .center()
-                .background(if positive { color } else { color.alpha(35) })
+                .background(if positive { color } else { color.alpha(30) })
                 .border(1.0, color)
                 .hover_border(TEXT)
                 .clickable(),
@@ -3989,7 +4052,10 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
     }
     Compass {
         axes,
+        dial,
+        beads,
         middle,
+        label,
         seen: None,
     }
 }

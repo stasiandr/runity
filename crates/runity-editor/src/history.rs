@@ -46,6 +46,43 @@ fn split(path: &Path) -> Result<(&Path, String), String> {
     Ok((dir, name))
 }
 
+/// Every file under `dir` that is not as it was committed — changed,
+/// added, new to git — as absolute paths: what the Project and the
+/// Hierarchy mark with a dot. An error outside a repository.
+pub fn uncommitted(dir: &Path) -> Result<std::collections::HashSet<std::path::PathBuf>, String> {
+    let top = git(dir, &["rev-parse", "--show-toplevel"])?;
+    let top = Path::new(top.trim());
+    let text = git(
+        dir,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."],
+    )?;
+    Ok(status_paths(&text)
+        .into_iter()
+        .map(|p| top.join(p))
+        .collect())
+}
+
+/// The paths of `git status --porcelain=v1 -z`, relative to the top of
+/// the repository: `XY path`, a rename followed by the name it had.
+fn status_paths(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut entries = text.split('\0').filter(|e| !e.is_empty());
+    while let Some(entry) = entries.next() {
+        let Some(path) = entry.get(3..) else { continue };
+        out.push(path.to_string());
+        if entry.starts_with('R') || entry.starts_with('C') {
+            // The old name: gone from the tree, nothing to mark.
+            entries.next();
+        }
+    }
+    out
+}
+
+/// The commit `HEAD` names in the repository around `dir`.
+pub fn head(dir: &Path) -> Result<String, String> {
+    git(dir, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string())
+}
+
 /// The commits that touched `path`, newest first, following renames.
 pub fn log(path: &Path) -> Result<Vec<Revision>, String> {
     let (dir, name) = split(path)?;
@@ -153,6 +190,15 @@ pub fn unlock(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_status_lists_each_path_once_and_a_rename_by_its_new_name() {
+        let text = " M scenes/main.ron\0?? prefabs/new.prefab\0R  b.ron\0a.ron\0A  x.png\0";
+        assert_eq!(
+            status_paths(text),
+            ["scenes/main.ron", "prefabs/new.prefab", "b.ron", "x.png"]
+        );
+    }
 
     #[test]
     fn a_verified_listing_is_split_into_ours_and_theirs() {

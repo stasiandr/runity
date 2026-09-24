@@ -50,10 +50,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         studio.handle(&InputEvent::MouseUp(MouseButton::Left));
         studio.frame();
     }
-    // A few frames more: what is drawn lazily (the Project's pictures)
-    // gets drawn.
-    for _ in 0..30 {
+    // A few frames more, and a moment: what is drawn lazily (the
+    // Project's pictures) gets drawn, and git, asked on a thread, answers.
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_millis(1500) {
         studio.frame();
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
     let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);

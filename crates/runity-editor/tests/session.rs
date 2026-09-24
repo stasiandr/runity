@@ -4838,3 +4838,35 @@ assert export.send_link(export.MOVES, export.moves([rock]))
     // The save's hash is in the sidecar: the poller has nothing to redo.
     assert_eq!(session.reload_assets(), 0, "no second import");
 }
+
+/// The Hierarchy's dots (`Session::changed_since`) against the scene's
+/// committed text.
+#[test]
+fn nothing_is_marked_changed_until_something_changes() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kitchen/scenes/main.ron"
+    ))
+    .unwrap();
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session
+        .open_scene(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/kitchen/scenes/main.ron"
+        )))
+        .unwrap();
+    // Opening settles links (IDs added); that is not a change.
+    let changed = session.changed_since(Some(&text));
+    assert!(changed.is_empty(), "{} marked", changed.len());
+    // One moved: that one, and not the lines around it.
+    let crate_id = session.find("cabbage crate").unwrap();
+    session
+        .set_field(crate_id, "position", "(-3.0, 0.5, -3.0)")
+        .unwrap();
+    let changed = session.changed_since(Some(&text));
+    assert_eq!(changed.into_iter().collect::<Vec<_>>(), [crate_id]);
+    // Never committed: everything is new.
+    assert_eq!(session.changed_since(None).len(), session.scene().ids().len());
+}
