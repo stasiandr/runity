@@ -25,6 +25,7 @@ pub mod look;
 pub mod material;
 pub mod moods;
 pub mod particles;
+pub mod particles_gpu;
 pub mod passes;
 pub mod post;
 pub mod ray;

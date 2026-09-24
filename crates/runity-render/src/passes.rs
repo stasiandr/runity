@@ -26,6 +26,9 @@ pub struct Passes {
     /// Probes baked and reflected.
     pub reflection_probes: bool,
     pub volumetric_fog: bool,
+    /// Particles on the GPU (`particles: (gpu: true)`): their compute step
+    /// and their draw. Those on the CPU are the scene's draws.
+    pub gpu_particles: bool,
     pub clouds: bool,
     /// Temporal antialiasing.
     pub taa: bool,
@@ -53,6 +56,7 @@ impl Passes {
         screen_space_reflections: true,
         reflection_probes: true,
         volumetric_fog: true,
+        gpu_particles: true,
         clouds: true,
         taa: true,
         lens: true,
@@ -69,6 +73,7 @@ impl Passes {
         screen_space_reflections: false,
         reflection_probes: false,
         volumetric_fog: false,
+        gpu_particles: false,
         clouds: false,
         taa: false,
         lens: false,
@@ -106,6 +111,9 @@ impl Passes {
         if !self.volumetric_fog {
             frame.volumetric_fog.enabled = false;
             frame.puffs.clear();
+        }
+        if !self.gpu_particles {
+            frame.gpu_particles.clear();
         }
         if !self.clouds {
             frame.sky.clouds.coverage = 0.0;

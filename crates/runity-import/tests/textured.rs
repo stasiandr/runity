@@ -71,6 +71,7 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
         weather: Default::default(),
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
+        gpu_particles: Vec::new(),
         plumes: Vec::new(),
         terrain: None,
         draws: vec![Draw {

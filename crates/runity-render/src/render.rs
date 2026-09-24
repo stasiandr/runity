@@ -547,6 +547,8 @@ pub struct Frame {
     pub volumetric_fog: crate::volume::VolumetricFog,
     /// Balls of dust in the air ([`crate::volume::Puff`]).
     pub puffs: Vec<crate::volume::Puff>,
+    /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
+    pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
     /// how much does, the wind decides.
     pub plumes: Vec<crate::volume::Plume>,
@@ -595,6 +597,7 @@ impl Default for Frame {
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
+            gpu_particles: Vec::new(),
             plumes: Vec::new(),
             terrain: None,
             wind: crate::foliage::Wind::default(),
@@ -1062,6 +1065,8 @@ pub struct Renderer {
     started: std::time::Instant,
     /// The stroke of lightning of the frame being drawn, if any.
     bolt: Option<crate::weather::Bolt>,
+    /// Particles on the GPU: their pipelines and pools.
+    gpu_particles: crate::particles_gpu::GpuParticles,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2827,6 +2832,12 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             bolt: None,
+            gpu_particles: crate::particles_gpu::GpuParticles::new(
+                gpu,
+                crate::post::HDR_FORMAT,
+                DEPTH_FORMAT,
+                sample_count(gpu),
+            ),
             lods: std::collections::HashMap::new(),
             lod_meshes: Vec::new(),
             timer: crate::gpu_timer::GpuTimer::new(gpu),
@@ -3617,6 +3628,11 @@ impl Renderer {
     /// Draw one frame into an offscreen target.
     pub fn render(&mut self, gpu: &Gpu, target: &OffscreenTarget, frame: &Frame) {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
+    }
+
+    /// Slots held for particles on the GPU, over all their emitters.
+    pub fn gpu_particle_slots(&self) -> u32 {
+        self.gpu_particles.slots()
     }
 
     /// Time each pass of the screen's frame on the GPU, or stop: see
@@ -5140,6 +5156,16 @@ impl Renderer {
             );
         }
 
+        // Particles on the GPU given off and stepped, for the colour pass.
+        if probe.is_none() {
+            self.gpu_particles.run(
+                gpu,
+                &mut encoder,
+                &frame.gpu_particles,
+                drawn,
+                frame.camera.apparent_eye(),
+            );
+        }
         {
             // A probe's face is drawn straight into its layer.
             let face = probe.map(|layer| self.reflections.layer(layer, 0));
@@ -5190,6 +5216,10 @@ impl Renderer {
             for (_, look, mesh, texture, pose, _) in &transparent {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
+            }
+            // Particles on the GPU, among what is see-through.
+            if probe.is_none() {
+                self.gpu_particles.draw(&mut pass);
             }
             // What falls, in front of it all.
             if weather.falling() {

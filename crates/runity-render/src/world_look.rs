@@ -665,11 +665,13 @@ pub fn build_frame_where(
             }
         }
     }
-    for (emitting, line) in world
-        .query::<(&crate::particles::Emitting, Option<&SceneId>)>()
+    let mut gpu_particles = Vec::new();
+    for (entity, emitting, line) in world
+        .query::<(hecs::Entity, &crate::particles::Emitting, Option<&SceneId>)>()
         .iter()
     {
         if keep(line.map(|l| l.0)) {
+            gpu_particles.extend(emitting.gpu(entity.to_bits().get()));
             draws.extend(emitting.draws_facing(Some(camera.position)));
         }
     }
@@ -805,6 +807,7 @@ pub fn build_frame_where(
         reflection_probes,
         decals,
         puffs,
+        gpu_particles,
         plumes,
         terrain,
         volumetric_fog: Default::default(),

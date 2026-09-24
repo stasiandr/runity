@@ -46,6 +46,10 @@ pub struct Emitting {
     clock: Option<f32>,
     /// The bursts of this round already given off.
     fired: usize,
+    /// For one on the GPU: how many it has given off, ever, and seconds it
+    /// has run — what the GPU spawns and steps by.
+    gpu_born: u64,
+    lived: f32,
 }
 
 impl Emitting {
@@ -58,6 +62,8 @@ impl Emitting {
             particles: Vec::new(),
             placed: Mat4::IDENTITY,
             owed: 0.0,
+            gpu_born: 0,
+            lived: 0.0,
             seed: 0x9e37_79b9_7f4a_7c15,
             clock: (!emitter_waits).then_some(0.0),
             fired: 0,
@@ -99,6 +105,7 @@ impl Emitting {
     /// `placed` (the entity's world matrix).
     pub fn advance(&mut self, placed: Mat4, dt: f32) {
         self.placed = placed;
+        self.lived += dt.max(0.0);
         let gravity = self.emitter.gravity;
         let local = self.emitter.local;
         // Gravity pulls down the world, whichever way a local emitter is
@@ -154,6 +161,11 @@ impl Emitting {
     }
 
     fn give_off(&mut self, count: usize, dt: f32) {
+        // On the GPU they are only counted: the GPU gives them off.
+        if self.emitter.gpu {
+            self.gpu_born += count as u64;
+            return;
+        }
         let e = self.emitter.clone();
         let (_, turn, origin) = self.placed.to_scale_rotation_translation();
         for _ in 0..count {
@@ -266,6 +278,20 @@ impl Emitting {
     }
 }
 
+impl Emitting {
+    /// What the GPU needs of an emitter on it this frame: none for one on
+    /// the CPU.
+    pub fn gpu(&self, key: u64) -> Option<crate::particles_gpu::GpuEmitter> {
+        self.emitter.gpu.then(|| crate::particles_gpu::GpuEmitter {
+            key,
+            placed: self.placed,
+            emitter: self.emitter.clone(),
+            born: self.gpu_born,
+            lived: self.lived,
+        })
+    }
+}
+
 /// Move every emitter's particles on: call it once a frame with the
 /// frame's delta — they are for the eye, not for the simulation. A
 /// switched-off emitter waits: switched on, it starts from nothing.
@@ -280,6 +306,28 @@ pub fn run_particles(world: &mut hecs::World, dt: f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn one_on_the_gpu_counts_what_it_gives_off_and_draws_nothing_itself() {
+        let mut emitting = Emitting::new(
+            Emitter {
+                rate: 1000.0,
+                gpu: true,
+                ..Emitter::default()
+            },
+            MeshHandle::TEST,
+        );
+        for _ in 0..30 {
+            emitting.advance(Mat4::IDENTITY, 1.0 / 30.0);
+        }
+        let gpu = emitting.gpu(3).expect("on the gpu");
+        assert!((980..=1000).contains(&gpu.born), "a second of them: {}", gpu.born);
+        assert!((gpu.lived - 1.0).abs() < 1e-3);
+        assert_eq!(emitting.draws().count(), 0, "none drawn on the CPU");
+        // And one on the CPU says nothing to the GPU.
+        let cpu = Emitting::new(Emitter::default(), MeshHandle::TEST);
+        assert!(cpu.gpu(3).is_none());
+    }
+
     use super::*;
 
     #[test]
