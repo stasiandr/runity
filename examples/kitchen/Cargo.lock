@@ -2594,6 +2594,7 @@ dependencies = [
  "ron",
  "serde",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -2649,6 +2650,8 @@ dependencies = [
  "runity-physics",
  "serde",
  "tracing",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]
@@ -2686,6 +2689,7 @@ dependencies = [
  "bytemuck",
  "glam 0.32.1",
  "hecs",
+ "naga",
  "objc2 0.6.4",
  "objc2-metal 0.3.2",
  "objc2-metal-fx",
@@ -2697,6 +2701,7 @@ dependencies = [
  "runity-gpu",
  "runity-overlay",
  "serde",
+ "web-time",
  "wgpu",
 ]
 
@@ -2716,11 +2721,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gilrs",
+ "js-sys",
  "runity-core",
  "runity-gpu",
  "runity-overlay",
  "runity-render",
  "subsecond",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "winit",
 ]
 
