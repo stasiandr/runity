@@ -223,6 +223,66 @@ pub fn set_field(text: &str, key: &str, value: Option<&str>) -> Option<String> {
     apply(text, open, &[change])
 }
 
+/// Where the value of the field `key` starts among the items of the
+/// struct opening at `open`.
+fn field_in(text: &str, open: usize, key: &str) -> Option<usize> {
+    let found = items(text, open)?;
+    found.items.iter().find_map(|r| {
+        let item = &text[r.clone()];
+        let (k, _) = item.split_once(':')?;
+        if k.trim() != key {
+            return None;
+        }
+        let colon = r.start + item.find(':')? + 1;
+        let skip = text[colon..].len() - text[colon..].trim_start().len();
+        Some(colon + skip)
+    })
+}
+
+/// Where a struct's `(` is in the value starting at `start`: the value
+/// itself, or after a name (`Wolf(…)`).
+fn struct_open(text: &str, start: usize) -> Option<usize> {
+    let span = value_span(text, start)?;
+    let value = &text[span.clone()];
+    let at = value.find('(')?;
+    value[..at]
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        .then_some(span.start + at)
+}
+
+/// The span of the value at a path of fields — `["jump", "height"]` in
+/// `(jump: (height: 1.2))` — through nested structs.
+pub fn value_at(text: &str, path: &[&str]) -> Option<Range<usize>> {
+    let (last, through) = path.split_last()?;
+    let mut open = outer_open(text)?;
+    for key in through {
+        let start = field_in(text, open, key)?;
+        open = struct_open(text, start)?;
+    }
+    let start = field_in(text, open, last)?;
+    value_span(text, start)
+}
+
+/// Set the value at a path of fields to `value` (RON text), leaving the
+/// rest of the text as it is: only that value's span changes. The last
+/// field is added to its struct when it is not written (a field with a
+/// default); the structs on the way must be.
+pub fn set_at(text: &str, path: &[&str], value: &str) -> Option<String> {
+    if let Some(span) = value_at(text, path) {
+        let mut out = text.to_string();
+        out.replace_range(span, value);
+        return Some(out);
+    }
+    let (last, through) = path.split_last()?;
+    let mut open = outer_open(text)?;
+    for key in through {
+        let start = field_in(text, open, key)?;
+        open = struct_open(text, start)?;
+    }
+    apply(text, open, &[Change::Append(format!("{last}: {value}"))])
+}
+
 /// `text` with `changes` made to the list or map opening at `open`.
 pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
     let found = items(text, open)?;
@@ -386,6 +446,28 @@ mod tests {
         assert_eq!(
             out,
             "// x\n(\n    start: \"a\",\n    states: {\n        \"a\": (clip: \"a\"),\n    },\n    any: [],\n)\n"
+        );
+    }
+
+    #[test]
+    fn a_value_deep_in_structs_changes_and_nothing_else_does() {
+        let text = "// The player.\n(\n    speed: 4.0, // metres a second\n    jump: Jump(height: 1.2, air: 0.5),\n)\n";
+        assert_eq!(&text[value_at(text, &["jump", "air"]).unwrap()], "0.5");
+        let out = set_at(text, &["jump", "height"], "2.5").unwrap();
+        assert_eq!(
+            out,
+            "// The player.\n(\n    speed: 4.0, // metres a second\n    jump: Jump(height: 2.5, air: 0.5),\n)\n"
+        );
+        let out = set_at(&out, &["speed"], "6").unwrap();
+        assert!(out.contains("speed: 6, // metres a second"), "{out}");
+        let added = set_at(&out, &["jump", "double"], "true").unwrap();
+        assert!(
+            added.contains("Jump(height: 2.5, air: 0.5, double: true)"),
+            "{added}"
+        );
+        assert!(
+            set_at(text, &["run", "height"], "1").is_none(),
+            "no struct on the way"
         );
     }
 

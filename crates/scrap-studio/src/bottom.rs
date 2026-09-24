@@ -135,6 +135,8 @@ pub struct Bottom {
     filters: [NodeId; 3],
     clear: NodeId,
     lines: NodeId,
+    /// A line for the running game's own console (`scrap::console`).
+    command: NodeId,
     at_least: Level,
     seen_lines: usize,
     /// Console lines opened to show all of their text, by index.
@@ -364,6 +366,23 @@ impl Bottom {
                 .clip(),
         );
         ui.set_name(lines, "console lines");
+        // Unreal's console, from the editor: a line typed here runs in the
+        // game playing in the Game view, and its answer comes back above.
+        let command_bar = ui.add(
+            console,
+            Style::row()
+                .full_width()
+                .height(30.0)
+                .fixed()
+                .padding_x(SPACE_2)
+                .center_items(),
+        );
+        let command = ui.add_field(command_bar, field_style().fill().height(24.0).mono(), "");
+        ui.set_name(command, "console command");
+        ui.set_placeholder(
+            command,
+            "Command for the running game — help, set world.gravity -3",
+        );
 
         // History
         let history_list = ui.add(
@@ -449,6 +468,7 @@ impl Bottom {
             filters,
             clear,
             lines,
+            command,
             at_least: Level::Info,
             seen_lines: 0,
             expanded: Default::default(),
@@ -1770,7 +1790,7 @@ impl Bottom {
 
     pub fn event(
         &mut self,
-        _ui: &mut Ui,
+        ui: &mut Ui,
         session: &mut Session,
         node: NodeId,
         event: &Event,
@@ -1832,6 +1852,16 @@ impl Bottom {
                     self.expanded.insert(i);
                 }
                 requests.refresh = true;
+            }
+            // Enter in the command line, not the keyboard leaving it.
+            Event::Submit(line) if node == self.command && ui.focused() == Some(node) => {
+                if !line.trim().is_empty() {
+                    match session.send_game_command(line) {
+                        Ok(()) => ui.set_text(node, ""),
+                        Err(e) => session.say(Level::Warning, e.to_string()),
+                    }
+                    requests.refresh = true;
+                }
             }
             Event::Click { .. } if node == self.clear => {
                 requests.action = Some(Action::ClearConsole);
@@ -1916,12 +1946,12 @@ impl Bottom {
             Event::Click { .. } if node == self.one_column_toggle => {
                 self.one_column = !self.one_column;
                 self.reveal = true;
-                self.show_toggles(_ui);
+                self.show_toggles(ui);
                 requests.refresh = true;
             }
             Event::Click { .. } if node == self.big_toggle => {
                 self.big = !self.big;
-                self.show_toggles(_ui);
+                self.show_toggles(ui);
                 requests.refresh = true;
             }
             Event::Click { .. } if self.kind_chips.iter().any(|(c, _)| *c == node) => {
@@ -1934,8 +1964,8 @@ impl Bottom {
             } if self.entries.contains_key(&node) => {
                 let asset = self.entries[&node].clone();
                 self.selected = Some(Pick::Asset(asset.clone()));
-                self.update_project(_ui, session);
-                let (x, y) = _ui.pointer();
+                self.update_project(ui, session);
+                let (x, y) = ui.pointer();
                 requests.menu = Some((asset_menu(&asset, session), x, y));
             }
             Event::Click { count, .. } if *count >= 2 => {
@@ -1953,7 +1983,7 @@ impl Bottom {
                     requests.inspect = Some(asset);
                     // Lit here and now: a refresh of every panel would
                     // take the Inspector back to the scene's selection.
-                    self.update_project(_ui, session);
+                    self.update_project(ui, session);
                 }
             }
             Event::DragEnd { .. } => {

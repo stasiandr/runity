@@ -117,6 +117,10 @@ pub struct Context<'a> {
     /// drawing and the wait for the screen — beside the game's own
     /// profiler, for F3.
     pub loop_times: &'a scrap_core::perf::Profiler,
+    /// Lines the editor's Console sent for the game's own console since
+    /// the last frame ([`scrap_core::embed::ToGame::Command`]): none in a
+    /// window of its own.
+    pub commands: &'a [String],
     quit: bool,
     capture: Option<bool>,
 }
@@ -395,6 +399,7 @@ impl<G: Game> Shell<G> {
             overlay: &mut drawing.overlay,
             cursor_captured: captured,
             loop_times,
+            commands: &[],
             quit: false,
             capture: None,
         }

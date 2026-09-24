@@ -78,13 +78,15 @@ impl Embedded {
         }
         if self.stream.is_some() && self.told != Some(view) {
             self.told = Some(view);
-            self.send(&ToGame::Size(view.0, view.1));
+            let _ = self.send(&ToGame::Size(view.0, view.1));
         }
     }
 
-    fn send(&mut self, message: &ToGame) {
+    /// `false` when there is no game to hear it: not connected yet, or
+    /// gone.
+    fn send(&mut self, message: &ToGame) -> bool {
         let Some(stream) = self.stream.as_mut() else {
-            return;
+            return false;
         };
         if embed::write_message(stream, message)
             .and_then(|()| stream.flush())
@@ -92,7 +94,9 @@ impl Embedded {
         {
             // The game went: its exit is what the Console reports.
             self.stream = None;
+            return false;
         }
+        true
     }
 
     fn take_frame(&mut self) -> Option<Frame> {
@@ -164,7 +168,69 @@ impl Session {
     /// in the view's pixels. Nothing without one.
     pub fn send_to_game(&mut self, event: InputEvent) {
         if let Some(embedded) = self.embedded() {
-            embedded.send(&ToGame::Input(event));
+            let _ = embedded.send(&ToGame::Input(event));
+        }
+    }
+
+    /// Type a line into the running game's own console, as if typed over
+    /// the game (`scrap::console`): its cheats, `set world.gravity -3`,
+    /// `help`. The game runs it and prints `> line` and its answer, which
+    /// the Console shows as one entry. The game in the Game view hears it;
+    /// the other players' windows do not.
+    pub fn send_game_command(&mut self, line: &str) -> EditResult<()> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        }
+        self.poll_embedded();
+        let Some(embedded) = self.embedded() else {
+            return Err(EditError::Io(
+                "no game is running in the Game view: start_game first".into(),
+            ));
+        };
+        if !embedded.send(&ToGame::Command(line.to_string())) {
+            return Err(EditError::Io(
+                "the game is not listening yet (still building or starting); try again once it draws".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// [`Session::send_game_command`], then wait up to `wait` for the
+    /// game's answer to come into the Console: its entry, `> line` and
+    /// what it said. An agent's cheat, headless.
+    pub fn game_console(&mut self, line: &str, wait: std::time::Duration) -> EditResult<String> {
+        let line = line.trim();
+        let asked = format!("> {line}");
+        let answers = |session: &Self| -> Vec<(String, u32)> {
+            session
+                .console()
+                .iter()
+                .filter(|l| {
+                    let first = l.text.lines().next().unwrap_or_default();
+                    // "player 1: > …" when several play.
+                    first == asked || first.ends_with(&format!(": {asked}"))
+                })
+                .map(|l| (l.text.clone(), l.count))
+                .collect()
+        };
+        self.poll_game();
+        let before = answers(self);
+        self.send_game_command(line)?;
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            self.poll_game();
+            let now = answers(self);
+            if let Some((text, _)) = now.iter().find(|a| !before.contains(a)) {
+                return Ok(text.clone());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(EditError::Io(format!(
+                    "sent `{line}`; the game has not answered in {:.1} s — see console",
+                    wait.as_secs_f32()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
 
@@ -262,5 +328,43 @@ mod tests {
         assert_ne!(session.frame_pixels(), red.as_slice());
         assert!(session.stop_game());
         assert!(!session.is_game_in_view());
+    }
+
+    /// A line for the game's console goes over the socket, and the answer
+    /// the game prints comes back as the Console entry the call returns.
+    #[test]
+    fn a_console_line_reaches_the_game_and_its_answer_comes_back() {
+        let mut session = match Session::offscreen(8, 4) {
+            Ok(s) => s,
+            Err(e) => return eprintln!("skipping: {e}"),
+        };
+        assert!(session.send_game_command("help").is_err(), "no game yet");
+        // A stand-in that answers the way `scrap::console` prints.
+        let mut stand_in = std::process::Command::new("sh");
+        stand_in.args(["-c", "sleep 1; printf '> give 3\\n  3 given\\n'; sleep 30"]);
+        session.run_in_console(stand_in).unwrap();
+        let (embed, address) = Embedded::listen().unwrap();
+        session.game.as_mut().unwrap().embed = Some(embed);
+        assert!(
+            session.send_game_command("help").is_err(),
+            "not connected yet"
+        );
+        let game = TcpStream::connect(&address).unwrap();
+        let mut from_editor = BufReader::new(game.try_clone().unwrap());
+        session.poll_game();
+        assert_eq!(
+            embed::read_packet::<ToGame>(&mut from_editor).unwrap(),
+            Packet::Message(ToGame::Size(8, 4))
+        );
+
+        let answer = session
+            .game_console("give 3", Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(answer, "> give 3\n  3 given");
+        assert_eq!(
+            embed::read_packet::<ToGame>(&mut from_editor).unwrap(),
+            Packet::Message(ToGame::Command("give 3".into()))
+        );
+        assert!(session.stop_game());
     }
 }

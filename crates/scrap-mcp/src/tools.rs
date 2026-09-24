@@ -145,6 +145,7 @@ pub fn list() -> Vec<Value> {
         tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, SCRAP_SCENE), drawing in the editor's Game view (the other players, when several, in windows of their own). What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" } }), &[]),
         tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, what was spawned at run time, and each animator's last transitions (from → to, and the conditions that held). The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
+        tool("game_console", "Type a line into the running game's own console (Unreal's ~ console), as a player would over the game, and get its answer: `help` lists the commands; `get world.gravity` reads tuning/world.ron; `set world.gravity -3` changes that value in the file itself (only its text, comments kept) and the game reloads it — the file is the truth, so keep or git-checkout the change; everything else is the game's own cheats (`spin 90` in the template). The answer is the console entry: `> line`, then what the game said, `error: …` when it could not. Needs a game started with start_game that has drawn (built and running); the console is on in debug builds.", json!({ "command": { "type": "string" }, "wait_seconds": { "type": "number", "description": "How long to wait for the answer; 5 by default." } }), &["command"]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
         tool("thumbnail", "A picture of a prefab or a model (by the name scenes use: campfire, builtin:cone, rock) alone, framed whole — the Project window's preview. Changes nothing.", json!({ "what": { "type": "string" }, "size": { "type": "integer", "description": "pixels a side, 16 to 1024; 256 by default" } }), &["what"]),
         tool("drop", "Drop a prefab or a model (by the name scenes use) into the view at a pixel of the last render, standing on whatever is there — Project-window drag and drop. One undo step; returns its id.", json!({ "what": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" } }), &["what", "x", "y"]),
@@ -876,6 +877,19 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             } else {
                 "no game was running".to_string()
             };
+            Ok(vec![text(answer)])
+        }
+        "game_console" => {
+            let command = string(args, "command")?;
+            let wait = args
+                .get("wait_seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(5.0)
+                .clamp(0.1, 60.0);
+            let session = server.session()?;
+            let answer = session
+                .game_console(&command, std::time::Duration::from_secs_f64(wait))
+                .map_err(|e| e.to_string())?;
             Ok(vec![text(answer)])
         }
         "console" => {
