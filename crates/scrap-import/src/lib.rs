@@ -106,6 +106,20 @@ pub struct ImportSettings {
     /// Blender's in Blender.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub materials: BTreeMap<String, String>,
+    /// An image whose shape is in one of its colours, not its alpha: that
+    /// colour copied into the alpha on the way in. A grass card whose
+    /// blade is its green is cut by it everywhere the alpha cuts — the
+    /// shadow pass too, which runs no material's own shader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_from: Option<ColourChannel>,
+}
+
+/// One of an image's colour channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColourChannel {
+    Red,
+    Green,
+    Blue,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -126,6 +140,7 @@ impl Default for ImportSettings {
             scene: false,
             parts: BTreeMap::new(),
             materials: BTreeMap::new(),
+            alpha_from: None,
         }
     }
 }
@@ -834,7 +849,13 @@ pub fn texture_from_image(
         .with_context(|| format!("{}", path.display()))?
         .to_rgba8();
     let (width, height) = image.dimensions();
-    let pixels = image.into_raw();
+    let mut pixels = image.into_raw();
+    if let Some(channel) = settings.alpha_from {
+        let from = channel as usize;
+        for texel in pixels.chunks_exact_mut(4) {
+            texel[3] = texel[from];
+        }
+    }
     let mips = build_mips(width, height, &pixels, settings.srgb);
     Ok(TextureAsset {
         id: settings.asset_id(),
@@ -2467,6 +2488,26 @@ f 1 4 3
         assert_eq!(texture.pixels.len(), 16, "two by two, four bytes each");
         assert_eq!(texture.pixels[0], 255, "the red pixel is first");
         assert!(texture.srgb, "a colour map is sRGB unless told otherwise");
+    }
+
+    #[test]
+    fn a_shape_in_the_green_becomes_the_alpha_when_asked() {
+        let dir = temp("alpha-from");
+        let path = dir.join("blade.png");
+        let mut image = image::RgbImage::new(2, 1);
+        image.put_pixel(0, 0, image::Rgb([200, 255, 10]));
+        image.put_pixel(1, 0, image::Rgb([200, 0, 10]));
+        image.save(&path).unwrap();
+
+        let plain = texture_from_image(&path, &ImportSettings::for_source("blade.png")).unwrap();
+        assert_eq!((plain.pixels[3], plain.pixels[7]), (255, 255), "no alpha of its own: opaque");
+        let settings = ImportSettings {
+            alpha_from: Some(ColourChannel::Green),
+            ..ImportSettings::for_source("blade.png")
+        };
+        let cut = texture_from_image(&path, &settings).unwrap();
+        assert_eq!((cut.pixels[3], cut.pixels[7]), (255, 0), "the blade where green is, nothing where not");
+        assert_eq!(&cut.pixels[..3], &[200, 255, 10], "the colours stay");
     }
 
     #[test]
