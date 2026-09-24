@@ -74,6 +74,9 @@ pub enum Action {
     TogglePivot,
     /// Play the game — its own code, in its own window — or stop it.
     Play,
+    /// Play the game with its player on the ground the view looks at
+    /// (docs/player.md).
+    PlayFromHere,
     /// Simulate the scene's physics right here in the view, without the
     /// game's code: what falls, falls. Stop puts it all back.
     Simulate,
@@ -108,6 +111,8 @@ pub enum Action {
     SnapSettings,
     /// Show where a walker can go, or stop.
     ToggleNavigation,
+    /// Show the player's size and jump where the pointer is, or stop.
+    TogglePlayer,
     /// One field of the selection: back to a new entity's, its value to
     /// the clipboard, the clipboard's value into it, gone.
     FieldReset(String),
@@ -327,6 +332,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Snap", Action::ToggleSnap),
                 item("Snap Settings…", Action::SnapSettings),
                 item("Navigation", Action::ToggleNavigation),
+                item("Player", Action::TogglePlayer),
                 MenuItem::separator(),
                 // The Scene view's tools, where their keys can be seen.
                 item("Tool › Hand", Action::Hand),
@@ -399,6 +405,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             "Play",
             vec![
                 item("Play / Stop", Action::Play),
+                item("Play from Here", Action::PlayFromHere),
                 MenuItem::separator(),
                 item("Simulate Physics Here", Action::Simulate),
                 item("Pause", Action::Pause),

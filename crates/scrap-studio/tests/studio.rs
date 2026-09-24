@@ -426,6 +426,17 @@ fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
     let grid = s.menu_state(&Action::ToggleGrid, "Grid").checked;
     s.run(Action::ToggleGrid);
     assert_ne!(s.menu_state(&Action::ToggleGrid, "Grid").checked, grid);
+    // The player's size is a view toggle as the grid is, and Play from
+    // Here sits under Play.
+    assert!(!s.menu_state(&Action::TogglePlayer, "Player").checked);
+    s.run(Action::TogglePlayer);
+    assert!(s.session.show_player());
+    assert!(s.menu_state(&Action::TogglePlayer, "Player").checked);
+    let bar = scrap_studio::menu::bare_menu_bar();
+    let (_, play) = bar.iter().find(|(name, _)| *name == "Play").unwrap();
+    assert!(play
+        .iter()
+        .any(|i| i.label == "Play from Here" && i.action == Some(Action::PlayFromHere)));
 
     // The system's menus: none in the toolbar, the play buttons stay.
     s.set_native_menu(true);

@@ -1698,6 +1698,63 @@ pub fn polyline_draws(
     line_draws(arm, segments, Mat4::IDENTITY, thickness, material)
 }
 
+/// A standing capsule as lines, feet at `feet`: the player's size in the
+/// Scene view. Two rings where the rounded ends begin, four sides, the
+/// ends' arcs across both ways, and a line from the chest along `facing`.
+pub fn capsule_draws(
+    arm: MeshHandle,
+    feet: Vec3,
+    height: f32,
+    radius: f32,
+    facing: Vec3,
+    thickness: f32,
+    material: Material,
+) -> Vec<Draw> {
+    const SIDES: usize = 24;
+    let radius = radius.max(0.01);
+    let (low, high) = (radius, (height - radius).max(radius));
+    let turn = |i: usize| i as f32 / SIDES as f32 * std::f32::consts::TAU;
+    let mut segments = Vec::new();
+    for y in [low, high] {
+        for i in 0..SIDES {
+            let (a, b) = (turn(i), turn(i + 1));
+            segments.push((
+                feet + Vec3::new(a.cos() * radius, y, a.sin() * radius),
+                feet + Vec3::new(b.cos() * radius, y, b.sin() * radius),
+            ));
+        }
+    }
+    for across in [Vec3::X, Vec3::Z] {
+        for side in [-1.0, 1.0] {
+            segments.push((
+                feet + across * side * radius + Vec3::Y * low,
+                feet + across * side * radius + Vec3::Y * high,
+            ));
+        }
+        // Half a circle over the top and under the bottom.
+        for i in 0..SIDES / 2 {
+            let (a, b) = (turn(i), turn(i + 1));
+            let at = |t: f32, y: f32, down: f32| {
+                feet + across * (t.cos() * radius) + Vec3::Y * (y + down * t.sin() * radius)
+            };
+            segments.push((at(a, high, 1.0), at(b, high, 1.0)));
+            segments.push((at(a, low, -1.0), at(b, low, -1.0)));
+        }
+    }
+    let facing = Vec3::new(facing.x, 0.0, facing.z).normalize_or_zero();
+    if facing != Vec3::ZERO {
+        let chest = feet + Vec3::Y * (height * 0.75);
+        segments.push((chest, chest + facing * radius * 2.0));
+    }
+    line_draws(arm, segments, Mat4::IDENTITY, thickness, material)
+}
+
+/// What the player reference and its jump are drawn in: a light green,
+/// not to be taken for a camera's white or the selection's orange.
+pub fn player_color() -> Material {
+    Material::new(0.45, 0.95, 0.35).unlit()
+}
+
 /// The Scene view's grid: lines `spacing` apart on the plane through the
 /// origin across `axis` (1: the ground; 0 and 2: the walls a side view
 /// looks at), `cells` either way of the line nearest `around`, so the grid

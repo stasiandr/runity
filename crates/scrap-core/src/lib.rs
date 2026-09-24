@@ -38,6 +38,7 @@ pub mod module;
 pub mod netsim;
 pub mod parts;
 pub mod perf;
+pub mod player;
 pub mod player_loop;
 pub mod player_prefs;
 pub mod prefab;

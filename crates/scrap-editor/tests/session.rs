@@ -3606,6 +3606,122 @@ fn the_view_shows_where_a_walker_can_go_and_keeps_up_with_edits() {
     assert_eq!(session.walkable_cells(), None);
 }
 
+/// A floor to stand on, twenty metres a side, its top at y = 0.
+const FLOOR: &str = r#"(
+    entities: [
+        (name: "floor", model: "builtin:cube", transform: (position: (0.0, -0.1, 0.0), scale: (20.0, 0.2, 20.0)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (name: "hero", model: "builtin:cube", transform: (position: (-5.0, 0.5, 5.0)), player_start: true),
+    ],
+)"#;
+
+#[test]
+fn the_player_is_the_one_scrap_ron_describes_and_navigation_walks_for_it() {
+    let Some((session, path)) = open_with("player-metrics", FLOOR) else {
+        return;
+    };
+    assert_eq!(
+        session.player_metrics(),
+        scrap::player::PlayerMetrics::default()
+    );
+    assert_eq!(session.walker(), scrap::navigation::NavSettings::default());
+    // A bigger player, written where Project Settings writes it: seen at
+    // once, and only what was written changes.
+    let manifest = root_of(&path).join("scrap.ron");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    assert!(text.contains("radius: 0.35"), "a new project writes its player: {text}");
+    let text = text
+        .replacen("radius: 0.35", "radius: 0.6", 1)
+        .replacen("step: 0.3,", "step: 0.45,", 1);
+    std::fs::write(&manifest, text).unwrap();
+    let player = session.player_metrics();
+    assert_eq!((player.radius, player.step), (0.6, 0.45));
+    assert_eq!(
+        player.height,
+        scrap::player::PlayerMetrics::default().height
+    );
+    let walker = session.walker();
+    assert_eq!(
+        (walker.radius, walker.max_step, walker.max_slope),
+        (0.6, 0.45, player.slope)
+    );
+}
+
+#[test]
+fn play_from_here_stands_the_player_on_what_the_view_looks_at() {
+    let Some((mut session, _)) = open_with("play-here", FLOOR) else {
+        return;
+    };
+    // Looking down at the floor: there, facing the way the view looks.
+    session.set_camera(Vec3::new(2.0, 6.0, 10.0), Vec3::new(2.0, 0.0, 0.0));
+    let start = session.start_here().unwrap();
+    assert!(
+        // Within a pixel of it.
+        start.position.distance(Vec3::new(2.0, 0.0, 0.0)) < 0.15,
+        "{start:?}"
+    );
+    assert!(
+        start.facing().distance(Vec3::NEG_Z) < 1e-4,
+        "{:?}",
+        start.facing()
+    );
+    // Looking at the horizon: on the floor under the camera.
+    session.set_camera(Vec3::new(1.0, 3.0, 0.0), Vec3::new(11.0, 3.0, 0.0));
+    let start = session.start_here().unwrap();
+    assert!(
+        start.position.distance(Vec3::new(1.0, 0.0, 0.0)) < 0.05,
+        "{start:?}"
+    );
+    assert!(start.facing().distance(Vec3::X) < 1e-4);
+    // The game is told, and reads back the same place; Play alone tells
+    // it nothing, even when this process was given a start.
+    let command = session.game_command_at(Some(start)).unwrap();
+    let given = command
+        .get_envs()
+        .find(|(k, _)| *k == scrap::player::START_VAR)
+        .and_then(|(_, v)| v)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let read: scrap::player::Start = scrap::ron::from_str(&given).unwrap();
+    assert_eq!(read, start);
+    let plain = session.game_command().unwrap();
+    assert!(plain
+        .get_envs()
+        .any(|(k, v)| k == scrap::player::START_VAR && v.is_none()));
+    // Off the edge, over nothing and looking at the sky: refused.
+    session.set_camera(Vec3::new(50.0, 3.0, 0.0), Vec3::new(60.0, 3.0, 0.0));
+    let e = session.start_here().unwrap_err().to_string();
+    assert!(e.contains("nothing to stand on"), "{e}");
+}
+
+#[test]
+fn the_player_reference_is_drawn_where_the_player_would_start() {
+    let Some((mut session, _)) = open_with("player-view", FLOOR) else {
+        return;
+    };
+    session.set_show_grid(false);
+    session.set_camera(Vec3::new(0.0, 3.0, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    session.render();
+    let without = session.frame_pixels().to_vec();
+    assert!(!session.show_player(), "off until asked");
+    session.set_show_player(true);
+    session.render();
+    let with = session.frame_pixels().to_vec();
+    // The capsule stands in the middle of the view, where the view looks.
+    let (w, h) = session.size();
+    let changed = |x0: u32, x1: u32| {
+        (h / 4..h * 3 / 4)
+            .flat_map(|y| (x0..x1).map(move |x| ((y * w + x) * 4) as usize))
+            .filter(|&i| with[i..i + 3] != without[i..i + 3])
+            .count()
+    };
+    assert!(changed(w * 2 / 5, w * 3 / 5) > 20, "the capsule is drawn");
+    assert_eq!(
+        session.start_here().unwrap(),
+        session.player_reference().unwrap()
+    );
+}
+
 #[test]
 fn a_thumbnail_pictures_an_asset_alone_and_changes_nothing() {
     let Some((mut session, _)) = open("thumbnail") else {

@@ -178,6 +178,10 @@ pub struct GameSettings {
     pub steps_per_second: u32,
     /// The table in `strings/` the game speaks.
     pub language: String,
+    /// How big the player is and how far it jumps: what the Scene view's
+    /// reference shows, navigation bakes for and the game's controller
+    /// reads (docs/player.md).
+    pub player: crate::player::PlayerMetrics,
 }
 
 impl Default for GameSettings {
@@ -189,6 +193,7 @@ impl Default for GameSettings {
             height: 720,
             steps_per_second: 60,
             language: "en".into(),
+            player: Default::default(),
         }
     }
 }
@@ -847,6 +852,11 @@ fn game_components() -> Components {
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
+            eprintln!("{line}");
+        }
+        // Play from Here in the editor: what the scene marks
+        // `player_start: true` stands where the editor was looking.
+        for line in self.live.start_here(&mut self.world) {
             eprintln!("{line}");
         }
         self.start_physics(ctx);
@@ -1553,6 +1563,13 @@ src/systems/     one system per file: `pub fn run(world, seconds)`
   list of them: the folder is the list. `scrap check` reports a component
   name no file answers to. Editing a value while the game runs changes that
   component and nothing else.
+* The player's size is `game: (player: (height, radius, step, slope,
+  jump_height, speed, gravity))` in `scrap.ron`: navigation bakes for it,
+  the editor draws it (View › Player), and a controller should read the
+  same numbers (`scrap::project::GameSettings::load`). The line the player
+  starts as — or an empty the game spawns it at — says
+  `player_start: true`; Play › Play from Here moves it where the editor
+  looks (`LiveScene::start_here` in `start`).
 * Everything a person makes is text and is committed; `library/` and
   `target/` are not.
 * Binary sources are in Git LFS and lockable — lock before editing one.

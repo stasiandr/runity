@@ -135,6 +135,7 @@ pub mod motion {
 }
 pub use scrap_core::parts;
 pub use scrap_core::perf;
+pub use scrap_core::player;
 pub use scrap_core::player_prefs;
 pub use scrap_core::prefab;
 pub use scrap_core::project;
@@ -458,6 +459,7 @@ pub mod scene {
         kinds.extend(scrap_geometry::line::part_kinds());
         kinds.extend(scrap_core::wind::part_kinds());
         kinds.extend(scrap_core::stream::part_kinds());
+        kinds.extend(scrap_core::player::part_kinds());
         kinds.extend(crate::look::part_kinds());
         #[cfg(feature = "animation")]
         kinds.extend(crate::motion::part_kinds());

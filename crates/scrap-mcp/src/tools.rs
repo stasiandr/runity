@@ -74,7 +74,8 @@ pub fn list() -> Vec<Value> {
         "height": { "type": "integer" },
         "from_game": { "type": "boolean", "description": "look through the game's camera — the entity with `camera` — instead of the editor's" },
         "colliders": { "type": "boolean", "description": "draw every collider as an outline — green static, blue dynamic, orange kinematic, yellow trigger — until turned off" },
-        "navigation": { "type": "boolean", "description": "show where a walker (0.35 m radius, 40° slope, 0.3 m step) can go, in blue on the ground, until turned off" },
+        "navigation": { "type": "boolean", "description": "show where the project's player (scrap.ron, game.player: radius, slope, step) can go, in blue on the ground, until turned off" },
+        "player": { "type": "boolean", "description": "draw the project's player (scrap.ron, game.player) in green — a capsule its height and width, and the arc its feet take in a running jump — standing where start_game's from_here would start it, until turned off: is this door tall enough, this gap jumpable" },
         "grid": { "type": "boolean", "description": "the Scene view's grid on the ground (on the wall in a side view), spaced as drags snap; on by default, stays until changed" },
         "view": { "type": "string", "enum": ["top", "bottom", "front", "back", "left", "right", "perspective", "orthographic"], "description": "look along an axis, orthographic, showing as much as before — `top` is the level's plan — or switch projection; stays until changed" },
     });
@@ -142,7 +143,7 @@ pub fn list() -> Vec<Value> {
         tool("to_view", "From the render view: `move` puts the entity (and what is under it) on the point the view looks at; `align` stands it where the view is, looking where it looks — frame a shot with render's eye and target, then align the game's camera to it. One undo step.", json!({ "id": { "type": "string", "description": ID }, "how": { "type": "string", "enum": ["move", "align"] } }), &["id", "how"]),
         tool("override_field", "On a prefab's part: `revert` one overridden field to what the prefab says, or `apply` it to the prefab file so every instance has it — the other overrides stay. position, rotation and scale are one override (the transform). One undo step.", json!({ "id": { "type": "string", "description": ID }, "field": { "type": "string" }, "how": { "type": "string", "enum": ["apply", "revert"] } }), &["id", "field", "how"]),
         tool("console", "The editor's Console: what opening, importing and rebuilding said — skipped lines, import warnings, sources that would not rebuild — and what a game started with start_game printed (cargo's compile errors, the game's own lines, a panic), each once with how many times, oldest first. clear: true empties it after reading.", json!({ "clear": { "type": "boolean" } }), &[]),
-        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, SCRAP_SCENE), drawing in the editor's Game view (the other players, when several, in windows of their own). What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" } }), &[]),
+        tool("start_game", "Play with the game's own code: save the open scene and run the project's game on it (cargo run, SCRAP_SCENE), drawing in the editor's Game view (the other players, when several, in windows of their own). What it prints goes to the console; read it with console. One game at a time — starting again stops the one running. players: 2 to 4 opens that many windows playing together on this machine (Unity's Multiplayer Play Mode): player 1 hosts, the others join once it is up, and console lines start with whose they are (\"player 2: ...\"). The count is remembered for the next start; players: 1 goes back to one. link makes the other players' connection bad on purpose — \"poor\", \"awful\", \"latency=80,jitter=10,loss=3,dup=1\" (round-trip ms, percent), or \"\" for a perfect one — also remembered.", json!({ "players": { "type": "integer", "minimum": 1, "maximum": 4 }, "link": { "type": "string" }, "from_here": { "type": "boolean", "description": "Play from Here: the player starts on the ground the view looks at (render's eye and target), facing its way — the game moves the lines its scene marks player_start: true there (SCRAP_START). Refused when there is nothing to stand on." } }), &[]),
         tool("game_state", "What the game started with start_game says its world is like now, a few times a second: every entity that is not where the scene puts it (id, name, position), the saved components, the scene's entities that are gone, what was spawned at run time, and each animator's last transitions (from → to, and the conditions that held). The Inspector shows the same as game.* fields.", json!({}), &[]),
         tool("stop_game", "Stop the game start_game started; says whether one was running and whether it had ended by itself.", json!({}), &[]),
         tool("group", "Put entities under a new empty entity named `name`, standing on the ground in the middle of them — Unity's Create Empty Parent. Nothing moves in the world; one undo step; returns the group's id.", json!({ "ids": { "type": "array", "items": { "type": "string" } }, "name": { "type": "string" } }), &["ids", "name"]),
@@ -159,9 +160,9 @@ pub fn list() -> Vec<Value> {
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
             "to": vec3("goal"),
-            "radius": { "type": "number", "description": "the walker's radius, metres (0.35)" },
-            "max_step": { "type": "number", "description": "the highest step it climbs, metres (0.3)" },
-            "max_slope": { "type": "number", "description": "the steepest slope it walks, degrees (40)" },
+            "radius": { "type": "number", "description": "the walker's radius, metres (the project player's: scrap.ron game.player.radius)" },
+            "max_step": { "type": "number", "description": "the highest step it climbs, metres (the player's step)" },
+            "max_slope": { "type": "number", "description": "the steepest slope it walks, degrees (the player's slope)" },
         }), &["from", "to"]),
         tool("locks", "Who holds which Git LFS lock in the project: lock binary sources (textures, models, sounds) before editing them.", json!({}), &[]),
         tool("lock", "Take (or with locked: false, give back) the Git LFS lock on a file.", json!({ "path": { "type": "string" }, "locked": { "type": "boolean" } }), &["path"]),
@@ -803,7 +804,16 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             if let Some(link) = args.get("link").and_then(|v| v.as_str()) {
                 session.set_link(link).map_err(|e| e.to_string())?;
             }
-            session.start_game().map_err(|e| e.to_string())?;
+            let from_here = args
+                .get("from_here")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let start = if from_here {
+                Some(session.start_game_from_here().map_err(|e| e.to_string())?)
+            } else {
+                session.start_game().map_err(|e| e.to_string())?;
+                None
+            };
             let players = session.players();
             let link = session.link();
             let over = if link.is_empty() {
@@ -811,10 +821,21 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             } else {
                 format!(", the others over a `{link}` link")
             };
+            let here = match start {
+                Some(start) => {
+                    let marked = scrap::player::player_starts(session.scene()).len();
+                    format!(
+                        " from {} facing {:.0}° ({marked} lines marked player_start)",
+                        triple(start.position),
+                        start.yaw_deg
+                    )
+                }
+                None => String::new(),
+            };
             Ok(vec![text(if players > 1 {
-                format!("started with {players} players{over}; their output goes to the console as it comes")
+                format!("started with {players} players{over}{here}; their output goes to the console as it comes")
             } else {
-                "started; its output goes to the console as it comes".to_string()
+                format!("started{here}; its output goes to the console as it comes")
             })])
         }
         "game_state" => {
@@ -1095,7 +1116,8 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "path" => {
             let from = optional_vec3(args, "from")?.ok_or("from is required")?;
             let to = optional_vec3(args, "to")?.ok_or("to is required")?;
-            let defaults = scrap::navigation::NavSettings::default();
+            // The project's player, unless the question names another.
+            let defaults = server.session()?.walker();
             let number = |key: &str, default: f32| {
                 args.get(key)
                     .and_then(Value::as_f64)
@@ -1774,7 +1796,11 @@ fn camera(server: &mut Server, args: &Value) -> Result<(), String> {
         session.set_show_grid(show);
     }
     if let Some(show) = args.get("navigation").and_then(Value::as_bool) {
-        session.set_show_navigation(show.then(scrap::navigation::NavSettings::default));
+        let walker = session.walker();
+        session.set_show_navigation(show.then_some(walker));
+    }
+    if let Some(show) = args.get("player").and_then(Value::as_bool) {
+        session.set_show_player(show);
     }
     if width.is_some() || height.is_some() {
         let (w, h) = session.size();

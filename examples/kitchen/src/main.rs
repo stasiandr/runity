@@ -273,6 +273,11 @@ impl shell::Game for Game {
         for line in self.live.spawn(&mut self.world, ctx.gpu, ctx.renderer).lines() {
             eprintln!("{line}");
         }
+        // Play from Here: the four cooks are marked `player_start`, and
+        // stand where the editor was looking, as they stood together.
+        for line in self.live.start_here(&mut self.world) {
+            eprintln!("{line}");
+        }
         self.start_physics(ctx);
     }
 

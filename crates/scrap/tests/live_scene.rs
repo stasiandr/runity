@@ -451,3 +451,33 @@ fn a_game_changes_level_keeping_what_it_spawned_itself() {
     assert!(world.contains(player), "the game's own things cross over");
     assert!(live.path().ends_with("scenes/cave.ron"));
 }
+
+#[test]
+fn played_from_here_the_line_marked_player_start_stands_where_the_editor_said() {
+    let project = project("start");
+    let path = project.scenes().join("main.ron");
+    write(
+        &path,
+        r#"(entities: [
+    (id: "a1", name: "hero", model: "builtin:cube", player_start: true),
+    (id: "b2", name: "rock", model: "builtin:cube", transform: (position: (3.0, 0.0, 0.0))),
+])"#,
+    );
+    let (mut live, _) = LiveScene::open(&path).unwrap();
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let start =
+        scrap::player::Start::looking(scrap::glam::Vec3::new(5.0, 1.0, -2.0), scrap::glam::Vec3::X);
+    let said = live.start_at(&mut world, start);
+    assert!(said[0].contains("1 marked player_start"), "{said:?}");
+    let at = |id: &str| {
+        world
+            .get::<&scrap::world::WorldTransform>(entity(&world, id))
+            .unwrap()
+            .0
+            .w_axis
+            .truncate()
+    };
+    assert!(at("a1").distance(start.position) < 1e-4, "{}", at("a1"));
+    assert!(at("b2").distance(scrap::glam::Vec3::new(3.0, 0.0, 0.0)) < 1e-4);
+}

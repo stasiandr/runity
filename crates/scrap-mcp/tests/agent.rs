@@ -589,6 +589,47 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
 }
 
 #[test]
+fn an_agent_sees_the_player_s_size_and_is_told_where_it_cannot_start() {
+    let mut agent = Agent::new();
+    let root = std::env::temp_dir().join("scrap-mcp-player");
+    let _ = std::fs::remove_dir_all(&root);
+    match agent.call("new_project", json!({ "path": root.to_string_lossy() })) {
+        Ok(_) => {}
+        Err(e) if e.contains("GPU") => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    }
+    // The capsule and the jump stand where the view looks: a picture.
+    let shot = agent
+        .call(
+            "render",
+            json!({ "eye": [0.0, 3.0, 6.0], "target": [0.0, 0.5, 0.0], "player": true }),
+        )
+        .unwrap();
+    assert!(shot.iter().any(|c| c["type"] == "image"), "{shot:?}");
+    // A walk across the ground, for the project's player.
+    let way = agent.text(
+        "path",
+        json!({ "from": [-5.0, 0.0, 0.0], "to": [5.0, 0.0, 0.0] }),
+    );
+    assert!(way.starts_with("a way"), "{way}");
+    // Looking at the sky from over nothing: nowhere to stand, said so, and
+    // nothing started.
+    agent
+        .call(
+            "render",
+            json!({ "eye": [100.0, 3.0, 0.0], "target": [110.0, 3.0, 0.0] }),
+        )
+        .unwrap();
+    let e = agent
+        .call("start_game", json!({ "from_here": true }))
+        .unwrap_err();
+    assert!(e.contains("nothing to stand on"), "{e}");
+}
+
+#[test]
 fn an_agent_sets_a_mood_and_tunes_the_look() {
     let mut agent = Agent::new();
     let root = std::env::temp_dir().join("scrap-mcp-mood");

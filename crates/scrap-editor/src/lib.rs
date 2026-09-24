@@ -34,6 +34,7 @@ pub use import_settings::IMPORT_FIELDS;
 pub mod history;
 pub mod panels;
 pub mod pickers;
+mod player;
 pub mod prefs;
 mod scene_view;
 mod surface;
@@ -181,6 +182,11 @@ pub struct Session {
     /// The grid on the ground (on the wall, in a side view): on until
     /// turned off, as Unity's is.
     show_grid: bool,
+    /// The player's size and jump drawn in the view, where the pointer is
+    /// (docs/player.md): a view setting.
+    show_player: bool,
+    /// Where the pointer is over the view; `None` off it.
+    hover_at: Option<(u32, u32)>,
     /// Set while the scene is being simulated rather than edited.
     play: Option<Play>,
     /// The scene as its file last had it — read or written by this session
@@ -365,6 +371,8 @@ impl Session {
             label: None,
             show_colliders: false,
             show_grid: true,
+            show_player: false,
+            hover_at: None,
             play: None,
             on_disk: None,
             merge: None,
@@ -2073,6 +2081,15 @@ impl Session {
     /// edited and saved, as every running game does. The editor's own
     /// [`Session::play`] simulates physics in place without the game.
     pub fn game_command(&mut self) -> EditResult<std::process::Command> {
+        self.game_command_at(None)
+    }
+
+    /// [`Session::game_command`] with the player to start at `start`
+    /// (`SCRAP_START`, Play from Here), or with no start at all.
+    pub fn game_command_at(
+        &mut self,
+        start: Option<scrap::player::Start>,
+    ) -> EditResult<std::process::Command> {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
         if !project.root().join("Cargo.toml").is_file() {
             return Err(EditError::Scene(format!(
@@ -2117,6 +2134,10 @@ impl Session {
             .env("SCRAP_SCENE", &name)
             .env(game::LIVE_VAR, &live)
             .env(scrap::live::STATE_VAR, &state);
+        match start {
+            Some(start) => command.env(scrap::player::START_VAR, start.to_env()),
+            None => command.env_remove(scrap::player::START_VAR),
+        };
         self.say(
             console::Level::Info,
             format!("playing scenes/{name}.ron in the game"),
@@ -3350,6 +3371,11 @@ impl Session {
                     pose: None,
                 }));
         }
+        // The player's size and jump, standing where the pointer is.
+        if self.show_player {
+            let draws = self.player_draws();
+            frame.draws.extend(draws);
+        }
         // Every camera the game can look through, as its frustum.
         {
             let arm = self.gizmo_arm_mesh();
@@ -4315,6 +4341,7 @@ impl Session {
         if let Some((x, y)) = at {
             self.pointer = (x, y);
         }
+        self.hover_at = at;
         self.hovered
     }
 

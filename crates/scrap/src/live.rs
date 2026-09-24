@@ -327,6 +327,40 @@ impl LiveScene {
         }
     }
 
+    /// Play from Here: when the editor started this game from a place
+    /// (`SCRAP_START`), move the lines the scene marks `player_start` there
+    /// ([`crate::player::place_at_start`]). Call it right after
+    /// [`Self::spawn`], before the game looks for its player. What it did,
+    /// a line each — nothing when the game was started as usual.
+    pub fn start_here(&self, world: &mut World) -> Vec<String> {
+        match crate::player::Start::from_env() {
+            Ok(Some(start)) => self.start_at(world, start),
+            Ok(None) => Vec::new(),
+            Err(problem) => vec![problem],
+        }
+    }
+
+    /// [`Self::start_here`] from a place given in code: a test, or a game
+    /// that takes it from somewhere else.
+    pub fn start_at(&self, world: &mut World, start: crate::player::Start) -> Vec<String> {
+        let moved = crate::player::place_at_start(world, &self.current, start);
+        let p = start.position;
+        vec![if moved.is_empty() {
+            format!(
+                "started from ({:.2}, {:.2}, {:.2}), but nothing in the scene is marked player_start",
+                p.x, p.y, p.z
+            )
+        } else {
+            format!(
+                "started from ({:.2}, {:.2}, {:.2}): {} marked player_start moved there",
+                p.x,
+                p.y,
+                p.z,
+                moved.len()
+            )
+        }]
+    }
+
     /// Start the world again under new code, keeping what a save keeps —
     /// what a hot patch calls, Unity's domain reload.
     ///

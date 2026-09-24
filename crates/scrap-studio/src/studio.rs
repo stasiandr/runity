@@ -1019,6 +1019,8 @@ impl Studio {
             Action::ToggleSnap => (true, s.snap().meters > 0.0),
             Action::ToggleColliders => (true, self.colliders),
             Action::ToggleNavigation => (true, self.navigation),
+            Action::TogglePlayer => (true, s.show_player()),
+            Action::PlayFromHere => (true, false),
             Action::GameView(game) => (true, s.is_game_view() == *game),
             Action::TogglePanel(i) => (true, self.panels.get(*i).copied().unwrap_or(false)),
             Action::Maximize => (true, self.maximized == Some(Zoom::View)),
@@ -3742,10 +3744,13 @@ impl Studio {
                 }
                 Action::ToggleNavigation => {
                     self.navigation = !self.navigation;
-                    s.set_show_navigation(
-                        self.navigation
-                            .then(scrap::navigation::NavSettings::default),
-                    );
+                    // The project's player, as scrap.ron says it.
+                    let walker = s.walker();
+                    s.set_show_navigation(self.navigation.then_some(walker));
+                }
+                Action::TogglePlayer => {
+                    let on = s.show_player();
+                    s.set_show_player(!on);
                 }
                 Action::Search => self.open_search(),
                 Action::PlaySound(name) => {
@@ -4123,6 +4128,19 @@ impl Studio {
                         s.set_game_view(true);
                         self.ui.focus(Some(self.viewport));
                     }
+                }
+                Action::PlayFromHere => {
+                    // Play, with the player on what the view looks at.
+                    // Whatever plays stops first, as a second Play would.
+                    if s.is_playing() {
+                        s.stop();
+                    }
+                    if self.bottom.clear_on_play {
+                        s.clear_console();
+                    }
+                    s.start_game_from_here().map_err(e)?;
+                    s.set_game_view(true);
+                    self.ui.focus(Some(self.viewport));
                 }
                 Action::Simulate => {
                     // The simulation looks through the game's eyes, as
