@@ -91,6 +91,7 @@ pub use runity_core::layers;
 pub use runity_render::lens;
 pub use runity_core::library;
 pub use runity_core::links;
+pub use runity_render::lod;
 pub use runity_render::lights;
 pub mod live;
 pub use runity_render::material;

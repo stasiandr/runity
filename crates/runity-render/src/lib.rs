@@ -20,6 +20,7 @@ pub mod footprints;
 pub mod gizmo;
 pub mod lens;
 pub mod lights;
+pub mod lod;
 pub mod look;
 pub mod material;
 pub mod moods;
