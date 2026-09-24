@@ -2539,7 +2539,6 @@ dependencies = [
  "runity-render",
  "runity-routes",
  "runity-shell",
- "runity-spline",
  "runity-steam",
  "serde",
  "tracing",
@@ -2707,16 +2706,6 @@ dependencies = [
  "runity-render",
  "subsecond",
  "winit",
-]
-
-[[package]]
-name = "runity-spline"
-version = "0.1.0"
-dependencies = [
- "glam 0.32.1",
- "runity-core",
- "runity-geometry",
- "serde",
 ]
 
 [[package]]

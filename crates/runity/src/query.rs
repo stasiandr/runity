@@ -134,7 +134,8 @@ impl Query {
                 Part::Particles => desc.particles().is_some(),
                 Part::Probe => desc.reflection_probe().is_some(),
                 Part::Decal => desc.decal().is_some(),
-                Part::Route => desc.route().is_some(),
+                // Read as text: a query answers in a build without routes too.
+                Part::Route => desc.parts.raw("route").is_some(),
                 Part::Joint => desc.joint() != Joint::None,
                 Part::Collider => desc.collider() != Collider::None,
             },

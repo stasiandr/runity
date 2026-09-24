@@ -10,4 +10,5 @@
     editor: false,
     parts: [],
     assets: [],
+    feature: Some("net"),
 )

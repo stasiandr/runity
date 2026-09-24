@@ -338,6 +338,7 @@ pub fn settle(
         if changed != before {
             desc.set_material(reference);
         }
+        #[cfg(feature = "spline")]
         if let Some(mut along) = desc.along() {
             let before = changed;
             model(&mut along.model, &mut changed);

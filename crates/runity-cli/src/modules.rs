@@ -182,7 +182,10 @@ mod tests {
         let cargo = KITCHEN.replace("runtity", "runity");
         assert_eq!(
             cargo_features(&cargo).unwrap(),
-            ["audio", "desktop-shell", "navigation", "physics"]
+            [
+                "animation", "audio", "desktop-shell", "dialogue", "input", "navigation", "net",
+                "physics", "routes", "spline"
+            ]
         );
         let cargo = cargo.replace("\"audio\"]", "\"audio\", \"ray-tracing\"]");
         let written = with_features(&cargo, &["audio".into()]).unwrap();

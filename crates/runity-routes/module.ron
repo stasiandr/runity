@@ -10,4 +10,5 @@
     editor: false,
     parts: ["route"],
     assets: [],
+    feature: Some("routes"),
 )

@@ -7,20 +7,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-runity-animation = { path = "../runity-animation" }
+runity-animation = { path = "../runity-animation", optional = true }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
 runity-shell = { path = "../runity-shell", optional = true }
 runity-render = { path = "../runity-render", default-features = false }
 runity-steam = { path = "../runity-steam", optional = true }
-runity-net = { path = "../runity-net" }
+runity-net = { path = "../runity-net", optional = true }
 runity-navigation = { path = "../runity-navigation", optional = true }
 runity-discord = { path = "../runity-discord", optional = true }
 runity-reports = { path = "../runity-reports", optional = true }
-runity-input = { path = "../runity-input" }
-runity-dialogue = { path = "../runity-dialogue" }
-runity-routes = { path = "../runity-routes" }
-runity-spline = { path = "../runity-spline" }
+runity-input = { path = "../runity-input", optional = true }
+runity-dialogue = { path = "../runity-dialogue", optional = true }
+runity-routes = { path = "../runity-routes", optional = true }
+runity-spline = { path = "../runity-spline", optional = true }
 runity-geometry = { path = "../runity-geometry" }
 runity-gpu = { path = "../runity-gpu" }
 runity-overlay = { path = "../runity-overlay" }
@@ -38,13 +38,27 @@ tracing = "0.1.44"
 # dependencies out of the build with it (DNA, postulate 3); a module's
 # manifest (`module.ron`) names its feature.
 [features]
-default = ["physics", "navigation", "ray-tracing"]
+default = [
+    "animation", "dialogue", "input", "navigation", "net", "physics", "ray-tracing", "routes", "spline",
+]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
-physics = ["runity-physics/rapier", "runity-net/physics"]
+physics = ["runity-physics/rapier", "runity-net?/physics"]
 # Hardware ray tracing in the render, where the device has it: an
 # experiment the scene asks for. Off, it is not in the build.
 ray-tracing = ["runity-render/ray-tracing"]
+# Skeletons, animator graphs and motion clips.
+animation = ["dep:runity-animation"]
+# Peers, ownership and sync, parties, LAN; Steam stands on it.
+net = ["dep:runity-net"]
+# Named input actions, maps and control schemes (input.ron).
+input = ["dep:runity-input"]
+# Splines and copies grown along them.
+spline = ["dep:runity-spline"]
+# Entities travelling their routes.
+routes = ["dep:runity-routes"]
+# Conversations.
+dialogue = ["dep:runity-dialogue"]
 # Where things can walk: a grid baked from the physics world.
 navigation = ["physics", "dep:runity-navigation"]
 # Sound. Off by default and not because it is unfinished: the engine is
@@ -55,7 +69,7 @@ audio = ["runity-audio/kira"]
 # Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
 # transport. Off by default: it links Valve's SDK and does nothing without
 # the Steam client running.
-steam = ["dep:runity-steam"]
+steam = ["net", "dep:runity-steam"]
 # Crash reports sent to Sentry and play reported to GameAnalytics. Off by
 # default: it is the network, TLS and a player's consent, none of which a
 # game gets without asking for them.

@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-runity = { path = "../../crates/runity", default-features = false, features = ["audio", "desktop-shell", "physics", "steam"] }
+runity = { path = "../../crates/runity", default-features = false, features = ["animation", "audio", "desktop-shell", "dialogue", "input", "net", "physics", "routes", "steam"] }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

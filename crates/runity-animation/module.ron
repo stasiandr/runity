@@ -10,4 +10,5 @@
     editor: false,
     parts: ["animator", "bone"],
     assets: [],
+    feature: Some("animation"),
 )

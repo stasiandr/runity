@@ -10,4 +10,5 @@
     editor: false,
     parts: ["spline", "along"],
     assets: [],
+    feature: Some("spline"),
 )

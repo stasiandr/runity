@@ -19,6 +19,7 @@
         "net",
         "steam",
         "dialogue",
+        "routes",
         "shell",
     ],
 )

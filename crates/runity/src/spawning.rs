@@ -19,7 +19,9 @@ pub fn dressers<'a>(
     let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
     #[cfg(feature = "physics")]
     out.push(Box::new(crate::physics::PhysicsDress));
+    #[cfg(feature = "animation")]
     out.push(Box::new(crate::motion::MotionDress));
+    #[cfg(feature = "routes")]
     out.push(Box::new(crate::routes::RouteDress));
     out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
     #[cfg(feature = "audio")]

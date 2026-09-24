@@ -20,10 +20,13 @@ pub use hecs;
 pub use ron;
 pub use runity_core::impl_parts;
 
+#[cfg(feature = "input")]
 pub use runity_input::actions;
 pub use runity_geometry::animation;
 pub use runity_render::appearance;
+#[cfg(feature = "animation")]
 pub use runity_animation::animator;
+#[cfg(feature = "animation")]
 pub use runity_animation::animgraph;
 /// The asset archive as the core has it: its header, its ID.
 pub use runity_core::asset as asset_core;
@@ -67,6 +70,7 @@ pub use runity_render::clouds;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub use runity_render::decals;
+#[cfg(feature = "dialogue")]
 pub use runity_dialogue::dialogue;
 #[cfg(feature = "discord")]
 pub use runity_discord::discord;
@@ -77,9 +81,11 @@ pub use runity_render::foliage;
 pub use runity_render::footprints;
 pub mod gizmo;
 pub use runity_gpu::gpu;
+#[cfg(feature = "animation")]
 pub use runity_animation::graph_text;
 pub use runity_core::id;
 pub use runity_core::input;
+#[cfg(feature = "net")]
 pub use runity_net::lan;
 pub use runity_core::layers;
 pub use runity_render::lens;
@@ -92,6 +98,7 @@ pub use runity_core::merge;
 pub use runity_render::moods;
 /// Clips that move a scene's things: the animation module's, with the
 /// sound and particles a clip turns written by the modules that own them.
+#[cfg(feature = "animation")]
 pub mod motion {
     pub use runity_animation::motion::*;
 
@@ -115,10 +122,12 @@ pub mod motion {
 }
 #[cfg(feature = "navigation")]
 pub use runity_navigation::navigation;
+#[cfg(feature = "net")]
 pub use runity_net::net;
 pub use runity_render::particles;
 pub use runity_render::passes;
 pub use runity_core::parts;
+#[cfg(feature = "net")]
 pub use runity_net::party;
 pub use runity_core::perf;
 #[cfg(feature = "physics")]
@@ -141,8 +150,11 @@ pub mod player_loop {
     /// own systems want it.
     pub fn modules() -> PlayerLoop {
         let mut player_loop = PlayerLoop::new();
+        #[cfg(feature = "routes")]
         runity_routes::systems(&mut player_loop);
+        #[cfg(feature = "animation")]
         player_loop.add(Phase::FixedUpdate, "motion", crate::motion::run);
+        #[cfg(feature = "animation")]
         runity_animation::systems(&mut player_loop);
         runity_core::player_loop::systems(&mut player_loop);
         runity_render::systems(&mut player_loop);
@@ -152,6 +164,7 @@ pub mod player_loop {
     #[cfg(test)]
     mod tests {
         #[test]
+        #[cfg(all(feature = "routes", feature = "animation"))]
         fn the_modules_put_their_systems_where_unity_would() {
             let player_loop = super::modules();
             use super::Phase;
@@ -173,7 +186,9 @@ pub mod modules {
     /// The modules' features `runity` builds with when a game does not say
     /// `default-features = false`: `default` in its Cargo.toml, less what
     /// is not a module's (a render pass's, as `ray-tracing`).
-    pub const DEFAULT_FEATURES: &[&str] = &["navigation", "physics"];
+    pub const DEFAULT_FEATURES: &[&str] = &[
+        "animation", "dialogue", "input", "navigation", "net", "physics", "routes", "spline",
+    ];
 
     /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,
     /// the core alone; `basic`, what a game as hard as Flappy Bird needs —
@@ -239,6 +254,12 @@ pub mod modules {
             "reports" => cfg!(feature = "reports"),
             "discord" => cfg!(feature = "discord"),
             "desktop-shell" => cfg!(feature = "desktop-shell"),
+            "animation" => cfg!(feature = "animation"),
+            "net" => cfg!(feature = "net"),
+            "input" => cfg!(feature = "input"),
+            "spline" => cfg!(feature = "spline"),
+            "routes" => cfg!(feature = "routes"),
+            "dialogue" => cfg!(feature = "dialogue"),
             _ => false,
         }
     }
@@ -264,12 +285,14 @@ pub mod modules {
 pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;
+#[cfg(feature = "net")]
 pub use runity_net::relay;
 pub use runity_render::render;
 #[cfg(feature = "reports")]
 pub use runity_reports::reports;
 pub use runity_core::ron_edit;
 pub use runity_core::ron_text;
+#[cfg(feature = "routes")]
 pub use runity_routes::routes;
 /// Saving a game in progress, as the core has it.
 pub use runity_core::save as save_core;
@@ -277,8 +300,35 @@ pub use runity_core::save as save_core;
 /// Saving a game in progress, and the report a running game sends the
 /// editor: the core's save with what the modules add to it.
 pub mod save {
+    #[cfg(feature = "animation")]
     pub use crate::animgraph::animator_trails;
+    #[cfg(feature = "net")]
     pub use crate::net::net_lines;
+
+    /// Each animated entity's recent transitions: none in a build without
+    /// animation.
+    #[cfg(not(feature = "animation"))]
+    pub fn animator_trails(_: &hecs::World) -> Vec<(crate::id::EntityId, Vec<String>)> {
+        Vec::new()
+    }
+
+    /// Who owns what on the network: nothing in a build without it.
+    #[cfg(not(feature = "net"))]
+    pub fn net_lines(_: &hecs::World) -> Vec<NetLine> {
+        Vec::new()
+    }
+
+    /// An entity's animator state for a save: its graph's, or nothing in a
+    /// build without animation.
+    fn animator_state(world: &hecs::World, entity: hecs::Entity) -> String {
+        #[cfg(feature = "animation")]
+        return crate::animgraph::animator_state(world, entity);
+        #[cfg(not(feature = "animation"))]
+        {
+            let _ = (world, entity);
+            String::new()
+        }
+    }
     pub use crate::save_core::*;
 
     /// Write down a world that started from `scene`, with each animated
@@ -288,7 +338,7 @@ pub mod save {
         components: &crate::components::Components,
         scene: &crate::scene::Scene,
     ) -> SaveGame {
-        capture_with(world, components, scene, &crate::animgraph::animator_state)
+        capture_with(world, components, scene, &animator_state)
     }
 }
 /// The scene file as the core has it: a line's identity, place and tree,
@@ -298,6 +348,7 @@ pub use runity_physics::body;
 pub use runity_core::defaults;
 pub use runity_render::look;
 pub use runity_audio::sound;
+#[cfg(feature = "spline")]
 pub use runity_spline::spline;
 mod scene_tests;
 
@@ -307,10 +358,13 @@ pub mod scene {
     pub use crate::body::*;
     pub use crate::look::*;
     pub use runity_geometry::line::*;
+    #[cfg(feature = "animation")]
     pub use crate::motion::{AnimatorRef, BoneName};
+    #[cfg(feature = "routes")]
     pub use crate::routes::{Route, RouteEnds};
     pub use crate::scene_core::*;
     pub use crate::sound::*;
+    #[cfg(feature = "spline")]
     pub use crate::spline::*;
 
     /// Every field of a line, an override or a scene's look the modules
@@ -323,9 +377,12 @@ pub mod scene {
         kinds.extend(runity_geometry::line::part_kinds());
         kinds.extend(runity_core::wind::part_kinds());
         kinds.extend(crate::look::part_kinds());
+        #[cfg(feature = "animation")]
         kinds.extend(crate::motion::part_kinds());
+        #[cfg(feature = "routes")]
         kinds.extend(crate::routes::part_kinds());
         kinds.extend(crate::sound::part_kinds());
+        #[cfg(feature = "spline")]
         kinds.extend(crate::spline::part_kinds());
         kinds
     }
@@ -340,9 +397,12 @@ pub mod prelude {
     pub use crate::mesh_asset::{MeshLibrary, TextureLibrary};
     pub use crate::sound::SoundLibrary;
     pub use crate::look::{LookLine, LookOverride, SceneLook};
+    #[cfg(feature = "animation")]
     pub use crate::motion::AnimationLine;
+    #[cfg(feature = "routes")]
     pub use crate::routes::RouteLine;
     pub use crate::sound::SoundLine;
+    #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
 }
 pub use runity_overlay::screen;
@@ -380,6 +440,7 @@ mod core_tests;
 /// apart.
 pub mod world {
     pub use crate::bodies::*;
+    #[cfg(feature = "animation")]
     pub use crate::motion::OnBone;
     pub use crate::sound::Sounding;
     pub use crate::spawning::*;
@@ -388,6 +449,7 @@ pub mod world {
 }
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
+#[cfg(feature = "animation")]
 pub use animator::{advance_animations, Animator, Playing};
 pub use asset::{
     AssetError, AssetId, Bounds, MaterialAsset, MeshAsset, SoundAsset, Submesh, Vertex,
@@ -403,6 +465,7 @@ pub use library::{Library, Reloaded};
 pub use refs::{AssetLink, MaterialLink, ModelLink, PrefabLink, SceneLink, SoundLink, TextureLink};
 // `Surface` is not re-exported at the root: `wgpu::Surface` and ours would
 // read the same in a `use` list and mean different things.
+#[cfg(feature = "input")]
 pub use actions::{Actions, Binding};
 pub use components::{ComponentProblem, Components};
 pub use live::{Instance, LiveScene, Reload, Spawned};
@@ -415,13 +478,24 @@ pub use prefab::{Instanced, Prefabs};
 /// Expand a scene's prefab instances, with what this build's modules grow
 /// on it: [`prefab::instantiate_with`] and the copies set along splines.
 pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
-    prefab::instantiate_with(scene, prefabs, spline::grow_all)
+    prefab::instantiate_with(scene, prefabs, grow)
+}
+
+/// What grows on a scene as it expands: copies along splines, in a build
+/// that has them.
+fn grow(lines: &mut [EntityDesc]) {
+    #[cfg(feature = "spline")]
+    spline::grow_all(lines);
+    #[cfg(not(feature = "spline"))]
+    let _ = lines;
 }
 pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
-pub use scene::{Along, Body, EntityDesc, Fog, Scene, Spline, Sun, Transform, View};
+pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
+#[cfg(feature = "spline")]
+pub use scene::{Along, Spline};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use tuned::Tuned;
