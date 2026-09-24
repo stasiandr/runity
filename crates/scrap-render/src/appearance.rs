@@ -152,6 +152,11 @@ fn emitting(
     Some(out)
 }
 
+/// A model spawned without a GPU, drawn with a stand-in until its mesh is
+/// uploaded: the link it names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshPending(pub crate::AssetLink);
+
 /// Give an entity the mesh and surface its line names — or its decal, or
 /// its shaped ground — or take them away when the mesh cannot be found.
 pub fn dress_look(
@@ -196,6 +201,14 @@ pub fn dress_look(
         Some(mesh) => {
             let surface = Surface(desc.material_from(palette));
             let _ = world.insert(entity, (Model(mesh), surface));
+            // Spawned where there is no GPU (a game's fixed step, with the
+            // renderer on its own thread): its mesh comes with the next
+            // frame (`LiveScene::upload_pending`).
+            if mesh == crate::render::MeshHandle::TEST {
+                let _ = world.insert_one(entity, MeshPending(model.clone()));
+            } else {
+                let _ = world.remove_one::<MeshPending>(entity);
+            }
         }
         None => {
             let _ = world.remove::<(Model, Surface)>(entity);
