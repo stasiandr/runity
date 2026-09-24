@@ -24,8 +24,9 @@
 - [x] Подповерхностное рассеяние
 - [x] Апскейл и динамическое разрешение: MetalFX temporal и spatial на
       Apple, свой Catmull-Rom везде
-- [ ] FSR 2/3 и DLSS на Windows и Linux: нужен wgpu-хэндл Vulkan/DX12 и
-      их SDK (свой spatial уже есть)
+- [x] DLSS на Windows и Linux (Vulkan, фича `dlss`, `runity_gpu::dlss`)
+- [ ] DLSS Ray Reconstruction вместо TAA для зерна лучей; FSR 3 для
+      AMD и Intel
 - [ ] Векторы движения по объектам — для TAA и MetalFX temporal
       (сейчас только камера)
 - [x] Отсечение кластеров на compute (`runity::cluster`)

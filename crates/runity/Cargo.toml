@@ -53,6 +53,9 @@ physics = ["runity-physics/rapier", "runity-net?/physics"]
 ray-tracing = ["runity-render/ray-tracing"]
 # MetalFX upscaling on Apple's GPUs; off, the engine's own upscaler.
 metalfx = ["runity-render/metalfx"]
+# DLSS on NVIDIA's RTX cards, Windows and Linux; off by default, since it
+# needs NVIDIA's DLSS SDK to build (docs/stack.md, "Апскейл").
+dlss = ["runity-render/dlss"]
 # Skeletons, animator graphs and motion clips.
 animation = ["dep:runity-animation"]
 # Peers, ownership and sync, parties, LAN; Steam stands on it.

@@ -110,8 +110,8 @@ fn half_the_pixels_made_up_to_the_screen_are_close_to_all_of_them() {
     let auto_off = difference(&full, &auto);
     eprintln!("auto ({used:?}): {auto_off:.2}");
     match used {
-        Some((Used::MetalFxTemporal, _)) => {
-            assert!(auto_off < shader_off, "MetalFX temporal is nearer than the engine's own: {auto_off:.2} vs {shader_off:.2}");
+        Some((Used::MetalFxTemporal | Used::Dlss, _)) => {
+            assert!(auto_off < shader_off, "the temporal upscaler is nearer than the engine's own: {auto_off:.2} vs {shader_off:.2}");
         }
         Some((Used::Shader, _)) => assert_eq!(auto_off, shader_off),
         other => panic!("auto made it up with {other:?}"),

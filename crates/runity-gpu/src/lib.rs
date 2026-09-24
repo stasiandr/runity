@@ -3,6 +3,8 @@
 //! module draws the 3D scene on it and the UI module draws the interface;
 //! the editor always has it, a headless server never does.
 
+#[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+pub mod dlss;
 pub mod gpu;
 pub mod gpu_timer;
 pub mod surface;

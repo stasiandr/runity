@@ -10,6 +10,11 @@
 //!
 //! What makes it up, best first, the first the device has:
 //!
+//! * **DLSS** (NVIDIA's RTX cards, Windows and Linux, on Vulkan, with the
+//!   `dlss` feature): like MetalFX temporal below, TAA and the upscale in
+//!   one, from the same jitter, depth and motion — a network NVIDIA
+//!   trained fills the detail in. At the screen's own size it is DLAA,
+//!   antialiasing alone.
 //! * **MetalFX temporal** (Apple): TAA and the upscale in one — each frame
 //!   moved by a fraction of a pixel of the smaller picture and blended into
 //!   a history at the screen's size, through the depth and where each pixel
@@ -36,10 +41,11 @@ pub const SHADER: &str = include_str!("upscale.wgsl");
 /// What makes the smaller picture up to the screen's size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Method {
-    /// The best the device has: MetalFX temporal where there is TAA to
-    /// replace, then MetalFX spatial, then the engine's own.
+    /// The best the device has: DLSS or MetalFX temporal where there is
+    /// TAA to replace, then MetalFX spatial, then the engine's own.
     #[default]
     Auto,
+    /// The device's temporal upscaler: DLSS or MetalFX temporal.
     Temporal,
     Spatial,
     /// The engine's own, on any device.
@@ -107,6 +113,7 @@ impl Default for Upscaling {
 /// Which upscaler made the last frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Used {
+    Dlss,
     MetalFxTemporal,
     MetalFxSpatial,
     Shader,
@@ -186,7 +193,7 @@ pub(crate) struct Upscaler {
     /// The picture made, at the screen's size.
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Where each pixel was last frame, at the size drawn.
-    #[cfg_attr(not(all(target_vendor = "apple", feature = "metalfx")), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
     motion: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Frames blended into the temporal history since it was last made,
     /// and where the camera was.
@@ -194,7 +201,7 @@ pub(crate) struct Upscaler {
     eye: Option<(glam::Vec3, glam::Vec3)>,
     pub(crate) used: Option<Used>,
     layout: wgpu::BindGroupLayout,
-    #[cfg_attr(not(all(target_vendor = "apple", feature = "metalfx")), allow(dead_code))]
+    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
     motion_pipeline: wgpu::RenderPipeline,
     upscale_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
@@ -204,6 +211,8 @@ pub(crate) struct Upscaler {
     no_depth: wgpu::TextureView,
     #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
     metal: metal::MetalFx,
+    #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+    dlss: Option<nvidia::Dlss>,
 }
 
 impl Upscaler {
@@ -328,6 +337,8 @@ impl Upscaler {
             no_depth,
             #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
             metal: metal::MetalFx::new(gpu),
+            #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+            dlss: nvidia::Dlss::new(gpu),
         }
     }
 
@@ -359,17 +370,20 @@ impl Upscaler {
         }
     }
 
-    /// Whether MetalFX temporal will make this frame up, taking TAA's place.
+    /// Whether DLSS or MetalFX temporal will make this frame up, taking
+    /// TAA's place.
     pub(crate) fn temporal(&self, settings: &Upscaling, taa: bool) -> bool {
+        #[allow(unused_mut)]
+        let mut has = false;
         #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
         {
-            taa && matches!(settings.method, Method::Auto | Method::Temporal) && self.metal.temporal_supported
+            has |= self.metal.temporal_supported;
         }
-        #[cfg(not(all(target_vendor = "apple", feature = "metalfx")))]
+        #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
         {
-            let _ = (settings, taa);
-            false
+            has |= self.dlss.is_some();
         }
+        has && taa && matches!(settings.method, Method::Auto | Method::Temporal)
     }
 
     /// The camera now: a cut starts the temporal history again, as TAA's.
@@ -411,6 +425,32 @@ impl Upscaler {
         let view = texture.create_view(&Default::default());
         self.output = Some((texture, view, size));
         self.frames = 0;
+    }
+
+    /// Where each pixel of the picture was last frame, into `motion`.
+    #[cfg_attr(not(any(all(target_vendor = "apple", feature = "metalfx"), all(feature = "dlss", any(windows, target_os = "linux")))), allow(dead_code))]
+    fn motion(
+        &mut self,
+        gpu: &Gpu,
+        encoder: &mut wgpu::CommandEncoder,
+        picture: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        input: (u32, u32),
+    ) {
+        if self.motion.as_ref().is_none_or(|m| m.2 != input) {
+            let texture = target(
+                gpu,
+                "motion",
+                input,
+                MOTION_FORMAT,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            let view = texture.create_view(&Default::default());
+            self.motion = Some((texture, view, input));
+        }
+        let group = self.group(gpu, picture, depth);
+        let motion = &self.motion.as_ref().expect("made above").1;
+        Self::fullscreen(encoder, "motion", motion, &self.motion_pipeline, &group);
     }
 
     fn group(&self, gpu: &Gpu, picture: &wgpu::TextureView, depth: &wgpu::TextureView) -> wgpu::BindGroup {
@@ -496,25 +536,42 @@ impl Upscaler {
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
 
+        #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+        if let Some(mut dlss) = self.dlss.take().filter(|_| temporal) {
+            self.motion(gpu, encoder, picture, depth, input);
+            // In the picture's pixels, y down, as MetalFX's.
+            let pixel = Vec2::new(jitter.x * input.0 as f32 * 0.5, -jitter.y * input.1 as f32 * 0.5);
+            let (_, out, _) = self.output.as_ref().expect("made above");
+            let motion = &self.motion.as_ref().expect("made above").1;
+            match dlss.render(gpu, encoder, picture, depth, motion, out, input, output, pixel, self.frames == 0) {
+                Ok(Some(buffer)) => {
+                    // DLSS's commands go straight after the frame's so far,
+                    // in the same submission.
+                    let before = std::mem::replace(
+                        encoder,
+                        gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("runity::after upscale"),
+                        }),
+                    );
+                    gpu.queue.submit([before.finish(), buffer]);
+                    self.dlss = Some(dlss);
+                    self.frames = self.frames.saturating_add(1);
+                    self.used = Some(Used::Dlss);
+                    return &self.output.as_ref().expect("made above").1;
+                }
+                // Drawn at a size this DLSS mode does not take: the
+                // engine's own, this frame.
+                Ok(None) => self.dlss = Some(dlss),
+                Err(e) => eprintln!("DLSS failed, the engine's own upscaler from now on: {e}"),
+            }
+        }
+
         #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
         {
             let spatial = matches!(settings.method, Method::Auto | Method::Spatial) && self.metal.spatial_supported;
             if temporal || spatial {
-                if temporal && self.motion.as_ref().is_none_or(|m| m.2 != input) {
-                    let texture = target(
-                        gpu,
-                        "motion",
-                        input,
-                        MOTION_FORMAT,
-                        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-                    );
-                    let view = texture.create_view(&Default::default());
-                    self.motion = Some((texture, view, input));
-                }
                 if temporal {
-                    let group = self.group(gpu, picture, depth);
-                    let motion = &self.motion.as_ref().expect("made above").1;
-                    Self::fullscreen(encoder, "motion", motion, &self.motion_pipeline, &group);
+                    self.motion(gpu, encoder, picture, depth, input);
                 }
                 let before = std::mem::replace(
                     encoder,
@@ -743,6 +800,123 @@ mod metal {
                 scaler.setReset(reset);
             }
             Self::encode(encoder, |buffer| unsafe { scaler.encodeToCommandBuffer(buffer) })
+        }
+    }
+}
+
+#[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+mod nvidia {
+    //! DLSS, through `dlss_wgpu`: a context per screen size and quality
+    //! mode, fed the picture, the prepass's depth and the motion.
+
+    use std::sync::{Arc, Mutex};
+
+    use glam::Vec2;
+    use runity_gpu::dlss::super_resolution::{
+        DlssSuperResolution, DlssSuperResolutionExposure, DlssSuperResolutionRenderParameters,
+    };
+    use runity_gpu::dlss::{DlssError, DlssFeatureFlags, DlssPerfQualityMode, DlssSdk};
+
+    use crate::gpu::Gpu;
+
+    pub(super) struct Dlss {
+        sdk: Arc<Mutex<DlssSdk>>,
+        context: Option<((u32, u32), DlssPerfQualityMode, DlssSuperResolution)>,
+    }
+
+    /// The mode whose share of the screen `scale` is nearest: each takes a
+    /// range of sizes round its own, so the dynamic scale moves inside one
+    /// without making it again.
+    fn mode(scale: f32) -> DlssPerfQualityMode {
+        match scale {
+            s if s >= 0.99 => DlssPerfQualityMode::Dlaa,
+            s if s >= 0.62 => DlssPerfQualityMode::Quality,
+            s if s >= 0.55 => DlssPerfQualityMode::Balanced,
+            s if s >= 0.42 => DlssPerfQualityMode::Performance,
+            _ => DlssPerfQualityMode::UltraPerformance,
+        }
+    }
+
+    impl Dlss {
+        pub(super) fn new(gpu: &Gpu) -> Option<Self> {
+            gpu.dlss.as_ref().map(|d| Self {
+                sdk: Arc::clone(&d.sdk),
+                context: None,
+            })
+        }
+
+        /// DLSS's commands for making `color` (drawn at `input`) up to
+        /// `output`, to submit straight after `encoder`; `None` when the
+        /// size drawn is outside what its mode takes.
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn render(
+            &mut self,
+            gpu: &Gpu,
+            encoder: &mut wgpu::CommandEncoder,
+            color: &wgpu::TextureView,
+            depth: &wgpu::TextureView,
+            motion: &wgpu::TextureView,
+            out: &wgpu::TextureView,
+            input: (u32, u32),
+            output: (u32, u32),
+            jitter: Vec2,
+            reset: bool,
+        ) -> Result<Option<wgpu::CommandBuffer>, DlssError> {
+            let mode = mode(input.0 as f32 / output.0.max(1) as f32);
+            if self.context.as_ref().is_none_or(|(size, m, _)| *size != output || *m != mode) {
+                // The old one goes first: it waits for the device.
+                self.context = None;
+                let made = DlssSuperResolution::new(
+                    [output.0, output.1],
+                    mode,
+                    // The picture is in HDR, before the eye has adjusted
+                    // (DLSS finds its own exposure), and the motion is
+                    // at the size drawn, without the jitter.
+                    DlssFeatureFlags::HighDynamicRange
+                        | DlssFeatureFlags::LowResolutionMotionVectors
+                        | DlssFeatureFlags::AutoExposure,
+                    Arc::clone(&self.sdk),
+                    &gpu.device,
+                    &gpu.queue,
+                )?;
+                self.context = Some((output, mode, made));
+            }
+            let (_, _, context) = self.context.as_mut().expect("made above");
+            let range = context.render_resolution_range();
+            let size = [input.0, input.1];
+            let (low, high) = (range.start(), range.end());
+            if size[0] < low[0] || size[1] < low[1] || size[0] > high[0] || size[1] > high[1] {
+                return Ok(None);
+            }
+            let parameters = DlssSuperResolutionRenderParameters {
+                color,
+                depth,
+                motion_vectors: motion,
+                exposure: DlssSuperResolutionExposure::Automatic,
+                bias: None,
+                dlss_output: out,
+                reset,
+                jitter_offset: [jitter.x, jitter.y],
+                partial_texture_size: Some(size),
+                // Motion is kept as a share of the picture; DLSS wants its
+                // pixels.
+                motion_vector_scale: Some([input.0 as f32, input.1 as f32]),
+            };
+            context.render(parameters, encoder, &gpu.adapter).map(Some)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_scale_picks_the_nearest_mode() {
+            assert_eq!(mode(1.0), DlssPerfQualityMode::Dlaa);
+            assert_eq!(mode(0.67), DlssPerfQualityMode::Quality);
+            assert_eq!(mode(0.58), DlssPerfQualityMode::Balanced);
+            assert_eq!(mode(0.5), DlssPerfQualityMode::Performance);
+            assert_eq!(mode(0.33), DlssPerfQualityMode::UltraPerformance);
         }
     }
 }

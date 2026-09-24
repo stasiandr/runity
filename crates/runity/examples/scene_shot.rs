@@ -86,6 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let warm = shot.warm_frames();
     shot.draw(warm);
     let pixels = shot.pixels();
+    if let Some((used, scale)) = shot.renderer.upscaled() {
+        eprintln!("made up to the screen by {used:?}, drawn at {scale:.2} of it");
+    }
     if timed > 0 {
         shot.renderer.profile_gpu(true);
         if std::env::var_os("RUNITY_NO_OCCLUSION").is_some() {
