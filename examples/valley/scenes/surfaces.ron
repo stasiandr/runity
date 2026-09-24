@@ -1,0 +1,22 @@
+// Поверхностные эффекты (docs/simulation.md, пункт 10): рябь на пруду —
+// волновое уравнение на карте высот — от шара, прокатившегося по воде,
+// и от капель дождя; дождь копится по часам мира: земля темнеет и
+// блестит, собираются лужи, низ ящиков и столбов забрызгивает грязью.
+(
+    view: (position: (0.0, 3.0, 7.5), target: (0.0, 0.3, -0.5), fov_deg: 55.0),
+    sun: (hour: 15.0, intensity: 0.9),
+    sky: (mode: Physical, clouds: (coverage: 0.8)),
+    weather: (rain: 0.8, accumulate: true, pace: 12.0, mud_height: 0.7),
+    entities: [
+        (id: "a1dc83e61bb3192e", name: "ground", model: "builtin:plane", transform: (scale: (60.0, 1.0, 60.0)), material: (base_color: (0.45, 0.4, 0.33)), body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "a3b497468f8fb7a0", name: "pond bed", model: "builtin:cube", transform: (position: (1.5, -0.3, -1.0), scale: (5.0, 0.2, 4.0)), material: (base_color: (0.55, 0.53, 0.5))),
+        (id: "890051577c25b7ef", name: "pond", transform: (position: (1.5, 0.02, -1.0)), material: (base_color: (0.05, 0.2, 0.25), shading: Water, wind: 0.2, clarity: 1.5, foam: 0.3), ripples: (size: (5.0, 4.0), cells: 120, speed: 1.2, damping: 0.4, rain: 6.0)),
+        (id: "d227197d9b661e44", name: "rolling ball", model: "builtin:sphere", transform: (position: (-1.5, 0.05, -2.5), scale: (0.35, 0.35, 0.35)), material: (base_color: (0.8, 0.2, 0.1)), body: Kinematic, collider: Sphere(radius: 0.5), route: (points: [(0.0, 0.0, 0.0), (5.5, 0.0, 2.5)], speed: 0.9, ends: Back)),
+        (id: "dee51cbe7c80591b", name: "crate 0", model: "builtin:cube", transform: (position: (-3.0, 0.4, 0.5), scale: (0.8, 0.8, 0.8), rotation_deg: (0.0, 0.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2))),
+        (id: "55940d60e671e1cf", name: "crate 1", model: "builtin:cube", transform: (position: (-2.2, 0.4, 1.6), scale: (0.8, 0.8, 0.8), rotation_deg: (0.0, 25.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2))),
+        (id: "11266b6c533ae0b9", name: "crate 2", model: "builtin:cube", transform: (position: (-3.5, 0.4, -1.2), scale: (0.8, 0.8, 0.8), rotation_deg: (0.0, 50.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2))),
+        (id: "025da1d59225ab9d", name: "post 0", model: "builtin:cylinder", transform: (position: (-1.0, 0.8, 1.8), scale: (0.18, 1.6, 0.18)), material: (base_color: (0.75, 0.72, 0.68))),
+        (id: "5c8da70182e85951", name: "post 1", model: "builtin:cylinder", transform: (position: (4.5, 0.8, 1.5), scale: (0.18, 1.6, 0.18)), material: (base_color: (0.75, 0.72, 0.68))),
+        (id: "c1f697cabca6919d", name: "post 2", model: "builtin:cylinder", transform: (position: (5.0, 0.8, -2.5), scale: (0.18, 1.6, 0.18)), material: (base_color: (0.75, 0.72, 0.68))),
+    ],
+)

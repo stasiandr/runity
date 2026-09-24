@@ -1262,6 +1262,19 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
         let curl = (1.0 - smoothstep(0.0, 0.5, crack.x)) * dry * 0.6;
         out.normal = normalize(out.normal + vec3<f32>(crack.y, 0.0, crack.z) * curl);
     }
+    // Mud splashed up the foot of things: brown and dull in spatters,
+    // thickest low, gone by the mud's height; wetter where it is wet.
+    let mud = frame.weather[2].z;
+    let mud_height = frame.weather[2].w;
+    if mud > 0.0 && mud_height > 0.0 && !is_sand {
+        let low = 1.0 - smoothstep(0.0, mud_height, position.y);
+        let spatter = patches(position.xz * 6.0 + vec2<f32>(position.y * 9.0, 3.0)) * 0.6 + patches(position.xz * 17.0 + position.y * 23.0) * 0.4;
+        let amount = mud * low * (1.0 - 0.6 * max(geometric.y, 0.0));
+        let splash = smoothstep(1.0 - amount, 1.0 - amount + 0.1, spatter) * step(0.001, amount);
+        out.albedo = mix(out.albedo, vec3<f32>(0.18, 0.12, 0.07), splash);
+        out.smoothness = mix(out.smoothness, 0.1 + 0.5 * wet_here, splash);
+        out.metal = out.metal * (1.0 - splash);
+    }
     if wet_here + puddles + w.z <= 0.0 {
         return out;
     }
