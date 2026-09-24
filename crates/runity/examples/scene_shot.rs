@@ -67,6 +67,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // A pool of a thousand pages: what a 1080p view needs at every level.
         frame.shadows.resolution = frame.shadows.resolution.max(4096);
     }
+    for smoke in &frame.smoke {
+        let most = smoke.cells.iter().map(|c| c[0]).max().unwrap_or(0);
+        let hot = smoke.cells.iter().map(|c| c[1]).max().unwrap_or(0);
+        eprintln!("smoke {:?} {:?}..{:?}: densest {most}, hottest {hot}", smoke.size, smoke.low, smoke.high);
+    }
     if let Some(scale) = upscale {
         frame.post.upscaling.enabled = true;
         frame.post.upscaling.scale = scale;

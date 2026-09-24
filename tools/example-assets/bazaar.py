@@ -2,7 +2,8 @@
 
 Awnings bellying over two stalls, flags and banners, a washing line with
 sheets, bunting between the stalls, and a mud-brick wall that comes down:
-cloth, ropes and crumbling together (runity::cloth, rope, crumble).
+cloth, ropes and a wall that comes down together (the soft module's
+cloth and rope, the destruction module's fracture).
 
     python3 tools/example-assets/bazaar.py
 """
@@ -69,9 +70,9 @@ for k in range(3):
 thing("bunting", 'transform: (position: (-2.5, 2.35, -2.0)), material: (base_color: (0.9, 0.3, 0.2)), rope: (to: (4.5, 0.0, -1.0), slack: 0.06, segments: 32, thickness: 0.018, catch: 0.6)')
 
 # A mud-brick wall that comes down four seconds in, toward the camera.
-thing("old wall", 'model: "builtin:cube", transform: (position: (6.0, 1.3, 2.5), rotation_deg: (0.0, -20.0, 0.0), scale: (4.0, 2.6, 0.45)), material: (base_color: %s), body: Static, collider: Box(half: (0.5, 0.5, 0.5), center: (0.0, 0.0, 0.0)), crumble: (at: 4.0, pieces: (8, 6, 2), burst: 3.5, from: (0.0, 0.3, -1.0), lasts: 6.0)' % f(MUD))
+thing("old wall", 'model: "builtin:cube", transform: (position: (6.0, 1.3, 2.5), rotation_deg: (0.0, -20.0, 0.0), scale: (4.0, 2.6, 0.45)), material: (base_color: %s), body: Static, collider: Box(half: (0.5, 0.5, 0.5), center: (0.0, 0.0, 0.0)), fracture: (pieces: 24, at: 4.0, from: (0.0, 0.3, -1.0), knock: 3.5, levels: 1)' % f(MUD))
 
-head = """// Базар в пустыне на ветру (`runity::cloth`, `rope`, `crumble`): навесы
+head = """// Базар в пустыне на ветру (`cloth`, `rope` модуля soft, `fracture` модуля destruction): навесы
 // над двумя лавками, флаги и знамя, бельевая верёвка с простынями,
 // гирлянда между лавками и глинобитная стена, что рушится на четвёртой
 // секунде. Сгенерирована tools/example-assets/bazaar.py.

@@ -264,6 +264,13 @@ pub struct Emitter {
     /// used then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpu: bool,
+    /// On the GPU, they bounce off what is drawn: each step a particle
+    /// that has gone behind the scene's depth is put back on the surface
+    /// there and bounced off it — sparks off a floor, rain off a roof —
+    /// with no colliders at all (screen-space collision). Off screen they
+    /// pass through.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub collide: bool,
 }
 
 fn emit_duration() -> f32 {
@@ -627,9 +634,6 @@ crate::impl_parts! {
     PostVolume => "post_volume";
     Decal => "decal";
     crate::footprints::Footprints => "footprints";
-    crate::cloth::Cloth => "cloth";
-    crate::rope::Rope => "rope";
-    crate::heap::Heap => "heap";
     View => "view";
     Sun => "sun";
     Fog => "fog";

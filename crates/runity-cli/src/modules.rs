@@ -183,8 +183,8 @@ mod tests {
         assert_eq!(
             cargo_features(&cargo).unwrap(),
             [
-                "animation", "audio", "desktop-shell", "dialogue", "input", "navigation", "net",
-                "physics", "routes", "spline"
+                "animation", "audio", "character", "desktop-shell", "destruction", "dialogue", "fluid", "input", "navigation", "net",
+                "physics", "routes", "soft", "spline"
             ]
         );
         let cargo = cargo.replace("\"audio\"]", "\"audio\", \"ray-tracing\"]");

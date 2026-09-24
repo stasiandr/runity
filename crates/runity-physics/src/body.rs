@@ -345,38 +345,7 @@ pub enum Body {
 pub struct JointBreak(pub f32);
 
 
-/// A thing that comes down, as a scene line writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Crumble {
-    /// Seconds after it is placed that it comes down; below 0, never by
-    /// itself (a game brings it down with [`CrumbleState::strike`]).
-    pub at: f32,
-    /// Blocks along its x, y and z.
-    pub pieces: [u32; 3],
-    /// How hard the blocks are knocked, metres a second.
-    pub burst: f32,
-    /// Where the blow comes from, in its own space: `(0, 0, 1)` from in
-    /// front. Zero bursts it outward from its middle.
-    pub from: [f32; 3],
-    /// Seconds a block lies before it crumbles into sand.
-    pub lasts: f32,
-}
-
-impl Default for Crumble {
-    fn default() -> Self {
-        Self {
-            at: 2.0,
-            pieces: [5, 4, 2],
-            burst: 3.0,
-            from: [0.0, 0.0, 1.0],
-            lasts: 5.0,
-        }
-    }
-}
-
 crate::impl_parts! {
-    Crumble => "crumble";
     Body => "body", default if |b| *b == Body::None;
     Collider => "collider", default if |c| *c == Collider::None;
     BodyProps => "physics", default if |p| p.is_default();

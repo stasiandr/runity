@@ -1,0 +1,19 @@
+// Накопление снега (docs/simulation.md, пункт 10): снегопад копится по
+// часам мира — сперва пятнами на том, что смотрит вверх, потом целиком;
+// санки прорезают колею в снежном покрове.
+(
+    view: (position: (0.0, 2.6, 7.0), target: (0.0, 0.6, 0.0), fov_deg: 55.0),
+    sun: (hour: 13.0, intensity: 1.0),
+    sky: (mode: Physical, clouds: (coverage: 0.7)),
+    wind: (direction: (1.0, 0.0, 0.2), strength: 0.6),
+    weather: (snowfall: 0.8, accumulate: true, pace: 16.0),
+    entities: [
+        (id: "e977790b3dd028c5", name: "ground", model: "builtin:plane", transform: (scale: (60.0, 1.0, 60.0)), material: (base_color: (0.35, 0.36, 0.3)), body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "44375e663141b986", name: "hut", model: "builtin:cube", transform: (position: (-2.5, 1.0, -2.0), scale: (2.5, 2.0, 2.0)), material: (base_color: (0.42, 0.3, 0.2))),
+        (id: "ff6621595099273a", name: "roof", model: "builtin:ramp", transform: (position: (-2.5, 2.4, -2.0), scale: (2.6, 0.8, 2.2)), material: (base_color: (0.4, 0.15, 0.1))),
+        (id: "36c625443d024ebc", name: "barrel", model: "builtin:cylinder", transform: (position: (0.5, 0.5, -1.0), scale: (0.7, 1.0, 0.7)), material: (base_color: (0.3, 0.3, 0.32), metallic: 0.8, roughness: 0.4)),
+        (id: "7999d4adb9fd6c21", name: "bench", model: "builtin:cube", transform: (position: (2.5, 0.45, 0.0), scale: (1.8, 0.1, 0.5)), material: (base_color: (0.42, 0.3, 0.2))),
+        (id: "8c3af8c6eca1b3e6", name: "snowfield", transform: (position: (1.5, 0.0, 2.0)), material: (base_color: (0.95, 0.96, 0.98), roughness: 0.85), snow_cover: (size: (7.0, 2.0), cells: 140, depth: 0.2, berm: 0.6)),
+        (id: "ae315254a576b913", name: "sled", model: "builtin:cube", transform: (position: (-1.5, 0.1, 2.0), scale: (0.5, 0.12, 0.9)), material: (base_color: (0.7, 0.15, 0.1)), body: Kinematic, collider: Box(half: (0.5, 0.5, 0.5)), route: (points: [(0.0, 0.0, 0.0), (6.0, 0.0, 0.0)], speed: 0.8, ends: Stop)),
+    ],
+)

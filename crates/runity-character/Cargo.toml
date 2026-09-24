@@ -1,0 +1,20 @@
+[package]
+name = "runity-character"
+description = "runity's characters in physics: a humanoid ragdoll from capsules and joints, active and limp, driven by procedural gait or motion matching, arms reaching by IK, and many-legged crawlers stepping by IK. Headless: it says what to push and where; the facade pushes through the physics and draws."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+runity-core = { path = "../runity-core" }
+runity-geometry = { path = "../runity-geometry" }
+runity-physics = { path = "../runity-physics", default-features = false }
+runity-soft = { path = "../runity-soft" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+ron = "0.12.2"

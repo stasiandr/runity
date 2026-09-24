@@ -21,6 +21,7 @@
 use runity::prelude::*;
 pub mod actions;
 mod animation;
+mod blender_link;
 mod blockout;
 pub mod console;
 mod error;
@@ -94,6 +95,15 @@ pub struct Session {
     library_dir: Option<PathBuf>,
     /// Where `.rmat` sources go: the project's `materials/`.
     material_dir: Option<PathBuf>,
+    /// A library update running beside the frame ([`Session::poll_assets`]):
+    /// a `.blend` takes Blender a second or more, and the editor keeps
+    /// drawing meanwhile.
+    syncing: Option<(
+        std::thread::JoinHandle<Vec<runity_import::Reimported>>,
+        std::time::Instant,
+    )>,
+    /// Listening for an open Blender (docs/blender.md).
+    blender: Option<blender_link::Link>,
     /// Prefabs a scene's instances name: the project's `prefabs/`.
     prefabs: runity::Prefabs,
     /// Where those came from, so the editor can write a new one back.
@@ -301,6 +311,8 @@ impl Session {
             library: None,
             library_dir: None,
             material_dir: None,
+            syncing: None,
+            blender: None,
             prefabs: runity::Prefabs::new(),
             prefab_dir: None,
             instanced: runity::Instanced::default(),
@@ -2831,29 +2843,187 @@ impl Session {
         Ok(())
     }
 
+    /// [`Session::reload_assets`] without waiting: the update runs on a
+    /// thread of its own, and a later call picks up what it did. What a
+    /// window calls every half second, so that saving a `.blend` — which
+    /// Blender takes a second or more to read — does not stop the frame.
+    /// `Some(n)` when an update finished, with how many assets it rebuilt.
+    pub fn poll_assets(&mut self) -> Option<usize> {
+        let Some(project) = self.project.clone() else {
+            let n = self.reload_assets();
+            return (n > 0).then_some(n);
+        };
+        match self.syncing.take() {
+            Some((job, _)) if job.is_finished() => {
+                let synced = job.join().unwrap_or_default();
+                Some(self.apply_synced(synced))
+            }
+            Some(running) => {
+                self.syncing = Some(running);
+                None
+            }
+            None => {
+                // A .blend an open Blender just saved is on its way over
+                // the link; this leaves it a moment to arrive.
+                self.syncing = Some((
+                    std::thread::spawn(move || {
+                        runity_import::sync_settled(&project, std::time::Duration::from_secs(2))
+                    }),
+                    std::time::Instant::now(),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Listen for an open Blender and take in what it sent: a saved
+    /// `.blend` imported without starting another Blender, and objects
+    /// being moved there, previewed here (docs/blender.md). Starts
+    /// listening on the first call for the open project, and writes the
+    /// port where the plugin looks, `library/blender-link`. Returns how
+    /// many messages were taken in.
+    pub fn poll_blender(&mut self) -> usize {
+        let Some(project) = self.project.clone() else {
+            self.blender = None;
+            return 0;
+        };
+        if self.blender.as_ref().is_none_or(|l| l.project != project) {
+            self.blender = blender_link::Link::start(project).ok();
+            self.write_blender_hints();
+        }
+        let Some(link) = &self.blender else { return 0 };
+        let messages = link.drain();
+        let count = messages.len();
+        // In the order they came: a drag after a save moves what the save
+        // brought in.
+        let mut moved = false;
+        for message in messages {
+            match message {
+                blender_link::Message::Imported { source, result } => {
+                    if result.is_ok() {
+                        let name = source
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        self.console.say(
+                            console::Level::Info,
+                            format!("{name}: saved in Blender, imported"),
+                        );
+                    }
+                    self.apply_synced(vec![runity_import::Reimported {
+                        source,
+                        change: runity_import::Change::Changed,
+                        result,
+                    }]);
+                    moved = false;
+                }
+                blender_link::Message::Moved(moves) => {
+                    for (id, transform) in moves {
+                        for tree in self.prefabs.trees_mut() {
+                            if let Some(part) = find_in(tree, id) {
+                                part.transform = transform;
+                                moved = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if moved {
+            self.respawn();
+        }
+        count
+    }
+
+    /// The port the editor listens on for Blender, once it does.
+    pub fn blender_port(&self) -> Option<u16> {
+        self.blender.as_ref().map(|l| l.port)
+    }
+
+    /// Whether a library update is running in the background.
+    pub fn importing(&self) -> bool {
+        self.importing_for().is_some()
+    }
+
+    /// How long the library update running in the background has taken so
+    /// far: a window says so once it is long enough to notice.
+    pub fn importing_for(&self) -> Option<std::time::Duration> {
+        self.syncing
+            .as_ref()
+            .filter(|(job, _)| !job.is_finished())
+            .map(|(_, started)| started.elapsed())
+    }
+
+    /// Take in what a library update did: its failures said, and the
+    /// library and prefabs read again if anything was rebuilt.
+    fn apply_synced(&mut self, synced: Vec<runity_import::Reimported>) -> usize {
+        let changed = synced.iter().filter(|r| r.result.is_ok()).count();
+        for failed in &synced {
+            if let Err(e) = &failed.result {
+                self.console.say(
+                    console::Level::Error,
+                    format!("{}: {e}", failed.source.display()),
+                );
+            }
+        }
+        if changed > 0 {
+            self.solids = None;
+            // A scene source (a glTF level, a .blend) rebuilds a prefab too.
+            if let Some(project) = &self.project {
+                self.prefabs = runity::Prefabs::of(project).0;
+            }
+            // New and moved assets are files the open library has never
+            // seen, so it is read again rather than refreshed.
+            let _ = self.reopen_library();
+            self.write_blender_hints();
+        }
+        changed
+    }
+
+    /// What the runity panel in Blender offers, written where it reads it,
+    /// `library/blender.json`: the materials a part can draw with, and the
+    /// game's components with their fields — so a component is added in
+    /// Blender with a field per value, as in the Inspector. Derived, like
+    /// the rest of the library.
+    pub fn write_blender_hints(&self) {
+        let Some(project) = &self.project else { return };
+        let components: serde_json::Map<String, serde_json::Value> = self
+            .component_shapes()
+            .into_iter()
+            .map(|(name, shape)| {
+                let value = serde_json::json!({
+                    "shape": serde_json::to_value(&shape).unwrap_or_default(),
+                    "example": shape.example(),
+                });
+                (name, value)
+            })
+            .collect();
+        let hints = serde_json::json!({
+            "materials": self.palette().into_iter().map(|(name, _)| name).collect::<Vec<_>>(),
+            "components": components,
+        });
+        let library = project.library();
+        let _ = std::fs::create_dir_all(&library);
+        let _ = std::fs::write(
+            library.join("blender.json"),
+            serde_json::to_string_pretty(&hints).unwrap_or_default(),
+        );
+    }
+
     pub fn reload_assets(&mut self) -> usize {
         self.solids = None;
         // In a project the sources are the truth: whatever changed, moved
         // or appeared in `assets/` and `materials/` is rebuilt first, and the
         // library read again if anything was. Without one there are no
         // sources to look at, only a library to re-read.
-        if let Some(project) = &self.project {
-            let synced = runity_import::sync(project);
-            let changed = synced.iter().filter(|r| r.result.is_ok()).count();
-            for failed in &synced {
-                if let Err(e) = &failed.result {
-                    self.console.say(
-                        console::Level::Error,
-                        format!("{}: {e}", failed.source.display()),
-                    );
-                }
+        if let Some(project) = self.project.clone() {
+            // One update at a time: one already running is waited for.
+            let mut changed = 0;
+            if let Some((job, _)) = self.syncing.take() {
+                changed += self.apply_synced(job.join().unwrap_or_default());
             }
-            if changed > 0 {
-                // New and moved assets are files the open library has never
-                // seen, so it is read again rather than refreshed.
-                let _ = self.reopen_library();
-            }
-            return changed;
+            let synced = runity_import::sync(&project);
+            return changed + self.apply_synced(synced);
         }
         let Some(library) = self.library.as_mut() else {
             return 0;
@@ -2951,6 +3121,16 @@ impl Session {
         // Emitters play while they are looked at, as Unity previews them:
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
+        // Ropes hang, sway and lie on what is below them the same way,
+        // so a line strung in the editor shows its sag as it is strung.
+        runity::soft::step(&mut self.world, 1.0 / 30.0);
+        runity::soft::show(&mut self.world, 0.0);
+        runity::destruction::show(&mut self.world, 0.0);
+        // Water, snow and sand move as they are looked at, too.
+        runity::fluid::step(&mut self.world, 1.0 / 30.0);
+        runity::fluid::show(&mut self.world, 0.0);
+        runity::character::crawl(&mut self.world, 1.0 / 30.0);
+        runity::character::show(&mut self.world, 0.0);
         // A clip previewed moves the same way: a thirtieth a frame drawn.
         if !self.previewing.is_empty() && self.play.is_none() {
             runity::advance_animations(&mut self.world, 1.0 / 30.0);
@@ -4080,12 +4260,11 @@ impl Session {
     fn fixed_step(world: &mut hecs::World, physics: &mut runity::PhysicsWorld, fixed: f32) {
         runity::routes::run_routes(world, fixed);
         runity::world::apply_hierarchy(world);
+        runity::fluid::float(world, physics);
+        runity::character::step(world, physics, fixed);
         physics.run(world);
-        // Cloth in the wind physics has from the scene.
-        runity::cloth::run_cloth(world, fixed, &physics.wind);
-        runity::heap::run_heaps(world, fixed);
-        runity::rope::run_ropes(world, fixed, &physics.wind);
-        runity::crumble::run_crumble(world, physics, fixed);
+        // What the step brought together hard enough breaks or dents.
+        runity::destruction::step(world, physics, fixed);
     }
 
     /// Hold play still, or let it go on — Unity's Pause button. While
@@ -4411,6 +4590,12 @@ impl Session {
             .find(|(desc, _)| desc.id == id)
     }
 
+    /// A model's box in its own space, as (min, max): a builtin's or the
+    /// library's. For a tool that fits one thing into the place of another.
+    pub fn model_bounds(&self, model: &str) -> Option<(Vec3, Vec3)> {
+        self.bounds_of(model)
+    }
+
     fn bounds_of(&self, model: &str) -> Option<(Vec3, Vec3)> {
         if let Some(mesh) = builtin::by_name(model) {
             return Some((
@@ -4557,4 +4742,12 @@ pub enum Align {
     Min,
     Center,
     Max,
+}
+
+/// The entity with this ID in a tree.
+fn find_in(tree: &mut EntityDesc, id: EntityId) -> Option<&mut EntityDesc> {
+    if tree.id == id {
+        return Some(tree);
+    }
+    tree.children.iter_mut().find_map(|c| find_in(c, id))
 }

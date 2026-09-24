@@ -1,0 +1,41 @@
+// Мягкие тела и вторичное движение (модуль `soft`, docs/simulation.md):
+// желейный куб падает на ступень, резиновый мяч, мармелад на сопоставлении
+// формы, слизь сползает с пандуса; плоть на кости едет на платформе и
+// колышется; антенна и хвост из карточек на jiggle-костях отстают от
+// тележки и раскачиваются.
+(
+    view: (position: (0.0, 2.6, 6.0), target: (0.0, 0.8, -0.5), fov_deg: 55.0),
+    sun: (hour: 15.0, intensity: 1.3),
+    sky: (mode: Physical),
+    entities: [
+        (id: "309989843fdc5fe4", name: "ground", model: "builtin:plane", transform: (scale: (40.0, 1.0, 40.0)), material: "grid", body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "8da3a13064ade868", name: "step", model: "builtin:cube", transform: (position: (-3.0, 0.25, 0.0), scale: (1.6, 0.5, 1.6)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "fa3626c022fe3aee", name: "jelly", model: "builtin:cube", transform: (position: (-2.8, 3.0, 0.0), scale: (0.9, 0.9, 0.9), rotation_deg: (15.0, 20.0, 10.0)), material: (base_color: (0.2, 0.8, 0.3), roughness: 0.2), soft_body: (stiffness: 0.25, cells: 5)),
+        (id: "423188a8a0b6642f", name: "rubber ball", model: "builtin:sphere", transform: (position: (-1.4, 4.0, 0.8), scale: (0.7, 0.7, 0.7)), material: (base_color: (0.85, 0.15, 0.1), roughness: 0.4), soft_body: (shape: Ball, stiffness: 0.7, cells: 6, weight: 2.0)),
+        (id: "f5801984ef1b4d93", name: "gummy", model: "builtin:cube", transform: (position: (-0.2, 3.5, 1.0), scale: (0.5, 0.9, 0.5), rotation_deg: (0.0, 0.0, 30.0)), material: (base_color: (0.95, 0.55, 0.1), roughness: 0.3), soft_body: (method: ShapeMatching, stiffness: 0.6, cells: 4, weight: 1.0)),
+        (id: "24412433bb2a2308", name: "ramp", model: "builtin:ramp", transform: (position: (2.6, 0.75, -0.5), scale: (1.6, 1.5, 3.0), rotation_deg: (0.0, 90.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Ramp(half: (0.5, 0.5, 0.5))),
+        (id: "350b9d4835ff8cf2", name: "slime", model: "builtin:sphere", transform: (position: (3.5, 2.3, -0.5), scale: (0.8, 0.5, 0.8)), material: (base_color: (0.5, 0.2, 0.7), roughness: 0.1), soft_body: (shape: Ball, stiffness: 0.06, cells: 6, friction: 0.15)),
+        (id: "7e7cf16d0c647e54", name: "platform", model: "builtin:cube", transform: (position: (-1.0, 0.15, -2.2), scale: (1.0, 0.3, 1.0)), material: (base_color: (0.42, 0.3, 0.2)), route: (points: [(0.0, 0.0, 0.0), (2.5, 0.0, 0.0)], speed: 3.0, ends: Back, pause: 0.25), children: [
+            (id: "0510d1c6c10525b7", name: "belly", model: "builtin:sphere", transform: (position: (0.0, 2.3, 0.0), scale: (0.8, 2.6, 0.8)), material: (base_color: (0.9, 0.6, 0.5), roughness: 0.6), soft_body: (shape: Ball, core: 0.4, stiffness: 0.12, cells: 6, weight: 3.0)),
+        ]),
+        (id: "cb4bdf08aa00cf54", name: "cart", transform: (position: (-2.5, 0.25, 2.0)), route: (points: [(0.0, 0.0, 0.0), (4.5, 0.0, 0.0)], speed: 3.0, ends: Back, pause: 0.5), children: [
+            (id: "74a9bf48decde1fc", name: "cart body", model: "builtin:cube", transform: (scale: (0.8, 0.4, 0.5)), material: (base_color: (0.3, 0.4, 0.7))),
+            (id: "63b8bd265190bbdb", name: "antenna 1", transform: (position: (0.2, 0.7, 0.0)), jiggle: (stiffness: 0.35, damping: 0.06, gravity: 0.1), children: [
+                (id: "675cf599028beaee", name: "rod", model: "builtin:cylinder", transform: (position: (0.0, -0.25, 0.0), scale: (0.04, 0.5, 0.04)), material: (base_color: (0.2, 0.2, 0.22), metallic: 1.0, roughness: 0.4)),
+                (id: "c209ca6c3c0bb8b2", name: "antenna 2", transform: (position: (0.0, 0.5, 0.0)), jiggle: (stiffness: 0.25, damping: 0.06, gravity: 0.1), children: [
+                    (id: "4e210615f661a28a", name: "rod", model: "builtin:cylinder", transform: (position: (0.0, -0.25, 0.0), scale: (0.04, 0.5, 0.04)), material: (base_color: (0.2, 0.2, 0.22), metallic: 1.0, roughness: 0.4)),
+                    (id: "f218670baaf0850a", name: "antenna ball", model: "builtin:sphere", transform: (scale: (0.12, 0.12, 0.12)), material: (base_color: (0.95, 0.9, 0.2), emission: (1.0, 0.9, 0.2))),
+                ]),
+            ]),
+            (id: "0b8c0de19cb98853", name: "tail 1", transform: (position: (-0.55, 0.1, 0.0)), jiggle: (stiffness: 0.2, gravity: 0.6), children: [
+                (id: "a90b49e4323fa541", name: "card 1", model: "builtin:plane", transform: (position: (0.1, 0.0, 0.0), rotation_deg: (90.0, 0.0, 0.0), scale: (0.25, 1.0, 0.16)), material: (base_color: (0.6, 0.35, 0.15))),
+                (id: "83fc1324c471b565", name: "tail 2", transform: (position: (-0.25, 0.0, 0.0)), jiggle: (stiffness: 0.15, gravity: 0.6), children: [
+                    (id: "d3f1d0a4624ab7bd", name: "card 2", model: "builtin:plane", transform: (position: (0.12, 0.0, 0.0), rotation_deg: (90.0, 0.0, 0.0), scale: (0.25, 1.0, 0.13)), material: (base_color: (0.6, 0.35, 0.15))),
+                    (id: "e88cba81726e2799", name: "tail 3", transform: (position: (-0.25, 0.0, 0.0)), jiggle: (stiffness: 0.1, gravity: 0.6), children: [
+                        (id: "4dcfe2bcce62a1f8", name: "card 3", model: "builtin:plane", transform: (position: (0.12, 0.0, 0.0), rotation_deg: (90.0, 0.0, 0.0), scale: (0.25, 1.0, 0.1)), material: (base_color: (0.6, 0.35, 0.15))),
+                    ]),
+                ]),
+            ]),
+        ]),
+    ],
+)

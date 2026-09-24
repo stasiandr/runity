@@ -560,6 +560,12 @@ pub struct Frame {
     pub volumetric_fog: crate::volume::VolumetricFog,
     /// Balls of dust in the air ([`crate::volume::Puff`]).
     pub puffs: Vec<crate::volume::Puff>,
+    /// Smoke and fire from grids, in the fog ([`crate::volume::Smoke`]),
+    /// the nearest the eye first.
+    pub smoke: Vec<crate::volume::Smoke>,
+    /// The scene's signed distance field, for occlusion and soft sun
+    /// shadows ([`crate::distance`]); none by default.
+    pub distance_field: Option<crate::distance::DistanceField>,
     /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
     pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
@@ -611,6 +617,8 @@ impl Default for Frame {
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
+            smoke: Vec::new(),
+            distance_field: None,
             gpu_particles: Vec::new(),
             plumes: Vec::new(),
             terrain: None,
@@ -748,6 +756,9 @@ struct FrameUniform {
     vsm: [[f32; 4]; 8],
     /// ReSTIR ([`crate::restir`]): on, the reservoirs' size, the frame.
     restir: [f32; 4],
+    /// The scene's distance field: its box and 1 when there is one; its
+    /// far corner and range.
+    distance: [[f32; 4]; 2],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1053,6 +1064,13 @@ pub struct Renderer {
     /// The drawn terrain's heights, for its vertex shader; and what they
     /// were made from.
     terrain_heights: wgpu::TextureView,
+    /// How the grass round the camera is trampled, and its texture
+    /// ([`crate::foliage::TrampleMap`]).
+    trample: crate::foliage::TrampleMap,
+    trample_texture: wgpu::Texture,
+    trample_view: wgpu::TextureView,
+    /// The scene's distance field's texture.
+    distance: crate::distance::DistanceTexture,
     terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -2550,6 +2568,28 @@ impl Renderer {
                 },
                 count: None,
             },
+            // How the grass is trampled, read by the vertex shader.
+            wgpu::BindGroupLayoutEntry {
+                binding: 30,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            // The scene's distance field, for occlusion and soft shadows.
+            wgpu::BindGroupLayoutEntry {
+                binding: 31,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The last frame, for screen-space reflections.
             wgpu::BindGroupLayoutEntry {
                 binding: 22,
@@ -2720,6 +2760,22 @@ impl Renderer {
         let mut ddgi = crate::ddgi::Ddgi::new(gpu, &layout);
         let vsm_table = crate::vsm::table_buffer(gpu);
         let mut restir = crate::restir::Restir::new(gpu, &layout);
+        let trample_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("trample"),
+            size: wgpu::Extent3d {
+                width: crate::foliage::TRAMPLE_CELLS,
+                height: crate::foliage::TRAMPLE_CELLS,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let trample_view = trample_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let distance = crate::distance::DistanceTexture::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
@@ -2728,6 +2784,8 @@ impl Renderer {
                 vsm_pages: &vsm_table,
                 restir: &restir.shade,
                 terrain_heights: &terrain_heights,
+                trample: &trample_view,
+                distance: &distance.view,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -3112,6 +3170,10 @@ impl Renderer {
             atmosphere,
             clouds,
             terrain_heights,
+            trample: crate::foliage::TrampleMap::default(),
+            trample_texture,
+            trample_view,
+            distance,
             blank_depth: gpu
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -3160,6 +3222,8 @@ impl Renderer {
                 vsm_pages: &self.vsm.table,
                 restir: &self.restir.shade,
                 terrain_heights: &self.terrain_heights,
+                trample: &self.trample_view,
+                distance: &self.distance.view,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -4150,6 +4214,11 @@ impl Renderer {
         }
         let mut frame = frame.clone();
         for live in std::mem::take(&mut frame.live_meshes) {
+            // Nothing to draw yet — water not poured, a mesh not made:
+            // an empty buffer is no buffer to the device.
+            if live.vertices.is_empty() || live.indices.is_empty() {
+                continue;
+            }
             let mesh = match self.live.get(&live.key) {
                 Some(&(mesh, version)) if version == live.version => mesh,
                 Some(&(mesh, _)) => {
@@ -4772,7 +4841,8 @@ impl Renderer {
         // Devils and plumes are marched with the clouds, precisely: too
         // thin and too far for the fog's grid.
         let local_dust = !devils.is_empty() || !plumes.is_empty();
-        if !puffs.is_empty() && !volumetric.enabled {
+        let smoke = if probe.is_none() { &frame.smoke[..] } else { &[] };
+        if (!puffs.is_empty() || !smoke.is_empty()) && !volumetric.enabled {
             volumetric = crate::volume::VolumetricFog {
                 enabled: true,
                 density: 0.0,
@@ -4828,7 +4898,7 @@ impl Renderer {
             sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
         let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
         let ground_light = ground_light.lerp(Vec3::new(0.35, 0.25, 0.15), storm * 0.7);
-        let foliage = crate::foliage::FoliageUniform::new(
+        let mut foliage = crate::foliage::FoliageUniform::new(
             &frame.wind,
             &frame.benders,
             frame.camera.position,
@@ -4877,6 +4947,30 @@ impl Renderer {
         } else {
             Vec::new()
         };
+        // A new distance field: into its texture, and bound anew.
+        if self.distance.update(gpu, frame.distance_field.as_ref()) {
+            self.rebind(gpu);
+        }
+        // The benders press into the trample map, which springs back as
+        // the clock runs; a reflection probe's picture leaves it alone.
+        if probe.is_none() && !self.picturing {
+            self.trample.press(&frame.benders, frame.camera.position, foliage.wind[3]);
+            gpu.queue.write_texture(
+                self.trample_texture.as_image_copy(),
+                bytemuck::cast_slice(&self.trample.texels()),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(crate::foliage::TRAMPLE_CELLS * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: crate::foliage::TRAMPLE_CELLS,
+                    height: crate::foliage::TRAMPLE_CELLS,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        foliage.trample = [self.trample.centre.x, self.trample.centre.y, crate::foliage::TRAMPLE_SIZE, 1.0];
         let casters: Vec<u8> = light_view_projection
             .iter()
             .chain(light_views.iter())
@@ -5117,6 +5211,7 @@ impl Renderer {
             ddgi: if probe.is_none() { self.ddgi.uniform() } else { [[0.0; 4]; 4] },
             vsm: if virtual_on { self.vsm.uniform } else { crate::vsm::OFF },
             restir: self.restir.uniform(restir_on),
+            distance: crate::distance::uniform(frame.distance_field.as_ref()),
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -5834,6 +5929,7 @@ impl Renderer {
 
         // The fog in the air, once every shadow it looks through is drawn.
         if volumetric.enabled {
+            self.volumes.set_smoke(gpu, &frame.smoke);
             self.volumes.run(
                 &mut encoder,
                 &self.fog_bind_group,
@@ -6044,6 +6140,8 @@ impl Renderer {
                 &frame.gpu_particles,
                 drawn,
                 frame.camera.apparent_eye(),
+                if prepass_drawn { &self.ssao.depth } else { &self.blank_depth },
+                prepass_drawn,
             );
         }
         // The prepass's depth is where the scene's starts, when they are
@@ -6548,6 +6646,10 @@ struct FrameInputs<'a> {
     vsm_pages: &'a wgpu::Buffer,
     /// ReSTIR's reservoirs.
     restir: &'a wgpu::Buffer,
+    /// How the grass is trampled, for the vertex shader.
+    trample: &'a wgpu::TextureView,
+    /// The scene's distance field.
+    distance: &'a wgpu::TextureView,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -6636,6 +6738,8 @@ fn frame_bind_group(
         view(21, inputs.clouds),
         view(22, inputs.history),
         view(23, inputs.terrain_heights),
+        view(30, inputs.trample),
+        view(31, inputs.distance),
     ];
     if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

@@ -3050,9 +3050,12 @@ dependencies = [
  "ron",
  "runity-animation",
  "runity-audio",
+ "runity-character",
  "runity-core",
+ "runity-destruction",
  "runity-dialogue",
  "runity-discord",
+ "runity-fluid",
  "runity-geometry",
  "runity-gpu",
  "runity-input",
@@ -3064,6 +3067,7 @@ dependencies = [
  "runity-reports",
  "runity-routes",
  "runity-shell",
+ "runity-soft",
  "runity-spline",
  "runity-steam",
  "serde",
@@ -3098,6 +3102,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-character"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-physics",
+ "runity-soft",
+ "serde",
+]
+
+[[package]]
 name = "runity-cli"
 version = "0.1.0"
 dependencies = [
@@ -3119,6 +3137,19 @@ dependencies = [
  "ron",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-destruction"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-physics",
+ "serde",
 ]
 
 [[package]]
@@ -3148,6 +3179,35 @@ dependencies = [
  "runity-import",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "runity-fluid"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-soft",
+ "serde",
+]
+
+[[package]]
+name = "runity-gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "gltf",
+ "image",
+ "ron",
+ "runity",
+ "runity-editor",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -3185,6 +3245,7 @@ dependencies = [
  "ron",
  "runity",
  "serde",
+ "serde_json",
  "symphonia",
  "tobj",
  "yaml-rust2",
@@ -3210,6 +3271,7 @@ dependencies = [
  "runity",
  "runity-cli",
  "runity-editor",
+ "runity-gen",
  "runity-import",
  "serde_json",
 ]
@@ -3325,6 +3387,18 @@ dependencies = [
  "runity-render",
  "subsecond",
  "winit",
+]
+
+[[package]]
+name = "runity-soft"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
 ]
 
 [[package]]

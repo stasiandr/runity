@@ -21,6 +21,10 @@ NEXT_STEPS.
 | `runity-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
 | `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
 | `runity-navigation` | сетка проходимости и A* | physics |
+| `runity-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
+| `runity-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
+| `runity-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
+| `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`, `grains`, `distance_field`: верёвки, ткань, волосы, мягкие тела, PBF/SPH, гравий, SDF сцены и общие контакты между ними (docs/simulation.md) | ядро, geometry |
 | `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
 | `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
 | `runity-gpu` | устройство, поверхность, offscreen | — |
@@ -38,7 +42,9 @@ NEXT_STEPS.
 где два модуля встречаются, не зная друг друга: `spawn_scene` с одевальщиками
 всех модулей сборки, `motion::run` (дорожки громкости и частиц клипа),
 `gizmo::collider_draws` (контур коллайдера из физики, нарисованный
-гизмо рендера), `save::capture` (состояние аниматоров).
+гизмо рендера), `save::capture` (состояние аниматоров), `soft`
+(коллайдеры физики — препятствия верёвок и ткани; верёвка и ткань —
+живой меш или копии звена рендера).
 
 Виды ассетов — модулей: `AssetKind` в ядре — только байт заголовка и имя,
 а `MESH` и `TEXTURE` объявляет geometry, `SOUND` — звук, `MATERIAL` —
@@ -51,13 +57,6 @@ NEXT_STEPS.
   (`blown`), которые друг от друга не зависят. Уедет в модуль погоды.
 * `Owned`/`Replica` — кто симулирует сущность — в ядре: по ним фильтрует
   каждый симулирующий модуль, а решает сеть.
-* `crumble` — поле физики (тип `Crumble` в `runity-physics`), а само
-  разрушение — клей фасада (`runity::crumble`): куски — тела физики с
-  моделью и материалом рендера, а пыль уходит в кадр через `Dust` рендера.
-  Ни физика, ни рендер друг о друге не знают.
-* `cloth` и `rope` — поля рендера, но ветер сцены им даёт тот, кто крутит
-  кадр (`run_cloth`, `run_ropes` с `Wind`): у систем цикла только мир и
-  время. Уедет вместе с ветром в модуль погоды.
 * Таймер GPU (`runity_gpu::gpu_timer`) — в модуле `gpu`: его проходы есть
   и у рендера, и у оверлея.
 

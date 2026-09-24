@@ -1,0 +1,23 @@
+// Открытое море (docs/simulation.md, пункт 6): FFT-океан Тессендорфа —
+// спектр Филлипса под ветер сцены, гребни заострены смещением; на нём
+// качаются буи, ящики и плот — плавучесть по столбикам через физику.
+(
+    view: (position: (0.0, 6.0, 22.0), target: (0.0, 0.0, 0.0), fov_deg: 55.0),
+    sun: (hour: 17.0, intensity: 1.4),
+    sky: (mode: Physical),
+    wind: (direction: (1.0, 0.0, 0.3), strength: 1.4),
+    screen_space_reflections: (enabled: true),
+    entities: [
+        (id: "72aa1434f2e598b3", name: "sea", material: (base_color: (0.02, 0.12, 0.18), shading: Water, wind: 0.4, clarity: 4.0, foam: 0.0), ocean: (size: 48.0, resolution: 64, tiles: 3, height: 1.0, choppy: 0.9, wind_speed: 9.0)),
+        (id: "db8c67de8d9d7de8", name: "buoy 0", model: "builtin:cylinder", transform: (position: (-6.0, 1.0, 4.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "18de8512764db47a", name: "buoy 1", model: "builtin:cylinder", transform: (position: (-2.0, 1.0, -3.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "f7f1f751d5d4c4fb", name: "buoy 2", model: "builtin:cylinder", transform: (position: (3.0, 1.0, 5.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "70457233015dc325", name: "buoy 3", model: "builtin:cylinder", transform: (position: (7.0, 1.0, -2.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "ce87e3413c189561", name: "buoy 4", model: "builtin:cylinder", transform: (position: (0.0, 1.0, 9.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "c6f5acf8ffa71f03", name: "buoy 5", model: "builtin:cylinder", transform: (position: (-9.0, 1.0, -6.0), scale: (0.8, 1.4, 0.8)), material: (base_color: (0.9, 0.3, 0.05), roughness: 0.5), body: Dynamic, collider: Cylinder(half_height: 0.5, radius: 0.5), physics: (density: 0.4), floats: (share: 0.5)),
+        (id: "6e674c0546374e59", name: "raft", model: "builtin:cube", transform: (position: (2.0, 1.0, 0.0), scale: (3.5, 0.35, 2.2)), material: (base_color: (0.42, 0.3, 0.2)), body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (density: 0.5), floats: (share: 0.45)),
+        (id: "d0347045fede843b", name: "crate 0", model: "builtin:cube", transform: (position: (-4.0, 1.0, 0.0), scale: (0.9, 0.9, 0.9), rotation_deg: (0.0, 0.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (density: 0.5), floats: (share: 0.35)),
+        (id: "c7caa05cf99e38f6", name: "crate 1", model: "builtin:cube", transform: (position: (5.0, 1.0, 3.0), scale: (0.9, 0.9, 0.9), rotation_deg: (0.0, 30.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (density: 0.5), floats: (share: 0.35)),
+        (id: "91cb6da11e1b37ad", name: "crate 2", model: "builtin:cube", transform: (position: (-1.0, 1.0, 5.0), scale: (0.9, 0.9, 0.9), rotation_deg: (0.0, 60.0, 0.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Dynamic, collider: Box(half: (0.5, 0.5, 0.5)), physics: (density: 0.5), floats: (share: 0.35)),
+    ],
+)

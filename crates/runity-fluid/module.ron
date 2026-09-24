@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "fluid",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Fluids on grids: MPM snow, sand and water, shallow water, ripples, the open sea.",
+    depends: ["geometry", "soft"],
+    runtime: true,
+    editor: false,
+    parts: ["mpm", "shallow_water", "ripples", "ocean", "floats", "smoke", "snow_cover"],
+    assets: [],
+    feature: Some("fluid"),
+)

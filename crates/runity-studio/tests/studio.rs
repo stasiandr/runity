@@ -988,7 +988,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     assert!(dir.join("src/components/door.rs").is_file());
     click(&mut s, "line crate");
     click(&mut s, "add component");
-    type_text(&mut s, "do");
+    type_text(&mut s, "doo");
     key(&mut s, Key::Enter);
     assert!(
         s.session

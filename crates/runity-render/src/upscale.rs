@@ -186,7 +186,7 @@ pub(crate) struct Upscaler {
     /// The picture made, at the screen's size.
     output: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Where each pixel was last frame, at the size drawn.
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    #[cfg_attr(not(all(target_vendor = "apple", feature = "metalfx")), allow(dead_code))]
     motion: Option<(wgpu::Texture, wgpu::TextureView, (u32, u32))>,
     /// Frames blended into the temporal history since it was last made,
     /// and where the camera was.
@@ -194,7 +194,7 @@ pub(crate) struct Upscaler {
     eye: Option<(glam::Vec3, glam::Vec3)>,
     pub(crate) used: Option<Used>,
     layout: wgpu::BindGroupLayout,
-    #[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+    #[cfg_attr(not(all(target_vendor = "apple", feature = "metalfx")), allow(dead_code))]
     motion_pipeline: wgpu::RenderPipeline,
     upscale_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
@@ -202,7 +202,7 @@ pub(crate) struct Upscaler {
     /// A picture the size of a pixel, for the depth the spatial pass does
     /// not read.
     no_depth: wgpu::TextureView,
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
     metal: metal::MetalFx,
 }
 
@@ -326,7 +326,7 @@ impl Upscaler {
             uniform,
             sampler,
             no_depth,
-            #[cfg(target_vendor = "apple")]
+            #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
             metal: metal::MetalFx::new(gpu),
         }
     }
@@ -361,11 +361,11 @@ impl Upscaler {
 
     /// Whether MetalFX temporal will make this frame up, taking TAA's place.
     pub(crate) fn temporal(&self, settings: &Upscaling, taa: bool) -> bool {
-        #[cfg(target_vendor = "apple")]
+        #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
         {
             taa && matches!(settings.method, Method::Auto | Method::Temporal) && self.metal.temporal_supported
         }
-        #[cfg(not(target_vendor = "apple"))]
+        #[cfg(not(all(target_vendor = "apple", feature = "metalfx")))]
         {
             let _ = (settings, taa);
             false
@@ -496,7 +496,7 @@ impl Upscaler {
         };
         gpu.queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
 
-        #[cfg(target_vendor = "apple")]
+        #[cfg(all(target_vendor = "apple", feature = "metalfx"))]
         {
             let spatial = matches!(settings.method, Method::Auto | Method::Spatial) && self.metal.spatial_supported;
             if temporal || spatial {
@@ -573,7 +573,7 @@ impl Upscaler {
 /// a hundredth of a pixel on a screen 4K wide.
 const MOTION_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", feature = "metalfx"))]
 mod metal {
     //! MetalFX, through wgpu's Metal handles.
 

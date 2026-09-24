@@ -365,13 +365,15 @@ pub fn by_name(name: &str) -> Option<MeshAsset> {
         "cylinder" => Some(cylinder(0.5, 1.0, 24)),
         "ramp" => Some(ramp(1.0)),
         "stairs" => Some(stairs(1.0, STAIRS)),
+        "link" => Some(link(24, 8)),
+        "capsule" => Some(capsule(0.5, 0.5, 20, 12)),
         _ => None,
     }
 }
 
 /// Every builtin name, for an editor's list and for tests that want to check
 /// all of them without repeating the list.
-pub const NAMES: [&str; 7] = [
+pub const NAMES: [&str; 9] = [
     "builtin:plane",
     "builtin:cube",
     "builtin:cone",
@@ -379,7 +381,116 @@ pub const NAMES: [&str; 7] = [
     "builtin:cylinder",
     "builtin:ramp",
     "builtin:stairs",
+    "builtin:link",
+    "builtin:capsule",
 ];
+
+/// A capsule standing up: a cylinder `2 × half_height` tall capped with
+/// half balls of `radius` — what fits `Capsule(half_height, radius)`.
+pub fn capsule(half_height: f32, radius: f32, segments: u32, rings: u32) -> MeshAsset {
+    let segments = segments.max(3);
+    let rings = rings.max(2) & !1; // even: the middle ring splits the caps
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    // A ball's rings, the top half raised and the bottom lowered, with the
+    // middle ring twice: once for each cap, the cylinder between them.
+    let mut ring_list: Vec<(f32, f32)> = Vec::new();
+    for ring in 0..=rings {
+        let phi = std::f32::consts::PI * ring as f32 / rings as f32;
+        let lift = if ring <= rings / 2 { half_height } else { -half_height };
+        ring_list.push((phi, lift));
+        if ring == rings / 2 {
+            ring_list.push((phi, -half_height));
+        }
+    }
+    for (row, (phi, lift)) in ring_list.iter().enumerate() {
+        for segment in 0..=segments {
+            let theta = std::f32::consts::TAU * segment as f32 / segments as f32;
+            let normal = [phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin()];
+            vertices.push(Vertex {
+                position: [normal[0] * radius, normal[1] * radius + lift, normal[2] * radius],
+                normal,
+                uv: [segment as f32 / segments as f32, row as f32 / (ring_list.len() - 1) as f32],
+            });
+        }
+    }
+    let stride = segments + 1;
+    for row in 0..ring_list.len() as u32 - 1 {
+        for segment in 0..segments {
+            let a = row * stride + segment;
+            let (b, c, d) = (a + 1, a + stride, a + stride + 1);
+            indices.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+    finish("capsule", vertices, indices)
+}
+
+/// A link of a chain: a ring of wire drawn out into a stadium, lying in
+/// its x–z plane, a metre long along z and 0.6 across x. A chain draws one
+/// per link, every other one turned a quarter about z, so they hang
+/// through each other.
+pub fn link(around: u32, sides: u32) -> MeshAsset {
+    use glam::Vec3;
+    let (wire, bend) = (0.08f32, 0.22f32);
+    let straight = 0.5 - bend - wire;
+    let around = around.max(8) as usize;
+    let sides = sides.max(3) as usize;
+    // The wire's middle, once round: up the right side, over the far end,
+    // down the left, under the near end — by distance, so the rings are
+    // even.
+    let arc = std::f32::consts::PI * bend;
+    let length = 4.0 * straight + 2.0 * arc;
+    let centre = |d: f32| -> (Vec3, Vec3) {
+        let d = d.rem_euclid(length);
+        let side = 2.0 * straight;
+        if d < side {
+            (Vec3::new(bend, 0.0, -straight + d), Vec3::X)
+        } else if d < side + arc {
+            let a = (d - side) / bend;
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            (Vec3::new(0.0, 0.0, straight) + out * bend, out)
+        } else if d < 2.0 * side + arc {
+            (Vec3::new(-bend, 0.0, straight - (d - side - arc)), -Vec3::X)
+        } else {
+            let a = std::f32::consts::PI + (d - 2.0 * side - arc) / bend;
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            (Vec3::new(0.0, 0.0, -straight) + out * bend, out)
+        }
+    };
+    let mut vertices = Vec::with_capacity(around * sides);
+    for i in 0..around {
+        let (c, out) = centre(i as f32 / around as f32 * length);
+        for j in 0..sides {
+            let a = j as f32 / sides as f32 * std::f32::consts::TAU;
+            let normal = out * a.cos() + Vec3::Y * a.sin();
+            vertices.push(Vertex {
+                position: (c + normal * wire).to_array(),
+                normal: normal.to_array(),
+                uv: [i as f32 / around as f32, j as f32 / sides as f32],
+            });
+        }
+    }
+    let mut indices = Vec::with_capacity(around * sides * 6);
+    let at = |i: usize, j: usize| ((i % around) * sides + j % sides) as u32;
+    let facing = |a: u32, b: u32, c: u32| {
+        let p = |i: u32| Vec3::from_array(vertices[i as usize].position);
+        let n = Vec3::from_array(vertices[a as usize].normal);
+        (p(b) - p(a)).cross(p(c) - p(a)).dot(n) > 0.0
+    };
+    for i in 0..around {
+        for j in 0..sides {
+            let (a, b, c, d) = (at(i, j), at(i, j + 1), at(i + 1, j), at(i + 1, j + 1));
+            for [x, y, z] in [[a, c, b], [b, c, d]] {
+                if facing(x, y, z) {
+                    indices.extend_from_slice(&[x, y, z]);
+                } else {
+                    indices.extend_from_slice(&[x, z, y]);
+                }
+            }
+        }
+    }
+    finish("link", vertices, indices)
+}
 
 /// How many steps `builtin:stairs` has: what a `Stairs` collider for it
 /// should say.

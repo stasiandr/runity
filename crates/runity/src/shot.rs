@@ -111,6 +111,10 @@ impl Shot {
         for m in &missing {
             problems.push(format!("{}: no model named {}", m.entity_name, m.model));
         }
+        // Mesh colliders get their triangles, as a live scene's do: the
+        // distance field is baked from them.
+        #[cfg(feature = "physics")]
+        crate::physics::attach_scene_collision_meshes(&mut world, &scene, library.as_ref());
 
         let lighting = crate::scene_lighting(&scene.sun());
         let fog = FogSettings {
@@ -122,6 +126,25 @@ impl Shot {
         // The scene says where it is looked at from, so two renders of the
         // same file are the same picture.
         let camera = crate::scene_camera(&scene.view());
+        // Ropes hang a few seconds before the picture, to rest where they
+        // would: strung as a parabola, they sway into a catenary and settle
+        // on what is under them.
+        #[cfg(feature = "soft")]
+        {
+            crate::world::apply_hierarchy(&mut world);
+            for _ in 0..180 {
+                crate::soft::step(&mut world, 1.0 / 60.0);
+            }
+            crate::soft::show(&mut world, 0.0);
+        }
+        // Water, snow and smoke run the same few seconds.
+        #[cfg(feature = "fluid")]
+        {
+            for _ in 0..180 {
+                crate::fluid::step(&mut world, 1.0 / 60.0);
+            }
+            crate::fluid::show(&mut world, 0.0);
+        }
         crate::terrain::upload_terrains(&mut world, &gpu, &mut renderer);
         problems.extend(crate::world::upload_material_maps(&world, library.as_ref(), &gpu, &mut renderer));
         let mut frame = crate::build_frame(&world, camera, lighting, fog);

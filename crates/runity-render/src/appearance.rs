@@ -12,7 +12,7 @@ use crate::material::Material;
 use crate::render::MeshHandle;
 use crate::scene::EntityDesc;
 use crate::world::{
-    LiveMesh, BendsGrass, CameraLens, Changed, Dress, LightSource, Model, PostVolumeBox, Pressing, ProbeBox, Surface, ToTexture,
+    BendsGrass, CameraLens, Changed, Dress, LightSource, Model, PostVolumeBox, Pressing, ProbeBox, Surface, ToTexture,
     Unresolved,
 };
 
@@ -93,42 +93,6 @@ impl Dress for LookDress<'_> {
             // Retuned, it starts a fresh trail: the old prints were made by
             // the old settings.
             put(world, entity, line.footprints().map(crate::footprints::Trail::new));
-        }
-        if changed.has("cloth") {
-            // Retuned, it hangs afresh, still.
-            match line.part::<crate::cloth::Cloth>() {
-                Some(cloth) => {
-                    let state = crate::cloth::ClothState::new(cloth);
-                    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
-                    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
-                }
-                None => {
-                    let _ = world.remove::<(crate::cloth::ClothState, LiveMesh)>(entity);
-                }
-            }
-        }
-        if changed.has("rope") {
-            match line.part::<crate::rope::Rope>() {
-                Some(rope) => {
-                    let state = crate::rope::RopeState::new(rope);
-                    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
-                    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
-                }
-                None => {
-                    let _ = world.remove::<(crate::rope::RopeState, LiveMesh)>(entity);
-                }
-            }
-        }
-        if changed.has("heap") {
-            // Retuned, it starts again from its start.
-            match line.part::<crate::heap::Heap>() {
-                Some(heap) => {
-                    let _ = world.insert(entity, (crate::heap::HeapState::new(heap), LiveMesh::new(Vec::new(), Vec::new())));
-                }
-                None => {
-                    let _ = world.remove::<(crate::heap::HeapState, LiveMesh)>(entity);
-                }
-            }
         }
         if changed.has("bends_grass") {
             let metres = line.bends_grass();
@@ -225,16 +189,7 @@ pub fn dress_look(
     let model = desc.model();
     if model.is_empty() {
         let _ = world.remove_one::<Model>(entity);
-        // Unless it draws a mesh of its own — cloth, a rope, a heap — in
-        // its material.
-        let own = desc.part::<crate::cloth::Cloth>().is_some()
-            || desc.part::<crate::rope::Rope>().is_some()
-            || desc.part::<crate::heap::Heap>().is_some();
-        if own {
-            let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
-        } else {
-            let _ = world.remove_one::<Surface>(entity);
-        }
+        let _ = world.remove_one::<Surface>(entity);
         return;
     }
     match resolve(&model) {

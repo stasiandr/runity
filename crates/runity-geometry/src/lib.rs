@@ -6,7 +6,9 @@
 
 pub mod animation;
 pub mod builtin;
+pub mod field;
 pub mod line;
+pub mod sdf;
 pub mod mesh_asset;
 pub mod terrain;
 

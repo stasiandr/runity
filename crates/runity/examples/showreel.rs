@@ -1,4 +1,4 @@
-//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays]` — the engine's
+//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays|sim]` — the engine's
 //! look, as a video: each shot a scene of the valley example with a camera
 //! moving through it, the clock running and the sun going round, written
 //! frame by frame into ffmpeg as `<out-dir>/NN-name.mp4`, and a subtitle
@@ -39,6 +39,9 @@ struct Shot {
     /// How far the ground has dried after rain at the start and the end:
     /// the weather's `drying`.
     drying: Option<(f32, f32)>,
+    /// Seconds of the scene run before the recording starts; a second when
+    /// not said.
+    warmup: Option<f32>,
 }
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
@@ -59,6 +62,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[("weather", "(drifted: 1.0)")],
         },
         Shot {
@@ -73,6 +77,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -87,6 +92,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("weather", "(dust_devils: 1.0)"),
                 ("wind", "(direction: (1.0, 0.0, 0.3), strength: 1.8)"),
@@ -104,6 +110,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("sun", "(hour: 14.0, intensity: 0.9, ground: (0.78, 0.6, 0.38))"),
                 ("sky", "(mode: Physical, atmosphere: (mie: 6.0))"),
@@ -125,6 +132,7 @@ fn shots() -> Vec<Shot> {
             speed: 4.6,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -139,6 +147,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -153,6 +162,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -167,6 +177,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.35))"),
                 ("volumetric_fog", "(enabled: true, density: 0.015, anisotropy: 0.75, height_falloff: 0.2)"),
@@ -184,6 +195,7 @@ fn shots() -> Vec<Shot> {
             speed: 30.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("sky", "(mode: Physical, clouds: (coverage: 0.55, shadows: 0.8))"),
                 ("wind", "(strength: 1.5)"),
@@ -201,6 +213,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -215,6 +228,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -229,6 +243,7 @@ fn shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("sun", "(hour: 21.0, intensity: 0.08)"),
                 ("sky", "(mode: Procedural, zenith: (0.01, 0.015, 0.04), horizon: (0.03, 0.04, 0.07), ground: (0.01, 0.01, 0.015), sun_size: 0.0)"),
@@ -256,6 +271,7 @@ fn later_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[
                 ("sun", "(hour: 19.3, intensity: 0.6)"),
                 ("weather", "(rain: 0.8, wetness: 1.0, puddles: 0.4, lightning: 1.0)"),
@@ -273,6 +289,7 @@ fn later_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: Some((0.0, 1.0)),
+            warmup: None,
             look: &[
                 ("post", "(heat_haze: (intensity: 0.0))"),
                 ("weather", "(wetness: 1.0, puddles: 0.35)"),
@@ -290,6 +307,7 @@ fn later_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[("volumetric_fog", "(enabled: true, density: 0.09, anisotropy: 0.6, base_height: 0.0, height_falloff: 0.15, distance: 40.0, ambient: 0.1, lamps: 30.0)")],
         },
     ]
@@ -311,6 +329,7 @@ fn bazaar_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -325,6 +344,7 @@ fn bazaar_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
     ]
@@ -347,6 +367,7 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -361,6 +382,7 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -375,6 +397,7 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -389,6 +412,7 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -403,6 +427,7 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: false,
             drying: None,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -417,8 +442,152 @@ fn ray_shots() -> Vec<Shot> {
             speed: 1.0,
             compare: true,
             drying: None,
+            warmup: None,
             look: &[("screen_space_reflections", "(enabled: true)")],
         },
+    ]
+}
+
+/// The simulation reel (`--reel sim`): one shot for each thing the soft
+/// and fluid modules simulate (docs/simulation.md), in the order of the
+/// list.
+fn sim_shots() -> Vec<Shot> {
+    let shot = |name, caption, scene, seconds, from: (Vec3, Vec3), to: (Vec3, Vec3)| Shot {
+        name,
+        caption,
+        scene,
+        seconds,
+        from,
+        to,
+        hours: None,
+        clock: 0.0,
+        speed: 1.0,
+        drying: None,
+        look: &[],
+        compare: false,
+        warmup: Some(0.3),
+    };
+    vec![
+        shot(
+            "ropes",
+            "Верёвки, кабели, цепи: стержни Коссера на XPBD, трубка по сплайну и звенья инстансами; ветер качает, ящик держит",
+            "ropes.ron",
+            8.0,
+            (v(-3.0, 2.2, 5.5), v(-1.5, 1.4, -3.0)),
+            (v(3.0, 2.4, 5.0), v(2.5, 1.6, -4.0)),
+        ),
+        shot(
+            "cloth",
+            "Ткань: знамя, флаг, простыня на верёвке, навес и скатерть, упавшая на стол и не проходящая сквозь себя",
+            "cloth.ron",
+            8.0,
+            (v(-3.0, 3.8, 7.0), v(-3.0, 2.0, -3.0)),
+            (v(3.5, 4.0, 6.5), v(3.0, 1.6, -4.0)),
+        ),
+        shot(
+            "hair",
+            "Волосы и мех: направляющие пряди — стержни Коссера, остальные интерполируются; ветер треплет",
+            "hair.ron",
+            7.0,
+            (v(-1.5, 2.0, 3.0), v(0.0, 1.5, 0.0)),
+            (v(1.5, 2.1, 3.0), v(0.0, 1.5, 0.0)),
+        ),
+        shot(
+            "softbody",
+            "Мягкие тела: желе на тетраэдрах, мяч, мармелад на сопоставлении формы, слизь; плоть на кости и jiggle-кости с карточками",
+            "softbody.ron",
+            9.0,
+            (v(-2.5, 2.4, 5.5), v(-1.0, 0.8, -0.5)),
+            (v(2.5, 2.6, 5.5), v(1.0, 0.8, -0.5)),
+        ),
+        shot(
+            "destruction",
+            "Разрушение: Вороной заранее и в момент удара, куски бьются снова, крошки на GPU, вмятины на машине",
+            "destruction.ron",
+            9.0,
+            (v(-6.0, 3.5, 9.0), v(-3.0, 1.5, -1.0)),
+            (v(6.0, 4.0, 10.0), v(4.0, 1.2, 0.0)),
+        ),
+        shot(
+            "fluids",
+            "Жидкости на частицах: прорыв плотины — PBF (поверхность Surface Nets) и SPH (капли), вода MPM с FLIP-переносом",
+            "fluids.ron",
+            6.0,
+            (v(-6.5, 1.6, 2.6), v(-4.5, 0.3, -1.0)),
+            (v(-2.5, 1.8, 2.6), v(-2.5, 0.3, -1.2)),
+        ),
+        shot(
+            "flood",
+            "Мелкая вода на трубах: паводок за плотиной обтекает камни, ящики плывут, едущий блок гонит волну",
+            "fluids.ron",
+            7.0,
+            (v(3.5, 3.2, 4.5), v(3.5, 0.0, -1.0)),
+            (v(5.5, 2.6, 3.5), v(3.8, 0.0, -1.0)),
+        ),
+        shot(
+            "ocean",
+            "Открытое море: FFT-океан под ветер сцены, буи, ящики и плот качаются на волнах",
+            "ocean.ron",
+            8.0,
+            (v(-10.0, 5.0, 18.0), v(0.0, 0.0, 0.0)),
+            (v(10.0, 3.0, 16.0), v(0.0, 0.5, 0.0)),
+        ),
+        shot(
+            "smoke",
+            "Дым, огонь и пар: Stable Fluids на разреженной сетке блоками 8³, в тумане лучом; костёр светится, пар обтекает навес",
+            "smoke.ron",
+            8.0,
+            (v(-4.5, 1.5, 4.5), v(-3.0, 1.4, 0.0)),
+            (v(3.5, 2.0, 5.5), v(3.5, 1.8, 0.0)),
+        ),
+        shot(
+            "granular",
+            "Сыпучее: песок MPM ложится кучей, снежный ком разбивается о ящик, гравий DEM сыплется с пандуса, санки и шар оставляют колею в снегу",
+            "granular.ron",
+            9.0,
+            (v(-3.5, 2.2, 3.5), v(-2.0, 0.4, -1.0)),
+            (v(4.0, 2.5, 5.0), v(3.0, 0.2, 1.2)),
+        ),
+        shot(
+            "vegetation",
+            "Растительность: иерархическое качание — ствол, ветви в своих фазах, листья; двое протаптывают тропы по карте взаимодействия, трава распрямляется",
+            "vegetation.ron",
+            10.0,
+            (v(-2.0, 4.5, 6.0), v(0.0, 0.0, -1.0)),
+            (v(3.0, 3.5, 5.5), v(0.5, 1.0, -3.5)),
+        ),
+        shot(
+            "surfaces",
+            "Поверхности: рябь по волновому уравнению от шара и капель; дождь копится — мокнет, собираются лужи, низ вещей в грязи",
+            "surfaces.ron",
+            10.0,
+            (v(-3.0, 2.5, 5.5), v(-1.5, 0.3, 0.0)),
+            (v(3.5, 2.0, 4.5), v(1.5, 0.0, -1.0)),
+        ),
+        shot(
+            "snowfall",
+            "Снегопад копится по часам мира: сперва пятнами, потом целиком на всём, что смотрит вверх; санки режут колею",
+            "snowfall.ron",
+            9.0,
+            (v(-3.0, 2.2, 6.0), v(-1.0, 0.8, -1.0)),
+            (v(3.0, 2.6, 6.0), v(1.5, 0.4, 0.5)),
+        ),
+        shot(
+            "characters",
+            "Персонажи: ragdoll падает на ступени, активные тянутся мышцами к позе — процедурная походка и motion matching, рука тянется к шару по IK; паук шагает, ступни по IK",
+            "characters.ron",
+            12.0,
+            (v(-6.0, 3.0, 7.0), v(-2.0, 0.8, -1.0)),
+            (v(7.0, 2.8, 6.5), v(5.0, 0.8, -2.0)),
+        ),
+        shot(
+            "foundation",
+            "Фундамент: одно поле расстояний сцены — скатерть на валуне, вода по конусу, мягкие тени и SDF AO; единые контакты: гравий в гамаке, желе на батуте; искры GPU отскакивают по глубине",
+            "foundation.ron",
+            10.0,
+            (v(-5.0, 3.2, 5.5), v(-2.5, 0.8, -1.2)),
+            (v(6.0, 3.2, 5.0), v(3.0, 0.8, -1.2)),
+        ),
     ]
 }
 
@@ -459,13 +628,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some("main") => shots(),
         Some("rays") => ray_shots(),
         Some("bazaar") => bazaar_shots(),
+        Some("sim") => sim_shots(),
         Some("all") => shots()
             .into_iter()
             .chain(later_shots())
             .chain(bazaar_shots())
             .chain(ray_shots())
+            .chain(sim_shots())
             .collect(),
-        Some(other) => return Err(format!("no reel `{other}`: main, rays, bazaar or all").into()),
+        Some(other) => return Err(format!("no reel `{other}`: main, rays, bazaar, sim or all").into()),
     };
     let total: u32 = list
         .iter()
@@ -654,7 +825,7 @@ fn render_shot(
     let base = runity::scene_camera(&scene.view());
     // A second of the scene first, unrecorded: the trail has steps, the
     // dust is up, and what reads the last frame has one.
-    let warmup = fps;
+    let warmup = (shot.warmup.unwrap_or(1.0) * fps as f32) as u32;
     for i in 0..warmup + frames {
         let t = smooth(i.saturating_sub(warmup) as f32 / frames.max(1) as f32);
         let clock = shot.clock + (i as f32 - warmup as f32) * dt * shot.speed;
@@ -662,15 +833,22 @@ fn render_shot(
         runity::world::apply_hierarchy(&mut world);
         owed += dt * shot.speed;
         while owed >= step {
+            runity::fluid::float(&world, &mut physics);
+            runity::character::step(&mut world, &mut physics, step);
             physics.run(&mut world);
-            runity::crumble::run_crumble(&mut world, &mut physics, step);
+            runity::fluid::step(&mut world, step);
+            runity::destruction::step(&mut world, &mut physics, step);
             owed -= step;
         }
         runity::world::apply_hierarchy(&mut world);
+        // What bends, hangs and flows, on its own fixed steps.
+        runity::soft::step(&mut world, dt * shot.speed);
+        runity::soft::show(&mut world, 0.0);
+        runity::destruction::show(&mut world, 0.0);
+        runity::fluid::show(&mut world, 0.0);
+        runity::character::crawl(&mut world, dt * shot.speed);
+        runity::character::show(&mut world, 0.0);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
-        runity::cloth::run_cloth(&mut world, dt * shot.speed, &physics.wind);
-        runity::heap::run_heaps(&mut world, dt * shot.speed);
-        runity::rope::run_ropes(&mut world, dt * shot.speed, &physics.wind);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {
             let mut sun = scene.sun();

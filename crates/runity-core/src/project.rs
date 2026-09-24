@@ -496,6 +496,9 @@ const GITIGNORE: &str = "\
 /build/
 # The editor's memory for whoever uses it: views, the last scene.
 /.runity/
+# Keys for the services editor modules call (FAL_KEY, …): a key in git is a
+# key on GitHub.
+.env
 ";
 
 /// The `.gitattributes` lines that send scenes and prefabs to `runity
@@ -793,11 +796,21 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     profile.time("spin", || systems::spin::run(world, seconds));
     // The modules' systems of the fixed step (`runity::player_loop`).
     modules.run(Phase::FixedUpdate, world, seconds, Some(profile));
+    // @fluid {
+    // What floats is held up by the water under it, for the coming step.
+    runity::fluid::float(world, physics);
+    // @fluid }
+    // @character {
+    // Ragdolls' muscles pull toward their poses.
+    runity::character::step(world, physics, seconds);
+    // @character }
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));
-    // What comes down, after the physics: its blocks are bodies.
-    runity::crumble::run_crumble(world, physics, seconds);
+    // @destruction {
+    // What the step brought together hard enough breaks or dents.
+    profile.time("destruction", || runity::destruction::step(world, physics, seconds));
+    // @destruction }
 }
 
 /// In the project, write what the components look like, for the editor's

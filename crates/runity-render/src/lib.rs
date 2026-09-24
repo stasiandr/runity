@@ -12,18 +12,17 @@
 pub mod appearance;
 pub mod atmosphere;
 pub mod bindless;
-pub mod cloth;
 pub mod clouds;
 pub mod cluster;
 pub mod ddgi;
 pub mod decals;
+pub mod distance;
 pub mod exposure;
 pub mod floaters;
 pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
 pub mod graph;
-pub mod heap;
 pub mod lens;
 pub mod lights;
 pub mod lod;
@@ -40,7 +39,6 @@ pub mod ray;
 pub mod reflections;
 pub mod render;
 pub mod restir;
-pub mod rope;
 pub mod ssao;
 pub mod streaming_textures;
 pub mod taa;
@@ -67,8 +65,7 @@ pub fn systems(player_loop: &mut runity_core::player_loop::PlayerLoop) {
     player_loop
         .add(Phase::LateUpdate, "cameras", world_look::follow_cameras)
         .add(Phase::PostLateUpdate, "particles", particles::run_particles)
-        .add(Phase::PostLateUpdate, "footprints", footprints::run_footprints)
-        .add(Phase::PostLateUpdate, "heaps", heap::run_heaps);
+        .add(Phase::PostLateUpdate, "footprints", footprints::run_footprints);
 }
 
 // The core, geometry, the GPU and the overlay, under the names this

@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "destruction",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Things that break into Voronoi pieces, and surfaces that dent.",
+    depends: ["geometry", "physics"],
+    runtime: true,
+    editor: false,
+    parts: ["fracture", "dents"],
+    assets: [],
+    feature: Some("destruction"),
+)

@@ -71,6 +71,8 @@ fn shoot(
         weather: Default::default(),
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
+        smoke: Vec::new(),
+        distance_field: None,
         gpu_particles: Vec::new(),
         plumes: Vec::new(),
         terrain: None,

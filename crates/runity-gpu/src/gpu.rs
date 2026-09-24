@@ -139,6 +139,13 @@ impl Gpu {
             .max_storage_buffers_per_shader_stage
             .max(16)
             .min(adapter.limits().max_storage_buffers_per_shader_stage);
+        // Seventeen textures in the lit shader's fragment stage: the scene's
+        // distance field is the seventeenth. Metal, Vulkan and D3D12 all
+        // give far more than the portable sixteen.
+        required_limits.max_sampled_textures_per_shader_stage = required_limits
+            .max_sampled_textures_per_shader_stage
+            .max(24)
+            .min(adapter.limits().max_sampled_textures_per_shader_stage);
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
             required_limits.max_storage_buffers_per_shader_stage = required_limits

@@ -129,6 +129,8 @@ pub enum Action {
     ToggleFoliage,
     /// A material that is another one with nothing changed yet.
     MaterialInstance(String),
+    /// Put the runity add-on into Blender, turned on (docs/blender.md).
+    InstallBlenderPlugin,
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -241,6 +243,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Save Material from Selection…", Action::SaveMaterial),
                 MenuItem::separator(),
                 item("Import…", Action::Import),
+                item("Install Blender Plugin…", Action::InstallBlenderPlugin),
                 item("Refresh", Action::ReloadAssets),
                 item("Check Project", Action::CheckProject),
             ],

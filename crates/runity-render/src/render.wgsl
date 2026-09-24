@@ -9,6 +9,8 @@ struct Foliage {
     wind: vec4<f32>,
     // position and radius of each; radius 0 bends nothing
     benders: array<vec4<f32>, 8>,
+    // the trample map's middle x and z, its size, 1 when there is one
+    trample: vec4<f32>,
 };
 
 struct Frame {
@@ -123,6 +125,9 @@ struct Frame {
     vsm: array<vec4<f32>, 8>,
     // ReSTIR (restir.rs): on, the reservoirs' size, the frame's number.
     restir: vec4<f32>,
+    // the scene's distance field (distance.rs): its box and 1 when there
+    // is one; its far corner and range in metres
+    distance: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -180,6 +185,54 @@ struct Decal {
 @group(3) @binding(0) var fog_scatter_out: texture_storage_3d<rgba16float, write>;
 @group(3) @binding(1) var fog_scatter_in: texture_3d<f32>;
 @group(3) @binding(2) var fog_integrated_out: texture_storage_3d<rgba16float, write>;
+
+// Smoke from a grid, sampled by the fog's cells (`volume::Smoke`).
+struct SmokeBox {
+    // low corner, 1 when there is smoke
+    low: vec4<f32>,
+    // high corner, extinction per unit of density
+    high: vec4<f32>,
+    // colour, glow
+    color: vec4<f32>,
+    // how much of the texture it fills
+    fill: vec4<f32>,
+};
+@group(3) @binding(10) var smoke_volume: texture_3d<f32>;
+@group(3) @binding(11) var smoke_sampler: sampler;
+struct SmokeBoxes {
+    boxes: array<SmokeBox, 4>,
+    count: vec4<u32>,
+};
+@group(3) @binding(12) var<uniform> smokes: SmokeBoxes;
+
+/// The smokes at a point: what they scatter (their colour times their
+/// extinction), their extinction, and their glow.
+struct SmokeHere {
+    scatter: vec3<f32>,
+    extinction: f32,
+    glow: vec3<f32>,
+};
+
+fn smoke_at(p: vec3<f32>) -> SmokeHere {
+    var here = SmokeHere(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+    for (var i = 0u; i < min(smokes.count.x, 4u); i = i + 1u) {
+        let b = smokes.boxes[i];
+        let t = (p - b.low.xyz) / max(b.high.xyz - b.low.xyz, vec3<f32>(1e-4));
+        if any(t < vec3<f32>(0.0)) || any(t > vec3<f32>(1.0)) {
+            continue;
+        }
+        // Its slab of the texture: the smokes lie one above another in z.
+        let uvw = vec3<f32>(t.xy * b.fill.xy, (t.z * b.fill.z + b.fill.w) / 4.0);
+        let s = textureSampleLevel(smoke_volume, smoke_sampler, uvw, 0.0);
+        let density = s.r * 3.0 * b.high.w;
+        let heat = s.g;
+        here.scatter += b.color.rgb * density;
+        here.extinction += density;
+        // Fire glows by its heat, deep red to yellow-white.
+        here.glow += mix(vec3<f32>(1.0, 0.18, 0.02), vec3<f32>(1.0, 0.75, 0.35), heat) * heat * heat * b.color.w * max(s.r * 3.0, 0.3);
+    }
+    return here;
+}
 const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 
 // The physical sky (atmosphere.rs): the whole sky from the camera, and per
@@ -194,6 +247,62 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 @group(0) @binding(22) var last_frame: texture_2d<f32>;
 // The drawn terrain's heights on its grid of cells (terrain.rs).
 @group(0) @binding(23) var terrain_heights: texture_2d<f32>;
+// How the grass is trampled round the camera (foliage.rs, TrampleMap):
+// pressed, and the way out.
+@group(0) @binding(30) var trample_map: texture_2d<f32>;
+// The scene's signed distance field (distance.rs), 128 on the surface.
+@group(0) @binding(31) var distance_field: texture_3d<f32>;
+
+/// How far the nearest solid is from `p`, by the scene's distance field;
+/// far away outside its box.
+fn scene_distance(p: vec3<f32>) -> f32 {
+    let low = frame.distance[0].xyz;
+    let high = frame.distance[1].xyz;
+    let uvw = (p - low) / max(high - low, vec3<f32>(1e-4));
+    if any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0)) {
+        return 1e4;
+    }
+    let v = textureSampleLevel(distance_field, fog_sampler, uvw, 0.0).r;
+    return (v * 2.0 - 1.0) * frame.distance[1].w;
+}
+
+/// Occlusion by the distance field: stepping out along the normal, how
+/// much nearer something is than the step went (Evans, "Fast Approximations
+/// for Global Illumination on Dynamic Scenes").
+fn field_occlusion(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    var occluded = 0.0;
+    var weight = 1.0;
+    for (var i = 1; i <= 5; i++) {
+        let h = 0.12 * f32(i);
+        occluded += (h - max(scene_distance(p + n * h), 0.0)) * weight;
+        weight *= 0.6;
+    }
+    return clamp(1.0 - occluded * 2.2, 0.0, 1.0);
+}
+
+/// The share of the sun seen from `p` past what the field holds: marched
+/// toward it, the nearest the ray passes to anything over how far it has
+/// gone is how much of the disc shows (Quilez, soft shadows).
+fn field_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    var seen = 1.0;
+    var t = 0.08;
+    let start = p + n * 0.06;
+    for (var i = 0; i < 40; i++) {
+        let d = scene_distance(start + to_sun * t);
+        if d > 1e3 {
+            break;
+        }
+        seen = min(seen, 10.0 * d / t);
+        if seen < 0.01 {
+            return 0.0;
+        }
+        t += clamp(d, 0.04, 0.6);
+        if t > 12.0 {
+            break;
+        }
+    }
+    return smoothstep(0.0, 1.0, seen);
+}
 
 /// Whether any of the dust wall can lie between the eye and a point: the
 /// point is past where the ray enters the wall's side of its front (its
@@ -592,6 +701,22 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
     let flutter = amount * strength * min(height, 1.0) * 0.015
         * sin(t * 7.0 + dot(world, vec3<f32>(1.7, 2.3, 1.1)));
     var moved = world + direction * bend + vec3<f32>(-direction.z, 0.3, direction.x) * flutter;
+    // Branches: how far out from the trunk's axis a point is. Each branch —
+    // a band round the trunk and up it — bobs and swings on its own phase,
+    // more the further out; leaves at the tips flutter fast.
+    let out = world.xz - origin.xz;
+    let reach = length(out);
+    if reach > 0.3 && height > 0.5 {
+        let around = atan2(out.y, out.x);
+        let branch = floor(around * 1.3) * 3.7 + floor(height * 1.5) * 1.9;
+        let swing = sin(t * 1.9 + branch + along * 0.2) * (0.6 + 0.4 * gust);
+        let sway = amount * strength * reach * 0.02 * swing;
+        let side = vec3<f32>(-direction.z, 0.0, direction.x);
+        moved += side * sway + vec3<f32>(0.0, sway * 0.6, 0.0) + direction * abs(sway) * 0.5;
+        let leaf = amount * strength * min(reach, 3.0) * 0.006
+            * sin(t * 11.0 + dot(world, vec3<f32>(3.1, 1.3, 2.7)) + branch);
+        moved += vec3<f32>(leaf, leaf * 0.7, -leaf);
+    }
     // Kept roughly its length: what leans over also drops.
     moved.y -= bend * bend / max(2.0 * height, 0.2);
 
@@ -610,6 +735,32 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
             moved.y -= push * height * 0.6;
         }
     }
+    return moved;
+}
+
+/// A vertex of grass pressed down and out by what has walked through it
+/// and not yet sprung back: the trample map.
+fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<f32> {
+    if amount <= 0.0 || f.trample.w < 0.5 {
+        return world;
+    }
+    let size = f.trample.z;
+    let t = (world.xz - f.trample.xy) / size + 0.5;
+    if any(t < vec2<f32>(0.0)) || any(t >= vec2<f32>(1.0)) {
+        return world;
+    }
+    let cells = vec2<f32>(textureDimensions(trample_map));
+    let texel = textureLoad(trample_map, vec2<i32>(t * cells), 0);
+    let pressed = texel.r * min(amount, 1.0);
+    if pressed <= 0.0 {
+        return world;
+    }
+    let height = max(world.y - origin.y, 0.0);
+    let away = texel.gb * 2.0 - 1.0;
+    // Laid over, not squashed: out along the way it was pushed, and down
+    // as far as it leans.
+    var moved = world + vec3<f32>(away.x, 0.0, away.y) * pressed * min(height, 1.0) * 0.9;
+    moved.y -= pressed * height * 0.8;
     return moved;
 }
 
@@ -1093,7 +1244,8 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = ray.start + ray.direction * (depth - ray.start_depth) * ray.stretch;
     let air = fog_density(p);
     let dust = puff_dust(p);
-    let density = air + dust.a;
+    let smoke = smoke_at(p);
+    let density = air + dust.a + smoke.extinction;
     let to_eye = -ray.direction;
     let g = frame.fog_shape.z;
 
@@ -1149,7 +1301,10 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     // light bouncing about inside it, not the thin air's single turn
     // towards the eye — and from the ground and sky round it.
     let dust_light = sun_through * 0.45 + mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * 0.9;
-    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * air + dust_light * dust.rgb, density));
+    // Smoke is lit as the dust is, in its own colour; fire glows by its
+    // heat, whatever lights it.
+    let smoke_light = dust_light * smoke.scatter + smoke.glow;
+    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * air + dust_light * dust.rgb + smoke_light, density));
 }
 
 // Each column front to back: what each cell adds, dimmed by what lies
@@ -1298,6 +1453,19 @@ fn weathered(albedo: vec3<f32>, smoothness: f32, normal: vec3<f32>, geometric: v
         // Each plate curls a little as it shrinks: its edges lift.
         let curl = (1.0 - smoothstep(0.0, 0.5, crack.x)) * dry * 0.6;
         out.normal = normalize(out.normal + vec3<f32>(crack.y, 0.0, crack.z) * curl);
+    }
+    // Mud splashed up the foot of things: brown and dull in spatters,
+    // thickest low, gone by the mud's height; wetter where it is wet.
+    let mud = frame.weather[2].z;
+    let mud_height = frame.weather[2].w;
+    if mud > 0.0 && mud_height > 0.0 && !is_sand {
+        let low = 1.0 - smoothstep(0.0, mud_height, position.y);
+        let spatter = patches(position.xz * 6.0 + vec2<f32>(position.y * 9.0, 3.0)) * 0.6 + patches(position.xz * 17.0 + position.y * 23.0) * 0.4;
+        let amount = mud * low * (1.0 - 0.6 * max(geometric.y, 0.0));
+        let splash = smoothstep(1.0 - amount, 1.0 - amount + 0.1, spatter) * step(0.001, amount);
+        out.albedo = mix(out.albedo, vec3<f32>(0.18, 0.12, 0.07), splash);
+        out.smoothness = mix(out.smoothness, 0.1 + 0.5 * wet_here, splash);
+        out.metal = out.metal * (1.0 - splash);
     }
     if wet_here + puddles + w.z <= 0.0 {
         return out;
@@ -1560,7 +1728,12 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
 fn standard_vertex(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = vec4<f32>(
-        swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
+        trampled(
+            swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
+            in.model_3.xyz,
+            in.detail.z,
+            frame.foliage,
+        ),
         1.0,
     );
 
@@ -2168,6 +2341,12 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
             }
         }
     }
+    // The scene's distance field softens the sun's shadow where the map
+    // is coarse and adds what the map missed.
+    let field_on = frame.distance[0].w > 0.5 && unlit < 0.5;
+    if field_on && shadow > 0.0 && (flags & 4u) != 0u {
+        shadow = min(shadow, field_shadow(in.world_position, geometric, to_sun));
+    }
     // Under a cloud: in its shadow.
     shadow *= cloud_shadow(in.world_position);
     // Under water: the sun comes down as caustics, dimmer the deeper.
@@ -2187,6 +2366,9 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let gathered = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0);
         ao = gathered.a;
         bounce = gathered.rgb;
+    }
+    if field_on {
+        ao *= field_occlusion(in.world_position, geometric);
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)

@@ -61,6 +61,18 @@ pub struct Weather {
     /// (dry): `wetness` and `puddles` go, not evenly but in patches, the
     /// open and high first, hollows last; clay cracks as it goes.
     pub drying: f32,
+    /// Mud splashed on the low parts of things, 0 to 1: brown and dull in
+    /// spatters, thickest at the foot, up to `mud_height` metres.
+    pub mud: f32,
+    pub mud_height: f32,
+    /// The weather gathers by the world's clock instead of standing as
+    /// set: under `rain` things get wet, then puddles gather, then mud;
+    /// under `snowfall` snow settles, patchy first and then whole. The same
+    /// on every machine at the same time.
+    pub accumulate: bool,
+    /// How many times faster than that it gathers: a scene that shows the
+    /// whole of it in a few seconds.
+    pub pace: f32,
 }
 
 /// A stroke of lightning at a moment: its path from the cloud to the
@@ -97,6 +109,10 @@ impl Default for Weather {
             drifted: 0.0,
             lightning: 0.0,
             drying: 0.0,
+            mud: 0.0,
+            mud_height: 0.6,
+            accumulate: false,
+            pace: 1.0,
         }
     }
 }
@@ -110,7 +126,7 @@ impl Weather {
         [
             [c(self.wetness), c(self.puddles), c(self.snow), c(self.rain)],
             [c(self.snowfall), c(self.sandstorm), c(self.dust_wall), 0.0],
-            [c(self.drifted), c(self.drying), 0.0, 0.0],
+            [c(self.drifted), c(self.drying), c(self.mud), self.mud_height.max(0.0)],
         ]
     }
 
@@ -136,17 +152,40 @@ impl Weather {
     /// in the air, the grains flying past — as much as the camera is behind
     /// the front, eased over a few dozen metres.
     pub fn at(&self, eye: glam::Vec3, wind: &crate::foliage::Wind, time: f32) -> Weather {
-        if self.dust_wall <= 0.0 {
-            return *self;
+        let gathered = self.gathered(time);
+        if gathered.dust_wall <= 0.0 {
+            return gathered;
         }
+        let this = gathered;
         let level = glam::Vec2::new(wind.direction.x, wind.direction.z).normalize_or(glam::Vec2::X);
         let along = glam::Vec2::new(eye.x, eye.z).dot(level);
         // The front's mean line; its bulges reach a little either side.
-        let inside = -self.dust_front(wind, time) - along;
+        let inside = -this.dust_front(wind, time) - along;
         let swallowed = ((inside + 40.0) / 120.0).clamp(0.0, 1.0);
         let swallowed = swallowed * swallowed * (3.0 - 2.0 * swallowed);
         Weather {
-            sandstorm: self.sandstorm.max(swallowed * self.dust_wall),
+            sandstorm: this.sandstorm.max(swallowed * this.dust_wall),
+            ..this
+        }
+    }
+
+    /// What has gathered by `time` seconds, when it gathers: wet in half
+    /// a minute of heavy rain, puddles after a minute more, mud after two;
+    /// snow patchy in a minute of heavy snowfall and whole in two. Never
+    /// less than the scene sets.
+    pub fn gathered(&self, time: f32) -> Weather {
+        if !self.accumulate {
+            return *self;
+        }
+        let time = time.max(0.0) * self.pace.max(0.0);
+        let rained = self.rain.clamp(0.0, 1.0) * time;
+        let snowed = self.snowfall.clamp(0.0, 1.0) * time;
+        let ramp = |from: f32, over: f32, v: f32| ((v - from) / over).clamp(0.0, 1.0);
+        Weather {
+            wetness: self.wetness.max(ramp(0.0, 30.0, rained)),
+            puddles: self.puddles.max(ramp(30.0, 60.0, rained)),
+            mud: self.mud.max(ramp(20.0, 100.0, rained)),
+            snow: self.snow.max(ramp(0.0, 120.0, snowed)),
             ..*self
         }
     }

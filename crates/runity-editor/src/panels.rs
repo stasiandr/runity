@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "cloth" | "rope" | "crumble" | "heap" | "render_texture" | "sound" | "route" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "distance_field" | "snow_cover" | "ragdoll" | "crawler" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 26] = [
+pub const FIELDS: [&str; 41] = [
     "name",
     "model",
     "prefab",
@@ -102,12 +102,27 @@ pub const FIELDS: [&str; 26] = [
     "decal",
     "footprints",
     "terrain",
-    "cloth",
-    "rope",
-    "crumble",
-    "heap",
     "bends_grass",
     "route",
+    "rope",
+    "cloth",
+    "hair",
+    "soft_body",
+    "jiggle",
+    "fluid",
+    "fracture",
+    "dents",
+    "mpm",
+    "shallow_water",
+    "ripples",
+    "ocean",
+    "floats",
+    "smoke",
+    "grains",
+    "distance_field",
+    "snow_cover",
+    "ragdoll",
+    "crawler",
     "components.<name>",
 ];
 
@@ -335,13 +350,85 @@ impl Session {
                 "terrain".into(),
                 desc.terrain().map_or("None".to_string(), |t| ron(&t)),
             ),
-            ("cloth".into(), desc.part::<runity::cloth::Cloth>().map_or("None".to_string(), |t| ron(&t))),
-            ("rope".into(), desc.part::<runity::rope::Rope>().map_or("None".to_string(), |t| ron(&t))),
-            ("crumble".into(), desc.part::<runity::crumble::Crumble>().map_or("None".to_string(), |t| ron(&t))),
-            ("heap".into(), desc.part::<runity::heap::Heap>().map_or("None".to_string(), |t| ron(&t))),
             (
                 "route".into(),
                 desc.route().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "rope".into(),
+                desc.rope().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "cloth".into(),
+                desc.cloth().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "hair".into(),
+                desc.hair().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "soft_body".into(),
+                desc.soft_body().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "jiggle".into(),
+                desc.jiggle().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "fluid".into(),
+                desc.fluid().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "fracture".into(),
+                desc.fracture().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "dents".into(),
+                desc.dents().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "mpm".into(),
+                desc.mpm().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "shallow_water".into(),
+                desc.shallow_water().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "ripples".into(),
+                desc.ripples().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "ocean".into(),
+                desc.ocean().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "floats".into(),
+                desc.floats().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "smoke".into(),
+                desc.smoke().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "grains".into(),
+                desc.grains().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "distance_field".into(),
+                desc.distance_field().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "snow_cover".into(),
+                desc.snow_cover().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "ragdoll".into(),
+                desc.ragdoll().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "crawler".into(),
+                desc.crawler().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -717,6 +804,158 @@ impl Session {
                 })
                 .as_ref(),
             ),
+            "soft_body" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SoftBody>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "jiggle" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Jiggle>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "fluid" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Fluid>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "fracture" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Fracture>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "dents" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Dents>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "mpm" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Mpm>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "shallow_water" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::ShallowWater>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "ripples" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Ripples>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "ocean" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Ocean>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "floats" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Floats>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "smoke" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Smoke>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "grains" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Grains>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "distance_field" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::DistanceField>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "snow_cover" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SnowCover>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "ragdoll" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Ragdoll>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "crawler" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Crawler>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "rope" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Rope>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "cloth" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Cloth>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "hair" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Hair>(field, text)?)
+                })
+                .as_ref(),
+            ),
             "particles" => next.set_part_opt(
                 (if text.trim() == "None" {
                     None
@@ -754,38 +993,6 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::terrain::Terrain>(field, text)?)
-                })
-                .as_ref(),
-            ),
-            "cloth" => next.set_part_opt(
-                (if text.trim() == "None" {
-                    None
-                } else {
-                    Some(parse::<runity::cloth::Cloth>(field, text)?)
-                })
-                .as_ref(),
-            ),
-            "rope" => next.set_part_opt(
-                (if text.trim() == "None" {
-                    None
-                } else {
-                    Some(parse::<runity::rope::Rope>(field, text)?)
-                })
-                .as_ref(),
-            ),
-            "crumble" => next.set_part_opt(
-                (if text.trim() == "None" {
-                    None
-                } else {
-                    Some(parse::<runity::crumble::Crumble>(field, text)?)
-                })
-                .as_ref(),
-            ),
-            "heap" => next.set_part_opt(
-                (if text.trim() == "None" {
-                    None
-                } else {
-                    Some(parse::<runity::heap::Heap>(field, text)?)
                 })
                 .as_ref(),
             ),

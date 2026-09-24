@@ -25,9 +25,12 @@
 //! folder nobody commits is settings nobody keeps.
 
 pub mod assets;
+pub mod blend;
 pub mod poly;
+pub mod scene;
 pub mod terrain;
 pub mod unity;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -80,6 +83,25 @@ pub struct ImportSettings {
     /// its foot can be dropped on the ground.
     #[serde(default = "yes")]
     pub origin_to_base: bool,
+    /// A glTF that is a scene — several objects — rather than one model:
+    /// imported as models, materials and a prefab (see [`scene`]). Set on
+    /// the first import from what the file holds, and kept.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub scene: bool,
+    /// For a scene: the ID of every asset it builds, by what the file calls
+    /// it (`mesh:rock.0`, `material:moss`), so a re-import updates them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parts: BTreeMap<String, AssetId>,
+    /// For a scene: its materials the project draws with one of its own
+    /// instead — `{ "moss": "moss_wet" }` — everywhere this file uses them
+    /// (docs/blender.md). A material with a custom look in the game and
+    /// Blender's in Blender.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub materials: BTreeMap<String, String>,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Default for ImportSettings {
@@ -92,6 +114,9 @@ impl Default for ImportSettings {
             recompute_normals: false,
             srgb: true,
             origin_to_base: true,
+            scene: false,
+            parts: BTreeMap::new(),
+            materials: BTreeMap::new(),
         }
     }
 }
@@ -157,11 +182,36 @@ pub fn asset_for(id: AssetId, library: &Path) -> PathBuf {
     library.join(format!("{id}.rasset"))
 }
 
+/// Whether what an import built was written in an older asset format: its
+/// `.rasset`, or for a scene — whose own output is a prefab, with no asset
+/// header — every asset it built.
+fn outdated(settings: &ImportSettings, output: &Path, library: &Path) -> bool {
+    if settings.scene {
+        settings
+            .parts
+            .values()
+            .map(|id| asset_for(*id, library))
+            .any(|part| part.is_file() && !runity::asset::is_current(&part))
+    } else {
+        !runity::asset::is_current(output)
+    }
+}
+
 /// Where a source's asset is built, by the ID its sidecar holds: `None`
 /// for a source with no sidecar yet.
 pub fn built_for(source: &Path, library: &Path) -> Option<PathBuf> {
     let settings = ImportSettings::load(sidecar_for(source)).ok()?;
-    Some(asset_for(settings.asset_id(), library))
+    Some(output_for(&settings, library))
+}
+
+/// The file an import with these settings builds: its `.rasset`, or for a
+/// scene its prefab.
+pub fn output_for(settings: &ImportSettings, library: &Path) -> PathBuf {
+    if settings.scene {
+        scene::prefab_for(settings.asset_id(), library)
+    } else {
+        asset_for(settings.asset_id(), library)
+    }
 }
 
 /// Whether a library file is named the way [`asset_for`] names one. A
@@ -1531,6 +1581,7 @@ pub fn import_to(
     mut settings: ImportSettings,
 ) -> Result<Imported> {
     std::fs::create_dir_all(library)?;
+    let first = settings.id.is_none() && settings.hash.is_empty();
     settings.hash = content_hash(source).with_context(|| format!("{}", source.display()))?;
     settings.id = Some(settings.asset_id());
 
@@ -1538,6 +1589,20 @@ pub fn import_to(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
+    if extension == "blend" {
+        settings.scene = true;
+    } else if matches!(extension.as_str(), "gltf" | "glb") && first && !settings.scene {
+        settings.scene = scene::is_scene(source)?;
+    }
+    if settings.scene {
+        let id = scene::import_scene(source, library, &mut settings)?;
+        settings.save(sidecar)?;
+        return Ok(Imported {
+            id,
+            asset: scene::prefab_for(id, library),
+            sidecar: sidecar.to_path_buf(),
+        });
+    }
     let (bytes, id, kind) = match extension.as_str() {
         "gltf" | "glb" => {
             let mesh = mesh_from_gltf(source, &settings)?;
@@ -1709,6 +1774,26 @@ pub struct Reimported {
 /// a modification time only says whether hashing is worth doing, because
 /// polling this every frame must not read every texture every frame.
 pub fn sync(project: &runity::Project) -> Vec<Reimported> {
+    sync_settled(project, std::time::Duration::ZERO)
+}
+
+/// [`sync`], leaving alone a `.blend` written less than `settle` ago.
+///
+/// What an editor polls with while an open Blender can send it the file
+/// it just saved (docs/blender.md): that arrives in a moment and costs
+/// nothing, where importing it here would start a second Blender for the
+/// same work. A `.blend` changed any other way — a pull, a Blender without
+/// the plugin — is imported once it has settled.
+pub fn sync_settled(project: &runity::Project, settle: std::time::Duration) -> Vec<Reimported> {
+    let fresh = |path: &Path| {
+        !settle.is_zero()
+            && path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("blend"))
+            && modified(path)
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age < settle)
+    };
     let library = project.library();
     // Built before assets were named by ID: gone, and built again below.
     if let Ok(entries) = std::fs::read_dir(&library) {
@@ -1768,11 +1853,14 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
             continue;
         }
         claimed.push(source.clone());
+        if fresh(&source) {
+            continue;
+        }
 
-        let asset = asset_for(settings.asset_id(), &library);
+        let asset = output_for(&settings, &library);
         let change = if !asset.is_file() {
             Some(Change::Built)
-        } else if !runity::asset::is_current(&asset) {
+        } else if outdated(&settings, &asset, &library) {
             Some(Change::Outdated)
         } else if settings.hash.is_empty() || modified(&source) > modified(sidecar) {
             // The clock says maybe; the hash decides.
@@ -1805,6 +1893,7 @@ pub fn sync(project: &runity::Project) -> Vec<Reimported> {
     let mut unclaimed: Vec<PathBuf> = sources
         .into_iter()
         .filter(|source| !claimed.iter().any(|c| same(c, source)))
+        .filter(|source| !fresh(source))
         .collect();
 
     // A sidecar whose source is gone, and a source with no sidecar holding
@@ -1981,6 +2070,7 @@ pub fn importable(path: &Path) -> bool {
         Some(
             "gltf"
                 | "glb"
+                | "blend"
                 | "obj"
                 | "rterrain"
                 | "rpoly"

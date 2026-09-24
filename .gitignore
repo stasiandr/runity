@@ -22,3 +22,8 @@ crates/runity-gpu/tests/diff/
 
 # The editor window's own layout: panel sizes and the open tab, per person.
 **/.runity/studio.ron
+__pycache__/
+
+# Keys for the services editor modules call (FAL_KEY, …) and anything else
+# local: never committed.
+.env

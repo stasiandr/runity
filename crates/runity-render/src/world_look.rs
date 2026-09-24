@@ -195,7 +195,7 @@ pub fn texture_views(
 }
 
 /// Dust in the air round a thing, for the frame: what a wall coming down
-/// raises (the facade's `crumble`), kept up to date by whatever makes it.
+/// raises, kept up to date by whatever makes it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Dust(pub Vec<crate::volume::Puff>);
 
@@ -258,6 +258,26 @@ impl LiveMesh {
         &self.indices
     }
 }
+
+/// Many of one mesh, drawn with the entity's material, each placed in the
+/// world as it says — a chain's links, a fence's pickets: one mesh, drawn
+/// as instances of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Copies {
+    pub mesh: crate::render::MeshHandle,
+    pub placed: Vec<glam::Mat4>,
+}
+
+/// Smoke or fire in the fog, on the entity that makes it: whoever steps
+/// the smoke writes it each frame, and the frame takes the nearest few
+/// ([`crate::volume::Smoke`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmokeVolume(pub crate::volume::Smoke);
+
+/// The scene's distance field, on the entity that bakes it: the frame
+/// draws occlusion and soft shadows by it ([`crate::distance`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistanceFieldLook(pub crate::distance::DistanceField);
 
 /// A local look at an entity, from its line's `post_volume`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -652,6 +672,21 @@ pub fn build_frame_where(
             pose,
         });
     }
+    // Copies of one mesh: the renderer draws them as instances.
+    for (copies, surface, line) in world
+        .query::<(&Copies, &Surface, Option<&SceneId>)>()
+        .iter()
+    {
+        if keep(line.map(|l| l.0)) {
+            draws.extend(copies.placed.iter().map(|placed| Draw {
+                mesh: copies.mesh,
+                transform: *placed,
+                texture: TextureHandle::WHITE,
+                material: surface.0,
+                pose: None,
+            }));
+        }
+    }
     // Screens in the world: their pictures, and the things showing them.
     let mut ui_pictures = Vec::new();
     for (entity, screen, line) in world
@@ -831,6 +866,15 @@ pub fn build_frame_where(
             puffs.extend(dust.0.iter().copied());
         }
     }
+    // The smokes, nearest the eye first: the fog takes the first few.
+    let mut smoke: Vec<crate::volume::Smoke> = world
+        .query::<(&SmokeVolume, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, line)| keep(line.map(|l| l.0)))
+        .map(|(s, _)| s.0.clone())
+        .collect();
+    let d = |s: &crate::volume::Smoke| ((s.low + s.high) * 0.5).distance_squared(camera.position);
+    smoke.sort_by(|a, b| d(a).total_cmp(&d(b)));
     Frame {
         camera,
         lighting,
@@ -838,6 +882,8 @@ pub fn build_frame_where(
         irradiance_volumes,
         decals,
         puffs,
+        smoke,
+        distance_field: world.query::<(&DistanceFieldLook, Option<&SceneId>)>().iter().find(|(_, line)| keep(line.map(|l| l.0))).map(|(f, _)| f.0.clone()),
         gpu_particles,
         plumes,
         terrain,

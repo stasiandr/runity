@@ -1,0 +1,30 @@
+// Верёвки, кабели и цепи (модуль `soft`, docs/simulation.md): бельевая
+// верёвка между столбами, цепь между столбами, цепь с балки, кабель из
+// стены, верёвка, легшая на ящик. Всё — поле `rope` строки, ветер сцены
+// качает, коллайдеры держат.
+(
+    view: (position: (0.5, 2.4, 6.5), target: (0.0, 1.4, -4.0), fov_deg: 55.0),
+    sun: (hour: 16.0, intensity: 1.3),
+    sky: (mode: Physical),
+    wind: (direction: (0.2, 0.0, 1.0), strength: 1.2),
+    entities: [
+        (id: "7a7ff8661c1e1c90", name: "ground", model: "builtin:plane", transform: (scale: (40.0, 1.0, 40.0)), material: "grid", body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "88e13a7e2033c651", name: "post washing west", model: "builtin:cylinder", transform: (position: (-6.0, 1.2, -6.0), scale: (0.14, 2.4, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "a12e51a0b80bea7d", name: "post washing east", model: "builtin:cylinder", transform: (position: (-1.5, 1.2, -6.0), scale: (0.14, 2.4, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "cc5f2617a46e7a96", name: "washing line", transform: (position: (-6.0, 2.35, -6.0)), material: (base_color: (0.92, 0.9, 0.84)), rope: (to: (0.0, 0.0, 0.0), end: EntityRef("1e6458b15d09243e"), slack: 0.04, thickness: 0.014, catch: 0.8)),
+        (id: "1e6458b15d09243e", name: "washing end", transform: (position: (-1.5, 2.35, -6.0))),
+        (id: "44104f23664e5120", name: "post chain west", model: "builtin:cylinder", transform: (position: (1.5, 1.0, -6.0), scale: (0.14, 2.0, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "e205d729c4c71692", name: "post chain east", model: "builtin:cylinder", transform: (position: (6.0, 1.0, -6.0), scale: (0.14, 2.0, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "d92d31ccdfdc375b", name: "chain between", transform: (position: (1.5, 1.95, -6.0)), material: (base_color: (0.32, 0.33, 0.35), metallic: 1.0, roughness: 0.4), rope: (to: (0.0, 0.0, 0.0), end: EntityRef("e07138e0e00b9baa"), kind: Chain, slack: 0.12, segments: 40, thickness: 0.05)),
+        (id: "e07138e0e00b9baa", name: "chain end", transform: (position: (6.0, 1.95, -6.0))),
+        (id: "55f9bb60cf469c38", name: "beam", model: "builtin:cube", transform: (position: (3.0, 3.4, -2.5), scale: (3.0, 0.2, 0.2)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "886aceb066121160", name: "hanging chain", transform: (position: (3.6, 3.3, -2.5)), material: (base_color: (0.32, 0.33, 0.35), metallic: 1.0, roughness: 0.4), rope: (to: (0.0, -1.8, 0.0), ends: Start, kind: Chain, segments: 22, thickness: 0.04)),
+        (id: "4936baf3055abe5b", name: "wall", model: "builtin:cube", transform: (position: (-6.5, 1.5, -2.0), scale: (0.4, 3.0, 4.0)), material: (base_color: (0.7, 0.66, 0.6)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "fc780f29fd58a4b7", name: "cable", transform: (position: (-6.3, 2.2, -1.5)), material: (base_color: (0.08, 0.08, 0.09), roughness: 0.6), rope: (to: (2.5, 0.0, 0.0), ends: Start, kind: Cable, segments: 20, thickness: 0.035)),
+        (id: "3e7facdbddfdffc1", name: "crate", model: "builtin:cube", transform: (position: (-1.6, 0.5, -1.2)), material: (base_color: (0.55, 0.4, 0.22)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "e01254117d9e114f", name: "post drape west", model: "builtin:cylinder", transform: (position: (-3.6, 0.8, -1.2), scale: (0.14, 1.6, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "045c3ccccd3eccb7", name: "post drape east", model: "builtin:cylinder", transform: (position: (0.4, 0.8, -1.2), scale: (0.14, 1.6, 0.14)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Cylinder(half_height: 0.5, radius: 0.5)),
+        (id: "4b78d00b411d8393", name: "draped rope", transform: (position: (-3.6, 1.55, -1.2)), material: (base_color: (0.75, 0.6, 0.35)), rope: (to: (0.0, 0.0, 0.0), end: EntityRef("2f07b768a6c52845"), slack: 0.35, segments: 40, thickness: 0.03)),
+        (id: "2f07b768a6c52845", name: "drape end", transform: (position: (0.4, 1.55, -1.2))),
+    ],
+)

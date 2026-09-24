@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/ocean.ron",
+    id: Some("2750dfede976012549bb2a5be50456bb"),
+)

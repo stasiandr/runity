@@ -321,6 +321,7 @@ mod tests {
             Emitter {
                 rate: 1000.0,
                 gpu: true,
+                collide: false,
                 ..Emitter::default()
             },
             MeshHandle::TEST,
