@@ -131,6 +131,10 @@ pub enum Action {
     MaterialInstance(String),
     /// Put the runity add-on into Blender, turned on (docs/blender.md).
     InstallBlenderPlugin,
+    /// A colour preset by name (`theme::PRESETS`), as the person's choice.
+    Theme(&'static str),
+    /// Settings, on its Appearance page.
+    Appearance,
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -273,7 +277,18 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Snap", Action::ToggleSnap),
                 item("Snap Settings…", Action::SnapSettings),
                 item("Navigation", Action::ToggleNavigation),
-            ],
+                MenuItem::separator(),
+                // A submenu, «Theme ›», where the menu bar has them: the
+                // label's first part is its title.
+                item("Theme › Appearance Settings…", Action::Appearance),
+            ]
+            .into_iter()
+            .chain(
+                crate::theme::PRESETS
+                    .iter()
+                    .map(|p| item(&format!("Theme › {}", p.label), Action::Theme(p.name))),
+            )
+            .collect(),
         ),
         (
             "Window",

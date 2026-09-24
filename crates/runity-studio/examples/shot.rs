@@ -8,6 +8,9 @@
 //! into an off-screen texture on the session's GPU, and read back. Not a
 //! mock: the same `Studio` the window runs. An agent sees what it changed
 //! without a person looking at a screen (DNA, postulate 5).
+//!
+//! The colours are Nocturne's, not whatever the person running it chose,
+//! unless `RUNITY_SHOT_THEME` names a preset (`daylight`, `graphite`…).
 
 use std::path::PathBuf;
 
@@ -27,16 +30,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = runity_studio::open(&scene)?;
     let mut studio = runity_studio::Studio::new(session, width, height, scale);
+    let config = std::env::temp_dir().join(format!("runity-shot-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&config);
+    studio.set_config_dir(config.clone());
+    if let Ok(preset) = std::env::var("RUNITY_SHOT_THEME") {
+        let change = runity_studio::appearance::Change::Preset(preset);
+        studio.change_theme(change);
+    }
     for name in args {
         match studio.session.find(&name) {
             Some(id) => studio.session.add_to_selection(id)?,
             None => eprintln!("nothing called {name:?}"),
         }
     }
+    // One panel in a window of its own, at a size that shows all of it:
+    // `RUNITY_SHOT_FLOAT=settings` photographs the Settings panel alone.
+    let float = std::env::var("RUNITY_SHOT_FLOAT").ok();
+    let (fw, fh) = (1000.0, 1240.0);
+    studio.frame();
+    if let Some(panel) = &float {
+        studio.float_panel(panel);
+        studio.resize_float(panel, fw, fh);
+        studio.frame();
+    }
     // Names of nodes to click first, comma-separated: what a person would
     // do before looking (`asset campfire,menu bar View`).
     let clicks = std::env::var("RUNITY_SHOT_CLICK").unwrap_or_default();
-    studio.frame();
     for name in clicks.split(',').filter(|n| !n.is_empty()) {
         studio.ui.paint();
         let Some(node) = studio.ui.find(name) else {
@@ -45,15 +64,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let (x, y) = studio.ui.rect(node).center();
         use runity::input::{InputEvent, MouseButton};
-        studio.handle(&InputEvent::MouseMoved { x, y });
-        studio.handle(&InputEvent::MouseDown(MouseButton::Left));
-        studio.handle(&InputEvent::MouseUp(MouseButton::Left));
+        // Inside the floating panel: its window's pointer, from its corner.
+        let frame = float
+            .as_ref()
+            .and_then(|p| studio.ui.find(&format!("float {p}")))
+            .map(|f| studio.ui.rect(f))
+            .filter(|f| f.contains(x, y));
+        let events = [
+            InputEvent::MouseMoved { x, y },
+            InputEvent::MouseDown(MouseButton::Left),
+            InputEvent::MouseUp(MouseButton::Left),
+        ];
+        for event in &events {
+            match (&frame, &float) {
+                (Some(f), Some(p)) => {
+                    let event = match event {
+                        InputEvent::MouseMoved { x, y } => InputEvent::MouseMoved {
+                            x: x - f.x,
+                            y: y - f.y,
+                        },
+                        e => e.clone(),
+                    };
+                    studio.handle_float(p, &event);
+                }
+                _ => studio.handle(event),
+            }
+        }
         studio.frame();
     }
     // A few frames more: what is drawn lazily (the Project's pictures)
     // gets drawn.
     for _ in 0..30 {
         studio.frame();
+    }
+    if let Some(panel) = &float {
+        let (pw, ph) = ((fw * scale) as u32, (fh * scale) as u32);
+        let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
+        let mut renderer = studio.renderer(target.format());
+        let mut seen = u64::MAX;
+        for _ in 0..3 {
+            studio.frame();
+            studio.draw_float(panel, &mut renderer, &mut seen, &target.ui_view(), pw, ph);
+        }
+        let pixels = target.read_rgba(studio.session.gpu());
+        image::save_buffer(&out, &pixels, pw, ph, image::ExtendedColorType::Rgba8)?;
+        let _ = std::fs::remove_dir_all(&config);
+        println!("wrote {}", out.display());
+        return Ok(());
     }
     let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
     let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
@@ -66,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let pixels = target.read_rgba(studio.session.gpu());
     image::save_buffer(&out, &pixels, pw, ph, image::ExtendedColorType::Rgba8)?;
+    let _ = std::fs::remove_dir_all(&config);
     println!("wrote {}", out.display());
     Ok(())
 }

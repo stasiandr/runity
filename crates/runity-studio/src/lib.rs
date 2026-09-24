@@ -18,6 +18,7 @@
 //! `shot` example drive it off-screen. [`window::run`] is winit around it.
 
 mod animator;
+pub mod appearance;
 mod bottom;
 mod clipboard;
 mod dialogues;

@@ -61,7 +61,8 @@ impl Clipboard for LocalClipboard {
     }
 }
 
-/// The accent of the caret and the tint of a selection.
+/// The accent of the caret and the tint of a selection, drawn through the
+/// palette like any other colour: a theme's accent is its caret too.
 const CARET: Color = Color::hex(0x9184d9);
 
 fn prev_boundary(text: &str, at: usize) -> usize {
@@ -501,14 +502,17 @@ impl Ui {
         if let Some((start, text)) = state.preedit.clone() {
             let (sx, sy) = self.caret_at(id, start);
             let (ex, _) = self.caret_at(id, start + text.len());
+            let color = self.tint(CARET);
             bands_underline(
                 &mut self.layers,
+                color,
                 inner.x + sx - offset,
                 text_y + sy + line - 2.0,
                 (ex - sx).max(1.0),
                 clip,
             );
         }
+        let caret = self.tint(CARET);
         let layer_rects = &mut self.layers.last_mut().expect("a layer").rects;
         for (from, y, width) in bands {
             layer_rects.push(RectPaint {
@@ -518,7 +522,7 @@ impl Ui {
                     width,
                     height: line,
                 },
-                fill: CARET.alpha(30),
+                fill: caret.alpha(30),
                 border: Color::TRANSPARENT,
                 border_width: 0.0,
                 radius: 2.0,
@@ -532,7 +536,7 @@ impl Ui {
                 width: 1.5,
                 height: line - 2.0,
             },
-            fill: CARET,
+            fill: caret,
             border: Color::TRANSPARENT,
             border_width: 0.0,
             radius: 0.0,
@@ -561,7 +565,14 @@ fn line_of(text: &str, at: usize) -> (usize, usize) {
 }
 
 /// A line under text being composed.
-fn bands_underline(layers: &mut [crate::Layer], x: f32, y: f32, width: f32, clip: Rect) {
+fn bands_underline(
+    layers: &mut [crate::Layer],
+    color: Color,
+    x: f32,
+    y: f32,
+    width: f32,
+    clip: Rect,
+) {
     if let Some(layer) = layers.last_mut() {
         layer.rects.push(RectPaint {
             rect: Rect {
@@ -570,7 +581,7 @@ fn bands_underline(layers: &mut [crate::Layer], x: f32, y: f32, width: f32, clip
                 width,
                 height: 1.5,
             },
-            fill: CARET,
+            fill: color,
             border: Color::TRANSPARENT,
             border_width: 0.0,
             radius: 0.0,
