@@ -48,13 +48,13 @@ fn expanded() -> (Scene, runity::Instanced) {
 fn three_lines_in_a_scene_become_three_of_the_same_thing() {
     let (document, instanced) = expanded();
 
-    // The document stays small: that is the saving. Seven entries — the
-    // ground, three fires, the flames of the two that burn, and the kettle
-    // standing beside the cold one.
-    assert_eq!(document.flatten().len(), 7);
+    // The document stays small: that is the saving. Nine entries — the
+    // ground, three fires, the flame and sparks of the two that burn, and
+    // the kettle standing beside the cold one.
+    assert_eq!(document.flatten().len(), 9);
     // And the scene that gets drawn is the whole thing: each fire brings a
     // root and five parts.
-    assert_eq!(instanced.scene.flatten().len(), 7 + 3 * 5);
+    assert_eq!(instanced.scene.flatten().len(), 9 + 3 * 5);
 
     // The three arrangements are the same arrangement. Compared by the names
     // and materials under each root, which is what "the same prefab" means;
@@ -73,8 +73,8 @@ fn three_lines_in_a_scene_become_three_of_the_same_thing() {
     assert_eq!(shape("west fire"), shape("east fire"));
     assert_eq!(
         shape("west fire").len(),
-        6,
-        "an ember and four stones, and the flame the scene put in it"
+        7,
+        "an ember and four stones, and the flame and sparks the scene put in it"
     );
     assert_eq!(
         shape("cold fire")[..5],

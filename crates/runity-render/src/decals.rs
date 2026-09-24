@@ -402,7 +402,7 @@ impl DecalAtlases {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("decal pictures"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });

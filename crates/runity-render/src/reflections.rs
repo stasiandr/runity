@@ -376,7 +376,7 @@ impl ProbeStore {
                         },
                     })],
                     depth_stencil_attachment: None,
-                    timestamp_writes: None,
+                    timestamp_writes: crate::gpu_timer::render("probe mips"),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });

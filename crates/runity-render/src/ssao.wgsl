@@ -19,7 +19,7 @@ struct Ssao {
     size: vec4<f32>,
     kernel: array<vec4<f32>, 16>,
     previous_view_projection: mat4x4<f32>,
-    // how much light bounces (0: none), how far its rays reach
+    // how much light bounces (0: none), how far its rays reach; 1 for GTAO
     bounce: vec4<f32>,
 };
 
@@ -184,6 +184,27 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     let t = normalize(r - n * dot(r, n));
     let b = cross(n, t);
 
+    var ao = 1.0;
+    if ssao.bounce.z > 0.5 {
+        ao = gtao(pixel, p, n, distance, turn);
+    } else {
+        ao = hemisphere_occlusion(p, n, t, b, distance);
+    }
+    ao = pow(clamp(ao, 0.0, 1.0), ssao.params.y);
+    // Fades out with distance, as URP's Falloff Distance.
+    let falloff = ssao.params.z;
+    let fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
+    var light = vec3<f32>(0.0);
+    if ssao.bounce.x > 0.0 {
+        light = bounced(p, n, t, b, fract(turn * 5.0)) * fade;
+    }
+    return vec4<f32>(light, mix(1.0, ao, fade));
+}
+
+/// URP's SSAO: the share of points in the hemisphere over `n` that fall
+/// behind what the camera sees, near enough to be what occludes.
+fn hemisphere_occlusion(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, distance: f32) -> f32 {
+    let radius = ssao.params.x;
     let count = u32(ssao.params.w);
     var occluded = 0.0;
     for (var i = 0u; i < count; i = i + 1u) {
@@ -211,16 +232,94 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
             occluded += 1.0 - smoothstep(radius * 0.5, radius, gap);
         }
     }
-    var ao = 1.0 - occluded / max(f32(count), 1.0);
-    ao = pow(clamp(ao, 0.0, 1.0), ssao.params.y);
-    // Fades out with distance, as URP's Falloff Distance.
-    let falloff = ssao.params.z;
-    let fade = clamp((falloff - distance) / (falloff * 0.2), 0.0, 1.0);
-    var light = vec3<f32>(0.0);
-    if ssao.bounce.x > 0.0 {
-        light = bounced(p, n, t, b, fract(turn * 5.0)) * fade;
+    return 1.0 - occluded / max(f32(count), 1.0);
+}
+
+/// The pixel a world point falls on, unclamped, as floats.
+fn screen_of(q: vec3<f32>) -> vec3<f32> {
+    let c = ssao.view_projection * vec4<f32>(q, 1.0);
+    let n = c.xy / c.w;
+    return vec3<f32>(vec2<f32>(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5) * ssao.size.xy, c.w);
+}
+
+/// Ground-truth ambient occlusion (Jimenez, Wu, Pesce, Jarabo 2016): in two
+/// slices through the view at `p` — turned by `turn`, which the blur's
+/// sixteen turns fill out — the highest the depth rises within the radius
+/// on either side, the horizons; then the cosine-weighted share of the dome
+/// between them over the normal, as the integral in closed form.
+fn gtao(pixel: vec2<i32>, p: vec3<f32>, n: vec3<f32>, distance: f32, turn: f32) -> f32 {
+    let radius = ssao.params.x;
+    let v = normalize(ssao.eye.xyz - p);
+    // The radius on the screen: what a metre across the view is there.
+    var across = cross(v, vec3<f32>(0.0, 1.0, 0.0));
+    if dot(across, across) < 1e-4 {
+        across = cross(v, vec3<f32>(1.0, 0.0, 0.0));
     }
-    return vec4<f32>(light, mix(1.0, ao, fade));
+    across = normalize(across);
+    let here = screen_of(p);
+    let reach = length(screen_of(p + across * radius).xy - here.xy);
+    if reach < 1.0 {
+        return 1.0;
+    }
+    let slices = 2u;
+    let steps = 8u;
+    let limit = vec2<f32>(ssao.size.xy) - 1.0;
+    var visible = 0.0;
+    for (var s = 0u; s < slices; s = s + 1u) {
+        let phi = (f32(s) + turn) / f32(slices) * 3.14159265;
+        let dir = vec2<f32>(cos(phi), sin(phi));
+        // Which way the slice runs in the world: the point a pixel along it
+        // on the screen, at the same depth.
+        let clip = ssao.view_projection * vec4<f32>(p, 1.0);
+        let ndc = clip.xyz / clip.w;
+        let step_ndc = vec2<f32>(dir.x, -dir.y) * 2.0 * ssao.size.zw;
+        let beside = ssao.inverse_view_projection * vec4<f32>(ndc.xy + step_ndc, ndc.z, 1.0);
+        var way3 = beside.xyz / beside.w - p;
+        if dot(way3, way3) < 1e-12 {
+            continue;
+        }
+        way3 = normalize(way3 - v * dot(way3, v));
+        // Horizons on the two sides, as cosines against the view.
+        var high = array<f32, 2>(-1.0, -1.0);
+        for (var side = 0u; side < 2u; side = side + 1u) {
+            let way = select(-dir, dir, side == 0u);
+            for (var k = 1u; k <= steps; k = k + 1u) {
+                let t = (f32(k) - 0.5 + fract(turn * 7.0 + f32(k) * 0.37) * 0.5) / f32(steps);
+                let at = clamp(here.xy + way * reach * t * t, vec2<f32>(0.0), limit);
+                let texel = vec2<i32>(at);
+                if textureLoad(depth, texel, 0) >= 1.0 {
+                    continue;
+                }
+                let q = world_at(texel);
+                let d = q - p;
+                let len = length(d);
+                if len < 1e-4 {
+                    continue;
+                }
+                // Past the radius it counts less, so a far wall is not a
+                // horizon: the cosine lowered toward none.
+                let cos_h = dot(d / len, v);
+                let fall = clamp(1.0 - len * len / (radius * radius), 0.0, 1.0);
+                high[side] = max(high[side], mix(-1.0, cos_h, fall));
+            }
+        }
+        let axis = normalize(cross(way3, v));
+        let flat_n = n - axis * dot(n, axis);
+        let weight = length(flat_n);
+        if weight < 1e-4 {
+            continue;
+        }
+        let pn = flat_n / weight;
+        let gamma = sign(dot(way3, pn)) * acos(clamp(dot(pn, v), -1.0, 1.0));
+        // The horizon angles, each side, clamped to the hemisphere of the
+        // normal.
+        let h1 = gamma + min(acos(clamp(high[0], -1.0, 1.0)) - gamma, 1.5707963);
+        let h0 = gamma + max(-acos(clamp(high[1], -1.0, 1.0)) - gamma, -1.5707963);
+        let arc = -cos(2.0 * h0 - gamma) + cos(gamma) + 2.0 * h0 * sin(gamma)
+            - cos(2.0 * h1 - gamma) + cos(gamma) + 2.0 * h1 * sin(gamma);
+        visible += weight * 0.25 * arc;
+    }
+    return visible / f32(slices);
 }
 
 // A 4x4 box — the pattern's sixteen turns averaged away — over what lies

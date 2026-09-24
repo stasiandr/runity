@@ -110,19 +110,40 @@ impl Gpu {
             && std::env::var_os(MESH_SHADERS_VAR).is_some();
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
+        // An instance's numbers take seventeen vertex attributes: its
+        // light under the surface is the seventeenth.
+        required_limits.max_vertex_attributes = required_limits
+            .max_vertex_attributes
+            .max(17)
+            .min(adapter.limits().max_vertex_attributes);
+        // Eight storage buffers a stage where there are: the occlusion
+        // culling reads five, the lit shader one more when it traces (what
+        // each thing is made of, for reflections' hits), and a cluster's
+        // vertex shader pulls four.
+        required_limits.max_storage_buffers_per_shader_stage = required_limits
+            .max_storage_buffers_per_shader_stage
+            .max(8)
+            .min(adapter.limits().max_storage_buffers_per_shader_stage);
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
-            // The lit shader reads one storage buffer more when it traces:
-            // what each thing is made of, for reflections' hits.
             required_limits.max_storage_buffers_per_shader_stage = required_limits
                 .max_storage_buffers_per_shader_stage
-                .max(5)
+                .max(8)
                 .min(adapter.limits().max_storage_buffers_per_shader_stage);
         }
         if mesh_shaders {
             required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
         }
         let mut required_features = wgpu::Features::empty();
+        // Indirect draws that start past the first instance: what the
+        // occlusion culling draws with.
+        if adapter.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+            required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        }
+        // Timestamps at the passes' ends, for the GPU profiler.
+        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
         if ray_tracing {
             required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }

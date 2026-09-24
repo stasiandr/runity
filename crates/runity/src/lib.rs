@@ -67,6 +67,7 @@ pub use runity_audio::audio;
 pub use runity_net::bench;
 pub use runity_geometry::builtin;
 pub use runity_render::clouds;
+pub use runity_render::cluster;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub use runity_render::decals;
@@ -91,6 +92,7 @@ pub use runity_core::layers;
 pub use runity_render::lens;
 pub use runity_core::library;
 pub use runity_core::links;
+pub use runity_render::lod;
 pub use runity_render::lights;
 pub mod live;
 pub use runity_render::material;
@@ -124,7 +126,9 @@ pub mod motion {
 pub use runity_navigation::navigation;
 #[cfg(feature = "net")]
 pub use runity_net::net;
+pub use runity_render::occlusion;
 pub use runity_render::particles;
+pub use runity_render::particles_gpu;
 pub use runity_render::passes;
 pub use runity_core::parts;
 #[cfg(feature = "net")]
@@ -437,6 +441,7 @@ pub use runity_render::terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
 pub use runity_render::tour;
+pub use runity_render::upscale;
 pub use runity_core::tuned;
 pub use runity_overlay::ui;
 pub use runity_overlay::ui_render;

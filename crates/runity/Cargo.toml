@@ -40,7 +40,7 @@ tracing = "0.1.44"
 # manifest (`module.ron`) names its feature.
 [features]
 default = [
-    "animation", "dialogue", "input", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
+    "animation", "dialogue", "input", "metalfx", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
 ]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
@@ -48,6 +48,8 @@ physics = ["runity-physics/rapier", "runity-net?/physics"]
 # Hardware ray tracing in the render, where the device has it: an
 # experiment the scene asks for. Off, it is not in the build.
 ray-tracing = ["runity-render/ray-tracing"]
+# MetalFX upscaling on Apple's GPUs; off, the engine's own upscaler.
+metalfx = ["runity-render/metalfx"]
 # Skeletons, animator graphs and motion clips.
 animation = ["dep:runity-animation"]
 # Peers, ownership and sync, parties, LAN; Steam stands on it.

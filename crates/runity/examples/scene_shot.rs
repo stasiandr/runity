@@ -23,6 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (mut width, mut height) = (960u32, 540u32);
     let mut timed = 0u32;
     let mut at: Option<f32> = None;
+    let mut upscale: Option<f32> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -30,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--library" => library_dir = args.next().map(PathBuf::from),
             "--time" => timed = args.next().and_then(|n| n.parse().ok()).unwrap_or(30),
             "--at" => at = args.next().and_then(|n| n.parse().ok()),
+            "--upscale" => upscale = args.next().and_then(|n| n.parse().ok()),
             "--size" => {
                 if let Some(size) = args.next() {
                     let (w, h) = size.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
@@ -39,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N] [--at SECONDS]\n\n\
+                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N] [--at SECONDS] [--upscale SCALE]\n\n\
                      Prefabs and the library come from the project the scene is in;\n\
                      --library overrides the library."
                 );
@@ -171,16 +173,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
+    if let Some(scale) = upscale {
+        frame.post.upscaling.enabled = true;
+        frame.post.upscaling.scale = scale;
+    }
     // A moment of the scene's clock: where the weather has got to.
     if at.is_some() {
         frame.time = at;
     }
     // Twice: what reads the last frame — screen-space reflections — has
-    // one by the second.
-    renderer.render(&gpu, &target, &frame);
-    renderer.render(&gpu, &target, &frame);
+    // one by the second. Upscaled, a few more: MetalFX temporal's history
+    // at the screen's size fills in over them.
+    for _ in 0..if upscale.is_some() { 16 } else { 2 } {
+        renderer.render(&gpu, &target, &frame);
+    }
     let pixels = target.read_rgba(&gpu);
     if timed > 0 {
+        renderer.profile_gpu(true);
+        if std::env::var_os("RUNITY_NO_OCCLUSION").is_some() {
+            renderer.set_occlusion_culling(false);
+        }
         let start = std::time::Instant::now();
         for _ in 0..timed {
             renderer.render(&gpu, &target, &frame);
@@ -189,6 +201,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         target.read_rgba(&gpu);
         let ms = start.elapsed().as_secs_f64() * 1000.0 / timed as f64;
         eprintln!("{ms:.2} ms a frame over {timed}");
+        // A few frames more, each waited for, so the passes' times come
+        // back: the timer reads them a frame or two late.
+        for _ in 0..4 {
+            renderer.render(&gpu, &target, &frame);
+            target.read_rgba(&gpu);
+        }
+        let passes = renderer.gpu_times();
+        if !passes.is_empty() {
+            let total: f32 = passes.iter().map(|(_, t)| t).sum();
+            eprintln!("on the GPU, {total:.2} ms in passes:");
+            for (name, ms) in passes {
+                eprintln!("  {name:<14} {ms:6.2} ms");
+            }
+        }
     }
 
     write_png(&out, &pixels, width, height)?;

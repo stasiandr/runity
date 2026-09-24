@@ -4,6 +4,7 @@
 //! the editor always has it, a headless server never does.
 
 pub mod gpu;
+pub mod gpu_timer;
 pub mod surface;
 
 pub use gpu::{Gpu, GpuError, OffscreenTarget};

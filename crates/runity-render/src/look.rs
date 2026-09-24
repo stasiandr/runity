@@ -257,6 +257,13 @@ pub struct Emitter {
     /// `color`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub material: Option<crate::AssetLink>,
+    /// On the GPU (see [`crate::particles_gpu`]): tens of thousands at
+    /// once — a blizzard, a sandstorm's grit, a fountain's spray — each a
+    /// soft disc of `color` turned to the camera, lit by nothing, rather
+    /// than a small model with a material. `model` and `material` are not
+    /// used then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gpu: bool,
 }
 
 fn emit_duration() -> f32 {

@@ -237,7 +237,7 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
     let thickness = frame.ssr.z;
     // Noise in where the steps fall, turned a little every frame, so bands
     // do not show: TAA averages it into a smooth reflection.
-    let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+    let turn = frame.ambient_occlusion.w;
     let jitter = fract(pixel_noise(p.xz * 131.0 + p.y) + turn);
     var previous = 0.0;
     var in_front = true;
@@ -289,6 +289,31 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
         previous = t;
     }
     return vec4<f32>(0.0);
+}
+
+/// Contact shadows: a short ray from `p` toward the sun, marched through
+/// the depth of what is on the screen; 0 where something stands just in
+/// its way — within a hand's thickness behind what the screen shows there —
+/// fading back to 1 the further along it was met.
+fn contact_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let reach = frame.ambient_occlusion.z;
+    let steps = 12u;
+    let turn = frame.ambient_occlusion.w;
+    let jitter = fract(pixel_noise(pixel) + turn);
+    let start = p + n * 0.015;
+    for (var i = 0u; i < steps; i = i + 1u) {
+        let along = (f32(i) + jitter) / f32(steps);
+        let t = reach * along;
+        let found = ssr_behind(start + to_sun * t);
+        if found.x < -1.5 {
+            break;
+        }
+        let slack = 0.01 + found.y * 0.002;
+        if found.x > slack && found.x < 0.25 + t {
+            return mix(0.0, 1.0, along * along);
+        }
+    }
+    return 1.0;
 }
 
 fn cloud_hash(p: vec3<f32>) -> f32 {
@@ -431,6 +456,8 @@ struct VertexInput {
     // the material's own numbers, for its shader: in.params in `surface`
     @location(14) params_0: vec4<f32>,
     @location(15) params_1: vec4<f32>,
+    // light under the surface: its colour, and how far it goes
+    @location(16) subsurface: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -446,6 +473,7 @@ struct VertexOutput {
     @location(7) detail: vec4<f32>,
     @location(8) params_0: vec4<f32>,
     @location(9) params_1: vec4<f32>,
+    @location(10) subsurface: vec4<f32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -503,6 +531,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.detail = in.detail;
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
+    out.subsurface = in.subsurface;
     return out;
 }
 
@@ -744,6 +773,42 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     return mix(1.0, lit, fade);
 }
 
+/// How much stands between a point and the sun, metres: from the shadow
+/// map, how far past the first surface toward the sun the point lies — the
+/// thickness of what it is under. −1 when there is no map there.
+fn sun_thickness(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let count = u32(frame.shadow_params.w + 0.5);
+    if count == 0u {
+        return -1.0;
+    }
+    var cascade = count;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let d = world_position - frame.cascade_spheres[i].xyz;
+        if dot(d, d) < frame.cascade_spheres[i].w {
+            cascade = i;
+            break;
+        }
+    }
+    if cascade == count {
+        return -1.0;
+    }
+    // Pushed in a little, against the normal: the point is under its own
+    // surface, not on it.
+    let inside = world_position - normal * frame.cascade_bias[cascade];
+    let light = frame.light_view_projection[cascade];
+    let clip = light * vec4<f32>(inside, 1.0);
+    let ndc = clip.xyz / clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    if ndc.z > 1.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 {
+        return -1.0;
+    }
+    let size = vec2<f32>(textureDimensions(shadow_map));
+    let first = textureLoad(shadow_map, vec2<i32>(uv * size), i32(cascade), 0);
+    // An orthographic light: depth is metres times its scale along the view.
+    let per_metre = max(abs(light[2][2]), 1e-6);
+    return max(ndc.z - first, 0.0) / per_metre;
+}
+
 /// The light cell a fragment is in.
 fn light_cell(pixel: vec2<f32>, world_position: vec3<f32>) -> u32 {
     let tiles = vec2<u32>(frame.clusters.xy);
@@ -902,7 +967,7 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     // keeps its bars and TAA smooths what the grid is too coarse for.
     var sun_seen = 0.0;
     if frame.ray.x > 0.5 {
-        let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+        let turn = frame.ambient_occlusion.w;
         for (var k = 0u; k < 3u; k = k + 1u) {
             let o = fract(vec3<f32>(0.1731, 0.5329, 0.8971) * f32(k + 1u) + turn + pixel_noise(vec2<f32>(id.xy) + f32(id.z) * 7.0)) - 0.5;
             let r = fog_ray((cell.xy + o.xy) / vec2<f32>(FOG_SIZE.xy));
@@ -1278,6 +1343,7 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     // How much of the ripples the geometry holds: the sand shader draws
     // only the rest.
     out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
+    out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
     return out;
 }
 
@@ -1302,6 +1368,56 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
 
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
+    return standard_vertex(in);
+}
+
+// Clusters (cluster.rs): a dense mesh drawn a cluster at a time, the ones
+// the compute pass kept, each an instance of 372 vertices whose vertex and
+// instance are read out of the mesh's own buffers.
+struct ClusterDrawn {
+    instance: u32,
+    first: u32,
+    count: u32,
+    pad: u32,
+};
+
+@group(3) @binding(3) var<storage, read> cluster_vertices: array<f32>;
+@group(3) @binding(4) var<storage, read> cluster_indices: array<u32>;
+@group(3) @binding(5) var<storage, read> cluster_instances: array<vec4<f32>>;
+@group(3) @binding(6) var<storage, read> cluster_drawn: array<ClusterDrawn>;
+
+@vertex
+fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexOutput {
+    let d = cluster_drawn[kept];
+    if corner >= d.count * 3u {
+        // Past the cluster's last triangle: all three corners the same
+        // point, behind the eye — nothing drawn.
+        var none: VertexOutput;
+        none.clip_position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
+        return none;
+    }
+    let v = cluster_indices[d.first + corner] * 8u;
+    let s = d.instance * 12u;
+    var in: VertexInput;
+    in.position = vec3<f32>(cluster_vertices[v], cluster_vertices[v + 1u], cluster_vertices[v + 2u]);
+    in.normal = vec3<f32>(cluster_vertices[v + 3u], cluster_vertices[v + 4u], cluster_vertices[v + 5u]);
+    in.uv = vec2<f32>(cluster_vertices[v + 6u], cluster_vertices[v + 7u]);
+    in.model_0 = cluster_instances[s];
+    in.model_1 = cluster_instances[s + 1u];
+    in.model_2 = cluster_instances[s + 2u];
+    in.model_3 = cluster_instances[s + 3u];
+    in.color_and_shading = cluster_instances[s + 4u];
+    in.surface = cluster_instances[s + 5u];
+    in.emission = cluster_instances[s + 6u];
+    in.uv_transform = cluster_instances[s + 7u];
+    in.detail = cluster_instances[s + 8u];
+    in.params_0 = cluster_instances[s + 9u];
+    in.params_1 = cluster_instances[s + 10u];
+    in.subsurface = cluster_instances[s + 11u];
+    return standard_vertex(in);
+}
+
+fn standard_vertex(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = vec4<f32>(
         swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
@@ -1323,6 +1439,7 @@ fn vs(in: VertexInput) -> VertexOutput {
     out.detail = in.detail;
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
+    out.subsurface = in.subsurface;
     return out;
 }
 
@@ -1417,7 +1534,7 @@ fn reflected(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f3
         var d = direction;
         let spread = perceptual_roughness * perceptual_roughness;
         if spread > 0.0005 {
-            let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+            let turn = frame.ambient_occlusion.w;
             let n1 = fract(pixel_noise(position.xz * 97.0 + position.y * 13.0) + turn);
             let n2 = fract(pixel_noise(position.zy * 71.0 + position.x * 7.0) + turn * 1.7);
             let side = basis_of(direction);
@@ -1694,6 +1811,9 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
         } else {
             shadow = sunlight(in.world_position, normal);
+            if frame.ambient_occlusion.z > 0.0 && shadow > 0.0 {
+                shadow *= contact_shadow(in.world_position, geometric, to_sun, in.clip_position.xy);
+            }
         }
     }
     // Under a cloud: in its shadow.
@@ -1727,6 +1847,25 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let flash = pow(max(dot(reflect(-to_sun, facet), to_eye), 0.0), 250.0);
         color += frame.sun_color.rgb * shadow * flash * 12.0 * length(glint_facet)
             * max(dot(geometric, to_sun), 0.0);
+    }
+    // Light under the surface: past the edge of the lit side, the light
+    // that went in on it comes out, tinted — a soft warm terminator on skin
+    // rather than a hard grey one; and through what is thin toward the sun,
+    // as thin as the shadow map says it is, fading with how far it went.
+    let under = in.subsurface.rgb;
+    if unlit < 0.5 && (under.r + under.g + under.b) > 0.0 {
+        let n_l = dot(normal, to_sun);
+        let wrap = 0.5;
+        let wrapped = max((n_l + wrap) / (1.0 + wrap), 0.0);
+        let spill = max(wrapped - max(n_l, 0.0), 0.0);
+        color += under * frame.sun_color.rgb * spill * mix(1.0, shadow, 0.5) * direct_ao;
+        let reach = max(in.subsurface.w, 0.0005);
+        let thick = sun_thickness(in.world_position, geometric);
+        if thick >= 0.0 {
+            let through = exp(-thick / reach) * max(-n_l, 0.0);
+            let into_sun = pow(max(dot(-to_eye, to_sun), 0.0), 4.0);
+            color += under * frame.sun_color.rgb * through * (0.4 + 1.6 * into_sun);
+        }
     }
     // Lit through from behind: a leaf, a blade of grass — brightest looking
     // straight at the sun through it.
@@ -1764,7 +1903,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
                 var aim = at.xyz;
                 let size = frame.ray_params.w;
                 if size > 0.0 {
-                    let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+                    let turn = frame.ambient_occlusion.w;
                     let n1 = fract(pixel_noise(in.clip_position.xy) + turn);
                     let n2 = fract(pixel_noise(in.clip_position.yx + vec2<f32>(17.0, 5.0)) + turn * 1.7 + f32(n) * 0.37);
                     let side = basis_of(toward);

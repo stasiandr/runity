@@ -20,12 +20,14 @@
         // Один и тот же костёр, расставленный по-разному. Имя и место — от
         // экземпляра, всё остальное — от префаба.
         // Огонь светит: у горящих костров рядом с угольком лампа — тёплая,
-        // с тенями от камней. У потухшего её нет.
+        // с тенями от камней, — и над ним искры, на GPU. У потухшего нет.
         (id: "876b198bbedf5219", name: "west fire", model: "", prefab: "campfire", transform: (position: (-3.2, 0.01, 0.0)), children: [
             (id: "e1c5a7b3d9f02468", name: "flame", transform: (position: (0.0, 0.55, 0.0)), light: (color: (1.0, 0.52, 0.2), intensity: 3.5, range: 7.0)),
+            (id: "a6d3f09c2b184e57", name: "sparks", transform: (position: (0.0, 0.3, 0.0)), particles: (rate: 400.0, life: 1.6, speed: 1.6, spread_deg: 25.0, size: 0.025, end_size: 0.0, gravity: 0.6, color: (1.0, 0.62, 0.2), end_color: (0.9, 0.25, 0.05), gpu: true)),
         ]),
         (id: "79c8ecaf7992dda2", name: "east fire", model: "", prefab: "campfire", transform: (position: (3.2, 0.01, 0.0), rotation_deg: (0.0, 35.0, 0.0)), children: [
             (id: "4b8d2f6a0c13e579", name: "flame", transform: (position: (0.0, 0.55, 0.0)), light: (color: (1.0, 0.52, 0.2), intensity: 3.5, range: 7.0)),
+            (id: "f2b86e0d4a9c3715", name: "sparks", transform: (position: (0.0, 0.3, 0.0)), particles: (rate: 400.0, life: 1.6, speed: 1.6, spread_deg: 25.0, size: 0.025, end_size: 0.0, gravity: 0.6, color: (1.0, 0.62, 0.2), end_color: (0.9, 0.25, 0.05), gpu: true)),
         ]),
 
         // Третий — потухший: экземпляр переопределяет материал корня, не

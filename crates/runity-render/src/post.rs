@@ -28,6 +28,11 @@ pub enum Tonemapping {
     Neutral,
     /// URP's ACES: filmic, contrasty, highlights desaturating to white.
     Aces,
+    /// AgX (Troy Sobotka's, as Blender has it): a wide log curve through a
+    /// gently rotated space, so bright saturated light goes to white
+    /// smoothly instead of skewing its hue or clipping a channel — a red
+    /// lamp's core stays red at the edge and white at the heart.
+    Agx,
 }
 
 /// Glow around what is brighter than white: the sun on water, an ember, a
@@ -322,6 +327,9 @@ pub struct PostProcess {
     /// The eye getting used to the light ([`crate::exposure`]): on by
     /// default. `exposure` still adds its stops on top.
     pub auto_exposure: crate::exposure::AutoExposure,
+    /// Drawing at fewer pixels and making the picture up to the screen's
+    /// size, and dynamic resolution ([`crate::upscale`]): off by default.
+    pub upscaling: crate::upscale::Upscaling,
 }
 
 impl Default for PostProcess {
@@ -354,6 +362,7 @@ impl Default for PostProcess {
             lens_flare: LensFlare::OFF,
             heat_haze: crate::lens::HeatHaze::OFF,
             auto_exposure: crate::exposure::AutoExposure::default(),
+            upscaling: crate::upscale::Upscaling::OFF,
         }
     }
 }
@@ -418,6 +427,7 @@ impl PostProcess {
         lens_flare: LensFlare::OFF,
         heat_haze: crate::lens::HeatHaze::OFF,
         auto_exposure: crate::exposure::AutoExposure::OFF,
+        upscaling: crate::upscale::Upscaling::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -544,6 +554,7 @@ impl PostProcess {
             } else {
                 self.auto_exposure
             },
+            upscaling: if half { other.upscaling } else { self.upscaling },
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
                 tint: v3(self.lens_flare.tint, other.lens_flare.tint),
@@ -1073,7 +1084,7 @@ impl PostRenderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("post"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -1090,6 +1101,7 @@ impl PostRenderer {
             Tonemapping::None => 0.0,
             Tonemapping::Neutral => 1.0,
             Tonemapping::Aces => 2.0,
+            Tonemapping::Agx => 3.0,
         };
         let balance = white_balance_coefficients(s.temperature, s.tint);
         let knee = s.bloom.threshold * 0.5;

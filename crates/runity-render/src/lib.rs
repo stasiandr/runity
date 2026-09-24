@@ -12,6 +12,7 @@
 pub mod appearance;
 pub mod atmosphere;
 pub mod clouds;
+pub mod cluster;
 pub mod decals;
 pub mod exposure;
 pub mod floaters;
@@ -20,10 +21,13 @@ pub mod footprints;
 pub mod gizmo;
 pub mod lens;
 pub mod lights;
+pub mod lod;
 pub mod look;
 pub mod material;
 pub mod moods;
 pub mod particles;
+pub mod particles_gpu;
+pub mod occlusion;
 pub mod passes;
 pub mod post;
 pub mod ray;
@@ -33,6 +37,7 @@ pub mod ssao;
 pub mod taa;
 pub mod terrain;
 pub mod tour;
+pub mod upscale;
 pub mod volume;
 pub mod weather;
 pub mod world_look;
@@ -62,7 +67,7 @@ use runity_core::{defaults, id, impl_parts, input, library, AssetLink, Library, 
 #[allow(unused_imports)]
 use runity_geometry::{animation, builtin};
 #[allow(unused_imports)]
-use runity_gpu::{gpu, surface};
+use runity_gpu::{gpu, gpu_timer, surface};
 #[allow(unused_imports)]
 use runity_overlay::{ui, ui_render};
 

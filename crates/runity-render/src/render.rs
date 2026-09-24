@@ -367,6 +367,8 @@ pub struct FrameStats {
     /// Draws in the shadow pass, which is not culled by the camera: a
     /// caster behind you still throws a shadow in front of you.
     pub shadow_casters: u32,
+    /// Triangles the colour pass draws, at the levels of detail picked.
+    pub triangles: u64,
 }
 
 /// How shadows are cast, or that they are not.
@@ -411,6 +413,11 @@ pub struct ShadowSettings {
     /// Side of each lamp's shadow map — URP's Additional Lights shadow
     /// resolution. A spot has one, a point six.
     pub light_resolution: u32,
+    /// Contact shadows: metres a short ray from each point toward the sun
+    /// is marched through the depth of what is on the screen, for the small
+    /// dark where things meet — a cup on a table, a foot on the ground —
+    /// that a cascade's texel is too coarse to hold. 0 is none.
+    pub contact: f32,
 }
 
 impl Default for ShadowSettings {
@@ -424,6 +431,7 @@ impl Default for ShadowSettings {
             cascades: 4,
             cascade_splits: [0.067, 0.2, 0.467],
             light_resolution: 512,
+            contact: 0.35,
         }
     }
 }
@@ -438,6 +446,7 @@ impl ShadowSettings {
         cascades: 1,
         cascade_splits: [0.067, 0.2, 0.467],
         light_resolution: 1,
+        contact: 0.0,
     };
 
     /// Where each cascade ends, in metres from the eye.
@@ -538,6 +547,8 @@ pub struct Frame {
     pub volumetric_fog: crate::volume::VolumetricFog,
     /// Balls of dust in the air ([`crate::volume::Puff`]).
     pub puffs: Vec<crate::volume::Puff>,
+    /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
+    pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
     /// how much does, the wind decides.
     pub plumes: Vec<crate::volume::Plume>,
@@ -586,6 +597,7 @@ impl Default for Frame {
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
+            gpu_particles: Vec::new(),
             plumes: Vec::new(),
             terrain: None,
             wind: crate::foliage::Wind::default(),
@@ -648,7 +660,9 @@ struct FrameUniform {
     /// for all of them leaves one cascade shadowing itself.
     cascade_depth_bias: [f32; 4],
     /// 1 when there is ambient occlusion to read; the share of the direct
-    /// light it darkens too.
+    /// light it darkens too; how far contact shadows' rays go; how far the
+    /// marches' noise is turned this frame — 0 without TAA, which alone
+    /// averages it away, so a still picture stays still.
     ambient_occlusion: [f32; 4],
     /// Traced: sun shadows, lamp shadows, occlusion, each 1 where asked and
     /// the device traces; `w` the tangent of the sun disc's radius.
@@ -806,6 +820,8 @@ struct InstanceRaw {
     detail: [f32; 4],
     /// The material's own numbers, for its shader.
     params: [[f32; 4]; 2],
+    /// Light under the surface: its colour (linear), and how far it goes.
+    subsurface: [f32; 4],
 }
 
 /// Bits of [`InstanceRaw::emission`]'s `w`.
@@ -905,6 +921,12 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
                 material.params[7],
             ],
         ],
+        subsurface: [
+            material.subsurface[0].max(0.0),
+            material.subsurface[1].max(0.0),
+            material.subsurface[2].max(0.0),
+            material.subsurface_radius.max(0.0005),
+        ],
     }
 }
 
@@ -915,6 +937,14 @@ type BatchKey = (Option<Look>, MeshHandle, Maps);
 struct GpuTexture {
     view: wgpu::TextureView,
 }
+
+fn gpu_has_first_instance(occlusion: &crate::occlusion::Occlusion) -> bool {
+    occlusion.can
+}
+
+/// A mesh handle with this bit set is a coarser level of a mesh, kept
+/// apart so the handles of what is uploaded stay in order.
+const LOD_HANDLE: u32 = 1 << 31;
 
 struct GpuMesh {
     vertices: wgpu::Buffer,
@@ -927,6 +957,9 @@ struct GpuMesh {
     bounds: crate::asset::Bounds,
     /// What rays hit, on a device that traces.
     blas: Option<wgpu::Blas>,
+    /// Its clusters, when it is dense enough to be culled by them
+    /// ([`crate::cluster`]): its indices are then in their order.
+    clusters: Option<crate::cluster::MeshClusters>,
 }
 
 /// Holds the pipeline, the uploaded meshes and the buffers a frame needs.
@@ -976,6 +1009,9 @@ pub struct Renderer {
     ssao: crate::ssao::SsaoRenderer,
     /// Temporal antialiasing's history ([`crate::taa`]).
     taa: crate::taa::Taa,
+    /// Drawing at fewer pixels and making the picture up
+    /// ([`crate::upscale`]).
+    upscaler: crate::upscale::Upscaler,
     /// Drawing a camera's picture for a texture, not the screen: no
     /// antialiasing history is touched.
     picturing: bool,
@@ -1049,6 +1085,20 @@ pub struct Renderer {
     started: std::time::Instant,
     /// The stroke of lightning of the frame being drawn, if any.
     bolt: Option<crate::weather::Bolt>,
+    /// Particles on the GPU: their pipelines and pools.
+    gpu_particles: crate::particles_gpu::GpuParticles,
+    /// Occlusion culling against last frame's depth ([`crate::occlusion`]).
+    occlusion: crate::occlusion::Occlusion,
+    /// Dense meshes culled a cluster at a time ([`crate::cluster`]).
+    clusters: crate::cluster::Clusters,
+    /// Coarser levels of the meshes that have them ([`crate::lod`]): each
+    /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
+    /// share of the screen each is drawn for.
+    lods: std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
+    lod_meshes: Vec<GpuMesh>,
+    /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
+    timer: Option<crate::gpu_timer::GpuTimer>,
+    timing: bool,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
     /// One texel of depth, bound in place of the prepass's while it draws.
@@ -1416,10 +1466,10 @@ struct Layouts<'a> {
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4,
-    14 => Float32x4, 15 => Float32x4
+    14 => Float32x4, 15 => Float32x4, 16 => Float32x4
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
@@ -1986,7 +2036,7 @@ fn build_pipelines(
     }
 }
 
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 impl Renderer {
     /// Build a renderer for an offscreen target.
@@ -2045,10 +2095,12 @@ impl Renderer {
                 terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
+        let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
+        self.clusters.pipelines = cluster_pipelines;
         self.base_shader = original.to_string();
         // The materials' own shaders are the standard one with their
         // surface in: built again on the new one.
@@ -2729,13 +2781,17 @@ impl Renderer {
         let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
             size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
+
+        let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
+        clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
 
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
             pipelines,
+            clusters,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -2756,6 +2812,7 @@ impl Renderer {
             decal_atlases,
             ssao,
             taa: crate::taa::Taa::new(gpu),
+            upscaler: crate::upscale::Upscaler::new(gpu),
             picturing: false,
             metered_at: None,
             clipmap: None,
@@ -2806,6 +2863,17 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             bolt: None,
+            occlusion: crate::occlusion::Occlusion::new(gpu),
+            gpu_particles: crate::particles_gpu::GpuParticles::new(
+                gpu,
+                crate::post::HDR_FORMAT,
+                DEPTH_FORMAT,
+                sample_count(gpu),
+            ),
+            lods: std::collections::HashMap::new(),
+            lod_meshes: Vec::new(),
+            timer: None,
+            timing: std::env::var_os("RUNITY_GPU_TIMES").is_some(),
             atmosphere,
             clouds,
             terrain_heights,
@@ -2952,29 +3020,84 @@ impl Renderer {
         vertices: &[crate::asset::Vertex],
         indices: &[u32],
     ) -> MeshHandle {
+        let mesh = self.gpu_mesh(gpu, vertices, indices, true);
+        self.meshes.push(mesh);
+        let handle = MeshHandle(self.meshes.len() as u32 - 1);
+        self.make_lods(gpu, handle, vertices, indices);
+        handle
+    }
+
+    /// A mesh of enough triangles gets its coarser levels ([`crate::lod`]).
+    fn make_lods(
+        &mut self,
+        gpu: &Gpu,
+        handle: MeshHandle,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+    ) {
+        self.lods.remove(&handle.0);
+        if indices.len() / 3 < crate::lod::FROM_TRIANGLES {
+            return;
+        }
+        let bounds = crate::asset::Bounds::of(vertices);
+        let diagonal = (Vec3::from_array(bounds.max) - Vec3::from_array(bounds.min)).length();
+        let mut levels = Vec::new();
+        for (share, below) in crate::lod::LEVELS {
+            let Some((v, i)) = crate::lod::simplify(vertices, indices, diagonal * share) else {
+                break;
+            };
+            let mesh = self.gpu_mesh(gpu, &v, &i, false);
+            self.lod_meshes.push(mesh);
+            levels.push((MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1)), below));
+        }
+        if !levels.is_empty() {
+            self.lods.insert(handle.0, levels);
+        }
+    }
+
+    /// A mesh on the GPU; a structure for rays too when `traced`.
+    fn gpu_mesh(
+        &self,
+        gpu: &Gpu,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+        traced: bool,
+    ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
 
-        let traced = if self.ray.is_some() {
+        let traced = traced && self.ray.is_some();
+        let mut usage = if traced {
             wgpu::BufferUsages::BLAS_INPUT
         } else {
             wgpu::BufferUsages::empty()
         };
+        // Dense: cut into clusters, its triangles in their order, its
+        // buffers readable by the vertex shader that pulls from them.
+        let clustered = self
+            .clusters
+            .can
+            .then(|| crate::cluster::build(vertices, indices))
+            .flatten();
+        if clustered.is_some() {
+            usage |= wgpu::BufferUsages::STORAGE;
+        }
+        let indices = clustered.as_ref().map_or(indices, |(sorted, _)| sorted.as_slice());
         let vertex_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | traced,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | usage,
             });
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
                 contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | traced,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | usage,
             });
-        let blas = (self.ray.is_some() && !indices.is_empty()).then(|| {
+        let blas = (traced && !indices.is_empty()).then(|| {
             crate::ray::blas(
                 gpu,
                 &vertex_buffer,
@@ -2983,16 +3106,54 @@ impl Renderer {
                 indices.len() as u32,
             )
         });
-
-        self.meshes.push(GpuMesh {
+        GpuMesh {
             vertices: vertex_buffer,
             skin: None,
             indices: index_buffer,
             index_count: indices.len() as u32,
             bounds,
             blas,
-        });
-        MeshHandle(self.meshes.len() as u32 - 1)
+            clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
+        }
+    }
+
+    /// A mesh by its handle, a coarser level's too.
+    fn mesh(&self, handle: MeshHandle) -> Option<&GpuMesh> {
+        if handle.0 & LOD_HANDLE != 0 {
+            self.lod_meshes.get((handle.0 & !LOD_HANDLE) as usize)
+        } else {
+            self.meshes.get(handle.0 as usize)
+        }
+    }
+
+    /// Which level of its mesh a draw is drawn with, from how much of the
+    /// screen it covers — `None` when it is too small to draw at all. A
+    /// skinned mesh keeps its own: its joints are bound to its vertices.
+    fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
+        let base = self.meshes.get(draw.mesh.0 as usize)?;
+        let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
+        let (scale, _, _) = draw.transform.to_scale_rotation_translation();
+        let centre = draw.transform.transform_point3((min + max) * 0.5);
+        let radius = ((max - min) * scale.abs()).length() * 0.5;
+        let covers = match camera.ortho {
+            Some(half) => radius / half.max(1e-3),
+            None => crate::lod::coverage(radius, centre.distance(eye), camera.fov_y_degrees),
+        };
+        if covers < crate::lod::TOO_SMALL {
+            return None;
+        }
+        if skinned {
+            return Some(draw.mesh);
+        }
+        let mut pick = draw.mesh;
+        if let Some(levels) = self.lods.get(&draw.mesh.0) {
+            for (handle, below) in levels {
+                if covers < *below {
+                    pick = *handle;
+                }
+            }
+        }
+        Some(pick)
     }
 
     /// Upload an image straight out of an imported asset.
@@ -3176,7 +3337,7 @@ impl Renderer {
         base: u32,
         textured: bool,
     ) {
-        self.draw_batches_with(pass, batches, base, textured, false);
+        self.draw_batches_with(pass, batches, base, textured, false, false);
     }
 
     /// [`Renderer::draw_batches`], in the depth-and-normals prepass when
@@ -3188,15 +3349,38 @@ impl Renderer {
         base: u32,
         textured: bool,
         prepass: bool,
+        culled: bool,
     ) {
+        // The colour pass's batches, culled on the GPU: each drawn by its
+        // arguments, from the instances kept.
+        let occluded = culled && self.occlusion.active;
         let mut first = base;
         let mut current: Option<Look> = None;
-        for ((look, handle, texture), list) in batches {
+        for (k, ((look, handle, texture), list)) in batches.iter().enumerate() {
             let count = list.len() as u32;
-            let Some(mesh) = self.meshes.get(handle.0 as usize) else {
+            let Some(mesh) = self.mesh(*handle) else {
                 first += count;
                 continue;
             };
+            // Culled a cluster at a time: drawn by what was kept.
+            if let (true, Some(look), Some(pipelines)) = (culled, look, &self.clusters.pipelines) {
+                let pipeline = if prepass {
+                    pipelines.prepass.get(&look.face)
+                } else {
+                    pipelines.scene.get(&(look.face, look.water))
+                };
+                if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+                    if textured {
+                        self.bind_maps(pass, *texture);
+                    }
+                    self.clusters.draw(pass, k);
+                    current = None;
+                    first += count;
+                    continue;
+                }
+            }
             if let Some(look) = look {
                 if current != Some(*look) {
                     let pipeline = if prepass {
@@ -3217,9 +3401,14 @@ impl Renderer {
                 self.bind_maps(pass, *texture);
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_vertex_buffer(1, self.instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
+            if occluded {
+                pass.set_vertex_buffer(1, self.occlusion.kept.buffer.slice(..));
+                pass.draw_indexed_indirect(&self.occlusion.args.buffer, k as u64 * 20);
+            } else {
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
+            }
             first += count;
         }
     }
@@ -3285,7 +3474,7 @@ impl Renderer {
         instance: u32,
         prepass: bool,
     ) {
-        let Some(mesh) = self.meshes.get(mesh.0 as usize) else {
+        let Some(mesh) = self.mesh(mesh) else {
             return;
         };
         let pipeline = if prepass {
@@ -3513,6 +3702,61 @@ impl Renderer {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
+    /// Cull what last frame's depth says is hidden, on the GPU, or not:
+    /// on by default ([`crate::occlusion`]).
+    pub fn set_occlusion_culling(&mut self, on: bool) {
+        self.occlusion.enabled = on && gpu_has_first_instance(&self.occlusion);
+        if !on {
+            self.occlusion.forget();
+        }
+    }
+
+    /// How many of the colour pass's instances the GPU's occlusion culling
+    /// kept last frame — `None` when it did not cull. Waits on the GPU: for
+    /// tests and tools.
+    pub fn culled_kept(&self, gpu: &Gpu) -> Option<u32> {
+        self.occlusion.kept_count(gpu)
+    }
+
+    /// Slots held for particles on the GPU, over all their emitters.
+    pub fn gpu_particle_slots(&self) -> u32 {
+        self.gpu_particles.slots()
+    }
+
+    /// Time each pass of the screen's frame on the GPU, or stop: see
+    /// [`Self::gpu_times`]. `RUNITY_GPU_TIMES=1` starts it on.
+    pub fn profile_gpu(&mut self, on: bool) {
+        self.timing = on;
+    }
+
+    /// Each pass's time on the GPU, milliseconds, averaged over the last
+    /// frames it was timed, in the order the passes run — nothing when
+    /// not timing or on a device without timestamps. A frame or two
+    /// behind: the frame does not wait for them.
+    pub fn gpu_times(&self) -> Vec<(String, f32)> {
+        self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
+    }
+
+    /// Cull dense meshes a cluster at a time, where the device can
+    /// ([`crate::cluster`]): on by default.
+    pub fn set_cluster_culling(&mut self, on: bool) {
+        self.clusters.enabled = on && self.clusters.can;
+    }
+
+    /// How many clusters the last frame kept of those it culled, read back
+    /// — waiting on the GPU, so for tests and tools; `None` when nothing
+    /// was culled by clusters.
+    pub fn clusters_kept(&self, gpu: &Gpu) -> Option<u32> {
+        self.clusters.kept(gpu)
+    }
+
+    /// What made the last frame up to the screen's size, and the share of
+    /// its width it was drawn at ([`crate::upscale`]); nothing when it was
+    /// drawn at the screen's own size.
+    pub fn upscaled(&self) -> Option<(crate::upscale::Used, f32)> {
+        self.upscaler.used.map(|u| (u, self.upscaler.scale))
+    }
+
     /// The frame as a stroke of lightning lights it, when one is coming
     /// down now; and the bolt for the sky to draw.
     fn lightning(&mut self, frame: &Frame) -> Option<Frame> {
@@ -3601,6 +3845,10 @@ impl Renderer {
     ///
     /// [`Passes::MAX`]: crate::passes::Passes::MAX
     pub fn set_passes(&mut self, passes: crate::passes::Passes) {
+        // Culling back on reads no pyramid made while it was off.
+        if passes.occlusion_culling != self.passes.occlusion_culling {
+            self.occlusion.forget();
+        }
         self.passes = passes;
     }
 
@@ -3735,6 +3983,8 @@ impl Renderer {
         let Some(old) = self.meshes.get(mesh.0 as usize) else {
             return;
         };
+        // What moves every frame is drawn as it is: its old levels are stale.
+        self.lods.remove(&mesh.0);
         let same = old.blas.is_none()
             && old.vertices.size() == std::mem::size_of_val(vertices) as u64
             && old.indices.size() == std::mem::size_of_val(indices) as u64;
@@ -3748,6 +3998,7 @@ impl Renderer {
         }
         let fresh = self.upload(gpu, vertices, indices);
         let made = self.meshes.pop().expect("just uploaded");
+        self.lods.remove(&fresh.0);
         debug_assert_eq!(fresh.0 as usize, self.meshes.len());
         self.meshes[mesh.0 as usize] = made;
     }
@@ -3835,6 +4086,33 @@ impl Renderer {
             &masked
         };
         let aspect = width as f32 / height.max(1) as f32;
+        // Upscaled: the screen's own view drawn at fewer pixels, up to the
+        // lens, and made up to `output` before post.
+        let output = (width, height);
+        let upscaling = frame.post.upscaling;
+        let screen = probe.is_none() && view.is_some() && !self.picturing;
+        let scaling = upscaling.enabled && frame.post.enabled && screen;
+        let (width, height) = if scaling {
+            self.upscaler.render_size(&upscaling, output)
+        } else {
+            output
+        };
+        if !scaling {
+            self.upscaler.used = None;
+        }
+        // The screen's frame timed, when asked — or when dynamic resolution
+        // needs the GPU's time: not a probe's face or a picture's.
+        let timed = (self.timing || (scaling && upscaling.dynamic.enabled)) && screen;
+        if timed {
+            // Made the first time it is wanted: a renderer that is never
+            // timed never holds a query set.
+            if self.timer.is_none() {
+                self.timer = crate::gpu_timer::GpuTimer::new(gpu);
+            }
+            if let Some(timer) = self.timer.as_mut() {
+                timer.begin(gpu);
+            }
+        }
         if self.depth_size != (width, height) {
             self.depth = depth_view(gpu, width, height, self.samples);
             self.scene = scene_targets(gpu, width, height, self.samples);
@@ -3847,14 +4125,31 @@ impl Renderer {
         // Temporal antialiasing: the screen's own view only, moved a
         // fraction of a pixel each frame it has a history to blend into.
         let taa_on = frame.post.taa && probe.is_none() && view.is_some() && !self.picturing;
-        if taa_on {
+        // MetalFX temporal takes TAA's place: its jitter, its history.
+        let temporal = scaling && self.upscaler.temporal(&upscaling, taa_on);
+        // At the screen's own size only MetalFX temporal has anything to
+        // do: it is the antialiasing then.
+        let upscale_on = temporal || (scaling && (width, height) != output);
+        if scaling && !upscale_on {
+            self.upscaler.used = None;
+        }
+        let taa_run = taa_on && !temporal;
+        if temporal {
+            self.upscaler.follow(
+                frame.camera.position,
+                (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
+            );
+        }
+        if taa_run {
             self.taa.resize(gpu, (width, height));
             self.taa.follow(
                 frame.camera.position,
                 (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z),
             );
         }
-        let jitter = if taa_on {
+        let jitter = if temporal {
+            self.upscaler.jitter((width, height))
+        } else if taa_run {
             self.taa.jitter()
         } else {
             glam::Vec2::ZERO
@@ -4008,6 +4303,12 @@ impl Renderer {
         let sun = frame.lighting.sun_direction.normalize_or_zero();
         // Traced sun shadows need no maps.
         let traced_sun = self.ray.is_some() && frame.ray_tracing.sun_shadows;
+        // Contact shadows read the prepass's depth, the screen's: not for a
+        // probe's face, and not when rays already find every shadow.
+        let contact_on = frame.shadows.enabled
+            && frame.shadows.contact > 0.0
+            && probe.is_none()
+            && !traced_sun;
         let cascades = if frame.shadows.enabled && !traced_sun {
             self.cascades(frame, sun, aspect)
         } else {
@@ -4251,8 +4552,9 @@ impl Renderer {
                     .ambient_occlusion
                     .direct_lighting_strength
                     .clamp(0.0, 1.0),
-                0.0,
-                0.0,
+                // Contact shadows: how far their rays go.
+                if contact_on { frame.shadows.contact } else { 0.0 },
+                if taa_on { (time * 37.0).fract() * 0.618_034 } else { 0.0 },
             ],
             ray: {
                 let on = |asked: bool| {
@@ -4490,34 +4792,44 @@ impl Renderer {
             ..Default::default()
         };
         let eye = frame.camera.apparent_eye();
+        let terrain_mesh = fine_terrain.map(|t| t.mesh);
         for draw in &frame.draws {
             let raw = instance_of(draw.transform, &draw.material);
             let maps = self.maps_of(draw);
+            let skinned = draw.pose.is_some()
+                && self
+                    .meshes
+                    .get(draw.mesh.0 as usize)
+                    .is_some_and(|m| m.skin.is_some());
+            // The level of detail it is drawn at, by how much of the screen
+            // it covers; none when it covers too little to see. The terrain
+            // is always itself: it is drawn finely near and coarse far by
+            // its own grid.
+            let level = if Some(draw.mesh) == terrain_mesh || probe.is_some() {
+                Some(draw.mesh)
+            } else {
+                self.level_of(draw, eye, &frame.camera, skinned)
+            };
             if !draw.material.is_transparent() {
                 let casters = if draw.material.alpha_clip > 0.0 {
                     &mut clip_batches
                 } else {
                     &mut shadow_batches
                 };
-                push(casters, (None, draw.mesh, maps), raw);
+                push(casters, (None, level.unwrap_or(draw.mesh), maps), raw);
                 stats.shadow_casters += 1;
             }
 
-            let skinned = draw.pose.is_some()
-                && self
-                    .meshes
-                    .get(draw.mesh.0 as usize)
-                    .is_some_and(|m| m.skin.is_some());
             let visible = match self.meshes.get(draw.mesh.0 as usize) {
                 Some(mesh) => aabb_in_frustum(&planes, mesh.bounds, draw.transform),
                 // A handle pointing at nothing draws nothing; it should not
                 // also be reported as culled.
                 None => false,
             };
-            if !visible {
+            let Some(mesh) = level.filter(|_| visible) else {
                 stats.culled += 1;
                 continue;
-            }
+            };
             stats.drawn += 1;
             let look = Look::of(&draw.material, skinned);
             // The terrain near the camera: its fine grid instead, placed and
@@ -4546,15 +4858,22 @@ impl Renderer {
             let pose = draw.pose.unwrap_or(0);
             if draw.material.is_transparent() {
                 let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
-                transparent.push((distance, look, draw.mesh, maps, pose, raw));
+                transparent.push((distance, look, mesh, maps, pose, raw));
             } else if skinned {
                 // Skinned draws are not batched: each one has its own pose,
                 // so two of them cannot share an instanced call anyway.
-                singles.push((look, draw.mesh, maps, pose, raw));
+                singles.push((look, mesh, maps, pose, raw));
             } else {
-                push(&mut batches, (Some(look), draw.mesh, maps), raw);
+                push(&mut batches, (Some(look), mesh, maps), raw);
             }
         }
+        stats.triangles = batches
+            .iter()
+            .map(|((_, mesh, _), list)| (list.len(), *mesh))
+            .chain(singles.iter().map(|(_, mesh, _, _, _)| (1, *mesh)))
+            .chain(transparent.iter().map(|(_, _, mesh, _, _, _)| (1, *mesh)))
+            .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
+            .sum();
         self.stats = stats;
         // Each lamp shadow map's casters: what its own view sees.
         let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();
@@ -4658,7 +4977,8 @@ impl Renderer {
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: self.instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                // Read by the occlusion culling too.
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
         }
@@ -4707,6 +5027,105 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("runity::render"),
             });
+        // What last frame's depth says is hidden, left out on the GPU.
+        {
+            // The screen's frame only; each culling a pass of its own.
+            let culling = probe.is_none() && view.is_some() && !self.picturing;
+            let occluding = culling && self.passes.occlusion_culling;
+            let clustering = culling && self.passes.cluster_culling;
+            let mut boxes: Vec<[f32; 8]> = Vec::new();
+            let mut listed: Vec<crate::occlusion::CullBatch> = Vec::new();
+            if occluding {
+                for ((look, handle, _), list) in &batches {
+                    let (min, max) = self
+                        .mesh(*handle)
+                        .map_or((Vec3::ZERO, Vec3::ZERO), |m| {
+                            (Vec3::from_array(m.bounds.min), Vec3::from_array(m.bounds.max))
+                        });
+                    let never = look.is_none_or(|l| l.terrain);
+                    for raw in list {
+                        let m = Mat4::from_cols_array_2d(&raw.model);
+                        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                        for c in 0..8 {
+                            let corner = Vec3::new(
+                                if c & 1 == 0 { min.x } else { max.x },
+                                if c & 2 == 0 { min.y } else { max.y },
+                                if c & 4 == 0 { min.z } else { max.z },
+                            );
+                            let w = m.transform_point3(corner);
+                            lo = lo.min(w);
+                            hi = hi.max(w);
+                        }
+                        boxes.push([lo.x, lo.y, lo.z, 0.0, hi.x, hi.y, hi.z, if never { 1.0 } else { 0.0 }]);
+                    }
+                    listed.push(crate::occlusion::CullBatch {
+                        index_count: self.mesh(*handle).map_or(0, |m| m.index_count),
+                        count: list.len() as u32,
+                    });
+                }
+                let forward = (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z);
+                self.occlusion.cull(
+                    gpu,
+                    &mut encoder,
+                    &listed,
+                    &boxes,
+                    &self.instances,
+                    shadow_total,
+                    frame.camera.position,
+                    forward,
+                );
+            } else {
+                self.occlusion.active = false;
+            }
+            if clustering {
+                // Dense meshes a cluster at a time: what can be drawn so —
+                // opaque, the standard shader, neither skinned nor terrain.
+                let mut jobs = Vec::new();
+                let mut first = shadow_total;
+                let (meshes, lod_meshes) = (&self.meshes, &self.lod_meshes);
+                let mesh_of = |handle: MeshHandle| {
+                    if handle.0 & LOD_HANDLE != 0 {
+                        lod_meshes.get((handle.0 & !LOD_HANDLE) as usize)
+                    } else {
+                        meshes.get(handle.0 as usize)
+                    }
+                };
+                for (k, ((look, handle, _), list)) in batches.iter().enumerate() {
+                    let count = list.len() as u32;
+                    if let (Some(look), Some(mesh)) = (look, mesh_of(*handle)) {
+                        let plain = look.blend.is_none()
+                            && look.shader.is_none()
+                            && !look.skinned
+                            && !look.terrain
+                            && !look.on_top;
+                        if let (true, Some(clusters)) = (plain, mesh.clusters.as_ref()) {
+                            jobs.push(crate::cluster::Job {
+                                batch: k,
+                                first_instance: first,
+                                instances: count,
+                                face: look.face,
+                                clusters,
+                                vertices: &mesh.vertices,
+                                indices: &mesh.indices,
+                            });
+                        }
+                    }
+                    first += count;
+                }
+                let hiz = self.occlusion.hiz();
+                self.clusters.cull(
+                    gpu,
+                    &mut encoder,
+                    &jobs,
+                    &self.instances,
+                    drawn,
+                    frame.camera.position,
+                    hiz,
+                );
+            } else {
+                self.clusters.this_frame.clear();
+            }
+        }
         // The scene as rays see it: every solid draw, seen or not — what is
         // behind the camera still shadows what is in front of it.
         let traced = self.ray.is_some() && frame.ray_tracing.any();
@@ -4760,7 +5179,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("shadows"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -4795,7 +5214,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("lamp shadows"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -4866,7 +5285,7 @@ impl Renderer {
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
         let prepass_drawn =
-            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust;
+            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust || contact_on;
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -4888,16 +5307,21 @@ impl Renderer {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: None,
+                    timestamp_writes: crate::gpu_timer::render("prepass"),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
+                self.draw_batches_with(&mut pass, &batches, shadow_total, true, true, true);
                 self.draw_mesh_terrain(&mut pass, mesh_terrain, true);
                 let first = shadow_total + batched_total;
                 for (instance, (look, mesh, texture, pose, _)) in (first..).zip(&singles) {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
+            }
+            // This frame's depth into the pyramid, for the next frame's
+            // culling.
+            if self.passes.occlusion_culling && probe.is_none() && view.is_some() && !self.picturing {
+                self.occlusion.build(gpu, &mut encoder, &self.ssao.depth, (width, height), drawn);
             }
             if ssao_on {
                 let now = drawn;
@@ -4985,6 +5409,16 @@ impl Renderer {
             );
         }
 
+        // Particles on the GPU given off and stepped, for the colour pass.
+        if probe.is_none() {
+            self.gpu_particles.run(
+                gpu,
+                &mut encoder,
+                &frame.gpu_particles,
+                drawn,
+                frame.camera.apparent_eye(),
+            );
+        }
         {
             // A probe's face is drawn straight into its layer.
             let face = probe.map(|layer| self.reflections.layer(layer, 0));
@@ -5013,11 +5447,11 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("scene"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.draw_batches(&mut pass, &batches, shadow_total, true);
+            self.draw_batches_with(&mut pass, &batches, shadow_total, true, false, true);
             self.draw_mesh_terrain(&mut pass, mesh_terrain, false);
             let mut instance = shadow_total + batched_total;
             for (look, mesh, texture, pose, _) in &singles {
@@ -5035,6 +5469,10 @@ impl Renderer {
             for (_, look, mesh, texture, pose, _) in &transparent {
                 self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, false);
                 instance += 1;
+            }
+            // Particles on the GPU, among what is see-through.
+            if probe.is_none() {
+                self.gpu_particles.draw(&mut pass);
             }
             // What falls, in front of it all.
             if weather.falling() {
@@ -5064,7 +5502,7 @@ impl Renderer {
             .previous_view_projection
             .replace(view_projection)
             .unwrap_or(view_projection);
-        let picture = if taa_on {
+        let picture = if taa_run {
             self.taa.run(
                 gpu,
                 &mut encoder,
@@ -5134,15 +5572,24 @@ impl Renderer {
         post.auto_exposure.compensation -= 1.6 * night;
         let most = post.auto_exposure.max_ev;
         post.auto_exposure.max_ev = most + (most.min(1.0) - most) * night;
-        self.post.run(
-            gpu,
-            &mut encoder,
-            lensed.unwrap_or(picture),
-            view,
-            (width, height),
-            &post,
-            metered,
-        );
+        let picture = lensed.unwrap_or(picture);
+        let picture = if upscale_on {
+            self.upscaler.run(
+                gpu,
+                &mut encoder,
+                &upscaling,
+                temporal,
+                picture,
+                &self.ssao.depth,
+                (width, height),
+                output,
+                [drawn, view_projection, previous],
+                jitter,
+            )
+        } else {
+            picture
+        };
+        self.post.run(gpu, &mut encoder, picture, view, output, &post, metered);
 
         // Tools go on the finished picture: no tonemapper, bloom or
         // vignette touches a handle's colour.
@@ -5159,7 +5606,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("overlay"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -5169,7 +5616,21 @@ impl Renderer {
                 shadow_total + batched_total + singles.len() as u32 + transparent.len() as u32;
             self.draw_batches(&mut pass, &overlay_batches, base, true);
         }
-        gpu.queue.submit(Some(encoder.finish()));
+        if scaling {
+            let ms = self.timer.as_ref().and_then(|t| t.frame_ms());
+            self.upscaler.adjust(&upscaling, ms);
+        }
+        let timer = self.timer.as_mut().filter(|_| timed);
+        match timer {
+            Some(timer) => {
+                timer.end(&mut encoder);
+                gpu.queue.submit(Some(encoder.finish()));
+                timer.submitted();
+            }
+            None => {
+                gpu.queue.submit(Some(encoder.finish()));
+            }
+        }
     }
 }
 
