@@ -12,6 +12,7 @@
 resolver = "2"
 members = [
     "crates/runity",
+    "crates/runity-animation",
     "crates/runity-core",
     "crates/runity-geometry",
     "crates/runity-gpu",

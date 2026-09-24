@@ -2534,6 +2534,7 @@ dependencies = [
  "rapier3d",
  "rkyv",
  "ron",
+ "runity-animation",
  "runity-core",
  "runity-geometry",
  "runity-gpu",
@@ -2545,6 +2546,19 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "runity-animation"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
+ "tracing",
 ]
 
 [[package]]

@@ -1156,20 +1156,21 @@ mod tests {
         let mut controller = Controller::new(graph);
         controller.update(&mut animator);
         let mut world = hecs::World::new();
-        let id = crate::EntityId::fresh();
+        let id = runity_core::EntityId::fresh();
         world.spawn((
             crate::world::SceneId(id),
             crate::scene::Transform::default(),
             controller,
         ));
-        let report = crate::save::capture(
+        let report = runity_core::save::capture_with(
             &world,
-            &crate::components::Components::new(),
-            &crate::Scene::default(),
+            &runity_core::components::Components::new(),
+            &runity_core::Scene::default(),
+            &animator_state,
         );
         assert_eq!(report.entities[0].animator, "idle");
         let text = ron::to_string(&report).unwrap();
-        let back: crate::save::SaveGame = ron::from_str(&text).unwrap();
+        let back: runity_core::save::SaveGame = ron::from_str(&text).unwrap();
         assert_eq!(back, report);
     }
 

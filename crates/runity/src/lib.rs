@@ -23,8 +23,8 @@ pub use runity_core::impl_parts;
 pub mod actions;
 pub use runity_geometry::animation;
 pub mod appearance;
-pub mod animator;
-pub mod animgraph;
+pub use runity_animation::animator;
+pub use runity_animation::animgraph;
 /// The asset archive as the core has it: its header, its ID.
 pub use runity_core::asset as asset_core;
 pub use runity_geometry::mesh_asset;
@@ -58,7 +58,7 @@ pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
 pub use runity_gpu::gpu;
-pub mod graph_text;
+pub use runity_animation::graph_text;
 pub use runity_core::id;
 pub use runity_core::input;
 pub mod lan;
@@ -71,7 +71,29 @@ pub mod live;
 pub mod material;
 pub use runity_core::merge;
 pub mod moods;
-pub mod motion;
+/// Clips that move a scene's things: the animation module's, with the
+/// sound and particles a clip turns written by the modules that own them.
+pub mod motion {
+    pub use runity_animation::motion::*;
+
+    /// Every moving line one step on ([`run_with`]), a clip's volume and
+    /// particle-rate tracks written to the entity's sound and particles.
+    pub fn run(world: &mut hecs::World, dt: f32) {
+        run_with(world, dt, &mut |world, entity, what, value| match what {
+            Property::Volume => {
+                if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
+                    s.0.volume = value;
+                }
+            }
+            Property::ParticleRate => {
+                if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
+                    p.emitter.rate = value;
+                }
+            }
+            _ => {}
+        })
+    }
+}
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;

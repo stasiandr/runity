@@ -410,9 +410,14 @@ fn channels_for(joint: u16, tracks: &[&Track], rest: &crate::Transform) -> Vec<C
 }
 
 /// Every [`Moving`] line one step on: its graph takes its transitions, its
-/// clips move its parts, switch them, turn their sound and particles.
-/// In the fixed step, before [`crate::world::apply_hierarchy`].
-pub fn run(world: &mut World, dt: f32) {
+/// clips move its parts and switch them. In the fixed step, before
+/// [`crate::world::apply_hierarchy`].
+///
+/// A track of another module's property — a sound's volume, particles'
+/// rate — is handed to `set`: this module reads the clip, the module that
+/// owns the component writes it. The engine's `runity::motion::run` passes
+/// the sound and particle modules' setter.
+pub fn run_with(world: &mut World, dt: f32, set: &mut dyn FnMut(&mut World, hecs::Entity, Property, f32)) {
     let mut places: Vec<(hecs::Entity, PoseTransform)> = Vec::new();
     let mut others: Vec<(hecs::Entity, Property, f32)> = Vec::new();
     for moving in world.query_mut::<&mut Moving>() {
@@ -458,16 +463,7 @@ pub fn run(world: &mut World, dt: f32) {
                     crate::world::set_active(world, entity, on);
                 }
             }
-            Property::Volume => {
-                if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
-                    s.0.volume = value;
-                }
-            }
-            Property::ParticleRate => {
-                if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
-                    p.emitter.rate = value;
-                }
-            }
+            Property::Volume | Property::ParticleRate => set(world, entity, what, value),
             _ => {}
         }
     }
@@ -476,7 +472,16 @@ pub fn run(world: &mut World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::MeshHandle;
+
+    /// Put a scene into a world with this module dressing it.
+    fn spawn(scene: &crate::scene::Scene, world: &mut World) {
+        crate::world::spawn_scene_dressed(scene, world, &mut [Box::new(MotionDress)]);
+    }
+
+    /// One step, with no sound or particles to hand tracks to.
+    fn run(world: &mut World, dt: f32) {
+        run_with(world, dt, &mut |_, _, _, _| {});
+    }
 
     #[test]
     fn a_graph_with_no_clips_here_plays_on_the_models_skeleton() {
@@ -489,7 +494,7 @@ mod tests {
         )
         .unwrap();
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut motions = Motions::default();
         motions.graphs.insert(
             "mouse".into(),
@@ -532,7 +537,7 @@ mod tests {
         };
         let said = attach(&mut world, &motions, skins);
         assert!(said.iter().any(|p| p.contains("`rock` has no skeleton")), "{said:?}");
-        let mouse = crate::net::addressable(&world)[&EntityId::from_raw(1)];
+        let mouse = crate::world::addressable(&world)[&EntityId::from_raw(1)];
         let names: Vec<String> = world
             .get::<&Animator>(mouse)
             .unwrap()
@@ -560,7 +565,7 @@ mod tests {
         )
         .unwrap();
         let mut world = World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        spawn(&scene, &mut world);
         let mut motions = Motions::default();
         motions.graphs.insert(
             "well".into(),
@@ -585,7 +590,7 @@ mod tests {
         );
         let said = attach(&mut world, &motions, |_| None);
         assert!(said.iter().any(|p| p.contains("Chimney")), "{said:?}");
-        let ids = crate::net::addressable(&world);
+        let ids = crate::world::addressable(&world);
         let (well, lid, glow) = (
             ids[&EntityId::from_raw(1)],
             ids[&EntityId::from_raw(2)],
