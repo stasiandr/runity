@@ -87,13 +87,47 @@ pub struct Bottom {
     /// Each folder tile in the grid.
     folder_tiles: HashMap<NodeId, String>,
     crumb_nodes: HashMap<NodeId, String>,
+    /// Unity's One Column Layout: the whole panel one tree, folders with
+    /// their files under them, in place of the two columns.
+    one_column: bool,
+    one_column_toggle: NodeId,
+    /// The two columns, hidden while the one tree shows.
+    columns: NodeId,
+    /// The one tree's lines.
+    files: NodeId,
+    /// Each line of the one tree, in order: what it stands for, and how
+    /// deep it is.
+    file_lines: Vec<(NodeId, Pick)>,
+    file_depths: Vec<usize>,
+    /// A line's arrow, by the folder it opens.
+    line_arrows: HashMap<NodeId, String>,
+    /// How each line was last drawn — selected, open, the open scene — so
+    /// that an update touches only the lines that changed.
+    line_looks: HashMap<NodeId, (bool, bool, bool)>,
+    /// The grid's tiles in order, for the arrows to walk.
+    tiles: Vec<(NodeId, Pick)>,
+    /// The one thing chosen in the Project, lit where it shows.
+    selected: Option<Pick>,
+    /// Scroll the chosen thing into view at the next update.
+    reveal: bool,
+    /// Whether the arrows, Enter, F2 and Delete are the Project's: after a
+    /// click on it, until a click elsewhere.
+    active: bool,
+    /// Under the panel: the chosen thing's path, the folder part a click
+    /// back to its folder.
+    path_icon: NodeId,
+    path_folder: NodeId,
+    path_file: NodeId,
+    /// The folder the path's folder part goes to.
+    path_target: Option<String>,
     entries: HashMap<NodeId, Asset>,
-    /// The entry an Inspector field pointed at (Unity's ping): outlined,
+    /// The entry an Inspector field pointed at (Unity's ping): selected,
     /// and scrolled to once.
     pinged: Option<(Asset, bool)>,
-    /// Each tile's files, absolute: the asset's own and, for a model, its
-    /// import settings beside it.
-    tile_files: HashMap<NodeId, Vec<PathBuf>>,
+    /// Each tile's or line's files, absolute: the asset's own and, for a
+    /// model, its import settings beside it; a folder's directory. Worked
+    /// out once, when the node is made.
+    tile_files: HashMap<NodeId, (bool, Vec<PathBuf>)>,
     /// Files not as committed (see `git_marks`): their tiles get a dot.
     marks: std::collections::HashSet<PathBuf>,
     // Console
@@ -191,6 +225,9 @@ impl Bottom {
         ui.set_name(search, "project search");
         ui.set_placeholder(search, "Search assets");
         spacer(ui, bar);
+        // Unity's One Column Layout: one tree of folders and files.
+        let one_column_toggle =
+            crate::theme::icon_button(ui, bar, "project one column", "list-tree", false);
         // Pictures by default, as Unity's Project shows its assets.
         let big_toggle = crate::theme::icon_button(ui, bar, "project pictures", "image", true);
         // What kind to show: Unity's type filter.
@@ -257,6 +294,59 @@ impl Bottom {
                 .clip(),
         );
         ui.set_name(grid, "project grid");
+        // The one tree, in the columns' place while it is chosen.
+        let files = ui.add(
+            project,
+            Style::column()
+                .fill()
+                .full_width()
+                .padding(SPACE_1)
+                .clip()
+                .hidden(),
+        );
+        ui.set_name(files, "project files");
+        // The chosen thing's path, as Unity's Project shows it at its foot.
+        ui.add(
+            project,
+            Style::row().height(1.0).fixed().full_width().background(DIVIDER),
+        );
+        let foot = ui.add(
+            project,
+            Style::row()
+                .full_width()
+                .height(22.0)
+                .fixed()
+                .padding_x(SPACE_3)
+                .gap(4.0)
+                .center_items(),
+        );
+        ui.set_name(foot, "asset path");
+        let path_icon = ui.add_icon(
+            foot,
+            Style::default()
+                .size(12.0, 12.0)
+                .fixed()
+                .text_color(MUTED)
+                .hidden(),
+            "file",
+        );
+        let path_folder = ui.add_text(
+            foot,
+            Style::default()
+                .text_size(11.0)
+                .text_color(MUTED)
+                .nowrap()
+                .radius(RADIUS_SM)
+                .hover(HOVER),
+            "",
+        );
+        ui.set_name(path_folder, "asset path folder");
+        let path_file = ui.add_text(
+            foot,
+            Style::default().text_size(11.0).text_color(LABEL).nowrap(),
+            "",
+        );
+        ui.set_name(path_file, "asset path file");
 
         // Console
         let lines = ui.add(
@@ -329,6 +419,22 @@ impl Bottom {
             folder_rows: HashMap::new(),
             folder_tiles: HashMap::new(),
             crumb_nodes: HashMap::new(),
+            one_column: false,
+            one_column_toggle,
+            columns: body,
+            files,
+            file_lines: Vec::new(),
+            file_depths: Vec::new(),
+            line_arrows: HashMap::new(),
+            line_looks: HashMap::new(),
+            tiles: Vec::new(),
+            selected: None,
+            reveal: false,
+            active: false,
+            path_icon,
+            path_folder,
+            path_file,
+            path_target: None,
             entries: HashMap::new(),
             pinged: None,
             tile_files: HashMap::new(),
@@ -400,8 +506,18 @@ impl Bottom {
     /// Show an entry in the grid — its folder chosen, the search left, its
     /// tile outlined — as Unity pings what an object field names.
     pub fn ping(&mut self, ui: &mut Ui, session: &Session, asset: Asset) {
-        ui.set_text(self.search, "");
-        self.go_to(folder_of(&asset, session, &material_sources(session)));
+        // Pointing at it is selecting it where it lives, in either layout.
+        let key = asset_file(&asset, session).unwrap_or_else(|| match &asset {
+            Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
+                n.clone()
+            }
+            Asset::Scene(p) => p.display().to_string(),
+        });
+        if !self.show_asset(ui, session, &key) {
+            ui.set_text(self.search, "");
+            self.go_to(folder_of(&asset, session, &material_sources(session)));
+        }
+        self.selected = Some(Pick::Asset(asset.clone()));
         self.pinged = Some((asset, false));
     }
 
@@ -551,9 +667,9 @@ impl Bottom {
     }
 
     fn show_marks(&self, ui: &mut Ui) {
-        for (tile, files) in &self.tile_files {
+        for (tile, (folder, files)) in &self.tile_files {
             // A folder: marked when anything in it is.
-            let on = if self.folder_tiles.contains_key(tile) {
+            let on = if *folder {
                 files
                     .iter()
                     .any(|dir| self.marks.iter().any(|m| m.starts_with(dir)))
@@ -672,8 +788,9 @@ pub fn all_assets(session: &Session) -> Vec<Asset> {
 }
 
 impl Bottom {
-    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
-        // Project
+    /// The Project: the two columns or the one tree, the path of what is
+    /// chosen under them, the kind chips.
+    fn update_project(&mut self, ui: &mut Ui, session: &Session) {
         let all = all_assets(session);
         let sources = material_sources(session);
         let folders = folders(&all, session, &sources);
@@ -681,8 +798,78 @@ impl Bottom {
         if !self.folder.is_empty() && !folders.contains(&self.folder) {
             self.folder = String::new();
         }
-        self.update_tree(ui, &folders);
-        self.update_crumbs(ui);
+        // The chosen thing gone (renamed, deleted): nothing is chosen.
+        let there = match &self.selected {
+            Some(Pick::Folder(f)) => folders.contains(f),
+            Some(Pick::Asset(a)) => all.contains(a),
+            None => true,
+        };
+        if !there {
+            self.selected = None;
+        }
+        self.tile_files.retain(|node, _| ui.exists(*node));
+        let one = self.one_column;
+        ui.restyle(self.columns, |s| if one { s.hidden() } else { s.shown() });
+        ui.restyle(self.files, |s| if one { s.shown() } else { s.hidden() });
+        // Only the layout shown has nodes: a hidden one's would still be
+        // found by name, and cost an update each.
+        if one {
+            for list in [self.tree, self.grid] {
+                empty(ui, list);
+            }
+            ui.clear(self.crumbs);
+            self.tiles.clear();
+            self.update_files(ui, session, &all, &folders, &sources);
+        } else {
+            empty(ui, self.files);
+            self.file_lines.clear();
+            self.file_depths.clear();
+            self.line_looks.clear();
+            self.line_arrows.clear();
+            self.update_tree(ui, &folders);
+            self.update_crumbs(ui);
+            self.update_grid(ui, session, &all, &folders, &sources);
+        }
+        self.show_marks(ui);
+        self.update_path(ui, session, &sources);
+        if self.reveal {
+            self.reveal = false;
+            let (list, shown) = if one {
+                (self.files, &self.file_lines)
+            } else {
+                (self.grid, &self.tiles)
+            };
+            let node = shown
+                .iter()
+                .find(|(_, p)| Some(p) == self.selected.as_ref())
+                .map(|(n, _)| *n);
+            if let Some(node) = node {
+                ui.scroll_to(list, node);
+            }
+        }
+
+        for (chip, kind) in &self.kind_chips {
+            let on = *kind == self.kind;
+            ui.restyle(*chip, |s| {
+                s.background(if on {
+                    ACCENT_900
+                } else {
+                    runity_ui::Color::TRANSPARENT
+                })
+            });
+        }
+    }
+
+    /// The right column: the chosen folder's folders and assets, or what a
+    /// search found anywhere.
+    fn update_grid(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        all: &[Asset],
+        folders: &[String],
+        sources: &Sources,
+    ) {
         let subfolders: Vec<String> = if self.searching(ui) {
             Vec::new()
         } else {
@@ -692,7 +879,7 @@ impl Bottom {
                 .cloned()
                 .collect()
         };
-        let assets = self.assets(ui, session, &all, &sources);
+        let assets = self.assets(ui, session, all, sources);
         // The mode is part of the key: switching it makes the tiles again.
         let big = self.big;
         let keys: Vec<String> = subfolders
@@ -716,11 +903,7 @@ impl Bottom {
                     return folder_tile(ui, grid, &subfolders[at], big);
                 }
                 let asset = &assets[at - n_folders];
-                let tint = if matches!(asset, Asset::Prefab(_)) {
-                    ACCENT
-                } else {
-                    MUTED
-                };
+                let tint = tint_of(asset);
                 if !big {
                     let tile = ui.add(
                         grid,
@@ -767,33 +950,7 @@ impl Bottom {
                         .radius(RADIUS_SM)
                         .background(BG),
                 );
-                // Everything but a sound gets its picture (drawn a few a
-                // frame, see Bottom::wanted_pictures); until then, its icon.
-                let mut drawn = false;
-                if let Some(name) = picture_key(asset) {
-                    let (id, ready) = *thumbs.entry(name.clone()).or_insert_with(|| {
-                        *next_image += 1;
-                        (ImageId(*next_image), false)
-                    });
-                    let img = ui.add_image(
-                        frame,
-                        Style::default().size(76.0, 76.0).radius(RADIUS_SM),
-                        id,
-                    );
-                    ui.set_name(img, format!("thumb {name}"));
-                    drawn = ready;
-                }
-                let glyph = ui.add_icon(
-                    frame,
-                    Style::default()
-                        .size(28.0, 28.0)
-                        .text_color(tint)
-                        .absolute(24.0, 24.0),
-                    asset.icon(),
-                );
-                if drawn {
-                    ui.restyle(glyph, |s| s.hidden());
-                }
+                picture(ui, frame, asset, 76.0, 28.0, Some((thumbs, next_image)));
                 ui.add_text(
                     tile,
                     Style::default()
@@ -809,67 +966,515 @@ impl Bottom {
             |_, _, _| {},
         );
         self.entries.clear();
-        self.tile_files.clear();
         self.folder_tiles.clear();
+        self.tiles.clear();
         let root = session.project().map(|p| p.root().to_path_buf());
         let tiles = ui.children(self.grid);
         for (tile, folder) in tiles.iter().zip(&subfolders) {
             self.folder_tiles.insert(*tile, folder.clone());
-            if let Some(root) = &root {
-                let dir = root.join(folder);
-                let dir = dir.canonicalize().unwrap_or(dir);
-                self.tile_files.insert(*tile, vec![dir]);
+            if let (Some(root), false) = (&root, self.tile_files.contains_key(tile)) {
+                self.tile_files.insert(*tile, (true, folder_files(root, folder)));
             }
+            let chosen = self.selected == Some(Pick::Folder(folder.clone()));
+            ui.restyle(*tile, |s| lit(s, chosen, false));
+            self.tiles.push((*tile, Pick::Folder(folder.clone())));
         }
         for (tile, asset) in tiles.into_iter().skip(n_folders).zip(assets) {
-            if let (Some(root), Some(file)) = (&root, asset_file(&asset, session)) {
-                let file = root.join(file);
-                let mut files = vec![file.with_extension(format!(
-                    "{}.rimport",
-                    file.extension().map(|e| e.to_string_lossy()).unwrap_or_default()
-                ))];
-                files.insert(0, file);
-                let files = files
-                    .into_iter()
-                    .map(|f| f.canonicalize().unwrap_or(f))
-                    .collect();
-                self.tile_files.insert(tile, files);
+            if let (Some(root), false) = (&root, self.tile_files.contains_key(&tile)) {
+                if let Some(file) = asset_file(&asset, session) {
+                    self.tile_files.insert(tile, (false, asset_files(root, &file)));
+                }
             }
             let current = matches!(&asset, Asset::Scene(p) if Some(p) == open.as_ref());
-            let pinged = match &mut self.pinged {
-                Some((p, scrolled)) if *p == asset => {
-                    if !*scrolled {
-                        *scrolled = true;
-                        ui.scroll_to(self.grid, tile);
-                    }
-                    true
+            if let Some((p, scrolled)) = &mut self.pinged {
+                if *p == asset && !*scrolled {
+                    *scrolled = true;
+                    ui.scroll_to(self.grid, tile);
                 }
-                _ => false,
-            };
-            ui.restyle(tile, |s| {
-                if pinged {
-                    s.border(1.0, ACCENT).background(ACCENT_900)
-                } else if current {
-                    s.border(1.0, ACCENT.alpha(40)).background(ACCENT_900)
-                } else {
-                    s.border(1.0, runity_ui::Color::TRANSPARENT)
-                        .background(runity_ui::Color::TRANSPARENT)
-                }
-            });
+            }
+            let chosen = self.selected.as_ref() == Some(&Pick::Asset(asset.clone()));
+            ui.restyle(tile, |s| lit(s, chosen, current));
+            self.tiles.push((tile, Pick::Asset(asset.clone())));
             self.entries.insert(tile, asset);
         }
-        self.show_marks(ui);
+    }
 
-        for (chip, kind) in &self.kind_chips {
-            let on = *kind == self.kind;
-            ui.restyle(*chip, |s| {
-                s.background(if on {
-                    ACCENT_900
-                } else {
-                    runity_ui::Color::TRANSPARENT
-                })
-            });
+    /// The one tree: the folders, each open one's folders and files under
+    /// it — or, while searching, what matches anywhere, as one flat list.
+    /// Lines are kept by what they stand for, so opening a folder makes
+    /// its lines and touches no other, and a line off screen costs no
+    /// drawing (the list clips).
+    fn update_files(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        all: &[Asset],
+        folders: &[String],
+        sources: &Sources,
+    ) {
+        let flat = self.searching(ui);
+        let rows: Vec<(Pick, usize)> = if flat {
+            self.assets(ui, session, all, sources)
+                .into_iter()
+                .map(|a| (Pick::Asset(a), 0))
+                .collect()
+        } else {
+            let mut placed: HashMap<String, Vec<&Asset>> = HashMap::new();
+            for a in all {
+                placed
+                    .entry(folder_of(a, session, sources))
+                    .or_default()
+                    .push(a);
+            }
+            let mut rows = Vec::new();
+            fn walk(
+                folders: &[String],
+                placed: &HashMap<String, Vec<&Asset>>,
+                open: &std::collections::HashSet<String>,
+                at: &str,
+                depth: usize,
+                rows: &mut Vec<(Pick, usize)>,
+            ) {
+                for f in folders
+                    .iter()
+                    .filter(|f| !f.is_empty() && parent_folder(f) == at)
+                {
+                    rows.push((Pick::Folder(f.clone()), depth));
+                    if open.contains(f) {
+                        walk(folders, placed, open, f, depth + 1, rows);
+                    }
+                }
+                for a in placed.get(at).into_iter().flatten() {
+                    rows.push((Pick::Asset((*a).clone()), depth));
+                }
+            }
+            walk(folders, &placed, &self.open_folders, "", 0, &mut rows);
+            rows
+        };
+        let big = self.big;
+        let keys: Vec<String> = rows
+            .iter()
+            .map(|(pick, _)| format!("{flat} {big} {pick:?}"))
+            .collect();
+        let index: HashMap<&String, usize> = keys.iter().enumerate().map(|(i, k)| (k, i)).collect();
+        let mut made: Vec<(NodeId, usize)> = Vec::new();
+        let thumbs = &mut self.thumbs;
+        let next_image = &mut self.next_image;
+        ui.sync_children(
+            self.files,
+            &keys,
+            |ui, list, key| {
+                let at = index[key];
+                let (pick, depth) = &rows[at];
+                // While searching, where each is: the list is flat.
+                let hint = match pick {
+                    Pick::Asset(a) if flat => path_label(&folder_of(a, session, sources)),
+                    _ => String::new(),
+                };
+                let pictures = big.then_some((&mut *thumbs, &mut *next_image));
+                let line = file_line(ui, list, pick, *depth, &hint, pictures);
+                made.push((line, at));
+                line
+            },
+            |_, _, _| {},
+        );
+        let root = session.project().map(|p| p.root().to_path_buf());
+        self.entries.retain(|node, _| ui.exists(*node));
+        self.line_arrows.retain(|node, _| ui.exists(*node));
+        self.line_looks.retain(|node, _| ui.exists(*node));
+        for (line, at) in made {
+            let kids = ui.children(line);
+            match &rows[at].0 {
+                Pick::Folder(f) => {
+                    self.line_arrows.insert(kids[1], f.clone());
+                    if let Some(root) = &root {
+                        self.tile_files.insert(line, (true, folder_files(root, f)));
+                    }
+                }
+                Pick::Asset(a) => {
+                    self.entries.insert(line, a.clone());
+                    if let (Some(root), Some(file)) = (&root, asset_file(a, session)) {
+                        self.tile_files.insert(line, (false, asset_files(root, &file)));
+                    }
+                }
+            }
         }
+        // Each line brought up to date — only those whose look changed: a
+        // click touches two lines, not two thousand.
+        let open = session.scene_path().map(|p| p.to_path_buf());
+        let lines = ui.children(self.files);
+        self.file_lines.clear();
+        self.file_depths.clear();
+        for (line, (pick, depth)) in lines.into_iter().zip(rows) {
+            self.file_depths.push(depth);
+            let chosen = self.selected.as_ref() == Some(&pick);
+            let (unfolded, current) = match &pick {
+                Pick::Folder(f) => (self.open_folders.contains(f), false),
+                Pick::Asset(a) => (
+                    false,
+                    matches!(a, Asset::Scene(p) if Some(p) == open.as_ref()),
+                ),
+            };
+            let look = (chosen, unfolded, current);
+            if self.line_looks.get(&line) != Some(&look) {
+                self.line_looks.insert(line, look);
+                ui.restyle(line, |s| lit(s, chosen, current));
+                if let Pick::Folder(_) = pick {
+                    let kids = ui.children(line);
+                    if let Some(arrow) = ui.children(kids[1]).first().copied() {
+                        ui.set_icon(arrow, if unfolded { "chevron-down" } else { "chevron-right" });
+                    }
+                    if let Some(glyph) = ui.children(kids[2]).last().copied() {
+                        ui.set_icon(glyph, if unfolded { "folder-open" } else { "folder" });
+                    }
+                }
+            }
+            self.file_lines.push((line, pick));
+        }
+    }
+
+    /// Under the panel: where the chosen thing is, as the project names it
+    /// (`assets/kenney/food/bread.glb`, `Built-in/cube`).
+    fn update_path(&mut self, ui: &mut Ui, session: &Session, sources: &Sources) {
+        let (glyph, folder, file) = match &self.selected {
+            None => (None, String::new(), String::new()),
+            Some(Pick::Folder(f)) => (
+                Some("folder"),
+                parent_folder(f),
+                folder_label(f),
+            ),
+            Some(Pick::Asset(a)) => {
+                let (folder, file) = match asset_file(a, session) {
+                    Some(file) => match file.rsplit_once('/') {
+                        Some((dir, name)) => (dir.to_string(), name.to_string()),
+                        None => (String::new(), file),
+                    },
+                    // A material an import made: in the file it came from.
+                    None => match (a, sources.get(&a.label())) {
+                        (Asset::Material(_), Some(source)) => {
+                            let (dir, name) = source.rsplit_once('/').unwrap_or(("", source));
+                            (dir.to_string(), format!("{name} › {}", a.label()))
+                        }
+                        _ => (BUILTIN.to_string(), a.label()),
+                    },
+                };
+                (Some(a.icon()), folder, file)
+            }
+        };
+        match glyph {
+            Some(g) => {
+                ui.set_icon(self.path_icon, g);
+                ui.restyle(self.path_icon, |s| s.shown());
+            }
+            None => ui.restyle(self.path_icon, |s| s.hidden()),
+        }
+        let shown = if folder.is_empty() {
+            String::new()
+        } else {
+            format!("{}/", path_label(&folder))
+        };
+        ui.set_text(self.path_folder, &shown);
+        ui.set_text(self.path_file, &file);
+        self.path_target = (!shown.is_empty()).then_some(folder);
+    }
+
+    /// The Project's view, as the studio's layout file keeps it:
+    /// `one-column` or `two-column`, then `pictures` or `list`.
+    pub fn modes(&self) -> String {
+        format!(
+            "{} {}",
+            if self.one_column {
+                "one-column"
+            } else {
+                "two-column"
+            },
+            if self.big { "pictures" } else { "list" }
+        )
+    }
+
+    /// Back to a view [`Bottom::modes`] wrote down.
+    pub fn set_modes(&mut self, ui: &mut Ui, modes: &str) {
+        self.one_column = modes.contains("one-column");
+        self.big = !modes.contains("list");
+        self.show_toggles(ui);
+    }
+
+    fn show_toggles(&self, ui: &mut Ui) {
+        crate::theme::set_icon_button(ui, self.big_toggle, "image", self.big, true);
+        crate::theme::set_icon_button(
+            ui,
+            self.one_column_toggle,
+            "list-tree",
+            self.one_column,
+            true,
+        );
+    }
+
+    /// Whether `node` is in the Project panel.
+    pub fn owns_project(&self, ui: &Ui, node: NodeId) -> bool {
+        let mut at = Some(node);
+        while let Some(n) = at {
+            if n == self.roots[0] {
+                return true;
+            }
+            at = ui.parent(n);
+        }
+        false
+    }
+
+    /// Whether the Project has the keyboard's arrows, Enter, F2 and
+    /// Delete: after a click on it, until a click elsewhere.
+    pub fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// Go to an asset in the Project, choose it and scroll it into view —
+    /// what a ping from an object field or the Hierarchy's "Show in
+    /// Project" does.
+    ///
+    /// `file_or_name` is a project-relative file (`assets/kenney/food/
+    /// bread.glb`, `scenes/main.ron`), an asset's name as the scene names
+    /// it (`campfire`, `builtin:cube`, a material's name) or its label as
+    /// the Project shows it (`cube`), or a folder (`assets/kenney`). The
+    /// file is tried first, then the name, then the label; the first match
+    /// wins.
+    ///
+    /// In two columns the grid goes to the asset's folder, the folder
+    /// tree opened down to it; in one column the tree opens down to it.
+    /// A search or kind filter is cleared so that it shows. The Inspector
+    /// is not touched and the keyboard stays where it is: this points, it
+    /// does not open. Returns `false`, changing nothing, when nothing in
+    /// the project matches. The panel's nodes are brought up to date
+    /// before this returns, so the caller can paint straight away.
+    pub fn show_asset(&mut self, ui: &mut Ui, session: &Session, file_or_name: &str) -> bool {
+        let all = all_assets(session);
+        let sources = material_sources(session);
+        let wanted = file_or_name.trim_end_matches('/').replace('\\', "/");
+        let root = session.project().map(|p| p.root().to_path_buf());
+        let file_of = |a: &Asset| -> Option<String> {
+            match a {
+                // A scene's path may come absolute.
+                Asset::Scene(p) if p.to_string_lossy().replace('\\', "/") == wanted => {
+                    Some(wanted.clone())
+                }
+                _ => asset_file(a, session),
+            }
+        };
+        let name_of = |a: &Asset| match a {
+            Asset::Prefab(n) | Asset::Model(n, _) | Asset::Material(n) | Asset::Sound(n, _) => {
+                n.clone()
+            }
+            Asset::Scene(_) => String::new(),
+        };
+        let found = all
+            .iter()
+            .find(|a| file_of(a).as_deref() == Some(wanted.as_str()))
+            .or_else(|| all.iter().find(|a| name_of(a) == wanted))
+            .or_else(|| all.iter().find(|a| a.label() == wanted))
+            .cloned();
+        let pick = match found {
+            Some(a) => Pick::Asset(a),
+            None => {
+                let folders = folders(&all, session, &sources);
+                let relative = root
+                    .as_ref()
+                    .and_then(|r| std::path::Path::new(&wanted).strip_prefix(r).ok())
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or(wanted.clone());
+                match folders.into_iter().find(|f| !f.is_empty() && *f == relative) {
+                    Some(f) => Pick::Folder(f),
+                    None => return false,
+                }
+            }
+        };
+        let folder = match &pick {
+            Pick::Asset(a) => folder_of(a, session, &sources),
+            Pick::Folder(f) => parent_folder(f),
+        };
+        ui.set_text(self.search, "");
+        self.kind = "All";
+        self.go_to(folder.clone());
+        if self.one_column && !folder.is_empty() {
+            self.open_folders.insert(folder);
+        }
+        self.selected = Some(pick);
+        self.reveal = true;
+        self.update_project(ui, session);
+        true
+    }
+
+    /// Choose `pick`, show it in the Inspector when it is an asset, and
+    /// bring it into view at the next [`Bottom::update_project`].
+    fn choose(&mut self, pick: Pick, requests: &mut Requests) {
+        if let Pick::Asset(a) = &pick {
+            requests.inspect = Some(a.clone());
+        }
+        self.selected = Some(pick);
+        self.reveal = true;
+    }
+
+    /// What a double click or Enter does: a folder goes in (or, in the one
+    /// tree, opens or closes); a scene opens, a prefab opens in prefab
+    /// mode, a model is placed, a material painted on, a sound played.
+    fn open(&mut self, pick: Pick, requests: &mut Requests) {
+        match pick {
+            Pick::Folder(f) if self.one_column => {
+                if !self.open_folders.remove(&f) {
+                    self.open_folders.insert(f);
+                }
+            }
+            Pick::Folder(f) => {
+                self.go_to(f);
+                self.selected = None;
+            }
+            Pick::Asset(Asset::Scene(path)) => requests.action = Some(Action::OpenScene(path)),
+            Pick::Asset(Asset::Prefab(name)) => requests.action = Some(Action::OpenPrefab(name)),
+            Pick::Asset(Asset::Model(name, _)) => requests.action = Some(Action::Place(name)),
+            Pick::Asset(Asset::Material(name)) => {
+                requests.action = Some(Action::SetField("material".into(), name))
+            }
+            Pick::Asset(Asset::Sound(name, _)) => requests.action = Some(Action::PlaySound(name)),
+        }
+        requests.refresh = true;
+    }
+
+    /// A key while the Project has the keyboard (see
+    /// [`Bottom::set_active`]): the arrows walk the grid, or the tree
+    /// (right opens a folder, left closes it or goes up to its folder);
+    /// Enter does what a double click does; F2 renames the chosen asset's
+    /// file; Delete asks, in a menu, before deleting it. `true` when it
+    /// used the key.
+    pub fn key(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        key: runity::input::Key,
+        requests: &mut Requests,
+    ) -> bool {
+        use runity::input::Key;
+        if !self.active || !self.visible[0] {
+            return false;
+        }
+        let shown: Vec<(NodeId, Pick)> = if self.one_column {
+            self.file_lines.clone()
+        } else {
+            self.tiles.clone()
+        };
+        let at = self
+            .selected
+            .as_ref()
+            .and_then(|p| shown.iter().position(|(_, q)| q == p));
+        match key {
+            Key::Up | Key::Down | Key::Left | Key::Right => {
+                if shown.is_empty() {
+                    return true;
+                }
+                let last = shown.len() - 1;
+                let Some(i) = at else {
+                    // Nothing chosen here yet: the arrows start at the top.
+                    self.choose(shown[0].1.clone(), requests);
+                    self.update_project(ui, session);
+                    return true;
+                };
+                let next = if self.one_column {
+                    let depth = |j: usize| self.file_depths[j];
+                    let folder = match &shown[i].1 {
+                        Pick::Folder(f) => Some(f.clone()),
+                        Pick::Asset(_) => None,
+                    };
+                    let unfolded = folder
+                        .as_ref()
+                        .is_some_and(|f| self.open_folders.contains(f));
+                    match key {
+                        Key::Up => i.checked_sub(1),
+                        Key::Down => (i < last).then_some(i + 1),
+                        Key::Right => match folder {
+                            Some(f) if !unfolded => {
+                                self.open_folders.insert(f);
+                                None
+                            }
+                            Some(_) => (i < last).then_some(i + 1),
+                            None => None,
+                        },
+                        _ => match folder {
+                            Some(f) if unfolded => {
+                                self.open_folders.remove(&f);
+                                None
+                            }
+                            // Up to the folder it is in: the nearest line
+                            // above that is less deep.
+                            _ => {
+                                let own = depth(i);
+                                (0..i).rev().find(|j| depth(*j) < own)
+                            }
+                        },
+                    }
+                } else {
+                    // How many tiles a row of the grid holds.
+                    ui.layout();
+                    let top = |n: NodeId| ui.layout_rect(n).map(|r| r.y.round());
+                    let across = shown
+                        .iter()
+                        .take_while(|(n, _)| top(*n) == top(shown[0].0))
+                        .count()
+                        .max(1);
+                    match key {
+                        Key::Left => i.checked_sub(1),
+                        Key::Right => (i < last).then_some(i + 1),
+                        Key::Up => i.checked_sub(across),
+                        _ => (i + across <= last).then_some(i + across),
+                    }
+                };
+                if let Some(j) = next {
+                    self.choose(shown[j].1.clone(), requests);
+                }
+                self.update_project(ui, session);
+            }
+            Key::Enter => {
+                if let Some(pick) = self.selected.clone() {
+                    self.open(pick, requests);
+                }
+            }
+            Key::F2 => {
+                if let Some(Pick::Asset(a)) = &self.selected {
+                    match asset_file(a, session) {
+                        Some(file) => requests.action = Some(Action::AssetRename(file)),
+                        None => return true,
+                    }
+                }
+            }
+            Key::Delete | Key::Backspace => {
+                let command = {
+                    let (_, ctrl, _, cmd) = ui.modifiers();
+                    ctrl || cmd
+                };
+                if key == Key::Backspace && !command {
+                    return false;
+                }
+                let (Some(i), Some(Pick::Asset(a))) = (at, &self.selected) else {
+                    return true;
+                };
+                if let Some(file) = asset_file(a, session) {
+                    // Asked first, as Unity asks: the menu is the question,
+                    // Escape or a click elsewhere the no.
+                    let r = ui.rect(shown[i].0);
+                    requests.menu = Some((
+                        vec![crate::menu::MenuItem::new(
+                            &format!("Delete {file}"),
+                            Action::AssetDelete(file),
+                        )],
+                        r.x,
+                        r.y + r.height,
+                    ));
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+        self.update_project(ui, session);
 
         // Console
         let (info, warnings, errors) = session.console_counts();
@@ -1251,14 +1856,64 @@ impl Bottom {
                 requests.refresh = true;
             }
             Event::Click { count, .. } if self.folder_tiles.contains_key(&node) => {
+                let folder = self.folder_tiles[&node].clone();
                 if *count >= 2 {
-                    self.go_to(self.folder_tiles[&node].clone());
+                    self.go_to(folder);
+                    self.selected = None;
+                } else {
+                    self.selected = Some(Pick::Folder(folder));
+                }
+                requests.refresh = true;
+            }
+            Event::Click { .. } if self.line_arrows.contains_key(&node) => {
+                let folder = self.line_arrows[&node].clone();
+                if !self.open_folders.remove(&folder) {
+                    self.open_folders.insert(folder);
+                }
+                requests.refresh = true;
+            }
+            Event::Click { count, .. }
+                if self
+                    .file_lines
+                    .iter()
+                    .any(|(n, p)| *n == node && matches!(p, Pick::Folder(_))) =>
+            {
+                let pick = self
+                    .file_lines
+                    .iter()
+                    .find(|(n, _)| *n == node)
+                    .map(|(_, p)| p.clone())
+                    .expect("checked");
+                if *count >= 2 {
+                    self.open(pick, requests);
+                } else {
+                    self.selected = Some(pick);
                     requests.refresh = true;
                 }
             }
+            Event::Click { .. } if node == self.path_folder => {
+                if let Some(folder) = self.path_target.clone() {
+                    if self.one_column {
+                        // The one tree has no folder to go to: the folder's
+                        // line is chosen instead, opened down to.
+                        self.go_to(folder.clone());
+                        self.selected = Some(Pick::Folder(folder));
+                        self.reveal = true;
+                    } else {
+                        self.go_to(folder);
+                    }
+                    requests.refresh = true;
+                }
+            }
+            Event::Click { .. } if node == self.one_column_toggle => {
+                self.one_column = !self.one_column;
+                self.reveal = true;
+                self.show_toggles(_ui);
+                requests.refresh = true;
+            }
             Event::Click { .. } if node == self.big_toggle => {
                 self.big = !self.big;
-                crate::theme::set_icon_button(_ui, self.big_toggle, "image", self.big, true);
+                self.show_toggles(_ui);
                 requests.refresh = true;
             }
             Event::Click { .. } if self.kind_chips.iter().any(|(c, _)| *c == node) => {
@@ -1270,29 +1925,27 @@ impl Bottom {
                 ..
             } if self.entries.contains_key(&node) => {
                 let asset = self.entries[&node].clone();
+                self.selected = Some(Pick::Asset(asset.clone()));
+                self.update_project(_ui, session);
                 let (x, y) = _ui.pointer();
                 requests.menu = Some((asset_menu(&asset, session), x, y));
             }
-            Event::Click { count, .. } if *count >= 2 => match self.entries.get(&node).cloned() {
-                Some(Asset::Scene(path)) => requests.action = Some(Action::OpenScene(path)),
-                Some(Asset::Prefab(name)) => {
-                    let _ = session;
-                    requests.action = Some(Action::OpenPrefab(name));
+            Event::Click { count, .. } if *count >= 2 => {
+                if let Some(asset) = self.entries.get(&node).cloned() {
+                    self.open(Pick::Asset(asset), requests);
                 }
-                Some(Asset::Model(name, _)) => requests.action = Some(Action::Place(name)),
-                Some(Asset::Material(name)) => {
-                    requests.action = Some(Action::SetField("material".into(), name))
-                }
-                Some(Asset::Sound(name, _)) => requests.action = Some(Action::PlaySound(name)),
-                None => {}
-            },
+            }
             Event::Click {
                 count: 1,
                 button: runity::input::MouseButton::Left,
             } => {
                 if let Some(asset) = self.entries.get(&node).cloned() {
                     self.pinged = None;
+                    self.selected = Some(Pick::Asset(asset.clone()));
                     requests.inspect = Some(asset);
+                    // Lit here and now: a refresh of every panel would
+                    // take the Inspector back to the scene's selection.
+                    self.update_project(_ui, session);
                 }
             }
             Event::DragEnd { .. } => {
@@ -1580,4 +2233,227 @@ fn folder_tile(ui: &mut Ui, grid: NodeId, folder: &str, big: bool) -> NodeId {
     };
     ui.set_name(tile, format!("folder tile {label}"));
     tile
+}
+
+/// What can be chosen in the Project: a folder, or an entry.
+#[derive(Debug, Clone, PartialEq)]
+enum Pick {
+    Folder(String),
+    Asset(Asset),
+}
+
+/// A folder as the path under the panel names it: project-relative, the
+/// engine's own `Built-in`.
+fn path_label(folder: &str) -> String {
+    match folder.strip_prefix(BUILTIN) {
+        Some(rest) => format!("Built-in{rest}"),
+        None => folder.to_string(),
+    }
+}
+
+/// A prefab's icon is the accent's, as the Hierarchy draws instances; the
+/// rest are muted.
+fn tint_of(asset: &Asset) -> runity_ui::Color {
+    if matches!(asset, Asset::Prefab(_)) {
+        ACCENT
+    } else {
+        MUTED
+    }
+}
+
+/// A tile or line as chosen (`chosen`), as the open scene (`current`), or
+/// as neither.
+fn lit(s: Style, chosen: bool, current: bool) -> Style {
+    if chosen {
+        s.border(1.0, ACCENT.alpha(60)).background(ACCENT_800)
+    } else if current {
+        s.border(1.0, ACCENT.alpha(40)).background(ACCENT_900)
+    } else {
+        s.border(1.0, runity_ui::Color::TRANSPARENT)
+            .background(runity_ui::Color::TRANSPARENT)
+    }
+}
+
+/// No children left in a keyed list.
+fn empty(ui: &mut Ui, list: NodeId) {
+    if !ui.children(list).is_empty() {
+        ui.sync_children(list, &[] as &[u8], |ui, l, _| ui.add(l, Style::row()), |_, _, _| {});
+    }
+}
+
+/// A folder's directory, absolute, for its git dot.
+fn folder_files(root: &std::path::Path, folder: &str) -> Vec<PathBuf> {
+    let dir = root.join(folder);
+    vec![dir.canonicalize().unwrap_or(dir)]
+}
+
+/// An asset's files, absolute, for its git dot: its own and its import
+/// settings beside it.
+fn asset_files(root: &std::path::Path, file: &str) -> Vec<PathBuf> {
+    let file = root.join(file);
+    let settings = file.with_extension(format!(
+        "{}.rimport",
+        file.extension()
+            .map(|e| e.to_string_lossy())
+            .unwrap_or_default()
+    ));
+    [file, settings]
+        .into_iter()
+        .map(|f| f.canonicalize().unwrap_or(f))
+        .collect()
+}
+
+/// An entry's picture in `frame`, `size` across: the drawn picture when
+/// pictures are on and it has one (see [`Bottom::wanted_pictures`]), its
+/// kind's icon, `glyph` across, until then — and for a sound.
+fn picture(
+    ui: &mut Ui,
+    frame: NodeId,
+    asset: &Asset,
+    size: f32,
+    glyph: f32,
+    pictures: Pictures,
+) {
+    let mut drawn = false;
+    if let (Some(name), Some((thumbs, next_image))) = (picture_key(asset), pictures) {
+        let (id, ready) = *thumbs.entry(name.clone()).or_insert_with(|| {
+            *next_image += 1;
+            (ImageId(*next_image), false)
+        });
+        let img = ui.add_image(
+            frame,
+            Style::default()
+                .size(size, size)
+                .radius(if size > 24.0 { RADIUS_SM } else { 2.0 }),
+            id,
+        );
+        ui.set_name(img, format!("thumb {name}"));
+        drawn = ready;
+    }
+    let at = (size - glyph) / 2.0;
+    let g = ui.add_icon(
+        frame,
+        Style::default()
+            .size(glyph, glyph)
+            .text_color(tint_of(asset))
+            .absolute(at, at),
+        asset.icon(),
+    );
+    if drawn {
+        ui.restyle(g, |s| s.hidden());
+    }
+}
+
+/// The pictures' images by name (see [`Bottom::wanted_pictures`]) and the
+/// number of the last image made — for a node that wants a picture, when
+/// pictures are on.
+type Pictures<'a> = Option<(&'a mut HashMap<String, (ImageId, bool)>, &'a mut u32)>;
+
+/// How far in each level of the one tree goes.
+const INDENT: f32 = 14.0;
+
+/// A line of the one tree: the guides of the levels it is under, an arrow
+/// (a folder's; an asset's is empty room, so names line up), its icon or
+/// picture, its name, where it is while searching, its git dot.
+fn file_line(
+    ui: &mut Ui,
+    list: NodeId,
+    pick: &Pick,
+    depth: usize,
+    hint: &str,
+    pictures: Pictures,
+) -> NodeId {
+    const H: f32 = 20.0;
+    let base = Style::row()
+        .height(H)
+        .fixed()
+        .full_width()
+        .padding_left(4.0 + depth as f32 * INDENT)
+        .gap(4.0)
+        .center_items()
+        .radius(RADIUS_SM)
+        .border(1.0, runity_ui::Color::TRANSPARENT)
+        .hover(HOVER);
+    let (line, label) = match pick {
+        Pick::Folder(f) => {
+            let label = folder_label(f);
+            let line = ui.add(list, base.clickable());
+            ui.set_name(line, format!("folder line {label}"));
+            (line, label)
+        }
+        Pick::Asset(a) => {
+            let label = a.label();
+            let line = ui.add(list, base.draggable());
+            ui.set_name(line, format!("asset {label}"));
+            (line, label)
+        }
+    };
+    // 0: the guides, one faint line down each level above it.
+    let guides = ui.add(
+        line,
+        Style::row()
+            .absolute(0.0, 0.0)
+            .size(8.0 + depth as f32 * INDENT, H),
+    );
+    for d in 0..depth {
+        ui.add(
+            guides,
+            Style::row()
+                .absolute(4.0 + d as f32 * INDENT + 6.0, 0.0)
+                .size(1.0, H)
+                .background(DIVIDER),
+        );
+    }
+    // 1: the arrow.
+    let arrow = ui.add(
+        line,
+        Style::row()
+            .size(12.0, 12.0)
+            .fixed()
+            .center()
+            .radius(RADIUS_SM),
+    );
+    // 2: the icon or picture.
+    let frame = ui.add(line, Style::row().size(16.0, 16.0).fixed().center());
+    match pick {
+        Pick::Folder(f) => {
+            ui.restyle(arrow, |s| s.clickable());
+            ui.set_name(arrow, format!("folder line arrow {label}"));
+            ui.add_icon(
+                arrow,
+                Style::default().size(12.0, 12.0).text_color(MUTED),
+                "chevron-right",
+            );
+            ui.add_icon(
+                frame,
+                Style::default().size(15.0, 15.0).text_color(NEUTRAL_500),
+                "folder",
+            );
+            let _ = f;
+        }
+        Pick::Asset(a) => picture(ui, frame, a, 16.0, 13.0, pictures),
+    }
+    // 3: the name; 4: where it is, while searching.
+    ui.add_text(line, text().text_size(12.0), &label);
+    ui.add_text(
+        line,
+        Style::default()
+            .text_size(11.0)
+            .text_color(MUTED)
+            .nowrap()
+            .fill(),
+        hint,
+    );
+    // 5: the git dot, last, where `show_marks` looks for it.
+    let dot = ui.add(
+        line,
+        Style::row()
+            .size(6.0, 6.0)
+            .fixed()
+            .radius(3.0)
+            .background(ACCENT_400)
+            .opacity(0.0),
+    );
+    ui.set_name(dot, format!("asset mark {label}"));
+    line
 }

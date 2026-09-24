@@ -768,6 +768,15 @@ impl Studio {
         let scale = self.ui.viewport().2;
         let view = self.ui.rect(self.viewport);
         let to_view = |x: f32, y: f32| ((x - view.x) * scale, (y - view.y) * scale);
+        if let InputEvent::MouseDown(_) = event {
+            // A click on the Project gives it the arrows; anywhere else,
+            // takes them back.
+            let on = self
+                .ui
+                .hovered()
+                .is_some_and(|h| self.bottom.owns_project(&self.ui, h));
+            self.bottom.set_active(on);
+        }
         match event {
             InputEvent::MouseMoved { x, y } => {
                 let (vx, vy) = to_view(*x, *y);
@@ -854,6 +863,14 @@ impl Studio {
             }
             InputEvent::Scroll { .. } if over_view => self.scene_input.handle(event),
             InputEvent::KeyDown(key) if !typing => {
+                let mut requests = Requests::default();
+                if self
+                    .bottom
+                    .key(&mut self.ui, &self.session, *key, &mut requests)
+                {
+                    self.apply(requests);
+                    return;
+                }
                 if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) {
                     let shift = self.ui.modifiers().0;
                     if self.hierarchy.key(&mut self.session, *key, shift) {
@@ -1811,12 +1828,13 @@ impl Studio {
         let w = |n: NodeId| self.ui.style(n).layout.size.width.value().round();
         let (docks, active) = self.docks.layout();
         format!(
-            "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
+            "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?}, project: {:?})\n",
             w(self.left),
             w(self.right),
             self.lower_before_wide
                 .unwrap_or(self.ui.style(self.lower).layout.size.height.value())
                 .round(),
+            self.bottom.modes(),
         )
     }
 
@@ -1862,6 +1880,9 @@ impl Studio {
                     self.docks.activate(&mut self.ui, panel);
                 }
             }
+        }
+        if let Some(modes) = quoted("project") {
+            self.bottom.set_modes(&mut self.ui, &modes);
         }
         self.sync_visible();
         self.saved_layout = self.layout_text_after_paint();
@@ -2080,6 +2101,16 @@ impl Studio {
     /// The renderer for this studio's frames, targets of `format`.
     pub fn renderer(&self, format: wgpu::TextureFormat) -> UiRenderer {
         UiRenderer::new(self.session.gpu(), format.remove_srgb_suffix())
+    }
+
+    /// Bring the Project on top, go to an asset there, choose it and
+    /// scroll to it: see [`Bottom::show_asset`] for what `file_or_name`
+    /// may be. `false` when nothing in the project matches.
+    pub fn show_in_project(&mut self, file_or_name: &str) -> bool {
+        self.docks.activate(&mut self.ui, Panel::Project);
+        self.sync_visible();
+        self.bottom
+            .show_asset(&mut self.ui, &self.session, file_or_name)
     }
 
     /// Bring every panel up to date now, whatever the stamp says.
