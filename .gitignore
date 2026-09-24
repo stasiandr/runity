@@ -24,5 +24,6 @@ crates/runity-gpu/tests/diff/
 **/.runity/studio.ron
 __pycache__/
 
-# Keys for the draft models and anything else local: never in git.
+# Keys for the services editor modules call (FAL_KEY, …) and anything else
+# local: never committed.
 .env

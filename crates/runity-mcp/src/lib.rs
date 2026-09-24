@@ -32,6 +32,9 @@ refers to that does not exist, with the closest real name.";
 pub struct Server {
     session: Option<Session>,
     size: (u32, u32),
+    /// Draft models from a neural network: a module, made on first use.
+    #[cfg(feature = "gen")]
+    generator: Option<runity_gen::Generator>,
 }
 
 impl Default for Server {
@@ -45,6 +48,8 @@ impl Server {
         Self {
             session: None,
             size: (640, 360),
+            #[cfg(feature = "gen")]
+            generator: None,
         }
     }
 
@@ -64,7 +69,7 @@ impl Server {
                 "instructions": INSTRUCTIONS,
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools::list() })),
+            "tools/list" => Ok(json!({ "tools": Self::tools() })),
             "tools/call" => Ok(self.call(&params)),
             "resources/list" => Ok(json!({ "resources": self.resources() })),
             "resources/read" => self
@@ -88,10 +93,54 @@ impl Server {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let empty = json!({});
         let arguments = params.get("arguments").unwrap_or(&empty);
+        #[cfg(feature = "gen")]
+        if let (Some(generator), Some(session)) = (&mut self.generator, &mut self.session) {
+            generator.poll(session);
+        }
+        #[cfg(feature = "gen")]
+        if let Some(answer) = self.call_gen(name, arguments) {
+            return match answer {
+                Ok(line) => json!({ "content": [text(line)], "isError": false }),
+                Err(message) => json!({ "content": [text(message)], "isError": true }),
+            };
+        }
         match tools::call(self, name, arguments) {
             Ok(content) => json!({ "content": content, "isError": false }),
             Err(message) => json!({ "content": [text(message)], "isError": true }),
         }
+    }
+
+    /// The engine's tools, and those of the modules built in.
+    fn tools() -> Vec<Value> {
+        #[allow(unused_mut)]
+        let mut all = tools::list();
+        #[cfg(feature = "gen")]
+        all.extend(runity_gen::mcp::list());
+        all
+    }
+
+    /// A tool of the `gen` module, or `None` for one of anybody else's.
+    #[cfg(feature = "gen")]
+    fn call_gen(&mut self, name: &str, arguments: &Value) -> Option<Result<String, String>> {
+        if !runity_gen::mcp::list().iter().any(|t| t["name"] == name) {
+            return None;
+        }
+        if self.generator.is_none() {
+            match runity_gen::Generator::from_env() {
+                Ok(generator) => self.generator = Some(generator),
+                Err(e) if name == "generate" => return Some(Err(format!("{e:#}"))),
+                Err(_) => {}
+            }
+        }
+        if let Err(e) = self.session() {
+            return Some(Err(e));
+        }
+        let session = self.session.as_mut().expect("made just above");
+        let generator = self
+            .generator
+            .as_mut()
+            .ok_or_else(|| "no generator: FAL_KEY is not set".to_string());
+        runity_gen::mcp::call(generator, session, name, arguments)
     }
 
     /// What there is to read: the open document as it stands — unsaved

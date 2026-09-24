@@ -4585,6 +4585,12 @@ impl Session {
             .find(|(desc, _)| desc.id == id)
     }
 
+    /// A model's box in its own space, as (min, max): a builtin's or the
+    /// library's. For a tool that fits one thing into the place of another.
+    pub fn model_bounds(&self, model: &str) -> Option<(Vec3, Vec3)> {
+        self.bounds_of(model)
+    }
+
     fn bounds_of(&self, model: &str) -> Option<(Vec3, Vec3)> {
         if let Some(mesh) = builtin::by_name(model) {
             return Some((
