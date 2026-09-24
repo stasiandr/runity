@@ -2710,12 +2710,13 @@ impl Studio {
     fn sync_visible(&mut self) {
         self.show_panels();
         let on = |p| self.docks.is_showing(p);
-        self.bottom.set_visible([
+        let visible = [
             on(Panel::Project),
             on(Panel::Console),
             on(Panel::History),
             on(Panel::Git),
-        ]);
+        ];
+        self.bottom.set_visible(&mut self.ui, &self.session, visible);
     }
 
     fn layout_text_after_paint(&mut self) -> String {
@@ -2962,7 +2963,11 @@ impl Studio {
 
     /// Bring every panel up to date now, whatever the stamp says.
     pub fn refresh(&mut self) {
-        self.seen = None;
+        // What the frame would do for a stamp it has not seen, done now
+        // and once: the stamp is taken as seen, so the frame does not do
+        // it all again.
+        self.inspector.clear_asset();
+        self.seen = Some(Stamp::of(&self.session));
         self.update_panels(false);
     }
 
@@ -3304,11 +3309,10 @@ impl Studio {
             }
         }
         match self.docks.event(&mut self.ui, node, event) {
+            // Nothing the panels show changed: the one come on top is
+            // brought up to date by `sync_visible`, if it needs to be.
             Some(Docked::Handled) => {
                 self.sync_visible();
-                if !matches!(event, Event::Drag { .. }) {
-                    requests.refresh = true;
-                }
                 return;
             }
             Some(Docked::Maximize(panel)) => {
