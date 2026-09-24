@@ -48,6 +48,11 @@ pub struct Mpm {
     /// How high above the room's floor the block starts, metres: the
     /// entity is the floor's middle.
     pub height: f32,
+    /// The most substeps a step may take. A material stiffer than that
+    /// many keep stable is stepped as the stiffest they do: a little
+    /// softer, and in a frame's budget. A real-time step has a few
+    /// milliseconds; each substep is a pass over every particle and node.
+    pub max_substeps: u32,
 }
 
 /// What an MPM block is made of.
@@ -79,6 +84,7 @@ impl Default for Mpm {
             transfer: Transfer::Apic,
             stiffness: 140.0,
             height: 0.5,
+            max_substeps: 8,
         }
     }
 }
@@ -257,10 +263,10 @@ impl MpmState {
             if self.rest.asleep(&self.at, std::mem::take(&mut changed)) {
                 continue;
             }
-            let substeps = self.substeps();
+            let (substeps, stiffness) = self.stepping();
             let dt = STEP / substeps as f32;
             for _ in 0..substeps {
-                self.substep(dt);
+                self.substep(dt, stiffness);
             }
             self.rest.stepped(runity_soft::rest::fastest(self.grains.iter().map(|g| g.v)));
         }
@@ -271,14 +277,30 @@ impl MpmState {
         self.rest.sleeping()
     }
 
-    /// Substeps a step: as many as its stiffness and the grid need to stay
-    /// stable (a wave crosses no more than a fraction of a cell each).
-    fn substeps(&self) -> usize {
-        // Packed snow hardens up to tenfold: stepped for the hardest.
-        let hard = if self.mpm.material == MpmMaterial::Snow { 10.0 } else { 1.0 };
-        let e = self.mpm.stiffness.max(1.0) * 1000.0 * hard;
-        let sound = (e / 1000.0).sqrt();
-        ((STEP * sound / (self.dx * 0.3)).ceil() as usize).clamp(4, 400)
+    /// How much harder packed snow grows, at the most: stepped for that.
+    fn hardening(&self) -> f32 {
+        if self.mpm.material == MpmMaterial::Snow {
+            10.0
+        } else {
+            1.0
+        }
+    }
+
+    /// Substeps a step (a wave crosses no more than a fraction of a cell
+    /// each), as many as its stiffness needs up to `max_substeps`, and the
+    /// stiffness they keep stable: its own, or less.
+    fn stepping(&self) -> (usize, f32) {
+        let hard = self.hardening();
+        let stiffness = self.mpm.stiffness.max(1.0);
+        let needed = |k: f32| (STEP * (k * hard).sqrt() / (self.dx * 0.3)).ceil() as usize;
+        let most = (self.mpm.max_substeps.max(1) as usize).min(400);
+        let n = needed(stiffness).clamp(4.min(most), most);
+        if needed(stiffness) <= n {
+            return (n, stiffness);
+        }
+        // The stiffest `n` substeps hold.
+        let k = (n as f32 * self.dx * 0.3 / STEP).powi(2) / hard;
+        (n, k.min(stiffness))
     }
 
     /// One substep: particles to the grid, the grid moved, the grid back to
@@ -286,13 +308,13 @@ impl MpmState {
     /// alone is spread over the cores (`runity_core::jobs`); only the
     /// scatter onto the grid, where particles share nodes, runs in order —
     /// so the result is the same on any number of them.
-    fn substep(&mut self, dt: f32) {
+    fn substep(&mut self, dt: f32, stiffness: f32) {
         use runity_core::jobs;
         let dx = self.dx;
         let inv = 1.0 / dx;
         let vol = (dx * 0.5).powi(3);
         let mass = vol * 1000.0;
-        let e = self.mpm.stiffness.max(1.0) * 1000.0;
+        let e = stiffness * 1000.0;
         let nu = 0.2;
         let mu0 = e / (2.0 * (1.0 + nu));
         let lambda0 = e * nu / ((1.0 + nu) * (1.0 - 2.0 * nu));

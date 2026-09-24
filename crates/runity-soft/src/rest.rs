@@ -53,8 +53,14 @@ impl Rest {
 
     /// A step was taken; `fastest` is its fastest particle's speed.
     pub fn stepped(&mut self, fastest: f32) {
+        self.stepped_as(fastest, REST_SPEED);
+    }
+
+    /// A step was taken, and `speed` (a share's or the fastest's) is still
+    /// under `rest`.
+    pub fn stepped_as(&mut self, speed: f32, rest: f32) {
         self.at = None;
-        if fastest < REST_SPEED {
+        if speed < rest {
             self.still = self.still.saturating_add(1);
         } else {
             self.still = 0;
@@ -70,6 +76,17 @@ impl Rest {
     pub fn sleeping(&self) -> bool {
         self.at.is_some()
     }
+}
+
+/// The speed that `share` of `speeds` stay under (0.9: nine in ten).
+pub fn share_under(speeds: impl Iterator<Item = Vec3>, share: f32) -> f32 {
+    let mut s: Vec<f32> = speeds.map(|v| v.length_squared()).collect();
+    if s.is_empty() {
+        return 0.0;
+    }
+    let at = ((s.len() - 1) as f32 * share.clamp(0.0, 1.0)) as usize;
+    s.select_nth_unstable_by(at, f32::total_cmp);
+    s[at].sqrt()
 }
 
 /// The fastest of `speeds`.

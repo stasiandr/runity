@@ -115,6 +115,11 @@ pub struct FluidState {
     obstacles: Vec<Obstacle>,
 }
 
+/// Metres a second nine in ten of a fluid's particles stay under at rest:
+/// its simmer is a tenth or two (PBF 0.19, SPH 0.12 in a still tank), a
+/// pour or a slosh is several.
+const FLUID_REST: f32 = 0.25;
+
 fn poly6(r2: f32, h: f32) -> f32 {
     let h2 = h * h;
     if r2 >= h2 {
@@ -228,7 +233,10 @@ impl FluidState {
                 FluidMethod::Pbf => self.step_pbf(obstacles),
                 FluidMethod::Sph => self.step_sph(obstacles),
             }
-            self.sleep.stepped(crate::rest::fastest(self.particles.v.iter().copied()));
+            // A fluid at rest simmers — each pass of its constraints nudges
+            // what is already where it should be — so it sleeps when nine in
+            // ten of it are slow, not every one.
+            self.sleep.stepped_as(crate::rest::share_under(self.particles.v.iter().copied(), 0.9), FLUID_REST);
         }
     }
 

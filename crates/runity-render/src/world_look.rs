@@ -219,6 +219,11 @@ impl LiveMesh {
         }
     }
 
+    /// No triangles yet.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
     /// New vertices and triangles.
     pub fn set(&mut self, vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) {
         self.vertices = std::sync::Arc::new(vertices);

@@ -158,22 +158,6 @@ impl SmokeState {
         (self.awake.iter().filter(|a| **a).count(), self.awake.len())
     }
 
-    /// A value of a field at a point of the grid (in cells), trilinear.
-    fn sample<T: Copy + std::ops::Mul<f32, Output = T> + std::ops::Add<Output = T>>(&self, field: &[T], p: Vec3) -> T {
-        let [nx, ny, nz] = self.n;
-        let p = p - Vec3::splat(0.5);
-        let p = p.clamp(Vec3::ZERO, Vec3::new(nx as f32 - 1.001, ny as f32 - 1.001, nz as f32 - 1.001));
-        let (i, j, k) = (p.x as usize, p.y as usize, p.z as usize);
-        let f = p - Vec3::new(i as f32, j as f32, k as f32);
-        let v = |a: usize, b: usize, c: usize| field[self.at(a, b, c)];
-        let lerp = |a: T, b: T, t: f32| a * (1.0 - t) + b * t;
-        let x00 = lerp(v(i, j, k), v(i + 1, j, k), f.x);
-        let x10 = lerp(v(i, j + 1, k), v(i + 1, j + 1, k), f.x);
-        let x01 = lerp(v(i, j, k + 1), v(i + 1, j, k + 1), f.x);
-        let x11 = lerp(v(i, j + 1, k + 1), v(i + 1, j + 1, k + 1), f.x);
-        lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z)
-    }
-
     /// Wake the blocks with smoke or heat in them, and their neighbours.
     fn wake(&mut self) {
         let [bx, by, bz] = [self.n[0] / BLOCK, self.n[1] / BLOCK, self.n[2] / BLOCK];
@@ -289,84 +273,73 @@ impl SmokeState {
         let cells = self.cells();
         // Forces: heat lifts, smoke weighs, the wind blows.
         let wind = Vec3::new(self.wind.direction.x, 0.0, self.wind.direction.z).normalize_or_zero() * self.wind.strength * 1.5;
-        for &(i, j, k) in &cells {
-            let at = self.at(i, j, k);
-            let lift = self.heat[at] * 3.0 - self.density[at] * s.weight;
-            self.velocity[at].y += lift * dt;
-            let toward = wind - self.velocity[at];
-            // The wind takes the air, more the higher it is off the ground.
-            self.velocity[at] += toward * (1.5 * dt * (0.3 + j as f32 / ny as f32)).min(1.0);
+        {
+            let (heat, density) = (&self.heat, &self.density);
+            each_awake_all(&mut self.velocity, self.n, &self.awake, |_, j, _, at, v| {
+                let lift = heat[at] * 3.0 - density[at] * s.weight;
+                v.y += lift * dt;
+                let toward = wind - *v;
+                // The wind takes the air, more the higher it is off the ground.
+                *v += toward * (1.5 * dt * (0.3 + j as f32 / ny as f32)).min(1.0);
+            });
         }
         self.confine_vorticity(&cells, dt);
         // Carry the speed along itself: each cell's from the old field,
         // across the cores (each writes only its own).
         let inv = 1.0 / self.dx;
-        let carried = {
-            let this = &*self;
-            runity_core::jobs::map(&cells, CELLS_A_JOB, |&(i, j, k)| {
-                let at = this.at(i, j, k);
-                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - this.velocity[at] * dt * inv;
-                this.sample(&this.velocity, p)
-            })
-        };
-        for (&(i, j, k), v) in cells.iter().zip(carried) {
-            let at = self.at(i, j, k);
-            self.velocity[at] = v;
+        let n = self.n;
+        {
+            let was = self.velocity.clone();
+            each_awake_all(&mut self.velocity, n, &self.awake, |i, j, k, at, v| {
+                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - was[at] * dt * inv;
+                *v = sample(n, &was, p);
+            });
         }
         self.solid_walls(&cells);
         self.project(&cells);
         // Carry smoke and heat along the speed, fading.
         let keep = (1.0 - s.fade.max(0.0) * dt).max(0.0);
-        let carried = {
-            let this = &*self;
-            runity_core::jobs::map(&cells, CELLS_A_JOB, |&(i, j, k)| {
-                let at = this.at(i, j, k);
-                if this.solid[at] {
-                    return (0.0, 0.0);
-                }
-                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - this.velocity[at] * dt * inv;
-                (this.sample(&this.density, p) * keep, this.sample(&this.heat, p) * keep)
-            })
-        };
-        for (&(i, j, k), (d, h)) in cells.iter().zip(carried) {
-            let at = self.at(i, j, k);
-            self.density[at] = d;
-            self.heat[at] = h;
+        let (velocity, solid) = (&self.velocity, &self.solid);
+        for field in [&mut self.density, &mut self.heat] {
+            let was = field.clone();
+            each_awake_all(field, n, &self.awake, |i, j, k, at, c| {
+                *c = if solid[at] {
+                    0.0
+                } else {
+                    let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - velocity[at] * dt * inv;
+                    sample(n, &was, p) * keep
+                };
+            });
         }
     }
 
     /// Put back the curls: a push round each swirl's centre (Fedkiw 2001).
     fn confine_vorticity(&mut self, cells: &[(usize, usize, usize)], dt: f32) {
+        let _ = cells;
         let strength = self.smoke.curl.max(0.0);
         if strength <= 0.0 {
             return;
         }
-        let [nx, ny, nz] = self.n;
-        let v = &self.velocity;
-        let get = |i: usize, j: usize, k: usize| v[(k * ny + j) * nx + i];
+        let [nx, ny, _] = self.n;
+        let slice = nx * ny;
+        let (v, dx) = (&self.velocity, self.dx);
         let mut curl = vec![Vec3::ZERO; v.len()];
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let dvz_dy = get(i, j + 1, k).z - get(i, j - 1, k).z;
-            let dvy_dz = get(i, j, k + 1).y - get(i, j, k - 1).y;
-            let dvx_dz = get(i, j, k + 1).x - get(i, j, k - 1).x;
-            let dvz_dx = get(i + 1, j, k).z - get(i - 1, j, k).z;
-            let dvy_dx = get(i + 1, j, k).y - get(i - 1, j, k).y;
-            let dvx_dy = get(i, j + 1, k).x - get(i, j - 1, k).x;
-            curl[(k * ny + j) * nx + i] = Vec3::new(dvz_dy - dvy_dz, dvx_dz - dvz_dx, dvy_dx - dvx_dy) * (0.5 / self.dx);
-        }
-        let len = |i: usize, j: usize, k: usize| curl[(k * ny + j) * nx + i].length();
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let grad = Vec3::new(len(i + 1, j, k) - len(i - 1, j, k), len(i, j + 1, k) - len(i, j - 1, k), len(i, j, k + 1) - len(i, j, k - 1));
+        each_awake(&mut curl, self.n, &self.awake, |_, _, _, at, c| {
+            let dvz_dy = v[at + nx].z - v[at - nx].z;
+            let dvy_dz = v[at + slice].y - v[at - slice].y;
+            let dvx_dz = v[at + slice].x - v[at - slice].x;
+            let dvz_dx = v[at + 1].z - v[at - 1].z;
+            let dvy_dx = v[at + 1].y - v[at - 1].y;
+            let dvx_dy = v[at + nx].x - v[at - nx].x;
+            *c = Vec3::new(dvz_dy - dvy_dz, dvx_dz - dvz_dx, dvy_dx - dvx_dy) * (0.5 / dx);
+        });
+        let curl = &curl;
+        let len = |at: usize| curl[at].length();
+        each_awake(&mut self.velocity, self.n, &self.awake, |_, _, _, at, v| {
+            let grad = Vec3::new(len(at + 1) - len(at - 1), len(at + nx) - len(at - nx), len(at + slice) - len(at - slice));
             let n = grad.normalize_or_zero();
-            let at = (k * ny + j) * nx + i;
-            self.velocity[at] += n.cross(curl[at]) * (strength * self.dx * dt);
-        }
+            *v += n.cross(curl[at]) * (strength * dx * dt);
+        });
     }
 
     /// No air into what is solid, nor out of the box's floor.
@@ -383,16 +356,15 @@ impl SmokeState {
     /// awake cells, its gradient taken off the speed.
     fn project(&mut self, cells: &[(usize, usize, usize)]) {
         let [nx, ny, nz] = self.n;
+        let _ = cells;
         let v = &self.velocity;
-        let get = |i: usize, j: usize, k: usize| v[(k * ny + j) * nx + i];
         let mut divergence = vec![0.0f32; v.len()];
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            divergence[(k * ny + j) * nx + i] = (get(i + 1, j, k).x - get(i - 1, j, k).x + get(i, j + 1, k).y - get(i, j - 1, k).y + get(i, j, k + 1).z - get(i, j, k - 1).z) * 0.5;
-        }
-        self.pressure.fill(0.0);
+        let slice = nx * ny;
+        each_awake(&mut divergence, self.n, &self.awake, |_, _, _, at, d| {
+            *d = (v[at + 1].x - v[at - 1].x + v[at + nx].y - v[at - nx].y + v[at + slice].z - v[at - slice].z) * 0.5;
+        });
+        // Started from the last step's pressure, which the air's is close
+        // to: a few sweeps finish what 24 from nothing did.
         let mut next = self.pressure.clone();
         // The awake cells: those of the awake blocks.
         let [bx, by, bz] = [nx / BLOCK, ny / BLOCK, nz / BLOCK];
@@ -401,7 +373,7 @@ impl SmokeState {
             let (a, b, c) = (i / BLOCK, j / BLOCK, k / BLOCK);
             a < bx && b < by && c < bz && awake[(c * by + b) * bx + a]
         };
-        for _ in 0..24 {
+        for _ in 0..SWEEPS {
             // Each awake cell's next pressure from its neighbours' last: a
             // Jacobi sweep, a slice of the grid to a core, each writing
             // only its own.
@@ -426,14 +398,10 @@ impl SmokeState {
             });
             std::mem::swap(&mut self.pressure, &mut next);
         }
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let at = (k * ny + j) * nx + i;
-            let p = &self.pressure;
-            self.velocity[at] -= Vec3::new(p[at + 1] - p[at - 1], p[at + nx] - p[at - nx], p[at + nx * ny] - p[at - nx * ny]) * 0.5;
-        }
+        let p = &self.pressure;
+        each_awake(&mut self.velocity, self.n, &self.awake, |_, _, _, at, v| {
+            *v -= Vec3::new(p[at + 1] - p[at - 1], p[at + nx] - p[at - nx], p[at + slice] - p[at - slice]) * 0.5;
+        });
     }
 
     /// All the smoke in it.
@@ -458,8 +426,60 @@ impl SmokeState {
     }
 }
 
-/// Cells a job takes at least: what splits a sweep across the cores.
-const CELLS_A_JOB: usize = 2048;
+/// `field` at the point `p` (in cells) of a grid of `n`: between its
+/// eight nearest cells.
+fn sample<T: Copy + std::ops::Mul<f32, Output = T> + std::ops::Add<Output = T>>(n: [usize; 3], field: &[T], p: Vec3) -> T {
+    let [nx, ny, nz] = n;
+    let p = p - Vec3::splat(0.5);
+    let p = p.clamp(Vec3::ZERO, Vec3::new(nx as f32 - 1.001, ny as f32 - 1.001, nz as f32 - 1.001));
+    let (i, j, k) = (p.x as usize, p.y as usize, p.z as usize);
+    let f = p - Vec3::new(i as f32, j as f32, k as f32);
+    let v = |a: usize, b: usize, c: usize| field[(c * ny + b) * nx + a];
+    let lerp = |a: T, b: T, t: f32| a * (1.0 - t) + b * t;
+    let x00 = lerp(v(i, j, k), v(i + 1, j, k), f.x);
+    let x10 = lerp(v(i, j + 1, k), v(i + 1, j + 1, k), f.x);
+    let x01 = lerp(v(i, j, k + 1), v(i + 1, j, k + 1), f.x);
+    let x11 = lerp(v(i, j + 1, k + 1), v(i + 1, j + 1, k + 1), f.x);
+    lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z)
+}
+
+/// `f(i, j, k, at, cell)` on every awake cell off the grid's edge, into
+/// `field`: a slice of the grid to a core, each writing only its own.
+fn each_awake<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    each_awake_cell(field, n, awake, 1, f)
+}
+
+/// The same with the grid's edge cells too: every cell of an awake block.
+fn each_awake_all<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    each_awake_cell(field, n, awake, 0, f)
+}
+
+fn each_awake_cell<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], edge: usize, f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    let [nx, ny, nz] = n;
+    let [bx, by, bz] = [nx / BLOCK, ny / BLOCK, nz / BLOCK];
+    let slice = nx * ny;
+    runity_core::jobs::for_each_chunk_mut(field, slice, |first, cells| {
+        let k = first / slice;
+        if k < edge || k + edge >= nz || k / BLOCK >= bz {
+            return;
+        }
+        for j in edge..ny - edge {
+            if j / BLOCK >= by {
+                continue;
+            }
+            for i in edge..nx - edge {
+                let (a, b) = (i / BLOCK, j / BLOCK);
+                if a >= bx || !awake[((k / BLOCK) * by + b) * bx + a] {
+                    continue;
+                }
+                f(i, j, k, first + j * nx + i, &mut cells[j * nx + i]);
+            }
+        }
+    });
+}
+
+/// Jacobi sweeps of the pressure a step, from the last step's.
+const SWEEPS: usize = 10;
 
 /// Every smoke on by `seconds`, round `obstacles`.
 pub fn run_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
