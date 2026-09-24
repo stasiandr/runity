@@ -347,6 +347,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         }
         std::fs::create_dir_all(&textures)?;
         let to = textures.join(format!("{name}.{extension}"));
+        writable(&to);
         if let Err(e) = std::fs::copy(path, &to) {
             report.errors.push(format!("{}: {e}", path.display()));
             continue;
@@ -384,6 +385,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_default();
         std::fs::create_dir_all(&sounds)?;
+        writable(&sounds.join(format!("{name}.{extension}")));
         if let Err(e) = std::fs::copy(path, sounds.join(format!("{name}.{extension}"))) {
             report.errors.push(format!("{}: {e}", path.display()));
             continue;
@@ -630,6 +632,20 @@ pub(crate) fn piece_name(object: &str) -> String {
         .collect()
 }
 
+/// A file the import writes over made writable first: a project's binary
+/// sources are lockable in LFS, and git leaves them read-only unless
+/// locked.
+fn writable(path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut permissions = meta.permissions();
+        if permissions.readonly() {
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+    }
+}
+
 /// FBX (and friends) to GLB through Blender, into `assets/models/`.
 fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &mut Report) {
     let blender = options
@@ -653,6 +669,7 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
             .unwrap_or_default();
         if matches!(extension.as_str(), "gltf" | "glb" | "obj") {
             let to = out.join(format!("{name}.{extension}"));
+            writable(&to);
             match std::fs::copy(path, &to) {
                 Ok(_) => report.models += 1,
                 Err(e) => report.errors.push(format!("{}: {e}", path.display())),
@@ -673,6 +690,13 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
         // in metres as Unity reads the file's units (its UnitScaleFactor,
         // centimetres to the unit).
         let pieces_dir = to.with_file_name("");
+        // What Blender writes over: the model and its pieces.
+        writable(&to);
+        for entry in std::fs::read_dir(&pieces_dir).into_iter().flatten().flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&format!("{name}@")) {
+                writable(&entry.path());
+            }
+        }
         let script = format!(
             "import bpy, math, mathutils, re\n\
              bpy.ops.wm.read_factory_settings(use_empty=True)\n\
