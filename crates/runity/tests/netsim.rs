@@ -709,8 +709,33 @@ fn ten_chains_swinging_at_once_keep_within_the_budget_and_none_is_left_behind() 
 #[ignore]
 fn traffic() {
     use std::sync::atomic::Ordering::Relaxed;
-    fn measure(name: &str, scene: Scene, pawns: &[u64], claims: &[u64], mut game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer)) {
+    fn measure(name: &str, scene: Scene, pawns: &[u64], claims: &[u64], game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer)) {
+        measure_tagged(name, scene, pawns, claims, None, game)
+    }
+    /// A game's own networked component, as a player's might be: a name
+    /// and health that seldom change.
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct Tag {
+        name: String,
+        health: u32,
+    }
+    fn measure_tagged(
+        name: &str,
+        scene: Scene,
+        pawns: &[u64],
+        claims: &[u64],
+        tag: Option<u64>,
+        mut game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer),
+    ) {
         let mut session = Session::new(&scene, 2, Conditions::GOOD, 1);
+        if let Some(id) = tag {
+            session.components.register_networked::<Tag>("tag");
+            for p in &mut session.peers {
+                if let Some(e) = p.entity(id) {
+                    let _ = p.world.insert_one(e, Tag { name: "Valentina the Unready".into(), health: 100 });
+                }
+            }
+        }
         for p in &mut session.peers {
             for id in pawns {
                 if let Some(e) = p.entity(*id) {
@@ -727,6 +752,9 @@ fn traffic() {
         }
         let (up, down) = (session.sent.load(Relaxed), session.served.load(Relaxed));
         let (up_kinds, down_kinds) = (session.sent_kinds.read(), session.served_kinds.read());
+        for kinds in [&session.sent_kinds, &session.served_kinds] {
+            *kinds.kept.lock().unwrap() = Some(Vec::new());
+        }
         let seconds = 3.0;
         for t in ticks(0.5)..ticks(0.5 + seconds) {
             session.step_with(|i, p| game(t, i, p));
@@ -744,6 +772,16 @@ fn traffic() {
         println!("TRAFFIC {name:<14} guest up {up:6.2} KB/s  down {down:6.2} KB/s");
         println!("   up:   {}", by(session.sent_kinds.read(), up_kinds));
         println!("   down: {}", by(session.served_kinds.read(), down_kinds));
+        // Would deflating each datagram pay? (Each alone: an unreliable
+        // one cannot lean on the one before, which may not have come.)
+        for (way, kinds) in [("up", &session.sent_kinds), ("down", &session.served_kinds)] {
+            let kept = kinds.kept.lock().unwrap().take().unwrap_or_default();
+            let raw: usize = kept.iter().map(Vec::len).sum();
+            let deflated: usize = kept.iter().map(|d| miniz_oxide::deflate::compress_to_vec(d, 9).len().min(d.len()) + 1).sum();
+            if raw > 0 {
+                println!("   {way} deflated: {:.0}% of {raw} bytes", deflated as f32 * 100.0 / raw as f32);
+            }
+        }
     }
     measure("idle crates", crates(), &[], &[CRATE_B], |_, _, _| {});
     measure("crates", crates(), &[], &[CRATE_B], |t, _, p| {
@@ -767,7 +805,7 @@ fn traffic() {
             }
         }
     });
-    measure("runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], |t, _, p| {
+    let run = |t: usize, _: usize, p: &mut runity::netsim::bench::Peer| {
         let Some(e) = p.entity(RUNNER) else { return };
         if p.world.get::<&runity::net::Owned>(e).is_err() {
             return;
@@ -777,6 +815,8 @@ fn traffic() {
             tr.position = Vec3::new(angle.cos() * 3.0, 0.8, angle.sin() * 3.0);
             tr.set_rotation(runity::glam::Quat::from_rotation_y(-angle));
         }
-    });
+    };
+    measure("runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], run);
+    measure_tagged("tagged runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], Some(RUNNER), run);
     measure("ragdoll", person(), &[PERSON], &[PERSON], |_, _, _| {});
 }

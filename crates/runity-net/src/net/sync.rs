@@ -29,7 +29,7 @@ use web_time::Instant;
 
 use glam::{Quat, Vec3};
 
-use super::protocol::{self, Blob, Entry, Record, ToClient, ToServer, TRANSFORM};
+use super::protocol::{self, Blob, BlobId, Entry, Record, ToClient, ToServer, TRANSFORM};
 use super::{
     addressable, despawn_tree, owner_of, DespawnWithOwner, NetId, NetPrefab, NetTick, Owned, Owner,
     OwnershipPending, PeerId, Replica, RequestOwnership,
@@ -43,7 +43,24 @@ use crate::world::SceneId;
 /// clock.
 pub const NET_HZ: f32 = 30.0;
 
-/// Unchanged network ticks before an entity's last word is sent.
+/// One of ours that changed, as it may go this tick.
+struct Change {
+    id: EntityId,
+    /// What goes: all of it (`whole`), or what changed lately.
+    entry: Entry,
+    whole: bool,
+    /// Something it had is gone: it goes in a whole snapshot.
+    removed: bool,
+    /// All of it, and as bytes.
+    blobs: Vec<Blob>,
+    bytes: Vec<u8>,
+}
+
+/// Unchanged network ticks before an entity's last word is sent. Soon:
+/// for what changes a few times a second (a `Rough` summary) the last word
+/// is the second copy that carries it over a lost datagram — said later,
+/// or said at once reliably, it came late on a lossy link, and a cape
+/// drifted a third further from its owner's (docs/netsim.md, «Трафик»).
 pub const SETTLE_TICKS: u32 = 2;
 
 /// About how many bytes of entries go in one snapshot message.
@@ -68,10 +85,37 @@ pub struct Tally {
 
 /// What this peer last sent about one of its entities.
 struct Baseline {
+    /// All of it, as staged.
     bytes: Vec<u8>,
     quiet: u32,
     settled: bool,
+    /// Each blob as last sent, and the network tick it last changed.
+    blobs: HashMap<BlobId, (Vec<u8>, u64)>,
+    /// The network tick it last went whole.
+    whole_at: u64,
 }
+
+impl Baseline {
+    /// `blobs` sent at `tick` over what was sent before (`was`).
+    fn after(was: Option<Baseline>, blobs: &[Blob], bytes: Vec<u8>, tick: u64, whole: bool) -> Self {
+        let (mut map, whole_at) = was.map_or((HashMap::new(), tick), |b| (b.blobs, b.whole_at));
+        map.retain(|n, _| blobs.iter().any(|(m, _)| m == n));
+        for (n, b) in blobs {
+            if map.get(n).is_none_or(|(old, _)| old != b) {
+                map.insert(*n, (b.clone(), tick));
+            }
+        }
+        Self { bytes, quiet: 0, settled: false, blobs: map, whole_at: if whole { tick } else { whole_at } }
+    }
+}
+
+/// Network ticks between an entity's whole entries while it changes: a
+/// blob whose change was lost comes with the next (docs/netsim.md,
+/// «Трафик»). Each entity's second falls on its own tick.
+pub const REFRESH: u64 = 30;
+/// Network ticks a changed blob goes on being sent after it stops
+/// changing: two lost datagrams in a row do not lose it.
+pub const REPEAT: u64 = 3;
 
 /// The sync state of one client.
 pub struct Sync {
@@ -348,30 +392,48 @@ impl Sync {
                         id,
                         prefab: prefab.0.clone(),
                         despawn_with_owner: world.get::<&DespawnWithOwner>(entity).is_ok(),
-                        blobs,
+                        blobs: blobs.clone(),
                     });
                     self.announced.insert(id);
-                    self.baselines.insert(
-                        id,
-                        Baseline {
-                            bytes,
-                            quiet: 0,
-                            settled: false,
-                        },
-                    );
+                    let base = Baseline::after(None, &blobs, bytes, self.tick, true);
+                    self.baselines.insert(id, base);
                     continue;
                 }
             }
-            match self.baselines.get_mut(&id) {
+            let tick = self.tick;
+            let said_reliably = match self.baselines.get_mut(&id) {
                 Some(base) if base.bytes == bytes => {
                     base.quiet += 1;
-                    if base.quiet >= SETTLE_TICKS && !base.settled {
-                        base.settled = true;
-                        settling.push(self.entry(id, blobs));
+                    let settles = base.quiet >= SETTLE_TICKS && !base.settled;
+                    base.settled |= settles;
+                    if settles {
+                        base.whole_at = tick;
                     }
+                    Some(settles)
                 }
-                _ => {
-                    changed.push((id, self.entry(id, blobs), bytes));
+                _ => None,
+            };
+            match said_reliably {
+                Some(true) => settling.push(self.entry(id, blobs)),
+                Some(false) => {}
+                None => {
+                    // Only what changed lately, unless its second is up or
+                    // nothing was sent before; and a blob gone is told by a
+                    // whole entry (the server takes removals only from one).
+                    let (sent, removed) = match self.baselines.get(&id) {
+                        Some(base) => {
+                            let removed = base.blobs.keys().any(|n| !blobs.iter().any(|(m, _)| m == n));
+                            if removed || tick >= base.whole_at + REFRESH {
+                                (blobs.clone(), removed)
+                            } else {
+                                let lately = |(n, b): &&Blob| base.blobs.get(n).is_none_or(|(old, at)| old != b || tick < at + REPEAT);
+                                (blobs.iter().filter(lately).cloned().collect(), false)
+                            }
+                        }
+                        None => (blobs.clone(), false),
+                    };
+                    let whole = sent.len() == blobs.len();
+                    changed.push(Change { id, entry: self.entry(id, sent), whole, removed, blobs, bytes });
                 }
             }
         }
@@ -380,49 +442,54 @@ impl Sync {
         // each thing waiting gains a point a tick, the most waited go
         // first, and what does not fit waits — still changed, so it goes
         // next time with more points. Nothing waits for ever.
-        for (id, _, _) in &changed {
-            *self.waiting.entry(*id).or_insert(0.0) += 1.0;
+        for change in &changed {
+            *self.waiting.entry(change.id).or_insert(0.0) += 1.0;
         }
         changed.sort_by(|a, b| {
-            let (pa, pb) = (self.waiting.get(&a.0).copied().unwrap_or(0.0), self.waiting.get(&b.0).copied().unwrap_or(0.0));
-            pb.total_cmp(&pa).then(a.0.cmp(&b.0))
+            let (pa, pb) = (self.waiting.get(&a.id).copied().unwrap_or(0.0), self.waiting.get(&b.id).copied().unwrap_or(0.0));
+            pb.total_cmp(&pa).then(a.id.cmp(&b.id))
         });
         let mut spent = OVERHEAD;
-        let mut sending = Vec::new();
-        for (id, entry, bytes) in changed {
-            let size = bytes.len() + 12;
+        // One snapshot a tick: partial if any entry leaves something out —
+        // a whole entry in it lacks nothing, so it removes nothing either
+        // — and a whole one for what lost a blob.
+        let (mut removing, mut rest, mut all_whole) = (Vec::new(), Vec::new(), true);
+        for Change { id, entry, whole: is_whole, removed, blobs, bytes } in changed {
+            let size = entry.blobs.iter().map(|(_, b)| b.len() + 3).sum::<usize>() + 12;
             if spent > OVERHEAD && spent + size > self.budget {
                 continue;
             }
             spent += size;
             self.waiting.remove(&id);
-            self.baselines.insert(
-                id,
-                Baseline {
-                    bytes,
-                    quiet: 0,
-                    settled: false,
-                },
-            );
-            sending.push(entry);
+            let was = self.baselines.remove(&id);
+            self.baselines.insert(id, Baseline::after(was, &blobs, bytes, self.tick, is_whole));
+            if removed {
+                removing.push(entry);
+            } else {
+                all_whole &= is_whole;
+                rest.push(entry);
+            }
         }
-        if !sending.is_empty() {
+        if !removing.is_empty() || !rest.is_empty() {
             self.sent_bytes += spent as u64;
         }
-        let changed = sending;
-        for entries in chunks(changed) {
-            unreliable.push(ToServer::Snapshot {
-                epoch: self.epoch,
-                tick: self.tick,
-                settle: false,
-                entries,
-            });
+        for (entries, is_partial) in [(removing, false), (rest, !all_whole)] {
+            for entries in chunks(entries) {
+                unreliable.push(ToServer::Snapshot {
+                    epoch: self.epoch,
+                    tick: self.tick,
+                    settle: false,
+                    partial: is_partial,
+                    entries,
+                });
+            }
         }
         for entries in chunks(settling) {
             reliable.push(ToServer::Snapshot {
                 epoch: self.epoch,
                 tick: self.tick,
                 settle: true,
+                partial: false,
                 entries,
             });
         }
@@ -450,16 +517,14 @@ impl Sync {
             if owner_of(world, entity) != self.me || world.get::<&NetPrefab>(entity).is_ok() {
                 continue;
             }
-            let bytes =
-                postcard::to_stdvec(&Self::stage(world, components, entity)).unwrap_or_default();
-            self.baselines.insert(
-                id,
-                Baseline {
-                    bytes,
-                    quiet: SETTLE_TICKS,
-                    settled: true,
-                },
-            );
+            let blobs = Self::stage(world, components, entity);
+            let bytes = postcard::to_stdvec(&blobs).unwrap_or_default();
+            let mut base = Baseline::after(None, &blobs, bytes, self.tick, true);
+            base.quiet = SETTLE_TICKS;
+            base.settled = true;
+            // Each entity's second of whole entries falls on its own tick.
+            base.whole_at = self.tick.saturating_sub(id.raw() % REFRESH);
+            self.baselines.insert(id, base);
         }
     }
 
@@ -554,6 +619,7 @@ impl Sync {
                 tick,
                 settle,
                 entries,
+                ..
             } => {
                 for entry in entries {
                     self.take_entry(world, components, owner, tick, settle, entry);
