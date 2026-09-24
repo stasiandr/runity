@@ -40,7 +40,7 @@ pub mod asset {
 }
 pub mod atmosphere;
 #[cfg(feature = "audio")]
-pub mod audio;
+pub use runity_audio::audio;
 #[cfg(feature = "physics")]
 pub mod bench;
 pub use runity_geometry::builtin;
@@ -144,7 +144,7 @@ pub use runity_core::scene as scene_core;
 pub use runity_physics::body;
 pub use runity_core::defaults;
 pub mod look;
-pub mod sound;
+pub use runity_audio::sound;
 pub mod spline;
 mod scene_tests;
 

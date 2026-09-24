@@ -600,7 +600,7 @@ mod tests {
                 ..Default::default()
             }),
             at(100.0),
-            crate::Transform::default(),
+            crate::scene::Transform::default(),
         ));
         let bang = world.spawn((
             Sounding(SoundSource {

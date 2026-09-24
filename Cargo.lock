@@ -3040,13 +3040,13 @@ dependencies = [
  "hecs",
  "hmac",
  "image",
- "kira",
  "pollster 1.0.1",
  "postcard",
  "rapier3d",
  "rkyv",
  "ron",
  "runity-animation",
+ "runity-audio",
  "runity-core",
  "runity-geometry",
  "runity-gpu",
@@ -3072,6 +3072,19 @@ dependencies = [
  "ron",
  "runity-core",
  "runity-geometry",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-audio"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "kira",
+ "rkyv",
+ "runity-core",
  "serde",
  "tracing",
 ]

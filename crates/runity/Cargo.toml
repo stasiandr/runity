@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 runity-animation = { path = "../runity-animation" }
+runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
 runity-geometry = { path = "../runity-geometry" }
 runity-gpu = { path = "../runity-gpu" }
@@ -18,7 +19,6 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 glyphon = "0.12.0"
 hecs = "0.11.0"
-kira = { version = "0.12.4", optional = true }
 pollster = "1.0.1"
 steamworks = { version = "0.13", optional = true }
 ureq = { version = "2", optional = true, features = ["json"] }
@@ -52,7 +52,7 @@ physics = ["dep:rapier3d", "runity-physics/rapier"]
 # being built on greybox, and a mixer nobody is listening to is a
 # dependency, a device to open and a thing to keep compiling. `--features
 # audio` brings it back, and CI builds with it so it cannot rot.
-audio = ["dep:kira"]
+audio = ["runity-audio/kira"]
 # Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
 # transport. Off by default: it links Valve's SDK and does nothing without
 # the Steam client running.
