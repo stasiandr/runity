@@ -215,6 +215,40 @@ fn a_prefab_spawned_at_run_time_is_whole_and_outlives_a_reload() {
     assert!(err.contains("did you mean `campfire`?"), "{err}");
 }
 
+/// A component linking another part of its prefab.
+#[derive(Debug, serde::Deserialize)]
+struct LitBy {
+    by: runity::EntityRef,
+}
+
+#[test]
+fn a_link_in_a_prefab_spawned_at_run_time_finds_its_own_instances_part() {
+    let project = project("spawn-links");
+    write(
+        &project.prefabs().join("lamp.prefab"),
+        r#"(id: "0000000000000a01", name: "lamp", components: { "lit": (by: EntityRef("0000000000000a02")) },
+            children: [(id: "0000000000000a02", name: "switch", transform: (position: (0.0, 1.0, 0.0)))])"#,
+    );
+    let mut components = runity::Components::new();
+    components.register::<LitBy>("lit");
+    let (live, _) = LiveScene::open(&project.scenes().join("main.ron")).unwrap();
+    let mut live = live.with_components(components);
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let at = |x: f32| runity::Transform {
+        position: runity::glam::Vec3::new(x, 0.0, 0.0),
+        ..runity::Transform::default()
+    };
+    let one = live.spawn_prefab_headless("lamp", at(0.0), None, &mut world).unwrap().root;
+    let two = live.spawn_prefab_headless("lamp", at(5.0), None, &mut world).unwrap().root;
+    for (lamp, x) in [(one, 0.0), (two, 5.0)] {
+        let link = world.get::<&LitBy>(lamp).unwrap().by;
+        let switch = link.get(&world).expect("the link finds a spawned part");
+        let placed = world.get::<&runity::world::WorldTransform>(switch).unwrap().0.w_axis;
+        assert_eq!((placed.x, placed.y), (x, 1.0), "its own instance's switch");
+    }
+}
+
 #[test]
 fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
     let Ok(gpu) = Gpu::headless_blocking(false) else {

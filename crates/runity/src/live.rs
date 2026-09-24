@@ -493,6 +493,7 @@ impl LiveScene {
         #[cfg(feature = "physics")]
         crate::physics::attach_collision_meshes(world, spawned.iter().copied(), library);
         for (entity, desc) in &spawned {
+            let _ = world.insert_one(*entity, crate::world::SpawnedId(desc.id));
             problems.extend(
                 components
                     .insert_all(desc, *entity, world)
