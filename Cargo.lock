@@ -3047,6 +3047,7 @@ dependencies = [
  "glam 0.32.1",
  "hecs",
  "image",
+ "miniz_oxide 0.8.9",
  "ron",
  "runity-animation",
  "runity-audio",

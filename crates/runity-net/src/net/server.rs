@@ -478,7 +478,8 @@ impl Server {
                 name,
                 ready: false,
                 pending: HashMap::new(),
-                allowance: 0.0,
+                // A tenth of a second's worth to begin with.
+                allowance: self.client_budget * 0.1,
                 reckoned: std::time::Instant::now(),
             },
         );
@@ -885,7 +886,10 @@ mod tests {
                     link
                 })
                 .collect();
-            let server = Server::new(vec![Link::accepting(server_end)], (0, PeerId(1)), "main", 7);
+            let mut server = Server::new(vec![Link::accepting(server_end)], (0, PeerId(1)), "main", 7);
+            // No budget but where a test sets one: these run faster than
+            // any clock would refill it.
+            server.client_budget = 1e12;
             Self { server, clients }
         }
 
