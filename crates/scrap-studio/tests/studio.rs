@@ -2611,6 +2611,28 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     s.frame();
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("smoothness"), "{text}");
+    // A number from 0 to 1 is a slider: dragged, the file follows it.
+    s.frame();
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material smoothness").expect("a slider"));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.2,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.3,
+        y: track.y + 3.0,
+    });
+    s.frame();
+    assert!(
+        std::fs::read_to_string(&file).unwrap().contains("smoothness: 0.3"),
+        "mid-drag: {}", std::fs::read_to_string(&file).unwrap()
+    );
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let b = s.ui.find("material smoothness").unwrap();
+    assert_eq!(s.ui.text(b), Some("0.3"));
     fill(&mut s, "material metallic", "lots");
     assert!(
         s.session
@@ -3138,6 +3160,71 @@ fn an_inline_materials_shading_is_a_list_from_the_engine() {
         .value;
     assert!(material.contains("shading:Unlit"), "{material}");
     assert!(material.contains("base_color:(0.5,0.4,0.3)"), "the rest kept: {material}");
+}
+
+#[test]
+fn a_number_from_0_to_1_is_a_slider() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(
+            crate_id,
+            "material",
+            "(base_color: (0.5, 0.4, 0.3), metallic: 0.2)",
+        )
+        .unwrap();
+    click(&mut s, "line crate");
+    click(&mut s, "fold material");
+    assert!(
+        s.ui.find("slide material smoothness").is_some(),
+        "one it leaves out too"
+    );
+    assert!(s.ui.find("slide material alpha_clip").is_some());
+    assert!(s.ui.find("slide material metallic").is_some());
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material metallic").unwrap());
+    let steps = s.session.undo_steps().len();
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.5,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.75,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let material = field_value(&s, crate_id, "material");
+    assert!(material.contains("metallic:0.75"), "{material}");
+    assert!(
+        material.contains("base_color:(0.5,0.4,0.3)"),
+        "the rest kept: {material}"
+    );
+    assert_eq!(
+        s.session.undo_steps().len(),
+        steps + 1,
+        "a drag is one step"
+    );
+    let b = s.ui.find("material metallic").unwrap();
+    assert_eq!(s.ui.text(b), Some("0.75"), "its box says it");
+    // Dragged past the end is the end.
+    s.ui.paint();
+    let track = s.ui.rect(s.ui.find("slide material metallic").unwrap());
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width * 0.5,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: track.x + track.width + 40.0,
+        y: track.y + 3.0,
+    });
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    assert!(field_value(&s, crate_id, "material").contains("metallic:1.0"));
 }
 
 fn field_value(s: &Studio, id: scrap::EntityId, field: &str) -> String {

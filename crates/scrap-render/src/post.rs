@@ -271,6 +271,26 @@ impl Default for LensFlare {
     }
 }
 
+/// The numbers of a [`PostProcess`] that go from 0 to 1: an editor's
+/// sliders ([`scrap_core::shape::with_fractions`]).
+pub const FRACTIONS: &[&str] = &[
+    "bloom.scatter",
+    "vignette.intensity",
+    "vignette.smoothness",
+    "lens_distortion.x_multiplier",
+    "lens_distortion.y_multiplier",
+    "panini_projection.distance",
+    "panini_projection.crop_to_fit",
+    "lens_flare.chromatic_aberration",
+    "chromatic_aberration",
+    "film_grain",
+    "motion_blur.intensity",
+    "heat_haze.intensity",
+    "heat_haze.mirage",
+    "auto_exposure.adaptation",
+    "upscaling.sharpness",
+];
+
 /// Everything done to a frame after it is drawn, with URP's names and
 /// ranges.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

@@ -91,7 +91,7 @@ impl Default for SoftBody {
 }
 
 scrap_core::impl_parts! {
-    SoftBody => "soft_body";
+    SoftBody => "soft_body", fractions ["stiffness", "volume", "core"];
 }
 
 /// The soft body of a line, read off it.

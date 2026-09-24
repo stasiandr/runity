@@ -745,28 +745,42 @@ crate::impl_parts! {
     // its type cannot see into.
     MaterialRef => "material", default if |m| m.is_default(), shape || {
         use scrap_core::shape::{self, Shape};
-        Shape::OneOf(vec![Shape::Asset("material".into()), shape::of::<Material>()])
+        Shape::OneOf(vec![
+            Shape::Asset("material".into()),
+            shape::with_fractions(shape::of::<Material>(), crate::material::FRACTIONS),
+        ])
     };
     BendsGrass => "bends_grass", default if |b| b.0 == 0.0;
     Lens => "camera";
     Light => "light";
-    Emitter => "particles";
+    Emitter => "particles", fractions ["alpha", "end_alpha", "dampen"];
     Probe => "reflection_probe";
     crate::ddgi::IrradianceVolume => "irradiance_volume";
     RenderTexture => "render_texture";
-    PostVolume => "post_volume";
+    PostVolume => "post_volume", shape || {
+        use scrap_core::shape;
+        let fractions: Vec<String> = crate::post::FRACTIONS.iter().map(|f| format!("post.{f}")).collect();
+        let fractions: Vec<&str> = fractions.iter().map(String::as_str).collect();
+        shape::with_fractions(shape::of_field::<PostVolume>("post_volume"), &fractions)
+    };
     Decal => "decal";
     crate::footprints::Footprints => "footprints";
     View => "view";
     Sun => "sun";
     Fog => "fog";
-    crate::render::Sky => "sky";
-    crate::post::PostProcess => "post";
-    crate::ssao::AmbientOcclusion => "ambient_occlusion";
-    crate::ray::RayTracing => "ray_tracing";
+    crate::render::Sky => "sky", fractions ["atmosphere.ground_albedo", "clouds.coverage", "clouds.shadows"];
+    crate::post::PostProcess => "post", shape || {
+        use scrap_core::shape;
+        shape::with_fractions(shape::of_field::<crate::post::PostProcess>("post"), crate::post::FRACTIONS)
+    };
+    crate::ssao::AmbientOcclusion => "ambient_occlusion", fractions ["direct_lighting_strength"];
+    crate::ray::RayTracing => "ray_tracing", fractions ["reflection_roughness"];
     VirtualShadows => "virtual_shadows", default if |v| !v.0;
     crate::volume::VolumetricFog => "volumetric_fog";
-    crate::weather::Weather => "weather";
+    crate::weather::Weather => "weather", fractions [
+        "rain", "wetness", "puddles", "snow", "snowfall", "sandstorm", "dust_wall",
+        "dust_devils", "drifted", "lightning", "drying", "mud",
+    ];
     crate::reflections::ScreenSpaceReflections => "screen_space_reflections";
 }
 

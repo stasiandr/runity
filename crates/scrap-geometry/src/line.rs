@@ -18,7 +18,7 @@ pub struct ModelRef(pub AssetLink);
 
 scrap_core::impl_parts! {
     ModelRef => "model", default if |m| m.0.is_empty();
-    Terrain => "terrain";
+    Terrain => "terrain", fractions ["dunes.sinuosity", "dunes.barchans"];
 }
 
 /// A line's shape, read off it.

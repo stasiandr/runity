@@ -283,6 +283,8 @@ enum Part {
     /// back to the parent's.
     MaterialParam(String, String),
     MaterialReset(String, String),
+    /// The track of a material's parameter that goes from 0 to 1.
+    MaterialSlide(String, String),
     /// A box of a field; `axis` for one number of a vector.
     Slot {
         field: String,
@@ -433,6 +435,46 @@ fn hue_pixels() -> Vec<u8> {
         }
     }
     out
+}
+
+/// A number from 0 to 1's track, filled to `value`: pressed or dragged
+/// along, it is set to where the pointer is ([`slide_to`]).
+fn slider_track(ui: &mut Ui, line: NodeId, value: f32, mixed: bool) -> NodeId {
+    let track = ui.add(
+        line,
+        Style::row()
+            .fill()
+            .height(6.0)
+            .radius(3.0)
+            .background(DIVIDER)
+            .draggable()
+            .clickable(),
+    );
+    ui.add(
+        track,
+        Style::row()
+            .full_height()
+            .radius(3.0)
+            .background(if mixed { MUTED.alpha(70) } else { ACCENT.alpha(70) })
+            .width_fraction(value.clamp(0.0, 1.0)),
+    );
+    track
+}
+
+/// The box beside a slider's track, to type the number into.
+fn slider_box() -> Style {
+    field_style().width(52.0).fixed().mono().text_size(11.5)
+}
+
+/// The value a track stands at with the pointer at `x`, in hundredths —
+/// what a person would have set it to — and its fill moved there.
+fn slide_to(ui: &mut Ui, track: NodeId, x: f32) -> f32 {
+    let r = ui.rect(track);
+    let value = (((x - r.x) / r.width.max(1.0)).clamp(0.0, 1.0) * 100.0).round() / 100.0;
+    if let Some(fill) = ui.children(track).first().copied() {
+        ui.restyle(fill, |s| s.width_fraction(value));
+    }
+    value
 }
 
 /// What a component's field is, for the box it gets.
@@ -1304,7 +1346,7 @@ impl Inspector {
                     .center_items(),
             );
             // A number's name is a handle: drag it sideways.
-            let number = matches!(kind, Shape::Int | Shape::Float);
+            let number = matches!(kind, Shape::Int | Shape::Float | Shape::Fraction);
             let name = ui.add(
                 line,
                 Style::row()
@@ -1329,7 +1371,7 @@ impl Inspector {
             }
             let sub = match kind {
                 Shape::Bool => SubKind::Bool(value == "true"),
-                Shape::Int | Shape::Float => SubKind::Number,
+                Shape::Int | Shape::Float | Shape::Fraction => SubKind::Number,
                 Shape::Text => SubKind::Text,
                 // A bare name: a list. One holding something — `Crate(Cabbage)`
                 // — is a form of its own (below).
@@ -1665,7 +1707,16 @@ impl Inspector {
                             .nowrap(),
                         &title(&key),
                     );
-                    let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &value);
+                    let f = if scrap::material::FRACTIONS.contains(&key.as_str()) {
+                        let at = value.trim().parse::<f32>().unwrap_or(0.0);
+                        let track = slider_track(ui, line, at, false);
+                        ui.set_name(track, format!("slide material {key}"));
+                        self.parts
+                            .insert(track, Part::MaterialSlide(name.clone(), key.clone()));
+                        ui.add_field(line, slider_box(), &trim_number(&value))
+                    } else {
+                        ui.add_field(line, field_style().fill().mono().text_size(11.5), &value)
+                    };
                     ui.set_name(f, format!("material {key}"));
                     self.parts
                         .insert(f, Part::MaterialParam(name.clone(), key.clone()));
@@ -1910,6 +1961,23 @@ impl Inspector {
                 if let Err(e) = session.set_material_param(&material, &key, Some(value.trim())) {
                     session.say(Level::Error, e.to_string());
                 }
+                requests.inspect = Some(Asset::Material(material));
+            }
+            (Part::MaterialSlide(material, key), Event::Press { x, .. } | Event::Drag { x, .. }) => {
+                self.scrubbing = Some((0.0, 0.0));
+                // The material changes as the track does: its file, and
+                // what wears it, every step of the drag.
+                let value = slide_to(ui, node, *x);
+                let set = session.set_material_param(&material, &key, Some(&format!("{value:?}")));
+                if let Err(e) = set {
+                    session.say(Level::Error, e.to_string());
+                }
+                if let Some(b) = ui.find(&format!("material {key}")) {
+                    ui.set_text(b, &trim_number(&format!("{value}")));
+                }
+            }
+            (Part::MaterialSlide(material, _), Event::Release { .. }) => {
+                self.scrubbing = None;
                 requests.inspect = Some(Asset::Material(material));
             }
             (Part::MaterialReset(material, key), Event::Click { .. }) => {

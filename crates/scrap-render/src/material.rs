@@ -170,6 +170,18 @@ pub enum ScreenMap {
     Mirror,
 }
 
+/// The numbers of a [`Material`] that go from 0 to 1: an editor's
+/// sliders ([`scrap_core::shape::with_fractions`]).
+pub const FRACTIONS: &[&str] = &[
+    "metallic",
+    "smoothness",
+    "alpha",
+    "alpha_clip",
+    "occlusion_strength",
+    "translucency",
+    "foam",
+];
+
 #[derive(
     Debug,
     Clone,

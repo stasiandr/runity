@@ -95,7 +95,7 @@ impl Default for Mpm {
 }
 
 scrap_core::impl_parts! {
-    Mpm => "mpm";
+    Mpm => "mpm", fractions ["transfer"];
 }
 
 /// The MPM block of a line, read off it.
