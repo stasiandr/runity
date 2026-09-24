@@ -3031,14 +3031,11 @@ name = "runity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "bytemuck",
- "discord-rich-presence",
  "gilrs",
  "glam 0.32.1",
  "glyphon",
  "hecs",
- "hmac",
  "image",
  "pollster 1.0.1",
  "postcard",
@@ -3048,17 +3045,21 @@ dependencies = [
  "runity-animation",
  "runity-audio",
  "runity-core",
+ "runity-dialogue",
+ "runity-discord",
  "runity-geometry",
  "runity-gpu",
+ "runity-input",
+ "runity-navigation",
  "runity-overlay",
  "runity-physics",
+ "runity-reports",
+ "runity-routes",
+ "runity-spline",
  "serde",
- "serde_json",
- "sha2",
  "steamworks",
  "subsecond",
  "tracing",
- "ureq",
  "wgpu",
  "winit",
 ]
@@ -3114,6 +3115,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-dialogue"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-discord"
+version = "0.1.0"
+dependencies = [
+ "discord-rich-presence",
+]
+
+[[package]]
 name = "runity-editor"
 version = "0.1.0"
 dependencies = [
@@ -3165,6 +3182,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ron",
+ "runity-core",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "runity-mcp"
 version = "0.1.0"
 dependencies = [
@@ -3175,6 +3203,18 @@ dependencies = [
  "runity-editor",
  "runity-import",
  "serde_json",
+]
+
+[[package]]
+name = "runity-navigation"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-physics",
 ]
 
 [[package]]
@@ -3204,6 +3244,40 @@ dependencies = [
  "runity-geometry",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-reports"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hmac",
+ "runity-core",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
+name = "runity-routes"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-spline"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
 ]
 
 [[package]]

@@ -548,7 +548,6 @@ fn keep_apart(world: &mut hecs::World, grid: &NavGrid) {
 mod tests {
     use super::*;
     use crate::scene::{Body, Collider, EntityDesc, Scene, Transform};
-    use crate::MeshHandle;
 
     fn solid(name: &str, position: Vec3, half: Vec3, collider: Option<Collider>) -> EntityDesc {
         EntityDesc {
@@ -559,7 +558,7 @@ mod tests {
             },
             ..EntityDesc::default()
         }
-        .with(crate::scene::ModelRef("m".into()))
+        .with(runity_geometry::ModelRef("m".into()))
         .with(Body::Static)
         .with(collider.unwrap_or(Collider::Box {
             half,
@@ -574,7 +573,7 @@ mod tests {
         };
         scene.assign_ids();
         let mut world = hecs::World::new();
-        crate::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        crate::world::spawn_scene_dressed(&scene, &mut world, &mut [Box::new(runity_physics::PhysicsDress)]);
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
         physics.sync_from_world(&mut world);
         physics.refresh_queries();

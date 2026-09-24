@@ -2528,18 +2528,23 @@ dependencies = [
  "glam 0.32.1",
  "glyphon",
  "hecs",
- "kira",
  "pollster",
  "postcard",
  "rapier3d",
  "rkyv",
  "ron",
  "runity-animation",
+ "runity-audio",
  "runity-core",
+ "runity-dialogue",
  "runity-geometry",
  "runity-gpu",
+ "runity-input",
+ "runity-navigation",
  "runity-overlay",
  "runity-physics",
+ "runity-routes",
+ "runity-spline",
  "serde",
  "steamworks",
  "subsecond",
@@ -2562,6 +2567,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-audio"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "kira",
+ "rkyv",
+ "runity-core",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "runity-core"
 version = "0.1.0"
 dependencies = [
@@ -2572,6 +2590,15 @@ dependencies = [
  "ron",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-dialogue"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "runity-core",
+ "serde",
 ]
 
 [[package]]
@@ -2593,6 +2620,27 @@ dependencies = [
  "tracing",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "runity-input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ron",
+ "runity-core",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-navigation"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "runity-core",
+ "runity-physics",
 ]
 
 [[package]]
@@ -2621,6 +2669,26 @@ dependencies = [
  "runity-geometry",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-routes"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-spline"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "runity-core",
+ "runity-geometry",
+ "serde",
 ]
 
 [[package]]

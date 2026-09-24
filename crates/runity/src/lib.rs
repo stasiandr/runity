@@ -20,7 +20,7 @@ pub use hecs;
 pub use ron;
 pub use runity_core::impl_parts;
 
-pub mod actions;
+pub use runity_input::actions;
 pub use runity_geometry::animation;
 pub mod appearance;
 pub use runity_animation::animator;
@@ -48,9 +48,9 @@ pub mod clouds;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub mod decals;
-pub mod dialogue;
+pub use runity_dialogue::dialogue;
 #[cfg(feature = "discord")]
-pub mod discord;
+pub use runity_discord::discord;
 pub use runity_core::edit;
 pub mod exposure;
 pub mod floaters;
@@ -94,8 +94,8 @@ pub mod motion {
         })
     }
 }
-#[cfg(feature = "physics")]
-pub mod navigation;
+#[cfg(feature = "navigation")]
+pub use runity_navigation::navigation;
 pub mod net;
 pub mod particles;
 pub use runity_core::parts;
@@ -114,10 +114,10 @@ pub mod refs;
 pub mod relay;
 pub mod render;
 #[cfg(feature = "reports")]
-pub mod reports;
+pub use runity_reports::reports;
 pub use runity_core::ron_edit;
 pub use runity_core::ron_text;
-pub mod routes;
+pub use runity_routes::routes;
 /// Saving a game in progress, as the core has it.
 pub use runity_core::save as save_core;
 
@@ -145,7 +145,7 @@ pub use runity_physics::body;
 pub use runity_core::defaults;
 pub mod look;
 pub use runity_audio::sound;
-pub mod spline;
+pub use runity_spline::spline;
 mod scene_tests;
 
 /// The scene file: the core's lines and scenes, and every module's types of

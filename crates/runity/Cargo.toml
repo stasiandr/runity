@@ -10,6 +10,13 @@ repository.workspace = true
 runity-animation = { path = "../runity-animation" }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
+runity-navigation = { path = "../runity-navigation", optional = true }
+runity-discord = { path = "../runity-discord", optional = true }
+runity-reports = { path = "../runity-reports", optional = true }
+runity-input = { path = "../runity-input" }
+runity-dialogue = { path = "../runity-dialogue" }
+runity-routes = { path = "../runity-routes" }
+runity-spline = { path = "../runity-spline" }
 runity-geometry = { path = "../runity-geometry" }
 runity-gpu = { path = "../runity-gpu" }
 runity-overlay = { path = "../runity-overlay" }
@@ -21,12 +28,6 @@ glyphon = "0.12.0"
 hecs = "0.11.0"
 pollster = "1.0.1"
 steamworks = { version = "0.13", optional = true }
-ureq = { version = "2", optional = true, features = ["json"] }
-serde_json = { version = "1", optional = true }
-hmac = { version = "0.12", optional = true }
-sha2 = { version = "0.10", optional = true }
-base64 = { version = "0.22", optional = true }
-discord-rich-presence = { version = "0.2", optional = true }
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 rapier3d = { version = "0.26.1", optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
@@ -44,10 +45,12 @@ gilrs = { version = "0.11", optional = true }
 # is still an open question in DNA.md, and features are what Cargo already
 # gives us until it is answered.
 [features]
-default = ["physics"]
+default = ["physics", "navigation"]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
 physics = ["dep:rapier3d", "runity-physics/rapier"]
+# Where things can walk: a grid baked from the physics world.
+navigation = ["physics", "dep:runity-navigation"]
 # Sound. Off by default and not because it is unfinished: the engine is
 # being built on greybox, and a mixer nobody is listening to is a
 # dependency, a device to open and a thing to keep compiling. `--features
@@ -60,10 +63,10 @@ steam = ["dep:steamworks"]
 # Crash reports sent to Sentry and play reported to GameAnalytics. Off by
 # default: it is the network, TLS and a player's consent, none of which a
 # game gets without asking for them.
-reports = ["dep:ureq", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:base64"]
+reports = ["dep:runity-reports"]
 # What a player is doing, shown on their Discord profile, through the
 # Discord client running beside the game.
-discord = ["dep:discord-rich-presence"]
+discord = ["dep:runity-discord"]
 # A plain desktop window, for running the game without the editor. The
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
