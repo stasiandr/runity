@@ -1795,6 +1795,7 @@ fn drive(data: &mut GenericJoint, joint: &crate::scene::Joint) {
             stiffness, damping, ..
         } => {
             for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
+                data.set_motor_model(axis, MotorModel::ForceBased);
                 data.set_motor_position(axis, 0.0, stiffness.max(0.0), damping.max(0.0));
             }
         }
@@ -1808,6 +1809,9 @@ fn set_motor(
     motor: Option<crate::scene::Motor>,
     unit: f32,
 ) {
+    // A torque (a force), not an acceleration: Unity's joint springs and
+    // motors are, so a heavy lever needs a stronger spring than a light one.
+    data.set_motor_model(axis, MotorModel::ForceBased);
     match motor {
         Some(motor) => {
             let strength = motor.strength.max(0.0);
@@ -1894,6 +1898,7 @@ fn joint_data(
     };
     if let Some(motor) = motor {
         let strength = motor.strength.max(0.0);
+        builder = builder.motor_model(axis, MotorModel::ForceBased);
         builder = match motor.hold {
             Some(hold) => builder.motor_position(axis, hold * unit, strength, motor.damping()),
             None => builder.motor_velocity(axis, motor.speed * unit, strength),
@@ -1904,7 +1909,9 @@ fn joint_data(
     } = *joint
     {
         for axis in [JointAxis::LinX, JointAxis::LinY, JointAxis::LinZ] {
-            builder = builder.motor_position(axis, 0.0, stiffness.max(0.0), damping.max(0.0));
+            builder = builder
+                .motor_model(axis, MotorModel::ForceBased)
+                .motor_position(axis, 0.0, stiffness.max(0.0), damping.max(0.0));
         }
     }
     Some(builder.build())
@@ -2147,6 +2154,73 @@ mod tests {
         }
         let angle = physics.hinge_angle(&world, door).unwrap();
         assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
+    }
+
+    /// A hinge held at an angle by its spring gets there, and against a
+    /// limit short of it rests on the limit.
+    #[test]
+    fn a_sprung_hinge_holds_its_angle_or_rests_on_the_stop_before_it() {
+        for (hold, limits, expect) in [(45.0, "", 45.0), (-45.0, "", -45.0), (45.0, "limits_deg: (60.0, 80.0),", 60.0)] {
+            let text = format!(
+                r#"(entities: [
+                (id: "0000000000000001", name: "post", model: "builtin:cube", body: Static,
+                 collider: Box(half: (0.1, 1.0, 0.1))),
+                (id: "0000000000000002", name: "door", model: "builtin:cube", body: Dynamic,
+                 transform: (position: (0.6, 0.0, 0.0)),
+                 collider: Box(half: (0.5, 1.0, 0.05)), physics: (gravity: 0.0),
+                 joint: Hinge(to: "0000000000000001", anchor: (-0.6, 0.0, 0.0), axis: (0.0, 1.0, 0.0), {limits} motor: (hold: {hold}, strength: 20.0))),
+            ])"#
+            );
+            let scene: Scene = ron::from_str(&text).unwrap();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 60.0);
+            let door = world
+                .query::<(hecs::Entity, &Physics)>()
+                .iter()
+                .find(|(_, p)| p.0 == Body::Dynamic)
+                .map(|(e, _)| e)
+                .unwrap();
+            for _ in 0..300 {
+                physics.run(&mut world);
+            }
+            let angle = physics.hinge_angle(&world, door).unwrap();
+            assert!((angle - expect).abs() < 1.0, "held at {hold} within {limits:?}: {angle}");
+        }
+    }
+
+    /// Dacha's elevator lever: a metre-long bar on a mount tipped 45°,
+    /// sprung toward 90° with a spring of 10 (a torque, as in Unity) and
+    /// stopped at 75°. The spring beats its weight, so it rests on 75.
+    #[test]
+    fn a_lever_is_sprung_up_against_its_stop_through_its_weight() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "mount", model: "builtin:cube", body: Kinematic,
+             transform: (position: (0.0, 1.0, 0.0), rotation_deg: (-45.0, 90.0, 0.0), scale: (0.4, 0.4, 0.4)),
+             collider: Box(half: (0.5, 0.5, 0.5)), physics: (gravity: 0.0),
+             children: [
+               (id: "0000000000000002", name: "lever", model: "builtin:cube", body: Dynamic,
+                transform: (position: (0.96, 0.0, 1.355), scale: (0.33, 0.33, 3.69)),
+                collider: Box(half: (0.5, 0.5, 0.35), center: (0.0, 0.0, 0.15)), physics: (mass: Some(1.0)),
+                joint: Hinge(to: "0000000000000001", anchor: (0.0, 0.0, -0.45), axis: (-1.0, 0.0, 0.0), limits_deg: (15.0, 75.0),
+                  motor: (hold: 90.0, strength: 10.0, damping: 0.1))),
+             ]),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 50.0);
+        let lever = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Dynamic)
+            .map(|(e, _)| e)
+            .unwrap();
+        for _ in 0..100 {
+            physics.run(&mut world);
+        }
+        let angle = physics.hinge_angle(&world, lever).unwrap();
+        assert!((angle - 75.0).abs() < 1.0, "on its stop: {angle}");
     }
 
     #[test]

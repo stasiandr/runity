@@ -930,8 +930,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     axis: b.vec3("m_Axis").map(axis).unwrap_or(Vec3::X),
                     limits_deg: (b.i64("m_UseLimits") == Some(1)).then(|| {
                         let l = &b["m_Limits"];
-                        // Mirrored: a turn one way is now the other.
-                        (-l.f32("max").unwrap_or(0.0), -l.f32("min").unwrap_or(0.0))
+                        // The axis is mirrored as a pseudo-vector, which
+                        // keeps the sense of a turn about it: the angles
+                        // are Unity's.
+                        (l.f32("min").unwrap_or(0.0), l.f32("max").unwrap_or(0.0))
                     }),
                     motor: hinge_drive(b),
                 },
@@ -1191,14 +1193,14 @@ const UNITY_FIELDS: [&str; 10] = [
 ];
 
 /// A HingeJoint's spring (held at an angle) or motor (turning at a
-/// speed), mirrored as its limits are. The spring wins when both are on,
+/// speed), in Unity's angles as its limits are. The spring wins when both are on,
 /// as a lever that springs back is what the two together usually mean.
 fn hinge_drive(b: &Yaml) -> Option<runity::scene::Motor> {
     if b.i64("m_UseSpring") == Some(1) {
         let s = &b["m_Spring"];
         return Some(runity::scene::Motor {
             speed: 0.0,
-            hold: Some(-s.f32("targetPosition").unwrap_or(0.0)),
+            hold: Some(s.f32("targetPosition").unwrap_or(0.0)),
             strength: s.f32("spring").unwrap_or(0.0),
             damping: Some(s.f32("damper").unwrap_or(0.0)),
         });
@@ -1206,7 +1208,7 @@ fn hinge_drive(b: &Yaml) -> Option<runity::scene::Motor> {
     if b.i64("m_UseMotor") == Some(1) {
         let m = &b["m_Motor"];
         return Some(runity::scene::Motor {
-            speed: -m.f32("targetVelocity").unwrap_or(0.0),
+            speed: m.f32("targetVelocity").unwrap_or(0.0),
             hold: None,
             strength: m.f32("force").unwrap_or(0.0),
             damping: None,
@@ -1535,11 +1537,11 @@ ParticleSystemRenderer:
 ";
 
     #[test]
-    fn a_hinge_springs_to_its_target_mirrored_as_its_limits() {
+    fn a_hinge_springs_to_its_target_in_unitys_angles() {
         let text = "a: 1\nm_UseSpring: 1\nm_Spring:\n  spring: 20\n  damper: 5\n  targetPosition: 90\nm_UseMotor: 0\n";
         let b = &yaml_rust2::YamlLoader::load_from_str(text).unwrap()[0];
         let motor = hinge_drive(b).unwrap();
-        assert_eq!(motor.hold, Some(-90.0));
+        assert_eq!(motor.hold, Some(90.0));
         assert_eq!((motor.strength, motor.damping()), (20.0, 5.0));
         let off = &yaml_rust2::YamlLoader::load_from_str("m_UseSpring: 0\nm_UseMotor: 0\n").unwrap()[0];
         assert!(hinge_drive(off).is_none());
