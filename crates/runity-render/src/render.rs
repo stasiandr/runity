@@ -5180,7 +5180,13 @@ impl Renderer {
                 .previous_view_projection
                 .unwrap_or_else(|| frame.camera.view_projection(aspect))
                 .to_cols_array_2d(),
-            dust: [if local_dust { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            dust: [
+                if local_dust { 1.0 } else { 0.0 },
+                // The dust wall's height, for the shadow it throws.
+                if weather.dust_wall > 0.0 { weather.dust_wall_height.max(10.0) } else { 0.0 },
+                0.0,
+                0.0,
+            ],
             night: [night, 0.0, 0.0, 0.0],
             terrain_to_local: fine_terrain
                 .map_or(Mat4::IDENTITY, |t| t.placed.inverse())
@@ -6076,6 +6082,9 @@ impl Renderer {
                     frame.camera.apparent_eye(),
                     &frame.ambient_occlusion,
                     (bounce_on && self.scene.has_history).then_some(&self.scene.history_view),
+                    // Under TAA the bounce's rays turn each frame, and half
+                    // as many do: the history adds them up.
+                    (taa_run && self.taa.frames() > 0).then(|| (self.taa.frames() as f32 * 0.618_034).fract()),
                 );
             }
         }

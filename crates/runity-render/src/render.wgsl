@@ -317,6 +317,35 @@ fn dust_can_reach(p: vec3<f32>) -> bool {
     return dot(p.xz, w) < front;
 }
 
+/// How much of the sun the dust wall lets through to a point: its mass
+/// stands between a point and a sun behind it, and the ground before a
+/// haboob goes dim before the haboob comes. Worked from the wall's shape
+/// as the clouds' pass has it (its front, its tiers), without its billows
+/// — a shadow hundreds of metres across wants none — at a few points
+/// along the way to the sun.
+fn dust_wall_shadow(p: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    let strength = frame.weather[1].z;
+    let height = frame.dust.y;
+    if strength <= 0.0 || height <= 0.0 || to_sun.y <= 0.0 {
+        return 1.0;
+    }
+    let w = select(vec2<f32>(1.0, 0.0), normalize(frame.foliage.wind.xy), length(frame.foliage.wind.xy) > 1e-4);
+    var darkest = 0.0;
+    for (var i = 0; i < 7; i = i + 1) {
+        let s = 20.0 * exp2(f32(i));
+        let q = p + to_sun * s;
+        if q.y > height * 1.2 {
+            break;
+        }
+        let behind = -frame.weather[1].w - dot(q.xz, w);
+        let tiers = 0.42 + 0.28 * smoothstep(90.0, 150.0, behind) + 0.30 * smoothstep(330.0, 420.0, behind);
+        let inside = min(behind, height * tiers - q.y);
+        darkest = max(darkest, smoothstep(-50.0, 50.0, inside));
+    }
+    // Never black: light scattered through the dust from all round.
+    return 1.0 - 0.85 * darkest * strength;
+}
+
 /// How deep, along the view, the prepass's depth at a pixel is.
 fn scene_view_depth(pixel: vec2<i32>) -> f32 {
     let d = textureLoad(scene_depth, pixel, 0);
@@ -518,6 +547,37 @@ fn fog_color_towards(direction: vec3<f32>) -> vec3<f32> {
     }
     let level = vec3<f32>(direction.x, max(direction.y, 0.03), direction.z);
     return physical_sky(level) * frame.sky_ground.w;
+}
+
+/// The clouds' quarter-size picture at `uv`, made up to the screen by
+/// Catmull-Rom rather than straight between texels: a billow's edge stays
+/// an edge (five bilinear taps, the corners' weights left out — Jimenez).
+fn cloud_tap(p: vec2<f32>) -> vec4<f32> {
+    return textureSampleLevel(cloud_layer, fog_sampler, p, 0.0);
+}
+
+fn cloud_sharp(uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(cloud_layer));
+    let at = uv * size;
+    let centre = floor(at - 0.5) + 0.5;
+    let f = at - centre;
+    let w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    let w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    let w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    let w3 = f * f * (-0.5 + 0.5 * f);
+    let w12 = w1 + w2;
+    let t0 = (centre - 1.0) / size;
+    let t3 = (centre + 2.0) / size;
+    let t12 = (centre + w2 / w12) / size;
+    var c = cloud_tap(vec2<f32>(t12.x, t0.y)) * (w12.x * w0.y)
+        + cloud_tap(vec2<f32>(t0.x, t12.y)) * (w0.x * w12.y)
+        + cloud_tap(t12) * (w12.x * w12.y)
+        + cloud_tap(vec2<f32>(t3.x, t12.y)) * (w3.x * w12.y)
+        + cloud_tap(vec2<f32>(t12.x, t3.y)) * (w12.x * w3.y);
+    let weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    // Ringing held to what light and let-through can be.
+    c = c / weight;
+    return vec4<f32>(max(c.rgb, vec3<f32>(0.0)), clamp(c.a, 0.0, 1.0));
 }
 
 /// A colour seen through the air between it and the eye: the physical
@@ -1176,8 +1236,14 @@ fn fog_density(p: vec3<f32>) -> f32 {
     if storm > 0.0 {
         let wind = vec3<f32>(frame.foliage.wind.x, 0.0, frame.foliage.wind.y) * max(frame.foliage.wind.z, 0.5) * 6.0;
         let q = (p - wind * frame.foliage.wind.w) * 0.06;
+        // Gusts tens of metres across, running ahead of the wind and
+        // lifting, then the billows in them: a storm seen from inside comes
+        // in walls and gaps, not an even brown.
+        let gust_at = (p - wind * 1.6 * frame.foliage.wind.w - vec3<f32>(0.0, frame.foliage.wind.w * 2.0, 0.0)) * 0.014;
+        let gust = cloud_noise(gust_at);
         let billow = cloud_noise(q) * 0.6 + cloud_noise(q * 2.3 + 5.0) * 0.4;
-        density *= mix(1.0, 0.25 + billow * 1.6, storm);
+        let lumps = gust * 0.55 + billow * 0.45;
+        density *= mix(1.0, 0.08 + pow(lumps, 1.6) * 2.8, storm);
     }
     return density;
 }
@@ -1267,6 +1333,8 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     } else {
         sun_seen = sunlight(p, vec3<f32>(0.0));
     }
+    // The dust wall's mass between the air and the sun.
+    sun_seen *= dust_wall_shadow(p, to_sun);
     let sun_through = frame.sun_color.rgb * sun_seen;
     var light = sun_through * phase(dot(-to_sun, to_eye), g);
     // The sky's light, from every way at once.
@@ -2340,6 +2408,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
                 shadow *= contact_shadow(in.world_position, geometric, to_sun, in.clip_position.xy);
             }
         }
+        shadow *= dust_wall_shadow(in.world_position, to_sun);
     }
     // The scene's distance field softens the sun's shadow where the map
     // is coarse and adds what the map missed.
@@ -2493,19 +2562,25 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     let reaches = clamp(dot(volume.rgb, luminance) / max(dot(ambient, luminance), 1e-4), 0.0, 1.0);
     sky_share = mix(1.0, reaches, volume.a);
     ambient = mix(ambient, volume.rgb, volume.a);
+    // In the dust wall's shadow the sky it lights by is half the wall:
+    // dimmer, and the wall's colour, not blue — and what shines on the
+    // ground from low toward the sun is the wall, not the sky behind it.
+    let under_wall = dust_wall_shadow(in.world_position, to_sun);
+    let wall_light = mix(vec3<f32>(0.5, 0.36, 0.24), vec3<f32>(1.0), under_wall);
+    ambient = ambient * wall_light;
     color = color + b.diffuse * (ambient * ao + bounce) * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
         let fresnel = pow(1.0 - n_v, 4.0);
         let reduction = 1.0 / (b.roughness2 + 1.0);
-        let seen = reflected(in.world_position, reflect(-to_eye, normal), b.perceptual_roughness);
+        let seen = reflected(in.world_position, reflect(-to_eye, normal), b.perceptual_roughness) * wall_light * wall_light;
         color = color + seen * reduction * mix(b.specular, vec3<f32>(b.grazing), fresnel) * ao * baked;
     }
     let emission = shaped.emission;
     color = color + emission;
 
     let distance = length(in.world_position - frame.camera_position.xyz);
-    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), fog_amount(distance));
+    color = mix(color, fog_color_towards(in.world_position - frame.camera_position.xyz), storm_curtains(in.world_position, fog_amount(distance)));
 
     // Glass by rays: what is behind it, bent through it, where the blend
     // would have laid the unbent picture — the glass's own light over it
@@ -2533,7 +2608,12 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         out = out * c.a + c.rgb;
     }
     // Nor the air's haze, which is sunlight too.
-    out = mix(through_air(out, in.clip_position.xy, length(in.world_position - frame.camera_position.xyz)), out, unlit);
+    // The air's own glow toward it is sunlight scattered on the way: in
+    // the dust wall's shadow there is little to scatter.
+    let air_far = length(in.world_position - frame.camera_position.xyz);
+    let air_glow = through_air(vec3<f32>(0.0), in.clip_position.xy, air_far);
+    let air_kept = through_air(vec3<f32>(1.0), in.clip_position.xy, air_far) - air_glow;
+    out = mix(out * air_kept + air_glow * mix(0.15, 1.0, under_wall), out, unlit);
     out = through_fog(out, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
     if (flags & 8u) != 0u {
         out = out * alpha;
@@ -2675,6 +2755,25 @@ fn metre_grid(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
     let cell = floor(plane);
     let checker = abs(cell.x + cell.y) % 2.0;
     return mix(1.0, 0.88, checker) * mix(1.0, 0.45, line);
+}
+
+/// In a sandstorm the fog comes and goes: curtains of sand tens of metres
+/// across, driven past by the wind, thicker and thinner along each way the
+/// eye looks. `amount` is the fog's even share; outside a storm, that.
+fn storm_curtains(p: vec3<f32>, amount: f32) -> f32 {
+    let storm = frame.weather[1].y;
+    if storm <= 0.0 {
+        return amount;
+    }
+    let eye = frame.camera_position.xyz;
+    let d = p - eye;
+    let far = length(d);
+    // Where along the way the nearest curtains hang.
+    let q = eye + d / max(far, 1e-3) * min(far, 35.0);
+    let wind = vec3<f32>(frame.foliage.wind.x, 0.0, frame.foliage.wind.y) * max(frame.foliage.wind.z, 0.5) * 9.0;
+    let at = (q - wind * frame.foliage.wind.w) * 0.045;
+    let curtain = cloud_noise(at) * 0.65 + cloud_noise(at * 2.7 + 3.0) * 0.35;
+    return clamp(amount * mix(1.0, 0.45 + 1.1 * curtain, storm), 0.0, 1.0);
 }
 
 /// How much fog stands between the eye and a point this far away.
@@ -3031,7 +3130,7 @@ fn fs_sky(in: SkyOut) -> @location(0) vec4<f32> {
     let sun = frame.sun_color.rgb * (disc * 20.0 * step(radius, 0.99999) + glow) * step(0.0, up + 0.02);
     var sky = (color + sun) * frame.sky_ground.w;
     if frame.clouds[0].x > 0.0 || frame.weather[1].z > 0.0 || frame.dust.x > 0.5 {
-        let c = textureSampleLevel(cloud_layer, fog_sampler, in.position.xy / frame.cluster_depth.zw, 0.0);
+        let c = cloud_sharp(in.position.xy / frame.cluster_depth.zw);
         sky = sky * c.a + c.rgb;
     }
     return vec4<f32>(through_fog(sky, in.position.xy, frame.volume.y), 1.0);

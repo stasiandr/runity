@@ -243,8 +243,12 @@ fn dust_field(p: vec3<f32>, detail: bool) -> vec2<f32> {
     let ahead = max(-behind, 0.0);
     // Heaped as the wall is, not a flat layer: its depth goes up and down
     // with the billows over it.
-    let heap = billows(vec3<f32>(across, 0.0, along - t * 4.0) / 90.0 + 5.3);
-    let haze = 0.012 * exp(-ahead / 160.0) * exp(-max(p.y, 0.0) / (10.0 + 40.0 * heap));
+    // (Only low, and not far before it: above and beyond, none to speak of.)
+    var haze = 0.0;
+    if p.y < 200.0 && ahead < 900.0 {
+        let heap = billows(vec3<f32>(across, 0.0, along - t * 4.0) / 90.0 + 5.3);
+        haze = 0.012 * exp(-ahead / 160.0) * exp(-max(p.y, 0.0) / (10.0 + 40.0 * heap));
+    }
     if behind < -260.0 {
         return vec2<f32>(haze, min(-(ahead - 260.0), -1.0));
     }
@@ -272,7 +276,16 @@ fn dust_field(p: vec3<f32>, detail: bool) -> vec2<f32> {
     }
     // Hard-edged, dense all through: its foot the densest.
     let foot = 1.0 + 0.8 * exp(-max(p.y, 0.0) / (height * 0.2));
-    let body = clamp(inside / 8.0, 0.0, 1.0) * foot;
+    var body = clamp(inside / 8.0, 0.0, 1.0) * foot;
+    // Inside, it is not even: billows within billows, gaps between them —
+    // what the eye goes through from within, or close. As dense on the
+    // whole as elsewhere.
+    // Only near: from far the parcels are too small to see, and an even
+    // body goes opaque in fewer steps.
+    if detail && inside > 0.0 && distance(p, cloud.eye.xyz) < 250.0 {
+        let within = billows(rolling / 32.0 + vec3<f32>(1.7, t * 0.15, 4.2));
+        body *= 0.25 + 1.5 * within * within;
+    }
     return vec2<f32>(max(body, haze) * cloud.dust.x, inside);
 }
 
@@ -542,7 +555,10 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
                     continue;
                 }
                 let u = dust_uvw(p);
-                var cell = vec4<f32>(density, 1.0, 1.0, 1.0);
+                // Past the light volume (a few km off): in the wall, as dim as
+                // its depths; before it, in the sun.
+                let deep_in = smoothstep(-40.0, 120.0, field.y);
+                var cell = vec4<f32>(density, 1.0 - 0.95 * deep_in, 1.0 - 0.6 * deep_in, 1.0 - 0.8 * deep_in);
                 if inside01(u) {
                     cell = textureSampleLevel(dust_lit, dust_sampler, u, 0.0);
                 }
@@ -552,8 +568,11 @@ fn cs_clouds(@builtin(global_invocation_id) id: vec3<u32>) {
                 // round: never black, and the same glow the storm has when
                 // it closes over the camera.
                 let many = (cell.a * 0.45 + 0.1) * (0.6 + 0.5 * open) * (0.55 + 0.45 * low);
-                let lit = cloud.sun.rgb * cloud.to_sun.w * (cell.g * 1.1 * sand + many * deep)
-                    + cloud.ambient.rgb * (0.3 + 0.6 * low) * (0.5 + 0.8 * open) * deep;
+                // A thick parcel shades itself, a thin one lets the light
+                // through: the dust's swirls, from within as from without.
+                let self_shade = mix(1.3, 0.55, clamp(density / 1.8, 0.0, 1.0));
+                let lit = (cloud.sun.rgb * cloud.to_sun.w * (cell.g * 1.1 * sand + many * deep)
+                    + cloud.ambient.rgb * (0.3 + 0.6 * low) * (0.5 + 0.8 * open) * deep) * self_shade;
                 let extinction = density * 0.07;
                 let passed = exp(-extinction * step);
                 dust_light += dust_through * lit * (1.0 - passed);

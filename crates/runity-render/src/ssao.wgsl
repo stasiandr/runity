@@ -66,13 +66,16 @@ fn hash(p: vec2<f32>) -> f32 {
 /// are the hemisphere ambient's, which the occlusion already shades.
 fn bounced(p: vec3<f32>, n: vec3<f32>, t: vec3<f32>, b: vec3<f32>, jitter: f32) -> vec3<f32> {
     let radius = ssao.bounce.y;
-    let rays = 4u;
+    // Four rays a pixel; two under TAA, turned each frame (`eye.w`), which
+    // its history adds up to more.
+    let turning = ssao.eye.w > 0.0;
+    let rays = select(4u, 2u, turning);
     let steps = 10u;
     var sum = vec3<f32>(0.0);
     for (var i = 0u; i < rays; i = i + 1u) {
         // Cosine-weighted: a ray's share is already its cosine.
-        let u = (f32(i) + 0.5) / f32(rays);
-        let phi = f32(i) * 2.3999632;
+        let u = fract((f32(i) + 0.5) / f32(rays) + ssao.eye.w * 0.5);
+        let phi = f32(i) * 2.3999632 + ssao.eye.w * 6.2831853;
         let across = sqrt(u);
         let dir = normalize(t * cos(phi) * across + b * sin(phi) * across + n * sqrt(1.0 - u));
         let start = p + n * 0.03;
