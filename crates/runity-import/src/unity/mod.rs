@@ -562,9 +562,11 @@ fn keep_origins(dir: &Path) -> Result<()> {
         };
         // One mesh, whatever its nodes: a scene names a model as one
         // thing — its pieces are there for a renderer that names one.
-        if settings.origin_to_base || settings.scene || !sidecar.is_file() {
+        // Its UVs as they are: the scene's materials read them.
+        if settings.origin_to_base || settings.scene || !settings.keep_uvs || !sidecar.is_file() {
             settings.origin_to_base = false;
             settings.scene = false;
+            settings.keep_uvs = true;
             settings.hash = String::new();
             settings.save(&sidecar)?;
         }

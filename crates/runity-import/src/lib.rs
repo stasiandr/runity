@@ -83,6 +83,14 @@ pub struct ImportSettings {
     /// its foot can be dropped on the ground.
     #[serde(default = "yes")]
     pub origin_to_base: bool,
+    /// Keep a glTF's own UVs even where its materials are colours only.
+    /// Otherwise those colours become the model's look — a palette its UVs
+    /// are moved onto — which is right for a kit whose model is all there
+    /// is, and wrong for one a scene always dresses in materials of its own
+    /// (a Unity project's: an atlas read by the UVs the palette would
+    /// overwrite).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep_uvs: bool,
     /// A glTF that is a scene — several objects — rather than one model:
     /// imported as models, materials and a prefab (see [`scene`]). Set on
     /// the first import from what the file holds, and kept.
@@ -114,6 +122,7 @@ impl Default for ImportSettings {
             recompute_normals: false,
             srgb: true,
             origin_to_base: true,
+            keep_uvs: false,
             scene: false,
             parts: BTreeMap::new(),
             materials: BTreeMap::new(),
@@ -542,7 +551,11 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     }
 
     let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
-    let look = gltf_look(&document, &images, &mut vertices, &painted, path);
+    let look = if settings.keep_uvs {
+        None
+    } else {
+        gltf_look(&document, &images, &mut vertices, &painted, path)
+    };
 
     Ok(MeshAsset {
         id: settings.asset_id(),
