@@ -30,7 +30,7 @@ python3 -m http.server -d site 8765
 ```
 
 Needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the
-version in `Cargo.lock`; `wasm-opt` is used when it is there. `cargo run`
+version in `Cargo.lock`; `WASM_OPT=1` runs a recent `wasm-opt` over it. `cargo run`
 still opens the kitchen in a desktop window, alone.
 
 ## Playing together

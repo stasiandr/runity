@@ -14,7 +14,9 @@ mkdir -p "$OUT"
 cargo build --profile web --target wasm32-unknown-unknown
 wasm-bindgen --target web --no-typescript --out-dir "$OUT" --out-name kitchen \
   target/wasm32-unknown-unknown/web/kitchen_rush_web.wasm
-if command -v wasm-opt >/dev/null; then
+# wasm-opt only when asked (WASM_OPT=1): an old one (Ubuntu's binaryen)
+# breaks wasm-bindgen's externref table.
+if [ "${WASM_OPT:-0}" = 1 ] && command -v wasm-opt >/dev/null; then
   wasm-opt -O3 --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext \
     "$OUT/kitchen_bg.wasm" -o "$OUT/kitchen_bg.wasm"
 fi
