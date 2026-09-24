@@ -3044,33 +3044,57 @@ name = "runity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
- "bytemuck",
- "discord-rich-presence",
- "gilrs",
  "glam 0.32.1",
- "glyphon",
  "hecs",
- "hmac",
  "image",
- "kira",
- "objc2 0.6.4",
- "objc2-metal 0.3.2",
- "objc2-metal-fx",
- "pollster 1.0.1",
- "postcard",
- "rapier3d",
- "rkyv",
  "ron",
+ "runity-animation",
+ "runity-audio",
+ "runity-core",
+ "runity-dialogue",
+ "runity-discord",
+ "runity-geometry",
+ "runity-gpu",
+ "runity-input",
+ "runity-navigation",
+ "runity-net",
+ "runity-overlay",
+ "runity-physics",
+ "runity-render",
+ "runity-reports",
+ "runity-routes",
+ "runity-shell",
+ "runity-spline",
+ "runity-steam",
  "serde",
- "serde_json",
- "sha2",
- "steamworks",
- "subsecond",
  "tracing",
- "ureq",
  "wgpu",
- "winit",
+]
+
+[[package]]
+name = "runity-animation"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-audio"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "kira",
+ "rkyv",
+ "runity-core",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -3085,6 +3109,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "hecs",
+ "rkyv",
+ "ron",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-dialogue"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-discord"
+version = "0.1.0"
+dependencies = [
+ "discord-rich-presence",
+ "runity-core",
+]
+
+[[package]]
 name = "runity-editor"
 version = "0.1.0"
 dependencies = [
@@ -3094,6 +3148,28 @@ dependencies = [
  "runity-import",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "runity-geometry"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "rkyv",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-gpu"
+version = "0.1.0"
+dependencies = [
+ "pollster 1.0.1",
+ "runity-core",
+ "tracing",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -3115,6 +3191,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-input"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ron",
+ "runity-core",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "runity-mcp"
 version = "0.1.0"
 dependencies = [
@@ -3125,6 +3212,140 @@ dependencies = [
  "runity-editor",
  "runity-import",
  "serde_json",
+]
+
+[[package]]
+name = "runity-navigation"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-physics",
+]
+
+[[package]]
+name = "runity-net"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "postcard",
+ "ron",
+ "runity-core",
+ "runity-physics",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-overlay"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "glyphon",
+ "ron",
+ "runity-core",
+ "runity-gpu",
+ "serde",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "runity-physics"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "rapier3d",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "runity-render"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "hecs",
+ "objc2 0.6.4",
+ "objc2-metal 0.3.2",
+ "objc2-metal-fx",
+ "pollster 1.0.1",
+ "rkyv",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-gpu",
+ "runity-overlay",
+ "serde",
+ "wgpu",
+]
+
+[[package]]
+name = "runity-reports"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "hmac",
+ "runity-core",
+ "serde_json",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
+name = "runity-routes"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "serde",
+]
+
+[[package]]
+name = "runity-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gilrs",
+ "runity-core",
+ "runity-gpu",
+ "runity-overlay",
+ "runity-render",
+ "subsecond",
+ "winit",
+]
+
+[[package]]
+name = "runity-spline"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
+]
+
+[[package]]
+name = "runity-steam"
+version = "0.1.0"
+dependencies = [
+ "runity-core",
+ "runity-net",
+ "steamworks",
+ "tracing",
 ]
 
 [[package]]
@@ -3153,7 +3374,8 @@ dependencies = [
  "image",
  "pollster 1.0.1",
  "resvg",
- "runity",
+ "runity-core",
+ "runity-gpu",
  "taffy",
  "wgpu",
 ]

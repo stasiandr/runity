@@ -6,6 +6,8 @@
 //! "the hut", "the bridge", "the north wall" — things that move and hide
 //! and turn into prefabs as one.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::{Mat4, Vec3};
 use runity::{EntityDesc, EntityId, Transform};
 
@@ -92,7 +94,7 @@ impl Session {
     /// in the entity's own space. One undo step; `false` for a thing with
     /// no model to fit.
     pub fn fit_collider(&mut self, id: EntityId) -> EditResult<bool> {
-        let Some(model) = self.line(id).map(|l| l.model.clone()) else {
+        let Some(model) = self.line(id).map(|l| l.model().clone()) else {
             return Err(EditError::NoEntity(id));
         };
         let Some((low, high)) = self.bounds_of(&model) else {
@@ -102,7 +104,7 @@ impl Session {
             half: (high - low) * 0.5,
             center: (high + low) * 0.5,
         };
-        self.update(id, |desc| desc.collider = collider)?;
+        self.update(id, |desc| desc.set_part(&collider))?;
         Ok(true)
     }
 

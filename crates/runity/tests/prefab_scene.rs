@@ -10,6 +10,8 @@
 //! tool forgot to expand", which produces a scene that opens fine and shows
 //! nothing.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::{Gpu, MeshHandle, OffscreenTarget, Renderer, Scene};
@@ -149,16 +151,16 @@ fn every_instance_reaches_the_frame() {
 
     let frame = runity::build_frame(
         &world,
-        runity::scene_camera(&scene.view),
+        runity::scene_camera(&scene.view()),
         runity::render::Lighting {
             sun_direction: runity::glam::Vec3::new(-0.4, -0.75, -0.5).normalize(),
-            sun_intensity: scene.sun.intensity,
+            sun_intensity: scene.sun().intensity,
             ..Default::default()
         },
         runity::render::FogSettings {
-            color: runity::glam::Vec3::from_array(scene.fog.color),
-            start: scene.fog.start,
-            end: scene.fog.end,
+            color: runity::glam::Vec3::from_array(scene.fog().color),
+            start: scene.fog().start,
+            end: scene.fog().end,
             ..Default::default()
         },
     );

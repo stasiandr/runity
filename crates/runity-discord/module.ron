@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "discord",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "What a player is doing, on their Discord profile.",
+    depends: [],
+    runtime: true,
+    editor: false,
+    parts: [],
+    assets: [],
+    feature: Some("discord"),
+)

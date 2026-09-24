@@ -17,7 +17,7 @@ use glyphon::{
     RasterizedCustomGlyph, Resolution, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport,
 };
-use runity::gpu::Gpu;
+use runity_gpu::gpu::Gpu;
 
 use crate::{ImageId, Layer, Rect, Ui};
 

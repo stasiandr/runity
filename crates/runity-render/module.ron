@@ -1,0 +1,13 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "render",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "The 3D scene drawn on the GPU: materials, lights, shadows, sky, post-processing, particles, terrain, foliage, gizmos.",
+    depends: ["geometry", "gpu", "overlay"],
+    runtime: true,
+    editor: false,
+    parts: ["ambient_occlusion", "bends_grass", "camera", "cloth", "decal", "fog", "footprints", "heap", "irradiance_volume", "light", "material", "particles", "post", "post_volume", "ray_tracing", "reflection_probe", "render_texture", "rope", "screen_space_reflections", "sky", "sun", "view", "virtual_shadows", "volumetric_fog", "weather"],
+    assets: [],
+)

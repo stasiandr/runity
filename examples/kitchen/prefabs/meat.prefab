@@ -1,0 +1,6 @@
+// Meat (Kenney's): raw from its crate, a patty once fried on a pan, burnt if left there. The game shows which.
+(id: "545d60a9dcb99c63", name: "meat", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Food(Meat)) }, children: [
+(id: "629e2cf580f53730", name: "raw", model: "meat-raw", transform: (position: (0.000, -0.150, 0.000), scale: (1.300, 1.300, 1.300)), components: { "mark": (name: "raw") }),
+(id: "22282f5fcb9df92a", name: "cooked", model: "meat-patty", transform: (position: (0.000, -0.150, 0.000), scale: (1.300, 1.300, 1.300)), inactive: true, components: { "mark": (name: "cooked") }),
+(id: "0ae513488194e458", name: "burnt", model: "meat-patty", transform: (position: (0.000, -0.150, 0.000), scale: (1.300, 1.300, 1.300)), material: "burnt", inactive: true, components: { "mark": (name: "burnt") }),
+])

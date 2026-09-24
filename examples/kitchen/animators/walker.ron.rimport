@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "animators/walker.ron",
+    id: Some("1025b678b1491df92681f966c6887cbd"),
+)

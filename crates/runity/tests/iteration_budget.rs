@@ -12,6 +12,8 @@
 //! once does not fail it, and a real regression — an accidental quadratic,
 //! a clone per entity per field — still does.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::time::{Duration, Instant};
 
 use runity::{EntityDesc, EntityId, MeshHandle, Scene, Transform};
@@ -22,12 +24,14 @@ const PROPS: usize = 1000;
 fn level() -> Scene {
     let mut scene = Scene::default();
     for i in 0..PROPS {
-        let part = |j: u64, model: &str| EntityDesc {
-            id: EntityId::from_raw((i as u64) * 16 + j + 1),
-            name: format!("part {j}"),
-            model: model.into(),
-            material: runity::scene::MaterialRef::Named("stone".into()),
-            ..EntityDesc::default()
+        let part = |j: u64, model: &str| {
+            EntityDesc {
+                id: EntityId::from_raw((i as u64) * 16 + j + 1),
+                name: format!("part {j}"),
+                ..EntityDesc::default()
+            }
+            .with(runity::scene::ModelRef(model.into()))
+            .with(runity::scene::MaterialRef::Named("stone".into()))
         };
         let mut prop = part(0, "builtin:cube");
         prop.name = format!("prop {i}");
@@ -114,15 +118,15 @@ fn building_a_frame_of_a_big_level_is_within_budget_and_steady() {
     let scene = level();
     let mut world = runity::hecs::World::new();
     runity::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
-    let camera = runity::scene_camera(&scene.view);
+    let camera = runity::scene_camera(&scene.view());
     let mut times = runity::FrameTimes::new(60);
     for _ in 0..60 {
         let start = Instant::now();
         let frame = runity::build_frame(
             &world,
             camera,
-            runity::scene_lighting(&scene.sun),
-            runity::scene_fog(&scene.fog),
+            runity::scene_lighting(&scene.sun()),
+            runity::scene_fog(&scene.fog()),
         );
         times.record(start.elapsed());
         assert_eq!(frame.draws.len(), PROPS * 3);

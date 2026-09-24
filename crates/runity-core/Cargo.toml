@@ -1,0 +1,17 @@
+[package]
+name = "runity-core"
+description = "The bare core of runity: the world and stable IDs, the transform and its hierarchy, components, scenes and prefabs, assets and their reload, saves, input events. No GPU, no physics, no sound: those are modules."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+rkyv = { version = "0.8", features = ["bytecheck"] }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"

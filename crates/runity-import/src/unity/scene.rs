@@ -1,5 +1,7 @@
 //! A `.unity` or `.prefab` file as runity entities.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use runity::glam::{Quat, Vec3};
@@ -17,6 +19,8 @@ const GAME_OBJECT: u32 = 1;
 const TRANSFORM: u32 = 4;
 const RECT_TRANSFORM: u32 = 224;
 const PREFAB_INSTANCE: u32 = 1001;
+/// The fileID Unity gives a model's root GameObject, in every model.
+const MODEL_ROOT: i64 = 919132149155446097;
 
 /// An entity's ID from a Unity fileID: the same object, the same ID, every
 /// time the file is imported (docs/unity-import.md).
@@ -81,7 +85,7 @@ pub fn sun(text: &str) -> Option<runity::scene::Sun> {
 /// The roots of a Unity file as entities, children under them.
 pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<EntityDesc> {
     let docs = yaml::documents(text);
-    let by_id = yaml::by_id(&docs);
+    let mut parts = Parts::default();
 
     // Where each object is: a transform's GameObject, a stripped
     // transform's prefab instance.
@@ -146,6 +150,19 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         body_object,
     };
 
+    // A stripped object stands for a part of a prefab instance: which
+    // part, as the prefab's source names it.
+    let stripped_source: HashMap<i64, (i64, String)> = docs
+        .iter()
+        .filter(|d| d.stripped)
+        .filter_map(|d| {
+            let r = d.body.reference("m_CorrespondingSourceObject")?;
+            Some((d.file_id, (r.file_id, r.guid?)))
+        })
+        .collect();
+    let part_of_stripped = |id: i64| stripped_source.get(&id).cloned();
+    // What hangs on a part of an instance rather than on the instance.
+    let mut on_part: HashMap<i64, (i64, String)> = HashMap::new();
     // Every entity, and its parent entity.
     let mut entities: BTreeMap<i64, EntityDesc> = BTreeMap::new();
     let mut parent: HashMap<i64, i64> = HashMap::new();
@@ -164,10 +181,10 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     .filter(|l| *l != 0)
                     .and_then(|l| unity.layers.get(&l))
                 {
-                    desc.layer = layer.clone();
+                    desc.set_part(&runity::scene::LayerName(layer.clone()));
                 }
                 if d.body.i64("m_IsActive") == Some(0) {
-                    report.skip("an inactive GameObject (brought over active)");
+                    desc.inactive = true;
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
@@ -182,6 +199,9 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     if let Some(p) = entity_of_transform(father.file_id) {
                         parent.insert(*go, p);
                     }
+                    if let Some(part) = part_of_stripped(father.file_id) {
+                        on_part.insert(*go, part);
+                    }
                 }
                 for (i, child) in d.body.list("m_Children").iter().enumerate() {
                     if let Some(c) =
@@ -192,12 +212,17 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 }
             }
             PREFAB_INSTANCE => {
-                let Some((desc, into)) = instance(d, &by_id, &entity_of_transform, unity, report)
+                let Some((desc, into)) =
+                    instance(d, &mut parts, &entity_of_transform, unity, report)
                 else {
                     continue;
                 };
                 if let Some(p) = into {
                     parent.insert(d.file_id, p);
+                }
+                let father = d.body["m_Modification"].reference("m_TransformParent");
+                if let Some(part) = father.and_then(|r| part_of_stripped(r.file_id)) {
+                    on_part.insert(d.file_id, part);
                 }
                 entities.insert(d.file_id, desc);
             }
@@ -219,16 +244,44 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
     }
     // Components added to a prefab instance's parts in this file land on
     // the instance: runity's instance is one line.
+    // Components added to a part go on that part, as an override of it;
+    // on the prefab's root, on the instance line itself.
     for d in docs.iter().filter(|d| d.class == GAME_OBJECT && d.stripped) {
-        if let Some(instance) = d.body.reference("m_PrefabInstance") {
-            let added = components.get(&d.file_id).map_or(0, Vec::len);
-            if added > 0 {
-                if let Some(desc) = entities.get_mut(&instance.file_id) {
-                    for c in components.get(&d.file_id).into_iter().flatten() {
-                        component(desc, c, &refs, report);
-                    }
+        let Some(instance) = d.body.reference("m_PrefabInstance") else {
+            continue;
+        };
+        let added = components.get(&d.file_id).into_iter().flatten();
+        let part = part_of_stripped(d.file_id).and_then(|(fid, guid)| {
+            let of = parts.of(unity, &guid, 0);
+            of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root)
+        });
+        let Some(desc) = entities.get_mut(&instance.file_id) else {
+            continue;
+        };
+        match part {
+            None => {
+                for c in added {
+                    component(desc, c, &refs, report);
                 }
             }
+            Some(key) => {
+                let mut given = EntityDesc::default();
+                for c in added {
+                    component(&mut given, c, &refs, report);
+                }
+                let change = runity::scene::Override::between(&EntityDesc::default(), &given);
+                if !change.is_empty() {
+                    desc.overrides.entry(key).or_default().merge(change);
+                }
+            }
+        }
+    }
+    // Hung on a part: the part's key, where it is not the prefab's root.
+    for (child, (fid, guid)) in on_part {
+        let of = parts.of(unity, &guid, 0);
+        let key = of.keys.get(&fid).copied().filter(|k| Some(*k) != of.root);
+        if let (Some(key), Some(desc)) = (key, entities.get_mut(&child)) {
+            desc.in_part = Some(key);
         }
     }
 
@@ -310,7 +363,7 @@ fn transform(t: &Yaml) -> Transform {
 /// called, from its modifications. And the entity it is under.
 fn instance(
     d: &Doc,
-    _by_id: &HashMap<i64, &Doc>,
+    parts: &mut Parts,
     entity_of_transform: &impl Fn(i64) -> Option<i64>,
     unity: &Unity,
     report: &mut Report,
@@ -338,13 +391,24 @@ fn instance(
         ..Default::default()
     };
     if kind == "model" {
-        desc.model = AssetLink::named(name);
+        desc.set_part(&runity::scene::ModelRef(AssetLink::named(name)));
     } else {
         desc.prefab = AssetLink::named(name);
     }
-    // The root's transform is what the modifications say; which target is
-    // the root is the one carrying m_LocalPosition, as Unity always writes it.
-    let mut root_target = None;
+    // The root's transform is what the modifications say. Which target is
+    // the root: the one the prefab's own root is, or else the first carrying
+    // m_LocalPosition, as Unity always writes the root's.
+    let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
+    let key_of = |t: Option<i64>| of.as_ref().and_then(|o| o.keys.get(&t?).copied());
+    let root_key = of.as_ref().and_then(|o| o.root);
+    let mut root_target = modification
+        .list("m_Modifications")
+        .iter()
+        .filter_map(|m| m.reference("target").map(|r| r.file_id))
+        .find(|t| root_key.is_some() && key_of(Some(*t)) == root_key);
+    // A part moved, turned or scaled: its axes as Unity says them.
+    type Axes = ([Option<f32>; 3], [Option<f32>; 4], [Option<f32>; 3]);
+    let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
@@ -355,38 +419,88 @@ fn instance(
             let rest = path.strip_prefix(name)?.strip_prefix('.')?;
             ["x", "y", "z", "w"].iter().position(|a| *a == rest)
         };
-        if let Some(i) = axis("m_LocalPosition") {
-            root_target = root_target.or(target);
-            if target == root_target && i < 3 {
-                p[i] = value;
+        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+            .iter()
+            .find_map(|f| Some((*f, axis(f)?)));
+        if let Some((field, i)) = transforming {
+            if field == "m_LocalPosition" {
+                root_target = root_target.or(target);
             }
-        } else if let Some(i) = axis("m_LocalRotation") {
-            if target == root_target || root_target.is_none() {
-                q[i] = value;
-            }
-        } else if let Some(i) = axis("m_LocalScale") {
-            if target == root_target || root_target.is_none() {
-                if i < 3 {
-                    s[i] = value;
+            let on_root = target == root_target || root_target.is_none();
+            if on_root {
+                match field {
+                    "m_LocalPosition" if i < 3 => p[i] = value,
+                    "m_LocalRotation" => q[i] = value,
+                    "m_LocalScale" if i < 3 => s[i] = value,
+                    _ => {}
                 }
+            } else if let Some(part) = key_of(target).filter(|_| kind == "prefab") {
+                let axes = moved.entry(part).or_default();
+                match field {
+                    "m_LocalPosition" if i < 3 => axes.0[i] = Some(value),
+                    "m_LocalRotation" => axes.1[i] = Some(value),
+                    "m_LocalScale" if i < 3 => axes.2[i] = Some(value),
+                    _ => {}
+                }
+            } else if kind == "model" {
+                report.skip("a placed model's part moved (a model is one entity)");
             } else {
-                report.skip("a prefab instance's part rescaled (m_LocalScale on a part)");
+                report.skip("a prefab instance's part moved, where the part is not found");
             }
         } else if path == "m_Materials.Array.data[0]" {
-            // The first material swapped on the placed thing.
+            // The first material swapped: on the placed thing, or on the
+            // part whose renderer it is.
             let material = m
                 .reference("objectReference")
                 .and_then(|r| r.guid)
                 .and_then(|g| unity.named(&g))
                 .filter(|(k, _)| *k == "material");
             if let Some((_, name)) = material {
-                desc.material = MaterialRef::Named(AssetLink::named(name));
+                let reference = MaterialRef::Named(AssetLink::named(name));
+                let on = target
+                    .and_then(|t| of.as_ref()?.components.get(&t))
+                    .map(|(part, _)| *part)
+                    .filter(|part| Some(*part) != root_key);
+                match on {
+                    Some(part) => desc.overrides.entry(part).or_default().set_part(&reference),
+                    None => desc.set_part(&reference),
+                }
             }
         } else if path.starts_with("m_Materials") {
             report.skip("a prefab modification of `m_Materials` past the first");
         } else if path == "m_Name" {
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
+            }
+        } else if path == "m_IsActive" || path == "m_Layer" {
+            // On the part it names — the prefab's root being the instance
+            // itself, which the engine applies an override of the root to.
+            let Some(part) = key_of(target) else {
+                report.skip(format!(
+                    "a prefab modification of `{path}` on something not a GameObject of it"
+                ));
+                continue;
+            };
+            // A placed model has no parts to override: it is its root.
+            let mut own = runity::scene::Override::default();
+            let change = if kind == "model" {
+                &mut own
+            } else {
+                desc.overrides.entry(part).or_default()
+            };
+            if path == "m_IsActive" {
+                change.inactive = Some(value == 0.0);
+            } else {
+                change.set_part(&runity::scene::LayerName(
+                    unity
+                        .layers
+                        .get(&(value as i64))
+                        .cloned()
+                        .unwrap_or_default(),
+                ));
+            }
+            if kind == "model" {
+                own.apply(&mut desc);
             }
         } else if path.starts_with("m_LocalEulerAnglesHint") || path == "m_RootOrder" {
             // Editor hints: nothing to carry.
@@ -398,11 +512,274 @@ fn instance(
     local.scale = Vec3::from_array(s);
     local.set_rotation(rotation(q));
     desc.transform = local;
+    // Each part moved: the axes said, the rest where the prefab has it.
+    for (part, (at, turn, size)) in moved {
+        let base = of
+            .as_ref()
+            .and_then(|o| o.places.get(&part))
+            .copied()
+            .unwrap_or_default();
+        // The base back in Unity's hand, to fill the axes not said.
+        let (bp, bq) = (base.position, base.rotation());
+        let unity_p = [bp.x, bp.y, -bp.z];
+        let unity_q = [-bq.x, -bq.y, bq.z, bq.w];
+        let p: [f32; 3] = std::array::from_fn(|i| at[i].unwrap_or(unity_p[i]));
+        let q: [f32; 4] = std::array::from_fn(|i| turn[i].unwrap_or(unity_q[i]));
+        let s: [f32; 3] = std::array::from_fn(|i| size[i].unwrap_or(base.scale[i]));
+        let mut t = Transform {
+            position: position(p),
+            scale: Vec3::from_array(s),
+            ..Default::default()
+        };
+        t.set_rotation(rotation(q));
+        desc.overrides.entry(part).or_default().transform = Some(t);
+    }
+    // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
-        let _ = removed;
-        report.skip("a component removed from a prefab instance");
+        let found =
+            yaml::reference(removed).and_then(|r| of.as_ref()?.components.get(&r.file_id).cloned());
+        match found {
+            Some((part, what)) => {
+                let change = desc.overrides.entry(part).or_default();
+                if !change.removed.contains(&what) {
+                    change.removed.push(what);
+                }
+            }
+            None => report.skip(
+                "a component removed from a prefab instance, of a kind runity has no place for",
+            ),
+        }
     }
     Some((desc, into))
+}
+
+/// A prefab file's GameObjects as a modification's `target` names them —
+/// its own, and through the prefabs inside it theirs, whose id in the file is
+/// Unity's `(instance ^ source) & i64::MAX` — to the key runity's overrides
+/// name each part by: its own id, or its instance's within its own.
+#[derive(Default)]
+struct Parts {
+    files: HashMap<String, std::rc::Rc<PrefabParts>>,
+}
+
+#[derive(Default)]
+struct PrefabParts {
+    keys: HashMap<i64, EntityId>,
+    /// The key the prefab's root has — for a variant, its instance's.
+    root: Option<EntityId>,
+    /// Each part's own place, as the prefab puts it.
+    places: HashMap<EntityId, Transform>,
+    /// Its components by the id a `m_RemovedComponents` names them: the
+    /// part they are on, and what a removal takes off it.
+    components: HashMap<i64, (EntityId, String)>,
+}
+
+/// What taking a component away takes off a line: the field, or the
+/// game component by its name.
+fn removal(d: &Doc, unity: &Unity) -> Option<String> {
+    Some(
+        match d.kind.as_str() {
+            "MeshFilter" | "MeshRenderer" | "SkinnedMeshRenderer" => "model",
+            "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider" => "collider",
+            "Rigidbody" => "body",
+            "Light" => "light",
+            "Camera" => "camera",
+            "ParticleSystem" | "ParticleSystemRenderer" => "particles",
+            "AudioSource" => "sound",
+            "Animator" => "animator",
+            "MonoBehaviour" => {
+                let script = d.body.reference("m_Script")?;
+                let path = unity.guids.get(script.guid.as_deref()?)?;
+                return Some(snake(&super::stem(path)));
+            }
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// Where a prefab instance puts its prefab's root, from its modifications:
+/// the target that carries `m_LocalPosition` is the root, as Unity writes.
+fn placement(modification: &Yaml) -> Transform {
+    let (mut p, mut q, mut s) = ([0.0f32; 3], [0.0, 0.0, 0.0, 1.0f32], [1.0f32; 3]);
+    let mut root = None;
+    for m in modification.list("m_Modifications") {
+        let (Some(path), target) = (
+            m.str("propertyPath"),
+            m.reference("target").map(|r| r.file_id),
+        ) else {
+            continue;
+        };
+        let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
+        let Some((field, axis)) = path.split_once('.') else {
+            continue;
+        };
+        let Some(i) = ["x", "y", "z", "w"].iter().position(|a| *a == axis) else {
+            continue;
+        };
+        if field == "m_LocalPosition" {
+            root = root.or(target);
+        }
+        if root.is_some() && target != root {
+            continue;
+        }
+        match field {
+            "m_LocalPosition" if i < 3 => p[i] = value,
+            "m_LocalRotation" => q[i] = value,
+            "m_LocalScale" if i < 3 => s[i] = value,
+            _ => {}
+        }
+    }
+    let mut out = Transform {
+        position: position(p),
+        scale: Vec3::from_array(s),
+        ..Default::default()
+    };
+    out.set_rotation(rotation(q));
+    out
+}
+
+impl Parts {
+    fn of(&mut self, unity: &Unity, guid: &str, depth: usize) -> std::rc::Rc<PrefabParts> {
+        if let Some(done) = self.files.get(guid) {
+            return done.clone();
+        }
+        let mut out = PrefabParts::default();
+        // A model is one entity: of its objects only its root is anything.
+        if unity.named(guid).is_some_and(|(kind, _)| kind == "model") {
+            let root = entity_id(MODEL_ROOT);
+            out.keys.insert(MODEL_ROOT, root);
+            out.root = Some(root);
+        }
+        let text = unity
+            .named(guid)
+            .filter(|(kind, _)| *kind == "prefab" && depth < 16)
+            .and_then(|_| unity.guids.get(guid))
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        for d in text.as_deref().map(yaml::documents).unwrap_or_default() {
+            match d.class {
+                GAME_OBJECT if !d.stripped => {
+                    out.keys.insert(d.file_id, entity_id(d.file_id));
+                }
+                TRANSFORM | RECT_TRANSFORM if !d.stripped => {
+                    let go = d
+                        .body
+                        .reference("m_GameObject")
+                        .map(|r| entity_id(r.file_id));
+                    let top = d.body.reference("m_Father").is_none_or(|r| r.file_id == 0);
+                    if top {
+                        out.root = go;
+                    }
+                    if let Some(go) = go {
+                        out.places.insert(go, transform(&d.body));
+                        // A move names the transform: the same part.
+                        out.keys.insert(d.file_id, go);
+                    }
+                }
+                PREFAB_INSTANCE => {
+                    let Some(inner) = d
+                        .body
+                        .reference("m_SourcePrefab")
+                        .and_then(|r| r.guid)
+                        .map(|g| self.of(unity, &g, depth + 1))
+                    else {
+                        continue;
+                    };
+                    let n = entity_id(d.file_id);
+                    // A variant's base is expanded straight into its scope.
+                    let variant = d.body["m_Modification"]
+                        .reference("m_TransformParent")
+                        .is_none_or(|r| r.file_id == 0);
+                    if variant {
+                        out.root = Some(n);
+                    }
+                    let key_of = |e: EntityId| {
+                        if Some(e) == inner.root {
+                            n
+                        } else if variant {
+                            e
+                        } else {
+                            n.within(e)
+                        }
+                    };
+                    for (x, e) in &inner.keys {
+                        out.keys.insert((d.file_id ^ x) & i64::MAX, key_of(*e));
+                    }
+                    for (e, place) in &inner.places {
+                        out.places.insert(key_of(*e), *place);
+                    }
+                    // Its root stands where this file puts it.
+                    out.places.insert(n, placement(&d.body["m_Modification"]));
+                    for (x, (e, what)) in &inner.components {
+                        out.components
+                            .insert((d.file_id ^ x) & i64::MAX, (key_of(*e), what.clone()));
+                    }
+                }
+                _ if !d.stripped => {
+                    let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
+                    if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
+                        out.components
+                            .insert(d.file_id, (entity_id(go.file_id), what));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let out = std::rc::Rc::new(out);
+        self.files.insert(guid.to_string(), out.clone());
+        out
+    }
+}
+
+/// An AudioSource: its clip, volume, loop, whether it plays on awake, how
+/// far it carries and its mixer group, by the group's name.
+fn audio_source(desc: &mut EntityDesc, b: &Yaml, unity: &Unity, report: &mut Report) {
+    // Unity 6 keeps the clip as `m_Resource`, before it `m_audioClip`.
+    let clip = ["m_Resource", "m_audioClip"]
+        .iter()
+        .filter_map(|key| b.reference(key))
+        .find_map(|r| unity.named(r.guid.as_deref()?))
+        .filter(|(kind, _)| *kind == "sound");
+    let Some((_, clip)) = clip else {
+        report.skip("an AudioSource with no clip (the game gives it one)");
+        return;
+    };
+    if desc.sound().is_some() {
+        report.skip("a second AudioSource on one object (one sound an entity)");
+        return;
+    }
+    if b.i64("Mute") == Some(1) {
+        report.skip("a muted AudioSource");
+    }
+    // Spatial blend: the first key of its curve, 0 flat and 1 in the world.
+    let blend = b["panLevelCustomCurve"]
+        .list("m_Curve")
+        .first()
+        .and_then(|k| k.f32("value"))
+        .unwrap_or(0.0);
+    let group = b
+        .reference("OutputAudioMixerGroup")
+        .filter(|r| r.file_id != 0)
+        .and_then(|r| {
+            let text = std::fs::read_to_string(unity.guids.get(r.guid.as_deref()?)?).ok()?;
+            yaml::documents(&text)
+                .into_iter()
+                .find(|d| d.file_id == r.file_id)
+                .and_then(|d| d.body.str("m_Name").map(snake))
+        })
+        .unwrap_or_default();
+    desc.set_part(&runity::scene::SoundSource {
+        clip: AssetLink::named(clip),
+        volume: b.f32("m_Volume").unwrap_or(1.0),
+        looped: b.i64("Loop") == Some(1),
+        pitch: b.f32("m_Pitch").unwrap_or(1.0),
+        // A switched-off AudioSource plays only when the game says so.
+        on_start: b.i64("m_PlayOnAwake") != Some(0) && b.i64("m_Enabled") != Some(0),
+        group,
+        spatial: blend >= 0.5,
+        near: b.f32("MinDistance").unwrap_or(1.0),
+        far: b.f32("MaxDistance").unwrap_or(40.0),
+    });
 }
 
 /// The field a property path is about: `hunts.any.Array.data[0]` → `hunts`.
@@ -416,13 +793,13 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                desc.model = AssetLink::named(model);
+                desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
-                    desc.model = AssetLink::named(model);
+                    desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
                 }
             }
             let materials = b.list("m_Materials");
@@ -430,7 +807,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 if let Some((kind, name)) = first.guid.as_deref().and_then(|g| refs.unity.named(g))
                 {
                     if kind == "material" {
-                        desc.material = MaterialRef::Named(AssetLink::named(name));
+                        desc.set_part(&MaterialRef::Named(AssetLink::named(name)));
                     }
                 }
             }
@@ -441,41 +818,41 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         "BoxCollider" => {
             let size = b.vec3("m_Size").unwrap_or([1.0; 3]);
             let center = b.vec3("m_Center").map(position).unwrap_or(Vec3::ZERO);
-            desc.collider = Collider::Box {
+            desc.set_part(&Collider::Box {
                 half: Vec3::from_array(size) * 0.5,
                 center,
-            };
+            });
             solid(desc, b);
         }
         "SphereCollider" => {
-            desc.collider = Collider::Sphere {
+            desc.set_part(&Collider::Sphere {
                 radius: b.f32("m_Radius").unwrap_or(0.5),
-            };
+            });
             solid(desc, b);
         }
         "CapsuleCollider" => {
             let radius = b.f32("m_Radius").unwrap_or(0.5);
             let height = b.f32("m_Height").unwrap_or(2.0);
-            desc.collider = Collider::Capsule {
+            desc.set_part(&Collider::Capsule {
                 half_height: (height * 0.5 - radius).max(0.0),
                 radius,
-            };
+            });
             if b.i64("m_Direction").is_some_and(|d| d != 1) {
                 report.skip("a capsule lying along x or z (brought over standing)");
             }
             solid(desc, b);
         }
         "MeshCollider" => {
-            desc.collider = Collider::Model;
+            desc.set_part(&Collider::Model);
             solid(desc, b);
         }
         "Rigidbody" => {
-            desc.body = if b.i64("m_IsKinematic") == Some(1) {
+            desc.set_part(&if b.i64("m_IsKinematic") == Some(1) {
                 Body::Kinematic
             } else {
                 Body::Dynamic
-            };
-            desc.physics = BodyProps {
+            });
+            desc.set_part(&BodyProps {
                 drag: b.f32("m_Drag").or(b.f32("m_LinearDamping")).unwrap_or(0.0),
                 spin_drag: b
                     .f32("m_AngularDrag")
@@ -487,7 +864,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     1.0
                 },
                 ..BodyProps::default()
-            };
+            });
         }
         "Light" => {
             let color = b.color("m_Color").unwrap_or([1.0; 4]);
@@ -496,7 +873,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 report.skip("a directional light (the scene's sun is its own setting)");
                 return;
             }
-            desc.light = Some(Light {
+            desc.set_part(&Light {
                 color: (color[0], color[1], color[2]),
                 intensity: b.f32("m_Intensity").unwrap_or(1.0),
                 range: b.f32("m_Range").unwrap_or(10.0),
@@ -511,7 +888,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             if b.i64("orthographic") == Some(1) {
                 lens.ortho = b.f32("orthographic size");
             }
-            desc.camera = Some(lens);
+            desc.set_part(&lens);
         }
         "HingeJoint" | "FixedJoint" | "CharacterJoint" | "ConfigurableJoint" | "SpringJoint" => {
             let to = b
@@ -521,7 +898,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 .map(|go| entity_id(*go))
                 .unwrap_or(EntityId::UNASSIGNED);
             let anchor = b.vec3("m_Anchor").map(position).unwrap_or(Vec3::ZERO);
-            desc.joint = match c.kind.as_str() {
+            desc.set_part(&match c.kind.as_str() {
                 "FixedJoint" => Joint::Fixed { to },
                 "HingeJoint" => Joint::Hinge {
                     to,
@@ -544,9 +921,9 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     report.skip(format!("{} (brought over as a ball joint)", c.kind));
                     Joint::Ball { to, anchor }
                 }
-            };
+            });
             // Unity writes an unbreakable joint's force as infinity.
-            desc.joint_break = b.f32("m_BreakForce").filter(|f| f.is_finite() && *f < 1e30);
+            desc.set_joint_break(b.f32("m_BreakForce").filter(|f| f.is_finite() && *f < 1e30));
         }
         "MonoBehaviour" => {
             let Some(script) = b.reference("m_Script") else {
@@ -559,7 +936,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             // Dacha's planar mirror: runity's own, a camera reflected in
             // the plane the mirror's material shows.
             if super::stem(path) == "PlanarReflectionMirror" {
-                desc.render_texture = Some(runity::scene::RenderTexture {
+                desc.set_part(&runity::scene::RenderTexture {
                     name: "mirror".into(),
                     hide: Vec::new(),
                     mirror: true,
@@ -576,12 +953,23 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "Animator" => {
-            report.skip("Animator (the graph comes over from animators/; the game attaches it)")
+            let graph = b
+                .reference("m_Controller")
+                .and_then(|r| refs.unity.named(r.guid.as_deref()?))
+                .filter(|(kind, _)| *kind == "animator");
+            match graph {
+                Some((_, name)) if b.i64("m_Enabled") != Some(0) => {
+                    desc.set_part(&runity::scene::AnimatorRef(name.to_string()))
+                }
+                Some(_) => report.skip("a switched-off Animator"),
+                None => report.skip("an Animator with no controller (or an override controller)"),
+            }
         }
-        "AudioSource" => report.skip("AudioSource"),
+        "AudioSource" => audio_source(desc, b, refs.unity, report),
         "ParticleSystem" => shuriken(desc, b, report),
         "ParticleSystemRenderer" => {
-            let e = desc.particles.get_or_insert_with(Default::default);
+            let mut emitter = desc.particles().unwrap_or_default();
+            let e = &mut emitter;
             match b.i64("m_RenderMode").unwrap_or(0) {
                 // Billboards, and stretched ones: longer the faster.
                 0 | 2 | 3 => e.facing = true,
@@ -604,6 +992,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     e.material = Some(AssetLink::named(name));
                 }
             }
+            desc.set_part(&emitter);
         }
         other => report.skip(other.to_string()),
     }
@@ -646,7 +1035,8 @@ fn gradient(v: &Yaml) -> Option<([f32; 4], [f32; 4])> {
 /// the simulation space, size and colour over lifetime. What has no
 /// counterpart (bursts, noise, collision, trails…) the report names.
 fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
-    let e = desc.particles.get_or_insert_with(Default::default);
+    let mut emitter = desc.particles().unwrap_or_default();
+    let e = &mut emitter;
     let main = &b["InitialModule"];
     let rgb = |c: [f32; 4]| (c[0], c[1], c[2]);
     e.life = min_max(&main["startLifetime"]).unwrap_or(5.0);
@@ -728,15 +1118,16 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
             report.skip(format!("a ParticleSystem's {module}"));
         }
     }
+    desc.set_part(&emitter);
 }
 
 /// A collider's GameObject is solid when nothing else says, a trigger when
 /// Unity said so.
 fn solid(desc: &mut EntityDesc, b: &Yaml) {
     if b.i64("m_IsTrigger") == Some(1) {
-        desc.body = Body::Trigger;
-    } else if desc.body == Body::None {
-        desc.body = Body::Static;
+        desc.set_part(&Body::Trigger);
+    } else if desc.body() == Body::None {
+        desc.set_part(&Body::Static);
     }
 }
 
@@ -913,6 +1304,7 @@ mod tests {
                 ("mmm".to_string(), "Assets/Mats/wood.mat".into()),
                 ("sss".to_string(), "Assets/Scripts/Door.cs".into()),
                 ("ppp".to_string(), "Assets/Prefabs/Lamp.prefab".into()),
+                ("www".to_string(), "Assets/Sounds/Radio.ogg".into()),
             ]
             .into_iter()
             .collect(),
@@ -922,6 +1314,7 @@ mod tests {
                 ("mmm", "wood"),
                 ("sss", "Door"),
                 ("ppp", "Lamp"),
+                ("www", "radio"),
             ]
             .into_iter()
             .map(|(g, n)| (g.to_string(), n.to_string()))
@@ -1073,10 +1466,146 @@ ParticleSystemRenderer:
 ";
 
     #[test]
+    fn an_instance_moves_a_part_and_takes_its_light_away() {
+        let dir = std::env::temp_dir().join(format!("runity-parts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lamp = dir.join("Lamp.prefab");
+        std::fs::write(
+            &lamp,
+            "%YAML 1.1
+--- !u!1 &100
+GameObject:
+  m_Name: Lamp
+--- !u!4 &101
+Transform:
+  m_GameObject: {fileID: 100}
+  m_Father: {fileID: 0}
+--- !u!1 &200
+GameObject:
+  m_Name: Bulb
+--- !u!4 &201
+Transform:
+  m_GameObject: {fileID: 200}
+  m_Father: {fileID: 101}
+  m_LocalPosition: {x: 0, y: 2, z: 0}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+--- !u!108 &202
+Light:
+  m_GameObject: {fileID: 200}
+",
+        )
+        .unwrap();
+        let mut unity = unity();
+        unity.guids.insert("ppp".into(), lamp);
+        let scene = "%YAML 1.1
+--- !u!1001 &900
+PrefabInstance:
+  m_Modification:
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 101, guid: ppp, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 5
+    - target: {fileID: 201, guid: ppp, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 1
+    m_RemovedComponents:
+    - {fileID: 202, guid: ppp, type: 3}
+  m_SourcePrefab: {fileID: 100100000, guid: ppp, type: 3}
+--- !u!4 &901 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: 201, guid: ppp, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!1 &902 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 200, guid: ppp, type: 3}
+  m_PrefabInstance: {fileID: 900}
+--- !u!114 &903
+MonoBehaviour:
+  m_GameObject: {fileID: 902}
+  m_Script: {fileID: 11500000, guid: sss, type: 3}
+  locked: 1
+--- !u!1 &910
+GameObject:
+  m_Name: Moth
+--- !u!4 &911
+Transform:
+  m_GameObject: {fileID: 910}
+  m_Father: {fileID: 901}
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity, scene, &mut report);
+        let _ = std::fs::remove_dir_all(&dir);
+        let lamp = &roots[0];
+        assert_eq!(
+            lamp.transform.position.x, 5.0,
+            "the root where the scene puts it"
+        );
+        let bulb = &lamp.overrides[&entity_id(200)];
+        let t = bulb.transform.expect("the bulb moved");
+        assert_eq!(
+            t.position,
+            Vec3::new(1.0, 2.0, 0.0),
+            "x said, y as the prefab has it"
+        );
+        assert_eq!(bulb.removed, ["light"]);
+        assert!(
+            bulb.components.contains_key("door"),
+            "added to the bulb, not the lamp"
+        );
+        assert!(lamp.components.is_empty());
+        let moth = lamp
+            .children
+            .iter()
+            .find(|c| c.name == "Moth")
+            .expect("under the lamp");
+        assert_eq!(moth.in_part, Some(entity_id(200)), "on the bulb");
+    }
+
+    #[test]
+    fn an_audio_source_becomes_the_entitys_sound() {
+        let text = "%YAML 1.1
+--- !u!1 &10
+GameObject:
+  m_Name: Radio
+  m_Component:
+  - component: {fileID: 11}
+  - component: {fileID: 12}
+--- !u!4 &11
+Transform:
+  m_GameObject: {fileID: 10}
+  m_Father: {fileID: 0}
+--- !u!82 &12
+AudioSource:
+  m_GameObject: {fileID: 10}
+  m_Enabled: 1
+  m_Resource: {fileID: 8300000, guid: www, type: 3}
+  m_PlayOnAwake: 1
+  m_Volume: 0.5
+  m_Pitch: 0.8
+  Loop: 1
+  MinDistance: 2
+  MaxDistance: 12
+  panLevelCustomCurve:
+    m_Curve:
+    - time: 0
+      value: 1
+";
+        let mut report = Report::default();
+        let roots = convert_file(&unity(), text, &mut report);
+        let sound = roots[0].sound().clone().expect("a sound");
+        assert_eq!(sound.clip.as_str(), "radio");
+        assert_eq!((sound.volume, sound.pitch), (0.5, 0.8));
+        assert!(sound.looped && sound.on_start && sound.spatial);
+        assert_eq!((sound.near, sound.far), (2.0, 12.0));
+    }
+
+    #[test]
     fn a_shuriken_system_becomes_an_emitter() {
         let mut report = Report::default();
         let roots = convert_file(&unity(), SMOKE, &mut report);
-        let e = roots[0].particles.clone().expect("an emitter");
+        let e = roots[0].particles().clone().expect("an emitter");
         assert_eq!(e.life, 5.0, "two constants: the middle");
         assert_eq!(e.rate, 20.0);
         assert_eq!(e.bursts, vec![(0.5, 30)]);
@@ -1109,10 +1638,10 @@ ParticleSystemRenderer:
             Vec3::new(1.0, 2.0, -3.0),
             "Z mirrored"
         );
-        assert_eq!(crate_.model.as_str(), "crate");
-        assert!(matches!(&crate_.material, MaterialRef::Named(l) if l.as_str() == "wood"));
-        assert_eq!(crate_.body, Body::Dynamic);
-        assert!(matches!(crate_.collider, Collider::Box { half, center }
+        assert_eq!(crate_.model().as_str(), "crate");
+        assert!(matches!(&crate_.material_ref(), MaterialRef::Named(l) if l.as_str() == "wood"));
+        assert_eq!(crate_.body(), Body::Dynamic);
+        assert!(matches!(crate_.collider(), Collider::Box { half, center }
             if half == Vec3::new(1.0, 0.5, 0.5) && center == Vec3::new(0.0, 0.5, 0.0)));
 
         let lid = &crate_.children[0];

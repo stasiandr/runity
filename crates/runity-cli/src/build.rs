@@ -26,6 +26,57 @@ use runity::project::{
 };
 use runity::Project;
 
+/// How a game is compiled (DNA, "Два профиля сборки игры"): for speed,
+/// the default — what a player plays — or for size, when the download is
+/// what matters (the web, a jam's upload limit); or debug, quick to make,
+/// what a smoke test wants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    Debug,
+    /// Cargo's release: everything optimised for speed.
+    Speed,
+    /// `small`: release optimised for size — `opt-level = "z"`, the whole
+    /// program at link time, one codegen unit, symbols stripped, panics
+    /// that abort (the crash report is still written: the hook runs
+    /// first). Given to cargo on the command line, so a game's Cargo.toml
+    /// needs nothing for it and may still say its own `[profile.small]`.
+    Size,
+}
+
+impl Profile {
+    /// Where cargo puts what it builds with this profile.
+    fn folder(self) -> &'static str {
+        match self {
+            Profile::Debug => "debug",
+            Profile::Speed => "release",
+            Profile::Size => "small",
+        }
+    }
+
+    /// What `cargo build` is given for it.
+    pub fn cargo_args(self) -> Vec<String> {
+        match self {
+            Profile::Debug => Vec::new(),
+            Profile::Speed => vec!["--release".into()],
+            Profile::Size => {
+                let mut out: Vec<String> = [
+                    "profile.small.inherits=\"release\"",
+                    "profile.small.opt-level=\"z\"",
+                    "profile.small.lto=true",
+                    "profile.small.codegen-units=1",
+                    "profile.small.strip=true",
+                    "profile.small.panic=\"abort\"",
+                ]
+                .iter()
+                .flat_map(|c| ["--config".to_string(), c.to_string()])
+                .collect();
+                out.extend(["--profile".into(), "small".into()]);
+                out
+            }
+        }
+    }
+}
+
 pub struct Built {
     pub folder: PathBuf,
     pub executable: PathBuf,
@@ -33,9 +84,14 @@ pub struct Built {
     pub stale: Vec<String>,
 }
 
-/// Build `project` into `out`: `release` for a shippable build, or a debug
-/// one, which is quicker and what a smoke test wants.
+/// Build `project` into `out`: `release` for a shippable build (for
+/// speed), or a debug one, which is quicker and what a smoke test wants.
 pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
+    build_with(project, out, if release { Profile::Speed } else { Profile::Debug })
+}
+
+/// Build `project` into `out` with a profile.
+pub fn build_with(project: &Project, out: &Path, profile: Profile) -> Result<Built> {
     let stale: Vec<String> = runity_import::sync(project)
         .into_iter()
         .filter_map(|r| {
@@ -54,9 +110,7 @@ pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
     command
         .args(["build", "--message-format", "short", "--manifest-path"])
         .arg(&manifest);
-    if release {
-        command.arg("--release");
-    }
+    command.args(profile.cargo_args());
     let output = command.output().context("running cargo")?;
     if !output.status.success() {
         bail!(
@@ -64,7 +118,7 @@ pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let executable = find_executable(project, release)?;
+    let executable = find_in(project, profile.folder())?;
     let executable = package(project, &executable, out)?;
     Ok(Built {
         folder: out.to_path_buf(),
@@ -76,12 +130,16 @@ pub fn build(project: &Project, out: &Path, release: bool) -> Result<Built> {
 /// Where cargo put the game: its target folder, which `CARGO_TARGET_DIR`
 /// may have moved.
 pub fn find_executable(project: &Project, release: bool) -> Result<PathBuf> {
+    find_in(project, if release { "release" } else { "debug" })
+}
+
+fn find_in(project: &Project, folder: &str) -> Result<PathBuf> {
     let name = crate_name(project)?;
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| project.root().join("target"));
     let path = target
-        .join(if release { "release" } else { "debug" })
+        .join(folder)
         .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     anyhow::ensure!(path.is_file(), "no executable at {}", path.display());
     Ok(path)
@@ -122,6 +180,8 @@ pub fn package(project: &Project, executable: &Path, out: &Path) -> Result<PathB
         ANIMATORS,
         SHADERS,
         runity::strings::DIR,
+        runity::dialogue::DIR,
+        runity::motion::DIR,
     ] {
         copy_tree(&project.root().join(dir), &data.join(dir))?;
     }
@@ -152,4 +212,18 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::Profile;
+
+    #[test]
+    fn the_size_profile_is_given_to_cargo_whole() {
+        let args = Profile::Size.cargo_args();
+        assert!(args.windows(2).any(|w| w == ["--profile", "small"]));
+        assert!(args.iter().any(|a| a == "profile.small.opt-level=\"z\""));
+        assert_eq!(Profile::Speed.cargo_args(), ["--release"]);
+        assert!(Profile::Debug.cargo_args().is_empty());
+    }
 }

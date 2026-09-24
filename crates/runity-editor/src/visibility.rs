@@ -9,6 +9,8 @@
 //! A box is dragged from empty space; everything whose drawn shape falls
 //! partly inside it is selected, as in Unity.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::HashSet;
 
 use runity::glam::{Vec2, Vec3};
@@ -128,7 +130,7 @@ impl Session {
             if unseen.contains(&desc.id) {
                 continue;
             }
-            let Some((min, max)) = self.bounds_of(&desc.model) else {
+            let Some((min, max)) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             let Some(owner) = self.instanced.owner_of(desc.id) else {

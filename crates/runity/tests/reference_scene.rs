@@ -7,6 +7,8 @@
 //! card's bytes — so what it compares are relationships inside one frame,
 //! which hold on any correct renderer.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::builtin;
@@ -71,16 +73,16 @@ fn shoot_with(gpu: &Gpu, scene: &Scene, sun_direction: Vec3, shadows: ShadowSett
         // From the scene, not from here: the assertions below are about a
         // framing, and a framing that lives in the test is one the file
         // cannot be changed to match.
-        runity::scene_camera(&scene.view),
+        runity::scene_camera(&scene.view()),
         Lighting {
             sun_direction,
-            sun_intensity: scene.sun.intensity,
+            sun_intensity: scene.sun().intensity,
             ..Lighting::default()
         },
         FogSettings {
-            color: Vec3::from_array(scene.fog.color),
-            start: scene.fog.start,
-            end: scene.fog.end,
+            color: Vec3::from_array(scene.fog().color),
+            start: scene.fog().start,
+            end: scene.fog().end,
             ..Default::default()
         },
     );
@@ -310,9 +312,9 @@ fn what_is_behind_the_camera_is_not_drawn_but_still_casts() {
             camera,
             Lighting::default(),
             FogSettings {
-                color: Vec3::from_array(scene.fog.color),
-                start: scene.fog.start,
-                end: scene.fog.end,
+                color: Vec3::from_array(scene.fog().color),
+                start: scene.fog().start,
+                end: scene.fog().end,
                 ..Default::default()
             },
         )

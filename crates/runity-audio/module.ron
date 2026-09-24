@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "audio",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "A line's sound, the sound asset, and the 3D mixer on kira.",
+    depends: [],
+    runtime: true,
+    editor: false,
+    parts: ["sound"],
+    assets: [],
+    feature: Some("audio"),
+)

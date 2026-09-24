@@ -1,0 +1,21 @@
+[package]
+name = "runity-gpu"
+description = "runity's GPU: the device, the surface a host hands over, offscreen targets. What the render and UI modules stand on; the bare core never sees it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pollster = "1.0.1"
+tracing = "0.1.44"
+wgpu = "30"
+winit = { version = "0.30.13", optional = true }
+
+[features]
+# A surface from a winit window, for the plain desktop shell.
+winit = ["dep:winit"]
+
+[dev-dependencies]
+runity-core = { path = "../runity-core" }

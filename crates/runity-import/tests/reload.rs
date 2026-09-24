@@ -10,6 +10,8 @@
 //! its contents and keeps its settings and its asset's ID; the library is
 //! derived, so a clone with none builds all of it.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::{asset, Library, MeshAsset, Project};

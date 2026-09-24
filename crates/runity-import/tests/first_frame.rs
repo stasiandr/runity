@@ -16,6 +16,8 @@
 //! failures that actually happen: nothing drawn, drawn inside out, lit from
 //! underneath, depth test backwards.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::render::{Camera, Draw, FogSettings, Frame, Lighting};
@@ -267,9 +269,10 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
             indices: Vec::new(),
             submeshes: Vec::new(),
             skin: None,
+            look: None,
             bounds: runity::Bounds::of(&[]),
         },
-        runity::asset::AssetKind::Mesh,
+        runity::asset::MESH,
     )
     .unwrap();
     bytes[8] = 0;

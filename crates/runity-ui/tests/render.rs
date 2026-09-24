@@ -4,7 +4,7 @@
 //! written next to the test's temp files so a person or an agent can look at
 //! it: `runity-ui-panel.png`.
 
-use runity::gpu::{Gpu, OffscreenTarget};
+use runity_gpu::gpu::{Gpu, OffscreenTarget};
 use runity_ui::render::UiRenderer;
 use runity_ui::{Color, ImageId, Style, Ui};
 

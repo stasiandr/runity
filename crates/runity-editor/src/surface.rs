@@ -8,6 +8,8 @@
 //! as Unity does: a greybox's pivots are wherever the primitive put them,
 //! and what a person means is "on".
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::glam::{Mat4, Vec2, Vec3};
 use runity::EntityId;
 
@@ -45,7 +47,7 @@ impl Session {
         if self.prefabs.get(what).is_some() {
             line.prefab = what.into();
         } else if self.bounds_of(what).is_some() {
-            line.model = what.into();
+            line.set_part(&runity::scene::ModelRef(what.into()));
         } else {
             return Err(crate::EditError::Scene(format!(
                 "no prefab or model named `{what}` to place"
@@ -223,7 +225,7 @@ impl Session {
             if !take(owner, self) {
                 continue;
             }
-            for local in self.vertices_of(&desc.model) {
+            for local in self.vertices_of(&desc.model()) {
                 let world = placed.transform_point3(local);
                 let Some(at) = self.camera.screen_point(world, size) else {
                     continue;

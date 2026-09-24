@@ -1,0 +1,13 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "ui",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "The UI of the editor, and of the game once it moves here.",
+    depends: ["gpu"],
+    runtime: true,
+    editor: false,
+    parts: [],
+    assets: [],
+)

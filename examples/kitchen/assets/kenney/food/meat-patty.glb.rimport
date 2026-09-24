@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/meat-patty.glb",
+    hash: "46073f349cdcf9e04fd96f36eec1cbb8",
+    id: Some("65f1966c9d5ae37a31fe31bb14a4a1f4"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

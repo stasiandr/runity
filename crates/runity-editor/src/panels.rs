@@ -9,6 +9,8 @@
 //! from the game's types waits on how modules reach the editor (open
 //! question 2).
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::scene::{Body, BodyProps, Collider, EntityDesc, Joint, Lens, MaterialRef};
 use runity::EntityId;
 
@@ -44,16 +46,17 @@ pub fn default_text(field: &str) -> Option<String> {
         "position" => ron(&blank.transform.position),
         "rotation" => ron(&blank.transform.rotation_deg),
         "scale" => ron(&blank.transform.scale),
-        "material" => ron(&blank.material),
-        "body" => ron(&blank.body),
-        "collider" => ron(&blank.collider),
-        "physics" => ron(&blank.physics),
-        "joint" => ron(&blank.joint),
-        "layer" | "bone" => String::new(),
-        "bends_grass" => ron(&blank.bends_grass),
+        "material" => ron(&blank.material_ref()),
+        "body" => ron(&blank.body()),
+        "collider" => ron(&blank.collider()),
+        "physics" => ron(&blank.physics()),
+        "joint" => ron(&blank.joint()),
+        "layer" | "bone" | "animator" => String::new(),
+        "inactive" => "false".into(),
+        "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "cloth" | "rope" | "crumble" | "heap" | "render_texture"
-        | "route" | "spline" | "along" | "joint_break" => "None".into(),
+        | "footprints" | "terrain" | "cloth" | "rope" | "crumble" | "heap" | "render_texture" | "sound" | "route" | "spline" | "along"
+        | "joint_break" => "None".into(),
         _ => return None,
     })
 }
@@ -120,35 +123,25 @@ fn take_field(
     let mut one = runity::scene::Override::default();
     match field {
         "name" => one.name = from.name.take(),
-        "model" => one.model = from.model.take(),
         "position" | "rotation" | "scale" => one.transform = from.transform.take(),
-        "material" => one.material = from.material.take(),
-        "body" => one.body = from.body.take(),
-        "collider" => one.collider = from.collider.take(),
-        "physics" => one.physics = from.physics.take(),
-        "layer" => one.layer = from.layer.take(),
-        "camera" => one.camera = from.camera.take(),
-        "light" => one.light = from.light.take(),
-        "particles" => one.particles = from.particles.take(),
-        "reflection_probe" => one.reflection_probe = from.reflection_probe.take(),
-        "decal" => one.decal = from.decal.take(),
-        "footprints" => one.footprints = from.footprints.take(),
-        "terrain" => one.terrain = from.terrain.take(),
-        "cloth" => one.cloth = from.cloth.take(),
-        "rope" => one.rope = from.rope.take(),
-        "crumble" => one.crumble = from.crumble.take(),
-        "heap" => one.heap = from.heap.take(),
-        "bends_grass" => one.bends_grass = from.bends_grass.take(),
-        "route" => one.route = from.route.take(),
+        "inactive" => one.inactive = from.inactive.take(),
         other => match other.strip_prefix("components.") {
             Some(name) => {
                 if let Some(value) = from.components.remove(name) {
                     one.components.insert(name.to_string(), value);
                 }
             }
+            // A module's field: moved as the text it is.
+            None if FIELDS.contains(&other) => {
+                if let Some(text) = from.parts.raw(other).map(str::to_string) {
+                    from.parts.remove(other);
+                    let _ = one.parts.set_raw(other, &text);
+                }
+            }
             None => {
                 return Err(EditError::Scene(format!(
-                    "`{other}` is not a field a part overrides — there are name, model, position, rotation, scale, material, body, collider, physics, layer, components.<name>"
+                    "`{other}` is not a field a part overrides — there are {}",
+                    FIELDS.join(", ")
                 )))
             }
         },
@@ -266,29 +259,12 @@ impl Session {
         let changed = |name: &str| {
             overrides.as_ref().is_some_and(|o| match name {
                 "name" => o.name.is_some(),
-                "model" => o.model.is_some(),
                 "position" | "rotation" | "scale" => o.transform.is_some(),
-                "material" => o.material.is_some(),
-                "body" => o.body.is_some(),
-                "collider" => o.collider.is_some(),
-                "physics" => o.physics.is_some(),
-                "layer" => o.layer.is_some(),
-                "camera" => o.camera.is_some(),
-                "light" => o.light.is_some(),
-                "particles" => o.particles.is_some(),
-                "reflection_probe" => o.reflection_probe.is_some(),
-                "decal" => o.decal.is_some(),
-                "footprints" => o.footprints.is_some(),
-                "terrain" => o.terrain.is_some(),
-                "cloth" => o.cloth.is_some(),
-                "rope" => o.rope.is_some(),
-                "crumble" => o.crumble.is_some(),
-                "heap" => o.heap.is_some(),
-                "bends_grass" => o.bends_grass.is_some(),
-                "route" => o.route.is_some(),
-                other => other
-                    .strip_prefix("components.")
-                    .is_some_and(|c| o.components.contains_key(c)),
+                "inactive" => o.inactive.is_some(),
+                other => match other.strip_prefix("components.") {
+                    Some(c) => o.components.contains_key(c),
+                    None => o.parts.contains(other),
+                },
             })
         };
         // During play the Inspector shows where things are, as Unity's
@@ -297,75 +273,83 @@ impl Session {
         let t = self.live_transform(id).unwrap_or(desc.transform);
         let mut fields: Vec<(String, String)> = vec![
             ("name".into(), desc.name.clone()),
-            ("model".into(), desc.model.to_string()),
+            ("model".into(), desc.model().to_string()),
             ("prefab".into(), desc.prefab.to_string()),
             ("position".into(), ron(&t.position)),
             ("rotation".into(), ron(&t.rotation_deg)),
             ("scale".into(), ron(&t.scale)),
-            ("material".into(), ron(&desc.material)),
-            ("body".into(), ron(&desc.body)),
-            ("collider".into(), ron(&desc.collider)),
-            ("physics".into(), ron(&desc.physics)),
-            ("layer".into(), desc.layer.clone()),
-            ("bends_grass".into(), ron(&desc.bends_grass)),
-            ("bone".into(), desc.bone.clone()),
-            ("joint".into(), ron(&desc.joint)),
+            ("material".into(), ron(&desc.material_ref())),
+            ("body".into(), ron(&desc.body())),
+            ("collider".into(), ron(&desc.collider())),
+            ("physics".into(), ron(&desc.physics())),
+            ("layer".into(), desc.layer().clone()),
+            ("inactive".into(), desc.inactive.to_string()),
+            ("animator".into(), desc.animator().clone()),
+            ("bends_grass".into(), ron(&desc.bends_grass())),
+            ("bone".into(), desc.bone().clone()),
+            ("joint".into(), ron(&desc.joint())),
             (
                 "joint_break".into(),
-                desc.joint_break.map_or("None".to_string(), |f| ron(&f)),
+                desc.joint_break().map_or("None".to_string(), |f| ron(&f)),
             ),
             (
                 "camera".into(),
-                desc.camera.map_or("None".to_string(), |c| ron(&c)),
+                desc.camera().map_or("None".to_string(), |c| ron(&c)),
             ),
             (
                 "light".into(),
-                desc.light.map_or("None".to_string(), |l| ron(&l)),
+                desc.light().map_or("None".to_string(), |l| ron(&l)),
             ),
             (
                 "particles".into(),
-                desc.particles.as_ref().map_or("None".to_string(), ron),
+                desc.particles().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "reflection_probe".into(),
-                desc.reflection_probe
+                desc.reflection_probe()
                     .map_or("None".to_string(), |p| ron(&p)),
             ),
             (
                 "render_texture".into(),
-                desc.render_texture.as_ref().map_or("None".to_string(), ron),
+                desc.render_texture()
+                    .as_ref()
+                    .map_or("None".to_string(), ron),
+            ),
+            (
+                "sound".into(),
+                desc.sound().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "post_volume".into(),
-                desc.post_volume.map_or("None".to_string(), |v| ron(&v)),
+                desc.post_volume().map_or("None".to_string(), |v| ron(&v)),
             ),
             (
                 "decal".into(),
-                desc.decal.map_or("None".to_string(), |d| ron(&d)),
+                desc.decal().map_or("None".to_string(), |d| ron(&d)),
             ),
             (
                 "footprints".into(),
-                desc.footprints.map_or("None".to_string(), |f| ron(&f)),
+                desc.footprints().map_or("None".to_string(), |f| ron(&f)),
             ),
             (
                 "terrain".into(),
-                desc.terrain.map_or("None".to_string(), |t| ron(&t)),
+                desc.terrain().map_or("None".to_string(), |t| ron(&t)),
             ),
-            ("cloth".into(), desc.cloth.map_or("None".to_string(), |t| ron(&t))),
-            ("rope".into(), desc.rope.map_or("None".to_string(), |t| ron(&t))),
-            ("crumble".into(), desc.crumble.map_or("None".to_string(), |t| ron(&t))),
-            ("heap".into(), desc.heap.map_or("None".to_string(), |t| ron(&t))),
+            ("cloth".into(), desc.part::<runity::cloth::Cloth>().map_or("None".to_string(), |t| ron(&t))),
+            ("rope".into(), desc.part::<runity::rope::Rope>().map_or("None".to_string(), |t| ron(&t))),
+            ("crumble".into(), desc.part::<runity::crumble::Crumble>().map_or("None".to_string(), |t| ron(&t))),
+            ("heap".into(), desc.part::<runity::heap::Heap>().map_or("None".to_string(), |t| ron(&t))),
             (
                 "route".into(),
-                desc.route.as_ref().map_or("None".to_string(), ron),
+                desc.route().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
-                desc.spline.as_ref().map_or("None".to_string(), ron),
+                desc.spline().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "along".into(),
-                desc.along.as_ref().map_or("None".to_string(), ron),
+                desc.along().as_ref().map_or("None".to_string(), ron),
             ),
         ];
         for (name, value) in &desc.components {
@@ -667,144 +651,168 @@ impl Session {
         let mut next = current.clone();
         match field {
             "name" => next.name = text.to_string(),
-            "model" => next.model = text.into(),
+            "model" => next.set_part(&runity::scene::ModelRef(text.into())),
             "prefab" => next.prefab = text.into(),
-            "layer" => next.layer = text.to_string(),
-            "bends_grass" => next.bends_grass = parse::<f32>(field, text)?.max(0.0),
-            "bone" => next.bone = text.trim().to_string(),
+            "layer" => next.set_part(&runity::scene::LayerName(text.to_string())),
+            "inactive" => next.inactive = parse::<bool>(field, text)?,
+            "animator" => next.set_part(&runity::scene::AnimatorRef(text.trim().to_string())),
+            "bends_grass" => next.set_part(&runity::scene::BendsGrass(
+                parse::<f32>(field, text)?.max(0.0),
+            )),
+            "bone" => next.set_part(&runity::scene::BoneName(text.trim().to_string())),
             "position" => next.transform.position = parse(field, text)?,
             "rotation" => next.transform.rotation_deg = parse(field, text)?,
             "scale" => next.transform.scale = parse(field, text)?,
-            "material" => {
-                next.material = if text.starts_with('"') || text.starts_with('(') {
-                    parse::<MaterialRef>(field, text)?
-                } else {
-                    MaterialRef::Named(text.into())
-                }
-            }
-            "body" => next.body = parse::<Body>(field, text)?,
-            "collider" => next.collider = parse::<Collider>(field, text)?,
-            "physics" => next.physics = parse::<BodyProps>(field, text)?,
-            "joint" => next.joint = parse::<Joint>(field, text)?,
-            "joint_break" => {
-                next.joint_break = if text.trim() == "None" {
-                    None
-                } else {
-                    Some(parse::<f32>(field, text)?)
-                }
-            }
-            "camera" => {
-                next.camera = if text.trim() == "None" {
+            "material" => next.set_part(&if text.starts_with('"') || text.starts_with('(') {
+                parse::<MaterialRef>(field, text)?
+            } else {
+                MaterialRef::Named(text.into())
+            }),
+            "body" => next.set_part(&parse::<Body>(field, text)?),
+            "collider" => next.set_part(&parse::<Collider>(field, text)?),
+            "physics" => next.set_part(&parse::<BodyProps>(field, text)?),
+            "joint" => next.set_part(&parse::<Joint>(field, text)?),
+            "joint_break" => next.set_joint_break(if text.trim() == "None" {
+                None
+            } else {
+                Some(parse::<f32>(field, text)?)
+            }),
+            "camera" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<Lens>(field, text)?)
-                }
-            }
-            "light" => {
-                next.light = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "light" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::Light>(field, text)?)
-                }
-            }
-            "spline" => {
-                next.spline = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "spline" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::Spline>(field, text)?)
-                }
-            }
-            "along" => {
-                next.along = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "along" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::Along>(field, text)?)
-                }
-            }
-            "route" => {
-                next.route = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "route" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::Route>(field, text)?)
-                }
-            }
-            "particles" => {
-                next.particles = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "particles" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::Emitter>(field, text)?)
-                }
-            }
-            "decal" => {
-                next.decal = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "decal" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::Decal>(field, text)?)
-                }
-            }
-            "footprints" => {
-                next.footprints = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "sound" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SoundSource>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "footprints" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::footprints::Footprints>(field, text)?)
-                }
-            }
-            "terrain" => {
-                next.terrain = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "terrain" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::terrain::Terrain>(field, text)?)
-                }
-            }
-            "cloth" => {
-                next.cloth = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "cloth" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::cloth::Cloth>(field, text)?)
-                }
-            }
-            "rope" => {
-                next.rope = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "rope" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::rope::Rope>(field, text)?)
-                }
-            }
-            "crumble" => {
-                next.crumble = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "crumble" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::crumble::Crumble>(field, text)?)
-                }
-            }
-            "heap" => {
-                next.heap = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "heap" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::heap::Heap>(field, text)?)
-                }
-            }
-            "render_texture" => {
-                next.render_texture = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "render_texture" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::RenderTexture>(field, text)?)
-                }
-            }
-            "post_volume" => {
-                next.post_volume = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "post_volume" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::PostVolume>(field, text)?)
-                }
-            }
-            "reflection_probe" => {
-                next.reflection_probe = if text.trim() == "None" {
+                })
+                .as_ref(),
+            ),
+            "reflection_probe" => next.set_part_opt(
+                (if text.trim() == "None" {
                     None
                 } else {
                     Some(parse::<runity::scene::Probe>(field, text)?)
-                }
-            }
+                })
+                .as_ref(),
+            ),
             other => {
                 return Err(EditError::Scene(format!(
                     "no field `{other}` — there are {}",

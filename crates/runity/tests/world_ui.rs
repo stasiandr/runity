@@ -69,7 +69,7 @@ fn a_screen_in_the_world_shows_what_is_drawn_on_it() {
     frame.clear_color = Vec3::ZERO;
     frame.post = runity::post::PostProcess::OFF;
     frame.ambient_occlusion = runity::ssao::AmbientOcclusion::OFF;
-    overlay.draw_pictures(&gpu, &mut renderer, &frame);
+    renderer.draw_ui_pictures(&gpu, &mut overlay, &frame);
     renderer.render(&gpu, &target, &frame);
     let p = OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2);
     assert!(p[0] > 150 && p[1] < 80, "the red it shows: {p:?}");

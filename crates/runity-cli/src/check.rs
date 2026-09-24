@@ -12,6 +12,8 @@
 //! Every finding names the file, the entity (by name and ID), what is wrong,
 //! and what would fix it, closest name included.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -60,6 +62,8 @@ struct Names {
     sounds: HashSet<String>,
     textures: HashSet<String>,
     scenes: HashSet<String>,
+    /// The graphs in `animators/`, by name.
+    animators: HashSet<String>,
     /// The game's components, from `src/components/`; `None` when the
     /// project has no such folder and only its code knows.
     components: Option<Vec<String>>,
@@ -95,6 +99,13 @@ pub fn check(project: &Project) -> Vec<Finding> {
         let file = relative(project, &path);
         if let Some(scene) = parse::<Scene>(&path, &file, &mut out) {
             check_entities(&scene.entities, &file, &names, &mut out);
+            check_parts(
+                &scene.parts,
+                "the scene",
+                &file,
+                &runity::scene::part_kinds(),
+                &mut out,
+            );
         }
     }
 
@@ -103,8 +114,13 @@ pub fn check(project: &Project) -> Vec<Finding> {
 
     let input = project.root().join(runity::project::INPUT);
     if input.is_file() {
-        if let Err(e) = runity::Actions::load(&input) {
-            out.push(error(runity::project::INPUT, e));
+        match runity::Actions::load(&input) {
+            Ok(actions) => {
+                for problem in actions.map.problems() {
+                    out.push(error(runity::project::INPUT, problem));
+                }
+            }
+            Err(e) => out.push(error(runity::project::INPUT, e)),
         }
     }
 
@@ -191,6 +207,12 @@ pub fn check(project: &Project) -> Vec<Finding> {
         let _: Option<ron::Value> = parse(&path, &file, &mut out);
     }
 
+    // The modules runity.ron lists hold together, and Cargo.toml builds
+    // the engine with them.
+    for problem in crate::modules::problems(project) {
+        out.push(error(runity::project::FILE, problem));
+    }
+
     check_sidecars(project, &mut out);
     check_layout(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
@@ -213,8 +235,12 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         UI,
         INPUT,
         TUNING,
+        ANIMATORS,
+        SHADERS,
         runity::layers::FILE,
         runity::strings::DIR,
+        runity::dialogue::DIR,
+        runity::motion::DIR,
         "Cargo.toml",
         "Cargo.lock",
         "build.rs",
@@ -399,7 +425,13 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             ids.insert(id);
         }
     }
+    let animators = files(&project.root().join(runity::project::ANIMATORS), "ron")
+        .iter()
+        .filter(|p| !p.to_string_lossy().ends_with(".cases.ron"))
+        .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect();
     Names {
+        animators,
         models,
         materials,
         prefabs,
@@ -464,10 +496,10 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                     ),
                 ));
             }
-        } else if !entity.model.is_empty() {
-            check_model(&entity.model, &who, file, names, out);
+        } else if !entity.model().is_empty() {
+            check_model(&entity.model(), &who, file, names, out);
         }
-        if let Some(along) = &entity.along {
+        if let Some(along) = &entity.along() {
             check_model(
                 &along.model,
                 &format!("{who} (along its spline)"),
@@ -475,6 +507,34 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 names,
                 out,
             );
+        }
+        if !entity.animator().is_empty() && !names.animators.contains(&entity.animator()) {
+            out.push(error(
+                file,
+                format!(
+                    "{who}: animator `{}` is not a graph in animators/{}",
+                    entity.animator(),
+                    suggest(
+                        &entity.animator(),
+                        names.animators.iter().map(String::as_str)
+                    )
+                ),
+            ));
+        }
+        if let Some(sound) = &entity.sound() {
+            let clip = &sound.clip;
+            let by_id = clip.id.is_some_and(|id| names.ids.contains(&id));
+            if clip.is_empty() {
+                out.push(error(file, format!("{who}: a sound with no clip")));
+            } else if !by_id && !names.sounds.contains(clip.as_str()) {
+                out.push(error(
+                    file,
+                    format!(
+                        "{who}: its sound plays `{clip}`, and there is no such sound in assets/{}",
+                        suggest(clip, names.sounds.iter().map(String::as_str))
+                    ),
+                ));
+            }
         }
         // A game component's links to assets.
         for (component, value) in &entity.components {
@@ -506,15 +566,16 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 }
             }
         }
-        if let MaterialRef::Named(link) = &entity.material {
+        if let MaterialRef::Named(link) = &entity.material_ref() {
             // Found by its ID, whatever name the line still says.
             if !link.id.is_some_and(|id| names.ids.contains(&id)) {
                 check_material(link, &who, file, names, out);
             }
         }
-        let layers = std::iter::once(&entity.layer)
-            .chain(entity.overrides.values().filter_map(|o| o.layer.as_ref()));
-        for layer in layers.filter(|l| !l.is_empty()) {
+        let layers: Vec<String> = std::iter::once(entity.layer())
+            .chain(entity.overrides.values().filter_map(|o| o.layer()))
+            .collect();
+        for layer in layers.iter().filter(|l| !l.is_empty()) {
             if names.layers.index(layer).is_none() {
                 out.push(error(
                     file,
@@ -525,7 +586,7 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 ));
             }
         }
-        if let Some(to) = entity.joint.to().filter(|to| !to.is_unassigned()) {
+        if let Some(to) = entity.joint().to().filter(|to| !to.is_unassigned()) {
             if !all.contains(&to) {
                 out.push(error(
                     file,
@@ -570,6 +631,52 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                 "{unnamed} entities have no id — they get one on load, and it is written on the next save from the editor"
             ),
         });
+    }
+    // Every module field on every line, and in every override: one no
+    // module of this build reads is kept as written and named here; one
+    // whose text does not fit its field is an error.
+    let kinds = runity::scene::part_kinds();
+    let mut stack: Vec<&EntityDesc> = entities.iter().rev().collect();
+    while let Some(entity) = stack.pop() {
+        stack.extend(entity.children.iter().rev());
+        let who = format!("`{}`", entity.name);
+        check_parts(&entity.parts, &who, file, &kinds, out);
+        for (part, change) in &entity.overrides {
+            check_parts(
+                &change.parts,
+                &format!("{who}, override of {part}"),
+                file,
+                &kinds,
+                out,
+            );
+        }
+    }
+}
+
+/// A line's module fields against the fields this build's modules read.
+fn check_parts(
+    parts: &runity::parts::Parts,
+    who: &str,
+    file: &str,
+    kinds: &[runity::parts::PartKind],
+    out: &mut Vec<Finding>,
+) {
+    for (name, text) in parts.iter() {
+        match kinds.iter().find(|k| k.name == name) {
+            Some(kind) => {
+                if let Err(e) = (kind.check)(text) {
+                    out.push(error(file, format!("{who}: `{name}` does not read: {e}")));
+                }
+            }
+            None => out.push(Finding {
+                severity: Severity::Warning,
+                file: file.to_string(),
+                message: format!(
+                    "{who}: `{name}` is a field no module of this build reads — kept as written; a typo, or a module switched off?{}",
+                    suggest(name, kinds.iter().map(|k| k.name))
+                ),
+            }),
+        }
     }
 }
 
@@ -708,6 +815,11 @@ fn parse<T: serde::de::DeserializeOwned>(
 /// transition never taken), and every parameter they read that the game's
 /// code never names — a graph waiting on a number nobody sets.
 fn animators(project: &Project, out: &mut Vec<Finding>) {
+    // The motion clips: each reads.
+    for path in files(&project.root().join(runity::motion::DIR), "ron") {
+        let file = relative(project, &path);
+        parse::<runity::motion::Motion>(&path, &file, out);
+    }
     let dir = project.root().join(runity::project::ANIMATORS);
     let graphs = files(&dir, "ron");
     if graphs.is_empty() {

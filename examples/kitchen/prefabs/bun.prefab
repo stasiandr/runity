@@ -1,0 +1,4 @@
+// A bun (Kenney's round loaf): from its crate straight onto a plate, for a burger.
+(id: "eeef1b4cfd1a732e", name: "bun", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Food(Bun)) }, children: [
+(id: "c2b97a4beb325ca1", name: "loaf", model: "loaf-round", transform: (position: (0.000, -0.160, 0.000), scale: (0.750, 0.750, 0.750))),
+])

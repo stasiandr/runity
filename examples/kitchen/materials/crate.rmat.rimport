@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/crate.rmat",
+    hash: "1225ca19f1fa9f5099bfd81e4f497c54",
+    id: Some("32801720270a899d9594aeb61ac52aed"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

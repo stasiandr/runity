@@ -8,6 +8,8 @@
 //! of them — routes, physics, footprints and particles run between frames
 //! as a game's loop runs them.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -596,11 +598,14 @@ fn render_shot(
             };
             assert_eq!(again, *handle, "the twin's meshes out of step at {name}");
         }
-        for (relief, model) in world.query_mut::<(&runity::terrain::Relief, &runity::world::Model)>() {
+        for (relief, model) in
+            world.query_mut::<(&runity::terrain::Relief, &runity::world::Model)>()
+        {
             let again = twin.upload_mesh_owned(gpu, &relief.terrain.mesh());
             assert_eq!(again, model.0, "the twin's terrain out of step");
         }
-        for problem in runity::world::upload_material_maps(&world, library.as_ref(), gpu, &mut twin) {
+        for problem in runity::world::upload_material_maps(&world, library.as_ref(), gpu, &mut twin)
+        {
             eprintln!("{problem}");
         }
         Some(twin)
@@ -612,7 +617,7 @@ fn render_shot(
     runity::physics::attach_scene_collision_meshes(&mut world, &scene, library.as_ref());
     let step = 1.0 / 60.0;
     let mut physics = runity::PhysicsWorld::new(step);
-    physics.wind = scene.wind.unwrap_or_default();
+    physics.wind = scene.wind().unwrap_or_default();
     let mut owed = 0.0f32;
 
     let (w, h) = (target.width, target.height);
@@ -646,7 +651,7 @@ fn render_shot(
 
     let frames = (shot.seconds * fps as f32) as u32;
     let dt = 1.0 / fps as f32;
-    let base = runity::scene_camera(&scene.view);
+    let base = runity::scene_camera(&scene.view());
     // A second of the scene first, unrecorded: the trail has steps, the
     // dust is up, and what reads the last frame has one.
     let warmup = fps;
@@ -668,12 +673,14 @@ fn render_shot(
         runity::rope::run_ropes(&mut world, dt * shot.speed, &physics.wind);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {
-            scene.sun.hour = a + (b - a) * t;
+            let mut sun = scene.sun();
+            sun.hour = a + (b - a) * t;
+            scene.set_part(&sun);
         }
         if let Some((a, b)) = shot.drying {
-            let mut weather = scene.weather.unwrap_or_default();
+            let mut weather = scene.weather().unwrap_or_default();
             weather.drying = a + (b - a) * t;
-            scene.weather = Some(weather);
+            scene.set_part(&weather);
         }
         let camera = Camera {
             position: shot.from.0.lerp(shot.to.0, t),

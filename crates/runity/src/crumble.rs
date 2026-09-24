@@ -15,40 +15,11 @@
 //! everywhere).
 
 use glam::{Mat4, Quat, Vec3};
-use serde::{Deserialize, Serialize};
 
 use crate::scene::{Body, Collider, Transform};
 use crate::world::{Model, Physics, Shape, Surface, WorldTransform};
 
-/// A thing that comes down, as a scene line writes it.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Crumble {
-    /// Seconds after it is placed that it comes down; below 0, never by
-    /// itself (a game brings it down with [`CrumbleState::strike`]).
-    pub at: f32,
-    /// Blocks along its x, y and z.
-    pub pieces: [u32; 3],
-    /// How hard the blocks are knocked, metres a second.
-    pub burst: f32,
-    /// Where the blow comes from, in its own space: `(0, 0, 1)` from in
-    /// front. Zero bursts it outward from its middle.
-    pub from: [f32; 3],
-    /// Seconds a block lies before it crumbles into sand.
-    pub lasts: f32,
-}
-
-impl Default for Crumble {
-    fn default() -> Self {
-        Self {
-            at: 2.0,
-            pieces: [5, 4, 2],
-            burst: 3.0,
-            from: [0.0, 0.0, 1.0],
-            lasts: 5.0,
-        }
-    }
-}
+pub use runity_physics::body::Crumble;
 
 /// Seconds a block takes to crumble away once it starts.
 const CRUMBLING: f32 = 1.4;
@@ -137,8 +108,53 @@ fn hashed(a: u64, b: u64) -> f32 {
 
 /// Step everything that crumbles by `seconds`: bring down what is due,
 /// knock its blocks once they have bodies, crumble the old ones to sand.
-/// Call it once a fixed step, after the physics.
+/// Call it once a fixed step, after the physics. Its dust goes where the
+/// render reads a thing's dust ([`crate::world::Dust`]).
 pub fn run_crumble(world: &mut hecs::World, physics: &mut crate::PhysicsWorld, seconds: f32) {
+    step_crumble(world, physics, seconds);
+    let dusty: Vec<(hecs::Entity, Vec<crate::volume::Puff>)> = world
+        .query::<(hecs::Entity, &CrumbleState)>()
+        .iter()
+        .map(|(e, s)| (e, s.puffs().collect()))
+        .collect();
+    for (entity, puffs) in dusty {
+        let _ = world.insert_one(entity, crate::world::Dust(puffs));
+    }
+}
+
+/// A line's `crumble`, on its entity: what physics' part says, stepped by
+/// [`run_crumble`].
+pub struct CrumbleDress;
+
+impl crate::world::Dress for CrumbleDress {
+    fn parts(&self) -> &[&'static str] {
+        &["crumble"]
+    }
+
+    fn dress(
+        &mut self,
+        line: &crate::scene::EntityDesc,
+        entity: hecs::Entity,
+        world: &mut hecs::World,
+        changed: crate::world::Changed,
+        _missing: &mut Vec<crate::world::Unresolved>,
+    ) {
+        if !changed.has("crumble") {
+            return;
+        }
+        // Retuned, it stands again and waits its time afresh.
+        match line.part::<Crumble>() {
+            Some(crumble) => {
+                let _ = world.insert_one(entity, CrumbleState::new(crumble));
+            }
+            None => {
+                let _ = world.remove::<(CrumbleState, crate::world::Dust)>(entity);
+            }
+        }
+    }
+}
+
+fn step_crumble(world: &mut hecs::World, physics: &mut crate::PhysicsWorld, seconds: f32) {
     let mut due = Vec::new();
     for (entity, state) in world.query_mut::<(hecs::Entity, &mut CrumbleState)>() {
         state.clock += seconds;

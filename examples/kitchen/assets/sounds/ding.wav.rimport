@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/sounds/ding.wav",
+    hash: "1f3db6ca0ef1f72230c8e33187dc3416",
+    id: Some("8b79855fba198339e0f8d74b4687b11a"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -29,15 +29,18 @@ pub const PREVIEW: runity_ui::ImageId = runity_ui::ImageId(1);
 use crate::studio::Requests;
 use crate::theme::*;
 
-const OBJECT: [&str; 5] = ["model", "material", "prefab", "layer", "bends_grass"];
+const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 14] = [
+const PARTS: [&str; 17] = [
     "camera",
     "light",
     "particles",
+    "sound",
     "reflection_probe",
     "decal",
+    "render_texture",
+    "post_volume",
     "footprints",
     "terrain",
     "cloth",
@@ -49,9 +52,82 @@ const PARTS: [&str; 14] = [
     "along",
 ];
 
-/// A field that says nothing: not shown, offered as a chip.
+/// The pictures the colour picker draws with: the square of saturation and
+/// value at its hue, and the strip of hues.
+pub const SV_SQUARE: runity_ui::ImageId = runity_ui::ImageId(10);
+pub const HUE_STRIP: runity_ui::ImageId = runity_ui::ImageId(11);
+const PICTURE: u32 = 128;
+
+/// X, Y and Z as the gizmo colours them.
+const AXES: [runity_ui::Color; 3] = [
+    runity_ui::Color::hex(0xe58a96),
+    runity_ui::Color::hex(0x9fd49a),
+    runity_ui::Color::hex(0x8fb4e8),
+];
+
+/// What a field that can be added is set to when it is: `None` for one
+/// shown empty to be filled in.
+fn added_value(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "collider" => "Box(half: (0.5, 0.5, 0.5))",
+        "body" => "Dynamic",
+        "joint" => "Ball(anchor: (0.0, 0.0, 0.0))",
+        "camera" | "light" | "particles" | "reflection_probe" | "decal" => "()",
+        "post_volume" => "(size: (10.0, 10.0, 10.0))",
+        "route" => "(points: [(0.0, 0.0, 0.0), (0.0, 2.0, 0.0)])",
+        "render_texture" => "(name: \"picture\")",
+        "sound" => "(clip: \"\")",
+        _ => return None,
+    })
+}
+
+/// The parts a line can have besides the game's components, as the Add
+/// Component list names them.
+const ADDABLE: [(&str, &str); 15] = [
+    ("model", "Model"),
+    ("collider", "Collider"),
+    ("body", "Body"),
+    ("physics", "Physics"),
+    ("joint", "Joint"),
+    ("joint_break", "Joint Break"),
+    ("camera", "Camera"),
+    ("light", "Light"),
+    ("particles", "Particles"),
+    ("sound", "Sound"),
+    ("animator", "Animator"),
+    ("reflection_probe", "Reflection Probe"),
+    ("decal", "Decal"),
+    ("route", "Route"),
+    ("post_volume", "Post Volume"),
+];
+
+/// Fields a line can be without: what the trash on a field takes off.
+const REMOVABLE: [&str; 19] = [
+    "model",
+    "footprints",
+    "terrain",
+    "camera",
+    "light",
+    "particles",
+    "sound",
+    "animator",
+    "render_texture",
+    "post_volume",
+    "decal",
+    "reflection_probe",
+    "route",
+    "joint",
+    "joint_break",
+    "collider",
+    "body",
+    "physics",
+    "spline",
+];
+
+/// A field that says nothing: not shown, offered by Add Component.
 fn is_empty(value: &str) -> bool {
-    matches!(value, "" | "None" | "r#None" | "()" | "\"\"")
+    // `false`: a switch that is off — `inactive` — says nothing either.
+    matches!(value, "" | "None" | "r#None" | "()" | "\"\"" | "false")
 }
 
 /// A vector field's three numbers, when its text is one.
@@ -104,20 +180,11 @@ enum Part {
     },
     /// The dot on an overridden field: revert it.
     Revert(String),
-    /// A chip offering an empty field.
-    Reveal(String),
     /// The «…» next to a field with a list to pick from.
     Pick(String),
-    AddComponent,
-    /// The list of the game's components.
-    PickComponent,
     /// A field's label: a click opens its menu — Reset, Copy, Paste,
     /// Remove — as Unity's ⋮ on a component.
     Label(String),
-    /// The material's colour as `#rrggbb`.
-    Hex,
-    /// One of the colour's hue, saturation and value, 0 to 1.
-    Slider(usize),
     /// An import setting of the asset shown, by name: a box.
     Import(String),
     /// An import setting that is on or off: a switch.
@@ -133,6 +200,147 @@ enum Part {
     Environment(String),
     /// The sun's hour, 0 to 24, as a track.
     Hour,
+    /// The switch before the name: on in the world, or off.
+    Active(bool),
+    /// The layer, as a list to pick from.
+    Layer,
+    /// The trash on a field: take it off the line.
+    Remove(String),
+    /// A label to drag sideways: the number changes as it goes — one axis
+    /// of a vector, or a component's number.
+    Scrub(Scrub),
+    /// The button under the fields, and in the list it opens: its search,
+    /// one entry, and the ground around it that closes it.
+    AddButton,
+    AddSearch,
+    AddEntry(Addition),
+    /// A colour's swatch: opens the picker.
+    Swatch(ColorTarget),
+    /// The picker: its square, its strip of hues, its hex box.
+    PickerSquare,
+    PickerHue,
+    PickerHex,
+    /// Around a list or a picker: a click there closes it.
+    Dismiss,
+}
+
+/// A number dragged by its label.
+#[derive(Debug, Clone, PartialEq)]
+enum Scrub {
+    Axis(String, usize),
+    Sub { component: String, key: String, whole: bool },
+}
+
+/// Something Add Component offers.
+#[derive(Debug, Clone, PartialEq)]
+enum Addition {
+    Field(String),
+    Component(String),
+    NewComponent,
+}
+
+/// Whose colour the picker edits.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColorTarget {
+    /// The selection's material, in linear light.
+    Material,
+    /// A colour inside a field's value, `key: (r, g, b)`, as a picker says
+    /// it (sRGB, 0 to 1): a light's, particles'.
+    Field(String, String),
+}
+
+/// What is open over the panel.
+enum Popover {
+    Add {
+        root: NodeId,
+        list: NodeId,
+        hits: Vec<Addition>,
+    },
+    Color {
+        root: NodeId,
+        target: ColorTarget,
+        hex: NodeId,
+        preview: NodeId,
+        square_mark: NodeId,
+        hue_mark: NodeId,
+    },
+}
+
+impl Popover {
+    fn root(&self) -> NodeId {
+        match self {
+            Popover::Add { root, .. } | Popover::Color { root, .. } => *root,
+        }
+    }
+}
+
+/// `key: (r, g, b)` in a field's RON, as three numbers.
+fn ron_color(text: &str, key: &str) -> Option<[f32; 3]> {
+    let at = find_key(text, key)?;
+    let rest = text[at..].trim_start().strip_prefix('(')?;
+    let inner = &rest[..rest.find(')')?];
+    let n: Vec<f32> = inner
+        .split(',')
+        .map(|v| v.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    (n.len() == 3).then(|| [n[0], n[1], n[2]])
+}
+
+/// Where the value of `key:` starts in RON text, the key whole.
+fn find_key(text: &str, key: &str) -> Option<usize> {
+    let pattern = format!("{key}:");
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&pattern) {
+        let at = from + i;
+        let before = text[..at].chars().next_back();
+        if !before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            return Some(at + pattern.len());
+        }
+        from = at + pattern.len();
+    }
+    None
+}
+
+/// The text with `key: (r, g, b)` set: replaced, or added at the end.
+fn with_ron_color(text: &str, key: &str, rgb: [f32; 3]) -> String {
+    let value = format!("({:.3}, {:.3}, {:.3})", rgb[0], rgb[1], rgb[2]);
+    if let Some(at) = find_key(text, key) {
+        if let Some(close) = text[at..].find(')') {
+            return format!("{} {value}{}", &text[..at], &text[at + close + 1..]);
+        }
+    }
+    let trimmed = text.trim();
+    match trimmed.strip_suffix(')') {
+        Some(body) if body.trim_end().ends_with('(') => format!("{body}{key}: {value})"),
+        Some(body) => format!("{}, {key}: {value})", body.trim_end().trim_end_matches(',')),
+        None => text.to_string(),
+    }
+}
+
+/// The square of saturation (across) and value (down) at a hue, RGBA.
+fn sv_pixels(hue: f32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((PICTURE * PICTURE * 4) as usize);
+    for y in 0..PICTURE {
+        for x in 0..PICTURE {
+            let s = x as f32 / (PICTURE - 1) as f32;
+            let v = 1.0 - y as f32 / (PICTURE - 1) as f32;
+            let [r, g, b] = rgb_of([hue, s, v]);
+            out.extend([r, g, b, 255]);
+        }
+    }
+    out
+}
+
+/// Every hue, left to right.
+fn hue_pixels() -> Vec<u8> {
+    let mut out = Vec::with_capacity((PICTURE * PICTURE * 4) as usize);
+    for _ in 0..PICTURE {
+        for x in 0..PICTURE {
+            let [r, g, b] = rgb_of([x as f32 / PICTURE as f32, 1.0, 1.0]);
+            out.extend([r, g, b, 255]);
+        }
+    }
+    out
 }
 
 /// What a component's field is, for the box it gets.
@@ -242,12 +450,8 @@ pub struct Inspector {
     slots: Vec<(String, Option<usize>, NodeId, String)>,
     revealed: BTreeSet<String>,
     playing: bool,
-    /// The material editor's colour while it is being dragged, and its
-    /// nodes: the swatch, the hex box, the three tracks.
+    /// The colour being picked.
     hsv: [f32; 3],
-    swatch: Option<NodeId>,
-    hex: Option<NodeId>,
-    tracks: [Option<NodeId>; 3],
     /// An asset from the Project shown instead of the selection, with its
     /// source file.
     asset: Option<(Asset, Option<String>)>,
@@ -263,12 +467,20 @@ pub struct Inspector {
     /// Unity's padlock: the entities shown whatever is selected after.
     locked: Option<Vec<EntityId>>,
     lock_button: NodeId,
-    /// Unreal's Search Details: only fields whose name has this in it.
-    filter: String,
     /// Which fields had a reset arrow at the last build: an arrow that
     /// comes or goes is a new layout.
     resets: Vec<String>,
-    search: NodeId,
+    /// The Add Component list or the colour picker, over everything.
+    popover: Option<Popover>,
+    popover_parts: HashMap<NodeId, Part>,
+    /// A number being dragged by its label: what it was at the press, and
+    /// how far the pointer has gone.
+    scrubbing: Option<(f32, f32)>,
+    /// Pictures for the renderer to take: the picker's.
+    images: Vec<(runity_ui::ImageId, u32, Vec<u8>)>,
+    hue_drawn: bool,
+    /// Each component field's box, to show a scrubbed number as it goes.
+    sub_nodes: HashMap<(String, String), NodeId>,
 }
 
 impl Inspector {
@@ -285,17 +497,19 @@ impl Inspector {
                 .padding_x(SPACE_2)
                 .center_items(),
         );
-        let search = ui.add_field(strip, field_style().fill().height(20.0).text_size(11.5), "");
-        ui.set_placeholder(search, "Search fields");
-        ui.set_name(search, "inspector search");
+        ui.add(strip, Style::row().fill());
         let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
             locked: None,
             lock_button,
-            filter: String::new(),
-            search,
             resets: Vec::new(),
+            popover: None,
+            popover_parts: HashMap::new(),
+            scrubbing: None,
+            images: Vec::new(),
+            hue_drawn: false,
+            sub_nodes: HashMap::new(),
             root: card,
             body,
             showing: Vec::new(),
@@ -310,9 +524,6 @@ impl Inspector {
             component_values: HashMap::new(),
             asset: None,
             hsv: [0.0; 3],
-            swatch: None,
-            hex: None,
-            tracks: [None; 3],
         }
     }
 
@@ -326,7 +537,14 @@ impl Inspector {
     }
 
     pub fn owns(&self, node: NodeId) -> bool {
-        node == self.lock_button || node == self.search || self.parts.contains_key(&node)
+        node == self.lock_button
+            || self.parts.contains_key(&node)
+            || self.popover_parts.contains_key(&node)
+    }
+
+    /// Pictures made since last asked, for the renderer.
+    pub fn take_images(&mut self) -> Vec<(runity_ui::ImageId, u32, Vec<u8>)> {
+        std::mem::take(&mut self.images)
     }
 
     /// What the Inspector edits: the locked entities that still exist, or
@@ -373,6 +591,9 @@ impl Inspector {
         let playing = session.is_playing();
         if ids != self.showing {
             self.revealed.clear();
+            if self.scrubbing.is_none() {
+                self.close_popover(ui);
+            }
         }
         // A material means nothing without a model to wear it: an empty,
         // a camera, a light.
@@ -403,12 +624,15 @@ impl Inspector {
             .filter(|f| f.resettable)
             .map(|f| f.name.clone())
             .collect();
-        if !self.built
+        // Mid-drag the boxes stay: rebuilt, the handle being dragged would
+        // be gone from under the pointer.
+        let dragging = self.scrubbing.is_some() && ids == self.showing;
+        let changed = !self.built
             || ids != self.showing
             || shape != self.shape
             || playing != self.playing
-            || resets != self.resets
-        {
+            || resets != self.resets;
+        if changed && !dragging {
             self.resets = resets;
             self.built = true;
             self.showing = ids.clone();
@@ -437,9 +661,6 @@ impl Inspector {
         ui.clear(self.body);
         self.parts.clear();
         self.slots.clear();
-        self.swatch = None;
-        self.hex = None;
-        self.tracks = [None; 3];
         if ids.is_empty() {
             let empty = ui.add(self.body, Style::column().padding(SPACE_4).gap(SPACE_2));
             ui.add_text(empty, text().text_color(MUTED), "Nothing selected");
@@ -468,6 +689,27 @@ impl Inspector {
                 .gap(SPACE_2)
                 .center_items(),
         );
+        // Unity's checkbox before the name: on in the world, or off.
+        if let Some(inactive) = find("inactive") {
+            let on = inactive.value != "true";
+            let check = ui.add(
+                head,
+                Style::row()
+                    .size(16.0, 16.0)
+                    .fixed()
+                    .center()
+                    .radius(4.0)
+                    .border(1.0, if on { ACCENT } else { NEUTRAL_500 })
+                    .background(if on { ACCENT } else { runity_ui::Color::TRANSPARENT })
+                    .hover_border(ACCENT)
+                    .clickable(),
+            );
+            ui.set_name(check, "inspector active");
+            if on {
+                icon(ui, check, "check", NEUTRAL_900);
+            }
+            self.parts.insert(check, Part::Active(on));
+        }
         icon(
             ui,
             head,
@@ -494,6 +736,28 @@ impl Inspector {
         }
         if let Some(p) = &prefab {
             tag(ui, head, p, ACCENT_900, ACCENT_300);
+        }
+        // The layer: a list to pick from, as Unity's under the name.
+        if let Some(layer) = find("layer") {
+            let pick = ui.add(
+                head,
+                Style::row()
+                    .height(22.0)
+                    .fixed()
+                    .padding_x(6.0)
+                    .gap(4.0)
+                    .center_items()
+                    .radius(6.0)
+                    .border(1.0, DIVIDER)
+                    .hover(HOVER)
+                    .clickable(),
+            );
+            ui.set_name(pick, "inspector layer");
+            icon(ui, pick, "layers-2", MUTED);
+            let shown = if layer.value.is_empty() { "Default" } else { &layer.value };
+            ui.add_text(pick, text().nowrap().text_size(11.5), shown);
+            icon(ui, pick, "chevron-down", MUTED);
+            self.parts.insert(pick, Part::Layer);
         }
         if self.playing {
             let note = ui.add(
@@ -542,15 +806,6 @@ impl Inspector {
             ("Physics", physics),
             ("Components", parts),
         ] {
-            let filter = self.filter.clone();
-            let group: Vec<&Field> = group
-                .into_iter()
-                .filter(|f| {
-                    filter.is_empty()
-                        || f.name.to_lowercase().contains(&filter)
-                        || title(&f.name).to_lowercase().contains(&filter)
-                })
-                .collect();
             if group.is_empty() {
                 continue;
             }
@@ -559,7 +814,26 @@ impl Inspector {
                 self.line(ui, session, f);
                 if f.name == "material" && f.value != MIXED {
                     if let Some(m) = session.material(ids[0]) {
-                        self.color_editor(ui, m.base_color);
+                        let rgb = to_srgb(m.base_color);
+                        self.color_line(ui, "Color", "material", rgb, ColorTarget::Material);
+                    }
+                }
+                // A colour inside a light's or particles' value: a swatch.
+                if f.value != MIXED {
+                    for key in ["color", "end_color"] {
+                        if !matches!(f.name.as_str(), "light" | "particles") {
+                            break;
+                        }
+                        if let Some(c) = ron_color(&f.value, key) {
+                            let rgb = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                            self.color_line(
+                                ui,
+                                &title(key).replace('_', " "),
+                                &format!("{} {key}", f.name),
+                                rgb,
+                                ColorTarget::Field(f.name.clone(), key.to_string()),
+                            );
+                        }
                     }
                 }
             }
@@ -593,65 +867,31 @@ impl Inspector {
             }
         }
 
-        // What could be added: the empty fields as outlined chips, and a
-        // component by name.
+        // Unity's Add Component: one button, a list with a search.
         let foot = ui.add(
             self.body,
             Style::column()
                 .full_width()
                 .padding_x(SPACE_4)
-                .padding_y(SPACE_3)
-                .gap(SPACE_2),
+                .padding_y(SPACE_3),
         );
-        let chips = ui.add(foot, Style::row().wrap().gap(SPACE_1).full_width());
-        for name in OBJECT.iter().chain(PHYSICS.iter()).chain(PARTS.iter()) {
-            if *name == "prefab" {
-                continue;
-            }
-            let Some(f) = find(name) else { continue };
-            if !is_empty(&f.value) || self.revealed.contains(*name) {
-                continue;
-            }
-            let chip = ui.add(
-                chips,
-                Style::row()
-                    .height(22.0)
-                    .padding_x(SPACE_2)
-                    .gap(4.0)
-                    .center_items()
-                    .radius(6.0)
-                    .border(1.0, DIVIDER)
-                    .hover(HOVER)
-                    .hover_border(ACCENT),
-            );
-            ui.set_name(chip, format!("add {name}"));
-            icon(ui, chip, "plus", MUTED);
-            ui.add_text(
-                chip,
-                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
-                &title(name),
-            );
-            self.parts.insert(chip, Part::Reveal(name.to_string()));
-        }
-        let add_row = ui.add(foot, Style::row().full_width().gap(SPACE_1).center_items());
-        let add = ui.add_field(add_row, field_style().fill(), "");
-        // The components the game has: a list to pick from, as Unity's Add
-        // Component button.
-        let pick = ui.add(
-            add_row,
+        let add = ui.add(
+            foot,
             Style::row()
-                .size(22.0, 22.0)
-                .fixed()
+                .full_width()
+                .height(26.0)
+                .gap(SPACE_2)
                 .center()
                 .radius(6.0)
-                .hover(HOVER),
+                .border(1.0, DIVIDER)
+                .hover(HOVER)
+                .hover_border(ACCENT)
+                .clickable(),
         );
-        ui.set_name(pick, "pick component");
-        icon(ui, pick, "plus", LABEL);
-        self.parts.insert(pick, Part::PickComponent);
         ui.set_name(add, "add component");
-        ui.set_placeholder(add, "Add component by name, Enter");
-        self.parts.insert(add, Part::AddComponent);
+        icon(ui, add, "plus", LABEL);
+        ui.add_text(add, text().nowrap(), "Add Component");
+        self.parts.insert(add, Part::AddButton);
         let _ = session;
     }
 
@@ -743,14 +983,32 @@ impl Inspector {
                 let boxes = ui.add(line, Style::row().fill().gap(SPACE_1));
                 for (i, value) in three.iter().enumerate() {
                     let b = ui.add(boxes, Style::row().fill().gap(2.0).center_items());
-                    ui.add_text(
+                    // The letter is a handle: dragged sideways, the number
+                    // goes up or down with it.
+                    let handle = ui.add(
                         b,
+                        Style::row()
+                            .size(12.0, 22.0)
+                            .fixed()
+                            .center()
+                            .radius(RADIUS_SM)
+                            .hover(HOVER)
+                            .draggable()
+                            .clickable(),
+                    );
+                    ui.set_name(handle, format!("scrub {} {}", f.name, ["x", "y", "z"][i]));
+                    ui.add_text(
+                        handle,
                         Style::default()
                             .text_size(10.5)
-                            .text_color(TEXT.alpha(40))
+                            .text_color(AXES[i])
                             .nowrap(),
                         ["X", "Y", "Z"][i],
                     );
+                    if !self.playing {
+                        self.parts
+                            .insert(handle, Part::Scrub(Scrub::Axis(f.name.clone(), i)));
+                    }
                     let slot = ui.add_field(b, field_style().fill(), value);
                     ui.set_name(slot, format!("{} {}", f.name, ["x", "y", "z"][i]));
                     self.slot(slot, &f.name, Some(i), value);
@@ -793,6 +1051,7 @@ impl Inspector {
                 }
             }
         }
+        self.remove_button(ui, line, &f.name);
         // Unreal's yellow arrow: this field says something a new entity (or
         // the prefab) does not, and one click takes it back.
         if f.resettable && !self.playing {
@@ -842,11 +1101,13 @@ impl Inspector {
         ui.add_text(
             head,
             Style::default()
+                .fill()
                 .text_size(12.0)
                 .text_color(if f.overridden { ACCENT_300 } else { TEXT })
                 .nowrap(),
             &title(&f.name),
         );
+        self.remove_button(ui, head, &f.name);
         for (key, kind) in &shape {
             let value = values
                 .iter()
@@ -864,16 +1125,34 @@ impl Inspector {
                     .gap(SPACE_2)
                     .center_items(),
             );
-            ui.add_text(
+            // A number's name is a handle: drag it sideways.
+            let number = matches!(kind, Shape::Int | Shape::Float);
+            let name = ui.add(
                 line,
-                Style::default()
+                Style::row()
                     .width(84.0 - 18.0)
                     .fixed()
-                    .text_size(12.0)
-                    .text_color(LABEL)
-                    .nowrap(),
+                    .height(22.0)
+                    .center_items()
+                    .radius(RADIUS_SM),
+            );
+            ui.add_text(
+                name,
+                Style::default().text_size(12.0).text_color(LABEL).nowrap(),
                 &title(key),
             );
+            if number && !self.playing {
+                ui.restyle(name, |s| s.hover(HOVER).draggable().clickable());
+                ui.set_name(name, format!("scrub {component} {key}"));
+                self.parts.insert(
+                    name,
+                    Part::Scrub(Scrub::Sub {
+                        component: component.to_string(),
+                        key: key.clone(),
+                        whole: matches!(kind, Shape::Int),
+                    }),
+                );
+            }
             let sub = match kind {
                 Shape::Bool => SubKind::Bool(value == "true"),
                 Shape::Int | Shape::Float => SubKind::Number,
@@ -1026,6 +1305,8 @@ impl Inspector {
                 }
             };
             ui.set_name(node, format!("{component} {key}"));
+            self.sub_nodes
+                .insert((component.to_string(), key.clone()), node);
             self.parts.insert(
                 node,
                 Part::Sub {
@@ -1185,9 +1466,6 @@ impl Inspector {
         ui.clear(self.body);
         self.parts.clear();
         self.slots.clear();
-        self.swatch = None;
-        self.hex = None;
-        self.tracks = [None; 3];
         self.showing.clear();
         let (name, kind, file) = match &asset {
             Asset::Model(n, f) => (n.clone(), "model", f.clone()),
@@ -1437,11 +1715,29 @@ impl Inspector {
         pixels
     }
 
-    /// The material's colour: a swatch, `#rrggbb`, and hue, saturation
-    /// and value tracks. Unity's colour field, flattened into the panel.
-    fn color_editor(&mut self, ui: &mut Ui, linear: [f32; 3]) {
-        let rgb = to_srgb(linear);
-        self.hsv = hsv_of(rgb);
+    /// The trash at the end of a field that the line can do without.
+    fn remove_button(&mut self, ui: &mut Ui, line: NodeId, field: &str) {
+        if self.playing || !(field.starts_with("components.") || REMOVABLE.contains(&field)) {
+            return;
+        }
+        let trash = ui.add(
+            line,
+            Style::row()
+                .size(20.0, 22.0)
+                .fixed()
+                .center()
+                .radius(6.0)
+                .hover(HOVER)
+                .clickable(),
+        );
+        ui.set_name(trash, format!("remove {field}"));
+        icon(ui, trash, "trash", MUTED);
+        self.parts.insert(trash, Part::Remove(field.to_string()));
+    }
+
+    /// A colour as a swatch and its `#rrggbb`: a click on either opens the
+    /// picker.
+    fn color_line(&mut self, ui: &mut Ui, label: &str, name: &str, rgb: [u8; 3], target: ColorTarget) {
         let line = ui.add(
             self.body,
             Style::row()
@@ -1451,86 +1747,45 @@ impl Inspector {
                 .gap(SPACE_2)
                 .center_items(),
         );
-        ui.add(line, Style::row().width(84.0).fixed());
+        ui.add_text(
+            line,
+            Style::default()
+                .width(84.0)
+                .fixed()
+                .text_size(12.0)
+                .text_color(LABEL)
+                .nowrap(),
+            label,
+        );
         let swatch = ui.add(
             line,
             Style::row()
-                .size(22.0, 22.0)
-                .fixed()
+                .fill()
+                .height(22.0)
+                .padding_x(6.0)
+                .gap(SPACE_2)
+                .center_items()
                 .radius(6.0)
                 .border(1.0, DIVIDER)
+                .hover_border(ACCENT)
+                .clickable(),
+        );
+        ui.set_name(swatch, format!("{name} swatch"));
+        ui.add(
+            swatch,
+            Style::row()
+                .size(28.0, 14.0)
+                .fixed()
+                .radius(3.0)
+                .border(1.0, NEUTRAL_800)
                 .background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255)),
         );
-        ui.set_name(swatch, "material swatch");
-        let hex = ui.add_field(
-            line,
-            field_style().width(86.0).mono().text_size(11.5),
+        ui.add_text(
+            swatch,
+            text().mono().text_size(11.5).nowrap(),
             &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]),
         );
-        ui.set_name(hex, "material hex");
-        self.parts.insert(hex, Part::Hex);
-        let tracks = ui.add(line, Style::column().fill().gap(3.0));
-        for (i, name) in ["hue", "saturation", "value"].into_iter().enumerate() {
-            let track = ui.add(
-                tracks,
-                Style::row()
-                    .full_width()
-                    .height(6.0)
-                    .radius(3.0)
-                    .background(DIVIDER)
-                    .draggable()
-                    .clickable(),
-            );
-            ui.set_name(track, format!("material {name}"));
-            ui.add(
-                track,
-                Style::row()
-                    .full_height()
-                    .radius(3.0)
-                    .background(ACCENT.alpha(70)),
-            );
-            self.parts.insert(track, Part::Slider(i));
-            self.tracks[i] = Some(track);
-        }
-        self.swatch = Some(swatch);
-        self.hex = Some(hex);
-        self.show_color(ui);
-    }
-
-    /// The swatch, the hex and the tracks, for the colour being edited.
-    fn show_color(&mut self, ui: &mut Ui) {
-        let rgb = rgb_of(self.hsv);
-        if let Some(sw) = self.swatch {
-            ui.restyle(sw, |s| {
-                s.background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255))
-            });
-        }
-        if let Some(hex) = self.hex {
-            if ui.focused() != Some(hex) {
-                ui.set_text(hex, &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
-            }
-        }
-        for (i, track) in self.tracks.iter().enumerate() {
-            let Some(track) = track else { continue };
-            if let Some(fill) = ui.children(*track).first().copied() {
-                let v = self.hsv[i];
-                ui.restyle(fill, |s| s.width_fraction(v.max(0.04)));
-            }
-        }
-    }
-
-    /// Give the selection the colour being edited: one undo step.
-    fn apply_color(&mut self, session: &mut Session) {
-        let [r, g, b] = rgb_of(self.hsv);
-        let material = runity::Material::from_srgb(r, g, b);
-        for id in self.showing.clone() {
-            let mut m = session.material(id).unwrap_or(material);
-            m.base_color = material.base_color;
-            if let Err(e) = session.set_material(id, m) {
-                session.say(Level::Error, e.to_string());
-                break;
-            }
-        }
+        self.parts.insert(swatch, Part::Swatch(target));
     }
 
     pub fn event(
@@ -1541,12 +1796,8 @@ impl Inspector {
         event: &Event,
         requests: &mut Requests,
     ) {
-        if node == self.search {
-            if let Event::Changed(text) | Event::Submit(text) = event {
-                self.filter = text.trim().to_lowercase();
-                self.built = false;
-                requests.refresh = true;
-            }
+        if let Some(part) = self.popover_parts.get(&node).cloned() {
+            self.popover_event(ui, session, node, part, event, requests);
             return;
         }
         if node == self.lock_button {
@@ -1594,35 +1845,94 @@ impl Inspector {
                 }
                 requests.refresh = true;
             }
-            (Part::Reveal(field), Event::Click { .. }) => {
-                self.revealed.insert(field.clone());
-                self.shape.clear();
-                requests.refresh = true;
-                requests.focus_named = Some(field);
-            }
             (Part::Pick(field), Event::Click { .. }) => {
                 let items = self.choices(session, &field);
                 let r = ui.rect(node);
                 requests.menu = Some((items, r.x - 180.0, r.y + r.height));
             }
-            (Part::Slider(i), Event::Press { x, .. } | Event::Drag { x, .. }) => {
-                let r = ui.rect(node);
-                self.hsv[i] = ((x - r.x) / r.width.max(1.0)).clamp(0.0, 1.0);
-                self.show_color(ui);
-            }
-            (Part::Slider(_), Event::Release { .. }) => {
-                self.apply_color(session);
-                requests.refresh = true;
-            }
-            (Part::Hex, Event::Submit(text)) => {
-                match parse_hex(text) {
-                    Some(rgb) => {
-                        self.hsv = hsv_of(rgb);
-                        self.apply_color(session);
-                    }
-                    None => session.say(Level::Error, format!("{text:?} is not a colour: #rrggbb")),
+            (Part::Active(on), Event::Click { .. }) => {
+                let value = if on { "true" } else { "false" };
+                if let Err(e) = session.set_field_all(&self.showing, "inactive", value) {
+                    session.say(Level::Error, e.to_string());
                 }
+                self.built = false;
                 requests.refresh = true;
+            }
+            (Part::Layer, Event::Click { .. }) => {
+                let mut items = vec![MenuItem::new(
+                    "Default",
+                    Action::SetField("layer".into(), String::new()),
+                )];
+                let layers = session.layer_names();
+                if !layers.is_empty() {
+                    items.push(MenuItem::separator());
+                }
+                for layer in layers {
+                    items.push(MenuItem::new(&layer, Action::SetField("layer".into(), layer.clone())));
+                }
+                let r = ui.rect(node);
+                requests.menu = Some((items, r.x, r.y + r.height));
+            }
+            (Part::Remove(field), Event::Click { .. }) => {
+                // Taken off every line shown: one step.
+                session.begin_gesture();
+                for id in self.showing.clone() {
+                    let done = match field.strip_prefix("components.") {
+                        Some(name) => session.set_component(id, name, None),
+                        None => session.reset_field(id, &field),
+                    };
+                    if let Err(e) = done {
+                        session.say(Level::Error, e.to_string());
+                        break;
+                    }
+                }
+                session.end_gesture();
+                self.revealed.remove(&field);
+                self.built = false;
+                requests.refresh = true;
+            }
+            (Part::Scrub(scrub), Event::Press { .. }) => {
+                let start = match &scrub {
+                    Scrub::Axis(field, i) => self
+                        .slots
+                        .iter()
+                        .find(|s| s.0 == *field && s.1 == Some(*i))
+                        .and_then(|s| eval(ui.text(s.2).unwrap_or_default().trim())),
+                    Scrub::Sub { component, key, .. } => self
+                        .component_values
+                        .get(component)
+                        .and_then(|v| v.iter().find(|(k, _)| k == key))
+                        .and_then(|(_, v)| eval(v.trim())),
+                };
+                if let Some(start) = start {
+                    session.begin_gesture();
+                    self.scrubbing = Some((start, 0.0));
+                }
+            }
+            (Part::Scrub(scrub), Event::Drag { dx, .. }) => {
+                let Some((start, moved)) = self.scrubbing.as_mut() else {
+                    return;
+                };
+                *moved += dx;
+                let (start, moved) = (*start, *moved);
+                self.scrub_to(ui, session, &scrub, start, moved);
+            }
+            (Part::Scrub(_), Event::Release { .. }) => {
+                if self.scrubbing.take().is_some() {
+                    session.end_gesture();
+                }
+                self.built = false;
+                requests.refresh = true;
+            }
+            (Part::AddButton, Event::Click { .. }) => {
+                let r = ui.rect(node);
+                self.open_add(ui, session, r);
+            }
+            (Part::Swatch(target), Event::Click { .. }) => {
+                if let Some(rgb) = self.color_of(session, &target) {
+                    let r = ui.rect(node);
+                    self.open_picker(ui, target, rgb, r);
+                }
             }
             (Part::Import(field), Event::Submit(value)) => {
                 if let Some((asset, Some(source))) = self.asset.clone() {
@@ -1777,31 +2087,22 @@ impl Inspector {
                 requests.refresh = true;
             }
             (Part::Hour, Event::Press { x, .. } | Event::Drag { x, .. }) => {
+                if matches!(event, Event::Press { .. }) {
+                    session.begin_gesture();
+                    self.scrubbing = Some((0.0, 0.0));
+                }
                 let r = ui.rect(node);
                 let hour = ((x - r.x) / r.width.max(1.0)).clamp(0.0, 0.999) * 24.0;
                 if let Some(fill) = ui.children(node).first().copied() {
                     ui.restyle(fill, |s| s.width_fraction(hour / 24.0));
                 }
+                // The sun moves as the track does.
                 self.hour = hour;
+                self.set_hour(session);
             }
             (Part::Hour, Event::Release { .. }) => {
-                let sun = session
-                    .environment()
-                    .into_iter()
-                    .find(|(f, _)| *f == "sun")
-                    .map(|(_, v)| v)
-                    .unwrap_or_default();
-                // The hour replaced in what the sun says, the rest kept.
-                let text = match sun.find("hour:") {
-                    Some(at) => {
-                        let rest = &sun[at + 5..];
-                        let end = rest.find([',', ')']).unwrap_or(rest.len());
-                        format!("{}hour:{:.2}{}", &sun[..at], self.hour, &rest[end..])
-                    }
-                    None => format!("(hour: {:.2})", self.hour),
-                };
-                if let Err(e) = session.set_environment("sun", &text) {
-                    session.say(Level::Error, e.to_string());
+                if self.scrubbing.take().is_some() {
+                    session.end_gesture();
                 }
                 self.built = false;
                 requests.refresh = true;
@@ -1812,18 +2113,8 @@ impl Inspector {
                     MenuItem::new("Copy Value", Action::FieldCopy(field.clone())),
                     MenuItem::new("Paste Value", Action::FieldPaste(field.clone())),
                 ];
-                let removable = field.starts_with("components.")
-                    || [
-                        "camera",
-                        "light",
-                        "particles",
-                        "route",
-                        "joint",
-                        "collider",
-                        "body",
-                        "physics",
-                    ]
-                    .contains(&field.as_str());
+                let removable =
+                    field.starts_with("components.") || REMOVABLE.contains(&field.as_str());
                 if removable {
                     items.push(MenuItem::separator());
                     items.push(MenuItem::new("Remove", Action::FieldRemove(field.clone())));
@@ -1831,49 +2122,450 @@ impl Inspector {
                 let (x, y) = ui.pointer();
                 requests.menu = Some((items, x, y));
             }
-            (Part::PickComponent, Event::Click { .. }) => {
-                let mut names: Vec<String> = session.component_shapes().into_keys().collect();
-                // Components written but not yet described: their files.
-                if let Some(project) = session.project() {
-                    if let Ok(read) =
-                        std::fs::read_dir(project.root().join(runity::project::COMPONENTS))
-                    {
-                        for e in read.flatten() {
-                            let p = e.path();
-                            if p.extension().is_some_and(|x| x == "rs") {
-                                let n = p.file_stem().unwrap().to_string_lossy().into_owned();
-                                if n != "mod" && !names.contains(&n) {
-                                    names.push(n);
-                                }
-                            }
+            _ => {}
+        }
+    }
+
+    /// The sun at the hour being dragged to, the rest of what it says kept.
+    fn set_hour(&mut self, session: &mut Session) {
+        let sun = session
+            .environment()
+            .into_iter()
+            .find(|(f, _)| *f == "sun")
+            .map(|(_, v)| v)
+            .unwrap_or_default();
+        let text = match sun.find("hour:") {
+            Some(at) => {
+                let rest = &sun[at + 5..];
+                let end = rest.find([',', ')']).unwrap_or(rest.len());
+                format!("{}hour:{:.2}{}", &sun[..at], self.hour, &rest[end..])
+            }
+            None => format!("(hour: {:.2})", self.hour),
+        };
+        if let Err(e) = session.set_environment("sun", &text) {
+            session.say(Level::Error, e.to_string());
+        }
+    }
+
+    /// A number dragged by its label to `start` and `moved` pixels on.
+    fn scrub_to(&mut self, ui: &mut Ui, session: &mut Session, scrub: &Scrub, start: f32, moved: f32) {
+        match scrub {
+            Scrub::Axis(field, axis) => {
+                // A degree a pixel for turning, a centimetre for the rest.
+                let step = if field == "rotation" { 0.5 } else { 0.01 };
+                let value = start + moved * step;
+                let mut three = [0.0f32; 3];
+                for s in self.slots.iter().filter(|s| s.0 == *field) {
+                    if let Some(i) = s.1 {
+                        three[i] = eval(ui.text(s.2).unwrap_or_default().trim()).unwrap_or(0.0);
+                    }
+                }
+                three[*axis] = value;
+                let text = format!("({:?}, {:?}, {:?})", three[0], three[1], three[2]);
+                if let Err(e) = session.set_field_all(&self.showing, field, &text) {
+                    session.say(Level::Error, e.to_string());
+                }
+                for s in self.slots.iter_mut().filter(|s| s.0 == *field && s.1 == Some(*axis)) {
+                    let shown = trim_number(&format!("{value}"));
+                    ui.set_text(s.2, &shown);
+                    s.3 = shown;
+                }
+            }
+            Scrub::Sub { component, key, whole } => {
+                let value = if *whole {
+                    format!("{}", (start + moved / 4.0).round() as i64)
+                } else {
+                    // Faster for big numbers: half a percent of it a pixel.
+                    let step = (start.abs() * 0.005).max(0.01);
+                    format!("{:?}", start + moved * step)
+                };
+                self.set_sub(session, component, key, &value);
+                if let Some(values) = self.component_values.get_mut(component) {
+                    match values.iter_mut().find(|(k, _)| k == key) {
+                        Some(slot) => slot.1 = value.clone(),
+                        None => values.push((key.clone(), value.clone())),
+                    }
+                }
+                if let Some(node) = self.sub_nodes.get(&(component.clone(), key.clone())) {
+                    ui.set_text(*node, &trim_number(&value));
+                }
+            }
+        }
+    }
+
+    /// The colour a swatch stands for, as sRGB bytes.
+    fn color_of(&self, session: &Session, target: &ColorTarget) -> Option<[u8; 3]> {
+        let id = *self.showing.first()?;
+        match target {
+            ColorTarget::Material => session.material(id).map(|m| to_srgb(m.base_color)),
+            ColorTarget::Field(field, key) => {
+                let value = session.inspect(id)?.into_iter().find(|f| f.name == *field)?.value;
+                ron_color(&value, key).map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
+            }
+        }
+    }
+
+    /// Give what is shown the picker's colour.
+    fn apply_color(&mut self, session: &mut Session, target: &ColorTarget) {
+        let [r, g, b] = rgb_of(self.hsv);
+        match target {
+            ColorTarget::Material => {
+                let material = runity::Material::from_srgb(r, g, b);
+                for id in self.showing.clone() {
+                    let mut m = session.material(id).unwrap_or(material);
+                    m.base_color = material.base_color;
+                    if let Err(e) = session.set_material(id, m) {
+                        session.say(Level::Error, e.to_string());
+                        break;
+                    }
+                }
+            }
+            ColorTarget::Field(field, key) => {
+                let rgb = [r, g, b].map(|v| v as f32 / 255.0);
+                for id in self.showing.clone() {
+                    let Some(value) = session
+                        .inspect(id)
+                        .and_then(|f| f.into_iter().find(|f| f.name == *field))
+                        .map(|f| f.value)
+                    else {
+                        continue;
+                    };
+                    if let Err(e) = session.set_field(id, field, &with_ron_color(&value, key, rgb)) {
+                        session.say(Level::Error, e.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Close whatever is open over the panel.
+    pub fn close_popover(&mut self, ui: &mut Ui) {
+        if let Some(p) = self.popover.take() {
+            ui.remove(p.root());
+        }
+        self.popover_parts.clear();
+    }
+
+    /// A layer over everything: the ground, a click on which closes it, and
+    /// a card at `x`, `y` for what it holds.
+    fn popover_card(&mut self, ui: &mut Ui, x: f32, y: f32, width: f32) -> (NodeId, NodeId) {
+        self.close_popover(ui);
+        let (w, h, _) = ui.viewport();
+        let ground = ui.add(
+            ui.root(),
+            Style::column().absolute(0.0, 0.0).size(w, h).clickable(),
+        );
+        ui.set_layer(ground, true);
+        ui.set_name(ground, "popover ground");
+        self.popover_parts.insert(ground, Part::Dismiss);
+        let card = ui.add(
+            ground,
+            Style::column()
+                .absolute(x.min(w - width - 8.0).max(8.0), y.min(h - 120.0))
+                .width(width)
+                .padding(SPACE_2)
+                .gap(SPACE_2)
+                .radius(RADIUS_MD)
+                .background(SURFACE)
+                .border(1.0, NEUTRAL_500)
+                .clickable(),
+        );
+        (ground, card)
+    }
+
+    /// Unity's Add Component: a search, and what matches it.
+    fn open_add(&mut self, ui: &mut Ui, session: &Session, at: runity_ui::Rect) {
+        let (ground, card) = self.popover_card(ui, at.x, at.y + at.height + 4.0, at.width.max(220.0));
+        ui.set_name(card, "add component list");
+        let field = ui.add_field(card, field_style().full_width().height(26.0), "");
+        ui.set_placeholder(field, "Search");
+        ui.set_name(field, "add component search");
+        self.popover_parts.insert(field, Part::AddSearch);
+        let list = ui.add(card, Style::column().full_width().gap(1.0).clip());
+        ui.focus(Some(field));
+        self.popover = Some(Popover::Add {
+            root: ground,
+            list,
+            hits: Vec::new(),
+        });
+        self.fill_add(ui, session, "");
+    }
+
+    /// What Add Component offers for what is typed: the line's parts it
+    /// does not have yet, the game's components, and making a new one.
+    fn fill_add(&mut self, ui: &mut Ui, session: &Session, typed: &str) {
+        let Some(Popover::Add { list, hits, .. }) = &mut self.popover else {
+            return;
+        };
+        let list = *list;
+        let query = typed.trim().to_lowercase();
+        let fields = self
+            .showing
+            .first()
+            .and_then(|id| session.inspect(*id))
+            .unwrap_or_default();
+        let has = |name: &str| {
+            fields
+                .iter()
+                .any(|f| f.name == name && !is_empty(&f.value))
+                || self.revealed.contains(name)
+        };
+        let mut offered: Vec<(Addition, String)> = ADDABLE
+            .iter()
+            .filter(|(field, _)| !has(field))
+            .map(|(field, label)| (Addition::Field(field.to_string()), label.to_string()))
+            .collect();
+        let mut names: Vec<String> = session.component_shapes().into_keys().collect();
+        if let Some(project) = session.project() {
+            if let Ok(read) = std::fs::read_dir(project.root().join(runity::project::COMPONENTS)) {
+                for e in read.flatten() {
+                    let p = e.path();
+                    if p.extension().is_some_and(|x| x == "rs") {
+                        let n = p.file_stem().unwrap().to_string_lossy().into_owned();
+                        if n != "mod" && !names.contains(&n) {
+                            names.push(n);
                         }
                     }
                 }
-                names.sort();
-                let mut items: Vec<MenuItem> = names
-                    .into_iter()
-                    .map(|n| MenuItem::new(&n, Action::AddComponent(n.clone())))
-                    .collect();
-                if items.is_empty() {
-                    items.push(MenuItem::new("Create Component…", Action::NewComponent));
-                } else {
-                    items.push(MenuItem::separator());
-                    items.push(MenuItem::new("Create Component…", Action::NewComponent));
+            }
+        }
+        names.sort();
+        for n in names {
+            if !has(&format!("components.{n}")) {
+                offered.push((Addition::Component(n.clone()), title(&n)));
+            }
+        }
+        offered.retain(|(_, label)| query.is_empty() || label.to_lowercase().contains(&query));
+        offered.push((Addition::NewComponent, "New Component…".into()));
+        ui.clear(list);
+        hits.clear();
+        let mut parts = Vec::new();
+        for (i, (addition, label)) in offered.into_iter().enumerate() {
+            let row = ui.add(
+                list,
+                Style::row()
+                    .full_width()
+                    .height(24.0)
+                    .padding_x(SPACE_2)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .background(if i == 0 && !query.is_empty() { HOVER } else { runity_ui::Color::TRANSPARENT })
+                    .hover(HOVER)
+                    .clickable(),
+            );
+            ui.set_name(row, format!("add {label}"));
+            let glyph = match &addition {
+                Addition::Field(_) => "box",
+                Addition::Component(_) => "component",
+                Addition::NewComponent => "plus",
+            };
+            icon(ui, row, glyph, if matches!(addition, Addition::Field(_)) { MUTED } else { ACCENT });
+            ui.add_text(row, text().nowrap(), &label);
+            hits.push(addition.clone());
+            parts.push((row, addition));
+        }
+        for (row, addition) in parts {
+            self.popover_parts.insert(row, Part::AddEntry(addition));
+        }
+    }
+
+    /// Put what was picked from Add Component on what is shown.
+    fn add(&mut self, ui: &mut Ui, session: &mut Session, addition: Addition, requests: &mut Requests) {
+        self.close_popover(ui);
+        match addition {
+            Addition::Field(field) => match added_value(&field) {
+                Some(value) => {
+                    if let Err(e) = session.set_field_all(&self.showing, &field, value) {
+                        session.say(Level::Error, e.to_string());
+                    }
+                }
+                None => {
+                    // Shown empty, the keyboard in it, to be filled in.
+                    self.revealed.insert(field.clone());
+                    self.shape.clear();
+                    requests.focus_named = Some(field);
+                }
+            },
+            Addition::Component(name) => requests.action = Some(Action::AddComponent(name)),
+            Addition::NewComponent => requests.action = Some(Action::NewComponent),
+        }
+        self.built = false;
+        requests.refresh = true;
+    }
+
+    /// The colour picker: a square of saturation and value, a strip of
+    /// hues, and the hex. Everything moves the colour as it is dragged.
+    fn open_picker(&mut self, ui: &mut Ui, target: ColorTarget, rgb: [u8; 3], at: runity_ui::Rect) {
+        self.hsv = hsv_of(rgb);
+        let (ground, card) = self.popover_card(ui, at.x, at.y + at.height + 4.0, 236.0);
+        ui.set_name(card, "color picker");
+        let square = ui.add_image(
+            card,
+            Style::default()
+                .size(220.0, 150.0)
+                .radius(RADIUS_SM)
+                .draggable()
+                .clickable(),
+            SV_SQUARE,
+        );
+        ui.set_name(square, "picker square");
+        let square_mark = ui.add(
+            square,
+            Style::row()
+                .absolute(0.0, 0.0)
+                .size(10.0, 10.0)
+                .radius(5.0)
+                .border(2.0, runity_ui::Color::hex(0xffffff)),
+        );
+        let hue = ui.add_image(
+            card,
+            Style::default()
+                .size(220.0, 12.0)
+                .radius(6.0)
+                .draggable()
+                .clickable(),
+            HUE_STRIP,
+        );
+        ui.set_name(hue, "picker hue");
+        let hue_mark = ui.add(
+            hue,
+            Style::row()
+                .absolute(0.0, -2.0)
+                .size(6.0, 16.0)
+                .radius(3.0)
+                .border(2.0, runity_ui::Color::hex(0xffffff)),
+        );
+        let row = ui.add(card, Style::row().full_width().gap(SPACE_2).center_items());
+        let preview = ui.add(
+            row,
+            Style::row()
+                .size(34.0, 24.0)
+                .fixed()
+                .radius(RADIUS_SM)
+                .border(1.0, NEUTRAL_800),
+        );
+        let hex = ui.add_field(row, field_style().fill().mono(), "");
+        ui.set_name(hex, "picker hex");
+        self.popover_parts.insert(square, Part::PickerSquare);
+        self.popover_parts.insert(hue, Part::PickerHue);
+        self.popover_parts.insert(hex, Part::PickerHex);
+        if !self.hue_drawn {
+            self.hue_drawn = true;
+            self.images.push((HUE_STRIP, PICTURE, hue_pixels()));
+        }
+        self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
+        self.popover = Some(Popover::Color {
+            root: ground,
+            target,
+            hex,
+            preview,
+            square_mark,
+            hue_mark,
+        });
+        self.show_picker(ui);
+    }
+
+    /// The marks, the preview and the hex, for the colour being picked.
+    fn show_picker(&mut self, ui: &mut Ui) {
+        let Some(Popover::Color {
+            hex,
+            preview,
+            square_mark,
+            hue_mark,
+            ..
+        }) = &self.popover
+        else {
+            return;
+        };
+        let [h, s, v] = self.hsv;
+        let rgb = rgb_of(self.hsv);
+        ui.restyle(*square_mark, |st| st.absolute(s * 220.0 - 5.0, (1.0 - v) * 150.0 - 5.0));
+        ui.restyle(*hue_mark, |st| st.absolute(h * 220.0 - 3.0, -2.0));
+        ui.restyle(*preview, |st| {
+            st.background(runity_ui::Color::rgba(rgb[0], rgb[1], rgb[2], 255))
+        });
+        if ui.focused() != Some(*hex) {
+            ui.set_text(*hex, &format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
+        }
+    }
+
+    fn popover_event(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        node: NodeId,
+        part: Part,
+        event: &Event,
+        requests: &mut Requests,
+    ) {
+        let target = match &self.popover {
+            Some(Popover::Color { target, .. }) => Some(target.clone()),
+            _ => None,
+        };
+        match (part, event) {
+            (Part::Dismiss, Event::Click { .. }) => self.close_popover(ui),
+            (Part::AddSearch, Event::Changed(text)) => {
+                let text = text.clone();
+                self.fill_add(ui, session, &text);
+            }
+            (Part::AddSearch, Event::Submit(_)) => {
+                let first = match &self.popover {
+                    Some(Popover::Add { hits, .. }) => hits.first().cloned(),
+                    _ => None,
+                };
+                if let Some(first) = first {
+                    self.add(ui, session, first, requests);
+                }
+            }
+            (Part::AddSearch, Event::Cancel) => self.close_popover(ui),
+            (Part::AddEntry(addition), Event::Click { .. }) => {
+                self.add(ui, session, addition, requests)
+            }
+            (
+                part @ (Part::PickerSquare | Part::PickerHue),
+                Event::Press { x, y, .. } | Event::Drag { x, y, .. },
+            ) => {
+                let Some(target) = target else { return };
+                if matches!(event, Event::Press { .. }) {
+                    session.begin_gesture();
+                    self.scrubbing = Some((0.0, 0.0));
                 }
                 let r = ui.rect(node);
-                requests.menu = Some((items, r.x - 200.0, r.y + r.height));
-            }
-            (Part::AddComponent, Event::Submit(name)) => {
-                let name = name.trim().to_string();
-                if !name.is_empty() {
-                    for id in self.showing.clone() {
-                        if let Err(e) = session.add_component(id, &name) {
-                            session.say(Level::Error, e.to_string());
-                            break;
-                        }
-                    }
+                let fx = ((x - r.x) / r.width.max(1.0)).clamp(0.0, 1.0);
+                let fy = ((y - r.y) / r.height.max(1.0)).clamp(0.0, 1.0);
+                if part == Part::PickerSquare {
+                    self.hsv[1] = fx;
+                    self.hsv[2] = 1.0 - fy;
+                } else {
+                    self.hsv[0] = fx.min(0.999);
+                    self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
                 }
-                ui.set_text(node, "");
+                self.show_picker(ui);
+                self.apply_color(session, &target);
+            }
+            (Part::PickerSquare | Part::PickerHue, Event::Release { .. }) => {
+                if self.scrubbing.take().is_some() {
+                    session.end_gesture();
+                }
+                self.built = false;
+                requests.refresh = true;
+            }
+            (Part::PickerHex, Event::Submit(text)) => {
+                let Some(target) = target else { return };
+                match parse_hex(text) {
+                    Some(rgb) => {
+                        self.hsv = hsv_of(rgb);
+                        self.images.push((SV_SQUARE, PICTURE, sv_pixels(self.hsv[0])));
+                        session.begin_gesture();
+                        self.apply_color(session, &target);
+                        session.end_gesture();
+                        self.show_picker(ui);
+                    }
+                    None => session.say(Level::Error, format!("{text:?} is not a colour: #rrggbb")),
+                }
+                self.built = false;
                 requests.refresh = true;
             }
             _ => {}

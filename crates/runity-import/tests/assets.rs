@@ -6,6 +6,8 @@
 //! And the renames that would quietly change what a scene means are
 //! refused before anything moves.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::refs::AssetRef;
@@ -130,7 +132,7 @@ fn renaming_a_material_renames_it_in_every_line_that_used_it() {
     assert!(camp
         .flatten()
         .iter()
-        .any(|(e, _)| e.material == MaterialRef::Named("granite".into())));
+        .any(|(e, _)| e.material_ref() == MaterialRef::Named("granite".into())));
     assert!(
         usages(&project, Path::new("materials/granite.rmat"))
             .unwrap()

@@ -29,7 +29,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
-use runity::input::{InputEvent, Key, MouseButton};
+use runity_core::input::{InputEvent, Key, MouseButton};
 use taffy::{AvailableSpace, TaffyTree};
 
 pub use field::Clipboard;
@@ -1498,5 +1498,20 @@ fn measure(
     taffy::Size {
         width: known.width.unwrap_or(w.ceil()),
         height: known.height.unwrap_or(line * lines.max(1) as f32),
+    }
+}
+
+/// This module's manifest (`module.ron`): its name, what it stands on,
+/// the fields of a line it reads.
+pub const MANIFEST: &str = include_str!("../module.ron");
+
+#[cfg(test)]
+mod manifest {
+    #[test]
+    fn the_manifest_reads_and_lists_the_fields_the_module_reads() {
+        let manifest = runity_core::module::Manifest::parse(super::MANIFEST).unwrap();
+        assert_eq!(manifest.name, "ui");
+        let problems = manifest.part_problems(&Vec::new());
+        assert!(problems.is_empty(), "{problems:?}");
     }
 }

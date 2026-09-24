@@ -38,7 +38,6 @@ use crate::dock::{Docked, Docks, Panel};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
-use crate::playtools::{PlayTool, Tool as PlayKind};
 use crate::screens::{self, Screens};
 use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
@@ -243,7 +242,6 @@ pub struct Studio {
     animator: Animator,
     dialogues: crate::dialogues::Dialogues,
     /// The network inspector, the world diff, the saves, the systems.
-    play_tools: Vec<(Panel, PlayTool)>,
     /// What the last draw cost, for the Profiler.
     last_draw_ms: f32,
     /// The sound device, opened the first time a sound is listened to, and
@@ -593,18 +591,6 @@ impl Studio {
         roots.insert(Panel::Animator, animator.root);
         let dialogues = crate::dialogues::Dialogues::new(&mut ui, lower);
         roots.insert(Panel::Dialogues, dialogues.root);
-        let play_tools: Vec<(Panel, PlayTool)> = [
-            (Panel::Network, PlayKind::Network),
-            (Panel::WorldDiff, PlayKind::Diff),
-            (Panel::Saves, PlayKind::Saves),
-            (Panel::Systems, PlayKind::Systems),
-        ]
-        .into_iter()
-        .map(|(panel, tool)| (panel, PlayTool::new(&mut ui, lower, tool)))
-        .collect();
-        for (panel, tool) in &play_tools {
-            roots.insert(*panel, tool.root);
-        }
         let docks = Docks::new(
             &mut ui,
             [left, right, lower],
@@ -652,7 +638,6 @@ impl Studio {
             screens,
             animator,
             dialogues,
-            play_tools,
             last_draw_ms: 0.0,
             aspect: None,
             audio: None,
@@ -1032,6 +1017,9 @@ impl Studio {
             self.seen = Some(stamp);
             self.update_panels(moving);
         }
+        // The colour picker's pictures, as it makes them.
+        let images = self.inspector.take_images();
+        self.pending_images.extend(images);
         // An asset an action made, shown once the panels have caught up
         // (catching up clears what the Inspector showed).
         if let Some(asset) = self.show_next.take() {
@@ -1067,11 +1055,6 @@ impl Studio {
             }
             if self.docks.is_showing(Panel::Dialogues) {
                 self.dialogues.update(&mut self.ui, &self.session);
-            }
-            for (panel, tool) in &mut self.play_tools {
-                if self.docks.is_showing(*panel) {
-                    tool.update(&mut self.ui, &mut self.session);
-                }
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
@@ -1698,7 +1681,7 @@ impl Studio {
         let Some(terrain) = terrain else {
             self.session.say(
                 Level::Warning,
-                "no terrain to sculpt: GameObject › Terrain makes one",
+                "no terrain to sculpt: Entity › Terrain makes one",
             );
             self.sculpt = false;
             self.refresh();
@@ -2317,12 +2300,6 @@ impl Studio {
         } else if self.settings.owns(&self.ui, node) {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
-        } else if let Some((_, tool)) = self
-            .play_tools
-            .iter_mut()
-            .find(|(_, t)| t.owns(&self.ui, node))
-        {
-            tool.event(&mut self.ui, &mut self.session, node, event);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -2399,13 +2376,13 @@ impl Studio {
             let mut items = items.clone();
             for item in &mut items {
                 match item.action {
-                    Some(Action::Undo) => {
+                    Some(Action::Editor("undo")) => {
                         item.label = match self.session.undo_label() {
                             Some(l) => format!("Undo {l}"),
                             None => "Undo".into(),
                         }
                     }
-                    Some(Action::Redo) => {
+                    Some(Action::Editor("redo")) => {
                         item.label = match self.session.redo_label() {
                             Some(l) => format!("Redo {l}"),
                             None => "Redo".into(),
@@ -2432,11 +2409,11 @@ impl Studio {
         } else if node == t.step {
             Action::Step
         } else if node == t.undo {
-            Action::Undo
+            Action::Editor("undo")
         } else if node == t.redo {
-            Action::Redo
+            Action::Editor("redo")
         } else if node == t.save {
-            Action::Save
+            Action::Editor("save_scene")
         } else {
             return false;
         };
@@ -2799,9 +2776,12 @@ impl Studio {
                         }
                     }
                 }
-                Action::Save => {
-                    s.save_scene(None).map_err(e)?;
-                    s.say(Level::Info, "saved");
+                // The registry's actions: what the agent's tools run too.
+                Action::Editor(name) => {
+                    let said = runity_editor::actions::run(s, name, &Default::default())?;
+                    if name == "save_scene" {
+                        s.say(Level::Info, said);
+                    }
                 }
                 Action::CheckProject => {
                     let project = s.project().ok_or("no project is open")?;
@@ -2853,12 +2833,6 @@ impl Studio {
                 Action::StopGame => {
                     s.stop_game();
                 }
-                Action::Undo => {
-                    s.undo().map_err(e)?;
-                }
-                Action::Redo => {
-                    s.redo().map_err(e)?;
-                }
                 Action::Copy => {
                     let text = s.copy_selection();
                     self.clipboard.set(text);
@@ -2866,12 +2840,6 @@ impl Studio {
                 Action::Paste => {
                     let text = self.clipboard.get().unwrap_or_default();
                     s.paste(&text, None).map_err(e)?;
-                }
-                Action::Duplicate => {
-                    s.duplicate_selection().map_err(e)?;
-                }
-                Action::Delete => {
-                    s.delete_selection().map_err(e)?;
                 }
                 Action::SelectAll => {
                     s.select_everything().map_err(e)?;
@@ -2882,9 +2850,6 @@ impl Studio {
                 }
                 Action::Frame => {
                     s.focus_selected();
-                }
-                Action::DropToGround => {
-                    s.drop_to_ground().map_err(e)?;
                 }
                 Action::SnapToGrid => {
                     s.snap_selection().map_err(e)?;
@@ -2953,10 +2918,6 @@ impl Studio {
                 }
                 Action::Hide => {
                     s.toggle_hidden().map_err(e)?;
-                }
-                Action::Isolate => {
-                    let ids = s.selection();
-                    s.isolate(&ids).map_err(e)?;
                 }
                 Action::ShowAll => s.show_all(),
                 Action::View(side) => s.look_from(side),
@@ -3038,59 +2999,6 @@ impl Studio {
                     s.drop_asset(&name, w / 2, h / 2).map_err(e)?;
                 }
                 Action::ClearConsole => s.clear_console(),
-                Action::PolyFloor | Action::PolyWall => {
-                    let standing = action == Action::PolyWall;
-                    let base = if standing { "wall" } else { "floor" };
-                    // A name no asset has yet: floor, floor_2, floor_3…
-                    let mut name = base.to_string();
-                    let mut n = 1;
-                    while s.has_model(&name) {
-                        n += 1;
-                        name = format!("{base}_{n}");
-                    }
-                    let source = runity_import::poly::PolySource {
-                        points: if standing {
-                            vec![(-2.0, 0.0), (2.0, 0.0), (2.0, 3.0), (-2.0, 3.0)]
-                        } else {
-                            vec![(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]
-                        },
-                        height: 0.2,
-                        standing,
-                        holes: Vec::new(),
-                    };
-                    let at = s.camera().target;
-                    s.poly_shape(&name, &source, at).map_err(e)?;
-                }
-                Action::PushFace(face, metres) => {
-                    let ids = s.selection();
-                    if ids.is_empty() {
-                        return Err("select something to push a face of".into());
-                    }
-                    for id in ids {
-                        s.push_face(id, face, metres).map_err(e)?;
-                    }
-                }
-                Action::Array(count) => {
-                    let id = s.selected().ok_or("select something to repeat")?;
-                    let width = s
-                        .world_bounds(id)
-                        .map(|(lo, hi)| (hi.x - lo.x).max(0.1))
-                        .unwrap_or(1.0);
-                    s.array(id, count, runity::glam::Vec3::new(width, 0.0, 0.0))
-                        .map_err(e)?;
-                }
-                Action::Scatter => {
-                    let id = s
-                        .selected()
-                        .ok_or("select something to scatter copies of")?;
-                    let what = s
-                        .entity_prefab(id)
-                        .or_else(|| s.entity_model(id))
-                        .ok_or("the selection has no model or prefab to scatter")?;
-                    let centre = s.camera().target;
-                    s.scatter(None, &what, centre, &runity::edit::Scatter::default())
-                        .map_err(e)?;
-                }
                 Action::TogglePanel(i) => {
                     self.maximized = false;
                     self.panels[i] = !self.panels[i];
@@ -3122,40 +3030,6 @@ impl Studio {
                         format!("{name}: {parent} until something on it says otherwise"),
                     );
                     self.show_next = Some(Asset::Material(name));
-                }
-                Action::NewFence => {
-                    let what = s
-                        .selected()
-                        .and_then(|id| s.entity_model(id))
-                        .unwrap_or_else(|| "builtin:cylinder".to_string());
-                    let (w, h) = s.size();
-                    let at = s.point_under(w / 2, h / 2).unwrap_or(Vec3::ZERO);
-                    let fence = s.add_fence(&what, at, 1.0).map_err(e)?;
-                    s.select(Some(fence)).map_err(e)?;
-                    s.say(
-                        Level::Info,
-                        "a fence: drag its points in the view; Tools › Spline: Add Point makes it longer",
-                    );
-                }
-                Action::AddSplinePoint => {
-                    let id = s.selected().ok_or("select something with a spline")?;
-                    let text = s
-                        .inspect(id)
-                        .and_then(|f| f.into_iter().find(|f| f.name == "spline"))
-                        .map(|f| f.value)
-                        .filter(|v| v != "None")
-                        .ok_or("the selection has no spline")?;
-                    let mut spline: runity::Spline =
-                        runity::ron::from_str(&text).map_err(|e| e.to_string())?;
-                    let n = spline.points.len();
-                    let next = match n {
-                        0 => Vec3::ZERO,
-                        1 => spline.points[0] + Vec3::new(2.0, 0.0, 0.0),
-                        _ => spline.points[n - 1] + (spline.points[n - 1] - spline.points[n - 2]),
-                    };
-                    spline.points.push(next);
-                    let text = runity::ron::to_string(&spline).map_err(|e| e.to_string())?;
-                    s.set_field(id, "spline", &text).map_err(e)?;
                 }
                 Action::ToggleFoliage => {
                     self.foliage = !self.foliage;
@@ -3219,9 +3093,6 @@ impl Studio {
                             "sculpt with the left button: Shift lowers, Ctrl/Cmd flattens",
                         );
                     }
-                }
-                Action::Align(axis, to) => {
-                    s.align_selection(axis, to).map_err(e)?;
                 }
             }
             Ok(())

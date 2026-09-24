@@ -7,71 +7,84 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+runity-animation = { path = "../runity-animation", optional = true }
+runity-audio = { path = "../runity-audio", default-features = false }
+runity-core = { path = "../runity-core" }
+runity-shell = { path = "../runity-shell", optional = true }
+runity-render = { path = "../runity-render", default-features = false }
+runity-steam = { path = "../runity-steam", optional = true }
+runity-net = { path = "../runity-net", optional = true }
+runity-navigation = { path = "../runity-navigation", optional = true }
+runity-discord = { path = "../runity-discord", optional = true }
+runity-reports = { path = "../runity-reports", optional = true }
+runity-input = { path = "../runity-input", optional = true }
+runity-dialogue = { path = "../runity-dialogue", optional = true }
+runity-routes = { path = "../runity-routes", optional = true }
+runity-spline = { path = "../runity-spline", optional = true }
+runity-geometry = { path = "../runity-geometry" }
+runity-gpu = { path = "../runity-gpu" }
+runity-overlay = { path = "../runity-overlay" }
+runity-physics = { path = "../runity-physics", default-features = false }
 anyhow = "1.0.104"
-bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
-glyphon = "0.12.0"
 hecs = "0.11.0"
-kira = { version = "0.12.4", optional = true }
-pollster = "1.0.1"
-steamworks = { version = "0.13", optional = true }
-ureq = { version = "2", optional = true, features = ["json"] }
-serde_json = { version = "1", optional = true }
-hmac = { version = "0.12", optional = true }
-sha2 = { version = "0.10", optional = true }
-base64 = { version = "0.22", optional = true }
-discord-rich-presence = { version = "0.2", optional = true }
-postcard = { version = "1.1", default-features = false, features = ["use-std"] }
-rapier3d = { version = "0.26.1", optional = true }
-rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
-subsecond = "0.7.10"
 tracing = "0.1.44"
-wgpu = "30"
-winit = { version = "0.30.13", optional = true }
-gilrs = { version = "0.11", optional = true }
 
-# MetalFX, Apple's upscaler (`runity::upscale`): reached through wgpu's
-# Metal handles, so only on Apple's systems.
-[target.'cfg(target_vendor = "apple")'.dependencies]
-objc2 = "0.6"
-objc2-metal = "0.3.2"
-objc2-metal-fx = { version = "0.3.2", features = ["MTLFXSpatialScaler", "MTLFXTemporalScaler"] }
-
-# Built-in subsystems are features, so that switching one off is one line
-# and takes its dependencies out of the build with it (DNA, postulate 3).
-# This is the seam, not the module system: the manifest a module ships with
-# is still an open question in DNA.md, and features are what Cargo already
-# gives us until it is answered.
+# Every module is a crate of its own (docs/modules.md); this crate is the
+# facade that brings them under one name. A module that can be left out is
+# a feature here, so switching one off is one line and takes its
+# dependencies out of the build with it (DNA, postulate 3); a module's
+# manifest (`module.ron`) names its feature.
 [features]
-default = ["physics"]
+default = [
+    "animation", "dialogue", "input", "navigation", "net", "physics", "ray-tracing", "routes", "spline",
+]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
-physics = ["dep:rapier3d"]
+physics = ["runity-physics/rapier", "runity-net?/physics"]
+# Hardware ray tracing in the render, where the device has it: an
+# experiment the scene asks for. Off, it is not in the build.
+ray-tracing = ["runity-render/ray-tracing"]
+# Skeletons, animator graphs and motion clips.
+animation = ["dep:runity-animation"]
+# Peers, ownership and sync, parties, LAN; Steam stands on it.
+net = ["dep:runity-net"]
+# Named input actions, maps and control schemes (input.ron).
+input = ["dep:runity-input"]
+# Splines and copies grown along them.
+spline = ["dep:runity-spline"]
+# Entities travelling their routes.
+routes = ["dep:runity-routes"]
+# Conversations.
+dialogue = ["dep:runity-dialogue"]
+# Where things can walk: a grid baked from the physics world.
+navigation = ["physics", "dep:runity-navigation"]
 # Sound. Off by default and not because it is unfinished: the engine is
 # being built on greybox, and a mixer nobody is listening to is a
 # dependency, a device to open and a thing to keep compiling. `--features
 # audio` brings it back, and CI builds with it so it cannot rot.
-audio = ["dep:kira"]
+audio = ["runity-audio/kira"]
 # Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
 # transport. Off by default: it links Valve's SDK and does nothing without
 # the Steam client running.
-steam = ["dep:steamworks"]
+steam = ["net", "dep:runity-steam"]
 # Crash reports sent to Sentry and play reported to GameAnalytics. Off by
 # default: it is the network, TLS and a player's consent, none of which a
 # game gets without asking for them.
-reports = ["dep:ureq", "dep:serde_json", "dep:hmac", "dep:sha2", "dep:base64"]
+reports = ["dep:runity-reports"]
 # What a player is doing, shown on their Discord profile, through the
 # Discord client running beside the game.
-discord = ["dep:discord-rich-presence"]
+discord = ["dep:runity-discord"]
 # A plain desktop window, for running the game without the editor. The
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
 # architecture.
-desktop-shell = ["dep:winit", "dep:gilrs"]
+desktop-shell = ["dep:runity-shell"]
 
 [dev-dependencies]
+wgpu = "30"
 hecs = "0.11.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "routes",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Entities travelling on their own along a route.",
+    depends: [],
+    runtime: true,
+    editor: false,
+    parts: ["route"],
+    assets: [],
+    feature: Some("routes"),
+)

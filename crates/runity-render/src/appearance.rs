@@ -1,0 +1,253 @@
+//! What a line looks like in the world: the render module's dresser
+//! ([`crate::world::Dress`]). A model and its material, a decal pressed
+//! from it, ground shaped from numbers, particles, a light, a camera, a
+//! reflection probe, a place that looks different, a picture a camera
+//! draws, prints left as it walks and grass it bends.
+
+#[allow(unused_imports)]
+use crate::prelude::*;
+use hecs::World;
+
+use crate::material::Material;
+use crate::render::MeshHandle;
+use crate::scene::EntityDesc;
+use crate::world::{
+    LiveMesh, BendsGrass, CameraLens, Changed, Dress, LightSource, Model, PostVolumeBox, Pressing, ProbeBox, Surface, ToTexture,
+    Unresolved,
+};
+
+/// The render module's dresser: models and materials found by `resolve`
+/// and `palette`.
+pub struct LookDress<'a> {
+    pub resolve: &'a mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    pub palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
+}
+
+/// Put a component on for `Some`, take it off for `None`.
+fn put<T: hecs::Component>(world: &mut World, entity: hecs::Entity, value: Option<T>) {
+    match value {
+        Some(value) => {
+            let _ = world.insert_one(entity, value);
+        }
+        None => {
+            let _ = world.remove_one::<T>(entity);
+        }
+    }
+}
+
+impl Dress for LookDress<'_> {
+    fn parts(&self) -> &[&'static str] {
+        &[
+            "model",
+            "material",
+            "decal",
+            "terrain",
+            "particles",
+            "light",
+            "reflection_probe",
+            "irradiance_volume",
+            "post_volume",
+            "camera",
+            "render_texture",
+            "footprints",
+            "cloth",
+            "rope",
+            "heap",
+            "bends_grass",
+        ]
+    }
+
+    fn dress(
+        &mut self,
+        line: &EntityDesc,
+        entity: hecs::Entity,
+        world: &mut World,
+        changed: Changed,
+        missing: &mut Vec<Unresolved>,
+    ) {
+        if changed.any(&["model", "material", "decal", "terrain", "cloth", "rope", "heap"]) {
+            dress_look(line, entity, world, &mut *self.resolve, self.palette, missing);
+        }
+        if changed.has("particles") {
+            particles(line, entity, world, &mut *self.resolve, self.palette);
+        }
+        if changed.has("light") {
+            put(world, entity, line.light().map(LightSource));
+        }
+        if changed.has("reflection_probe") {
+            put(world, entity, line.reflection_probe().map(ProbeBox));
+        }
+        if changed.has("irradiance_volume") {
+            put(world, entity, line.part::<crate::ddgi::IrradianceVolume>().map(crate::world::VolumeBox));
+        }
+        if changed.has("post_volume") {
+            put(world, entity, line.post_volume().map(PostVolumeBox));
+        }
+        if changed.has("camera") {
+            put(world, entity, line.camera().map(CameraLens));
+        }
+        if changed.has("render_texture") {
+            put(world, entity, line.render_texture().map(ToTexture));
+        }
+        if changed.has("footprints") {
+            // Retuned, it starts a fresh trail: the old prints were made by
+            // the old settings.
+            put(world, entity, line.footprints().map(crate::footprints::Trail::new));
+        }
+        if changed.has("cloth") {
+            // Retuned, it hangs afresh, still.
+            match line.part::<crate::cloth::Cloth>() {
+                Some(cloth) => {
+                    let state = crate::cloth::ClothState::new(cloth);
+                    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
+                    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
+                }
+                None => {
+                    let _ = world.remove::<(crate::cloth::ClothState, LiveMesh)>(entity);
+                }
+            }
+        }
+        if changed.has("rope") {
+            match line.part::<crate::rope::Rope>() {
+                Some(rope) => {
+                    let state = crate::rope::RopeState::new(rope);
+                    let (vertices, indices) = state.mesh(glam::Mat4::IDENTITY);
+                    let _ = world.insert(entity, (state, LiveMesh::new(vertices, indices)));
+                }
+                None => {
+                    let _ = world.remove::<(crate::rope::RopeState, LiveMesh)>(entity);
+                }
+            }
+        }
+        if changed.has("heap") {
+            // Retuned, it starts again from its start.
+            match line.part::<crate::heap::Heap>() {
+                Some(heap) => {
+                    let _ = world.insert(entity, (crate::heap::HeapState::new(heap), LiveMesh::new(Vec::new(), Vec::new())));
+                }
+                None => {
+                    let _ = world.remove::<(crate::heap::HeapState, LiveMesh)>(entity);
+                }
+            }
+        }
+        if changed.has("bends_grass") {
+            let metres = line.bends_grass();
+            put(world, entity, (metres > 0.0).then_some(BendsGrass(metres)));
+        }
+    }
+}
+
+/// An emitter ready to run: what its particles are drawn as (its model, or
+/// a small cube) and with (its material, or the plain colour). A retuned
+/// emitter keeps what is already in the air.
+fn particles(
+    line: &EntityDesc,
+    entity: hecs::Entity,
+    world: &mut World,
+    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
+) {
+    let Some(emitter) = line.particles() else {
+        let _ = world.remove_one::<crate::particles::Emitting>(entity);
+        return;
+    };
+    let fresh = emitting(&emitter, resolve, palette);
+    let running = world.get::<&mut crate::particles::Emitting>(entity).ok().map(|mut e| {
+        // The knobs change; what is in the air stays.
+        if let Some(fresh) = &fresh {
+            e.mesh = fresh.mesh;
+            e.material = fresh.material;
+        }
+        e.emitter = emitter.clone();
+    });
+    if running.is_none() {
+        if let Some(emitting) = fresh {
+            let _ = world.insert_one(entity, emitting);
+        }
+    }
+}
+
+fn emitting(
+    emitter: &crate::scene::Emitter,
+    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
+) -> Option<crate::particles::Emitting> {
+    let cube = crate::AssetLink::named(if emitter.facing {
+        "builtin:plane"
+    } else {
+        "builtin:cube"
+    });
+    let model = if emitter.model.is_empty() {
+        &cube
+    } else {
+        &emitter.model
+    };
+    let mesh = resolve(model).or_else(|| resolve(&cube))?;
+    let mut out = crate::particles::Emitting::new(emitter.clone(), mesh);
+    out.material = emitter.material.as_ref().and_then(palette);
+    Some(out)
+}
+
+/// Give an entity the mesh and surface its line names — or its decal, or
+/// its shaped ground — or take them away when the mesh cannot be found.
+pub fn dress_look(
+    desc: &EntityDesc,
+    entity: hecs::Entity,
+    world: &mut World,
+    resolve: &mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
+    palette: &dyn Fn(&crate::AssetLink) -> Option<Material>,
+    missing: &mut Vec<Unresolved>,
+) {
+    match desc.decal() {
+        Some(decal) => {
+            let _ = world.insert_one(entity, Pressing(decal, desc.material_from(palette)));
+        }
+        None => {
+            let _ = world.remove_one::<Pressing>(entity);
+        }
+    }
+    // Ground made from its numbers: its mesh comes when it is first drawn
+    // (`terrain::upload_terrains`), and again only if they changed.
+    if let Some(terrain) = desc.terrain() {
+        let same = world
+            .get::<&crate::terrain::Relief>(entity)
+            .is_ok_and(|r| r.terrain == terrain);
+        if !same {
+            let _ = world.remove_one::<Model>(entity);
+            let _ = world.insert_one(entity, crate::terrain::Relief::new(terrain));
+        }
+        let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
+        return;
+    }
+    let _ = world.remove_one::<crate::terrain::Relief>(entity);
+    // No model is nothing to draw — a probe, a decal, a light, an empty to
+    // hang children on — not a model that could not be found.
+    let model = desc.model();
+    if model.is_empty() {
+        let _ = world.remove_one::<Model>(entity);
+        // Unless it draws a mesh of its own — cloth, a rope, a heap — in
+        // its material.
+        let own = desc.part::<crate::cloth::Cloth>().is_some()
+            || desc.part::<crate::rope::Rope>().is_some()
+            || desc.part::<crate::heap::Heap>().is_some();
+        if own {
+            let _ = world.insert_one(entity, Surface(desc.material_from(palette)));
+        } else {
+            let _ = world.remove_one::<Surface>(entity);
+        }
+        return;
+    }
+    match resolve(&model) {
+        Some(mesh) => {
+            let surface = Surface(desc.material_from(palette));
+            let _ = world.insert(entity, (Model(mesh), surface));
+        }
+        None => {
+            let _ = world.remove::<(Model, Surface)>(entity);
+            missing.push(Unresolved {
+                entity_name: desc.name.clone(),
+                model: model.to_string(),
+            });
+        }
+    }
+}

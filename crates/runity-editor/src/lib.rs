@@ -17,6 +17,9 @@
 //! open question 1 (an IOSurface shared with the engine, on macOS), and it
 //! needs a prototype on a Mac before anything is built on it.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
+pub mod actions;
 mod animation;
 mod blockout;
 pub mod console;
@@ -395,7 +398,7 @@ impl Session {
         // view there: a file that renders one way headlessly and opens
         // pointing somewhere else in the editor is a file whose picture
         // nobody can predict.
-        self.camera = runity::scene_camera(&scene.view);
+        self.camera = runity::scene_camera(&scene.view());
         // Prefabs, materials and the library are the project's, found from
         // the scene the same way every other tool finds them. An editor that
         // had to be told where they are would be an editor that shows a
@@ -527,8 +530,8 @@ impl Session {
             .instanced
             .scene
             .get(id)
-            .map(|e| e.model.clone())
-            .unwrap_or(line.model);
+            .map(|e| e.model().clone())
+            .unwrap_or(line.model());
         let (min, max) = self.bounds_of(&model).ok_or_else(|| {
             EditError::Scene(format!(
                 "`{}` has no model to know its faces by — push_face works on things that draw one",
@@ -679,12 +682,12 @@ impl Session {
         let mut ground = self.instanced.scene.clone();
         fn solidify(entities: &mut [EntityDesc], moving: &std::collections::HashSet<EntityId>) {
             for e in entities {
-                if moving.contains(&e.id) || e.body == runity::Body::Trigger {
-                    e.body = runity::Body::None;
+                if moving.contains(&e.id) || e.body() == runity::Body::Trigger {
+                    e.set_part(&runity::Body::None);
                 } else {
-                    e.body = runity::Body::Static;
-                    if e.collider == runity::scene::Collider::None {
-                        e.collider = runity::scene::Collider::Model;
+                    e.set_part(&runity::Body::Static);
+                    if e.collider() == runity::scene::Collider::None {
+                        e.set_part(&runity::scene::Collider::Model);
                     }
                 }
                 solidify(&mut e.children, moving);
@@ -743,7 +746,7 @@ impl Session {
             if !owned {
                 continue;
             }
-            let Some((a, b)) = self.bounds_of(&desc.model) else {
+            let Some((a, b)) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             for corner in 0..8u32 {
@@ -831,7 +834,7 @@ impl Session {
         runity_import::walk(&project.assets(), &mut |path| {
             let named = path
                 .file_stem()
-                .is_some_and(|s| *s.to_string_lossy() == *desc.model);
+                .is_some_and(|s| *s.to_string_lossy() == *desc.model());
             if named && path.extension().is_some_and(|e| e == "rterrain") {
                 source = Some(path.to_path_buf());
             }
@@ -839,7 +842,8 @@ impl Session {
         let source = source.ok_or_else(|| {
             EditError::Scene(format!(
                 "`{}` does not draw a terrain: no {}.rterrain in assets/",
-                desc.name, desc.model
+                desc.name,
+                desc.model()
             ))
         })?;
 
@@ -970,11 +974,11 @@ impl Session {
         let variant = EntityDesc {
             id: EntityId::fresh(),
             name: name.to_string(),
-            model: Default::default(),
             prefab: line.prefab.clone(),
             transform: runity::Transform::default(),
             ..line.clone()
-        };
+        }
+        .with(runity::scene::ModelRef(Default::default()));
         std::fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{name}.{}", runity::prefab::EXTENSION));
         runity::Prefabs::save(&variant, &path).map_err(EditError::Io)?;
@@ -1444,11 +1448,11 @@ impl Session {
                 ),
             });
         }
-        let models = names_of(AssetKind::Mesh);
-        let materials = names_of(AssetKind::Material);
+        let models = names_of(runity::asset::MESH);
+        let materials = names_of(runity::asset::MATERIAL);
         let components = self.project.as_ref().and_then(|p| p.component_names());
         for (desc, _) in self.instanced.scene.flatten() {
-            if let Some(to) = desc.joint.to().filter(|to| !to.is_unassigned()) {
+            if let Some(to) = desc.joint().to().filter(|to| !to.is_unassigned()) {
                 if self.instanced.scene.get(to).is_none() {
                     out.push(Diagnostic {
                         entity: Some(desc.id),
@@ -1471,20 +1475,22 @@ impl Session {
                     });
                 }
             }
-            if !desc.model.is_empty()
-                && builtin::by_name(&desc.model).is_none()
-                && library.and_then(|l| l.mesh_by_name(&desc.model)).is_none()
+            if !desc.model().is_empty()
+                && builtin::by_name(&desc.model()).is_none()
+                && library
+                    .and_then(|l| l.mesh_by_name(&desc.model()))
+                    .is_none()
             {
                 out.push(Diagnostic {
                     entity: Some(desc.id),
                     message: format!(
                         "{who}: no model named `{}`{}",
-                        desc.model,
-                        suggest(&desc.model, &models, &builtin::NAMES)
+                        desc.model(),
+                        suggest(&desc.model(), &models, &builtin::NAMES)
                     ),
                 });
             }
-            if let MaterialRef::Named(name) = &desc.material {
+            if let MaterialRef::Named(name) = &desc.material_ref() {
                 let found = match name.strip_prefix("builtin:") {
                     Some(builtin) => runity::material::builtin::by_name(builtin).is_some(),
                     None => {
@@ -1713,9 +1719,9 @@ impl Session {
     pub fn add(&mut self, parent: Option<EntityId>, model: &str) -> EditResult<EntityId> {
         let desc = EntityDesc {
             name: "entity".into(),
-            model: model.into(),
             ..Default::default()
-        };
+        }
+        .with(runity::scene::ModelRef(model.into()));
         self.insert(parent, desc)
     }
 
@@ -1750,20 +1756,22 @@ impl Session {
         }
         let children = runity::edit::scatter(layout)
             .into_iter()
-            .map(|transform| EntityDesc {
-                name: what.trim_start_matches("builtin:").to_string(),
-                model: if prefab {
+            .map(|transform| {
+                EntityDesc {
+                    name: what.trim_start_matches("builtin:").to_string(),
+                    prefab: if prefab {
+                        what.into()
+                    } else {
+                        Default::default()
+                    },
+                    transform,
+                    ..Default::default()
+                }
+                .with(runity::scene::ModelRef(if prefab {
                     Default::default()
                 } else {
                     what.into()
-                },
-                prefab: if prefab {
-                    what.into()
-                } else {
-                    Default::default()
-                },
-                transform,
-                ..Default::default()
+                }))
             })
             .collect();
         let group = EntityDesc {
@@ -1888,22 +1896,24 @@ impl Session {
             };
             transform.set_rotation(lean * yaw);
             taken.push(point);
-            placed.push(EntityDesc {
-                id: EntityId::fresh(),
-                name: what.trim_start_matches("builtin:").to_string(),
-                model: if prefab {
+            placed.push(
+                EntityDesc {
+                    id: EntityId::fresh(),
+                    name: what.trim_start_matches("builtin:").to_string(),
+                    prefab: if prefab {
+                        what.into()
+                    } else {
+                        Default::default()
+                    },
+                    transform,
+                    ..Default::default()
+                }
+                .with(runity::scene::ModelRef(if prefab {
                     Default::default()
                 } else {
                     what.into()
-                },
-                prefab: if prefab {
-                    what.into()
-                } else {
-                    Default::default()
-                },
-                transform,
-                ..Default::default()
-            });
+                })),
+            );
         }
         if placed.is_empty() {
             return Ok(0);
@@ -2124,6 +2134,28 @@ impl Session {
         self.history.redo_description()
     }
 
+    /// The project's collision layers by name, from `layers.ron`: what a
+    /// line's `layer` picks from. Empty with no project or no file.
+    pub fn layer_names(&self) -> Vec<String> {
+        self.project
+            .as_ref()
+            .map(|p| p.root().join(runity::layers::FILE))
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| runity::ron::from_str::<runity::layers::Layers>(&text).ok())
+            .map(|l| l.layers)
+            .unwrap_or_default()
+    }
+
+    /// A slider dragged, a number scrubbed: every edit until
+    /// [`Self::end_gesture`] undoes as one step, the state before it.
+    pub fn begin_gesture(&mut self) {
+        self.history.begin_gesture();
+    }
+
+    pub fn end_gesture(&mut self) {
+        self.history.end_gesture();
+    }
+
     /// Make the last `steps` undo steps one: what a caller that made
     /// something and then named it wants undone in one go.
     pub fn squash_last(&mut self, steps: usize) {
@@ -2175,13 +2207,13 @@ impl Session {
         // One undoable step, like a value typed into an inspector. A drag
         // along a colour slider that wants to be one step takes its own
         // snapshot the way a gizmo drag does.
-        self.modify(id, |desc| desc.material = MaterialRef::Inline(material))
+        self.modify(id, |desc| desc.set_part(&MaterialRef::Inline(material)))
     }
 
     /// The name of the material an entity points at, or `None` when it
     /// carries its own colour.
     pub fn material_name(&self, id: EntityId) -> Option<String> {
-        match self.line(id).map(|desc| &desc.material) {
+        match self.line(id).map(|desc| desc.material_ref()) {
             Some(MaterialRef::Named(name)) => Some(name.to_string()),
             _ => None,
         }
@@ -2199,7 +2231,7 @@ impl Session {
         if name.is_empty() {
             return Err(EditError::EmptyName("a material"));
         }
-        self.modify(id, |desc| desc.material = MaterialRef::Named(name.into()))
+        self.modify(id, |desc| desc.set_part(&MaterialRef::Named(name.into())))
     }
 
     /// Every material the editor can offer, in the order to show them: the
@@ -2207,7 +2239,7 @@ impl Session {
     pub fn palette(&self) -> Vec<(String, Material)> {
         let mut out: Vec<(String, Material)> = Vec::new();
         if let Some(library) = self.library.as_ref() {
-            for name in library.names_of(runity::asset::AssetKind::Material) {
+            for name in library.names_of(runity::asset::MATERIAL) {
                 if let Some(material) = library.material_by_name(name) {
                     out.push((name.to_string(), material));
                 }
@@ -2280,7 +2312,8 @@ impl Session {
         }
         self.reopen_library()?;
 
-        self.edit_entity(id)?.material = MaterialRef::Named(name.into());
+        self.edit_entity(id)?
+            .set_part(&MaterialRef::Named(name.into()));
         self.respawn();
         Ok(())
     }
@@ -2328,7 +2361,7 @@ impl Session {
     /// The model an entity draws, when it draws one of its own.
     pub fn entity_model(&self, id: EntityId) -> Option<String> {
         self.line(id)
-            .map(|l| l.model.to_string())
+            .map(|l| l.model().to_string())
             .filter(|m| !m.is_empty())
     }
 
@@ -2351,10 +2384,10 @@ impl Session {
         }
         let desc = EntityDesc {
             name: prefab.to_string(),
-            model: Default::default(),
             prefab: prefab.into(),
             ..Default::default()
-        };
+        }
+        .with(runity::scene::ModelRef(Default::default()));
         self.insert(parent, desc)
     }
 
@@ -2394,7 +2427,7 @@ impl Session {
         // to drift.
         let entity = self.edit_entity(id)?;
         entity.prefab = name.into();
-        entity.model = Default::default();
+        entity.set_part(&runity::scene::ModelRef(Default::default()));
         entity.children.clear();
         self.respawn();
         Ok(())
@@ -2641,13 +2674,13 @@ impl Session {
         };
         let mut out: Vec<String> = match kind {
             "model" => {
-                let mut v = library(AssetKind::Mesh);
+                let mut v = library(runity::asset::MESH);
                 v.extend(builtin::NAMES.iter().map(|n| n.to_string()));
                 v
             }
-            "material" => library(AssetKind::Material),
-            "sound" => library(AssetKind::Sound),
-            "texture" => library(AssetKind::Texture),
+            "material" => library(runity::asset::MATERIAL),
+            "sound" => library(runity::asset::SOUND),
+            "texture" => library(runity::asset::TEXTURE),
             "prefab" => self
                 .prefabs
                 .names()
@@ -2675,10 +2708,10 @@ impl Session {
                 .is_some_and(|l| l.find(link, k).is_some())
         };
         match kind {
-            "model" => builtin::by_name(link).is_some() || library(AssetKind::Mesh),
-            "material" => library(AssetKind::Material),
-            "sound" => library(AssetKind::Sound),
-            "texture" => library(AssetKind::Texture),
+            "model" => builtin::by_name(link).is_some() || library(runity::asset::MESH),
+            "material" => library(runity::asset::MATERIAL),
+            "sound" => library(runity::asset::SOUND),
+            "texture" => library(runity::asset::TEXTURE),
             "prefab" => self.prefabs.find(link).is_some(),
             "scene" => {
                 let Some(project) = self.project.as_ref() else {
@@ -2706,25 +2739,24 @@ impl Session {
     /// A link to an asset of a kind by its name, with its ID when it has
     /// one: what a picker writes (docs/refs.md).
     pub fn link_to(&self, kind: &str, name: &str) -> runity::AssetLink {
-        use runity::asset::AssetKind;
         let mut link = runity::AssetLink::named(name);
         let found = match kind {
             "model" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Mesh)),
+                .and_then(|l| l.find(&link, runity::asset::MESH)),
             "material" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Material)),
+                .and_then(|l| l.find(&link, runity::asset::MATERIAL)),
             "sound" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Sound)),
+                .and_then(|l| l.find(&link, runity::asset::SOUND)),
             "texture" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Texture)),
+                .and_then(|l| l.find(&link, runity::asset::TEXTURE)),
             _ => None,
         }
         .map(|(id, name)| (id, name.to_string()));
@@ -2858,7 +2890,7 @@ impl Session {
     pub fn capture_camera(&mut self) -> EditResult<()> {
         self.refuse_while_playing()?;
         let view = runity::captured_view(&self.camera);
-        self.history.edit().view = view;
+        self.history.edit().set_part(&view);
         Ok(())
     }
 
@@ -2959,16 +2991,16 @@ impl Session {
             let arm = self.gizmo_arm_mesh();
             let unseen = self.unseen();
             for (desc, placed) in self.instanced.scene.flatten() {
-                if desc.body == runity::Body::None || unseen.contains(&desc.id) {
+                if desc.body() == runity::Body::None || unseen.contains(&desc.id) {
                     continue;
                 }
                 let distance = self.camera.apparent_distance(placed.w_axis.truncate());
                 frame.overlay_draws.extend(gizmo::collider_draws(
                     arm,
-                    desc.collider,
+                    desc.collider(),
                     placed,
                     (distance * 0.002).max(0.005),
-                    gizmo::collider_color(desc.body),
+                    gizmo::collider_color(desc.body()),
                 ));
             }
         }
@@ -3055,7 +3087,7 @@ impl Session {
             let (w, h) = self.size();
             let aspect = w as f32 / h.max(1) as f32;
             for (desc, placed) in self.instanced.scene.flatten() {
-                let Some(lens) = desc.camera else {
+                let Some(lens) = desc.camera() else {
                     continue;
                 };
                 if unseen.contains(&desc.id) {
@@ -3092,7 +3124,7 @@ impl Session {
                     .instanced
                     .scene
                     .get(saved.id)
-                    .map(|e| e.model.clone())
+                    .map(|e| e.model().clone())
                     .unwrap_or_default();
                 let Some((min, max)) = self.bounds_of(&model) else {
                     continue;
@@ -3127,7 +3159,7 @@ impl Session {
                 }
                 let thickness =
                     (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
-                if let Some(light) = desc.light {
+                if let Some(light) = desc.light() {
                     // How far a selected light reaches, as Unity shows it.
                     let at = Mat4::from_translation(placed.w_axis.truncate());
                     frame.overlay_draws.extend(gizmo::collider_draws(
@@ -3140,7 +3172,7 @@ impl Session {
                         gizmo::selection_color(),
                     ));
                 }
-                if let Some(route) = &desc.route {
+                if let Some(route) = &desc.route() {
                     // Where a selected thing travels, as a line.
                     let parent = placed * desc.transform.matrix().inverse();
                     let way: Vec<Vec3> =
@@ -3156,7 +3188,7 @@ impl Session {
                         gizmo::selection_color(),
                     ));
                 }
-                let Some((min, max)) = self.bounds_of(&desc.model) else {
+                let Some((min, max)) = self.bounds_of(&desc.model()) else {
                     continue;
                 };
                 frame.overlay_draws.extend(gizmo::bounds_draws(
@@ -3207,11 +3239,11 @@ impl Session {
             // From the scene's hour, like every other tool: an editor
             // lighting a scene differently from the render is an editor you
             // cannot trust about anything you are looking at.
-            lighting: runity::scene_lighting(&scene.sun),
-            fog: runity::scene_fog(&scene.fog),
-            clear_color: Vec3::from_array(scene.fog.color),
+            lighting: runity::scene_lighting(&scene.sun()),
+            fog: runity::scene_fog(&scene.fog()),
+            clear_color: Vec3::from_array(scene.fog().color),
             sky: runity::render::Sky {
-                horizon: scene.fog.color,
+                horizon: scene.fog().color,
                 ..Default::default()
             },
             ..{
@@ -3398,7 +3430,7 @@ impl Session {
         let mut best: Option<(f32, EntityId)> = None;
         let unseen = self.unseen();
         for (desc, world) in self.instanced.scene.flatten() {
-            let Some(bounds) = self.bounds_of(&desc.model) else {
+            let Some(bounds) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             let Some(owner) = self.instanced.owner_of(desc.id) else {
@@ -3515,22 +3547,22 @@ impl Session {
                     position: at,
                     ..Default::default()
                 },
-                spline: Some(runity::Spline {
-                    points: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
-                    closed: false,
-                }),
-                along: Some(runity::Along {
-                    model: what.into(),
-                    spacing,
-                    // A builtin is a metre across: thin it to a post.
-                    scale: if posts {
-                        Vec3::new(0.15, 1.2, 0.15)
-                    } else {
-                        Vec3::ONE
-                    },
-                }),
                 ..Default::default()
-            },
+            }
+            .with(runity::Spline {
+                points: vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+                closed: false,
+            })
+            .with(runity::Along {
+                model: what.into(),
+                spacing,
+                // A builtin is a metre across: thin it to a post.
+                scale: if posts {
+                    Vec3::new(0.15, 1.2, 0.15)
+                } else {
+                    Vec3::ONE
+                },
+            }),
         )
     }
 
@@ -3541,7 +3573,7 @@ impl Session {
             .flatten()
             .into_iter()
             .find(|(desc, _)| desc.id == id)
-            .and_then(|(desc, world)| Some((self.bounds_of(&desc.model)?, world)))
+            .and_then(|(desc, world)| Some((self.bounds_of(&desc.model())?, world)))
     }
 
     /// Put the gizmo on an entity, or clear the selection with `None`.
@@ -3998,7 +4030,7 @@ impl Session {
             self.library.as_ref(),
         );
         // The scene's wind carries what it says is `blown`.
-        physics.wind = self.instanced.scene.wind.unwrap_or_default();
+        physics.wind = self.instanced.scene.wind().unwrap_or_default();
         physics.sync_from_world(&mut self.world);
         self.play = Some(Play {
             physics,
@@ -4306,7 +4338,7 @@ impl Session {
             if self.instanced.owner_of(desc.id) != Some(id) {
                 continue;
             }
-            let Some((low, high)) = self.bounds_of(&desc.model) else {
+            let Some((low, high)) = self.bounds_of(&desc.model()) else {
                 continue;
             };
             for corner in 0..8u32 {

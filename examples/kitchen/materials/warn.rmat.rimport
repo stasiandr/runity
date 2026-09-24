@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/warn.rmat",
+    hash: "2dd241d00837b66cc3abfd0bdf64ff44",
+    id: Some("03a9e7ddf11ab54bf2cdcb6d77635848"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

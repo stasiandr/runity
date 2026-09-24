@@ -2,7 +2,7 @@
 //! turns into, and the promise a retained UI makes — nothing changes, nothing
 //! is redone.
 
-use runity::input::{InputEvent, Key, MouseButton};
+use runity_core::input::{InputEvent, Key, MouseButton};
 use runity_ui::{Color, Event, Style, Ui};
 
 const BG: Color = Color::hex(0x161826);

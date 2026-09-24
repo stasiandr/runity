@@ -1,0 +1,36 @@
+[package]
+name = "runity-render"
+description = "runity's 3D render: the scene drawn on the GPU — materials and lights, shadows, sky and fog, post-processing, particles, terrain, foliage and gizmos — from what the world's entities look like."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+runity-core = { path = "../runity-core" }
+runity-geometry = { path = "../runity-geometry" }
+runity-gpu = { path = "../runity-gpu" }
+runity-overlay = { path = "../runity-overlay" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+pollster = "1.0.1"
+rkyv = { version = "0.8", features = ["bytecheck"] }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+wgpu = "30"
+
+[features]
+default = ["ray-tracing"]
+# Hardware ray tracing, where the device has it: an experiment. Off, the
+# code and the shader are not in the build, and the lit pass runs as on a
+# device without rays.
+ray-tracing = []
+
+# MetalFX, Apple's upscaler (`runity_render::upscale`): reached through
+# wgpu's Metal handles, so only on Apple's systems.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3.2"
+objc2-metal-fx = { version = "0.3.2", features = ["MTLFXSpatialScaler", "MTLFXTemporalScaler"] }

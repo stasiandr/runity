@@ -1,0 +1,14 @@
+[package]
+name = "runity-steam"
+description = "runity's Steam: lobbies, invites through friends and peer-to-peer through NAT, as a transport of the network module. Links Valve's SDK and needs the Steam client running."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+runity-core = { path = "../runity-core" }
+runity-net = { path = "../runity-net" }
+steamworks = "0.13"
+tracing = "0.1.44"

@@ -53,7 +53,7 @@ impl Session {
         }
         let id = self.add(None, name)?;
         self.update(id, |d| {
-            d.body = runity::Body::Static;
+            d.set_part(&runity::Body::Static);
         })?;
         self.history.squash(2);
         self.select(Some(id))?;
@@ -97,15 +97,15 @@ impl Session {
             None,
             runity::EntityDesc {
                 name: name.to_string(),
-                model: name.to_string().into(),
-                body: runity::Body::Static,
-                collider: runity::scene::Collider::Model,
                 transform: runity::scene::Transform {
                     position: at,
                     ..Default::default()
                 },
                 ..Default::default()
-            },
+            }
+            .with(runity::scene::ModelRef(name.to_string().into()))
+            .with(runity::Body::Static)
+            .with(runity::scene::Collider::Model),
         )?;
         self.select(Some(id))?;
         Ok(id)

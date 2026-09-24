@@ -1,6 +1,8 @@
 //! A Unity project's content brought over, end to end: files in, a runity
 //! project out that opens and checks.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::Path;
 
 fn write(path: &Path, text: &str) {

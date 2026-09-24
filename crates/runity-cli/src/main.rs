@@ -1,13 +1,14 @@
 //! `runity` — a project from the command line.
 //!
 //! ```text
-//! runity new <folder> [--name NAME] [--engine-path PATH]
+//! runity new <folder> [--name NAME] [--engine-path PATH] [--set bare|basic|full | --template NAME]
 //! runity test  [PROJECT]  the game's tests, headless
 //! runity run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
+//! runity modules [sync] [PROJECT]  the engine's modules; Cargo.toml from runity.ron
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
-//! runity build [PROJECT] [--out DIR] [--debug]  a folder to ship
+//! runity build [PROJECT] [--out DIR] [--debug | --size]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! runity git-setup [PROJECT]             turn the driver on in this clone
 //! runity rename FROM TO                   move an asset, and what names it
@@ -32,10 +33,15 @@ use runity_cli::Severity;
 use runity_import::Change;
 
 const HELP: &str = "\
-runity new <folder> [--name NAME] [--engine-path PATH]
+runity new <folder> [--name NAME] [--engine-path PATH] [--set SET | --template NAME]
     Make a project: the standard layout, a scene, and a game crate.
     The game depends on the engine from git, or from a local checkout
-    of runity's crates/runity with --engine-path.
+    of runity's crates/runity with --engine-path. --set picks its modules:
+    basic (a window, the picture, input, a score on screen, sound,
+    collisions, played together; the default), full (every module), or
+    bare (the core alone: no window, a server or a simulation). They are
+    listed in runity.ron; add or drop one there and `runity modules sync`.
+    --template NAME copies one of the engine's example projects instead.
 runity run [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and tuning reload while it runs; with --hot, so does its
@@ -71,10 +77,18 @@ runity sync [PROJECT]
 runity check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
-runity build [PROJECT] [--out DIR] [--debug]
-    Sync the library, compile the game (release unless --debug), and lay out
-    DIR (build/ in the project by default): the executable and data/ with
-    scenes, prefabs and the built library. Sources stay home.
+runity modules [PROJECT]
+    Every module of the engine, what it is and stands on, and whether the
+    project lists it in runity.ron (`modules: [...]`).
+runity modules sync [PROJECT]
+    Write the engine's features in the game's Cargo.toml from the modules
+    runity.ron lists and what they stand on. `check` says when they part.
+runity build [PROJECT] [--out DIR] [--debug | --size]
+    Sync the library, compile the game, and lay out DIR (build/ in the
+    project by default): the executable and data/ with scenes, prefabs and
+    the built library. Sources stay home. Compiled for speed by default;
+    --size for the smallest download (opt-level z, LTO, stripped); --debug
+    quick to make.
 runity git-setup [PROJECT]
     Turn on the scene merge driver in this clone: scenes and prefabs merge
     by entity and field, and conflicts are said in words.
@@ -211,6 +225,35 @@ fn run() -> Result<ExitCode> {
             })
         }
         "check" => check(&find(&rest)?),
+        "modules" => {
+            let (sync, rest) = match rest.split_first() {
+                Some((first, rest)) if first == "sync" => (true, rest.to_vec()),
+                _ => (false, rest.to_vec()),
+            };
+            let project = find(&rest)?;
+            if sync {
+                let features = runity_cli::modules::sync(&project)?;
+                println!("Cargo.toml: runity with [{}]", features.join(", "));
+            } else {
+                for (module, on) in runity_cli::modules::table(&project) {
+                    let depends = if module.depends.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (on {})", module.depends.join(", "))
+                    };
+                    println!(
+                        "{} {:<11} {}{depends}",
+                        if on { "+" } else { " " },
+                        module.name,
+                        module.what
+                    );
+                }
+                if project.manifest().modules.is_empty() {
+                    println!("runity.ron lists no modules: the engine's default set");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         "relay" => {
             // A server between homes: peers in a room (a code the host reads
             // out) hear each other through it, NAT or not.
@@ -322,10 +365,14 @@ fn new(rest: &[String]) -> Result<ExitCode> {
     let mut folder: Option<PathBuf> = None;
     let mut name: Option<String> = None;
     let mut engine = Engine::default();
+    let mut set = String::from("basic");
+    let mut template: Option<String> = None;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--name" => name = args.next().cloned(),
+            "--set" => set = args.next().context("--set wants bare, basic or full")?.clone(),
+            "--template" => template = Some(args.next().context("--template wants a name")?.clone()),
             "--engine-path" => {
                 let path = args.next().context("--engine-path wants a path")?;
                 engine = Engine::Path(std::path::absolute(path)?);
@@ -342,8 +389,18 @@ fn new(rest: &[String]) -> Result<ExitCode> {
             .map(|n| n.to_string_lossy().into_owned())
             .context("the folder has no name; pass --name")?,
     };
-    let project =
-        Project::create_with(&folder, &name, &engine).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let project = match template {
+        Some(template) => runity_cli::template::create(&template, &folder, &name, &engine)?,
+        None => {
+            let known = runity::modules::official();
+            let listed = runity::modules::set(&set).with_context(|| {
+                format!("no set `{set}` — there are: {}", runity::modules::SETS.join(", "))
+            })?;
+            let features = runity::modules::features(&listed, &known);
+            Project::create_with_modules(&folder, &name, &engine, Some((&listed, &features)))
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+    };
     println!(
         "made {} in {}\n\n  cd {}\n  runity run       # the game, reloading scenes as you save them
   runity run --hot # and the game's own code too (needs dioxus-cli)\n  runity check     # what does not resolve",
@@ -561,19 +618,20 @@ fn uses(rest: &[String]) -> Result<ExitCode> {
 fn build(rest: &[String]) -> Result<ExitCode> {
     let mut at: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
-    let mut release = true;
+    let mut profile = runity_cli::build::Profile::Speed;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
-            "--debug" => release = false,
+            "--debug" => profile = runity_cli::build::Profile::Debug,
+            "--size" => profile = runity_cli::build::Profile::Size,
             other if other.starts_with('-') => bail!("unknown option {other}"),
             other => at.push(other.to_string()),
         }
     }
     let project = find(&at)?;
     let out = out.unwrap_or_else(|| project.root().join("build"));
-    let built = runity_cli::build::build(&project, &out, release)?;
+    let built = runity_cli::build::build_with(&project, &out, profile)?;
     for line in &built.stale {
         eprintln!("warning: {line}");
     }
