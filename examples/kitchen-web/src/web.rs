@@ -26,7 +26,7 @@ mod page {
         /// Keep a file the game wrote.
         #[wasm_bindgen(js_namespace = runityPage, js_name = save)]
         pub fn save(path: &str, bytes: &[u8]);
-        /// Where the game is: `menu`, `joining`, `kitchen`, `paused`.
+        /// Where the game is: `menu`, `joining`, `lobby`, `kitchen`, `paused`.
         #[wasm_bindgen(js_namespace = runityPage, js_name = phase)]
         pub fn phase(name: &str);
         /// The quality the page asks for: `?quality=` in its address, or

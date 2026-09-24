@@ -392,6 +392,9 @@ impl shell::Game for Game {
             front::Phase::Menu => "menu",
             front::Phase::Joining => "joining",
             front::Phase::Kitchen if self.front.paused => "paused",
+            // The doors shut: the lobby's card is on the right, where the
+            // page's buttons would be.
+            front::Phase::Kitchen if !front::round_of(&self.world).is_some_and(|r| r.open) => "lobby",
             front::Phase::Kitchen => "kitchen",
         });
         let reload = self

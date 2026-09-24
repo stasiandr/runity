@@ -88,6 +88,8 @@
   /* Touch controls: only on touch screens, only in the kitchen */
   #pad { position: fixed; inset: 0; z-index: 5; pointer-events: none; display: none; }
   body.touch.kitchen #pad { display: block; }
+  /* Doors shut: walk about, and leave the lobby's card on the right alone. */
+  body.touch.lobby #buttons { display: none; }
   #stick-zone {
     position: absolute; left: 0; bottom: 0; width: 45vw; height: 70vh; pointer-events: auto; touch-action: none;
   }
@@ -244,7 +246,8 @@
       } catch (_) {}
     },
     phase(name) {
-      document.body.classList.toggle("kitchen", name === "kitchen");
+      document.body.classList.toggle("kitchen", name === "kitchen" || name === "lobby");
+      document.body.classList.toggle("lobby", name === "lobby");
       window.runityPad && window.runityPad.reset();
     },
     // `?quality=low|medium|high|ultra`; a phone starts on low.
