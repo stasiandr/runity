@@ -76,3 +76,14 @@ jobs:
           CARGO_TARGET_DIR="$PWD/target" cargo run -q -p runity-cli -- rebuild-time "$RUNNER_TEMP/fresh" --budget 10
           CARGO_TARGET_DIR="$PWD/target" cargo run -q -p runity-cli -- build "$RUNNER_TEMP/fresh" --debug --out "$RUNNER_TEMP/dist"
           test -f "$RUNNER_TEMP/dist/data/scenes/main.ron"
+      # The other ways to start (DNA, postulate 8): the bare core — a game
+      # with no window, on runity-core alone — and a template, an example
+      # copied and handed over. Each builds and plays its start scene.
+      - name: A bare project and a template build and play
+        shell: bash
+        run: |
+          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/bare" --set bare --engine-path crates/runity
+          cargo run -q -p runity-cli -- check "$RUNNER_TEMP/bare"
+          (cd "$RUNNER_TEMP/bare" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo test)
+          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/soup" --template kitchen --engine-path crates/runity
+          (cd "$RUNNER_TEMP/soup" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo check --tests)

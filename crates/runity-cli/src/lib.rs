@@ -8,6 +8,7 @@ pub mod merge;
 pub mod modules;
 pub mod rebuild;
 pub mod run;
+pub mod template;
 
 pub use check::{check, Finding, Severity};
 pub use rebuild::{rebuild_time, RebuildTime};

@@ -1,7 +1,7 @@
 //! `runity` — a project from the command line.
 //!
 //! ```text
-//! runity new <folder> [--name NAME] [--engine-path PATH]
+//! runity new <folder> [--name NAME] [--engine-path PATH] [--set bare|basic|full | --template NAME]
 //! runity test  [PROJECT]  the game's tests, headless
 //! runity run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
@@ -33,10 +33,15 @@ use runity_cli::Severity;
 use runity_import::Change;
 
 const HELP: &str = "\
-runity new <folder> [--name NAME] [--engine-path PATH]
+runity new <folder> [--name NAME] [--engine-path PATH] [--set SET | --template NAME]
     Make a project: the standard layout, a scene, and a game crate.
     The game depends on the engine from git, or from a local checkout
-    of runity's crates/runity with --engine-path.
+    of runity's crates/runity with --engine-path. --set picks its modules:
+    basic (a window, the picture, input, a score on screen, sound,
+    collisions, played together; the default), full (every module), or
+    bare (the core alone: no window, a server or a simulation). They are
+    listed in runity.ron; add or drop one there and `runity modules sync`.
+    --template NAME copies one of the engine's example projects instead.
 runity run [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]
     Run the game, on scenes/main.ron or scenes/NAME.ron. Scenes, prefabs,
     assets, shaders and tuning reload while it runs; with --hot, so does its
@@ -358,10 +363,14 @@ fn new(rest: &[String]) -> Result<ExitCode> {
     let mut folder: Option<PathBuf> = None;
     let mut name: Option<String> = None;
     let mut engine = Engine::default();
+    let mut set = String::from("basic");
+    let mut template: Option<String> = None;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--name" => name = args.next().cloned(),
+            "--set" => set = args.next().context("--set wants bare, basic or full")?.clone(),
+            "--template" => template = Some(args.next().context("--template wants a name")?.clone()),
             "--engine-path" => {
                 let path = args.next().context("--engine-path wants a path")?;
                 engine = Engine::Path(std::path::absolute(path)?);
@@ -378,8 +387,18 @@ fn new(rest: &[String]) -> Result<ExitCode> {
             .map(|n| n.to_string_lossy().into_owned())
             .context("the folder has no name; pass --name")?,
     };
-    let project =
-        Project::create_with(&folder, &name, &engine).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let project = match template {
+        Some(template) => runity_cli::template::create(&template, &folder, &name, &engine)?,
+        None => {
+            let known = runity::modules::official();
+            let listed = runity::modules::set(&set).with_context(|| {
+                format!("no set `{set}` — there are: {}", runity::modules::SETS.join(", "))
+            })?;
+            let features = runity::modules::features(&listed, &known);
+            Project::create_with_modules(&folder, &name, &engine, Some((&listed, &features)))
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+        }
+    };
     println!(
         "made {} in {}\n\n  cd {}\n  runity run       # the game, reloading scenes as you save them
   runity run --hot # and the game's own code too (needs dioxus-cli)\n  runity check     # what does not resolve",

@@ -138,6 +138,25 @@ pub mod modules {
     /// `default-features = false`: `default` in its Cargo.toml.
     pub const DEFAULT_FEATURES: &[&str] = &["navigation", "physics"];
 
+    /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,
+    /// the core alone; `basic`, what a game as hard as Flappy Bird needs —
+    /// a picture, input, a score on screen, sound, collisions — played
+    /// together, since a game alone is a session of one (postulate 4), in
+    /// a window; `full`, every official module. What they stand on comes
+    /// with them.
+    pub fn set(name: &str) -> Option<Vec<String>> {
+        let names: Vec<&str> = match name {
+            "bare" => Vec::new(),
+            "basic" => vec!["render", "input", "overlay", "audio", "physics", "net", "shell"],
+            "full" => return Some(official().into_iter().map(|m| m.name).collect()),
+            _ => return None,
+        };
+        Some(names.into_iter().map(String::from).collect())
+    }
+
+    /// The names of the sets, for a message.
+    pub const SETS: &[&str] = &["bare", "basic", "full"];
+
     /// Every official module's manifest, whether this build has it or not.
     pub fn official() -> Vec<Manifest> {
         [
@@ -198,6 +217,10 @@ pub mod modules {
             let built: Vec<String> = super::built().into_iter().map(|m| m.name).collect();
             assert!(built.iter().any(|n| n == "render"));
             assert_eq!(built.iter().any(|n| n == "physics"), cfg!(feature = "physics"));
+            for set in super::SETS {
+                let listed = super::set(set).unwrap();
+                assert!(super::list_problems(&listed, &all, env!("CARGO_PKG_VERSION")).is_empty());
+            }
         }
     }
 }

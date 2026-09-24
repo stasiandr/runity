@@ -123,6 +123,16 @@ NEXT_STEPS.
 фичи перечисленных), а `runity check` называет модуль, которого нет, и
 `Cargo.toml`, который разошёлся со списком.
 
+### Наборы
+
+`runity new --set basic` (по умолчанию), `full` или `bare`, или
+`--template kitchen`. Набор — список модулей в `runity.ron`
+(`runity::modules::set`), из которого `runity new` пишет и `Cargo.toml`, и
+саму игру: шаблон `src/main.rs` размечен `// @animation {` … `// @animation }`,
+и код модуля не из набора выпадает. Голый набор — игра на одном ядре:
+`runity = { package = "runity-core", … }`, без окна, сцена играется
+фиксированными шагами — сервер, симуляция, тест.
+
 ### Фазы
 
 Цикл — как PlayerLoop в Unity: `Initialization`, `EarlyUpdate`,

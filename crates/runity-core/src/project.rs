@@ -122,6 +122,21 @@ pub enum Engine {
     Path(PathBuf),
 }
 
+impl Engine {
+    /// Where a game crate in `root` gets the engine, as `Cargo.toml` says
+    /// it: `git = "…"` or `path = "…"`, relative when it can be.
+    pub fn cargo_source(&self, root: &Path) -> String {
+        match self {
+            Engine::Git(url) => format!("git = \"{url}\""),
+            Engine::Path(path) => {
+                let path = relative_path(root, path)
+                    .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"));
+                format!("path = \"{path}\"")
+            }
+        }
+    }
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Engine::Git("https://github.com/stasiandr/runity".into())
@@ -301,6 +316,22 @@ impl Project {
         name: &str,
         engine: &Engine,
     ) -> Result<Self, ProjectError> {
+        Self::create_with_modules(root, name, engine, None)
+    }
+
+    /// [`Project::create_with`] for a set of modules (DNA, postulate 8:
+    /// `runity new` offers the bare core, the basic set, the full one): the
+    /// modules `runity.ron` lists and the engine's features they need, which
+    /// the engine's manifests say — the core knows no module by name. The
+    /// game is written for the set: what a module not in it would run is
+    /// left out, and with no module at all it is a game on the bare core,
+    /// with no window. `None` writes every module's code and lists none.
+    pub fn create_with_modules(
+        root: impl AsRef<Path>,
+        name: &str,
+        engine: &Engine,
+        modules: Option<(&[String], &[String])>,
+    ) -> Result<Self, ProjectError> {
         let root = root.as_ref().to_path_buf();
         if root.join(FILE).exists() {
             return Err(ProjectError::AlreadyAProject(root));
@@ -318,7 +349,7 @@ impl Project {
             name: name.to_string(),
             engine: env!("CARGO_PKG_VERSION").to_string(),
             game: GameSettings::default(),
-            modules: Vec::new(),
+            modules: modules.map(|(listed, _)| listed.to_vec()).unwrap_or_default(),
         };
         let pretty = ron::ser::PrettyConfig::new();
         let text = ron::ser::to_string_pretty(&manifest, pretty)
@@ -341,9 +372,16 @@ impl Project {
         std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
         std::fs::create_dir_all(root.join(SYSTEMS))?;
-        std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine))?;
+        let bare = modules.is_some_and(|(listed, _)| listed.is_empty());
+        let features = modules.map(|(_, features)| features);
+        std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine, features))?;
         std::fs::write(root.join("build.rs"), BUILD_RS)?;
-        std::fs::write(root.join(SRC).join("main.rs"), GAME.replace("{name}", name))?;
+        let game = if bare { GAME_BARE } else { GAME };
+        let listed = modules.map(|(listed, _)| listed);
+        std::fs::write(
+            root.join(SRC).join("main.rs"),
+            for_modules(game, listed).replace("{name}", name),
+        )?;
         std::fs::write(root.join(COMPONENTS).join("spin.rs"), SPIN_COMPONENT)?;
         std::fs::write(root.join(SYSTEMS).join("spin.rs"), SPIN_SYSTEM)?;
 
@@ -470,7 +508,9 @@ prefabs/**/*.prefab merge=runity
 ";
 
 /// The name Cargo will accept for a project called `name`.
-fn crate_name(name: &str) -> String {
+/// A project's name as a crate's: lowercase, `_` for the rest, never
+/// starting with a digit.
+pub fn crate_name(name: &str) -> String {
     let mut out: String = name
         .chars()
         .map(|c| {
@@ -517,15 +557,8 @@ fn relative_path(from: &Path, to: &Path) -> Option<String> {
     })
 }
 
-fn cargo_toml(root: &Path, name: &str, engine: &Engine) -> String {
-    let source = match engine {
-        Engine::Git(url) => format!("git = \"{url}\""),
-        Engine::Path(path) => {
-            let path = relative_path(root, path)
-                .unwrap_or_else(|| path.to_string_lossy().replace('\\', "/"));
-            format!("path = \"{path}\"")
-        }
-    };
+fn cargo_toml(root: &Path, name: &str, engine: &Engine, features: Option<&[String]>) -> String {
+    let source = engine.cargo_source(root);
     format!(
         "\
 [package]
@@ -540,7 +573,7 @@ publish = false
 
 [dependencies]
 anyhow = \"1\"
-runity = {{ {source}, features = [\"desktop-shell\", \"audio\"] }}
+{runity}
 serde = {{ version = \"1\", features = [\"derive\"] }}
 
 # The engine and every other dependency optimised even in a dev build, the
@@ -554,7 +587,53 @@ debug = \"line-tables-only\"
 opt-level = 3
 ",
         crate_name = crate_name(name),
+        runity = runity_dependency(&source, features),
     )
+}
+
+/// The game's `runity` line: the engine with the set's features, or — for
+/// a game on the bare core — the core itself under the engine's name, so
+/// `runity::` means the same in its code and in every file `runity add`
+/// writes. `None`: the engine's defaults, with the window and sound.
+fn runity_dependency(source: &str, features: Option<&[String]>) -> String {
+    match features {
+        None => format!("runity = {{ {source}, features = [\"desktop-shell\", \"audio\"] }}"),
+        Some([]) => {
+            let source = source.replace("crates/runity\"", "crates/runity-core\"");
+            format!("runity = {{ package = \"runity-core\", {source} }}")
+        }
+        Some(features) => {
+            let list: Vec<String> = features.iter().map(|f| format!("\"{f}\"")).collect();
+            format!(
+                "runity = {{ {source}, default-features = false, features = [{}] }}",
+                list.join(", ")
+            )
+        }
+    }
+}
+
+/// A template with what the modules not in `listed` would run left out:
+/// the lines between `// @module {` and `// @module }` go when `module` is
+/// not listed, and the marks go either way. `None` keeps every module's.
+fn for_modules(template: &str, listed: Option<&[String]>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut skipping: Option<String> = None;
+    for line in template.split_inclusive('\n') {
+        let mark = line.trim().strip_prefix("// @");
+        match (mark, &skipping) {
+            (Some(mark), None) if mark.ends_with(" {") => {
+                let module = mark.trim_end_matches(" {");
+                if listed.is_some_and(|l| !l.iter().any(|m| m == module)) {
+                    skipping = Some(module.to_string());
+                }
+            }
+            (Some(mark), Some(module)) if mark == format!("{module} }}") => skipping = None,
+            (Some(mark), None) if mark.ends_with(" }") => {}
+            (_, Some(_)) => {}
+            (_, None) => out.push_str(line),
+        }
+    }
+    out
 }
 
 /// The numbers a new project starts with.
@@ -685,8 +764,10 @@ struct Game {
     audio: Option<runity::audio::Audio>,
     /// The scene's `sound`s, played.
     sounds: runity::audio::Sources,
+    // @animation {
     /// The graphs and clips that lines' `animator`s play.
     motions: runity::motion::Motions,
+    // @animation }
 }
 
 impl Game {
@@ -705,15 +786,19 @@ impl Game {
 fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::perf::Profiler, seconds: f32) {
     // systems, in order
     profile.time("spin", || systems::spin::run(world, seconds));
+    // @routes {
     // Platforms and lifts on their routes, and lines with an `animator`
     // moving what is under them; then everything placed.
     profile.time("routes", || runity::routes::run_routes(world, seconds));
+    // @routes }
+    // @animation {
     profile.time("motion", || runity::motion::run(world, seconds));
     // Characters: their graphs pick the clip, the skeleton takes the pose.
     profile.time("animation", || {
         runity::animgraph::run_controllers(world);
         runity::advance_animations(world, seconds);
     });
+    // @animation }
     runity::world::apply_hierarchy(world);
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
@@ -794,12 +879,14 @@ impl shell::Game for Game {
         for line in reload.lines() {
             eprintln!("{line}");
         }
+        // @animation {
         // Lines that came in with an `animator` start their graphs.
         let library = self.live.library();
         let skins = |model: &runity::AssetLink| library?.mesh_by_name(model)?.skin_owned();
         for problem in runity::motion::attach(&mut self.world, &self.motions, skins) {
             eprintln!("{problem}");
         }
+        // @animation }
         for (shader, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
             match result {
                 Ok(()) => eprintln!("shader {shader}: in"),
@@ -928,10 +1015,12 @@ fn main() -> anyhow::Result<()> {
             ..Default::default()
         },
     };
+    // @animation {
     let (motions, problems) = runity::motion::Motions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
     for problem in &problems {
         eprintln!("{problem}");
     }
+    // @animation }
     let actions = Actions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "input.ron"))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
@@ -965,8 +1054,11 @@ fn main() -> anyhow::Result<()> {
         components: game_components(),
         audio: runity::audio::Audio::new().map_err(|e| eprintln!("no sound: {e}")).ok(),
         sounds: runity::audio::Sources::new(),
+        // @animation {
         motions,
+        // @animation }
     };
+
     run(config, game)
 }
 
@@ -1006,6 +1098,111 @@ mod tests {
 }
 "#;
 
+/// The game a project on the bare core starts with: no window, no picture,
+/// no sound — a server, a simulation, a test.
+const GAME_BARE: &str = r#"//! {name}, on the bare core: no window, no picture, no sound —
+//! `runity.ron` lists no modules. It plays its start scene headless, the
+//! systems in order at the fixed step: a server, a simulation, a test.
+//! `runity modules` shows what there is to add to runity.ron's `modules`;
+//! `runity modules sync` then brings the engine in.
+//!
+//! Components are files in `src/components/`, systems files in
+//! `src/systems/` (`runity add component NAME`, `runity add system NAME`);
+//! `build.rs` finds them, and `tick` below runs the systems in order.
+
+use runity::hecs::World;
+use runity::{Components, Scene};
+
+/// Every file in src/components/, registered by its file name.
+mod components {
+    include!(concat!(env!("OUT_DIR"), "/components.rs"));
+}
+
+/// Every file in src/systems/.
+mod systems {
+    include!(concat!(env!("OUT_DIR"), "/systems.rs"));
+}
+
+/// One fixed step of the game: the systems in order, then everything
+/// placed.
+fn tick(world: &mut World, seconds: f32) {
+    // systems, in order
+    systems::spin::run(world, seconds);
+    runity::world::apply_hierarchy(world);
+}
+
+/// Every component the game has, by name.
+fn game_components() -> Components {
+    let mut components = Components::new();
+    components::register(&mut components);
+    components
+}
+
+/// The scene at `path`, its prefabs expanded, in a new world with the
+/// game's components on it. Alone, this player simulates everything.
+fn start(path: &std::path::Path) -> anyhow::Result<World> {
+    let scene = Scene::load(path)?;
+    let (prefabs, problems) =
+        runity::Prefabs::open(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "prefabs"))?;
+    for (path, problem) in problems {
+        eprintln!("{}: {problem}", path.display());
+    }
+    let scene = runity::prefab::instantiate_with(&scene, &prefabs, |_| {}).scene;
+    let mut world = World::new();
+    runity::world::spawn_scene_dressed(&scene, &mut world, &mut []);
+    for problem in game_components().apply(&scene, &mut world) {
+        eprintln!("{problem}");
+    }
+    let everything: Vec<_> = world.iter().map(|e| e.entity()).collect();
+    for entity in everything {
+        let _ = world.insert_one(entity, runity::world::Owned);
+    }
+    Ok(world)
+}
+
+fn main() -> anyhow::Result<()> {
+    // `data/` beside the executable in a build, the project in development.
+    let (project_name, settings) =
+        runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).map_err(anyhow::Error::msg)?;
+    runity::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
+    let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
+    let scene = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{playing}.ron"));
+    let mut world = start(&scene)?;
+    let seconds = settings.fixed_delta();
+    eprintln!("{project_name}: {playing}, {} steps a second", settings.steps_per_second);
+    let step = std::time::Duration::from_secs_f32(seconds);
+    loop {
+        tick(&mut world, seconds);
+        std::thread::sleep(step);
+    }
+}
+
+/// Play without anything else: `runity test` (or `cargo test`).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The start scene plays two seconds of the game's own steps with
+    /// everything still somewhere real at the end.
+    #[test]
+    fn the_start_scene_plays() {
+        let (_, settings) = runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let scene = runity::project::data_file(
+            env!("CARGO_MANIFEST_DIR"),
+            &format!("scenes/{}.ron", settings.start_scene),
+        );
+        let mut world = start(&scene).unwrap();
+        let seconds = settings.fixed_delta();
+        for _ in 0..(2.0 / seconds) as usize {
+            tick(&mut world, seconds);
+        }
+        for (_, transform) in world.query::<(runity::hecs::Entity, &runity::Transform)>().iter() {
+            assert!(transform.position.is_finite(), "something flew off: {transform:?}");
+        }
+    }
+}
+"#;
+
 /// The component a new project starts with.
 const SPIN_COMPONENT: &str = r#"//! Turning in place. A scene line gives it as
 //! `components: { "spin": (degrees_per_second: 45.0) }` — the file's name is
@@ -1025,7 +1222,7 @@ const SPIN_SYSTEM: &str = r#"//! Turns everything that has a `Spin` and this pla
 //! system that simulates asks for `Owned`; alone, everything is.
 
 use runity::hecs::World;
-use runity::net::Owned;
+use runity::world::Owned;
 use runity::Transform;
 
 use crate::components::Spin;
