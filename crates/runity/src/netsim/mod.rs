@@ -319,8 +319,9 @@ fn predicted_point(world: &World, entity: hecs::Entity, to: glam::Vec3) -> Optio
 
 
 
-/// How fast someone else's entity goes at its owner's, by its buffer.
-#[cfg(all(feature = "soft", feature = "physics"))]
+/// How fast someone else's entity goes at its owner's, by its buffer. The
+/// ropes ask it, and so do approach claims, which a game without ropes has.
+#[cfg(all(feature = "physics", any(feature = "soft", feature = "net")))]
 fn predicted_velocity(world: &World, entity: hecs::Entity) -> glam::Vec3 {
     #[cfg(feature = "net")]
     {
