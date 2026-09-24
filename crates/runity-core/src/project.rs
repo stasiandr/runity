@@ -797,6 +797,10 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     // What floats is held up by the water under it, for the coming step.
     runity::fluid::float(world, physics);
     // @fluid }
+    // @character {
+    // Ragdolls' muscles pull toward their poses.
+    runity::character::step(world, physics, seconds);
+    // @character }
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));

@@ -1331,6 +1331,35 @@ impl PhysicsWorld {
         true
     }
 
+    /// How fast it turns, radians a second about each axis, in the world.
+    pub fn spin(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
+        let v = self.bodies.get(self.body_of(world, entity)?)?.angvel();
+        Some(Vec3::new(v.x, v.y, v.z))
+    }
+
+    /// A twist for the coming step, in newton-metres, in the world: what a
+    /// muscle does to a limb. Unity's `AddTorque`.
+    pub fn add_torque(&mut self, world: &World, entity: hecs::Entity, torque: Vec3) -> bool {
+        let dt = self.parameters.dt;
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        let t = torque * dt;
+        body.apply_torque_impulse(vector![t.x, t.y, t.z], true);
+        true
+    }
+
+    /// How hard it is to turn about each of its own axes, and those axes:
+    /// its principal inertia, kilogram-metres².
+    pub fn inertia(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let i = body.mass_properties().local_mprops.principal_inertia();
+        Some(Vec3::new(i.x, i.y, i.z))
+    }
+
     /// Its mass, kilograms.
     pub fn mass(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
         Some(self.bodies.get(self.body_of(world, entity)?)?.mass())

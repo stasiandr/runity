@@ -366,13 +366,14 @@ pub fn by_name(name: &str) -> Option<MeshAsset> {
         "ramp" => Some(ramp(1.0)),
         "stairs" => Some(stairs(1.0, STAIRS)),
         "link" => Some(link(24, 8)),
+        "capsule" => Some(capsule(0.5, 0.5, 20, 12)),
         _ => None,
     }
 }
 
 /// Every builtin name, for an editor's list and for tests that want to check
 /// all of them without repeating the list.
-pub const NAMES: [&str; 8] = [
+pub const NAMES: [&str; 9] = [
     "builtin:plane",
     "builtin:cube",
     "builtin:cone",
@@ -381,7 +382,48 @@ pub const NAMES: [&str; 8] = [
     "builtin:ramp",
     "builtin:stairs",
     "builtin:link",
+    "builtin:capsule",
 ];
+
+/// A capsule standing up: a cylinder `2 × half_height` tall capped with
+/// half balls of `radius` — what fits `Capsule(half_height, radius)`.
+pub fn capsule(half_height: f32, radius: f32, segments: u32, rings: u32) -> MeshAsset {
+    let segments = segments.max(3);
+    let rings = rings.max(2) & !1; // even: the middle ring splits the caps
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    // A ball's rings, the top half raised and the bottom lowered, with the
+    // middle ring twice: once for each cap, the cylinder between them.
+    let mut ring_list: Vec<(f32, f32)> = Vec::new();
+    for ring in 0..=rings {
+        let phi = std::f32::consts::PI * ring as f32 / rings as f32;
+        let lift = if ring <= rings / 2 { half_height } else { -half_height };
+        ring_list.push((phi, lift));
+        if ring == rings / 2 {
+            ring_list.push((phi, -half_height));
+        }
+    }
+    for (row, (phi, lift)) in ring_list.iter().enumerate() {
+        for segment in 0..=segments {
+            let theta = std::f32::consts::TAU * segment as f32 / segments as f32;
+            let normal = [phi.sin() * theta.cos(), phi.cos(), phi.sin() * theta.sin()];
+            vertices.push(Vertex {
+                position: [normal[0] * radius, normal[1] * radius + lift, normal[2] * radius],
+                normal,
+                uv: [segment as f32 / segments as f32, row as f32 / (ring_list.len() - 1) as f32],
+            });
+        }
+    }
+    let stride = segments + 1;
+    for row in 0..ring_list.len() as u32 - 1 {
+        for segment in 0..segments {
+            let a = row * stride + segment;
+            let (b, c, d) = (a + 1, a + stride, a + stride + 1);
+            indices.extend_from_slice(&[a, b, c, b, d, c]);
+        }
+    }
+    finish("capsule", vertices, indices)
+}
 
 /// A link of a chain: a ring of wire drawn out into a stadium, lying in
 /// its x–z plane, a metre long along z and 0.6 across x. A chain draws one

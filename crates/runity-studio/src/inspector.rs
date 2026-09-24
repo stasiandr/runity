@@ -32,7 +32,7 @@ use crate::theme::*;
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 29] = [
+const PARTS: [&str; 31] = [
     "camera",
     "light",
     "particles",
@@ -60,6 +60,8 @@ const PARTS: [&str; 29] = [
     "smoke",
     "grains",
     "snow_cover",
+    "ragdoll",
+    "crawler",
     "spline",
     "along",
 ];
@@ -100,6 +102,8 @@ fn added_value(field: &str) -> Option<&'static str> {
         "smoke" => "()",
         "grains" => "()",
         "snow_cover" => "()",
+        "ragdoll" => "()",
+        "crawler" => "()",
         "rope" => "(to: (4.0, 0.0, 0.0))",
         "cloth" => "(size: (2.0, 2.0))",
         "hair" => "(length: 0.3)",
@@ -111,7 +115,7 @@ fn added_value(field: &str) -> Option<&'static str> {
 
 /// The parts a line can have besides the game's components, as the Add
 /// Component list names them.
-const ADDABLE: [(&str, &str); 31] = [
+const ADDABLE: [(&str, &str); 33] = [
     ("model", "Model"),
     ("collider", "Collider"),
     ("body", "Body"),
@@ -127,6 +131,8 @@ const ADDABLE: [(&str, &str); 31] = [
     ("decal", "Decal"),
     ("route", "Route"),
     ("rope", "Rope"),
+    ("crawler", "Crawler"),
+    ("ragdoll", "Ragdoll"),
     ("snow_cover", "Snow Cover"),
     ("grains", "Grains"),
     ("smoke", "Smoke"),
@@ -146,7 +152,7 @@ const ADDABLE: [(&str, &str); 31] = [
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 35] = [
+const REMOVABLE: [&str; 37] = [
     "model",
     "footprints",
     "terrain",
@@ -176,6 +182,8 @@ const REMOVABLE: [&str; 35] = [
     "smoke",
     "grains",
     "snow_cover",
+    "ragdoll",
+    "crawler",
     "joint",
     "joint_break",
     "collider",

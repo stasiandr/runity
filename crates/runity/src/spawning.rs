@@ -19,6 +19,8 @@ pub fn dressers<'a>(
     let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
     #[cfg(feature = "fluid")]
     let cube = resolve(&crate::AssetLink::named("builtin:cube"));
+    #[cfg(feature = "character")]
+    let capsule = resolve(&crate::AssetLink::named("builtin:capsule"));
     #[cfg(feature = "soft")]
     let (link, sphere) = (
         resolve(&crate::AssetLink::named("builtin:link")),
@@ -50,6 +52,12 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::fluid::FloatsDress));
         out.push(Box::new(crate::fluid::SmokeDress));
         out.push(Box::new(crate::fluid::FluidLookDress { cube, palette }));
+    }
+    #[cfg(feature = "character")]
+    {
+        out.push(Box::new(crate::character::RagdollDress));
+        out.push(Box::new(crate::character::CrawlerDress));
+        out.push(Box::new(crate::character::CharacterLookDress { capsule, palette }));
     }
     #[cfg(feature = "destruction")]
     {

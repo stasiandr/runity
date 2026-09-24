@@ -455,6 +455,14 @@ fn sim_shots() -> Vec<Shot> {
             (v(-3.0, 2.2, 6.0), v(-1.0, 0.8, -1.0)),
             (v(3.0, 2.6, 6.0), v(1.5, 0.4, 0.5)),
         ),
+        shot(
+            "characters",
+            "Персонажи: ragdoll падает на ступени, активные тянутся мышцами к позе — процедурная походка и motion matching, рука тянется к шару по IK; паук шагает, ступни по IK",
+            "characters.ron",
+            12.0,
+            (v(-6.0, 3.0, 7.0), v(-2.0, 0.8, -1.0)),
+            (v(7.0, 2.8, 6.5), v(5.0, 0.8, -2.0)),
+        ),
     ]
 }
 
@@ -693,6 +701,7 @@ fn render_shot(
         owed += dt * shot.speed;
         while owed >= step {
             runity::fluid::float(&world, &mut physics);
+            runity::character::step(&mut world, &mut physics, step);
             physics.run(&mut world);
             runity::fluid::step(&mut world, step);
             runity::destruction::step(&mut world, &mut physics, step);
@@ -704,6 +713,8 @@ fn render_shot(
         runity::soft::show(&mut world, 0.0);
         runity::destruction::show(&mut world, 0.0);
         runity::fluid::show(&mut world, 0.0);
+        runity::character::crawl(&mut world, dt * shot.speed);
+        runity::character::show(&mut world, 0.0);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {

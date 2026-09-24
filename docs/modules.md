@@ -21,6 +21,7 @@ NEXT_STEPS.
 | `runity-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
 | `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
 | `runity-navigation` | сетка проходимости и A* | physics |
+| `runity-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
 | `runity-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
 | `runity-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
 | `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`: верёвки, ткань, волосы, мягкие тела, PBF/SPH (docs/simulation.md) | ядро, geometry |

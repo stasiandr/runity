@@ -1,0 +1,24 @@
+// Персонажи (docs/simulation.md, пункт 11): ragdoll из одиннадцати капсул
+// на суставах — безвольные падают на ступени и землю; активные тянутся
+// мышцами (PD) к позе: один идёт процедурной походкой за целью, другой —
+// по motion matching с остановками, третий тянется левой рукой (IK) к
+// летающему шару. Паук на восьми ногах
+// шагает через ящики, ступни по IK на коллайдерах.
+(
+    view: (position: (0.0, 3.5, 10.0), target: (0.0, 1.0, 0.0), fov_deg: 55.0),
+    sun: (hour: 15.0, intensity: 1.3),
+    sky: (mode: Physical),
+    entities: [
+        (id: "7f329d4ffd3f3f4d", name: "ground", model: "builtin:plane", transform: (scale: (60.0, 1.0, 60.0)), material: "grid", body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "f23d245d2922c5e0", name: "stairs", model: "builtin:stairs", transform: (position: (-5.0, 0.6, -2.0), scale: (2.0, 1.2, 2.4)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Stairs(half: (0.5, 0.5, 0.5), steps: 4)),
+        (id: "568d4bb3c3e5720c", name: "falling guy", transform: (position: (-5.2, 3.0, -1.5), rotation_deg: (0.0, 30.0, 0.0)), material: (base_color: (0.8, 0.55, 0.2)), ragdoll: (mode: Limp)),
+        (id: "5c88dfd96d72166f", name: "falling guy 2", transform: (position: (-3.2, 4.0, -3.0), rotation_deg: (0.0, -60.0, 0.0)), material: (base_color: (0.3, 0.6, 0.3)), ragdoll: (mode: Limp)),
+        (id: "bef6890ef76846cb", name: "walker", transform: (position: (-2.0, 0.0, 2.5)), material: (base_color: (0.2, 0.35, 0.75)), ragdoll: (drive: Walk), route: (points: [(0.0, 0.0, 0.0), (4.0, 0.0, 0.0), (4.0, 0.0, -3.0), (0.0, 0.0, -3.0)], speed: 1.1, ends: Loop)),
+        (id: "0e1021f32264abfa", name: "matcher", transform: (position: (3.5, 0.0, 3.5)), material: (base_color: (0.7, 0.2, 0.5)), ragdoll: (drive: Match), route: (points: [(0.0, 0.0, 0.0), (0.0, 0.0, -5.0)], speed: 1.8, ends: Back, pause: 1.2)),
+        (id: "676304659cce0998", name: "hovering ball", model: "builtin:sphere", transform: (position: (6.4, 1.6, -2.0), scale: (0.25, 0.25, 0.25)), material: (base_color: (1.0, 0.85, 0.2), emission: (0.8, 0.6, 0.1)), route: (points: [(0.0, 0.0, 0.0), (0.0, 0.5, 0.6), (0.0, 0.0, 1.2)], speed: 0.6, ends: Back)),
+        (id: "4d55f670ae6dff2d", name: "reacher", transform: (position: (6.8, 0.0, -1.5), rotation_deg: (0.0, -90.0, 0.0)), material: (base_color: (0.85, 0.85, 0.8)), ragdoll: (toughness: 3.0, reach: EntityRef("676304659cce0998"), recover: 2.5)),
+        (id: "9d462c7e699bfb26", name: "crate a", model: "builtin:cube", transform: (position: (1.0, 0.25, -6.0), scale: (1.2, 0.5, 1.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "9e47184ac7b3d68a", name: "crate b", model: "builtin:cube", transform: (position: (2.5, 0.4, -6.0), scale: (1.0, 0.8, 1.0)), material: (base_color: (0.42, 0.3, 0.2)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "24d79cd6e1e54c0c", name: "spider", model: "builtin:sphere", transform: (position: (-2.5, 0.9, -6.0), rotation_deg: (0.0, 90.0, 0.0), scale: (0.7, 0.35, 0.9)), material: (base_color: (0.15, 0.12, 0.1)), crawler: (legs: 8, span: (0.28, 0.4), leg: 1.1, step: 0.35), route: (points: [(0.0, 0.0, 0.0), (7.0, 0.0, 0.0)], speed: 0.9, ends: Back, pause: 0.5)),
+    ],
+)

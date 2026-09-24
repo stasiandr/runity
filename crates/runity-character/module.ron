@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "character",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Ragdolls, active ragdolls on procedural gait or motion matching, IK, and crawlers.",
+    depends: ["geometry", "physics", "soft"],
+    runtime: true,
+    editor: false,
+    parts: ["ragdoll", "crawler"],
+    assets: [],
+    feature: Some("character"),
+)

@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "snow_cover" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "snow_cover" | "ragdoll" | "crawler" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 38] = [
+pub const FIELDS: [&str; 40] = [
     "name",
     "model",
     "prefab",
@@ -120,6 +120,8 @@ pub const FIELDS: [&str; 38] = [
     "smoke",
     "grains",
     "snow_cover",
+    "ragdoll",
+    "crawler",
     "components.<name>",
 ];
 
@@ -414,6 +416,14 @@ impl Session {
             (
                 "snow_cover".into(),
                 desc.snow_cover().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "ragdoll".into(),
+                desc.ragdoll().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "crawler".into(),
+                desc.crawler().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -890,6 +900,22 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::SnowCover>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "ragdoll" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Ragdoll>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "crawler" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Crawler>(field, text)?)
                 })
                 .as_ref(),
             ),

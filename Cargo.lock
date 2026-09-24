@@ -3050,6 +3050,7 @@ dependencies = [
  "ron",
  "runity-animation",
  "runity-audio",
+ "runity-character",
  "runity-core",
  "runity-destruction",
  "runity-dialogue",
@@ -3098,6 +3099,20 @@ dependencies = [
  "runity-core",
  "serde",
  "tracing",
+]
+
+[[package]]
+name = "runity-character"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-physics",
+ "runity-soft",
+ "serde",
 ]
 
 [[package]]

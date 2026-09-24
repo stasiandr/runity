@@ -183,7 +183,7 @@ mod tests {
         assert_eq!(
             cargo_features(&cargo).unwrap(),
             [
-                "animation", "audio", "desktop-shell", "destruction", "dialogue", "fluid", "input", "navigation", "net",
+                "animation", "audio", "character", "desktop-shell", "destruction", "dialogue", "fluid", "input", "navigation", "net",
                 "physics", "routes", "soft", "spline"
             ]
         );
