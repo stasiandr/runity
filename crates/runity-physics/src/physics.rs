@@ -862,11 +862,19 @@ impl PhysicsWorld {
     /// entity no longer asks for one. A joint whose partner is not there —
     /// not built yet, or a typo'd id — waits rather than guessing.
     fn sync_joints(&mut self, world: &mut World) {
-        let bodies_by_id: std::collections::HashMap<crate::id::EntityId, RigidBodyHandle> = world
+        // By the scene's ids, and by a run-time prefab's own: a mouse spawned
+        // mid-level has a tail whose links name each other.
+        let mut bodies_by_id: std::collections::HashMap<crate::id::EntityId, RigidBodyHandle> = world
             .query::<(&SceneId, &BodyHandle)>()
             .iter()
             .map(|(id, handle)| (id.0, handle.0))
             .collect();
+        bodies_by_id.extend(
+            world
+                .query::<(&crate::world::SpawnedId, &BodyHandle)>()
+                .iter()
+                .map(|(id, handle)| (id.0, handle.0)),
+        );
         let mut drop: Vec<hecs::Entity> = Vec::new();
         let mut build: Vec<(
             hecs::Entity,

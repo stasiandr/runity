@@ -250,6 +250,38 @@ fn a_link_in_a_prefab_spawned_at_run_time_finds_its_own_instances_part() {
 }
 
 #[test]
+fn a_joint_in_a_prefab_spawned_at_run_time_holds_its_parts_together() {
+    let project = project("spawn-joints");
+    write(
+        &project.prefabs().join("lamp.prefab"),
+        r#"(id: "0000000000000b01", name: "post", collider: Box(half: (0.1, 1.0, 0.1)), body: Kinematic,
+            children: [(id: "0000000000000b02", name: "shade", transform: (position: (0.0, -0.5, 0.0)),
+                        collider: Sphere(radius: 0.2), body: Dynamic,
+                        joint: Ball(to: "0000000000000b01", anchor: (0.0, 0.5, 0.0)))])"#,
+    );
+    let (live, _) = LiveScene::open(&project.scenes().join("main.ron")).unwrap();
+    let mut live = live;
+    let mut world = hecs::World::new();
+    live.spawn_headless(&mut world);
+    let at = runity::Transform {
+        position: runity::glam::Vec3::new(0.0, 5.0, 0.0),
+        ..runity::Transform::default()
+    };
+    live.spawn_prefab_headless("lamp", at, None, &mut world).unwrap();
+    let mut physics = runity::PhysicsWorld::new(1.0 / 50.0);
+    for _ in 0..100 {
+        physics.run(&mut world);
+    }
+    let lowest = world
+        .query::<(&runity::world::Physics, &runity::world::WorldTransform)>()
+        .iter()
+        .filter(|(p, _)| p.0 == runity::scene::Body::Dynamic)
+        .map(|(_, t)| t.0.w_axis.y)
+        .fold(f32::MAX, f32::min);
+    assert!(lowest > 3.0, "the shade hangs from its post, not fallen: {lowest}");
+}
+
+#[test]
 fn two_scenes_share_a_world_and_each_reloads_and_unloads_only_its_own() {
     let Ok(gpu) = Gpu::headless_blocking(false) else {
         eprintln!("skipping: no adapter");
