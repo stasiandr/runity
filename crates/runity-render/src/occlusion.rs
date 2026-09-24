@@ -520,6 +520,20 @@ impl Occlusion {
         Some(args.chunks(5).map(|a| a[1]).sum())
     }
 
+    /// Last frame's depth to test against, when this frame was culled by it
+    /// (on, and not a cut).
+    pub(crate) fn hiz(&self) -> Option<crate::cluster::Hiz<'_>> {
+        let (Some(made_with), Some((_, size, views, whole)), true) = (self.made_with, self.pyramid.as_ref(), self.active) else {
+            return None;
+        };
+        Some(crate::cluster::Hiz {
+            view: whole,
+            view_projection: made_with,
+            size: *size,
+            levels: views.len() as u32,
+        })
+    }
+
     /// Fold this frame's prepass depth into the pyramid, for the next frame.
     pub(crate) fn build(
         &mut self,

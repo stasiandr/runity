@@ -957,6 +957,9 @@ struct GpuMesh {
     bounds: crate::asset::Bounds,
     /// What rays hit, on a device that traces.
     blas: Option<wgpu::Blas>,
+    /// Its clusters, when it is dense enough to be culled by them
+    /// ([`crate::cluster`]): its indices are then in their order.
+    clusters: Option<crate::cluster::MeshClusters>,
 }
 
 /// Holds the pipeline, the uploaded meshes and the buffers a frame needs.
@@ -1086,6 +1089,8 @@ pub struct Renderer {
     gpu_particles: crate::particles_gpu::GpuParticles,
     /// Occlusion culling against last frame's depth ([`crate::occlusion`]).
     occlusion: crate::occlusion::Occlusion,
+    /// Dense meshes culled a cluster at a time ([`crate::cluster`]).
+    clusters: crate::cluster::Clusters,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2031,7 +2036,7 @@ fn build_pipelines(
     }
 }
 
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 impl Renderer {
     /// Build a renderer for an offscreen target.
@@ -2090,10 +2095,12 @@ impl Renderer {
                 terrain_mesh: self.terrain_mesh_layouts.as_ref().map(|(_, p)| p),
             },
         );
+        let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
+        self.clusters.pipelines = cluster_pipelines;
         self.base_shader = original.to_string();
         // The materials' own shaders are the standard one with their
         // surface in: built again on the new one.
@@ -2778,9 +2785,13 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
+        clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
+
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
             pipelines,
+            clusters,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -3056,11 +3067,22 @@ impl Renderer {
         use wgpu::util::DeviceExt;
 
         let traced = traced && self.ray.is_some();
-        let usage = if traced {
+        let mut usage = if traced {
             wgpu::BufferUsages::BLAS_INPUT
         } else {
             wgpu::BufferUsages::empty()
         };
+        // Dense: cut into clusters, its triangles in their order, its
+        // buffers readable by the vertex shader that pulls from them.
+        let clustered = self
+            .clusters
+            .can
+            .then(|| crate::cluster::build(vertices, indices))
+            .flatten();
+        if clustered.is_some() {
+            usage |= wgpu::BufferUsages::STORAGE;
+        }
+        let indices = clustered.as_ref().map_or(indices, |(sorted, _)| sorted.as_slice());
         let vertex_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -3091,6 +3113,7 @@ impl Renderer {
             index_count: indices.len() as u32,
             bounds,
             blas,
+            clusters: clustered.map(|(_, c)| crate::cluster::MeshClusters::new(gpu, &c)),
         }
     }
 
@@ -3330,7 +3353,7 @@ impl Renderer {
     ) {
         // The colour pass's batches, culled on the GPU: each drawn by its
         // arguments, from the instances kept.
-        let culled = culled && self.occlusion.active;
+        let occluded = culled && self.occlusion.active;
         let mut first = base;
         let mut current: Option<Look> = None;
         for (k, ((look, handle, texture), list)) in batches.iter().enumerate() {
@@ -3339,6 +3362,25 @@ impl Renderer {
                 first += count;
                 continue;
             };
+            // Culled a cluster at a time: drawn by what was kept.
+            if let (true, Some(look), Some(pipelines)) = (culled, look, &self.clusters.pipelines) {
+                let pipeline = if prepass {
+                    pipelines.prepass.get(&look.face)
+                } else {
+                    pipelines.scene.get(&(look.face, look.water))
+                };
+                if let (Some(pipeline), true) = (pipeline, self.clusters.this_frame.contains_key(&k)) {
+                    pass.set_pipeline(pipeline);
+                    pass.set_bind_group(0, self.frame_group_for(prepass), &[]);
+                    if textured {
+                        self.bind_maps(pass, *texture);
+                    }
+                    self.clusters.draw(pass, k);
+                    current = None;
+                    first += count;
+                    continue;
+                }
+            }
             if let Some(look) = look {
                 if current != Some(*look) {
                     let pipeline = if prepass {
@@ -3360,7 +3402,7 @@ impl Renderer {
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            if culled {
+            if occluded {
                 pass.set_vertex_buffer(1, self.occlusion.kept.buffer.slice(..));
                 pass.draw_indexed_indirect(&self.occlusion.args.buffer, k as u64 * 20);
             } else {
@@ -3693,6 +3735,19 @@ impl Renderer {
     /// behind: the frame does not wait for them.
     pub fn gpu_times(&self) -> Vec<(String, f32)> {
         self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
+    }
+
+    /// Cull dense meshes a cluster at a time, where the device can
+    /// ([`crate::cluster`]): on by default.
+    pub fn set_cluster_culling(&mut self, on: bool) {
+        self.clusters.enabled = on && self.clusters.can;
+    }
+
+    /// How many clusters the last frame kept of those it culled, read back
+    /// — waiting on the GPU, so for tests and tools; `None` when nothing
+    /// was culled by clusters.
+    pub fn clusters_kept(&self, gpu: &Gpu) -> Option<u32> {
+        self.clusters.kept(gpu)
     }
 
     /// What made the last frame up to the screen's size, and the share of
@@ -4974,13 +5029,13 @@ impl Renderer {
             });
         // What last frame's depth says is hidden, left out on the GPU.
         {
-            let culling = self.passes.occlusion_culling
-                && probe.is_none()
-                && view.is_some()
-                && !self.picturing;
+            // The screen's frame only; each culling a pass of its own.
+            let culling = probe.is_none() && view.is_some() && !self.picturing;
+            let occluding = culling && self.passes.occlusion_culling;
+            let clustering = culling && self.passes.cluster_culling;
             let mut boxes: Vec<[f32; 8]> = Vec::new();
             let mut listed: Vec<crate::occlusion::CullBatch> = Vec::new();
-            if culling {
+            if occluding {
                 for ((look, handle, _), list) in &batches {
                     let (min, max) = self
                         .mesh(*handle)
@@ -5021,6 +5076,54 @@ impl Renderer {
                 );
             } else {
                 self.occlusion.active = false;
+            }
+            if clustering {
+                // Dense meshes a cluster at a time: what can be drawn so —
+                // opaque, the standard shader, neither skinned nor terrain.
+                let mut jobs = Vec::new();
+                let mut first = shadow_total;
+                let (meshes, lod_meshes) = (&self.meshes, &self.lod_meshes);
+                let mesh_of = |handle: MeshHandle| {
+                    if handle.0 & LOD_HANDLE != 0 {
+                        lod_meshes.get((handle.0 & !LOD_HANDLE) as usize)
+                    } else {
+                        meshes.get(handle.0 as usize)
+                    }
+                };
+                for (k, ((look, handle, _), list)) in batches.iter().enumerate() {
+                    let count = list.len() as u32;
+                    if let (Some(look), Some(mesh)) = (look, mesh_of(*handle)) {
+                        let plain = look.blend.is_none()
+                            && look.shader.is_none()
+                            && !look.skinned
+                            && !look.terrain
+                            && !look.on_top;
+                        if let (true, Some(clusters)) = (plain, mesh.clusters.as_ref()) {
+                            jobs.push(crate::cluster::Job {
+                                batch: k,
+                                first_instance: first,
+                                instances: count,
+                                face: look.face,
+                                clusters,
+                                vertices: &mesh.vertices,
+                                indices: &mesh.indices,
+                            });
+                        }
+                    }
+                    first += count;
+                }
+                let hiz = self.occlusion.hiz();
+                self.clusters.cull(
+                    gpu,
+                    &mut encoder,
+                    &jobs,
+                    &self.instances,
+                    drawn,
+                    frame.camera.position,
+                    hiz,
+                );
+            } else {
+                self.clusters.this_frame.clear();
             }
         }
         // The scene as rays see it: every solid draw, seen or not — what is

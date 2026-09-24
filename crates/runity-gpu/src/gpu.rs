@@ -116,13 +116,19 @@ impl Gpu {
             .max_vertex_attributes
             .max(17)
             .min(adapter.limits().max_vertex_attributes);
+        // Eight storage buffers a stage where there are: the occlusion
+        // culling reads five, the lit shader one more when it traces (what
+        // each thing is made of, for reflections' hits), and a cluster's
+        // vertex shader pulls four.
+        required_limits.max_storage_buffers_per_shader_stage = required_limits
+            .max_storage_buffers_per_shader_stage
+            .max(8)
+            .min(adapter.limits().max_storage_buffers_per_shader_stage);
         if ray_tracing {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
-            // The lit shader reads one storage buffer more when it traces:
-            // what each thing is made of, for reflections' hits.
             required_limits.max_storage_buffers_per_shader_stage = required_limits
                 .max_storage_buffers_per_shader_stage
-                .max(5)
+                .max(8)
                 .min(adapter.limits().max_storage_buffers_per_shader_stage);
         }
         if mesh_shaders {

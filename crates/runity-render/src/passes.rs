@@ -35,6 +35,9 @@ pub struct Passes {
     /// Instances hidden behind last frame's depth left out on the GPU
     /// ([`crate::occlusion`]); off, every instance in the view is drawn.
     pub occlusion_culling: bool,
+    /// Dense meshes culled a cluster of triangles at a time on the GPU
+    /// ([`crate::cluster`]); off, they are drawn whole.
+    pub cluster_culling: bool,
     pub clouds: bool,
     /// Temporal antialiasing.
     pub taa: bool,
@@ -69,6 +72,7 @@ impl Passes {
         volumetric_fog: true,
         gpu_particles: true,
         occlusion_culling: true,
+        cluster_culling: true,
         clouds: true,
         taa: true,
         upscaling: true,
@@ -89,6 +93,7 @@ impl Passes {
         volumetric_fog: false,
         gpu_particles: false,
         occlusion_culling: false,
+        cluster_culling: false,
         clouds: false,
         taa: false,
         upscaling: false,

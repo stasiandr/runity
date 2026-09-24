@@ -12,6 +12,7 @@
 pub mod appearance;
 pub mod atmosphere;
 pub mod clouds;
+pub mod cluster;
 pub mod decals;
 pub mod exposure;
 pub mod floaters;

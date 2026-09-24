@@ -1368,6 +1368,56 @@ fn vs_terrain(in: VertexInput) -> VertexOutput {
 
 @vertex
 fn vs(in: VertexInput) -> VertexOutput {
+    return standard_vertex(in);
+}
+
+// Clusters (cluster.rs): a dense mesh drawn a cluster at a time, the ones
+// the compute pass kept, each an instance of 372 vertices whose vertex and
+// instance are read out of the mesh's own buffers.
+struct ClusterDrawn {
+    instance: u32,
+    first: u32,
+    count: u32,
+    pad: u32,
+};
+
+@group(3) @binding(3) var<storage, read> cluster_vertices: array<f32>;
+@group(3) @binding(4) var<storage, read> cluster_indices: array<u32>;
+@group(3) @binding(5) var<storage, read> cluster_instances: array<vec4<f32>>;
+@group(3) @binding(6) var<storage, read> cluster_drawn: array<ClusterDrawn>;
+
+@vertex
+fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept: u32) -> VertexOutput {
+    let d = cluster_drawn[kept];
+    if corner >= d.count * 3u {
+        // Past the cluster's last triangle: all three corners the same
+        // point, behind the eye — nothing drawn.
+        var none: VertexOutput;
+        none.clip_position = vec4<f32>(0.0, 0.0, -1.0, 1.0);
+        return none;
+    }
+    let v = cluster_indices[d.first + corner] * 8u;
+    let s = d.instance * 12u;
+    var in: VertexInput;
+    in.position = vec3<f32>(cluster_vertices[v], cluster_vertices[v + 1u], cluster_vertices[v + 2u]);
+    in.normal = vec3<f32>(cluster_vertices[v + 3u], cluster_vertices[v + 4u], cluster_vertices[v + 5u]);
+    in.uv = vec2<f32>(cluster_vertices[v + 6u], cluster_vertices[v + 7u]);
+    in.model_0 = cluster_instances[s];
+    in.model_1 = cluster_instances[s + 1u];
+    in.model_2 = cluster_instances[s + 2u];
+    in.model_3 = cluster_instances[s + 3u];
+    in.color_and_shading = cluster_instances[s + 4u];
+    in.surface = cluster_instances[s + 5u];
+    in.emission = cluster_instances[s + 6u];
+    in.uv_transform = cluster_instances[s + 7u];
+    in.detail = cluster_instances[s + 8u];
+    in.params_0 = cluster_instances[s + 9u];
+    in.params_1 = cluster_instances[s + 10u];
+    in.subsurface = cluster_instances[s + 11u];
+    return standard_vertex(in);
+}
+
+fn standard_vertex(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = vec4<f32>(
         swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),

@@ -67,6 +67,7 @@ pub use runity_audio::audio;
 pub use runity_net::bench;
 pub use runity_geometry::builtin;
 pub use runity_render::clouds;
+pub use runity_render::cluster;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub use runity_render::decals;
