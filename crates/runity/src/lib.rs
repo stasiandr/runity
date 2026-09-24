@@ -64,6 +64,7 @@ pub mod moods;
 #[cfg(feature = "physics")]
 pub mod navigation;
 pub mod net;
+pub mod occlusion;
 pub mod particles;
 pub mod particles_gpu;
 pub mod party;

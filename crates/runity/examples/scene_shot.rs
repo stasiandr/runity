@@ -169,6 +169,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pixels = target.read_rgba(&gpu);
     if timed > 0 {
         renderer.profile_gpu(true);
+        if std::env::var_os("RUNITY_NO_OCCLUSION").is_some() {
+            renderer.set_occlusion_culling(false);
+        }
         let start = std::time::Instant::now();
         for _ in 0..timed {
             renderer.render(&gpu, &target, &frame);

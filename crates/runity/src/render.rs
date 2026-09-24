@@ -928,6 +928,10 @@ struct GpuTexture {
     view: wgpu::TextureView,
 }
 
+fn gpu_has_first_instance(occlusion: &crate::occlusion::Occlusion) -> bool {
+    occlusion.can
+}
+
 /// A mesh handle with this bit set is a coarser level of a mesh, kept
 /// apart so the handles of what is uploaded stay in order.
 const LOD_HANDLE: u32 = 1 << 31;
@@ -1061,6 +1065,8 @@ pub struct Renderer {
     bolt: Option<crate::weather::Bolt>,
     /// Particles on the GPU: their pipelines and pools.
     gpu_particles: crate::particles_gpu::GpuParticles,
+    /// Occlusion culling against last frame's depth ([`crate::occlusion`]).
+    occlusion: crate::occlusion::Occlusion,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2749,7 +2755,7 @@ impl Renderer {
         let instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
             size: instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
 
@@ -2824,6 +2830,7 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             bolt: None,
+            occlusion: crate::occlusion::Occlusion::new(gpu),
             gpu_particles: crate::particles_gpu::GpuParticles::new(
                 gpu,
                 crate::post::HDR_FORMAT,
@@ -3276,7 +3283,7 @@ impl Renderer {
         base: u32,
         textured: bool,
     ) {
-        self.draw_batches_with(pass, batches, base, textured, false);
+        self.draw_batches_with(pass, batches, base, textured, false, false);
     }
 
     /// [`Renderer::draw_batches`], in the depth-and-normals prepass when
@@ -3288,10 +3295,14 @@ impl Renderer {
         base: u32,
         textured: bool,
         prepass: bool,
+        culled: bool,
     ) {
+        // The colour pass's batches, culled on the GPU: each drawn by its
+        // arguments, from the instances kept.
+        let culled = culled && self.occlusion.active;
         let mut first = base;
         let mut current: Option<Look> = None;
-        for ((look, handle, texture), list) in batches {
+        for (k, ((look, handle, texture), list)) in batches.iter().enumerate() {
             let count = list.len() as u32;
             let Some(mesh) = self.mesh(*handle) else {
                 first += count;
@@ -3317,9 +3328,14 @@ impl Renderer {
                 self.bind_maps(pass, *texture);
             }
             pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-            pass.set_vertex_buffer(1, self.instances.slice(..));
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
+            if culled {
+                pass.set_vertex_buffer(1, self.occlusion.kept.buffer.slice(..));
+                pass.draw_indexed_indirect(&self.occlusion.args.buffer, k as u64 * 20);
+            } else {
+                pass.set_vertex_buffer(1, self.instances.slice(..));
+                pass.draw_indexed(0..mesh.index_count, 0, first..first + count);
+            }
             first += count;
         }
     }
@@ -3611,6 +3627,22 @@ impl Renderer {
     /// Draw one frame into an offscreen target.
     pub fn render(&mut self, gpu: &Gpu, target: &OffscreenTarget, frame: &Frame) {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
+    }
+
+    /// Cull what last frame's depth says is hidden, on the GPU, or not:
+    /// on by default ([`crate::occlusion`]).
+    pub fn set_occlusion_culling(&mut self, on: bool) {
+        self.occlusion.enabled = on && gpu_has_first_instance(&self.occlusion);
+        if !on {
+            self.occlusion.forget();
+        }
+    }
+
+    /// How many of the colour pass's instances the GPU's occlusion culling
+    /// kept last frame — `None` when it did not cull. Waits on the GPU: for
+    /// tests and tools.
+    pub fn culled_kept(&self, gpu: &Gpu) -> Option<u32> {
+        self.occlusion.kept_count(gpu)
     }
 
     /// Slots held for particles on the GPU, over all their emitters.
@@ -4776,7 +4808,8 @@ impl Renderer {
             self.instances = gpu.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
                 size: self.instance_capacity * std::mem::size_of::<InstanceRaw>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                // Read by the occlusion culling too.
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             });
         }
@@ -4825,6 +4858,54 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("runity::render"),
             });
+        // What last frame's depth says is hidden, left out on the GPU.
+        {
+            let culling = probe.is_none() && view.is_some() && !self.picturing;
+            let mut boxes: Vec<[f32; 8]> = Vec::new();
+            let mut listed: Vec<crate::occlusion::CullBatch> = Vec::new();
+            if culling {
+                for ((look, handle, _), list) in &batches {
+                    let (min, max) = self
+                        .mesh(*handle)
+                        .map_or((Vec3::ZERO, Vec3::ZERO), |m| {
+                            (Vec3::from_array(m.bounds.min), Vec3::from_array(m.bounds.max))
+                        });
+                    let never = look.is_none_or(|l| l.terrain);
+                    for raw in list {
+                        let m = Mat4::from_cols_array_2d(&raw.model);
+                        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                        for c in 0..8 {
+                            let corner = Vec3::new(
+                                if c & 1 == 0 { min.x } else { max.x },
+                                if c & 2 == 0 { min.y } else { max.y },
+                                if c & 4 == 0 { min.z } else { max.z },
+                            );
+                            let w = m.transform_point3(corner);
+                            lo = lo.min(w);
+                            hi = hi.max(w);
+                        }
+                        boxes.push([lo.x, lo.y, lo.z, 0.0, hi.x, hi.y, hi.z, if never { 1.0 } else { 0.0 }]);
+                    }
+                    listed.push(crate::occlusion::CullBatch {
+                        index_count: self.mesh(*handle).map_or(0, |m| m.index_count),
+                        count: list.len() as u32,
+                    });
+                }
+                let forward = (frame.camera.target - frame.camera.position).normalize_or(Vec3::NEG_Z);
+                self.occlusion.cull(
+                    gpu,
+                    &mut encoder,
+                    &listed,
+                    &boxes,
+                    &self.instances,
+                    shadow_total,
+                    frame.camera.position,
+                    forward,
+                );
+            } else {
+                self.occlusion.active = false;
+            }
+        }
         // The scene as rays see it: every solid draw, seen or not — what is
         // behind the camera still shadows what is in front of it.
         let traced = self.ray.is_some() && frame.ray_tracing.any();
@@ -5010,12 +5091,17 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                self.draw_batches_with(&mut pass, &batches, shadow_total, true, true);
+                self.draw_batches_with(&mut pass, &batches, shadow_total, true, true, true);
                 self.draw_mesh_terrain(&mut pass, mesh_terrain, true);
                 let first = shadow_total + batched_total;
                 for (instance, (look, mesh, texture, pose, _)) in (first..).zip(&singles) {
                     self.draw_single(&mut pass, *look, *mesh, *texture, *pose, instance, true);
                 }
+            }
+            // This frame's depth into the pyramid, for the next frame's
+            // culling.
+            if probe.is_none() && view.is_some() && !self.picturing {
+                self.occlusion.build(gpu, &mut encoder, &self.ssao.depth, (width, height), drawn);
             }
             if ssao_on {
                 let now = drawn;
@@ -5145,7 +5231,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.draw_batches(&mut pass, &batches, shadow_total, true);
+            self.draw_batches_with(&mut pass, &batches, shadow_total, true, false, true);
             self.draw_mesh_terrain(&mut pass, mesh_terrain, false);
             let mut instance = shadow_total + batched_total;
             for (look, mesh, texture, pose, _) in &singles {

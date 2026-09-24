@@ -123,6 +123,11 @@ impl Gpu {
             required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
         }
         let mut required_features = wgpu::Features::empty();
+        // Indirect draws that start past the first instance: what the
+        // occlusion culling draws with.
+        if adapter.features().contains(wgpu::Features::INDIRECT_FIRST_INSTANCE) {
+            required_features |= wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        }
         // Timestamps at the passes' ends, for the GPU profiler.
         if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             required_features |= wgpu::Features::TIMESTAMP_QUERY;
