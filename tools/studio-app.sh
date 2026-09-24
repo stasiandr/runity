@@ -16,6 +16,7 @@ version=$(cargo pkgid -p scrap-studio | sed 's/.*[#@]//')
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/scrap-studio "$app/Contents/MacOS/scrap-studio"
+cp crates/scrap-studio/assets/icon/scrap.icns "$app/Contents/Resources/scrap.icns"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,6 +28,7 @@ cat > "$app/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>dev.scrap.studio</string>
   <key>CFBundleExecutable</key><string>scrap-studio</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>scrap</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
