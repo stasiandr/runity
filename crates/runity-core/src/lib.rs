@@ -23,6 +23,7 @@ pub mod defaults;
 pub mod edit;
 pub mod id;
 pub mod input;
+pub mod jobs;
 pub mod layers;
 pub mod library;
 pub mod links;

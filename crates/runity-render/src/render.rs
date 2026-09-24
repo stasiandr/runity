@@ -3240,36 +3240,6 @@ impl Renderer {
         }
     }
 
-    /// Which level of its mesh a draw is drawn with, from how much of the
-    /// screen it covers — `None` when it is too small to draw at all. A
-    /// skinned mesh keeps its own: its joints are bound to its vertices.
-    fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
-        let base = self.meshes.get(draw.mesh.0 as usize)?;
-        let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
-        let (scale, _, _) = draw.transform.to_scale_rotation_translation();
-        let centre = draw.transform.transform_point3((min + max) * 0.5);
-        let radius = ((max - min) * scale.abs()).length() * 0.5;
-        let covers = match camera.ortho {
-            Some(half) => radius / half.max(1e-3),
-            None => crate::lod::coverage(radius, centre.distance(eye), camera.fov_y_degrees),
-        };
-        if covers < crate::lod::TOO_SMALL {
-            return None;
-        }
-        if skinned {
-            return Some(draw.mesh);
-        }
-        let mut pick = draw.mesh;
-        if let Some(levels) = self.lods.get(&draw.mesh.0) {
-            for (handle, below) in levels {
-                if covers < *below {
-                    pick = *handle;
-                }
-            }
-        }
-        Some(pick)
-    }
-
     /// Upload an image straight out of an imported asset.
     pub fn upload_texture(&mut self, gpu: &Gpu, texture: &ArchivedTextureAsset) -> TextureHandle {
         let mut levels: Vec<(u32, u32, &[u8])> = vec![(
@@ -3299,19 +3269,18 @@ impl Renderer {
     /// the draw's own texture for the colour and neutral ones for the rest
     /// — a missing map leaves a plain surface, not a hole.
     fn maps_of(&self, draw: &Draw) -> Maps {
-        let m = &draw.material;
-        let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.texture_for(id));
-        // No map of its own and no texture on the entity: the model's look.
-        let own = match self.looks.get(&draw.mesh) {
-            Some(look) if draw.texture == TextureHandle::WHITE => *look,
-            _ => draw.texture,
-        };
-        [
-            find(m.base_map).unwrap_or(own),
-            find(m.normal_map).unwrap_or(TextureHandle::FLAT_NORMAL),
-            find(m.mask_map).unwrap_or(TextureHandle::WHITE),
-            find(m.emission_map).unwrap_or(TextureHandle::WHITE),
-        ]
+        self.lookup().maps_of(draw)
+    }
+
+    /// What preparing a draw reads of the renderer: shareable across the
+    /// jobs that prepare them.
+    fn lookup(&self) -> DrawLookup<'_> {
+        DrawLookup {
+            meshes: &self.meshes,
+            lods: &self.lods,
+            looks: &self.looks,
+            by_asset: &self.by_asset,
+        }
     }
 
     /// The maps a batch is keyed by: its own, or with bindless one set for
@@ -3637,32 +3606,18 @@ impl Renderer {
 
     /// The world-space box around everything being drawn.
     fn scene_bounds(&self, frame: &Frame) -> Option<(Vec3, Vec3)> {
-        let mut min = Vec3::splat(f32::INFINITY);
-        let mut max = Vec3::splat(f32::NEG_INFINITY);
-        let mut any = false;
-        for draw in &frame.draws {
-            let Some(mesh) = self.meshes.get(draw.mesh.0 as usize) else {
-                continue;
-            };
-            let (lo, hi) = (
-                Vec3::from_array(mesh.bounds.min),
-                Vec3::from_array(mesh.bounds.max),
-            );
-            // All eight corners, because a rotation turns the box and taking
-            // only two of them would clip whatever swung outside.
-            for i in 0..8 {
-                let corner = Vec3::new(
-                    if i & 1 == 0 { lo.x } else { hi.x },
-                    if i & 2 == 0 { lo.y } else { hi.y },
-                    if i & 4 == 0 { lo.z } else { hi.z },
-                );
-                let world = draw.transform.transform_point3(corner);
-                min = min.min(world);
-                max = max.max(world);
-                any = true;
-            }
-        }
-        any.then_some((min, max))
+        // Each draw's world box on every core, then folded.
+        let meshes = &self.meshes;
+        let boxes = runity_core::jobs::map(&frame.draws, 1024, |draw| {
+            let mesh = meshes.get(draw.mesh.0 as usize)?;
+            // All eight corners (world_box), because a rotation turns the box
+            // and taking only two of them would clip whatever swung outside.
+            Some(world_box(mesh.bounds, draw.transform))
+        });
+        boxes
+            .into_iter()
+            .flatten()
+            .reduce(|(a, b), (c, d)| (a.min(c), b.max(d)))
     }
 
     /// The sphere one cascade covers: the slice of what the camera sees
@@ -5023,15 +4978,16 @@ impl Renderer {
         };
         let eye = frame.camera.apparent_eye();
         let terrain_mesh = fine_terrain.map(|t| t.mesh);
-        for draw in &frame.draws {
+        // What each draw is, worked out on every core (runity_core::jobs):
+        // its instance, maps, level of detail and whether it is in view —
+        // reading, not writing, so the draws split freely.
+        let this = self.lookup();
+        let prepared = runity_core::jobs::map(&frame.draws, 256, |draw| {
             let mut raw = instance_of(draw.transform, &draw.material);
-            let maps = self.maps_of(draw);
+            let maps = this.maps_of(draw);
             raw.maps = maps.map(|h| h.0);
-            // Bindless: the maps travel with the instance, and draws are not
-            // split by them.
-            let maps = self.batch_maps(maps);
             let skinned = draw.pose.is_some()
-                && self
+                && this
                     .meshes
                     .get(draw.mesh.0 as usize)
                     .is_some_and(|m| m.skin.is_some());
@@ -5042,24 +4998,45 @@ impl Renderer {
             let level = if Some(draw.mesh) == terrain_mesh || probe.is_some() {
                 Some(draw.mesh)
             } else {
-                self.level_of(draw, eye, &frame.camera, skinned)
+                this.level_of(draw, eye, &frame.camera, skinned)
             };
-            if !draw.material.is_transparent() {
-                let casters = if draw.material.alpha_clip > 0.0 {
-                    &mut clip_batches
-                } else {
-                    &mut shadow_batches
-                };
-                push(casters, (None, level.unwrap_or(draw.mesh), maps), raw);
-                stats.shadow_casters += 1;
-            }
-
-            let visible = match self.meshes.get(draw.mesh.0 as usize) {
+            let visible = match this.meshes.get(draw.mesh.0 as usize) {
                 Some(mesh) => aabb_in_frustum(&planes, mesh.bounds, draw.transform),
                 // A handle pointing at nothing draws nothing; it should not
                 // also be reported as culled.
                 None => false,
             };
+            Prepared {
+                raw,
+                maps,
+                skinned,
+                level,
+                visible,
+            }
+        });
+        let mut shadow_index = BatchIndex::default();
+        let mut clip_index = BatchIndex::default();
+        let mut colour_index = BatchIndex::default();
+        for (draw, prepared) in frame.draws.iter().zip(prepared) {
+            let Prepared {
+                raw,
+                maps,
+                skinned,
+                level,
+                visible,
+            } = prepared;
+            // Bindless: the maps travel with the instance, and draws are not
+            // split by them.
+            let maps = self.batch_maps(maps);
+            if !draw.material.is_transparent() {
+                if draw.material.alpha_clip > 0.0 {
+                    clip_index.push(&mut clip_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
+                } else {
+                    shadow_index.push(&mut shadow_batches, (None, level.unwrap_or(draw.mesh), maps), raw);
+                }
+                stats.shadow_casters += 1;
+            }
+
             let Some(mesh) = level.filter(|_| visible) else {
                 stats.culled += 1;
                 continue;
@@ -5085,7 +5062,7 @@ impl Renderer {
                         face: RenderFace::Front,
                         ..look
                     };
-                    push(&mut batches, (Some(look), grid, maps), raw);
+                    colour_index.push(&mut batches, (Some(look), grid, maps), raw);
                     continue;
                 }
             }
@@ -5098,7 +5075,7 @@ impl Renderer {
                 // so two of them cannot share an instanced call anyway.
                 singles.push((look, mesh, maps, pose, raw));
             } else {
-                push(&mut batches, (Some(look), mesh, maps), raw);
+                colour_index.push(&mut batches, (Some(look), mesh, maps), raw);
             }
         }
         stats.batches = batches.len() as u32;
@@ -6000,6 +5977,107 @@ impl Renderer {
 /// Draws grouped by what they share, each group's instances in order.
 type Batches = Vec<(BatchKey, Vec<InstanceRaw>)>;
 
+/// The renderer's meshes, levels of detail and textures, as preparing a
+/// draw reads them ([`Renderer::lookup`]).
+#[derive(Clone, Copy)]
+struct DrawLookup<'a> {
+    meshes: &'a [GpuMesh],
+    lods: &'a std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
+    looks: &'a std::collections::HashMap<MeshHandle, TextureHandle>,
+    by_asset: &'a std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+}
+
+impl DrawLookup<'_> {
+    /// The four maps a draw takes: its material's, where uploaded, else
+    /// the draw's own texture for the colour and neutral ones for the rest
+    /// — a missing map leaves a plain surface, not a hole.
+    fn maps_of(&self, draw: &Draw) -> Maps {
+        let m = &draw.material;
+        let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.by_asset.get(&id).copied());
+        // No map of its own and no texture on the entity: the model's look.
+        let own = match self.looks.get(&draw.mesh) {
+            Some(look) if draw.texture == TextureHandle::WHITE => *look,
+            _ => draw.texture,
+        };
+        [
+            find(m.base_map).unwrap_or(own),
+            find(m.normal_map).unwrap_or(TextureHandle::FLAT_NORMAL),
+            find(m.mask_map).unwrap_or(TextureHandle::WHITE),
+            find(m.emission_map).unwrap_or(TextureHandle::WHITE),
+        ]
+    }
+
+    /// Which level of its mesh a draw is drawn with, from how much of the
+    /// screen it covers — `None` when it is too small to draw at all. A
+    /// skinned mesh keeps its own: its joints are bound to its vertices.
+    fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
+        let base = self.meshes.get(draw.mesh.0 as usize)?;
+        let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
+        let (scale, _, _) = draw.transform.to_scale_rotation_translation();
+        let centre = draw.transform.transform_point3((min + max) * 0.5);
+        let radius = ((max - min) * scale.abs()).length() * 0.5;
+        let covers = match camera.ortho {
+            Some(half) => radius / half.max(1e-3),
+            None => crate::lod::coverage(radius, centre.distance(eye), camera.fov_y_degrees),
+        };
+        if covers < crate::lod::TOO_SMALL {
+            return None;
+        }
+        if skinned {
+            return Some(draw.mesh);
+        }
+        let mut pick = draw.mesh;
+        if let Some(levels) = self.lods.get(&draw.mesh.0) {
+            for (handle, below) in levels {
+                if covers < *below {
+                    pick = *handle;
+                }
+            }
+        }
+        Some(pick)
+    }
+}
+
+/// A draw, as the frame's preparing on every core works it out.
+struct Prepared {
+    raw: InstanceRaw,
+    maps: Maps,
+    skinned: bool,
+    level: Option<MeshHandle>,
+    visible: bool,
+}
+
+/// Where each batch of a list is, by its key: thousands of draws into
+/// hundreds of batches without looking through them all each time.
+/// The last batch pushed to is looked at first: draws of one thing come
+/// together, and then no key is hashed at all.
+#[derive(Default)]
+struct BatchIndex {
+    at: std::collections::HashMap<BatchKey, usize>,
+    last: Option<(BatchKey, usize)>,
+}
+
+impl BatchIndex {
+    fn push(&mut self, batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
+        if let Some((last, at)) = self.last {
+            if last == key {
+                batches[at].1.push(raw);
+                return;
+            }
+        }
+        let at = match self.at.get(&key) {
+            Some(&at) => at,
+            None => {
+                self.at.insert(key, batches.len());
+                batches.push((key, Vec::new()));
+                batches.len() - 1
+            }
+        };
+        batches[at].1.push(raw);
+        self.last = Some((key, at));
+    }
+}
+
 fn push(batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
     match batches.iter_mut().find(|(k, _)| *k == key) {
         Some((_, list)) => list.push(raw),
@@ -6384,3 +6462,4 @@ mod tests {
         assert!(aabb_in_frustum(&planes, unit_box(), ground));
     }
 }
+
