@@ -190,6 +190,17 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
                 }
+                // A switched-off renderer draws nothing: its mesh is not
+                // brought over to be drawn.
+                let hidden = components.get(&d.file_id).into_iter().flatten().any(|c| {
+                    matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
+                        && c.body.i64("m_Enabled") == Some(0)
+                });
+                // (A mesh collider still needs its mesh.)
+                if hidden && desc.part::<Collider>() != Some(Collider::Model) {
+                    desc.clear_part::<runity::scene::ModelRef>();
+                    desc.clear_part::<MaterialRef>();
+                }
                 entities.insert(d.file_id, desc);
             }
             TRANSFORM | RECT_TRANSFORM if !d.stripped => {
@@ -909,6 +920,15 @@ fn field_of(path: &str) -> &str {
 /// One component of a GameObject, onto its entity.
 fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     let b = &c.body;
+    let collider = matches!(
+        c.kind.as_str(),
+        "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider"
+    );
+    if collider && b.i64("m_Enabled") == Some(0) {
+        // Switched off, it touches nothing.
+        report.skip("a switched-off collider");
+        return;
+    }
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
