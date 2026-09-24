@@ -13,8 +13,9 @@ const PREFIX = "runity-kitchen-rush-";
 const LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const JOIN_TIMEOUT_MS = 20000;
 // How two browsers find a way to each other: STUN for the address a home
-// router shows the world (most pairs connect on that), PeerJS's own TURN
-// relay as the last resort.
+// router shows the world (most pairs connect on that), a TURN relay for
+// the rest (two phones on mobile data) — Metered's, below, when the site
+// was built with one; PeerJS's own is the fallback.
 const PEER_OPTIONS = {
   debug: 1,
   config: {
@@ -24,6 +25,31 @@ const PEER_OPTIONS = {
     ],
   },
 };
+
+// Where fresh TURN credentials come from (a Metered app's REST endpoint),
+// written in by web/build.sh from RUNITY_TURN_URL; left as is, there is no
+// relay and only devices STUN can join meet.
+const TURN_URL = "__RUNITY_TURN_URL__";
+
+// The ICE servers for a new peer: the relay's credentials fetched fresh,
+// or STUN alone when there is no relay or it does not answer in time.
+async function peerOptions() {
+  if (!TURN_URL || TURN_URL.startsWith("__")) return PEER_OPTIONS;
+  try {
+    const answer = await Promise.race([
+      fetch(TURN_URL).then((r) => (r.ok ? r.json() : null)),
+      new Promise((r) => setTimeout(() => r(null), 4000)),
+    ]);
+    if (Array.isArray(answer) && answer.length) {
+      const config = { iceServers: [...PEER_OPTIONS.config.iceServers.slice(0, 1), ...answer] };
+      // `?relay`: through the relay only, as two phones behind strict NATs
+      // would go — to check it works.
+      if (new URLSearchParams(location.search).has("relay")) config.iceTransportPolicy = "relay";
+      return { ...PEER_OPTIONS, config };
+    }
+  } catch (_) {}
+  return PEER_OPTIONS;
+}
 
 function randomCode(n = 5) {
   const bytes = crypto.getRandomValues(new Uint8Array(n));
@@ -106,8 +132,10 @@ const net = {
   // The room's peer at the broker, by the room's code. The code is kept for
   // as long as the room is: a phone that locked or switched apps comes back
   // to the same code, so the link a friend has still works.
-  _open(code, tries) {
-    const peer = new Peer(PREFIX + code, PEER_OPTIONS);
+  async _open(code, tries) {
+    const options = await peerOptions();
+    if (this._state !== "hosting" || this._code !== code) return;
+    const peer = new Peer(PREFIX + code, options);
     this._peer = peer;
     let opened = false;
     peer.on("open", () => {
@@ -161,13 +189,16 @@ const net = {
     else if (peer.disconnected) peer.reconnect();
   },
 
-  join(code) {
+  async join(code) {
     code = String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!code) return;
     this.leave();
     this._code = code;
     this._state = "joining";
-    const peer = new Peer(PEER_OPTIONS);
+    this._say("Joining " + code + "…", JOIN_TIMEOUT_MS);
+    const options = await peerOptions();
+    if (this._state !== "joining" || this._code !== code) return;
+    const peer = new Peer(options);
     this._peer = peer;
     let step = "reaching the broker";
     this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);

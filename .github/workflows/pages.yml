@@ -58,6 +58,10 @@ jobs:
         run: cargo run --release -p runity-cli -- sync examples/kitchen-web
 
       - name: Build the site
+        env:
+          # Metered's TURN credentials endpoint: two phones on mobile data
+          # meet through its relay.
+          RUNITY_TURN_URL: ${{ secrets.RUNITY_TURN_URL }}
         run: examples/kitchen-web/web/build.sh "$GITHUB_WORKSPACE/site"
 
       - uses: actions/upload-pages-artifact@v3

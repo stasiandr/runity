@@ -21,7 +21,18 @@ if [ "${WASM_OPT:-0}" = 1 ] && command -v wasm-opt >/dev/null; then
     "$OUT/kitchen_bg.wasm" -o "$OUT/kitchen_bg.wasm"
 fi
 python3 web/pack.py "$OUT/data.bin.gz"
-cp web/index.html web/runity-net.js web/pad.js "$OUT/"
+cp web/index.html web/pad.js "$OUT/"
+# The relay's credentials endpoint, when there is one (RUNITY_TURN_URL: a
+# Metered app's REST URL with its key; the Pages workflow has it as a
+# secret). It ends up in the page, as anything a static site uses must.
+python3 - "$OUT/runity-net.js" <<'PY'
+import os, sys
+text = open("web/runity-net.js").read()
+url = os.environ.get("RUNITY_TURN_URL", "")
+if url:
+    text = text.replace("__RUNITY_TURN_URL__", url)
+open(sys.argv[1], "w").write(text)
+PY
 # Pages serves folders beginning with _ only without Jekyll.
 touch "$OUT/.nojekyll"
 ls -la "$OUT"
