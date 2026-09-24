@@ -84,6 +84,8 @@ fn shoot(
             pose: pose.as_ref().map(|_| 0),
         }],
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         poses: pose.into_iter().collect(),
     };
     renderer.render(gpu, &target, &frame);

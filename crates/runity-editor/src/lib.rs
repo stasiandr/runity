@@ -44,7 +44,7 @@ pub use views::{Pivot, Side, Space};
 
 use std::path::{Path, PathBuf};
 
-use runity::gizmo::{self, Drag, GizmoStyle, Handle, Motion, Tool};
+use runity::gizmo::{self, Drag, GizmoMeshes, GizmoStyle, Grip, Handle, Motion, Tool};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, FogSettings, Frame, Lighting, MeshHandle};
 use runity::scene::MaterialRef;
@@ -154,8 +154,24 @@ pub struct Session {
     space: Space,
     /// Where the handles sit: on the entity's pivot or the selection's middle.
     pivot: Pivot,
-    /// A unit cube, uploaded once, that the gizmo's handles are made of.
+    /// A unit cube, uploaded once, that outlines and lines are made of.
     gizmo_arm: Option<MeshHandle>,
+    /// The cube, cone and triangle the handles are made of.
+    gizmo_meshes: Option<GizmoMeshes>,
+    /// The handle under the pointer, drawn yellow.
+    hovered: Option<Grip>,
+    /// Where the pointer last was over the view, in pixels: where a turn's
+    /// angle is written.
+    pointer: (u32, u32),
+    /// A ring drag's turn so far, radians, snapped.
+    drag_angle: Option<f32>,
+    /// A scale drag's factor, for the arms to stretch by.
+    drag_stretch: Vec3,
+    /// Pixels to a point of the window showing the view: how big the
+    /// angle's writing is.
+    ui_scale: f32,
+    /// What writes a turn's angle over the view, made the first time.
+    label: Option<runity::UiRenderer>,
     /// Whether frames show every collider as an outline.
     show_colliders: bool,
     /// The grid on the ground (on the wall, in a side view): on until
@@ -335,6 +351,13 @@ impl Session {
             space: Space::Global,
             pivot: Pivot::Pivot,
             gizmo_arm: None,
+            gizmo_meshes: None,
+            hovered: None,
+            pointer: (0, 0),
+            drag_angle: None,
+            drag_stretch: Vec3::ONE,
+            ui_scale: 1.0,
+            label: None,
             show_colliders: false,
             show_grid: true,
             play: None,
@@ -3178,12 +3201,11 @@ impl Session {
                 if desc.body() == runity::Body::None || unseen.contains(&desc.id) {
                     continue;
                 }
-                let distance = self.camera.apparent_distance(placed.w_axis.truncate());
                 frame.overlay_draws.extend(gizmo::collider_draws(
                     arm,
                     desc.collider(),
                     placed,
-                    (distance * 0.002).max(0.005),
+                    self.line_width(placed.w_axis.truncate(), 0.002),
                     gizmo::collider_color(desc.body()),
                 ));
             }
@@ -3278,7 +3300,7 @@ impl Session {
                     continue;
                 }
                 let at = placed.w_axis.truncate();
-                let thickness = (self.camera.apparent_distance(at) * 0.0015).max(0.004);
+                let thickness = self.line_width(at, 0.0015);
                 frame.overlay_draws.extend(gizmo::camera_draws(
                     arm,
                     lens,
@@ -3314,8 +3336,7 @@ impl Session {
                     continue;
                 };
                 let placed = saved.transform.matrix();
-                let thickness =
-                    (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
+                let thickness = self.line_width(placed.w_axis.truncate(), 0.0015);
                 frame.overlay_draws.extend(gizmo::bounds_draws(
                     arm,
                     min,
@@ -3330,6 +3351,8 @@ impl Session {
         if !selection.is_empty() {
             let arm = self.gizmo_arm_mesh();
             let unseen = self.unseen();
+            let mut selected = std::collections::HashSet::new();
+            let mut beneath = std::collections::HashSet::new();
             for (desc, placed) in self.instanced.scene.flatten() {
                 if unseen.contains(&desc.id) {
                     continue;
@@ -3341,8 +3364,7 @@ impl Session {
                 if !chosen {
                     continue;
                 }
-                let thickness =
-                    (self.camera.apparent_distance(placed.w_axis.truncate()) * 0.0015).max(0.004);
+                let thickness = self.line_width(placed.w_axis.truncate(), 0.0015);
                 if let Some(light) = desc.light() {
                     // How far a selected light reaches, as Unity shows it.
                     let at = Mat4::from_translation(placed.w_axis.truncate());
@@ -3372,45 +3394,125 @@ impl Session {
                         gizmo::selection_color(),
                     ));
                 }
-                let Some((min, max)) = self.bounds_of(&desc.model()) else {
-                    continue;
-                };
-                frame.overlay_draws.extend(gizmo::bounds_draws(
-                    arm,
-                    min,
-                    max,
-                    placed,
-                    thickness,
-                    gizmo::selection_color(),
-                ));
+                // Outlined, not boxed: the selected thing orange, what
+                // hangs under it blue, as Unity outlines them.
+                let own = self
+                    .instanced
+                    .owner_of(desc.id)
+                    .is_some_and(|owner| selection.contains(&owner));
+                if own {
+                    selected.insert(desc.id);
+                } else {
+                    beneath.insert(desc.id);
+                }
             }
+            for (ids, color) in [
+                (&selected, gizmo::selection_color()),
+                (&beneath, gizmo::child_selection_color()),
+            ] {
+                if ids.is_empty() {
+                    continue;
+                }
+                let shapes = runity::build_frame_where(
+                    &self.world,
+                    self.camera,
+                    Lighting::default(),
+                    FogSettings::default(),
+                    |line| line.is_some_and(|id| ids.contains(&id)),
+                );
+                frame
+                    .outline_draws
+                    .extend(shapes.draws.into_iter().map(|d| runity::Draw {
+                        material: color,
+                        pose: None,
+                        ..d
+                    }));
+            }
+            frame.outline_width = 2.0 * self.ui_scale.max(1.0);
         }
         // The gizmo goes in after the scene's own draws and before the frame
         // is submitted, so it is part of the same pass and does not need a
-        // second one. It is unlit and drawn last, which is what keeps a
+        // second one. It is drawn last, with no depth, which is what keeps a
         // handle visible against anything.
-        if let Some(origin) = self.selected_origin() {
-            let arm = self.gizmo_arm_mesh();
-            let orientation = match self.drag {
-                Some(_) => self.drag_orientation,
-                None => self.handle_orientation(),
+        if let Some(g) = self.gizmo() {
+            let meshes = self.gizmo_meshes();
+            let shown = gizmo::Shown {
+                hovered: self.hovered,
+                held: self.gizmo_held(),
+                stretch: self.drag_stretch,
+                swept: self
+                    .drag
+                    .zip(self.drag_angle)
+                    .and_then(|(d, angle)| d.swept(angle)),
             };
-            frame.overlay_draws.extend(gizmo::draws_turned(
-                gizmo::draws_for(
-                    self.tool,
-                    arm,
-                    &self.camera,
-                    &self.gizmo_style,
-                    origin,
-                    self.drag.map(|d| d.handle),
-                ),
-                origin,
-                orientation,
-            ));
+            frame.overlay_draws.extend(g.draws(&meshes, &shown));
         }
         self.renderer.render(&self.gpu, &self.target, &frame);
+        self.draw_angle();
         if self.readback {
             self.pixels = self.target.read_rgba(&self.gpu);
+        }
+    }
+
+    /// A turn's angle written by the pointer while a ring is held, as
+    /// Unity writes it: on the frame itself, so a window, a screenshot and
+    /// an agent reading the pixels all see it.
+    fn draw_angle(&mut self) {
+        let Some(degrees) = self.gizmo_angle() else {
+            return;
+        };
+        let scale = self.ui_scale.max(1.0);
+        let text = format!("{degrees:.1}°");
+        let size = 12.0 * scale;
+        let (x, y) = (
+            self.pointer.0 as f32 + 14.0 * scale,
+            self.pointer.1 as f32 + 10.0 * scale,
+        );
+        let mut ui = runity::Ui::new();
+        // A dark tag with the number centred in it, the text's top at `y`.
+        let width = size * 0.6 * text.chars().count() as f32 + 12.0 * scale;
+        let pad = 4.0 * scale;
+        ui.quad(
+            runity::Quad::new(
+                x - pad,
+                y - pad,
+                width,
+                size * 1.3 + pad * 2.0,
+                runity::glam::Vec4::new(0.1, 0.1, 0.1, 0.8),
+            )
+            .rounded(4.0 * scale),
+        );
+        ui.text(
+            runity::TextRun::new(x - pad, y, size, runity::glam::Vec4::ONE, text)
+                .within(width, 0.5),
+        );
+        let label = self
+            .label
+            .get_or_insert_with(|| runity::UiRenderer::new(&self.gpu, &self.target));
+        label.render(&self.gpu, &self.target, &ui);
+    }
+
+    /// How wide a line drawn over the view at `at` is, in metres: `share`
+    /// of its distance, and never under a pixel and a quarter (a point and
+    /// a quarter on a Retina screen). The overlay is smoothed, and a line
+    /// thinner than a pixel comes out as a faint smear rather than a line.
+    fn line_width(&self, at: Vec3, share: f32) -> f32 {
+        let distance = self.camera.apparent_distance(at);
+        let (_, height) = self.size();
+        let across = match self.camera.ortho {
+            Some(half) => half * 2.0,
+            None => distance * 2.0 * (self.camera.fov_y_degrees.to_radians() * 0.5).tan(),
+        };
+        let pixel = across / height.max(1) as f32;
+        (distance * share).max(pixel * 1.25 * self.ui_scale.max(1.0))
+    }
+
+    /// Pixels to a point of the window that shows the view (2 on a
+    /// Retina screen): how thick an outline is and how big a turn's angle
+    /// is written. 1 until a window says.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        if scale.is_finite() && scale > 0.0 {
+            self.ui_scale = scale;
         }
     }
 
@@ -3600,6 +3702,25 @@ impl Session {
     /// show. A view setting, not an edit.
     pub fn set_show_colliders(&mut self, show: bool) {
         self.show_colliders = show;
+    }
+
+    /// The meshes the handles are made of, uploaded once.
+    fn gizmo_meshes(&mut self) -> GizmoMeshes {
+        if let Some(meshes) = self.gizmo_meshes {
+            return meshes;
+        }
+        let cube = self.gizmo_arm_mesh();
+        let meshes = GizmoMeshes {
+            cube,
+            cone: self
+                .renderer
+                .upload_mesh_owned(&self.gpu, &GizmoMeshes::cone_mesh()),
+            triangle: self
+                .renderer
+                .upload_mesh_owned(&self.gpu, &GizmoMeshes::triangle_mesh()),
+        };
+        self.gizmo_meshes = Some(meshes);
+        meshes
     }
 
     /// The unit cube handles and outlines are drawn with, uploaded once.
@@ -4024,38 +4145,110 @@ impl Session {
         };
     }
 
+    /// The gizmo on the selection as it stands now: the tool, the view,
+    /// where the handles sit and which way they point — and for the rect
+    /// tool, the box it goes round. What is drawn, hovered and grabbed are
+    /// all this one, so they cannot disagree.
+    pub fn gizmo(&self) -> Option<gizmo::Gizmo> {
+        let origin = match self.drag {
+            // Held: the handles stay where the grab began, turned as they
+            // were, so the drag solves against what was grabbed.
+            Some(drag) if drag.tool != Tool::Move && drag.tool != Tool::Rect => drag.origin,
+            _ => self.selected_origin()?,
+        };
+        let orientation = match self.drag {
+            Some(_) => self.drag_orientation,
+            None => self.handle_orientation(),
+        };
+        let mut g = gizmo::Gizmo::new(self.tool, &self.camera, &self.gizmo_style, origin)
+            .turned(orientation);
+        if self.tool == Tool::Rect {
+            let (min, max) = self.selection_box(origin, orientation)?;
+            g = g.around(min, max);
+        }
+        Some(g)
+    }
+
+    /// The box round the selection's roots in a frame turned by
+    /// `orientation` about `origin`, relative to it: what the rect tool
+    /// goes round.
+    fn selection_box(
+        &self,
+        origin: Vec3,
+        orientation: runity::glam::Quat,
+    ) -> Option<(Vec3, Vec3)> {
+        let roots = self.selection_roots();
+        let back = orientation.inverse();
+        let mut low = Vec3::splat(f32::MAX);
+        let mut high = Vec3::splat(f32::MIN);
+        for (desc, world) in self.instanced.scene.flatten() {
+            let owned = self
+                .instanced
+                .owner_of(desc.id)
+                .is_some_and(|owner| roots.iter().any(|r| self.is_within(owner, *r)));
+            if !owned {
+                continue;
+            }
+            let Some((a, b)) = self.bounds_of(&desc.model()) else {
+                continue;
+            };
+            for corner in 0..8u32 {
+                let pick = |axis: usize| if corner & (1 << axis) == 0 { a[axis] } else { b[axis] };
+                let p = back * (world.transform_point3(Vec3::new(pick(0), pick(1), pick(2))) - origin);
+                low = low.min(p);
+                high = high.max(p);
+            }
+        }
+        (low.x <= high.x).then_some((low, high))
+    }
+
     /// Which handle is under a point, without grabbing it.
     pub fn gizmo_hover(&self, x: u32, y: u32) -> Option<Handle> {
-        let origin = self.selected_origin()?;
+        self.gizmo_grip_at(x, y).map(|grip| grip.handle)
+    }
+
+    /// Which handle is under a point and what grabbing it would do — the
+    /// Transform tool's X is an arrow, a cube or a ring.
+    pub fn gizmo_grip_at(&self, x: u32, y: u32) -> Option<Grip> {
         let (from, direction) = self.ray(x, y);
-        let (from, direction) = gizmo::ray_into(origin, self.handle_orientation(), from, direction);
-        gizmo::hit_for(
-            self.tool,
-            &self.camera,
-            &self.gizmo_style,
-            origin,
-            from,
-            direction,
-        )
+        self.gizmo()?.pick(from, direction)
+    }
+
+    /// The handle the pointer is over, drawn yellow: what the Scene view
+    /// last found under it ([`Session::set_gizmo_hover`]).
+    pub fn gizmo_hovered(&self) -> Option<Grip> {
+        self.hovered
+    }
+
+    /// Find the handle under the pointer, to draw it yellow; `None` when
+    /// the pointer is off the view. What the Scene view does each frame the
+    /// pointer moves and nothing is held.
+    pub fn set_gizmo_hover(&mut self, at: Option<(u32, u32)>) -> Option<Grip> {
+        self.hovered = match (at, self.drag) {
+            (Some((x, y)), None) => self.gizmo_grip_at(x, y),
+            _ => None,
+        };
+        if let Some((x, y)) = at {
+            self.pointer = (x, y);
+        }
+        self.hovered
+    }
+
+    /// How far the held ring has turned, in degrees, snapped as the drag
+    /// is: what is written by the cursor while a turn lasts. `None` unless
+    /// a ring (or the view's ring) is held.
+    pub fn gizmo_angle(&self) -> Option<f32> {
+        self.drag_angle.map(|a| a.to_degrees())
     }
 
     /// Grab whatever handle is under a point.
     pub fn gizmo_begin(&mut self, x: u32, y: u32) -> EditResult<Option<Handle>> {
         self.refuse_while_playing()?;
-        let Some(origin) = self.selected_origin() else {
+        let Some(g) = self.gizmo() else {
             return Ok(None);
         };
-        let orientation = self.handle_orientation();
         let (from, direction) = self.ray(x, y);
-        let (from, direction) = gizmo::ray_into(origin, orientation, from, direction);
-        let Some(handle) = gizmo::hit_for(
-            self.tool,
-            &self.camera,
-            &self.gizmo_style,
-            origin,
-            from,
-            direction,
-        ) else {
+        let Some(grip) = g.pick(from, direction) else {
             return Ok(None);
         };
         // One snapshot for the whole gesture: everything until the next one
@@ -4072,9 +4265,18 @@ impl Session {
                 .collect(),
             None => Vec::new(),
         };
-        self.drag = Some(gizmo::begin_for(self.tool, origin, handle, from, direction));
-        self.drag_orientation = orientation;
-        Ok(Some(handle))
+        self.drag = Some(g.begin(grip, from, direction));
+        self.drag_orientation = g.orientation;
+        self.drag_angle = self.drag.and_then(|d| d.angle(from, direction)).map(|_| 0.0);
+        self.drag_stretch = Vec3::ONE;
+        self.hovered = None;
+        self.pointer = (x, y);
+        Ok(Some(grip.handle))
+    }
+
+    /// The handle held, and what it does: `None` without a grab.
+    pub fn gizmo_held(&self) -> Option<Grip> {
+        self.drag.map(|d| Grip::new(d.tool, d.handle))
     }
 
     /// Move the held handle to follow a point. `false` without a grab.
@@ -4083,14 +4285,16 @@ impl Session {
         let (Some(drag), Some(id)) = (self.drag, self.selected) else {
             return Ok(false);
         };
+        self.pointer = (x, y);
         let orientation = self.drag_orientation;
         let (from, direction) = self.ray(x, y);
-        let (from, direction) = gizmo::ray_into(drag.origin, orientation, from, direction);
-        let mut motion = gizmo::motion_out_of(
-            gizmo::update_for(&drag, from, direction),
-            drag.origin,
-            orientation,
-        );
+        // A ring turns in steps of the snap, the step itself snapped
+        // rather than each Euler angle after: a turn about the line of
+        // sight is not a turn about any one of them.
+        let mut motion = drag.motion_snapped(from, direction, self.snap.degrees);
+        self.drag_angle = drag
+            .angle(from, direction)
+            .map(|a| gizmo::snap(a, self.snap.degrees.to_radians()));
         // Along an entity's own axes, the step is what snaps: a grid in the
         // parent's axes would pull it off the axis it is sliding along.
         let turned = orientation != runity::glam::Quat::IDENTITY;
@@ -4098,6 +4302,9 @@ impl Session {
             let step = orientation.inverse() * (moved - drag.origin);
             let step = gizmo::snap_all(step, self.snap.meters);
             motion = Motion::Position(drag.origin + orientation * step);
+        }
+        if let Motion::Scale(factor) = motion {
+            self.drag_stretch = factor;
         }
 
         // The gizmo sits at the entity's world position, but what is edited
@@ -4108,6 +4315,9 @@ impl Session {
         let started = self.drag_from;
         let snap = self.snap;
         let center = self.pivot == Pivot::Center;
+        // Where each root stood in the world when the drag began, for a
+        // resize that moves them as it stretches them.
+        let started_at = |from: &runity::Transform, parent: Mat4| parent.transform_point3(from.position);
         let others: Vec<(EntityId, runity::Transform, Mat4)> = self
             .drag_others
             .iter()
@@ -4150,18 +4360,12 @@ impl Session {
                 let (_, parent_rotation, _) = parent.to_scale_rotation_translation();
                 let local = parent_rotation.inverse() * delta * parent_rotation;
                 desc.transform.set_rotation(local * started.rotation());
-                // Snapped as degrees, which is what the file holds and what
-                // an inspector shows; snapping a quaternion is not a thing.
-                desc.transform.rotation_deg =
-                    gizmo::snap_all(desc.transform.rotation_deg, snap.degrees);
                 // Each of the rest turns as much about its own pivot.
                 for (other, from, other_parent) in &others {
                     let (_, turn, _) = other_parent.to_scale_rotation_translation();
                     if let Some(d) = scene.get_mut(*other) {
                         d.transform
                             .set_rotation(turn.inverse() * delta * turn * from.rotation());
-                        d.transform.rotation_deg =
-                            gizmo::snap_all(d.transform.rotation_deg, snap.degrees);
                     }
                 }
             }
@@ -4176,6 +4380,26 @@ impl Session {
                     }
                 }
             }
+            Motion::Resize { scale, about } => {
+                let Some(started) = started else {
+                    return Ok(false);
+                };
+                // Stretched along the rect's axes — the entity's own — and
+                // moved so that `about`, the far side, stays where it was.
+                let stretch = |at: Vec3| about + orientation * (scale * (orientation.inverse() * (at - about)));
+                desc.transform.scale = started.scale * scale;
+                desc.transform.position = parent
+                    .inverse()
+                    .transform_point3(stretch(started_at(&started, parent)));
+                for (other, from, other_parent) in &others {
+                    if let Some(d) = scene.get_mut(*other) {
+                        d.transform.scale = from.scale * scale;
+                        d.transform.position = other_parent
+                            .inverse()
+                            .transform_point3(stretch(started_at(from, *other_parent)));
+                    }
+                }
+            }
         }
         // Center: turned and stretched about the middle of the selection,
         // so each also goes round or away from it.
@@ -4184,7 +4408,7 @@ impl Session {
             let place = |from: Vec3, parent: Mat4| -> Option<Vec3> {
                 let at = parent.transform_point3(from) - about;
                 let to = match motion {
-                    Motion::Position(_) => return None,
+                    Motion::Position(_) | Motion::Resize { .. } => return None,
                     Motion::Rotation(turn) => turn * at,
                     Motion::Scale(factor) => orientation * (factor * (orientation.inverse() * at)),
                 };
@@ -4202,17 +4426,19 @@ impl Session {
         Ok(true)
     }
 
-    /// Let go. Safe without a grab.
     /// Whether a handle is being dragged.
     pub fn is_dragging(&self) -> bool {
         self.drag.is_some()
     }
 
+    /// Let go. Safe without a grab.
     pub fn gizmo_end(&mut self) {
         self.drag = None;
         self.drag_from = None;
         self.drag_others.clear();
         self.surface = None;
+        self.drag_angle = None;
+        self.drag_stretch = Vec3::ONE;
     }
 
     // --- play mode ------------------------------------------------------

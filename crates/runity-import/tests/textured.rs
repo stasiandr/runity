@@ -85,6 +85,8 @@ fn shoot(gpu: &Gpu, renderer: &mut Renderer, texture: TextureHandle) -> Vec<u8> 
             pose: None,
         }],
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         poses: Vec::new(),
     };
     renderer.render(gpu, &target, &frame);

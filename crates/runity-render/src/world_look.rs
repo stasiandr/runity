@@ -920,6 +920,8 @@ pub fn build_frame_where(
         shadows: crate::render::ShadowSettings::default(),
         draws,
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         lights,
         flares,
         live_meshes,

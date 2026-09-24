@@ -1706,6 +1706,68 @@ fn vs(in: VertexInput) -> VertexOutput {
     return standard_vertex(in);
 }
 
+// Tools over the finished picture (tools.rs): handles and the outline
+// mask. Nothing of the world's light, fog or maps — a handle is the same
+// colour whatever the scene is doing.
+struct ToolOut {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world_position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    // rgb, and alpha
+    @location(2) color: vec4<f32>,
+    // 0 shaded (a cone, a cube), 1 flat (a line, a square)
+    @location(3) shading: f32,
+    @location(4) clip: vec4<f32>,
+};
+
+@vertex
+fn vs_tool(in: VertexInput) -> ToolOut {
+    let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
+    let world = model * vec4<f32>(in.position, 1.0);
+    var out: ToolOut;
+    out.clip_position = frame.view_projection * world;
+    out.clip = out.clip_position;
+    out.world_position = world.xyz;
+    out.normal = (model * vec4<f32>(in.normal, 0.0)).xyz;
+    out.color = vec4<f32>(in.color_and_shading.rgb, in.surface.z);
+    out.shading = in.color_and_shading.w;
+    return out;
+}
+
+@fragment
+fn fs_tool(in: ToolOut) -> @location(0) vec4<f32> {
+    var rgb = in.color.rgb;
+    if in.shading < 0.5 {
+        // Lit, for a tool, is by a lamp over the eye's shoulder, as Unity
+        // shades its handles: a cone reads as a cone from any side, and
+        // no sun or shadow changes it.
+        let n = normalize(in.normal);
+        let to_eye = normalize(frame.camera_position.xyz - in.world_position);
+        let lamp = normalize(to_eye + vec3<f32>(0.0, 0.7, 0.0));
+        let facing = clamp(dot(n, lamp), 0.0, 1.0);
+        rgb = rgb * (0.45 + 0.6 * facing) + vec3<f32>(0.18) * pow(clamp(dot(n, to_eye), 0.0, 1.0), 16.0);
+    }
+    let a = clamp(in.color.a, 0.0, 1.0);
+    return vec4<f32>(rgb * a, a);
+}
+
+// What an outline is drawn round: red the colour's number, green 1 where
+// nothing the prepass saw is in front of it.
+@fragment
+fn fs_outline_mask(in: ToolOut) -> @location(0) vec4<f32> {
+    let ndc = in.clip.xy / in.clip.w;
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    let size = vec2<i32>(frame.cluster_depth.zw);
+    let pixel = clamp(vec2<i32>(uv * frame.cluster_depth.zw), vec2<i32>(0), size - vec2<i32>(1));
+    let d = textureLoad(scene_depth, pixel, 0);
+    // Compared as depth along the view, in metres, for either projection.
+    let seen = frame.inverse_view_projection * vec4<f32>(ndc, d, 1.0);
+    let seen_depth = -dot(frame.view_depth, vec4<f32>(seen.xyz / seen.w, 1.0));
+    let mine = -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0));
+    let visible = select(0.0, 1.0, mine <= seen_depth * 1.01 + 0.03);
+    return vec4<f32>(in.color.r, visible, 0.0, 1.0);
+}
+
 // Clusters (cluster.rs): a dense mesh drawn a cluster at a time, the ones
 // the compute pass kept, each an instance of 372 vertices whose vertex and
 // instance are read out of the mesh's own buffers.

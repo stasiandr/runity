@@ -950,6 +950,8 @@ impl Studio {
         if self.session.size() != size {
             self.session.resize(size.0, size.1);
         }
+        // How thick outlines are and how big a turn's angle is written.
+        self.session.set_ui_scale(scale);
         let t1 = Instant::now();
         // Play runs on the frame's time: the simulation takes as many fixed
         // steps as the frame took (paused, none).

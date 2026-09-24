@@ -10,7 +10,7 @@
 use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
-use runity::gizmo::{Handle, Tool};
+use runity::gizmo::{Grip, Handle, Tool};
 use runity::glam::Vec3;
 use runity::{EntityId, Material, Transform};
 use runity_editor::{EditError, SceneReload, Session, Snap};
@@ -99,11 +99,32 @@ fn grab_right_of_centre(session: &mut Session) -> Option<(Handle, u32)> {
     let (width, height) = session.size();
     let (cx, cy) = (width / 2, height / 2);
     for r in 4..(width / 2) {
+        // An arm or a ring, not the middle square or the ball inside the
+        // rings, which the sweep crosses first.
+        if !matches!(
+            session.gizmo_hover(cx + r, cy),
+            Some(Handle::X | Handle::Y | Handle::Z)
+        ) {
+            continue;
+        }
         if let Some(handle) = session.gizmo_begin(cx + r, cy).unwrap() {
             return Some((handle, r));
         }
     }
     None
+}
+
+/// A pixel where a handle is grabbed, found by looking at every pixel
+/// rather than assumed; the one nearest `near`, when there are several.
+fn find_grip(session: &Session, grip: Grip, near: (u32, u32)) -> Option<(u32, u32)> {
+    let (w, h) = session.size();
+    (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .filter(|&(x, y)| session.gizmo_grip_at(x, y) == Some(grip))
+        .min_by_key(|&(x, y)| {
+            let (dx, dy) = (x as i64 - near.0 as i64, y as i64 - near.1 as i64);
+            dx * dx + dy * dy
+        })
 }
 
 #[test]
@@ -725,9 +746,17 @@ fn the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step() {
     // Grab the Y ring where it crosses the screen, then drag a quarter of
     // the way around it. The exact pixels do not matter; what matters is
     // that the rotation changes and nothing else does.
-    let (handle, radius) = grab_right_of_centre(&mut session).expect("a ring to grab");
-    assert_eq!(handle, Handle::Y, "the Y ring, seen from above");
+    // The Z and X rings are lines through the middle from up here; the
+    // flat Y ring is the circle, found right of the middle.
     let (width, height) = session.size();
+    let at = find_grip(
+        &session,
+        Grip::new(Tool::Rotate, Handle::Y),
+        (width, height / 2),
+    )
+    .expect("a ring to grab");
+    assert_eq!(session.gizmo_begin(at.0, at.1).unwrap(), Some(Handle::Y));
+    let radius = at.0 - width / 2;
     assert!(session.gizmo_drag(width / 2, height / 2 + radius).unwrap());
     session.gizmo_end();
 
@@ -2918,7 +2947,8 @@ fn what_is_selected_is_outlined_in_orange() {
         session
             .frame_pixels()
             .chunks(4)
-            .filter(|p| p[0] > 200 && (60..180).contains(&p[1]) && p[2] < 60)
+            // Unity's orange, not the X arrow's red (219, 62, 29).
+            .filter(|p| p[0] > 200 && (80..180).contains(&p[1]) && p[2] < 60)
             .count()
     };
     session.render();
@@ -4982,4 +5012,329 @@ fn an_entity_and_the_scene_settings_are_edited_as_the_ron_the_file_holds() {
     assert!(session.set_scene_settings_ron("(sun: (hour: \"late\"))").is_err());
     session.undo().unwrap();
     assert_eq!(session.scene_settings_ron().unwrap(), settings);
+}
+
+/// One box on the ground, and nothing under it.
+const BOX: &str = r#"(
+    entities: [
+        (name: "ground", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0))),
+        (name: "box", model: "builtin:cube", transform: (position: (0.0, 0.5, 0.0))),
+    ],
+)"#;
+
+#[test]
+fn a_plane_square_moves_the_thing_on_two_axes_and_not_the_third() {
+    let Some((mut session, _)) = open_with("gizmo-plane", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(2.5, 4.0, 5.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    let (w, h) = session.size();
+    let at = find_grip(
+        &session,
+        Grip::new(Tool::Move, Handle::PlaneY),
+        (w / 2, h / 2),
+    )
+    .expect("the XZ square, seen from above");
+    assert_eq!(
+        session.gizmo_begin(at.0, at.1).unwrap(),
+        Some(Handle::PlaneY)
+    );
+    assert_eq!(
+        session.gizmo_held(),
+        Some(Grip::new(Tool::Move, Handle::PlaneY))
+    );
+    session.gizmo_drag(at.0 + 25, at.1 + 12).unwrap();
+    session.gizmo_end();
+    let moved = session.transform(it).unwrap().position;
+    assert_eq!(moved.y, 0.5, "the square slides along the ground");
+    assert!(
+        moved.x.abs() > 0.05 && moved.z.abs() > 0.05,
+        "on both of its axes: {moved}"
+    );
+    assert!(session.undo().unwrap());
+    assert_eq!(
+        session.transform(it).unwrap().position,
+        Vec3::new(0.0, 0.5, 0.0)
+    );
+}
+
+#[test]
+fn the_middle_square_moves_across_the_view() {
+    let Some((mut session, _)) = open_with("gizmo-middle", BOX) else {
+        return;
+    };
+    // Straight at the box: the view's plane is the XY plane.
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    let (w, h) = session.size();
+    assert_eq!(
+        session.gizmo_grip_at(w / 2, h / 2),
+        Some(Grip::new(Tool::Move, Handle::Center)),
+        "the middle wins over the arms that start there"
+    );
+    session.gizmo_begin(w / 2, h / 2).unwrap();
+    session.gizmo_drag(w / 2 + 10, h / 2 - 6).unwrap();
+    session.gizmo_end();
+    let moved = session.transform(it).unwrap().position;
+    assert!(moved.x > 0.05 && moved.y > 0.55, "right and up: {moved}");
+    assert!(moved.z.abs() < 1e-4, "and not toward the eye: {moved}");
+}
+
+#[test]
+fn the_handle_under_the_pointer_is_named_and_drawn_yellow() {
+    let Some((mut session, _)) = open_with("gizmo-hover", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(2.5, 2.0, 5.0), Vec3::new(0.0, 0.5, 0.0));
+    session.select(session.find("box")).unwrap();
+    let w = session.size().0;
+    let yellow = |session: &Session| {
+        session
+            .frame_pixels()
+            .chunks_exact(4)
+            .filter(|p| p[0] > 200 && p[1] > 190 && p[2] < 110)
+            .count()
+    };
+    session.set_gizmo_hover(None);
+    session.render();
+    let before = yellow(&session);
+    let at = find_grip(&session, Grip::new(Tool::Move, Handle::Y), (w / 2, 0))
+        .expect("the Y arrow");
+    assert_eq!(
+        session.set_gizmo_hover(Some(at)),
+        Some(Grip::new(Tool::Move, Handle::Y))
+    );
+    assert_eq!(
+        session.gizmo_hovered(),
+        Some(Grip::new(Tool::Move, Handle::Y))
+    );
+    session.render();
+    assert!(
+        yellow(&session) > before + 3,
+        "{before} → {}",
+        yellow(&session)
+    );
+    // Held, the hover is forgotten: the held one is the yellow one.
+    session.gizmo_begin(at.0, at.1).unwrap();
+    assert_eq!(session.gizmo_hovered(), None);
+    session.gizmo_end();
+}
+
+#[test]
+fn the_view_ring_turns_in_snapped_steps_and_says_how_far() {
+    let Some((mut session, _)) = open_with("gizmo-view-ring", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    session.set_tool(Tool::Rotate);
+    session.set_snap(Snap {
+        meters: 0.0,
+        degrees: 15.0,
+        scale: 0.0,
+    });
+    let (w, h) = session.size();
+    let at = find_grip(
+        &session,
+        Grip::new(Tool::Rotate, Handle::View),
+        (w, h / 2),
+    )
+    .expect("the outer ring, right of the middle");
+    session.gizmo_begin(at.0, at.1).unwrap();
+    assert_eq!(session.gizmo_angle(), Some(0.0));
+    let (cx, cy) = (w / 2, h / 2);
+    let r = at.0 - cx;
+    session.gizmo_drag(cx + r * 7 / 10, cy - r * 7 / 10).unwrap();
+    let angle = session.gizmo_angle().expect("a ring is held");
+    assert!(
+        (angle.abs() - 45.0).abs() < 1e-3,
+        "an eighth of a turn, in steps: {angle}"
+    );
+    // Drawn with its pie and its number, and nothing breaks.
+    session.render();
+    session.gizmo_end();
+    assert_eq!(session.gizmo_angle(), None);
+    let turned = session.transform(it).unwrap().rotation_deg;
+    assert!(
+        (turned.z.abs() - 45.0).abs() < 0.1,
+        "about the line of sight, z here: {turned}"
+    );
+    assert!(turned.x.abs() < 0.1 && turned.y.abs() < 0.1, "{turned}");
+}
+
+#[test]
+fn the_ball_inside_the_rings_turns_freely() {
+    let Some((mut session, _)) = open_with("gizmo-ball", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    session.set_tool(Tool::Rotate);
+    let (w, h) = session.size();
+    let at = (w / 2 + 3, h / 2 + 2);
+    assert_eq!(
+        session.gizmo_grip_at(at.0, at.1),
+        Some(Grip::new(Tool::Rotate, Handle::Free))
+    );
+    session.gizmo_begin(at.0, at.1).unwrap();
+    session.gizmo_drag(at.0 + 8, at.1 - 8).unwrap();
+    session.gizmo_end();
+    let turned = session.transform(it).unwrap().rotation_deg;
+    // Dragged right and up across the ball: about both y and x.
+    assert!(turned.x.abs() > 1.0 && turned.y.abs() > 1.0, "{turned}");
+    assert_eq!(
+        session.transform(it).unwrap().position,
+        Vec3::new(0.0, 0.5, 0.0)
+    );
+}
+
+#[test]
+fn the_middle_cube_scales_all_three_axes() {
+    let Some((mut session, _)) = open_with("gizmo-uniform", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(2.0, 2.0, 5.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    session.set_tool(Tool::Scale);
+    let (w, h) = session.size();
+    let at = find_grip(
+        &session,
+        Grip::new(Tool::Scale, Handle::Center),
+        (w / 2, h / 2),
+    )
+    .expect("the middle cube");
+    session.gizmo_begin(at.0, at.1).unwrap();
+    session.gizmo_drag(at.0 + 15, at.1 - 5).unwrap();
+    session.gizmo_end();
+    let s = session.transform(it).unwrap().scale;
+    assert!(s.x > 1.1 && s.x == s.y && s.y == s.z, "{s}");
+}
+
+#[test]
+fn a_rect_corner_resizes_with_the_far_corner_staying_put() {
+    let Some((mut session, _)) = open_with("gizmo-rect", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 0.5, 6.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    session.set_tool(Tool::Rect);
+    let (low, high) = session.world_bounds(it).unwrap();
+    let w = session.size().0;
+    let at = find_grip(
+        &session,
+        Grip::new(Tool::Rect, Handle::Rect(1, 1)),
+        (w, 0),
+    )
+    .expect("the top right corner");
+    session.gizmo_begin(at.0, at.1).unwrap();
+    session.gizmo_drag(at.0 + 12, at.1 - 8).unwrap();
+    session.gizmo_end();
+    let (low2, high2) = session.world_bounds(it).unwrap();
+    assert!(
+        (low2.x - low.x).abs() < 1e-3 && (low2.y - low.y).abs() < 1e-3,
+        "the far corner stays: {low} → {low2}"
+    );
+    assert!(
+        high2.x > high.x + 0.05 && high2.y > high.y + 0.05,
+        "the corner went out: {high} → {high2}"
+    );
+    assert!(
+        (high2.z - high.z).abs() < 1e-3 && (low2.z - low.z).abs() < 1e-3,
+        "not across the rect"
+    );
+    // The inside moves it on the rect's plane.
+    let before = session.transform(it).unwrap().position;
+    let (cx, cy) = (w / 2 + 2, session.size().1 / 2);
+    assert_eq!(
+        session.gizmo_grip_at(cx, cy),
+        Some(Grip::new(Tool::Rect, Handle::Rect(0, 0)))
+    );
+    session.gizmo_begin(cx, cy).unwrap();
+    session.gizmo_drag(cx - 10, cy).unwrap();
+    session.gizmo_end();
+    let after = session.transform(it).unwrap().position;
+    assert!(
+        after.x < before.x - 0.05 && (after.z - before.z).abs() < 1e-4,
+        "{before} → {after}"
+    );
+}
+
+#[test]
+fn the_transform_tool_is_t_and_each_of_its_parts_does_its_own_drag() {
+    use runity::input::{Input, InputEvent as E, Key};
+    let Some((mut session, _)) = open_with("gizmo-transform", BOX) else {
+        return;
+    };
+    session.set_camera(Vec3::new(2.5, 2.0, 5.0), Vec3::new(0.0, 0.5, 0.0));
+    let it = id(&session, "box");
+    session.select(Some(it)).unwrap();
+    let mut input = Input::new();
+    let (w, h) = session.size();
+    let centre = (w as f32 / 2.0, h as f32 / 2.0);
+    view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::T)]);
+    assert_eq!(session.tool(), Tool::Transform);
+    view_frame(
+        &mut session,
+        &mut input,
+        centre,
+        &[E::KeyUp(Key::T), E::KeyDown(Key::Y)],
+    );
+    assert_eq!(session.tool(), Tool::Rect);
+    session.set_tool(Tool::Transform);
+    // Its cube on X scales; its ring on Y turns.
+    let at = find_grip(&session, Grip::new(Tool::Scale, Handle::X), (w, h / 2))
+        .expect("the X cube");
+    session.gizmo_begin(at.0, at.1).unwrap();
+    session.gizmo_drag(at.0 + 10, at.1 + 3).unwrap();
+    session.gizmo_end();
+    let t = session.transform(it).unwrap();
+    assert!(t.scale.x > 1.05 && t.scale.y == 1.0, "{t:?}");
+    let at = find_grip(&session, Grip::new(Tool::Rotate, Handle::Y), (w / 2, h))
+        .expect("the Y ring");
+    session.gizmo_begin(at.0, at.1).unwrap();
+    session.gizmo_drag(at.0 + 12, at.1).unwrap();
+    session.gizmo_end();
+    let t = session.transform(it).unwrap();
+    assert!(t.rotation_deg.y.abs() > 2.0, "{t:?}");
+}
+
+#[test]
+fn the_selection_is_outlined_round_its_shape_and_its_children_in_blue() {
+    let Some((mut session, _)) = open("outline-shape") else {
+        return;
+    };
+    session.set_camera(Vec3::new(0.0, 1.5, 5.0), Vec3::new(0.0, 0.7, 0.0));
+    let count = |session: &Session, wanted: fn(&[u8]) -> bool| {
+        session
+            .frame_pixels()
+            .chunks_exact(4)
+            .filter(|p| wanted(p))
+            .count()
+    };
+    let orange = |p: &[u8]| p[0] > 220 && (80..140).contains(&p[1]) && p[2] < 40;
+    let blue = |p: &[u8]| p[2] > 220 && p[0] < 140 && (90..160).contains(&p[1]);
+    session.render();
+    assert_eq!(count(&session, orange), 0, "nothing selected, nothing outlined");
+    session.select(session.find("crate")).unwrap();
+    // The rect tool: no handle in the colours counted.
+    session.set_tool(Tool::Rect);
+    session.set_gizmo_hover(None);
+    session.render();
+    assert!(
+        count(&session, orange) > 40,
+        "the crate's edge: {}",
+        count(&session, orange)
+    );
+    assert!(
+        count(&session, blue) > 10,
+        "and its child's, in blue: {}",
+        count(&session, blue)
+    );
 }

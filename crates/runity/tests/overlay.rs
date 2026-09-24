@@ -62,6 +62,8 @@ fn shoot(gpu: &Gpu, ui: &Ui) -> Vec<u8> {
             terrain: None,
             draws: Vec::new(),
             overlay_draws: Vec::new(),
+            outline_draws: Vec::new(),
+            outline_width: 2.0,
             poses: Vec::new(),
         },
     );
@@ -224,6 +226,8 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         terrain: None,
         draws: vec![wall],
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         poses: Vec::new(),
     };
 
@@ -252,6 +256,8 @@ fn an_overlay_draw_is_not_hidden_by_what_is_in_front_of_it() {
         ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
         ray_tracing: Default::default(),
         overlay_draws: vec![behind],
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         ..base
     };
     renderer.render(&gpu, &target, &shown);
