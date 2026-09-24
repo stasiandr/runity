@@ -411,6 +411,11 @@ pub struct ShadowSettings {
     /// Side of each lamp's shadow map — URP's Additional Lights shadow
     /// resolution. A spot has one, a point six.
     pub light_resolution: u32,
+    /// Contact shadows: metres a short ray from each point toward the sun
+    /// is marched through the depth of what is on the screen, for the small
+    /// dark where things meet — a cup on a table, a foot on the ground —
+    /// that a cascade's texel is too coarse to hold. 0 is none.
+    pub contact: f32,
 }
 
 impl Default for ShadowSettings {
@@ -424,6 +429,7 @@ impl Default for ShadowSettings {
             cascades: 4,
             cascade_splits: [0.067, 0.2, 0.467],
             light_resolution: 512,
+            contact: 0.35,
         }
     }
 }
@@ -438,6 +444,7 @@ impl ShadowSettings {
         cascades: 1,
         cascade_splits: [0.067, 0.2, 0.467],
         light_resolution: 1,
+        contact: 0.0,
     };
 
     /// Where each cascade ends, in metres from the eye.
@@ -4035,6 +4042,12 @@ impl Renderer {
         let sun = frame.lighting.sun_direction.normalize_or_zero();
         // Traced sun shadows need no maps.
         let traced_sun = self.ray.is_some() && frame.ray_tracing.sun_shadows;
+        // Contact shadows read the prepass's depth, the screen's: not for a
+        // probe's face, and not when rays already find every shadow.
+        let contact_on = frame.shadows.enabled
+            && frame.shadows.contact > 0.0
+            && probe.is_none()
+            && !traced_sun;
         let cascades = if frame.shadows.enabled && !traced_sun {
             self.cascades(frame, sun, aspect)
         } else {
@@ -4278,7 +4291,8 @@ impl Renderer {
                     .ambient_occlusion
                     .direct_lighting_strength
                     .clamp(0.0, 1.0),
-                0.0,
+                // Contact shadows: how far their rays go.
+                if contact_on { frame.shadows.contact } else { 0.0 },
                 0.0,
             ],
             ray: {
@@ -4893,7 +4907,7 @@ impl Renderer {
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
         let prepass_drawn =
-            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust;
+            ssao_on || lens_on || water_on || ssr_on || wall_on || taa_on || local_dust || contact_on;
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

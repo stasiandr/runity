@@ -291,6 +291,31 @@ fn screen_reflection(p: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec4<f32> {
     return vec4<f32>(0.0);
 }
 
+/// Contact shadows: a short ray from `p` toward the sun, marched through
+/// the depth of what is on the screen; 0 where something stands just in
+/// its way — within a hand's thickness behind what the screen shows there —
+/// fading back to 1 the further along it was met.
+fn contact_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>, pixel: vec2<f32>) -> f32 {
+    let reach = frame.ambient_occlusion.z;
+    let steps = 12u;
+    let turn = fract(frame.foliage.wind.w * 37.0) * 0.618034;
+    let jitter = fract(pixel_noise(pixel) + turn);
+    let start = p + n * 0.015;
+    for (var i = 0u; i < steps; i = i + 1u) {
+        let along = (f32(i) + jitter) / f32(steps);
+        let t = reach * along;
+        let found = ssr_behind(start + to_sun * t);
+        if found.x < -1.5 {
+            break;
+        }
+        let slack = 0.01 + found.y * 0.002;
+        if found.x > slack && found.x < 0.25 + t {
+            return mix(0.0, 1.0, along * along);
+        }
+    }
+    return 1.0;
+}
+
 fn cloud_hash(p: vec3<f32>) -> f32 {
     var q = fract(p * 0.1031);
     q += dot(q, q.zyx + 31.32);
@@ -1694,6 +1719,9 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             shadow = traced_sun(in.world_position, geometric, to_sun, in.clip_position.xy);
         } else {
             shadow = sunlight(in.world_position, normal);
+            if frame.ambient_occlusion.z > 0.0 && shadow > 0.0 {
+                shadow *= contact_shadow(in.world_position, geometric, to_sun, in.clip_position.xy);
+            }
         }
     }
     // Under a cloud: in its shadow.

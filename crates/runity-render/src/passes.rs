@@ -18,6 +18,9 @@ pub struct Passes {
     /// drawn in its own colour, unlit — the least there is.
     pub lighting: bool,
     pub shadows: bool,
+    /// The short rays toward the sun through the screen's depth, for the
+    /// small dark where things meet (`ShadowSettings::contact`).
+    pub contact_shadows: bool,
     pub ambient_occlusion: bool,
     pub screen_space_reflections: bool,
     /// Probes baked and reflected.
@@ -45,6 +48,7 @@ impl Passes {
     pub const MAX: Passes = Passes {
         lighting: true,
         shadows: true,
+        contact_shadows: true,
         ambient_occlusion: true,
         screen_space_reflections: true,
         reflection_probes: true,
@@ -60,6 +64,7 @@ impl Passes {
     pub const MIN: Passes = Passes {
         lighting: false,
         shadows: false,
+        contact_shadows: false,
         ambient_occlusion: false,
         screen_space_reflections: false,
         reflection_probes: false,
@@ -85,6 +90,9 @@ impl Passes {
         }
         if !self.shadows || !self.lighting {
             frame.shadows.enabled = false;
+        }
+        if !self.contact_shadows {
+            frame.shadows.contact = 0.0;
         }
         if !self.ambient_occlusion {
             frame.ambient_occlusion.enabled = false;
