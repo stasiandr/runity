@@ -95,6 +95,8 @@ pub struct GpuTimer {
     /// Frames read back so far: the first is left out, its pipelines
     /// still being built.
     frames: u32,
+    /// The GPU's time for the last frame read back, all its passes.
+    last_frame: Option<f32>,
 }
 
 impl GpuTimer {
@@ -135,6 +137,7 @@ impl GpuTimer {
             to_map: false,
             times: Vec::new(),
             frames: 0,
+            last_frame: None,
         })
     }
 
@@ -193,6 +196,7 @@ impl GpuTimer {
                 None => frame.push((label, ms)),
             }
         }
+        self.last_frame = Some(frame.iter().map(|(_, ms)| ms).sum());
         for (label, ms) in frame {
             match self.times.iter_mut().find(|(l, _, _)| *l == label) {
                 Some((_, t, n)) => {
@@ -232,6 +236,11 @@ impl GpuTimer {
                     mapped.store(true, Ordering::Release);
                 }
             });
+    }
+
+    /// The GPU's time for the last frame read back, milliseconds.
+    pub fn frame_ms(&self) -> Option<f32> {
+        self.last_frame
     }
 
     /// Each pass's average time, milliseconds.

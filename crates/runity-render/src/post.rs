@@ -327,6 +327,9 @@ pub struct PostProcess {
     /// The eye getting used to the light ([`crate::exposure`]): on by
     /// default. `exposure` still adds its stops on top.
     pub auto_exposure: crate::exposure::AutoExposure,
+    /// Drawing at fewer pixels and making the picture up to the screen's
+    /// size, and dynamic resolution ([`crate::upscale`]): off by default.
+    pub upscaling: crate::upscale::Upscaling,
 }
 
 impl Default for PostProcess {
@@ -359,6 +362,7 @@ impl Default for PostProcess {
             lens_flare: LensFlare::OFF,
             heat_haze: crate::lens::HeatHaze::OFF,
             auto_exposure: crate::exposure::AutoExposure::default(),
+            upscaling: crate::upscale::Upscaling::OFF,
         }
     }
 }
@@ -423,6 +427,7 @@ impl PostProcess {
         lens_flare: LensFlare::OFF,
         heat_haze: crate::lens::HeatHaze::OFF,
         auto_exposure: crate::exposure::AutoExposure::OFF,
+        upscaling: crate::upscale::Upscaling::OFF,
     };
 
     /// Part way from `self` to `other`: `t` 0 is self, 1 is other. What a
@@ -549,6 +554,7 @@ impl PostProcess {
             } else {
                 self.auto_exposure
             },
+            upscaling: if half { other.upscaling } else { self.upscaling },
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
                 tint: v3(self.lens_flare.tint, other.lens_flare.tint),

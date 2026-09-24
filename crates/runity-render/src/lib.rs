@@ -36,6 +36,7 @@ pub mod ssao;
 pub mod taa;
 pub mod terrain;
 pub mod tour;
+pub mod upscale;
 pub mod volume;
 pub mod weather;
 pub mod world_look;

@@ -423,6 +423,7 @@ pub use runity_render::terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
 pub use runity_render::tour;
+pub use runity_render::upscale;
 pub use runity_core::tuned;
 pub use runity_overlay::ui;
 pub use runity_overlay::ui_render;

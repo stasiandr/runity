@@ -38,6 +38,10 @@ pub struct Passes {
     pub clouds: bool,
     /// Temporal antialiasing.
     pub taa: bool,
+    /// Drawing at fewer pixels and making the picture up to the screen's
+    /// (`post: (upscaling: …)`, [`crate::upscale`]); off, the screen's own
+    /// size, whatever the scene asks.
+    pub upscaling: bool,
     /// Depth of field, motion blur, heat haze.
     pub lens: bool,
     /// Bloom, grading, tonemapping, exposure, FXAA.
@@ -67,6 +71,7 @@ impl Passes {
         occlusion_culling: true,
         clouds: true,
         taa: true,
+        upscaling: true,
         lens: true,
         post: true,
         ray_tracing: true,
@@ -86,6 +91,7 @@ impl Passes {
         occlusion_culling: false,
         clouds: false,
         taa: false,
+        upscaling: false,
         lens: false,
         post: false,
         ray_tracing: false,
@@ -135,6 +141,9 @@ impl Passes {
         }
         if !self.taa {
             frame.post.taa = false;
+        }
+        if !self.upscaling {
+            frame.post.upscaling.enabled = false;
         }
         if !self.lens {
             frame.post.depth_of_field.mode = crate::lens::FocusMode::Off;
