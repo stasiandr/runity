@@ -91,6 +91,7 @@ fn double_click(studio: &mut Studio, name: &str) {
         .ui
         .find(name)
         .unwrap_or_else(|| panic!("no node {name:?} in\n{}", studio.ui.dump()));
+    scroll_into_view(studio, node);
     let (x, y) = studio.ui.rect(node).center();
     studio.handle(&InputEvent::MouseMoved { x, y });
     for _ in 0..2 {
@@ -100,12 +101,26 @@ fn double_click(studio: &mut Studio, name: &str) {
     studio.frame();
 }
 
+/// Scroll every list `node` is in until it shows, as a person scrolls to
+/// what they are about to click.
+fn scroll_into_view(studio: &mut Studio, node: runity_ui::NodeId) {
+    let mut at = studio.ui.parent(node);
+    while let Some(list) = at {
+        if studio.ui.style(list).look.clip {
+            studio.ui.scroll_to(list, node);
+        }
+        at = studio.ui.parent(list);
+    }
+    studio.ui.paint();
+}
+
 fn press(studio: &mut Studio, name: &str, button: MouseButton) {
     studio.ui.paint();
     let node = studio
         .ui
         .find(name)
         .unwrap_or_else(|| panic!("no node {name:?} in\n{}", studio.ui.dump()));
+    scroll_into_view(studio, node);
     let (x, y) = studio.ui.rect(node).center();
     studio.handle(&InputEvent::MouseMoved { x, y });
     studio.handle(&InputEvent::MouseDown(button));
@@ -2767,4 +2782,128 @@ fn a_collider_picks_its_shape_and_edits_its_numbers() {
         .unwrap()
         .iter()
         .any(|f| f.name == "body" && f.value == "Dynamic"));
+}
+
+/// A second scene beside the first, so there is somewhere to go.
+fn second_scene(s: &mut Studio, dir: &std::path::Path) {
+    std::fs::copy(
+        dir.join("scenes/first-light.ron"),
+        dir.join("scenes/second.ron"),
+    )
+    .unwrap();
+    s.refresh();
+}
+
+#[test]
+fn one_column_shows_files_inside_folders_and_is_remembered() {
+    let Some((mut s, dir)) = studio() else { return };
+    second_scene(&mut s, &dir);
+    click(&mut s, "project one column");
+    s.ui.paint();
+    assert!(s.ui.find("folder line scenes").is_some(), "the folders as lines");
+    assert!(s.ui.find("folder tile scenes").is_none(), "no tiles behind it");
+    assert!(s.ui.find("asset first-light").is_none(), "shut until opened");
+    // Opened by its arrow: its files under it.
+    click(&mut s, "folder line arrow scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    // A double click on a scene's line opens it.
+    double_click(&mut s, "asset second");
+    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    // Remembered for the next run.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    drop(s);
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
+    again.frame();
+    again.ui.paint();
+    assert!(again.ui.find("folder line scenes").is_some(), "one column again");
+}
+
+#[test]
+fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder scenes");
+    click(&mut s, "asset first-light");
+    let dump = s.ui.dump();
+    assert!(
+        dump.contains("\"scenes/\"") && dump.contains("\"first-light.ron\""),
+        "{dump}"
+    );
+    // The engine's own: under Built-in.
+    find_in_project(&mut s, "cube");
+    click(&mut s, "asset cube");
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"Built-in/\"") && dump.contains("\"cube\""));
+    // Its folder part goes there, out of the search.
+    click(&mut s, "project search");
+    s.handle(&InputEvent::KeyDown(Key::Escape));
+    s.frame();
+    click(&mut s, "asset path folder");
+    assert!(s.ui.find("crumb Built-in").is_some(), "in the engine's folder");
+}
+
+#[test]
+fn show_asset_goes_to_its_folder_and_chooses_it() {
+    let Some((mut s, _dir)) = studio() else { return };
+    assert!(s.show_in_project("scenes/first-light.ron"));
+    assert!(s.ui.find("crumb scenes").is_some(), "in its folder");
+    assert!(s.ui.dump().contains("\"first-light.ron\""), "chosen");
+    // By name, in one column: the tree opens down to it.
+    click(&mut s, "project one column");
+    assert!(s.show_in_project("cube"));
+    assert!(s.ui.find("asset cube").is_some());
+    assert!(s.ui.dump().contains("\"Built-in/\""));
+    assert!(!s.show_in_project("no such thing"));
+}
+
+#[test]
+fn the_arrows_walk_the_project_and_enter_opens() {
+    let Some((mut s, dir)) = studio() else { return };
+    second_scene(&mut s, &dir);
+    click(&mut s, "folder scenes");
+    click(&mut s, "asset first-light");
+    key(&mut s, Key::Right);
+    assert!(s.ui.dump().contains("\"second.ron\""), "the next tile");
+    key(&mut s, Key::Enter);
+    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    // F2 asks for its new name; Delete asks before deleting.
+    key(&mut s, Key::F2);
+    assert!(s.ui.find("dialog field").is_some(), "renaming");
+    click(&mut s, "dialog cancel");
+    click(&mut s, "asset first-light");
+    key(&mut s, Key::Delete);
+    assert!(s.ui.dump().contains("Delete scenes/first-light.ron"));
+    assert!(dir.join("scenes/first-light.ron").exists(), "only asked");
+    // In one column: right opens a folder, down goes into it.
+    key(&mut s, Key::Escape);
+    click(&mut s, "project one column");
+    click(&mut s, "folder line prefabs");
+    key(&mut s, Key::Right);
+    key(&mut s, Key::Down);
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"prefabs/\""), "a prefab chosen: {dump}");
+}
+
+#[test]
+fn search_in_one_column_is_a_flat_list() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "project one column");
+    find_in_project(&mut s, "cube");
+    let dump = s.ui.dump();
+    assert!(dump.contains("#asset cube"), "found from the top");
+    assert!(!dump.contains("#folder line"), "no folders while searching");
+}
+
+#[test]
+fn the_project_grid_scrolls_with_the_wheel() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder Built-in");
+    s.ui.paint();
+    let grid = s.ui.find("project grid").unwrap();
+    let (x, y) = s.ui.rect(grid).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::Scroll { x: 0.0, y: -3.0 });
+    s.frame();
+    assert!(s.ui.scroll(grid) > 0.0, "scrolled");
 }

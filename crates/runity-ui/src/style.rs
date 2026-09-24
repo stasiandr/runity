@@ -372,8 +372,12 @@ impl Style {
         self
     }
 
+    /// Children go on to the next line when a line is full. The lines are
+    /// packed at the start, as text is: a grid taller than its tiles keeps
+    /// them together rather than spreading its rows down the room.
     pub fn wrap(mut self) -> Self {
         self.layout.flex_wrap = taffy::FlexWrap::Wrap;
+        self.layout.align_content = Some(taffy::AlignContent::FLEX_START);
         self
     }
 
