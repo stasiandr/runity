@@ -78,10 +78,12 @@ pub use scrap_dialogue::text as dialogue_text;
 #[cfg(feature = "discord")]
 pub use scrap_discord::discord;
 pub use scrap_geometry::builtin;
+pub use scrap_geometry::ease;
 pub use scrap_geometry::solid;
 #[cfg(feature = "physics")]
 pub use scrap_net::bench;
 pub use scrap_render::atmosphere;
+pub use scrap_render::cameras;
 pub use scrap_render::clouds;
 pub use scrap_render::cluster;
 pub use scrap_render::decals;
@@ -139,6 +141,49 @@ pub mod motion {
         })
     }
 }
+
+/// Tweens from game code: the animation module's, with a sound's volume
+/// and particles' rate read and written by the modules that own them, as
+/// a motion clip's are (docs/feel.md).
+#[cfg(feature = "animation")]
+pub mod tween {
+    pub use scrap_animation::tween::*;
+
+    use scrap_animation::motion::Property;
+
+    /// Every tween one step on ([`run_tweens`]).
+    pub fn run(world: &mut hecs::World, dt: f32) {
+        let get = |world: &hecs::World, entity: hecs::Entity, what: Property| match what {
+            Property::Volume => world
+                .get::<&crate::world::Sounding>(entity)
+                .ok()
+                .map(|s| s.0.volume),
+            Property::ParticleRate => world
+                .get::<&crate::particles::Emitting>(entity)
+                .ok()
+                .map(|p| p.emitter.rate),
+            _ => None,
+        };
+        run_tweens(
+            world,
+            dt,
+            &get,
+            &mut |world, entity, what, value| match what {
+                Property::Volume => {
+                    if let Ok(mut s) = world.get::<&mut crate::world::Sounding>(entity) {
+                        s.0.volume = value;
+                    }
+                }
+                Property::ParticleRate => {
+                    if let Ok(mut p) = world.get::<&mut crate::particles::Emitting>(entity) {
+                        p.emitter.rate = value;
+                    }
+                }
+                _ => {}
+            },
+        )
+    }
+}
 pub use scrap_core::parts;
 pub use scrap_core::perf;
 pub use scrap_core::player;
@@ -164,7 +209,7 @@ pub mod player_loop {
     pub use scrap_core::player_loop::*;
 
     /// The build's modules' systems, in the order a frame needs them: in
-    /// the fixed step routes, motion clips and characters' animation, then
+    /// the fixed step routes, motion clips, tweens and characters' animation, then
     /// the hierarchy placed; cameras following in LateUpdate; particles
     /// and footprints as the frame is built. A game runs a phase where its
     /// own systems want it.
@@ -173,7 +218,9 @@ pub mod player_loop {
         #[cfg(feature = "routes")]
         scrap_routes::systems(&mut player_loop);
         #[cfg(feature = "animation")]
-        player_loop.add(Phase::FixedUpdate, "motion", crate::motion::run);
+        player_loop
+            .add(Phase::FixedUpdate, "motion", crate::motion::run)
+            .add(Phase::FixedUpdate, "tweens", crate::tween::run);
         #[cfg(feature = "animation")]
         scrap_animation::systems(&mut player_loop);
         scrap_core::player_loop::systems(&mut player_loop);
@@ -212,7 +259,7 @@ pub mod player_loop {
         fn the_modules_put_their_systems_where_unity_would() {
             let player_loop = super::modules();
             use super::Phase;
-            let mut fixed = vec!["routes", "motion", "animation", "hierarchy"];
+            let mut fixed = vec!["routes", "motion", "tweens", "animation", "hierarchy"];
             if cfg!(feature = "soft") {
                 fixed.push("soft");
             }

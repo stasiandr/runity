@@ -888,26 +888,29 @@ impl shell::Game for Game {
         let seconds = ctx.time.settings().fixed_delta;
         self.physics.gravity.y = self.tuning.gravity;
         tick(&mut self.world, &mut self.physics, &mut self.modules, &mut self.profile, seconds);
+        // Slow motion or a hit-stop the step's systems asked for
+        // (`scrap::time::hit_stop`), to the clock.
+        ctx.ask_time(scrap::time::sync(&mut self.world, ctx.time));
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
         if let Some(Err(problem)) = self.actions.reload_if_changed() {
             eprintln!("{problem}");
         }
-        if let Some(Err(problem)) = self.tuning.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.tuning.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
-        match self.layers.poll(ctx.time.delta()) {
+        match self.layers.poll(ctx.time.unscaled_delta()) {
             Some(Ok(())) => self.physics.set_layers((*self.layers).clone(), &self.world),
             Some(Err(problem)) => eprintln!("{problem}"),
             None => {}
         }
-        if let Some(Err(problem)) = self.hud.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.hud.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         self.ui.clear();
         let size = scrap::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
-        if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
+        if let Some(Err(problem)) = self.strings.poll(ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         // The pad's moves between the screen's widgets, before they draw.
@@ -916,7 +919,7 @@ impl shell::Game for Game {
         if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
             ctx.quit();
         }
-        let reload = self.live.poll(ctx.time.delta(), &mut self.world, ctx.gpu, ctx.renderer);
+        let reload = self.live.poll(ctx.time.unscaled_delta(), &mut self.world, ctx.gpu, ctx.renderer);
         for line in reload.lines() {
             eprintln!("{line}");
         }
@@ -937,7 +940,7 @@ impl shell::Game for Game {
         // Played together: what the others own comes in, what this player
         // owns goes out, and whatever they spawn is spawned here too.
         let (live, gpu, renderer) = (&mut self.live, ctx.gpu, &mut *ctx.renderer);
-        let events = self.party.update(&mut self.world, &self.components, ctx.time.delta(), |world, prefab, at| {
+        let events = self.party.update(&mut self.world, &self.components, ctx.time.unscaled_delta(), |world, prefab, at| {
             live.spawn_prefab(prefab, at, None, world, gpu, renderer).ok().map(|i| i.root)
         });
         for event in events {
@@ -974,7 +977,7 @@ impl shell::Game for Game {
         // Started from the editor: tell it where things are, who this is
         // and what the systems cost.
         self.live.note(self.party.me().0, &self.profile);
-        if let Err(problem) = self.live.report(&self.world, ctx.time.delta()) {
+        if let Err(problem) = self.live.report(&self.world, ctx.time.unscaled_delta()) {
             eprintln!("{problem}");
         }
         // F3: what each part costs, over the game.
@@ -990,8 +993,12 @@ impl shell::Game for Game {
                 self.ui.text(TextRun::new(20.0, at, 16.0, scrap::glam::Vec4::ONE, line));
             }
         }
+        // The clock into the world — the real delta a camera's blend and
+        // shake run on — and what the systems asked of it, to the clock.
+        ctx.ask_time(scrap::time::sync(&mut self.world, ctx.time));
         // The modules' late systems: cameras that follow keep after their
-        // targets; sparks and dust move on the frame's time.
+        // targets and blend and shake; sparks and dust move on the frame's
+        // time.
         let delta = ctx.time.delta();
         for phase in [Phase::Update, Phase::LateUpdate, Phase::PostLateUpdate] {
             self.modules.run(phase, &mut self.world, delta, Some(&mut self.profile));

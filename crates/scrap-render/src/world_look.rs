@@ -525,6 +525,15 @@ pub fn scene_camera(view: &crate::scene::View) -> Camera {
     }
 }
 
+/// The cameras one frame on (the render module's LateUpdate system):
+/// followers keep after their targets ([`follow_cameras`], on the world's
+/// time), then the brain picks, blends and shakes
+/// ([`crate::cameras::run_brain`], on real time).
+pub fn run_cameras(world: &mut World, dt: f32) {
+    follow_cameras(world, dt);
+    crate::cameras::run_brain(world, dt);
+}
+
 /// Move every following camera toward its target and turn it to look,
 /// damped: call it each frame with the frame's delta, before
 /// [`camera_of`]. A camera at the top of the tree is moved in the world;
@@ -535,6 +544,14 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
         .iter()
         .map(|(id, placed)| (id.0, placed.0.w_axis.truncate()))
         .collect();
+    // Exponential: the same softness at any frame rate.
+    let keep = |damping: f32| {
+        if damping <= 0.0 {
+            0.0
+        } else {
+            (-dt / damping * 3.0).exp()
+        }
+    };
     for (lens, transform, placed, parent) in world.query_mut::<(
         &CameraLens,
         &mut crate::scene::Transform,
@@ -550,16 +567,21 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
         let Some(&target) = targets.get(&follow.target) else {
             continue;
         };
-        let wanted = target + follow.offset;
-        // Exponential: the same softness at any frame rate.
-        let keep = if follow.damping <= 0.0 {
-            0.0
-        } else {
-            (-dt / follow.damping * 3.0).exp()
-        };
-        transform.position = wanted + (transform.position - wanted) * keep;
+        let mut wanted = target + follow.offset;
+        // Inside the dead zone the camera stays; outside it goes only as
+        // far as the zone's edge.
+        let gap = transform.position - wanted;
+        if follow.dead_zone > 0.0 {
+            let far = gap.length();
+            wanted = if far <= follow.dead_zone {
+                transform.position
+            } else {
+                wanted + gap / far * follow.dead_zone
+            };
+        }
+        transform.position = wanted + (transform.position - wanted) * keep(follow.damping);
         if follow.look {
-            let ahead = (target - transform.position).normalize_or_zero();
+            let ahead = (target + follow.look_offset - transform.position).normalize_or_zero();
             if ahead != glam::Vec3::ZERO {
                 let up = if ahead.y.abs() > 0.999 {
                     glam::Vec3::Z
@@ -569,6 +591,11 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
                 let right = up.cross(ahead).normalize();
                 let turn =
                     glam::Quat::from_mat3(&glam::Mat3::from_cols(right, ahead.cross(right), ahead));
+                let turn = if follow.look_damping > 0.0 {
+                    turn.slerp(transform.rotation(), keep(follow.look_damping))
+                } else {
+                    turn
+                };
                 transform.set_rotation(turn);
             }
         }
@@ -578,25 +605,12 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
 
 /// What the world's camera sees: the entity with a [`CameraLens`] of the
 /// highest priority (the lowest id among equals, so the answer does not
-/// change between runs), from where it is and along its +z. `None` when no
-/// entity has one — the game falls back to the scene's `view`.
+/// change between runs), from where it is and along its +z — blended from
+/// the camera before and shaken as the world's camera brain says
+/// ([`crate::cameras`]). `None` when no entity has one — the game falls
+/// back to the scene's `view`.
 pub fn camera_of(world: &World) -> Option<Camera> {
-    let mut best: Option<(i32, std::cmp::Reverse<crate::id::EntityId>, Camera)> = None;
-    for (lens, placed, shown, id) in world
-        .query::<(&CameraLens, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
-        .without::<&ToTexture>()
-        .iter()
-    {
-        let camera = lens_camera(lens.0, crate::world::drawn_at(placed, shown));
-        let key = (
-            lens.0.priority,
-            std::cmp::Reverse(id.map(|i| i.0).unwrap_or_default()),
-        );
-        if best.as_ref().is_none_or(|(p, i, _)| key > (*p, *i)) {
-            best = Some((key.0, key.1, camera));
-        }
-    }
-    best.map(|(_, _, camera)| camera)
+    crate::cameras::seen(world)
 }
 
 /// A camera reflected in the plane through `at` facing `normal`: what a
@@ -613,18 +627,7 @@ pub fn reflected(camera: Camera, at: glam::Vec3, normal: glam::Vec3) -> Camera {
     }
 }
 
-/// What a camera on an entity sees: from where it is, along its +z.
-fn lens_camera(lens: crate::scene::Lens, placed: glam::Mat4) -> Camera {
-    let (_, rotation, position) = placed.to_scale_rotation_translation();
-    Camera {
-        position,
-        target: position + rotation * glam::Vec3::Z,
-        up: rotation * glam::Vec3::Y,
-        fov_y_degrees: lens.fov_deg,
-        ortho: lens.ortho,
-        ..Camera::default()
-    }
-}
+use crate::cameras::lens_camera;
 
 /// The view to write back into a scene for a camera.
 pub fn captured_view(camera: &Camera) -> crate::scene::View {

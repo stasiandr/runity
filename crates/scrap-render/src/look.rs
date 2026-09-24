@@ -33,6 +33,26 @@ pub struct Lens {
     /// damping: 0.3)`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub follow: Option<Follow>,
+    /// Blend into this camera when it takes over rather than cut to it —
+    /// Cinemachine's blend: `blend: (seconds: 1.0, ease: InOutCubic)`.
+    /// Real seconds: slow motion does not stretch it (docs/feel.md).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub blend: Option<Blend>,
+}
+
+/// How a camera comes in when it takes over.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Blend {
+    /// Seconds from the camera before to this one.
+    #[serde(default = "unit")]
+    pub seconds: f32,
+    /// How the way is covered: slow at both ends by default.
+    #[serde(default = "blend_ease")]
+    pub ease: crate::ease::Ease,
+}
+
+fn blend_ease() -> crate::ease::Ease {
+    crate::ease::Ease::InOutCubic
 }
 
 /// A camera keeping after a target.
@@ -49,6 +69,18 @@ pub struct Follow {
     /// Turn to look at the target.
     #[serde(default = "yes_look")]
     pub look: bool,
+    /// Seconds to turn most of the way toward the target, as `damping`
+    /// is for the place: 0 turns at once.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub look_damping: f32,
+    /// Where on the target to look, from its origin, in the world's axes:
+    /// `(0.0, 1.5, 0.0)` for a person's head rather than their feet.
+    #[serde(default, skip_serializing_if = "is_zero_vec3")]
+    pub look_offset: Vec3,
+    /// Metres the target may stray from where the camera keeps before the
+    /// camera goes after it — a dead zone: small steps do not move it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dead_zone: f32,
 }
 
 fn follow_offset() -> Vec3 {

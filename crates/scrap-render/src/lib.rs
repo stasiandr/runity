@@ -12,6 +12,7 @@
 pub mod appearance;
 pub mod atmosphere;
 pub mod bindless;
+pub mod cameras;
 pub mod clouds;
 pub mod cluster;
 pub mod ddgi;
@@ -60,12 +61,13 @@ pub use passes::Passes;
 pub use world_look::build_frame;
 
 /// This module's systems in the loop: cameras that follow keep after their
-/// targets once the frame's moves are done, and sparks and footprints move
-/// on the frame's time — they are for the eye.
+/// targets once the frame's moves are done and the brain blends and shakes
+/// the view, and sparks and footprints move on the frame's time — they
+/// are for the eye.
 pub fn systems(player_loop: &mut scrap_core::player_loop::PlayerLoop) {
     use scrap_core::player_loop::Phase;
     player_loop
-        .add(Phase::LateUpdate, "cameras", world_look::follow_cameras)
+        .add(Phase::LateUpdate, "cameras", world_look::run_cameras)
         .add(Phase::PostLateUpdate, "particles", particles::run_particles)
         .add(Phase::PostLateUpdate, "footprints", footprints::run_footprints);
 }
@@ -75,7 +77,7 @@ pub fn systems(player_loop: &mut scrap_core::player_loop::PlayerLoop) {
 #[allow(unused_imports)]
 use scrap_core::{defaults, id, impl_parts, input, library, AssetLink, Library, Tuned};
 #[allow(unused_imports)]
-use scrap_geometry::{animation, builtin};
+use scrap_geometry::{animation, builtin, ease};
 #[allow(unused_imports)]
 use scrap_gpu::{gpu, gpu_timer, surface};
 #[allow(unused_imports)]

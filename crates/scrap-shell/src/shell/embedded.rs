@@ -20,7 +20,7 @@ use super::{hot, run_steps, translate_pad, Context, Game, WindowConfig, PATCHED}
 use crate::gpu::{Gpu, OffscreenTarget};
 use crate::input::Input;
 use crate::render::Renderer;
-use crate::time::Time;
+use crate::time::{Time, TimeAsk};
 
 /// What waits to go to the editor: the newest frame only — one the editor
 /// has not taken by the time the next is drawn is not worth sending — and
@@ -131,6 +131,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 loop_times: &loop_times,
                 quit: false,
                 capture: None,
+                asked: TimeAsk::default(),
             }
         };
     }
@@ -178,6 +179,8 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
             hot(|| game.patched(&mut ctx));
             quit |= ctx.quit;
             wanted = ctx.capture.or(wanted);
+            let asked = ctx.asked;
+            time.ask(asked);
         }
         let steps = Instant::now();
         quit |= run_steps(&mut game, &mut time, &input, (target.width, target.height));
@@ -187,6 +190,8 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         let frame = hot(|| game.frame(&mut ctx));
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
+        let asked = ctx.asked;
+        time.ask(asked);
         loop_times.record("frame", framed.elapsed());
         if let Some(on) = wanted.filter(|on| *on != captured) {
             captured = on;
