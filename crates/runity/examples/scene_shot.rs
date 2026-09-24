@@ -170,8 +170,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Twice: what reads the last frame — screen-space reflections — has
     // one by the second. Upscaled, a few more: MetalFX temporal's history
-    // at the screen's size fills in over them.
-    for _ in 0..if upscale.is_some() { 16 } else { 2 } {
+    // at the screen's size fills in over them. With an irradiance volume,
+    // a second's worth: its probes settle over it.
+    let warm = if !frame.irradiance_volumes.is_empty() {
+        90
+    } else if upscale.is_some() {
+        16
+    } else {
+        2
+    };
+    for _ in 0..warm {
         renderer.render(&gpu, &target, &frame);
     }
     let pixels = target.read_rgba(&gpu);

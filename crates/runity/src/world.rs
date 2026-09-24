@@ -351,6 +351,10 @@ pub fn post_volumes(frame: &mut Frame, world: &World) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbeBox(pub crate::scene::Probe);
 
+/// An irradiance volume at an entity, from its line's `irradiance_volume`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeBox(pub crate::ddgi::IrradianceVolume);
+
 /// The collision layer's name, kept from the scene when not `default`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer(pub String);
@@ -546,6 +550,9 @@ fn spawn_one(
     }
     if let Some(probe) = desc.reflection_probe {
         let _ = world.insert_one(entity, ProbeBox(probe));
+    }
+    if let Some(volume) = desc.irradiance_volume {
+        let _ = world.insert_one(entity, VolumeBox(volume));
     }
     if desc.bends_grass > 0.0 {
         let _ = world.insert_one(entity, BendsGrass(desc.bends_grass));
@@ -1011,6 +1018,17 @@ impl Patch<'_> {
                 }
                 None => {
                     let _ = world.remove_one::<ProbeBox>(entity);
+                }
+            }
+            changed = true;
+        }
+        if was.is_none_or(|(old, _)| old.irradiance_volume != desc.irradiance_volume) {
+            match desc.irradiance_volume {
+                Some(volume) => {
+                    let _ = world.insert_one(entity, VolumeBox(volume));
+                }
+                None => {
+                    let _ = world.remove_one::<VolumeBox>(entity);
                 }
             }
             changed = true;
@@ -1594,6 +1612,15 @@ pub fn build_frame_where(
             blend_distance: probe.0.blend_distance,
         })
         .collect();
+    let irradiance_volumes = world
+        .query::<(&VolumeBox, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(volume, placed, _)| crate::ddgi::PlacedVolume {
+            centre: placed.0.w_axis.truncate(),
+            volume: volume.0,
+        })
+        .collect();
     let mut decals: Vec<crate::decals::Decal> = world
         .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
         .iter()
@@ -1667,6 +1694,7 @@ pub fn build_frame_where(
         camera,
         lighting,
         reflection_probes,
+        irradiance_volumes,
         decals,
         puffs,
         gpu_particles,
@@ -1775,6 +1803,7 @@ mod tests {
             light: None,
             particles: None,
             reflection_probe: None,
+            irradiance_volume: None,
             decal: None,
             footprints: None,
             terrain: None,
@@ -1817,6 +1846,7 @@ mod tests {
                     light: None,
                     particles: None,
                     reflection_probe: None,
+                    irradiance_volume: None,
                     decal: None,
                     footprints: None,
                     terrain: None,

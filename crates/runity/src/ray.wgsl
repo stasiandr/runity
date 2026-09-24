@@ -94,8 +94,23 @@ fn ray_seen(start: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
     }
     let metal = m.color_metal.w;
     let lifted = hit + n * 0.02;
-    // The sky's hemisphere, the sun with its shadow, the lamps with theirs.
-    var light = mix(frame.ground_color.rgb, frame.sky_color.rgb, n.y * 0.5 + 0.5);
+    // The sky's hemisphere (or the irradiance volume's probes), the sun
+    // with its shadow, the lamps with theirs.
+    var light = ray_direct(hit, lifted, n);
+    let volume = ddgi_irradiance(lifted, n, -direction);
+    light += mix(mix(frame.ground_color.rgb, frame.sky_color.rgb, n.y * 0.5 + 0.5), volume.rgb, volume.a);
+    var color = albedo * (1.0 - metal) * light + m.emission_smooth.rgb;
+    // A metal seen this way: its own reflection, of the probes and sky.
+    if metal > 0.0 {
+        color += albedo * metal * probes_and_sky(hit, reflect(direction, n), 1.0 - m.emission_smooth.w);
+    }
+    return vec4<f32>(color, 1.0);
+}
+
+/// The sun and the lamps on a point a ray hit, each with its shadow ray
+/// from `lifted`, just off it.
+fn ray_direct(hit: vec3<f32>, lifted: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
     let to_sun = -normalize(frame.sun_direction.xyz);
     let sun_facing = max(dot(n, to_sun), 0.0);
     if sun_facing > 0.0 {
@@ -118,12 +133,64 @@ fn ray_seen(start: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
         let seen = ray_visible(lifted, toward, max(distance_to - 0.05, 0.0));
         light += lamp.color_shadow.rgb * facing * reach_lamp * reach_lamp * seen;
     }
-    var color = albedo * (1.0 - metal) * light + m.emission_smooth.rgb;
-    // A metal seen this way: its own reflection, of the probes and sky.
-    if metal > 0.0 {
-        color += albedo * metal * probes_and_sky(hit, reflect(direction, n), 1.0 - m.emission_smooth.w);
+    return light;
+}
+
+/// The sky's light along a ray that met nothing, as the hemisphere
+/// ambient has it: the scene's sky colour above (shaded by the physical
+/// sky's picture, where there is one), the ground's below.
+fn ddgi_sky(d: vec3<f32>) -> vec3<f32> {
+    if d.y < 0.0 {
+        return frame.ground_color.rgb;
     }
-    return vec4<f32>(color, 1.0);
+    var sky = frame.sky_color.rgb;
+    if frame.air.x > 0.5 {
+        sky = sky * physical_sky(d) / max(sky_toward(vec3<f32>(0.0, 1.0, 0.0)), vec3<f32>(1e-4));
+    }
+    return sky;
+}
+
+/// One of an irradiance volume's probes' rays this frame (ddgi.rs): what
+/// it met, lit — by the sun, the lamps and the probes round it, so light
+/// bounces on frame after frame — and how far; the distance negative for
+/// the back of a face.
+@compute @workgroup_size(64)
+fn cs_ddgi_trace(@builtin(global_invocation_id) id: vec3<u32>) {
+    let rays = u32(ddgi_step.rays.x);
+    if id.x >= u32(ddgi_step.rays.w) * rays {
+        return;
+    }
+    let probe = id.x / rays;
+    let direction = ddgi_direction(id.x % rays);
+    let origin = ddgi_position(probe);
+    let reach = 300.0;
+    let mask = RAY_THINGS | RAY_TERRAIN;
+    var query: ray_query;
+    rayQueryInitialize(&query, scene_rays, RayDesc(RAY_FLAG_NONE, mask, 0.0, reach, origin, direction));
+    while rayQueryProceed(&query) {}
+    let found = rayQueryGetCommittedIntersection(&query);
+    if found.kind == RAY_QUERY_INTERSECTION_NONE {
+        ddgi_rays[id.x] = vec4<f32>(ddgi_sky(direction), 1.0e4);
+        return;
+    }
+    if !found.front_face {
+        ddgi_rays[id.x] = vec4<f32>(0.0, 0.0, 0.0, -found.t);
+        return;
+    }
+    let first = RayHit(found.t, found.instance_custom_data);
+    let hit = origin + direction * found.t;
+    let n = ray_facing(origin, direction, first, reach, mask);
+    let m = ray_materials[first.instance];
+    if m.color_metal.w < -0.5 {
+        ddgi_rays[id.x] = vec4<f32>(m.color_metal.rgb + m.emission_smooth.rgb, found.t);
+        return;
+    }
+    let lifted = hit + n * 0.02;
+    var light = ray_direct(hit, lifted, n);
+    let volume = ddgi_irradiance(lifted, n, -direction);
+    light += mix(mix(frame.ground_color.rgb, frame.sky_color.rgb, n.y * 0.5 + 0.5), volume.rgb, volume.a);
+    let color = m.color_metal.rgb * (1.0 - max(m.color_metal.w, 0.0)) * light + m.emission_smooth.rgb;
+    ddgi_rays[id.x] = vec4<f32>(color, found.t);
 }
 
 /// What a mirror at `origin` sees along `direction`, lit: alpha 1 when the

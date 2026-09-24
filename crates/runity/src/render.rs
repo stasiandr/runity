@@ -541,6 +541,9 @@ pub struct Frame {
     /// Boxes whose surroundings are baked for reflections
     /// ([`crate::reflections`]).
     pub reflection_probes: Vec<crate::reflections::ReflectionProbe>,
+    /// Boxes of probes the rays keep lit, for diffuse light that bounces
+    /// ([`crate::ddgi`]): the first is lit, on a device that traces.
+    pub irradiance_volumes: Vec<crate::ddgi::PlacedVolume>,
     /// Pictures pressed onto what lies in their boxes ([`crate::decals`]).
     pub decals: Vec<crate::decals::Decal>,
     /// Light seen in the air ([`crate::volume`]); off by default.
@@ -594,6 +597,7 @@ impl Default for Frame {
             texture_views: Vec::new(),
             ui_pictures: Vec::new(),
             reflection_probes: Vec::new(),
+            irradiance_volumes: Vec::new(),
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
@@ -727,6 +731,8 @@ struct FrameUniform {
     glass: [f32; 4],
     /// A stroke of lightning's channel: points, brightness in `w`.
     bolt: [[f32; 4]; crate::weather::BOLT_POINTS],
+    /// The irradiance volume ([`crate::ddgi`]): its grid, and its biases.
+    ddgi: [[f32; 4]; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1085,6 +1091,8 @@ pub struct Renderer {
     occlusion: crate::occlusion::Occlusion,
     /// Dense meshes culled a cluster at a time ([`crate::cluster`]).
     clusters: crate::cluster::Clusters,
+    /// Probes the rays keep lit ([`crate::ddgi`]).
+    ddgi: crate::ddgi::Ddgi,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2090,11 +2098,13 @@ impl Renderer {
             },
         );
         let cluster_pipelines = self.clusters.make_pipelines(gpu, &shader, self.samples);
+        let ddgi_pipelines = self.ddgi.make_pipelines(gpu, &shader, self.ray.is_some());
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
         self.pipelines = pipelines;
         self.clusters.pipelines = cluster_pipelines;
+        (self.ddgi.trace, self.ddgi.update) = ddgi_pipelines;
         self.base_shader = original.to_string();
         // The materials' own shaders are the standard one with their
         // surface in: built again on the new one.
@@ -2421,6 +2431,17 @@ impl Renderer {
                 count: None,
             },
         ]);
+        // The irradiance volume's probes' pictures.
+        frame_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 25,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
         // The fog's compute passes read the frame as the lit shader does.
         for entry in &mut frame_entries {
             entry.visibility |= wgpu::ShaderStages::COMPUTE;
@@ -2437,10 +2458,11 @@ impl Renderer {
                 },
                 count: None,
             });
-            // What each thing in it is made of, for reflections' hits.
+            // What each thing in it is made of, for reflections' hits and
+            // the irradiance volume's rays.
             frame_entries.push(wgpu::BindGroupLayoutEntry {
                 binding: 24,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
                     has_dynamic_offset: false,
@@ -2509,10 +2531,12 @@ impl Renderer {
         let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
         let clouds = crate::clouds::CloudRenderer::new(gpu);
         let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
+        let mut ddgi = crate::ddgi::Ddgi::new(gpu, &layout);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
+                ddgi: &ddgi.probes,
                 terrain_heights: &terrain_heights,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
@@ -2781,11 +2805,13 @@ impl Renderer {
 
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
         clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
+        (ddgi.trace, ddgi.update) = ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing);
 
         let fog_bind_group = bind_group.clone();
         let mut renderer = Self {
             pipelines,
             clusters,
+            ddgi,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -2913,6 +2939,7 @@ impl Renderer {
             gpu,
             &self.layout,
             &FrameInputs {
+                ddgi: &self.ddgi.probes,
                 terrain_heights: &self.terrain_heights,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
@@ -4003,6 +4030,7 @@ impl Renderer {
                         ray_tracing: crate::ray::RayTracing::default(),
                         overlay_draws: Vec::new(),
                         reflection_probes: Vec::new(),
+            irradiance_volumes: Vec::new(),
                         ..frame.clone()
                     };
                     self.render_view(gpu, None, size, size, &seen, Some((i * 6 + face) as u32));
@@ -4046,6 +4074,11 @@ impl Renderer {
         // The screen's frame timed, when asked — or when dynamic resolution
         // needs the GPU's time: not a probe's face or a picture's.
         let timed = (self.timing || (scaling && upscaling.dynamic.enabled)) && screen;
+        // The irradiance volume, for the screen's frame: its probes made
+        // again when its grid changes, and the frame's group with them.
+        if screen && self.ddgi.prepare(gpu, frame.irradiance_volumes.first().copied()) {
+            self.rebind(gpu);
+        }
         if timed {
             // Made the first time it is wanted: a renderer that is never
             // timed never holds a query set.
@@ -4630,6 +4663,7 @@ impl Renderer {
                 }
                 out
             },
+            ddgi: if probe.is_none() { self.ddgi.uniform() } else { [[0.0; 4]; 4] },
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -5065,7 +5099,9 @@ impl Renderer {
         }
         // The scene as rays see it: every solid draw, seen or not — what is
         // behind the camera still shadows what is in front of it.
-        let traced = self.ray.is_some() && frame.ray_tracing.any();
+        // The irradiance volume's probes trace too, whatever else does.
+        let lit_by_probes = probe.is_none() && view.is_some() && !self.picturing && self.ddgi.on();
+        let traced = self.ray.is_some() && (frame.ray_tracing.any() || lit_by_probes);
         if traced {
             let meshes = &self.meshes;
             // The terrain apart from the rest (RAY_TERRAIN in render.wgsl):
@@ -5194,6 +5230,11 @@ impl Renderer {
             );
         }
 
+        // The irradiance volume's probes, lit by this frame's rays.
+        if traced && lit_by_probes {
+            self.ddgi.run(gpu, &mut encoder, &self.bind_group);
+        }
+
         // The fog in the air, once every shadow it looks through is drawn.
         if volumetric.enabled {
             self.volumes.run(
@@ -5206,7 +5247,7 @@ impl Renderer {
 
         // Ambient occlusion: the solid things' depth and normals, and the
         // occlusion made from them, before the lit pass reads it.
-        let traced_occlusion = traced && frame.ray_tracing.ambient_occlusion;
+        let traced_occlusion = self.ray.is_some() && frame.ray_tracing.ambient_occlusion;
         let ssao_on = frame.ambient_occlusion.enabled && !traced_occlusion;
         // The lens reads the same depth.
         let lens_on = crate::lens::LensRenderer::wanted(&frame.post);
@@ -5712,6 +5753,8 @@ struct FrameInputs<'a> {
     history: &'a wgpu::TextureView,
     /// Terrain heights, for the vertex shader.
     terrain_heights: &'a wgpu::TextureView,
+    /// The irradiance volume's probes.
+    ddgi: &'a wgpu::Buffer,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -5774,6 +5817,7 @@ fn frame_bind_group(
         },
         view(4, inputs.occlusion),
         buffer(6, inputs.lights),
+        buffer(25, inputs.ddgi),
         buffer(7, inputs.cells),
         buffer(8, inputs.indices),
         view(9, inputs.light_shadow_map),

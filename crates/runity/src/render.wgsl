@@ -112,6 +112,10 @@ struct Frame {
     glass: vec4<f32>,
     // a stroke of lightning's channel: points, brightness in w
     bolt: array<vec4<f32>, 32>,
+    // The irradiance volume (ddgi.rs): its first probe and spacing; its
+    // probes along each axis and 1 when on; the biases along the normal
+    // and toward the eye, and the farthest a distance counts.
+    ddgi: array<vec4<f32>, 4>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -1587,6 +1591,199 @@ fn around(position: vec3<f32>, normal: vec3<f32>, hemisphere: vec3<f32>) -> vec3
     return sum + hemisphere * (1.0 - covered);
 }
 
+// DDGI (ddgi.rs): each probe's two octahedral pictures of 8×8 texels,
+// its light and then its distances (mean, mean of squares, 1 when the
+// probe is out in the open).
+@group(0) @binding(25) var<storage, read> ddgi_probes: array<vec4<f32>>;
+
+const DDGI_TEXELS: u32 = 8u;
+const DDGI_PER_PROBE: u32 = 128u;
+
+/// A direction to a point of the unit square, by the octahedron.
+fn oct_encode(d: vec3<f32>) -> vec2<f32> {
+    var p = d.xz / (abs(d.x) + abs(d.y) + abs(d.z));
+    if d.y < 0.0 {
+        p = (1.0 - abs(p.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    }
+    return p * 0.5 + 0.5;
+}
+
+fn oct_decode(uv: vec2<f32>) -> vec3<f32> {
+    let e = uv * 2.0 - 1.0;
+    var d = vec3<f32>(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    if d.y < 0.0 {
+        let xz = (1.0 - abs(d.zx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), d.xz >= vec2<f32>(0.0));
+        d = vec3<f32>(xz.x, d.y, xz.y);
+    }
+    return normalize(d);
+}
+
+/// A probe's picture at `uv`, filtered between its four nearest texels;
+/// `offset` 0 for its light, 64 for its distances.
+fn ddgi_texel(probe: u32, uv: vec2<f32>, offset: u32) -> vec4<f32> {
+    let t = clamp(uv * f32(DDGI_TEXELS) - 0.5, vec2<f32>(0.0), vec2<f32>(f32(DDGI_TEXELS) - 1.0));
+    let a = vec2<u32>(floor(t));
+    let b = min(a + 1u, vec2<u32>(DDGI_TEXELS - 1u));
+    let f = t - floor(t);
+    let base = probe * DDGI_PER_PROBE + offset;
+    let t00 = ddgi_probes[base + a.y * DDGI_TEXELS + a.x];
+    let t10 = ddgi_probes[base + a.y * DDGI_TEXELS + b.x];
+    let t01 = ddgi_probes[base + b.y * DDGI_TEXELS + a.x];
+    let t11 = ddgi_probes[base + b.y * DDGI_TEXELS + b.x];
+    return mix(mix(t00, t10, f.x), mix(t01, t11, f.x), f.y);
+}
+
+/// The diffuse light the irradiance volume gives a surface at `p`
+/// turned `n`, seen from `to_eye`: rgb, and in alpha how much it covers
+/// there (1 inside the grid and half a cell past it, 0 a cell past).
+fn ddgi_irradiance(p: vec3<f32>, n: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+    if frame.ddgi[1].w < 0.5 {
+        return vec4<f32>(0.0);
+    }
+    let origin = frame.ddgi[0].xyz;
+    let spacing = frame.ddgi[0].w;
+    let counts = vec3<i32>(frame.ddgi[1].xyz);
+    let biased = p + n * frame.ddgi[2].x + to_eye * frame.ddgi[2].y;
+    let g = (biased - origin) / spacing;
+    let far = vec3<f32>(counts - 1);
+    let inside = min(g, far - g);
+    // Whole to half a cell past the outer probes — a room's walls, just
+    // outside them, are theirs — and gone a cell past.
+    let covered = clamp((min(inside.x, min(inside.y, inside.z)) + 1.0) * 2.0, 0.0, 1.0);
+    if covered <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let base = clamp(vec3<i32>(floor(g)), vec3<i32>(0), counts - 2);
+    let alpha = clamp(g - vec3<f32>(base), vec3<f32>(0.0), vec3<f32>(1.0));
+    let normal_uv = oct_encode(n);
+    var sum = vec3<f32>(0.0);
+    var weights = 0.0;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let offset = vec3<i32>(i32(i & 1u), i32((i >> 1u) & 1u), i32((i >> 2u) & 1u));
+        let at = base + offset;
+        let probe = u32(at.x + counts.x * (at.y + counts.y * at.z));
+        let position = origin + vec3<f32>(at) * spacing;
+        let near = mix(1.0 - alpha, alpha, vec3<f32>(offset));
+        let trilinear = near.x * near.y * near.z;
+        // On the side the surface faces: a probe behind it counts less.
+        let toward = normalize(position - p);
+        let facing = (dot(toward, n) + 1.0) * 0.5;
+        var weight = facing * facing + 0.2;
+        // Can the probe see it: its distances that way against how far.
+        let away = biased - position;
+        let r = length(away);
+        let moments = ddgi_texel(probe, oct_encode(away / max(r, 1e-4)), 64u);
+        if moments.z < 0.5 {
+            continue;
+        }
+        if r > moments.x {
+            let variance = abs(moments.x * moments.x - moments.y);
+            let past = r - moments.x;
+            let chebyshev = variance / (variance + past * past);
+            weight *= max(chebyshev * chebyshev * chebyshev, 0.0);
+        }
+        // Crushed where it is faint, so a sliver of a hidden probe's light
+        // does not come through.
+        weight = max(weight, 1e-6);
+        if weight < 0.2 {
+            weight *= weight * weight / 0.04;
+        }
+        weight *= trilinear;
+        sum += ddgi_texel(probe, normal_uv, 0u).rgb * weight;
+        weights += weight;
+    }
+    // Inside the box, no probe that can see here is dark, not the sky:
+    // the sky is what the probes found.
+    if weights < 1e-5 {
+        return vec4<f32>(0.0, 0.0, 0.0, covered);
+    }
+    return vec4<f32>(sum / weights, covered);
+}
+
+// The irradiance volume's update (ddgi.rs): this frame's rays, and the
+// probes' pictures they are blended into.
+struct DdgiStep {
+    rotation: mat4x4<f32>,
+    // rays a probe, how much of the old is kept, the farthest a distance
+    // counts, probes
+    rays: vec4<f32>,
+};
+
+@group(3) @binding(7) var<uniform> ddgi_step: DdgiStep;
+@group(3) @binding(8) var<storage, read_write> ddgi_rays: array<vec4<f32>>;
+@group(3) @binding(9) var<storage, read_write> ddgi_out: array<vec4<f32>>;
+
+/// The `i`-th of a probe's rays this frame: spread evenly over the sphere
+/// (spherical Fibonacci), turned the frame's way.
+fn ddgi_direction(i: u32) -> vec3<f32> {
+    let count = ddgi_step.rays.x;
+    let k = f32(i) + 0.5;
+    let y = 1.0 - 2.0 * k / count;
+    let r = sqrt(max(1.0 - y * y, 0.0));
+    let a = k * 2.3999632;
+    return normalize((ddgi_step.rotation * vec4<f32>(cos(a) * r, y, sin(a) * r, 0.0)).xyz);
+}
+
+fn ddgi_position(probe: u32) -> vec3<f32> {
+    let counts = vec3<u32>(frame.ddgi[1].xyz);
+    let at = vec3<u32>(probe % counts.x, (probe / counts.x) % counts.y, probe / (counts.x * counts.y));
+    return frame.ddgi[0].xyz + vec3<f32>(at) * frame.ddgi[0].w;
+}
+
+var<workgroup> ddgi_backs: atomic<u32>;
+
+/// One probe a group, one texel of both its pictures a thread: every ray
+/// of the frame weighed by how near it runs to the texel's direction.
+@compute @workgroup_size(8, 8)
+fn cs_ddgi_update(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    let probe = group.x;
+    let rays = u32(ddgi_step.rays.x);
+    let keep = ddgi_step.rays.y;
+    let farthest = ddgi_step.rays.z;
+    let texel = local.y * DDGI_TEXELS + local.x;
+    if texel == 0u {
+        atomicStore(&ddgi_backs, 0u);
+    }
+    workgroupBarrier();
+    let d = oct_decode((vec2<f32>(local.xy) + 0.5) / f32(DDGI_TEXELS));
+    var light = vec3<f32>(0.0);
+    var light_weight = 0.0;
+    var mean = 0.0;
+    var squares = 0.0;
+    var distance_weight = 0.0;
+    for (var i = 0u; i < rays; i = i + 1u) {
+        let ray = ddgi_rays[probe * rays + i];
+        let direction = ddgi_direction(i);
+        let cosine = dot(d, direction);
+        var t = ray.w;
+        if t < 0.0 {
+            // The back of a face: inside something. Nothing lit, and near.
+            if texel == 0u {
+                atomicAdd(&ddgi_backs, 1u);
+            }
+            t = -t * 0.2;
+        } else {
+            let w = max(cosine, 0.0);
+            light += ray.rgb * w;
+            light_weight += w;
+        }
+        let near = pow(max(cosine, 0.0), 50.0);
+        let clamped = min(t, farthest);
+        mean += clamped * near;
+        squares += clamped * clamped * near;
+        distance_weight += near;
+    }
+    workgroupBarrier();
+    let open = select(0.0, 1.0, f32(atomicLoad(&ddgi_backs)) < f32(rays) * 0.25);
+    let at = probe * DDGI_PER_PROBE + texel;
+    let new_light = light / max(light_weight, 1e-4);
+    let new_moments = vec2<f32>(mean, squares) / max(distance_weight, 1e-4);
+    let old_light = ddgi_out[at];
+    let old_moments = ddgi_out[at + 64u];
+    ddgi_out[at] = vec4<f32>(mix(new_light, old_light.rgb, keep), 1.0);
+    ddgi_out[at + 64u] = vec4<f32>(mix(new_moments, old_moments.xy, keep), open, 0.0);
+}
+
 /// What the probes and the sky give a reflection, without the screen.
 fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let sky = environment(direction, perceptual_roughness);
@@ -1620,8 +1817,14 @@ fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughnes
             break;
         }
     }
-    return sum + sky * (1.0 - covered);
+    return sum + sky * (1.0 - covered) * sky_share;
 }
+
+/// How much of the open sky a reflection here may show: less inside an
+/// irradiance volume, by how much of the sky's light its probes found
+/// gets in — a closed room's polish does not mirror a sky it cannot see.
+/// Set by the lit shader for its pixel; 1 everywhere else.
+var<private> sky_share: f32 = 1.0;
 
 /// A tangent-space normal from the map, turned into the world. The
 /// tangent frame is worked out from how position and UV change across the
@@ -1932,7 +2135,13 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let here = sky_toward(normal);
         sky_light = sky_light * here / max(up, vec3<f32>(1e-4));
     }
-    let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    var ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    // Inside an irradiance volume its probes give the diffuse light.
+    let volume = ddgi_irradiance(in.world_position, normal, to_eye);
+    let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let reaches = clamp(dot(volume.rgb, luminance) / max(dot(ambient, luminance), 1e-4), 0.0, 1.0);
+    sky_share = mix(1.0, reaches, volume.a);
+    ambient = mix(ambient, volume.rgb, volume.a);
     color = color + b.diffuse * (ambient * ao + bounce) * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);

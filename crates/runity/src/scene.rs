@@ -815,6 +815,10 @@ pub struct EntityDesc {
     /// A reflection probe at this entity; see [`Probe`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub reflection_probe: Option<Probe>,
+    /// A box of probes the rays keep lit, for light that bounces; see
+    /// [`crate::ddgi`].
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub irradiance_volume: Option<crate::ddgi::IrradianceVolume>,
     /// This entity's camera draws into a picture, not onto the screen;
     /// see [`RenderTexture`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1911,6 +1915,7 @@ mod tests {
                 light: None,
                 particles: None,
                 reflection_probe: None,
+                irradiance_volume: None,
                 decal: None,
                 footprints: None,
                 terrain: None,
@@ -1951,6 +1956,7 @@ mod tests {
                     light: None,
                     particles: None,
                     reflection_probe: None,
+                    irradiance_volume: None,
                     decal: None,
                     footprints: None,
                     terrain: None,
@@ -2021,6 +2027,7 @@ mod tests {
                 light: None,
                 particles: None,
                 reflection_probe: None,
+                irradiance_volume: None,
                 decal: None,
                 footprints: None,
                 terrain: None,
