@@ -16,9 +16,13 @@ use runity_studio::Studio;
 
 fn studio() -> Option<(Studio, std::path::PathBuf)> {
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/valley");
+    // A number of its own as well: two tests starting in the same
+    // nanosecond must not share a folder and delete each other's files.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "runity-studio-{}-{}",
+        "runity-studio-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
