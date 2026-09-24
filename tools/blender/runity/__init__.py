@@ -25,7 +25,14 @@ import re
 import bpy
 from bpy.app.handlers import persistent
 
-from . import export
+if "export" in locals():
+    # Reload Scripts runs this file again but keeps export.py as it was
+    # first imported: without this, a new exporter needs a new Blender.
+    import importlib
+
+    importlib.reload(export)
+else:
+    from . import export
 
 _moved = set()
 _flush_pending = False
@@ -70,6 +77,10 @@ def _changed(_scene, depsgraph):
 # Blender keeps only a pointer to a dynamic enum's strings: they must live
 # somewhere Python does not collect them.
 _enum_items = {}
+
+# The Game material menu's "Blender's own". Not "": an enum item with an
+# empty identifier is a separator in a menu, and cannot be picked.
+_OWN = "__blender__"
 
 
 def _shape_default(shape):
@@ -149,7 +160,7 @@ def _component_items(_self, _context):
 
 def _material_items(_self, _context):
     names = export.hints().get("materials", [])
-    items = [("", "(Blender's own)", "Draw with the material the file gives it")]
+    items = [(_OWN, "Blender's own", "Draw with the material the file gives it")]
     items += [(n, n, "") for n in names]
     _enum_items["materials"] = items
     return items
@@ -221,7 +232,7 @@ class RUNITY_OT_set_material(bpy.types.Operator):
         obj = context.object
         if obj is None:
             return {"CANCELLED"}
-        if self.material:
+        if self.material and self.material != _OWN:
             obj[export.MATERIAL] = self.material
         elif export.MATERIAL in obj:
             del obj[export.MATERIAL]
@@ -267,6 +278,8 @@ class RUNITY_PT_panel(bpy.types.Panel):
             "runity.set_material", "material",
             text=material if isinstance(material, str) else "Blender's own",
         )
+        if isinstance(material, str):
+            row.operator("runity.set_material", text="", icon="X").material = _OWN
 
         swapped = _file_overrides()
         slots = [slot.material for slot in obj.material_slots if slot.material is not None]

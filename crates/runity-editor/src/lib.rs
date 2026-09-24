@@ -2900,7 +2900,8 @@ impl Session {
             self.blender = blender_link::Link::start(project).ok();
             self.write_blender_hints();
         }
-        let Some(link) = &self.blender else { return 0 };
+        let Some(link) = &mut self.blender else { return 0 };
+        link.keep_port();
         let messages = link.drain();
         let count = messages.len();
         // In the order they came: a drag after a save moves what the save

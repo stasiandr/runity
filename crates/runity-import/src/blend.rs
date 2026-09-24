@@ -110,6 +110,36 @@ print("RUNITY_INSTALLED " + folder)
     }
 }
 
+/// Whether a Blender with a window is running on this machine. Installing
+/// the plugin while one is open does not stick: Blender saves its
+/// preferences when it quits, from memory, over the ones [`install`] just
+/// wrote — the plugin stays in its folder, turned off. Blenders run with
+/// `--background`, as the importer runs them, do not count.
+pub fn blender_open() -> bool {
+    if cfg!(windows) {
+        // tasklist cannot tell a background Blender from one with a window;
+        // the importer's are gone in seconds.
+        return Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq blender.exe", "/NH"])
+            .output()
+            .is_ok_and(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .to_lowercase()
+                    .contains("blender.exe")
+            });
+    }
+    let Ok(out) = Command::new("ps").args(["-axo", "args="]).output() else {
+        return false;
+    };
+    String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+        let mut args = line.split_whitespace();
+        let program = args.next().unwrap_or_default();
+        let name = program.rsplit('/').next().unwrap_or_default();
+        name.eq_ignore_ascii_case("blender")
+            && !args.any(|a| a == "--background" || a == "-b")
+    })
+}
+
 /// The stream's version; the plugin writes the same.
 pub const VERSION: u32 = 1;
 

@@ -3266,12 +3266,17 @@ impl Studio {
                 Action::InstallBlenderPlugin => {
                     let blender = runity_import::blend::blender()
                         .ok_or("Blender was not found: install it, or set RUNITY_BLENDER to it")?;
+                    if runity_import::blend::blender_open() {
+                        return Err(
+                            "Blender is open: quit it and install again. Blender saves its preferences when it quits, over the ones that turn the plugin on".into(),
+                        );
+                    }
                     let folder =
                         runity_import::blend::install(&blender).map_err(|e| format!("{e:#}"))?;
                     s.say(
                         Level::Info,
                         format!(
-                            "the runity plugin is in Blender and on ({}); a Blender already open picks it up when restarted",
+                            "the runity plugin is in Blender and on ({}): open Blender, the runity tab is in the 3D view's sidebar (N)",
                             folder.display()
                         ),
                     );

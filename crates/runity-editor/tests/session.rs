@@ -4746,6 +4746,28 @@ fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
     assert!(session.palette().iter().any(|(name, _)| name == "slate"));
 }
 
+/// Another editor on the same project takes the port file away when it
+/// closes; the one still open puts its own back, so Blender finds it.
+#[test]
+fn the_link_puts_its_port_back_when_another_editor_took_it() {
+    let Some((mut session, path)) = open_with(
+        "blender-link-kept",
+        r#"(entities: [])"#,
+    ) else {
+        return;
+    };
+    session.poll_blender();
+    let port = session.blender_port().expect("listening");
+    let file = path.parent().unwrap().parent().unwrap().join("library/blender-link");
+    std::fs::remove_file(&file).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    session.poll_blender();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap().trim(),
+        port.to_string()
+    );
+}
+
 /// A saved `.blend` and an object being moved, sent by Blender itself over
 /// the link: the save is imported without starting another Blender, and
 /// the move shows before any save.

@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use runity::{EntityId, Transform};
 use serde_json::Value;
@@ -51,6 +51,8 @@ pub(crate) struct Link {
     pub port: u16,
     messages: Receiver<Message>,
     stop: Arc<AtomicBool>,
+    /// When the port file was last seen to hold this link's port.
+    checked: Instant,
 }
 
 impl Link {
@@ -89,12 +91,28 @@ impl Link {
             port,
             messages,
             stop,
+            checked: Instant::now(),
         })
     }
 
     /// What arrived since the last call.
     pub fn drain(&self) -> Vec<Message> {
         self.messages.try_iter().collect()
+    }
+
+    /// Put the port back where the plugin looks, if it is gone: another
+    /// editor on the same project — a second window, a screenshot tool —
+    /// writes its own and takes it away when it closes, and Blender would
+    /// no longer find this one. Once a second, not every frame.
+    pub fn keep_port(&mut self) {
+        if self.checked.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.checked = Instant::now();
+        let file = self.project.library().join(PORT_FILE);
+        if !file.is_file() {
+            let _ = std::fs::write(file, format!("{}\n", self.port));
+        }
     }
 }
 
