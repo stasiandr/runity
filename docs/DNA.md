@@ -583,7 +583,8 @@ N метров, противоположная на месте), `array` (коп
 2026-09-25 (docs/history/2026-09-designer-tools-review/): Play from Here и
 метрики игрока (docs/player.md), таблица записей `tuning/` и сущностей
 (docs/tables.md), консоль и читы в игре (docs/console.md), кисти с
-вычитанием (docs/brush.md), провода триггеров (docs/wires.md), диалоги с
+вычитанием (docs/brush.md), провода триггеров (docs/wires.md), слои
+анимации с масками и IK ступней (docs/animation.md), диалоги с
 условиями, прогоном без игры и квесты (docs/dialogue.md), бленды и тряска
 камер, твины, хит-стоп (docs/feel.md).
 
