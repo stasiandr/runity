@@ -1555,6 +1555,45 @@ fn project_settings_open_and_save_only_what_reads() {
 }
 
 #[test]
+fn configs_show_as_tables_and_follow_a_save() {
+    let Some((mut s, dir)) = studio() else { return };
+    let configs = dir.join("configs");
+    std::fs::create_dir_all(configs.join("items")).unwrap();
+    std::fs::write(
+        configs.join("flyby.ron"),
+        "(\n    travel: 3.5,\n    shots: [\n        (at: (0.5, 5.4, 6.7), look: (1.9, 0.4, 0.2)),\n        (at: (1.0, 2.0, 3.0), look: (0.0, 0.0, 0.0)),\n    ],\n)\n",
+    )
+    .unwrap();
+    std::fs::write(
+        configs.join("items/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", hard: (1, 2)),\n    \"Доска\": (id: \"9a02\", base: \"Палка\"),\n}\n",
+    )
+    .unwrap();
+    click(&mut s, "tab configs");
+    s.frame();
+    // The first file opens by itself: an empty page says nothing.
+    assert!(s.ui.find("configs flyby.ron").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("configs field travel").is_some());
+    assert!(s.ui.find("configs table shots").is_some());
+    assert!(s.ui.find("configs row shots 1").is_some());
+
+    click(&mut s, "configs items/materials.ron");
+    assert!(s.ui.find("configs row  Доска").is_some(), "{}", s.ui.dump());
+    assert!(s.ui.find("configs table shots").is_none());
+
+    // A save that is not RON says so, with where.
+    std::fs::write(
+        configs.join("items/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\"\n",
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    let problem = s.ui.find("configs problem").expect("the error shown");
+    assert!(s.ui.text(problem).unwrap_or_default().contains(':'));
+}
+
+#[test]
 fn the_profiler_shows_what_frames_cost() {
     let Some((mut s, _dir)) = studio() else {
         return;

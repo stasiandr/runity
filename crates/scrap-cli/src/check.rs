@@ -202,7 +202,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
         ));
     }
 
-    for path in files(&project.root().join(scrap::project::TUNING), "ron") {
+    for path in files(&project.root().join(scrap::project::CONFIGS), "ron") {
         let file = relative(project, &path);
         let _: Option<ron::Value> = parse(&path, &file, &mut out);
     }
@@ -234,7 +234,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         SRC,
         UI,
         INPUT,
-        TUNING,
+        CONFIGS,
         ANIMATORS,
         SHADERS,
         scrap::layers::FILE,
@@ -279,6 +279,10 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
             _ => None,
         };
         let message = match home {
+            // The folder's old name, from before it held more than numbers.
+            _ if dir && name == "tuning" => {
+                format!("`tuning/` is `{CONFIGS}/` now: `git mv tuning {CONFIGS}`")
+            }
             Some(home) => format!(
                 "`{name}` is outside the layout, where no tool looks for it — it goes in {home}/"
             ),

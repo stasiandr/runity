@@ -21,6 +21,7 @@
 use scrap::prelude::*;
 pub mod actions;
 mod animation;
+pub mod configs;
 mod blender_link;
 mod blockout;
 pub mod console;

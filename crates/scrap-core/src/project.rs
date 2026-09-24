@@ -14,7 +14,7 @@
 //!   prefabs/        *.prefab
 //!   materials/      *.scrmat
 //!   assets/         sources: models, textures, sounds
-//!   tuning/         the game's numbers, RON, reloaded while it runs
+//!   configs/        the game's data, RON, reloaded while it runs
 //!   ui/             the game's screens, RON, reloaded while it runs
 //!   library/        built .scrasset — derived, never committed
 //!   Cargo.toml      the game crate, its own workspace
@@ -86,7 +86,7 @@ pub const SHADERS: &str = "shaders";
 pub const INPUT: &str = "input.ron";
 /// The game's numbers, as RON a designer turns while it runs: see
 /// [`crate::Tuned`].
-pub const TUNING: &str = "tuning";
+pub const CONFIGS: &str = "configs";
 
 /// What the game's components look like, written by the game from its own
 /// types: what the editor's Inspector and `scrap check` know them by
@@ -370,8 +370,8 @@ impl Project {
         )?;
         std::fs::create_dir_all(root.join(crate::strings::DIR))?;
         std::fs::write(root.join(crate::strings::DIR).join("en.ron"), STRINGS_EN)?;
-        std::fs::create_dir_all(root.join(TUNING))?;
-        std::fs::write(root.join(TUNING).join("world.ron"), WORLD_RON)?;
+        std::fs::create_dir_all(root.join(CONFIGS))?;
+        std::fs::write(root.join(CONFIGS).join("world.ron"), WORLD_RON)?;
         std::fs::create_dir_all(root.join(COMPONENTS))?;
         std::fs::create_dir_all(root.join(SYSTEMS))?;
         let bare = modules.is_some_and(|(listed, _)| listed.is_empty());
@@ -746,7 +746,7 @@ mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
 
-/// Numbers from `tuning/world.ron`, reloaded while the game runs.
+/// Numbers from `configs/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -1057,7 +1057,7 @@ fn main() -> anyhow::Result<()> {
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning/world.ron"))
+    let tuning = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "configs/world.ron"))
         .map_err(anyhow::Error::msg)?;
     let layers = Tuned::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "layers.ron"))
         .map_err(anyhow::Error::msg)?;
@@ -1489,7 +1489,7 @@ things in the same place:
 ```
 scrap.ron   the project file
 input.ron    actions by name (\"jump\"), and the keys for each
-tuning/      the game's numbers, RON, typed in code with scrap::Tuned
+configs/     the game's data, RON, typed in code with scrap::Tuned
 ui/          the game's screens: elements anchored in a 1280x720 frame (scrap::screen)
 strings/     the game's words, one file per language; a screen says `@key`
 dialogues/   conversations: lines, answers and the flags they set (scrap::dialogue)

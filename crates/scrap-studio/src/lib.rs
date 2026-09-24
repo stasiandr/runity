@@ -21,6 +21,7 @@ mod animator;
 pub mod appearance;
 mod bottom;
 mod clipboard;
+mod configs;
 mod dialogues;
 mod dock;
 mod git_marks;

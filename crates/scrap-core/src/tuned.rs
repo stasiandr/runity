@@ -1,7 +1,7 @@
 //! Numbers a designer turns while the game runs.
 //!
 //! Unity's ScriptableObject, for data: a struct of the game's, kept as RON
-//! in `tuning/` — how high the player jumps, what a wolf costs, how strong
+//! in `configs/` — how high the player jumps, what a wolf costs, how strong
 //! gravity is — and read into the game typed. [`Tuned::poll`] rereads it
 //! when the file changes, so balancing is: save, look, save again, with the
 //! game running (DNA, postulate 1: balance numbers reload too). A save that

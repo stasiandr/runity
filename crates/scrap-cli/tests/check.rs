@@ -358,6 +358,23 @@ fn a_file_outside_the_layout_is_named_with_where_it_goes() {
 }
 
 #[test]
+fn the_old_tuning_folder_is_named_with_its_new_name() {
+    let project = project("tuning");
+    write(&project.root().join("tuning/world.ron"), "(gravity: -9.81)");
+    let findings = check(&project);
+    let warnings: Vec<String> = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .map(ToString::to_string)
+        .collect();
+    assert!(one_containing(&warnings, "`tuning/`").contains("git mv tuning configs"));
+    assert!(
+        errors(&findings).is_empty(),
+        "warnings, not errors: {findings:#?}"
+    );
+}
+
+#[test]
 fn a_component_value_that_does_not_fit_the_game_s_type_is_found() {
     #[derive(serde::Deserialize)]
     #[allow(dead_code)]

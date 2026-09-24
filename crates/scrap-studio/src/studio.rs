@@ -322,6 +322,7 @@ pub struct Studio {
     sculpt_button: NodeId,
     docks: Docks,
     settings: Settings,
+    configs: crate::configs::Configs,
     profiler: Profiler,
     animation: Animation,
     screens: Screens,
@@ -673,6 +674,8 @@ impl Studio {
         let profiler = Profiler::new(&mut ui, lower);
         roots.insert(Panel::Settings, settings.root);
         roots.insert(Panel::Profiler, profiler.root);
+        let configs = crate::configs::Configs::new(&mut ui, lower);
+        roots.insert(Panel::Configs, configs.root);
         let animation = Animation::new(&mut ui, lower);
         roots.insert(Panel::Animation, animation.root);
         let screens = Screens::new(&mut ui, lower);
@@ -734,6 +737,7 @@ impl Studio {
             last_input: Instant::now(),
             docks,
             settings,
+            configs,
             profiler,
             animation,
             screens,
@@ -1435,6 +1439,9 @@ impl Studio {
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
                 self.settings.update(&mut self.ui, &mut self.session);
+            }
+            if self.docks.is_showing(Panel::Configs) {
+                self.configs.update(&mut self.ui, &self.session);
             }
         }
         if timing {
@@ -3382,6 +3389,8 @@ impl Studio {
         } else if self.settings.owns(&self.ui, node) {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
+        } else if self.configs.owns(&self.ui, node) {
+            self.configs.event(&mut self.ui, &self.session, node, event);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
                 .event(&mut self.ui, &mut self.session, node, event);

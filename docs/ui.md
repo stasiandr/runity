@@ -142,7 +142,7 @@ RGB: светлой теме нужен приглушённый текст те
 хром редактора, умолчание одно — Nocturne, проект от выбора не зависит.
 
 Настроек два окна, как в Unity. **Project Settings** — файлы проекта в
-git (`scrap.ron` с модулями, `input.ron`, `layers.ron`, `tuning/`, `ui/`):
+git (`scrap.ron` с модулями, `input.ron`, `layers.ron`, `configs/`, `ui/`):
 вкладка дока, Edit › Project Settings…. **Preferences** — человека, во
 всех проектах, в папке настроек пользователя: своё окно (⌘, / Ctrl+,,
 «scrap › Settings…» в меню macOS, Edit › Preferences… на других

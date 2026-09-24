@@ -67,7 +67,7 @@ Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
 | **Decals** | the stains on the floor |
 | **Lights**, **post-processing** | a warm lamp over the stoves; ACES, bloom, vignette, depth of field, grain, TAA and SSAO (`post:`, `ambient_occlusion:` in the scene) |
 | Switched-off things (`inactive`) | the soup, bars and steam marks; cooks nobody plays |
-| **A camera tour** (`scrap::tour`), tuned from a file | the fly-through while players gather: the shots in `tuning/flyby.ron` (saved while running, it changes at once), eased in and out in `main.rs`; the lens focuses on what it looks at |
+| **A camera tour** (`scrap::tour`), tuned from a file | the fly-through while players gather: the shots in `configs/flyby.ron` (saved while running, it changes at once), eased in and out in `main.rs`; the lens focuses on what it looks at |
 | **Words over the world** (`scrap::floaters`) | points won rising over the window, lost at the board: `Front::watch_score` |
 | State everyone follows | `Round::open`: shut, the kitchen is the lobby; the host opens it (`Act::Restart`) and every peer's screen follows |
 | **Player prefs** | the volumes, the language and the best score, kept between runs |

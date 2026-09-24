@@ -57,7 +57,7 @@ mod noise;
 #[cfg(test)]
 mod play_tests;
 
-/// Numbers from `tuning/world.ron`, reloaded while the game runs.
+/// Numbers from `configs/world.ron`, reloaded while the game runs.
 #[derive(Deserialize)]
 struct WorldNumbers {
     gravity: f32,
@@ -67,7 +67,7 @@ struct Game {
     live: LiveScene,
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
-    /// The camera's tour while players gather, from `tuning/flyby.ron`.
+    /// The camera's tour while players gather, from `configs/flyby.ron`.
     tour: Tuned<scrap::tour::Tour>,
     flyby: scrap::tour::Flyby,
     layers: Tuned<scrap::layers::Layers>,
@@ -702,12 +702,12 @@ fn main() -> anyhow::Result<()> {
     }
     let tuning = Tuned::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
-        "tuning/world.ron",
+        "configs/world.ron",
     ))
     .map_err(anyhow::Error::msg)?;
     let tour = Tuned::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
-        "tuning/flyby.ron",
+        "configs/flyby.ron",
     ))
     .map_err(anyhow::Error::msg)?;
     let layers = Tuned::load(scrap::project::data_file(

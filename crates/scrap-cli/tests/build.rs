@@ -23,7 +23,7 @@ fn a_build_carries_the_data_the_game_reads_and_leaves_the_sources_home() {
     for present in [
         "data/scrap.ron",
         "data/input.ron",
-        "data/tuning/world.ron",
+        "data/configs/world.ron",
         "data/scenes/main.ron",
     ] {
         assert!(out.join(present).is_file(), "{present} is shipped");

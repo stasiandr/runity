@@ -392,6 +392,7 @@ pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                     "Project Settings",
                     Action::ShowPanel(crate::dock::Panel::Settings),
                 ),
+                item("Configs", Action::ShowPanel(crate::dock::Panel::Configs)),
                 item("Profiler", Action::ShowPanel(crate::dock::Panel::Profiler)),
             ],
         ),
