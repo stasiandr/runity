@@ -8,7 +8,7 @@
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity modules [sync] [PROJECT]  the engine's modules; Cargo.toml from runity.ron
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
-//! runity build [PROJECT] [--out DIR] [--debug]  a folder to ship
+//! runity build [PROJECT] [--out DIR] [--debug | --size]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! runity git-setup [PROJECT]             turn the driver on in this clone
 //! runity rename FROM TO                   move an asset, and what names it
@@ -83,10 +83,12 @@ runity modules [PROJECT]
 runity modules sync [PROJECT]
     Write the engine's features in the game's Cargo.toml from the modules
     runity.ron lists and what they stand on. `check` says when they part.
-runity build [PROJECT] [--out DIR] [--debug]
-    Sync the library, compile the game (release unless --debug), and lay out
-    DIR (build/ in the project by default): the executable and data/ with
-    scenes, prefabs and the built library. Sources stay home.
+runity build [PROJECT] [--out DIR] [--debug | --size]
+    Sync the library, compile the game, and lay out DIR (build/ in the
+    project by default): the executable and data/ with scenes, prefabs and
+    the built library. Sources stay home. Compiled for speed by default;
+    --size for the smallest download (opt-level z, LTO, stripped); --debug
+    quick to make.
 runity git-setup [PROJECT]
     Turn on the scene merge driver in this clone: scenes and prefabs merge
     by entity and field, and conflicts are said in words.
@@ -616,19 +618,20 @@ fn uses(rest: &[String]) -> Result<ExitCode> {
 fn build(rest: &[String]) -> Result<ExitCode> {
     let mut at: Vec<String> = Vec::new();
     let mut out: Option<PathBuf> = None;
-    let mut release = true;
+    let mut profile = runity_cli::build::Profile::Speed;
     let mut args = rest.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
-            "--debug" => release = false,
+            "--debug" => profile = runity_cli::build::Profile::Debug,
+            "--size" => profile = runity_cli::build::Profile::Size,
             other if other.starts_with('-') => bail!("unknown option {other}"),
             other => at.push(other.to_string()),
         }
     }
     let project = find(&at)?;
     let out = out.unwrap_or_else(|| project.root().join("build"));
-    let built = runity_cli::build::build(&project, &out, release)?;
+    let built = runity_cli::build::build_with(&project, &out, profile)?;
     for line in &built.stale {
         eprintln!("warning: {line}");
     }
