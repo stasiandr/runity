@@ -902,7 +902,7 @@ impl Inspector {
             ui.add_text(
                 note,
                 Style::default().text_size(11.5).text_color(ACCENT_300),
-                "Playing: this is where things are now. Stop brings the scene back.",
+                "Simulating: this is where things are now. Stop brings the scene back.",
             );
         }
 

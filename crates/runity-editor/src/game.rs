@@ -618,6 +618,12 @@ impl Session {
         self.game.is_some()
     }
 
+    /// Whether a game started from here was running when last polled —
+    /// for what is drawn every frame, which polls anyway.
+    pub fn is_game_running(&self) -> bool {
+        self.game.is_some()
+    }
+
     /// Stop the game started from here. `false` when there was none.
     pub fn stop_game(&mut self) -> bool {
         self.poll_game();

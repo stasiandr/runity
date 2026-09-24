@@ -228,10 +228,10 @@ fn play_stop_and_the_right_click_menu() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
-    click(&mut s, "play");
+    menu(&mut s, "Play", "Simulate Physics Here");
     assert!(s.session.is_playing());
     click(&mut s, "play");
-    assert!(!s.session.is_playing());
+    assert!(!s.session.is_playing(), "the button stops the simulation too");
 
     press(&mut s, "line boulder", MouseButton::Right);
     assert!(s.ui.find("menu Make Prefab").is_some());
@@ -290,10 +290,38 @@ fn play_looks_through_the_game_and_the_tabs_switch_views() {
     assert!(s.session.is_game_view());
     click(&mut s, "view scene");
     assert!(!s.session.is_game_view());
-    click(&mut s, "play");
-    assert!(s.session.is_game_view(), "Play brings up the Game view");
+    menu(&mut s, "Play", "Simulate Physics Here");
+    assert!(s.session.is_game_view(), "the simulation brings up the Game view");
     click(&mut s, "play");
     assert!(!s.session.is_game_view(), "and Stop takes it away");
+}
+
+#[test]
+fn play_runs_the_game_itself_and_stops_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The valley has no game of its own: Play says so, and simulates nothing.
+    click(&mut s, "play");
+    assert!(!s.session.is_playing() && !s.session.is_game_running());
+    let said = |s: &Studio, text: &str| s.session.console().iter().any(|l| l.text.contains(text));
+    assert!(said(&s, "no game crate"), "{:#?}", s.session.console());
+    assert!(said(&s, "Simulate Physics Here"), "and where the physics is");
+
+    // With one, Play is `cargo run` on the open scene — not the simulation.
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"not-built\"\n").unwrap();
+    click(&mut s, "play");
+    assert!(!s.session.is_playing(), "the game plays, not the editor");
+    assert!(said(&s, "playing scenes/first-light.ron in the game"));
+    s.session.stop_game();
+
+    // While a game runs, the button is Stop, and stops it.
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30");
+    s.session.run_in_console(game).unwrap();
+    s.frame();
+    click(&mut s, "play");
+    assert!(!s.session.is_game_running(), "Stop ended the game");
 }
 
 /// Drag the line named `from` to a spot `t` of the way down the line named
@@ -2157,7 +2185,7 @@ fn k_during_play_keeps_where_the_crate_fell() {
     let start = t.position;
     s.frame();
 
-    click(&mut s, "play");
+    menu(&mut s, "Play", "Simulate Physics Here");
     assert!(s.session.is_playing());
     for _ in 0..60 {
         std::thread::sleep(std::time::Duration::from_millis(15));

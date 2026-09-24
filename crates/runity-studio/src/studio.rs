@@ -190,6 +190,8 @@ struct Stamp {
     lines: usize,
     tool: Tool,
     playing: bool,
+    /// The game started with Play: the button turns back when it ends.
+    game: bool,
     paused: bool,
     hidden: usize,
     isolated: usize,
@@ -209,6 +211,7 @@ impl Stamp {
             lines: session.console().iter().map(|l| l.count as usize).sum(),
             tool: session.tool(),
             playing: session.is_playing(),
+            game: session.is_game_running(),
             paused: session.is_paused(),
             hidden: session.hidden().len(),
             isolated: session.isolated().len(),
@@ -2158,7 +2161,7 @@ impl Studio {
             true,
         );
         set_icon_button(ui, t.grid, "grid-3x3", s.show_grid(), true);
-        let playing = s.is_playing();
+        let playing = s.is_playing() || s.is_game_running();
         set_icon_button(
             ui,
             t.play,
@@ -2246,14 +2249,15 @@ impl Studio {
             st.text_color(if e > 0 { ERROR } else { WARNING })
         });
         let mode = match (s.is_playing(), s.is_paused()) {
-            (true, true) => "paused",
-            (true, false) => "playing",
+            (true, true) => "simulation paused",
+            (true, false) => "simulating",
+            _ if s.is_game_running() => "playing",
             _ if s.is_prefab() => "prefab mode",
             _ => "editing",
         };
         ui.set_text(self.status.mode, mode);
         ui.restyle(self.status.mode, |st| {
-            st.text_color(if s.is_playing() { ACCENT } else { MUTED })
+            st.text_color(if s.is_playing() || s.is_game_running() { ACCENT } else { MUTED })
         });
     }
 
@@ -3073,8 +3077,25 @@ impl Studio {
                     s.set_pivot(next);
                 }
                 Action::Play => {
-                    // Play looks through the game's eyes, as Unity's Play
-                    // brings up the Game view; stop goes back.
+                    // Play is the game: its own code, input and camera, in
+                    // its own window (DNA, open question 1: the view stays
+                    // the editor's). Pressed while something plays — the
+                    // game, or the physics simulated here — it stops that.
+                    if s.is_playing() {
+                        s.stop();
+                        s.set_game_view(false);
+                    } else if s.is_game_running() {
+                        s.stop_game();
+                        s.say(Level::Info, "stopped the game");
+                    } else {
+                        s.start_game().map_err(|err| {
+                            format!("{err} — Play → Simulate Physics Here runs the scene's physics in the view instead")
+                        })?;
+                    }
+                }
+                Action::Simulate => {
+                    // The simulation looks through the game's eyes, as
+                    // Unity's Play brings up the Game view; stop goes back.
                     if s.is_playing() {
                         s.stop();
                         s.set_game_view(false);
@@ -3900,9 +3921,9 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "space" => "Handles along the world's axes or the entity's own (X)",
         "pivot" => "Handles on the pivot or the selection's centre (Z)",
         "grid" => "Show the grid",
-        "play" => "Play / Stop (Ctrl/Cmd P)",
-        "pause" => "Pause (Ctrl/Cmd Shift P)",
-        "step" => "One step (Ctrl/Cmd Alt P)",
+        "play" => "Play the game in its own window / Stop (Ctrl/Cmd P)",
+        "pause" => "Simulate physics here, paused (Ctrl/Cmd Shift P)",
+        "step" => "One step of physics simulated here (Ctrl/Cmd Alt P)",
         "undo" => "Undo (Ctrl/Cmd Z)",
         "redo" => "Redo (Ctrl/Cmd Shift Z)",
         "save" => "Save the scene (Ctrl/Cmd S)",
