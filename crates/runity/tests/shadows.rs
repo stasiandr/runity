@@ -155,3 +155,84 @@ fn the_shadow_distance_is_split_into_cascades_finest_first() {
         vec![settings.max_distance * 0.25, settings.max_distance]
     );
 }
+
+/// A pebble on the floor, too small for a coarse shadow map to hold, under
+/// a low sun: with contact shadows the floor just behind it, away from the
+/// sun, is dark; without them only its own shaded sides are.
+#[test]
+fn contact_shadows_hold_the_dark_behind_a_pebble_the_map_misses() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let shot = |contact: f32| {
+        let mut renderer = Renderer::new(&gpu, &target);
+        let plane = renderer.upload_mesh_owned(&gpu, &builtin::plane(1.0, 1));
+        let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+        let frame = Frame {
+            sky: Sky {
+                mode: SkyMode::Color,
+                ..Default::default()
+            },
+            post: runity::post::PostProcess::OFF,
+            ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+            // Looking down at the pebble and the floor past it, from the side.
+            camera: Camera {
+                position: Vec3::new(0.05, 0.3, 0.35),
+                target: Vec3::new(0.08, 0.0, 0.0),
+                ..Camera::default()
+            },
+            lighting: Lighting {
+                // Low from −x: its shadow falls toward +x.
+                sun_direction: Vec3::new(1.0, -0.35, 0.0).normalize(),
+                sky_color: Vec3::splat(0.05),
+                ground_color: Vec3::splat(0.05),
+                ..Lighting::default()
+            },
+            // A map far too coarse for a pebble.
+            shadows: ShadowSettings {
+                resolution: 64,
+                contact,
+                ..ShadowSettings::default()
+            },
+            clear_color: Vec3::ZERO,
+            draws: vec![
+                Draw {
+                    mesh: plane,
+                    transform: Mat4::from_scale(Vec3::splat(20.0)),
+                    texture: TextureHandle::WHITE,
+                    material: Material::new(0.8, 0.8, 0.8),
+                    pose: None,
+                },
+                Draw {
+                    mesh: cube,
+                    transform: Mat4::from_translation(Vec3::new(0.0, 0.03, 0.0))
+                        * Mat4::from_scale(Vec3::splat(0.06)),
+                    texture: TextureHandle::WHITE,
+                    material: Material::new(0.8, 0.8, 0.8),
+                    pose: None,
+                },
+            ],
+            ..Frame::default()
+        };
+        renderer.render(&gpu, &target, &frame);
+        renderer.render(&gpu, &target, &frame);
+        let pixels = target.read_rgba(&gpu);
+        // How many pixels are dark: the pebble's own shaded sides in any
+        // case, and its shadow on the floor where it is held.
+        let open = OffscreenTarget::pixel(&pixels, SIZE, SIZE / 10, SIZE / 10)[1] as i32;
+        let dark = pixels.chunks(4).filter(|p| (p[1] as i32) < open / 2).count();
+        if let Ok(dir) = std::env::var("DUMP") {
+            image::save_buffer(format!("{dir}/contact_{contact}.png"), &pixels, SIZE, SIZE, image::ColorType::Rgba8).unwrap();
+        }
+        (dark, open)
+    };
+    let (without, _) = shot(0.0);
+    let (with, _) = shot(0.35);
+    eprintln!("dark pixels: without {without}, with {with}");
+    assert!(
+        with > without + 20,
+        "contact shadows lay a shadow the map misses: {with} dark pixels against {without}"
+    );
+}
