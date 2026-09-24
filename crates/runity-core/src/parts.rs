@@ -40,6 +40,16 @@ pub trait Part: Serialize + DeserializeOwned {
 pub struct PartKind {
     pub name: &'static str,
     pub check: fn(&str) -> Result<(), String>,
+    /// What its value looks like ([`crate::shape`]): what an inspector
+    /// lays out a form by.
+    pub shape: fn() -> crate::shape::Shape,
+    /// For an enum, what each variant holds ([`crate::shape::variants_of`]).
+    pub variants: fn() -> Vec<(String, crate::shape::Shape)>,
+    /// A text read as the type and written back as a line of the file
+    /// writes it: what it means, with every field left at its default
+    /// left out. `()` read so is the type's own default, where every field
+    /// has one — what an editor adds a field as.
+    pub normal: fn(&str) -> Result<String, String>,
 }
 
 impl PartKind {
@@ -50,6 +60,13 @@ impl PartKind {
             check: |text| {
                 ron::from_str::<T>(text)
                     .map(|_| ())
+                    .map_err(|e| e.to_string())
+            },
+            shape: crate::shape::of::<T>,
+            variants: crate::shape::variants_of::<T>,
+            normal: |text| {
+                ron::from_str::<T>(text)
+                    .map(|value| to_text(&value))
                     .map_err(|e| e.to_string())
             },
         }
