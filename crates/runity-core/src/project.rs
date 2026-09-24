@@ -950,11 +950,9 @@ impl shell::Game for Game {
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
             .unwrap_or_else(|| runity::scene_camera(&scene.view()));
-        let started = std::time::Instant::now();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
-        let frame = runity::world::scene_frame(&self.world, camera, scene);
-        self.profile.record("frame", started.elapsed());
+        let frame = self.profile.time("frame", || runity::world::scene_frame(&self.world, camera, scene));
         // The scene's sounds, heard from where the camera is.
         if let (Some(audio), Some(library)) = (self.audio.as_mut(), self.live.library()) {
             audio.set_listener(camera.position);

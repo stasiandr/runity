@@ -9,7 +9,7 @@
 //! Mixing them is the classic bug: physics stepped by a variable delta gives
 //! a different answer at 144 Hz than at 60, and a replay stops replaying.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The longest real interval one frame may report, in seconds.
 ///
@@ -55,7 +55,8 @@ pub struct Time {
     step: u64,
     accumulator: f32,
     steps_this_frame: u32,
-    last: Option<Instant>,
+    /// The host's clock at the last tick, seconds.
+    last: Option<f64>,
 }
 
 impl Default for Time {
@@ -86,11 +87,23 @@ impl Time {
         &mut self.settings
     }
 
-    /// Advance by the wall clock. Called once per frame by the shell.
+    /// Advance by the wall clock. Called once per frame by the shell. Not on
+    /// the web, where there is no `Instant`: there the host says the time
+    /// ([`Time::tick_at`]).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn tick(&mut self) {
-        let now = Instant::now();
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = *START.get_or_init(std::time::Instant::now);
+        self.tick_at(start.elapsed().as_secs_f64());
+    }
+
+    /// Advance to `now`, seconds on the host's own clock (DNA, "Не
+    /// закрывать веб": the loop's clock without `std::time::Instant`) — a
+    /// browser's `performance.now() / 1000`, a recorded run's timestamps.
+    /// Only the difference between ticks counts.
+    pub fn tick_at(&mut self, now: f64) {
         let raw = match self.last {
-            Some(last) => now.duration_since(last).as_secs_f32(),
+            Some(last) => (now - last).max(0.0) as f32,
             // The first frame has no previous instant to measure against.
             // Reporting one fixed step is closer to the truth than zero, and
             // keeps anything that divides by delta out of trouble.
@@ -183,6 +196,17 @@ impl Time {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_host_says_the_time_and_only_the_difference_counts() {
+        let mut time = Time::default();
+        time.tick_at(1000.0);
+        assert!((time.delta() - 1.0 / 60.0).abs() < 1e-6, "the first frame is one step");
+        time.tick_at(1000.1);
+        assert!((time.delta() - 0.1).abs() < 1e-4);
+        time.tick_at(999.0);
+        assert_eq!(time.delta(), 0.0, "a clock going back is no time");
+    }
 
     fn steps(time: &mut Time) -> u32 {
         let mut n = 0;

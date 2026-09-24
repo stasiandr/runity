@@ -17,6 +17,7 @@ pub use ron;
 pub mod asset;
 pub mod components;
 pub mod crash;
+pub mod data;
 #[doc(hidden)]
 pub mod defaults;
 pub mod edit;

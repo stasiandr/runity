@@ -495,6 +495,15 @@ impl Scene {
         derive_ids(&mut self.entities, &mut std::collections::HashSet::new())
     }
 
+    /// A scene read through a game's [`crate::data::Data`], at its path
+    /// there: the same scene on the desktop and on the web.
+    pub fn load_from(data: &dyn crate::data::Data, path: &str) -> anyhow::Result<Self> {
+        let text = data.read_text(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        let mut scene: Scene = ron::from_str(&text).map_err(|e| anyhow::anyhow!("{path}:{e}"))?;
+        scene.assign_ids();
+        Ok(scene)
+    }
+
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let text = std::fs::read_to_string(path)

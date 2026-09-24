@@ -77,6 +77,38 @@ impl Prefabs {
         Ok((prefabs, problems))
     }
 
+    /// Every prefab in `folder` of a game's [`crate::data::Data`]: what
+    /// [`Prefabs::open`] reads from a directory, read through the seam.
+    pub fn open_from(data: &dyn crate::data::Data, folder: &str) -> (Self, Vec<(String, String)>) {
+        let mut prefabs = Self::new();
+        let mut problems = Vec::new();
+        for path in data.list(folder).unwrap_or_default() {
+            if !path.ends_with(&format!(".{EXTENSION}")) {
+                continue;
+            }
+            let read = data.read_text(&path).map_err(|e| e.to_string()).and_then(|text| {
+                ron::from_str::<EntityDesc>(&text).map_err(|e| format!("{path}:{e}"))
+            });
+            match read {
+                Ok(mut desc) => {
+                    crate::scene::derive_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
+                    let name = crate::data::stem(&path);
+                    let sidecar = data
+                        .read_text(&format!("{path}.rimport"))
+                        .ok()
+                        .and_then(|text| crate::asset::sidecar_id_of(&text));
+                    if let Some(id) = sidecar {
+                        prefabs.ids.insert(id, name.clone());
+                        prefabs.id_of.insert(name.clone(), id);
+                    }
+                    prefabs.insert(name, desc);
+                }
+                Err(e) => problems.push((path, e)),
+            }
+        }
+        (prefabs, problems)
+    }
+
     /// A project's prefabs: everything in its `prefabs/`.
     ///
     /// Found through the project rather than next to whichever scene is

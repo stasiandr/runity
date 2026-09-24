@@ -107,10 +107,41 @@ impl Library {
         Ok((library, problems))
     }
 
+    /// Every `.rasset` in `folder` of a game's [`crate::data::Data`]:
+    /// [`Library::open`] through the seam, for the web, where the host
+    /// fetched them. Such assets are not polled for changes.
+    pub fn open_from(data: &dyn crate::data::Data, folder: &str) -> (Self, Vec<(String, AssetError)>) {
+        let mut library = Self::new();
+        let mut problems = Vec::new();
+        for path in data.list(folder).unwrap_or_default() {
+            if !path.ends_with(".rasset") {
+                continue;
+            }
+            let added = data
+                .read(&path)
+                .map_err(AssetError::from)
+                .and_then(|bytes| library.add_bytes(PathBuf::from(&path), bytes));
+            if let Err(e) = added {
+                problems.push((path, e));
+            }
+        }
+        (library, problems)
+    }
+
     /// Add one asset file.
     pub fn add(&mut self, path: impl AsRef<Path>) -> Result<AssetId, AssetError> {
         let path = path.as_ref();
         let bytes = asset::read(path)?;
+        let id = self.add_bytes(path.to_path_buf(), bytes)?;
+        if let Some(&index) = self.by_id.get(&id) {
+            self.entries[index].modified = modified_at(path);
+        }
+        Ok(id)
+    }
+
+    /// Add an asset's bytes, known by `path`.
+    fn add_bytes(&mut self, path: PathBuf, bytes: Vec<u8>) -> Result<AssetId, AssetError> {
+        asset::split_header(&bytes)?;
         let kind = asset::kind_of(&bytes)?;
         // The body is validated here, on the way in, so that every later
         // lookup is a cast into bytes already known to be sound.
@@ -122,8 +153,8 @@ impl Library {
         self.entries.push(Entry {
             bytes,
             kind,
-            path: path.to_path_buf(),
-            modified: modified_at(path),
+            path,
+            modified: None,
             name: name.clone(),
         });
         self.by_id.insert(id, index);

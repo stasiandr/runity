@@ -27,6 +27,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct EntityId(u64);
 
+/// The host's randomness, mixed into fresh identities ([`EntityId::seed`]).
+static SEED: AtomicU64 = AtomicU64::new(0);
+
 impl EntityId {
     /// Not yet given an identity. What an entity built in code starts as,
     /// and what one read from a file without an `id` becomes until the
@@ -44,10 +47,21 @@ impl EntityId {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
         hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+        hasher.write_u64(SEED.load(Ordering::Relaxed));
+        // No clock on the web (wasm32 panics asking): there the host's seed
+        // stands in for it.
+        #[cfg(not(target_arch = "wasm32"))]
         if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             hasher.write_u128(now.as_nanos());
         }
         Self::nonzero(hasher.finish())
+    }
+
+    /// Mix the host's randomness into every fresh identity from now on:
+    /// where the process has no clock or random keys of its own — the web,
+    /// with `crypto.getRandomValues` — so two players' fresh IDs differ.
+    pub fn seed(random: u64) {
+        SEED.fetch_xor(random, Ordering::Relaxed);
     }
 
     pub const fn from_raw(raw: u64) -> Self {

@@ -54,6 +54,12 @@ jobs:
       # the engine bare and the first to notice would be a game that tried.
       - name: Check (no optional subsystems)
         run: cargo check -p runity --no-default-features
+      # The web is not closed (DNA): the bare core builds for the browser —
+      # no Instant, no clock, no threads of its own, data through a seam.
+      - name: The bare core builds for the web
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p runity-core --target wasm32-unknown-unknown
       # The Steam transport links Valve's SDK and needs the client to run,
       # so it is only built here; nothing can exercise it on a runner.
       - name: Clippy (steam)

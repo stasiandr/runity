@@ -106,8 +106,20 @@
       `opt-level = "z"`, LTO, одна единица, strip, abort — ключами
       `--config`, так что `Cargo.toml` игры не трогается; голый проект:
       1,4 МБ → 570 КБ)
-- [ ] Не закрывать веб: запуск без блокировки потока, чтение данных через шов,
+- [x] Не закрывать веб: запуск без блокировки потока, чтение данных через шов,
       часы цикла без `std::time::Instant`, ядро в одном потоке
+  - [x] Данные через шов: `runity_core::data::Data` (`Disk`, `Preloaded` —
+        что веб-хозяин скачал до старта); `Scene::load_from`,
+        `Prefabs::open_from`, `Library::open_from`
+  - [x] Часы: `Time::tick_at(seconds)` — время говорит хозяин
+        (`performance.now()`); `tick()` с `Instant` — только не на wasm;
+        профайлер на wasm не меряет; `EntityId::seed` — случайность хозяина
+        вместо часов
+  - [x] Ядро своих потоков не заводит; GPU поднимается асинхронно
+        (`Gpu::headless`), блокируют лишь обёртки `*_blocking`
+  - [x] CI собирает `runity-core` под `wasm32-unknown-unknown`
+  - [ ] Веб-хозяин: `runity-gpu` с поверхности canvas, цикл на
+        `requestAnimationFrame`
 
 # Графовые редакторы
 

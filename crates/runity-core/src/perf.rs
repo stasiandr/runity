@@ -100,12 +100,22 @@ impl Profiler {
         }
     }
 
-    /// Run `work`, and count how long it took under `name`.
+    /// Run `work`, and count how long it took under `name`. On the web,
+    /// where there is no `Instant`, it runs uncounted: a host there records
+    /// what it measured itself ([`Profiler::record`]).
     pub fn time<R>(&mut self, name: &str, work: impl FnOnce() -> R) -> R {
-        let start = std::time::Instant::now();
-        let out = work();
-        self.record(name, start.elapsed());
-        out
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let start = std::time::Instant::now();
+            let out = work();
+            self.record(name, start.elapsed());
+            out
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = name;
+            work()
+        }
     }
 
     /// Count a duration measured elsewhere under `name`.
