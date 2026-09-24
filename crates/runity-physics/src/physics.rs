@@ -106,6 +106,9 @@ struct Built {
     body: Body,
     collider: ColliderShape,
     local: Transform,
+    /// Where in the world it was put: a body the solver does not move
+    /// follows its parent's move, which leaves its own transform as it was.
+    placed: glam::Mat4,
     /// Which [`CollisionMesh`] a `Model` collider was built from.
     mesh: usize,
     props: crate::scene::BodyProps,
@@ -589,7 +592,11 @@ impl PhysicsWorld {
                 stale.push(entity);
             } else {
                 live.insert(handle.0);
-                if built.local != *local {
+                // Moved itself, or — for a body the solver does not move —
+                // carried by a parent that moved: a lever's mount on a
+                // held tool, a drone's mouth on its animated frame.
+                let carried = !matches!(body, Body::Dynamic) && moved(&built.placed, &placed.0);
+                if built.local != *local || carried {
                     teleport.push((entity, handle.0, placed.0, *local, body));
                 }
             }
@@ -657,6 +664,7 @@ impl PhysicsWorld {
             }
             if let Ok(mut built) = world.get::<&mut Built>(entity) {
                 built.local = local;
+                built.placed = placed;
             }
         }
 
@@ -818,6 +826,7 @@ impl PhysicsWorld {
                     body: kind,
                     collider: shape.0,
                     local: *local,
+                    placed: placed.0,
                     mesh: mesh.map_or(0, CollisionMesh::key),
                     props,
                     layer,
@@ -1317,6 +1326,7 @@ impl PhysicsWorld {
             let _ = world.insert_one(entity, local);
             if let Ok(mut built) = world.get::<&mut Built>(entity) {
                 built.local = local;
+                built.placed = matrix;
             }
         }
     }
@@ -1936,6 +1946,11 @@ fn joint_data(
     Some(builder.build())
 }
 
+/// Whether a placement moved enough to say so.
+fn moved(a: &glam::Mat4, b: &glam::Mat4) -> bool {
+    a.to_cols_array().iter().zip(b.to_cols_array()).any(|(x, y)| (x - y).abs() > 1e-5)
+}
+
 /// Where a world matrix puts a body: its translation and rotation. Scale
 /// lives in the collider's shape.
 fn isometry(placed: glam::Mat4) -> Isometry<Real> {
@@ -2197,6 +2212,33 @@ mod tests {
             }
             assert_eq!(world.get::<&JointBroken>(sponge).is_ok(), loose, "pulled with {pull} N");
         }
+    }
+
+    /// A kinematic body under a parent that moves goes with it: a tool's
+    /// animated head on the tool being carried.
+    #[test]
+    fn a_kinematic_body_is_carried_by_its_parent() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "tool", body: Dynamic, collider: Box(half: (0.1, 0.1, 0.1)),
+             physics: (gravity: 0.0),
+             children: [(id: "0000000000000002", name: "head", transform: (position: (0.0, 0.0, 1.0)),
+               body: Kinematic, collider: Box(half: (0.2, 0.2, 0.2)))]),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 50.0);
+        physics.run(&mut world);
+        let tool = world.query::<(hecs::Entity, &Physics)>().iter().find(|(_, p)| p.0 == Body::Dynamic).map(|(e, _)| e).unwrap();
+        physics.set_velocity(&world, tool, Vec3::new(5.0, 0.0, 0.0));
+        for _ in 0..50 {
+            physics.run(&mut world);
+            crate::world::apply_hierarchy(&mut world);
+        }
+        let head_now = Vec3::new(5.0, 0.0, 1.0);
+        let found = physics.overlap_sphere(head_now, 0.1);
+        assert!(!found.is_empty(), "the head's collider is where its parent took it: {found:?}");
+        assert!(physics.overlap_sphere(Vec3::new(0.0, 0.0, 1.0), 0.1).is_empty(), "and not left where it started");
     }
 
     /// A hinge held at an angle by its spring gets there, and against a
