@@ -70,7 +70,9 @@ fn unpack(mut bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
 #[cfg(target_arch = "wasm32")]
 fn unpack_page(array: &js_sys::Uint8Array) -> Vec<(String, Vec<u8>)> {
     let length = array.length();
-    let bytes = |from: u32, n: u32| (from.checked_add(n)? <= length).then(|| array.subarray(from, from + n).to_vec());
+    let bytes = |from: u32, n: u32| {
+        (from.checked_add(n)? <= length).then(|| array.subarray(from, from + n).to_vec())
+    };
     let number = |from: u32| bytes(from, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
     let mut out = Vec::new();
     let Some(count) = number(0) else { return out };

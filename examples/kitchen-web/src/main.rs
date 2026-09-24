@@ -161,7 +161,7 @@ impl Game {
                 if let Some(party) = self.lobby.host(&self.scene, &name, &self.components) {
                     self.party = party;
                 }
-                self.front.room = self.lobby.room.clone();
+                self.front.room = self.lobby.room();
                 self.front.phase = Phase::Kitchen;
             }
             Wish::Friends => self.lobby.friends(),
@@ -393,6 +393,9 @@ impl shell::Game for Game {
         if self.front.phase == front::Phase::Menu && self.lobby.knocking() {
             self.front.phase = front::Phase::Joining;
         }
+        if self.front.room.is_some() {
+            self.front.room = self.lobby.room();
+        }
         if let Some(why) = self.lobby.problem() {
             if self.front.phase == front::Phase::Joining {
                 self.front.status = why;
@@ -405,7 +408,9 @@ impl shell::Game for Game {
             front::Phase::Kitchen if self.front.paused => "paused",
             // The doors shut: the lobby's card is on the right, where the
             // page's buttons would be.
-            front::Phase::Kitchen if !front::round_of(&self.world).is_some_and(|r| r.open) => "lobby",
+            front::Phase::Kitchen if !front::round_of(&self.world).is_some_and(|r| r.open) => {
+                "lobby"
+            }
             front::Phase::Kitchen => "kitchen",
         });
         let reload = self

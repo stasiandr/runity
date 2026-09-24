@@ -227,11 +227,11 @@
 
   const toast = document.getElementById("toast");
   let toastTimer = null;
-  window.runityToast = (text) => {
+  window.runityToast = (text, ms = 3500) => {
     toast.textContent = text;
     toast.classList.add("on");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove("on"), 3500);
+    toastTimer = setTimeout(() => toast.classList.remove("on"), ms);
   };
 
   // The player's files (prefs, best score), kept in the browser between visits.

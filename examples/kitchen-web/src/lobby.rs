@@ -39,6 +39,9 @@ mod page {
         /// The name this player goes by.
         #[wasm_bindgen(js_namespace = runityNet)]
         pub fn name() -> String;
+        /// The room's code as it stands (a taken one is swapped for another).
+        #[wasm_bindgen(js_namespace = runityNet)]
+        pub fn code() -> Option<String>;
     }
 }
 
@@ -157,6 +160,16 @@ impl Lobby {
             return page::state() == "joining";
         }
         false
+    }
+
+    /// The room's code, to say in the lobby, while this player hosts one:
+    /// the page's, which may have swapped a taken code for another.
+    pub fn room(&mut self) -> Option<String> {
+        #[cfg(target_arch = "wasm32")]
+        if self.hosting {
+            self.room = page::code();
+        }
+        self.room.clone()
     }
 
     /// The page's news, once a frame. When it is that the channel to a
