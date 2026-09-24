@@ -54,6 +54,28 @@ impl Obstacle {
         }
     }
 
+    /// A wedge — `builtin:ramp` in the space of `placed`, high at its back
+    /// (−z) — as a box lying under its slope: the slope is the box's top,
+    /// and it reaches into the wedge as deep as the wedge is thick there.
+    pub fn placed_ramp(placed: Mat4, half: Vec3) -> Self {
+        let at = |x: f32, y: f32, z: f32| placed.transform_point3(Vec3::new(x, y, z) * half * 2.0);
+        let (low, high) = ((at(-0.5, -0.5, 0.5) + at(0.5, -0.5, 0.5)) * 0.5, (at(-0.5, 0.5, -0.5) + at(0.5, 0.5, -0.5)) * 0.5);
+        let across = at(0.5, -0.5, 0.5) - at(-0.5, -0.5, 0.5);
+        let along = high - low;
+        let up = across.cross(along).normalize_or(Vec3::Y);
+        let up = if up.y < 0.0 { -up } else { up };
+        let x = across.normalize_or(Vec3::X);
+        let z = x.cross(up);
+        // As thick as the wedge's height over its slope, where it is thickest.
+        let (height, depth) = ((at(0.0, 0.5, -0.5) - at(0.0, -0.5, -0.5)).length(), (at(0.0, -0.5, 0.5) - at(0.0, -0.5, -0.5)).length());
+        let thick = height * depth / along.length().max(1e-6);
+        Obstacle::Box {
+            center: (low + high) * 0.5 - up * (thick * 0.5),
+            rotation: Quat::from_mat3(&glam::Mat3::from_cols(x, up, z)),
+            half: Vec3::new(across.length() * 0.5, thick * 0.5, along.length() * 0.5),
+        }
+    }
+
     /// Where a ball of `radius` at `p` pokes into it: the way out, and how
     /// deep. `None` when it does not touch.
     pub fn contact(&self, p: Vec3, radius: f32) -> Option<(Vec3, f32)> {
@@ -265,6 +287,20 @@ mod tests {
         // Off its corner, within reach: out from the corner.
         assert!(crate_.contact(Vec3::new(0.0, 2.05, 0.0), 0.1).is_some());
         assert!(crate_.contact(Vec3::new(0.0, 2.3, 0.0), 0.1).is_none());
+    }
+
+    #[test]
+    fn a_ramp_is_solid_under_its_slope_and_not_over_it() {
+        // builtin:ramp two metres deep and high: its slope at 45°, rising to
+        // the back (−z).
+        let ramp = Obstacle::placed_ramp(Mat4::from_scale(Vec3::splat(2.0)), Vec3::splat(0.5));
+        // Over the middle of the slope, a little above: clear.
+        assert!(ramp.contact(Vec3::new(0.0, 0.1, 0.0), 0.05).is_none());
+        // Just under it: pushed out up the slope's normal.
+        let (n, _) = ramp.contact(Vec3::new(0.0, -0.05, 0.0), 0.05).unwrap();
+        assert!(n.distance(Vec3::new(0.0, 1.0, 1.0).normalize()) < 1e-3, "{n}");
+        // Where a box standing in for it would be solid, over the front: clear.
+        assert!(ramp.contact(Vec3::new(0.0, 0.5, 0.8), 0.05).is_none());
     }
 
     #[test]

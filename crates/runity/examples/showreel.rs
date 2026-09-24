@@ -1,4 +1,4 @@
-//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays]` — the engine's
+//! `showreel <out-dir> [--size WxH] [--fps N] [--only NAME] [--reel main|rays|sim]` — the engine's
 //! look, as a video: each shot a scene of the valley example with a camera
 //! moving through it, the clock running and the sun going round, written
 //! frame by frame into ffmpeg as `<out-dir>/NN-name.mp4`, and a subtitle
@@ -311,6 +311,59 @@ fn ray_shots() -> Vec<Shot> {
     ]
 }
 
+/// The simulation reel (`--reel sim`): one shot for each thing the soft
+/// and fluid modules simulate (docs/simulation.md), in the order of the
+/// list.
+fn sim_shots() -> Vec<Shot> {
+    let shot = |name, caption, scene, seconds, from: (Vec3, Vec3), to: (Vec3, Vec3)| Shot {
+        name,
+        caption,
+        scene,
+        seconds,
+        from,
+        to,
+        hours: None,
+        clock: 0.0,
+        speed: 1.0,
+        look: &[],
+        compare: false,
+    };
+    vec![
+        shot(
+            "ropes",
+            "Верёвки, кабели, цепи: стержни Коссера на XPBD, трубка по сплайну и звенья инстансами; ветер качает, ящик держит",
+            "ropes.ron",
+            8.0,
+            (v(-3.0, 2.2, 5.5), v(-1.5, 1.4, -3.0)),
+            (v(3.0, 2.4, 5.0), v(2.5, 1.6, -4.0)),
+        ),
+        shot(
+            "cloth",
+            "Ткань: знамя, флаг, простыня на верёвке, навес и скатерть, упавшая на стол и не проходящая сквозь себя",
+            "cloth.ron",
+            8.0,
+            (v(-3.0, 3.8, 7.0), v(-3.0, 2.0, -3.0)),
+            (v(3.5, 4.0, 6.5), v(3.0, 1.6, -4.0)),
+        ),
+        shot(
+            "hair",
+            "Волосы и мех: направляющие пряди — стержни Коссера, остальные интерполируются; ветер треплет",
+            "hair.ron",
+            7.0,
+            (v(-1.5, 2.0, 3.0), v(0.0, 1.5, 0.0)),
+            (v(1.5, 2.1, 3.0), v(0.0, 1.5, 0.0)),
+        ),
+        shot(
+            "softbody",
+            "Мягкие тела: желе на тетраэдрах, мяч, мармелад на сопоставлении формы, слизь; плоть на кости и jiggle-кости с карточками",
+            "softbody.ron",
+            9.0,
+            (v(-2.5, 2.4, 5.5), v(-1.0, 0.8, -0.5)),
+            (v(2.5, 2.6, 5.5), v(1.0, 0.8, -0.5)),
+        ),
+    ]
+}
+
 fn smooth(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
@@ -347,7 +400,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let list = match reel.as_deref() {
         None | Some("main") => shots(),
         Some("rays") => ray_shots(),
-        Some(other) => return Err(format!("no reel `{other}`: main or rays").into()),
+        Some("sim") => sim_shots(),
+        Some(other) => return Err(format!("no reel `{other}`: main, rays or sim").into()),
     };
     let total: u32 = list
         .iter()
@@ -548,6 +602,9 @@ fn render_shot(
             owed -= step;
         }
         runity::world::apply_hierarchy(&mut world);
+        // What bends, hangs and flows, on its own fixed steps.
+        runity::soft::step(&mut world, dt * shot.speed);
+        runity::soft::show(&mut world, 0.0);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {

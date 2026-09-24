@@ -34,9 +34,8 @@ pub fn obstacles(world: &World) -> Vec<Obstacle> {
         let wide = scale.abs().max_element();
         match shape.0 {
             Collider::Box { half, center } => out.push(Obstacle::placed_box(placed, center, half)),
-            Collider::Ramp { half } | Collider::Stairs { half, .. } => {
-                out.push(Obstacle::placed_box(placed, Vec3::ZERO, half))
-            }
+            Collider::Ramp { half } => out.push(Obstacle::placed_ramp(placed, half)),
+            Collider::Stairs { half, .. } => out.push(Obstacle::placed_ramp(placed, half)),
             Collider::Sphere { radius } => out.push(Obstacle::Sphere { center: at, radius: radius * wide }),
             Collider::Capsule { half_height, radius } | Collider::Cylinder { half_height, radius } => {
                 let up = turn * Vec3::Y * (half_height * scale.y.abs());
@@ -58,7 +57,11 @@ pub fn step(world: &mut World, seconds: f32) {
     let ropes = world.query::<&RopeState>().iter().next().is_some();
     let cloth = world.query::<&ClothState>().iter().next().is_some();
     let hair = world.query::<&HairState>().iter().next().is_some();
-    if !ropes && !cloth && !hair {
+    let bodies = world.query::<&SoftBodyState>().iter().next().is_some();
+    // Jiggle bones meet nothing: they go first, and what hangs off them —
+    // hair on a jiggling head — goes where they have gone.
+    run_jiggle(world, seconds);
+    if !ropes && !cloth && !hair && !bodies {
         return;
     }
     let obstacles = Obstacles::new(obstacles(world));
@@ -70,6 +73,9 @@ pub fn step(world: &mut World, seconds: f32) {
     }
     if hair {
         run_hair(world, seconds, &obstacles);
+    }
+    if bodies {
+        run_soft_bodies(world, seconds, &obstacles);
     }
 }
 
@@ -97,6 +103,12 @@ pub fn show(world: &mut World, _seconds: f32) {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
     }
+    for (state, placed, live) in world.query_mut::<(&SoftBodyState, &WorldTransform, &mut LiveMesh)>() {
+        let (vertices, indices) = state.mesh(placed.0);
+        if !vertices.is_empty() {
+            live.set(vertices, indices);
+        }
+    }
 }
 
 /// Sides round a rope's tube, and rings along each link of it.
@@ -122,13 +134,17 @@ pub struct SoftLookDress<'a> {
 
 impl Dress for SoftLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["rope", "cloth", "hair", "model", "material"]
+        &["rope", "cloth", "hair", "soft_body", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         use crate::prelude::*;
-        let (rope, cloth, hair) = (line.rope(), line.cloth(), line.hair());
-        if rope.is_none() && cloth.is_none() && hair.is_none() {
+        let (rope, cloth, hair, body) = (line.rope(), line.cloth(), line.hair(), line.soft_body());
+        if body.is_some() {
+            // The model itself is soft: drawn deformed, not as it is.
+            let _ = world.remove_one::<crate::world::Model>(entity);
+        }
+        if rope.is_none() && cloth.is_none() && hair.is_none() && body.is_none() {
             if world.remove_one::<RopeLook>(entity).is_ok() {
                 let _ = world.remove::<(LiveMesh, Copies)>(entity);
             }
@@ -138,7 +154,7 @@ impl Dress for SoftLookDress<'_> {
         // hair is a line of its own, a child of the head, so that it and
         // the head are each their own colour.
         let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
-        if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() && hair.is_none() {
+        if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() && hair.is_none() && body.is_none() {
             let _ = world.remove_one::<LiveMesh>(entity);
             // The line's model is its link, drawn at each link and not
             // once at the entity.

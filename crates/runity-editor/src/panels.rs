@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 25] = [
+pub const FIELDS: [&str; 27] = [
     "name",
     "model",
     "prefab",
@@ -107,6 +107,8 @@ pub const FIELDS: [&str; 25] = [
     "rope",
     "cloth",
     "hair",
+    "soft_body",
+    "jiggle",
     "components.<name>",
 ];
 
@@ -349,6 +351,14 @@ impl Session {
             (
                 "hair".into(),
                 desc.hair().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "soft_body".into(),
+                desc.soft_body().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "jiggle".into(),
+                desc.jiggle().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -721,6 +731,22 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Route>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "soft_body" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SoftBody>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "jiggle" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Jiggle>(field, text)?)
                 })
                 .as_ref(),
             ),

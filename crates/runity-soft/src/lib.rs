@@ -11,14 +11,18 @@
 
 pub mod cloth;
 pub mod hair;
+pub mod jiggle;
 pub mod obstacle;
 pub mod particles;
 pub mod rod;
 pub mod rope;
+pub mod softbody;
 
 pub use cloth::{run_cloth, Cloth, ClothDress, ClothLine, ClothState, Pinned};
 pub use hair::{run_hair, Hair, HairDress, HairLine, HairState};
 pub use obstacle::{Obstacle, Obstacles};
+pub use jiggle::{run_jiggle, Jiggle, JiggleDress, JiggleLine, JiggleState};
+pub use softbody::{run_soft_bodies, Method, SoftBody, SoftBodyDress, SoftBodyLine, SoftBodyState, SoftShape};
 pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
 
 /// This module's fields of a line, with how to check each one's text.
@@ -26,6 +30,8 @@ pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
     let mut kinds = rope::part_kinds();
     kinds.extend(cloth::part_kinds());
     kinds.extend(hair::part_kinds());
+    kinds.extend(softbody::part_kinds());
+    kinds.extend(jiggle::part_kinds());
     kinds
 }
 

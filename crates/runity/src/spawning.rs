@@ -31,6 +31,8 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::soft::RopeDress));
         out.push(Box::new(crate::soft::ClothDress));
         out.push(Box::new(crate::soft::HairDress));
+        out.push(Box::new(crate::soft::SoftBodyDress));
+        out.push(Box::new(crate::soft::JiggleDress));
         out.push(Box::new(crate::soft::SoftLookDress { link, palette }));
     }
     #[cfg(feature = "audio")]
