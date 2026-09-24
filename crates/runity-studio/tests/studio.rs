@@ -1091,36 +1091,40 @@ fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
 }
 
 #[test]
-fn a_long_value_is_edited_on_several_lines() {
+fn debug_mode_edits_the_entity_as_its_ron_on_several_lines() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
     let crate_id = s.session.find("crate").unwrap();
-    s.session
-        .set_field(
-            crate_id,
-            "light",
-            "(color: (1.0, 0.9, 0.8), intensity: 3.0, range: 8.0)",
-        )
-        .unwrap();
     click(&mut s, "line crate");
-    // The value as RON is Debug mode's.
     click(&mut s, "inspector more");
     click(&mut s, "inspector mode Debug");
-    click(&mut s, "light");
-    // Enter is a new line inside the value; Cmd Enter commits it.
+    // The whole block, as the file writes it, and no field rows.
+    let ron = s.ui.find("inspector ron").expect("one box");
+    assert_eq!(s.ui.text(ron).unwrap(), s.session.entity_ron(crate_id).unwrap());
+    assert!(s.ui.text(ron).unwrap().contains("name: \"crate\""));
+    assert!(s.ui.find("position x").is_none(), "no field rows");
+
+    // Retyped over several lines: Enter is a new line, Cmd Enter applies.
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "inspector ron");
     s.handle(&InputEvent::KeyDown(Key::LeftSuper));
     s.handle(&InputEvent::KeyDown(Key::A));
     s.handle(&InputEvent::KeyUp(Key::A));
     s.handle(&InputEvent::KeyUp(Key::LeftSuper));
     type_text(&mut s, "(");
     key(&mut s, Key::Enter);
-    type_text(&mut s, "    intensity: 5.0,");
+    type_text(&mut s, "    name: \"box\",");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, "    model: \"builtin:cube\",");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, "    light: (color: (1.0, 0.9, 0.8), intensity: 5.0, range: 8.0),");
     key(&mut s, Key::Enter);
     type_text(&mut s, ")");
     s.handle(&InputEvent::KeyDown(Key::LeftSuper));
     key(&mut s, Key::Enter);
     s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("box"));
     let light = s
         .session
         .inspect(crate_id)
@@ -1129,10 +1133,29 @@ fn a_long_value_is_edited_on_several_lines() {
         .find(|f| f.name == "light")
         .unwrap()
         .value;
-    assert!(
-        light.contains("intensity:5.0") || light.contains("intensity: 5.0"),
-        "{light}"
-    );
+    assert!(light.contains("intensity:5.0"), "{light}");
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+
+    // Undo: the document and the box go back.
+    click(&mut s, "undo");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    let ron = s.ui.find("inspector ron").unwrap();
+    assert!(s.ui.text(ron).unwrap().contains("name: \"crate\""));
+
+    // What does not read is said under the box, and nothing changes.
+    click(&mut s, "inspector ron");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "(name: \"x\", transform: (position: (1.0, 2.0)))");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    key(&mut s, Key::Enter);
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    let error = s.ui.find("inspector ron error").unwrap();
+    assert!(!s.ui.text(error).unwrap().is_empty(), "the reason is shown");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    assert_eq!(s.session.undo_steps().len(), steps);
 }
 
 /// Answer the open dialog with `text`.
@@ -2675,19 +2698,22 @@ fn a_part_of_the_look_switches_on_at_its_default_and_off_to_none() {
 }
 
 #[test]
-fn debug_mode_shows_the_ron_and_normal_the_form() {
+fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
-    assert!(s.ui.find("scene fog").is_none(), "no RON box outside Debug mode");
+    assert!(s.ui.find("inspector ron").is_none(), "no RON outside Debug mode");
     click(&mut s, "inspector more");
     click(&mut s, "inspector mode Debug");
-    let fog = s.ui.find("scene fog").expect("the fog as one box");
-    assert!(s.ui.text(fog).unwrap().starts_with("(color:"));
+    let ron = s.ui.find("inspector ron").expect("the settings as one box");
+    let text = s.ui.text(ron).unwrap().to_string();
+    assert!(text.contains("sun:") && text.contains("fog:"), "{text}");
+    assert!(!text.contains("entities"), "{text}");
+    assert!(s.ui.find("scene fog start").is_none(), "no field rows");
     assert!(s.session.inspector_debug(), "remembered");
     click(&mut s, "inspector more");
     click(&mut s, "inspector mode Normal");
-    assert!(s.ui.find("scene fog").is_none());
+    assert!(s.ui.find("inspector ron").is_none());
     assert!(s.ui.find("scene fog start").is_some());
 }
 

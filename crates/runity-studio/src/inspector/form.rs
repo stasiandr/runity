@@ -194,7 +194,7 @@ fn variant_text(name: &str, content: &Shape, current: Option<(&str, &Node)>) -> 
 impl Inspector {
     /// Whether this field is laid out as a form (outside Debug mode).
     pub(super) fn is_form(&self, f: &Field) -> bool {
-        if self.debug || is_plain(&f.name) || f.name.starts_with("game") {
+        if is_plain(&f.name) || f.name.starts_with("game") {
             return false;
         }
         // A material by name is a name; one written out in full a form.
