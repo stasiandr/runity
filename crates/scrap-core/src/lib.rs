@@ -16,6 +16,7 @@ pub use ron;
 
 pub mod asset;
 pub mod components;
+pub mod console;
 pub mod crash;
 pub mod data;
 pub mod files;

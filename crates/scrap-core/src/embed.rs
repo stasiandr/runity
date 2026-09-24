@@ -29,6 +29,10 @@ pub enum ToGame {
     Size(u32, u32),
     /// What happened over the view, positions in the view's pixels.
     Input(InputEvent),
+    /// A line typed into the editor's Console for the game's own
+    /// ([`crate::console`]): the game answers on its output, which the
+    /// Console shows.
+    Command(String),
 }
 
 /// What the game tells the editor, beside its frames.
@@ -127,6 +131,7 @@ mod tests {
         .unwrap();
         write_frame(&mut wire, 2, 1, &[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
         write_message(&mut wire, &ToGame::Input(InputEvent::MouseDown(MouseButton::Left))).unwrap();
+        write_message(&mut wire, &ToGame::Command("set world.gravity -3".into())).unwrap();
 
         let mut from = wire.as_slice();
         let mut next = || read_packet::<ToGame>(&mut from).unwrap();
@@ -148,6 +153,7 @@ mod tests {
             next(),
             Packet::Message(ToGame::Input(InputEvent::MouseDown(MouseButton::Left)))
         );
+        assert_eq!(next(), Packet::Message(ToGame::Command("set world.gravity -3".into())));
         assert!(read_packet::<ToGame>(&mut from).is_err(), "and then the end");
     }
 

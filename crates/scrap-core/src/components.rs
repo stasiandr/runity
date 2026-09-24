@@ -236,8 +236,9 @@ impl Components {
         self.saved.contains_key(name)
     }
 
-    /// Every saved component on an entity, as `(name, RON)`.
-    pub(crate) fn write_saved(&self, world: &World, entity: hecs::Entity) -> Vec<(String, String)> {
+    /// Every saved component on an entity, as `(name, RON)`: what a save
+    /// and the report to the editor keep, and the debug overlay shows.
+    pub fn write_saved(&self, world: &World, entity: hecs::Entity) -> Vec<(String, String)> {
         self.saved
             .iter()
             .filter_map(|(name, write)| write(world, entity).map(|text| (name.clone(), text)))

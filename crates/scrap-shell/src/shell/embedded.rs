@@ -117,6 +117,8 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
     let mut pads = gilrs::Gilrs::new().ok();
     let mut captured = false;
     let mut loop_times = scrap_core::perf::Profiler::new(600);
+    // Console lines from the editor, for the next frame.
+    let mut commands: Vec<String> = Vec::new();
 
     macro_rules! ctx {
         () => {
@@ -129,6 +131,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 overlay: &mut overlay,
                 cursor_captured: captured,
                 loop_times: &loop_times,
+                commands: &commands,
                 quit: false,
                 capture: None,
                 asked: TimeAsk::default(),
@@ -150,6 +153,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                     }
                 }
                 Ok(ToGame::Input(event)) => input.handle(&event),
+                Ok(ToGame::Command(line)) => commands.push(line),
                 Err(TryRecvError::Empty) => break,
                 // The editor stopped playing, or went.
                 Err(TryRecvError::Disconnected) => {
@@ -193,6 +197,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
         let asked = ctx.asked;
         time.ask(asked);
         loop_times.record("frame", framed.elapsed());
+        commands.clear();
         if let Some(on) = wanted.filter(|on| *on != captured) {
             captured = on;
             post(&outbox, |o| o.messages.push(ToEditor::Capture(on)));

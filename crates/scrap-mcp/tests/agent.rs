@@ -127,6 +127,7 @@ fn the_handshake_lists_the_tools_without_needing_a_gpu() {
         "to_view",
         "override_field",
         "console",
+        "game_console",
         "group",
         "thumbnail",
         "drop",
@@ -615,6 +616,11 @@ fn an_agent_starts_a_new_level_in_the_same_project() {
         .call("new_scene", json!({ "name": "main" }))
         .unwrap_err();
     assert!(err.contains("already there"), "{err}");
+    // No game running: the game's console says what to do first.
+    let err = agent
+        .call("game_console", json!({ "command": "help" }))
+        .unwrap_err();
+    assert!(err.contains("start_game first"), "{err}");
 }
 
 #[test]

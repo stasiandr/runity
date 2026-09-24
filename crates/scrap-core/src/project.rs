@@ -706,6 +706,8 @@ const INPUT_RON: &str = "\
     actions: {
         \"quit\": [Key(Escape)],
         \"profile\": [Key(F3)],
+        \"console\": [Key(Backquote)],
+        \"debug\": [Key(Quote)],
         \"jump\": [Key(Space), Pad(South)],
     },
     axes: {
@@ -773,6 +775,11 @@ struct Game {
     strings: scrap::strings::Strings,
     profile: scrap::perf::Profiler,
     show_profile: bool,
+    /// ` : the game's console — `help`, `set world.gravity -3`, the cheats
+    /// in [`cheats`]; the editor's Console types into it too.
+    console: scrap::console::Console,
+    /// ' : what the thing looked at is doing, written over it.
+    debug: scrap::debug_overlay::DebugOverlay,
     widgets: Widgets,
     /// Materials' own shaders, put in and reloaded as they are saved.
     shaders: scrap::render::MaterialShaders,
@@ -836,6 +843,25 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     // What the step brought together hard enough breaks or dents.
     profile.time("destruction", || scrap::destruction::step(world, physics, seconds));
     // @destruction }
+}
+
+/// The game's console commands besides the engine's `help`, `get` and
+/// `set` — its cheats. Each is a function of the world and the words typed
+/// after its name (Unreal's CheatManager); add yours here. The console is
+/// on in a debug build, and in a release one run with SCRAP_CONSOLE=1.
+fn cheats() -> scrap::console::Commands {
+    let tuning = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "tuning");
+    let mut commands = scrap::console::Commands::new().with_tuning(tuning);
+    commands.add("spin", "spin DEGREES: everything that spins turns this fast", |world, words| {
+        let speed: f32 = words.first().and_then(|w| w.parse().ok()).ok_or("spin DEGREES, as: spin 90")?;
+        let mut turned = 0;
+        for spin in world.query_mut::<&mut components::Spin>() {
+            spin.degrees_per_second = speed;
+            turned += 1;
+        }
+        Ok(format!("{turned} spinning at {speed} degrees a second"))
+    });
+    commands
 }
 
 /// In the project, write what the components look like, for the editor's
@@ -916,7 +942,12 @@ impl shell::Game for Game {
         // The pad's moves between the screen's widgets, before they draw.
         self.widgets.begin_frame(ctx.input);
         let done = self.hud.draw_localized(&mut self.widgets, &mut self.ui, ctx.input, size, &self.strings);
-        if done.clicked("quit") || self.actions.pressed(ctx.input, "quit") {
+        // The console: typed into here, or sent from the editor's Console.
+        // While it has the keyboard, the game's keys are not the game's.
+        let toggled = self.actions.pressed(ctx.input, "console");
+        self.console.frame(&mut self.world, ctx.input, toggled, ctx.commands, &mut self.ui, size);
+        let keys = !self.console.has_keyboard();
+        if done.clicked("quit") || (keys && self.actions.pressed(ctx.input, "quit")) {
             ctx.quit();
         }
         let reload = self.live.poll(ctx.time.unscaled_delta(), &mut self.world, ctx.gpu, ctx.renderer);
@@ -981,8 +1012,11 @@ impl shell::Game for Game {
             eprintln!("{problem}");
         }
         // F3: what each part costs, over the game.
-        if self.actions.pressed(ctx.input, "profile") {
+        if keys && self.actions.pressed(ctx.input, "profile") {
             self.show_profile = !self.show_profile;
+        }
+        if keys && self.actions.pressed(ctx.input, "debug") {
+            self.debug.toggle();
         }
         if self.show_profile {
             // The game's parts, then the loop's own: steps, frame, drawing and
@@ -1019,7 +1053,9 @@ impl shell::Game for Game {
         let scene = self.live.scene();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
-        let frame = self.profile.time("frame", || scrap::world::scene_frame(&self.world, camera, scene));
+        let mut frame = self.profile.time("frame", || scrap::world::scene_frame(&self.world, camera, scene));
+        // ' : the state of the thing in the middle of the view, over it.
+        self.debug.draw(&self.world, &self.components, &camera, size, &mut self.ui, &mut frame, ctx.gpu, ctx.renderer);
         // The scene's sounds, heard from where the camera is.
         if let (Some(audio), Some(library)) = (self.audio.as_mut(), self.live.library()) {
             audio.set_listener(camera.position);
@@ -1104,6 +1140,8 @@ fn main() -> anyhow::Result<()> {
         strings,
         profile: scrap::perf::Profiler::new(600),
         show_profile: false,
+        console: scrap::console::Console::for_build(cheats(), cfg!(debug_assertions)),
+        debug: scrap::debug_overlay::DebugOverlay::new(),
         widgets: Widgets::new(),
         shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "shaders")),
         ui: Ui::new(),

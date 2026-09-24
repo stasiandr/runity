@@ -63,6 +63,7 @@ pub mod asset {
 #[cfg(feature = "audio")]
 pub use scrap_audio::audio;
 pub use scrap_core::components;
+pub mod console;
 pub use scrap_core::crash;
 pub use scrap_core::edit;
 pub use scrap_core::embed;
@@ -93,6 +94,7 @@ pub use scrap_render::floaters;
 pub use scrap_render::foliage;
 pub use scrap_render::footprints;
 #[cfg(feature = "physics")]
+pub mod debug_overlay;
 pub mod gizmo;
 #[cfg(feature = "animation")]
 pub use scrap_animation::graph_text;
