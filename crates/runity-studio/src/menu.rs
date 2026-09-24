@@ -5,7 +5,8 @@
 //! so the menu bar, a right click and a test all do the same thing.
 //! Shortcuts are shown next to entries; the Scene view's own keyboard
 //! handling (`Session::scene_view`) is what answers them, so the label and
-//! the key cannot disagree about what happens.
+//! the key cannot disagree about what happens — in macOS's menu bar too
+//! (`crate::native_menu`).
 
 use std::path::PathBuf;
 
@@ -63,6 +64,8 @@ pub enum Action {
     ToggleColliders,
     ToggleSnap,
     Tool(Tool),
+    /// The hand (Q): the view moves, nothing is picked.
+    Hand,
     ToggleSpace,
     TogglePivot,
     Play,

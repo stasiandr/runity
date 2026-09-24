@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Names of nodes to click first, comma-separated: what a person would
     // do before looking (`asset campfire,menu bar View`).
     let clicks = std::env::var("RUNITY_SHOT_CLICK").unwrap_or_default();
+    // The toolbar as macOS's window has it: the menus in the menu bar.
+    if std::env::var_os("RUNITY_SHOT_NATIVE_MENU").is_some() {
+        studio.set_native_menu(true);
+    }
     studio.frame();
     for name in clicks.split(',').filter(|n| !n.is_empty()) {
         studio.ui.paint();

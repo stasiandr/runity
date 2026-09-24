@@ -24,6 +24,13 @@ runity-ui = { version = "0.1.0", path = "../runity-ui" }
 wgpu = "30"
 winit = "0.30.13"
 
+# The menus in the system's menu bar (`crate::native_menu`): only macOS
+# has one; elsewhere the menus stay in the toolbar.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.20", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSResponder"] }
+
 [dev-dependencies]
 image = { version = "0.25.9", default-features = false, features = ["png"] }
 
