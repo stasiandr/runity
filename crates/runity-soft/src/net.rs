@@ -3,8 +3,8 @@
 //!
 //! * [`Frame`] — particles, the turns of a rod's links and a few numbers
 //!   more (the pull on each end), quantized: each point a quarter-millimetre
-//!   step from the one before, a link's turn its twist about the link, both
-//!   packed at the bits the frame needs. A chain of forty links, turns and
+//!   lattice from the first, sent as how each step bends from the one
+//!   before; a link's turn as its twist about the link; both Rice-coded. A chain of forty links, turns and
 //!   all, is about 250 bytes.
 //! * [`PresentedParticles`] — the owner's frames as they came, shown a
 //!   couple of network ticks in the past between the two around the clock,
@@ -55,11 +55,11 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// The frame as bytes: counts, the first point whole, then each point
-    /// from the one before in steps of [`POINT_STEP`], packed at as few
-    /// bits as the frame's longest step needs (docs/netsim.md, «Трафик»)
-    /// — each step taken from where the one before will be read, so the
-    /// rounding never adds up along the rope; a rod's links' turns as
+    /// The frame as bytes: counts, the first point whole, then the others
+    /// on a lattice of [`POINT_STEP`]s from it — the first step, then how
+    /// each step differs from the one before, Rice-coded
+    /// ([`pack_signed`]; docs/netsim.md, «Трафик»); each point within half
+    /// a step, never adding up along the rope; a rod's links' turns as
     /// their twists (the first whole), other turns at four bytes; the
     /// extras whole. A chain of forty links, turns and all, is about 250
     /// bytes; a rope of twenty-four, which sends no turns, about 130.
@@ -73,16 +73,30 @@ impl Frame {
             for c in first.to_array() {
                 out.extend_from_slice(&c.to_le_bytes());
             }
-            let mut read = *first;
-            read_points.push(read);
-            let mut steps = Vec::with_capacity(self.points.len() * 3);
-            for p in &self.points[1..] {
-                let q = ((*p - read) / POINT_STEP).round().clamp(Vec3::splat(-(1 << 30) as f32), Vec3::splat((1 << 30) as f32));
-                read += q * POINT_STEP;
-                read_points.push(read);
-                steps.extend(q.to_array().map(|c| c as i32));
+            // Each point on a lattice of steps from the first; the first
+            // step whole, then how each step differs from the one before
+            // — along a rope, which bends a little from link to link,
+            // a few bits.
+            let lattice: Vec<[i32; 3]> = self
+                .points
+                .iter()
+                .map(|p| ((*p - *first) / POINT_STEP).round().clamp(Vec3::splat(-(1 << 29) as f32), Vec3::splat((1 << 29) as f32)).to_array().map(|c| c as i32))
+                .collect();
+            read_points.extend(lattice.iter().map(|l| on_lattice(*first, *l)));
+            let mut firsts = Vec::new();
+            let mut bends = Vec::with_capacity(lattice.len() * 3);
+            for i in 1..lattice.len() {
+                for c in 0..3 {
+                    let step = lattice[i][c] - lattice[i - 1][c];
+                    if i == 1 {
+                        firsts.push(step);
+                    } else {
+                        bends.push(step - (lattice[i - 1][c] - lattice[i - 2][c]));
+                    }
+                }
             }
-            pack_signed(&mut out, &steps);
+            pack_signed(&mut out, &firsts);
+            pack_signed(&mut out, &bends);
         }
         if twisted(read_points.len(), self.turns.len()) {
             // A rod's links: the first turn whole, then each as its twist
@@ -123,12 +137,17 @@ impl Frame {
         let e = r.take(1)?[0] as usize;
         let mut points = Vec::with_capacity(n.min(bytes.len()));
         if n > 0 {
-            let mut at = r.vec3()?;
-            points.push(at);
-            let steps = unpack_signed(&mut r, (n - 1) * 3)?;
-            for q in steps.chunks(3) {
-                at += Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) * POINT_STEP;
-                points.push(at);
+            let first = r.vec3()?;
+            points.push(first);
+            let firsts = unpack_signed(&mut r, if n > 1 { 3 } else { 0 })?;
+            let bends = unpack_signed(&mut r, n.saturating_sub(2) * 3)?;
+            let (mut at, mut step) = ([0i32; 3], [0i32; 3]);
+            for i in 1..n {
+                for c in 0..3 {
+                    step[c] = if i == 1 { firsts[c] } else { step[c].wrapping_add(bends[(i - 2) * 3 + c]) };
+                    at[c] = at[c].wrapping_add(step[c]);
+                }
+                points.push(on_lattice(first, at));
             }
         }
         let mut turns = Vec::with_capacity(m.min(bytes.len()));
@@ -169,6 +188,11 @@ impl Frame {
 /// Of a metre, the step a frame's points go in: a quarter millimetre.
 pub const POINT_STEP: f32 = 1.0 / 4096.0;
 
+/// A point `l` steps from `first`.
+fn on_lattice(first: Vec3, l: [i32; 3]) -> Vec3 {
+    first + Vec3::new(l[0] as f32, l[1] as f32, l[2] as f32) * POINT_STEP
+}
+
 /// Of a turn, the step a link's twist goes in: about a tenth of a degree.
 pub const TWIST_STEP: f32 = std::f32::consts::TAU / 4096.0;
 
@@ -187,30 +211,58 @@ fn along(points: &[Vec3], k: usize, turn: Quat) -> Quat {
     }
 }
 
-/// Whole numbers at as few bits each as the largest needs: the width in a
-/// byte, then the numbers packed end to end, offset to be positive.
+/// Past this many ones of a quotient, the number goes whole: one far off
+/// the rest costs 64 bits, not hundreds.
+const ESCAPE: u32 = 24;
+
+/// Whole numbers, mostly small, a few not: Rice-coded — each folded to be
+/// positive (zigzag), its low `k` bits as they are and the rest as that
+/// many ones and a nought, `k` the frame's own, whichever makes it
+/// shortest. A rope bent sharply at one link costs that link, not every
+/// link the bits the sharp one needs.
 fn pack_signed(out: &mut Vec<u8>, values: &[i32]) {
-    let most = values.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-    let bits = 33 - most.leading_zeros().min(32);
-    out.push(bits as u8);
-    let bias = if bits >= 32 { 0 } else { 1u32 << (bits - 1) };
+    let folded: Vec<u32> = values.iter().map(|v| ((v << 1) ^ (v >> 31)) as u32).collect();
+    let cost = |k: u32| -> u64 {
+        folded.iter().map(|z| {
+            let q = z >> k;
+            if q >= ESCAPE { (ESCAPE + 32) as u64 } else { (q + 1 + k) as u64 }
+        }).sum()
+    };
+    let k = (0..20).min_by_key(|k| cost(*k)).unwrap_or(0);
+    out.push(k as u8);
     let mut w = Bits::default();
-    for v in values {
-        w.put((*v as u32).wrapping_add(bias) as u64, bits);
+    for z in folded {
+        let q = z >> k;
+        if q >= ESCAPE {
+            w.put((1u64 << ESCAPE) - 1, ESCAPE);
+            w.put(z as u64, 32);
+        } else {
+            w.put((1u64 << q) - 1, q);
+            w.put(0, 1);
+            w.put(z as u64 & ((1u64 << k) - 1), k);
+        }
     }
     out.extend(w.finish());
 }
 
 /// [`pack_signed`]'s `count` numbers back.
 fn unpack_signed(r: &mut Reader, count: usize) -> Option<Vec<i32>> {
-    let bits = r.take(1)?[0] as u32;
-    if bits > 32 {
+    let k = r.take(1)?[0] as u32;
+    if k >= 20 {
         return None;
     }
-    let packed = r.take((count * bits as usize).div_ceil(8))?;
-    let mut b = BitReader { bytes: packed, at: 0 };
-    let bias = if bits >= 32 { 0 } else { 1u32 << (bits.max(1) - 1) };
-    (0..count).map(|_| Some((b.get(bits)? as u32).wrapping_sub(bias) as i32)).collect()
+    let mut b = BitReader { bytes: &r.bytes[r.at..], at: 0 };
+    let mut values = Vec::with_capacity(count.min(r.bytes.len() * 8));
+    for _ in 0..count {
+        let mut q = 0;
+        while q < ESCAPE && b.get(1)? == 1 {
+            q += 1;
+        }
+        let z = if q == ESCAPE { b.get(32)? as u32 } else { (q << k) | b.get(k)? as u32 };
+        values.push(((z >> 1) as i32) ^ -((z & 1) as i32));
+    }
+    r.at += b.at.div_ceil(8);
+    Some(values)
 }
 
 fn varint(out: &mut Vec<u8>, mut v: u32) {
@@ -748,6 +800,26 @@ mod tests {
         assert!((t - 100.005).abs() < 1e-3, "near: slewed, {t}");
         keep_time(&mut t, None);
         assert!((t - 100.005).abs() < 1e-3, "no session: its own");
+    }
+
+    #[test]
+    fn small_numbers_go_in_few_bits_and_a_far_one_costs_only_itself() {
+        let mut values: Vec<i32> = (0..300).map(|i| (i % 7) - 3).collect();
+        values[100] = 1 << 28;
+        values[200] = -(1 << 30);
+        values.push(i32::MAX);
+        values.push(i32::MIN);
+        let mut out = Vec::new();
+        pack_signed(&mut out, &values);
+        assert!(out.len() < 300 * 4 / 8 + 40, "{} bytes", out.len());
+        out.push(0xAB);
+        let mut r = Reader { bytes: &out, at: 0 };
+        assert_eq!(unpack_signed(&mut r, values.len()), Some(values));
+        assert_eq!(r.take(1), Some(&[0xAB][..]), "read to its end and no further");
+        let mut empty = Vec::new();
+        pack_signed(&mut empty, &[]);
+        assert_eq!(unpack_signed(&mut Reader { bytes: &empty, at: 0 }, 0), Some(vec![]));
+        assert_eq!(unpack_signed(&mut Reader { bytes: &out[..5], at: 0 }, 302), None);
     }
 
     #[test]
