@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "prefabs/plate.prefab",
+    id: Some("b6e430681c6c02299e765f18561805e9"),
+)

@@ -25,7 +25,7 @@
 //!   change of owner rather than restarting.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use web_time::Instant;
 
 use glam::{Quat, Vec3};
 
@@ -904,7 +904,7 @@ impl Presented {
     /// beyond the earliest any came (the link's own delay aside) is how
     /// far off the beat the link is.
     fn hear(&mut self, tick: f64) {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let origin = *self.origin.get_or_insert(now);
         let late = now.duration_since(origin).as_secs_f64() * NET_HZ as f64 - tick;
         // The earliest, let rise a little each time so a link that got

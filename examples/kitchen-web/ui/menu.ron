@@ -1,0 +1,19 @@
+// The menu, over a still of the kitchen: host a kitchen (a Steam lobby your
+// friends can join), or join a friend's from the Steam friends list; the
+// volumes and the language, kept.
+(
+    elements: [
+        (id: "card", anchor: Center, at: (0, 0), size: (520, 500), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -224), size: (420, 56), kind: Text("Kitchen Rush"), text_size: 44, align: Center),
+        (id: "tagline", anchor: Center, at: (0, -176), size: (420, 26), kind: Text("@menu.tagline"), text_size: 15, align: Center),
+        (id: "host", anchor: Center, at: (0, -110), size: (320, 46), kind: Button("@menu.host")),
+        (id: "friends", anchor: Center, at: (0, -56), size: (320, 46), kind: Button("@menu.friends")),
+        (id: "who", anchor: Center, at: (0, -14), size: (420, 24), kind: Text(""), text_size: 15, align: Center),
+        (id: "music", anchor: Center, at: (0, 30), size: (320, 32), kind: Slider(label: "@menu.music", min: 0.0, max: 1.0)),
+        (id: "sfx", anchor: Center, at: (0, 70), size: (320, 32), kind: Slider(label: "@menu.sfx", min: 0.0, max: 1.0)),
+        (id: "language", anchor: Center, at: (0, 114), size: (320, 36), kind: Choice(label: "@menu.language", options: ["English", "Русский"])),
+        (id: "quit", anchor: Center, at: (0, 166), size: (320, 40), kind: Button("@menu.quit")),
+        (id: "best", anchor: Center, at: (0, 206), size: (420, 24), kind: Text(""), text_size: 15, align: Center),
+        (id: "status", anchor: Center, at: (0, 232), size: (420, 24), kind: Text(""), text_size: 15, align: Center),
+    ],
+)

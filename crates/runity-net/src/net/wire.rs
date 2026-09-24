@@ -14,7 +14,7 @@
 //! against a bad link without a bad link.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use super::PeerId;
 

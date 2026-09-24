@@ -200,7 +200,7 @@ impl GameSettings {
     pub fn load(dev_root: &str) -> Result<(String, GameSettings), String> {
         let path = data_file(dev_root, FILE);
         let text =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::files::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let manifest: Manifest =
             ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
         Ok((manifest.name, manifest.game))
@@ -261,7 +261,7 @@ impl Project {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectError> {
         let root = root.as_ref().to_path_buf();
         let file = root.join(FILE);
-        let text = match std::fs::read_to_string(&file) {
+        let text = match crate::files::read_to_string(&file) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(ProjectError::NotAProject(root));
@@ -281,7 +281,7 @@ impl Project {
     /// find the same prefabs, materials and library without being told.
     pub fn find(path: impl AsRef<Path>) -> Result<Self, ProjectError> {
         let path = path.as_ref();
-        let start = if path.is_dir() {
+        let start = if crate::files::is_dir(path) {
             path.to_path_buf()
         } else {
             path.parent()
@@ -293,7 +293,7 @@ impl Project {
         let start = std::path::absolute(&start).unwrap_or(start);
         let mut here = Some(start.as_path());
         while let Some(dir) = here {
-            if dir.join(FILE).is_file() {
+            if crate::files::is_file(dir.join(FILE)) {
                 return Self::open(dir);
             }
             here = dir.parent();
@@ -349,7 +349,9 @@ impl Project {
             name: name.to_string(),
             engine: env!("CARGO_PKG_VERSION").to_string(),
             game: GameSettings::default(),
-            modules: modules.map(|(listed, _)| listed.to_vec()).unwrap_or_default(),
+            modules: modules
+                .map(|(listed, _)| listed.to_vec())
+                .unwrap_or_default(),
         };
         let pretty = ron::ser::PrettyConfig::new();
         let text = ron::ser::to_string_pretty(&manifest, pretty)
@@ -374,7 +376,10 @@ impl Project {
         std::fs::create_dir_all(root.join(SYSTEMS))?;
         let bare = modules.is_some_and(|(listed, _)| listed.is_empty());
         let features = modules.map(|(_, features)| features);
-        std::fs::write(root.join("Cargo.toml"), cargo_toml(&root, name, engine, features))?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            cargo_toml(&root, name, engine, features),
+        )?;
         std::fs::write(root.join("build.rs"), BUILD_RS)?;
         let game = if bare { GAME_BARE } else { GAME };
         let listed = modules.map(|(listed, _)| listed);
@@ -424,7 +429,7 @@ impl Project {
 
     /// The project's scenes by name, sorted: `main`, `level_2`.
     pub fn scene_names(&self) -> Vec<String> {
-        let mut out: Vec<String> = std::fs::read_dir(self.scenes())
+        let mut out: Vec<String> = crate::files::read_dir(self.scenes())
             .into_iter()
             .flatten()
             .flatten()

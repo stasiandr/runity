@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/tomato-slice.glb",
+    hash: "c5667ab8c9efd051d8a152714ade9b3e",
+    id: Some("3048f18c319b35ac263aa5085d996ff1"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

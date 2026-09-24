@@ -87,7 +87,7 @@ impl Strings {
 
 /// Every language file in a directory, by language.
 pub fn tables(dir: impl AsRef<Path>) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = std::fs::read_dir(dir.as_ref())
+    let mut out: Vec<(String, PathBuf)> = crate::files::read_dir(dir.as_ref())
         .into_iter()
         .flatten()
         .flatten()

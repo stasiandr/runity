@@ -1,0 +1,10 @@
+// The host is gone: closed the kitchen, or stopped answering. Back to the
+// menu — or, while it may still come back, wait.
+(
+    elements: [
+        (id: "card", anchor: Center, at: (0, 0), size: (440, 220), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -62), size: (400, 40), kind: Text(""), text_size: 26, align: Center),
+        (id: "hint", anchor: Center, at: (0, -22), size: (400, 22), kind: Text(""), text_size: 14, align: Center),
+        (id: "menu", anchor: Center, at: (0, 50), size: (260, 44), kind: Button("@lost.menu")),
+    ],
+)

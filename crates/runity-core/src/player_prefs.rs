@@ -23,6 +23,11 @@ pub const USER_DIR_VAR: &str = "RUNITY_USER_DIR";
 /// `$XDG_DATA_HOME` or `~/.local/share` on Linux, `~/Library/Application
 /// Support` on macOS, `%APPDATA%` on Windows — or `RUNITY_USER_DIR`.
 pub fn user_dir(game: &str) -> std::io::Result<PathBuf> {
+    // A browser has no folders: the player's files are kept in memory
+    // under this path, and the web host keeps them between visits.
+    if cfg!(target_arch = "wasm32") {
+        return Ok(PathBuf::from("/user").join(game));
+    }
     let env = |name: &str| std::env::var_os(name).map(PathBuf::from);
     if let Some(dir) = env(USER_DIR_VAR).filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(&dir)?;
@@ -62,7 +67,7 @@ impl PlayerPrefs {
     /// that does not read is an error, not a quiet reset of every setting.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        let values = match std::fs::read_to_string(&path) {
+        let values = match crate::files::read_to_string(&path) {
             Ok(text) => ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?,
             Err(_) => BTreeMap::new(),
         };
@@ -85,7 +90,7 @@ impl PlayerPrefs {
         };
         let text = ron::ser::to_string_pretty(&self.values, ron::ser::PrettyConfig::new())
             .map_err(|e| e.to_string())?;
-        std::fs::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
+        crate::files::write(path, text + "\n").map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn set(&mut self, key: &str, value: Pref) {

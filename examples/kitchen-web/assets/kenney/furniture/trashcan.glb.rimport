@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/furniture/trashcan.glb",
+    hash: "edd4470e7c102b70048cc674feef2fb7",
+    id: Some("c401834f37f88f6f1853b0183a8bd07a"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

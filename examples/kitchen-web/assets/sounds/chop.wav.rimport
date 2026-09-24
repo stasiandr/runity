@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/sounds/chop.wav",
+    hash: "42284919773e11f362b7e88643a065cb",
+    id: Some("c2dc0c93952553a459da9da26097d1fa"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

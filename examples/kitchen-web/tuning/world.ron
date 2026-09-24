@@ -1,0 +1,4 @@
+// The world's numbers. Change one and save while the game runs.
+(
+    gravity: -9.81,
+)

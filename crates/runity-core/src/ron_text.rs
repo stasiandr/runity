@@ -75,7 +75,7 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq,
 {
     let new = ron::ser::to_string_pretty(value, pretty.clone())? + "\n";
-    let old = std::fs::read_to_string(path).ok();
+    let old = crate::files::read_to_string(path).ok();
     let merged = old.as_deref().and_then(|old| {
         let parsed: T = ron::from_str(old).ok()?;
         let canon = ron::ser::to_string_pretty(&parsed, pretty).ok()? + "\n";
@@ -88,7 +88,7 @@ where
     if old.as_deref() == Some(text.as_str()) {
         return Ok(());
     }
-    std::fs::write(path, text)?;
+    crate::files::write(path, text)?;
     Ok(())
 }
 

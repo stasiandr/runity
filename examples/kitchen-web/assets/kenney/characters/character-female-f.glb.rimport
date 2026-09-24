@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/characters/character-female-f.glb",
+    hash: "c190935096d6c9f9dc0c8bd59f2b9a6a",
+    id: Some("f21dc4a15762f94a9888279819e14129"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

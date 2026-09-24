@@ -148,6 +148,7 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
             })
             .collect(),
         body_object,
+        scoped: HashMap::new(),
     };
 
     // A stripped object stands for a part of a prefab instance: which
@@ -188,6 +189,17 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                 }
                 for c in components.get(&d.file_id).into_iter().flatten() {
                     component(&mut desc, c, &refs, report);
+                }
+                // A switched-off renderer draws nothing: its mesh is not
+                // brought over to be drawn.
+                let hidden = components.get(&d.file_id).into_iter().flatten().any(|c| {
+                    matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
+                        && c.body.i64("m_Enabled") == Some(0)
+                });
+                // (A mesh collider still needs its mesh.)
+                if hidden && desc.part::<Collider>() != Some(Collider::Model) {
+                    desc.clear_part::<runity::scene::ModelRef>();
+                    desc.clear_part::<MaterialRef>();
                 }
                 entities.insert(d.file_id, desc);
             }
@@ -357,6 +369,9 @@ struct Refs<'a> {
     /// Any object of the file → the entity it is on.
     entity_of: HashMap<i64, i64>,
     body_object: HashMap<i64, i64>,
+    /// Objects of another file (a prefab whose component an instance
+    /// changes) → the id its part has here, looked up first.
+    scoped: HashMap<i64, EntityId>,
 }
 
 fn transform(t: &Yaml) -> Transform {
@@ -429,11 +444,19 @@ fn instance(
     // A part moved, turned or scaled: its axes as Unity says them.
     type Axes = ([Option<f32>; 3], [Option<f32>; 4], [Option<f32>; 3]);
     let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
+    // A component's fields changed: the prefab's component, changed.
+    let mut behaviours: BTreeMap<i64, Behaviour> = BTreeMap::new();
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
         };
         let target = m.reference("target").map(|r| r.file_id);
+        let behaviour = target.and_then(|t| Some((t, of.as_ref()?.behaviours.get(&t)?)));
+        if let Some((t, b)) = behaviour.filter(|_| kind == "prefab" && !path.starts_with("m_")) {
+            let b = behaviours.entry(t).or_insert_with(|| b.clone());
+            modify(&mut b.body, path, m);
+            continue;
+        }
         let value = yaml::number(&m["value"]).unwrap_or(0.0) as f32;
         let axis = |name: &str| -> Option<usize> {
             let rest = path.strip_prefix(name)?.strip_prefix('.')?;
@@ -554,6 +577,28 @@ fn instance(
         t.set_rotation(rotation(q));
         desc.overrides.entry(part).or_default().transform = Some(t);
     }
+    // Each component changed, whole, on its part, naming the parts of this
+    // instance as this file has them.
+    for b in behaviours.into_values() {
+        let refs = Refs {
+            unity,
+            entity_of: HashMap::new(),
+            body_object: HashMap::new(),
+            scoped: b.links.iter().map(|(k, e)| (*k, desc.id.within(*e))).collect(),
+        };
+        let value = mono_behaviour(&b.body, &refs);
+        let Ok(raw) = runity::ron::value::RawValue::from_boxed_ron(value.into_boxed_str()) else {
+            report.skip(format!("component `{}` changed in an instance, whose fields did not make RON", b.name));
+            continue;
+        };
+        // The root's too: the engine applies an override of the root to
+        // the instance itself.
+        desc.overrides
+            .entry(b.part)
+            .or_default()
+            .components
+            .insert(b.name, raw);
+    }
     // Components taken off a part: what each takes off the line.
     for removed in modification.list("m_RemovedComponents") {
         let found =
@@ -592,6 +637,20 @@ struct PrefabParts {
     /// Its components by the id a `m_RemovedComponents` names them: the
     /// part they are on, and what a removal takes off it.
     components: HashMap<i64, (EntityId, String)>,
+    /// Its MonoBehaviours by the id a modification's `target` names them:
+    /// what an instance changes a field of.
+    behaviours: HashMap<i64, Behaviour>,
+}
+
+/// A prefab's MonoBehaviour as it stands in the prefab: the part it is on,
+/// its component name, its fields, and what the objects its fields name
+/// are as parts of the prefab.
+#[derive(Clone)]
+struct Behaviour {
+    part: EntityId,
+    name: String,
+    body: Yaml,
+    links: std::rc::Rc<HashMap<i64, EntityId>>,
 }
 
 /// What taking a component away takes off a line: the field, or the
@@ -676,7 +735,22 @@ impl Parts {
             .filter(|(kind, _)| *kind == "prefab" && depth < 16)
             .and_then(|_| unity.guids.get(guid))
             .and_then(|path| std::fs::read_to_string(path).ok());
-        for d in text.as_deref().map(yaml::documents).unwrap_or_default() {
+        let docs = text.as_deref().map(yaml::documents).unwrap_or_default();
+        // What each object of the file is a part of: a GameObject itself,
+        // a component its GameObject, a placeholder its prefab instance.
+        let links: std::rc::Rc<HashMap<i64, EntityId>> = std::rc::Rc::new(
+            docs.iter()
+                .filter_map(|d| {
+                    let of = match d.class {
+                        _ if d.stripped => d.body.reference("m_PrefabInstance")?.file_id,
+                        GAME_OBJECT | PREFAB_INSTANCE => d.file_id,
+                        _ => d.body.reference("m_GameObject")?.file_id,
+                    };
+                    Some((d.file_id, entity_id(of)))
+                })
+                .collect(),
+        );
+        for d in docs {
             match d.class {
                 GAME_OBJECT if !d.stripped => {
                     out.keys.insert(d.file_id, entity_id(d.file_id));
@@ -734,10 +808,46 @@ impl Parts {
                         out.components
                             .insert((d.file_id ^ x) & i64::MAX, (key_of(*e), what.clone()));
                     }
+                    // Its behaviours as this file sees them: with what this
+                    // instance changes in them, and their links as parts
+                    // here.
+                    let mut changed: HashMap<i64, Behaviour> = inner.behaviours.clone();
+                    for m in d.body["m_Modification"].list("m_Modifications") {
+                        let (Some(path), Some(target)) =
+                            (m.str("propertyPath"), m.reference("target"))
+                        else {
+                            continue;
+                        };
+                        if let Some(b) = changed.get_mut(&target.file_id) {
+                            modify(&mut b.body, path, m);
+                        }
+                    }
+                    for (x, b) in changed {
+                        let links = b.links.iter().map(|(k, e)| (*k, key_of(*e))).collect();
+                        out.behaviours.insert(
+                            (d.file_id ^ x) & i64::MAX,
+                            Behaviour {
+                                part: key_of(b.part),
+                                links: std::rc::Rc::new(links),
+                                ..b
+                            },
+                        );
+                    }
                 }
                 _ if !d.stripped => {
                     let go = d.body.reference("m_GameObject").filter(|r| r.file_id != 0);
                     if let (Some(go), Some(what)) = (go, removal(&d, unity)) {
+                        if d.kind == "MonoBehaviour" {
+                            out.behaviours.insert(
+                                d.file_id,
+                                Behaviour {
+                                    part: entity_id(go.file_id),
+                                    name: what.clone(),
+                                    body: d.body.clone(),
+                                    links: links.clone(),
+                                },
+                            );
+                        }
                         out.components
                             .insert(d.file_id, (entity_id(go.file_id), what));
                     }
@@ -810,6 +920,15 @@ fn field_of(path: &str) -> &str {
 /// One component of a GameObject, onto its entity.
 fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     let b = &c.body;
+    let collider = matches!(
+        c.kind.as_str(),
+        "BoxCollider" | "SphereCollider" | "CapsuleCollider" | "MeshCollider"
+    );
+    if collider && b.i64("m_Enabled") == Some(0) {
+        // Switched off, it touches nothing.
+        report.skip("a switched-off collider");
+        return;
+    }
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
@@ -930,10 +1049,12 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                     axis: b.vec3("m_Axis").map(axis).unwrap_or(Vec3::X),
                     limits_deg: (b.i64("m_UseLimits") == Some(1)).then(|| {
                         let l = &b["m_Limits"];
-                        // Mirrored: a turn one way is now the other.
-                        (-l.f32("max").unwrap_or(0.0), -l.f32("min").unwrap_or(0.0))
+                        // The axis is mirrored as a pseudo-vector, which
+                        // keeps the sense of a turn about it: the angles
+                        // are Unity's.
+                        (l.f32("min").unwrap_or(0.0), l.f32("max").unwrap_or(0.0))
                     }),
-                    motor: None,
+                    motor: hinge_drive(b),
                 },
                 "SpringJoint" => Joint::Spring {
                     to,
@@ -1190,6 +1311,129 @@ const UNITY_FIELDS: [&str; 10] = [
     "m_EditorClassIdentifier",
 ];
 
+/// A HingeJoint's spring (held at an angle) or motor (turning at a
+/// speed), in Unity's angles as its limits are. The spring wins when both are on,
+/// as a lever that springs back is what the two together usually mean.
+fn hinge_drive(b: &Yaml) -> Option<runity::scene::Motor> {
+    if b.i64("m_UseSpring") == Some(1) {
+        let s = &b["m_Spring"];
+        return Some(runity::scene::Motor {
+            speed: 0.0,
+            hold: Some(s.f32("targetPosition").unwrap_or(0.0)),
+            strength: s.f32("spring").unwrap_or(0.0),
+            damping: Some(s.f32("damper").unwrap_or(0.0)),
+        });
+    }
+    if b.i64("m_UseMotor") == Some(1) {
+        let m = &b["m_Motor"];
+        return Some(runity::scene::Motor {
+            speed: m.f32("targetVelocity").unwrap_or(0.0),
+            hold: None,
+            strength: m.f32("force").unwrap_or(0.0),
+            damping: None,
+        });
+    }
+    None
+}
+
+/// Change one field of a MonoBehaviour's YAML as a prefab modification
+/// says: `a.b`, `list.Array.size`, `list.Array.data[2].count`. The value
+/// takes the type the field had (a number stays a number); an object
+/// field takes the modification's `objectReference`.
+fn modify(body: &mut Yaml, path: &str, m: &Yaml) {
+    let mut steps: Vec<&str> = path.split('.').collect();
+    let mut at = body;
+    while let Some(step) = (!steps.is_empty()).then(|| steps.remove(0)) {
+        if step == "Array" {
+            continue;
+        }
+        if step == "size" {
+            // `list.Array.size`: longer copies the last item, shorter cuts.
+            let n = yaml::number(&m["value"]).unwrap_or(0.0).max(0.0) as usize;
+            if !matches!(at, Yaml::Array(_)) {
+                *at = Yaml::Array(Vec::new());
+            }
+            if let Yaml::Array(items) = at {
+                let fill = items.last().cloned().unwrap_or(Yaml::Hash(Default::default()));
+                items.resize(n, fill);
+            }
+            return;
+        }
+        if let Some(i) = step
+            .strip_prefix("data[")
+            .and_then(|r| r.strip_suffix(']'))
+            .and_then(|i| i.parse::<usize>().ok())
+        {
+            let Yaml::Array(items) = at else { return };
+            if i >= items.len() {
+                let fill = items.last().cloned().unwrap_or(Yaml::Hash(Default::default()));
+                items.resize(i + 1, fill);
+            }
+            at = &mut items[i];
+        } else {
+            if !matches!(at, Yaml::Hash(_)) {
+                *at = Yaml::Hash(Default::default());
+            }
+            let Yaml::Hash(h) = at else { return };
+            at = h
+                .entry(Yaml::String(step.to_string()))
+                .or_insert(Yaml::Null);
+        }
+    }
+    let reference = m["objectReference"].clone();
+    let is_reference = yaml::reference(at).is_some()
+        || yaml::reference(&reference).is_some_and(|r| !r.is_none());
+    *at = if is_reference {
+        reference
+    } else {
+        let text = match &m["value"] {
+            Yaml::String(t) => t.clone(),
+            Yaml::Integer(i) => i.to_string(),
+            Yaml::Real(r) => r.clone(),
+            Yaml::Boolean(b) => (*b as i64).to_string(),
+            _ => String::new(),
+        };
+        match at {
+            Yaml::Integer(_) | Yaml::Boolean(_) => text
+                .parse::<i64>()
+                .map(Yaml::Integer)
+                .unwrap_or(Yaml::Real(text)),
+            Yaml::Real(_) => Yaml::Real(text),
+            Yaml::String(_) => Yaml::String(text),
+            _ => {
+                if let Ok(i) = text.parse::<i64>() {
+                    Yaml::Integer(i)
+                } else if text.parse::<f64>().is_ok() {
+                    Yaml::Real(text)
+                } else {
+                    Yaml::String(text)
+                }
+            }
+        }
+    };
+}
+
+/// A ScriptableObject `.asset` as data: the script it is an instance of,
+/// and its own fields as a RON struct. `None` when the file is not one, or
+/// its script is not the project's (a package's: fonts, render settings).
+pub fn data_asset(unity: &Unity, text: &str) -> Option<(String, String)> {
+    let docs = yaml::documents(text);
+    let doc = docs.iter().find(|d| d.kind == "MonoBehaviour")?;
+    let script = doc
+        .body
+        .reference("m_Script")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))
+        .map(|p| super::stem(p))?;
+    let refs = Refs {
+        unity,
+        entity_of: HashMap::new(),
+        body_object: HashMap::new(),
+        scoped: HashMap::new(),
+    };
+    Some((script, mono_behaviour(&doc.body, &refs)))
+}
+
 /// A MonoBehaviour's own fields as a RON struct.
 fn mono_behaviour(b: &Yaml, refs: &Refs) -> String {
     let Yaml::Hash(hash) = b else {
@@ -1297,6 +1541,9 @@ fn link(r: &Ref, refs: &Refs) -> Option<String> {
     }
     match r.guid.as_deref() {
         None => {
+            if let Some(id) = refs.scoped.get(&r.file_id) {
+                return Some(format!("EntityRef(\"{id}\")"));
+            }
             let entity = refs.entity_of.get(&r.file_id)?;
             Some(format!("EntityRef(\"{}\")", entity_id(*entity)))
         }
@@ -1488,6 +1735,47 @@ ParticleSystemRenderer:
   m_Materials:
   - {fileID: 2100000, guid: mmm, type: 2}
 ";
+
+    #[test]
+    fn a_hinge_springs_to_its_target_in_unitys_angles() {
+        let text = "a: 1\nm_UseSpring: 1\nm_Spring:\n  spring: 20\n  damper: 5\n  targetPosition: 90\nm_UseMotor: 0\n";
+        let b = &yaml_rust2::YamlLoader::load_from_str(text).unwrap()[0];
+        let motor = hinge_drive(b).unwrap();
+        assert_eq!(motor.hold, Some(90.0));
+        assert_eq!((motor.strength, motor.damping()), (20.0, 5.0));
+        let off = &yaml_rust2::YamlLoader::load_from_str("m_UseSpring: 0\nm_UseMotor: 0\n").unwrap()[0];
+        assert!(hinge_drive(off).is_none());
+    }
+
+    #[test]
+    fn an_instance_changes_a_components_fields_as_its_modifications_say() {
+        let load = |t: &str| yaml_rust2::YamlLoader::load_from_str(t).unwrap().remove(0);
+        let mut body = load("required:\n- tag: plank\n  count: 3\n- tag: scrap\n  count: 2\nrideSeconds: 31\nvolume: {fileID: 5}\n");
+        let change = |path: &str, value: &str| load(&format!("propertyPath: {path}\nvalue: {value}\nobjectReference: {{fileID: 0}}\n"));
+        modify(&mut body, "required.Array.size", &change("required.Array.size", "1"));
+        modify(&mut body, "required.Array.data[0].tag", &change("", "sponge"));
+        modify(&mut body, "required.Array.data[0].count", &change("", "4"));
+        modify(&mut body, "rideSeconds", &change("", "12.5"));
+        modify(&mut body, "volume", &load("value: \nobjectReference: {fileID: 9}\n"));
+        let items = body["required"].as_vec().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["tag"].as_str(), Some("sponge"));
+        assert_eq!(items[0]["count"].as_i64(), Some(4));
+        assert_eq!(yaml::number(&body["rideSeconds"]), Some(12.5));
+        assert_eq!(body["volume"]["fileID"].as_i64(), Some(9));
+    }
+
+    #[test]
+    fn a_scriptable_object_becomes_data() {
+        let text = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_Script: {fileID: 11500000, guid: sss, type: 3}\n  m_Name: GardenSoil\n  graphName: garden_soil\n  nodes:\n  - prefab: {fileID: 100, guid: ppp, type: 3}\n    branches:\n    - condition: 2\n      requires: [seeds]\n";
+        let (script, body) = data_asset(&unity(), text).unwrap();
+        assert_eq!(script, "Door");
+        assert!(body.contains("graphName: \"garden_soil\""), "{body}");
+        assert!(body.contains("PrefabLink(\"Lamp\")"), "{body}");
+        assert!(body.contains("condition: 2"), "{body}");
+        assert!(!body.contains("m_Name"), "{body}");
+        assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
 
     #[test]
     fn an_instance_moves_a_part_and_takes_its_light_away() {

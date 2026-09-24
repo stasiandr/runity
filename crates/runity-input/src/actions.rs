@@ -136,7 +136,7 @@ pub struct Actions {
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    runity_core::files::modified(path)
 }
 
 impl Actions {
@@ -150,7 +150,7 @@ impl Actions {
     /// Read an `input.ron`.
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let text = std::fs::read_to_string(&path)
+        let text = runity_core::files::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         let map = ron::from_str(&text).map_err(|e| anyhow::anyhow!("{}:{e}", path.display()))?;
         Ok(Self {
@@ -305,7 +305,11 @@ impl Actions {
             .filter_map(|(map, name)| map.axes.get(&name).cloned())
             .collect();
         let counted = |bindings: &[Binding]| -> Vec<Binding> {
-            bindings.iter().copied().filter(|b| self.counts(b.device())).collect()
+            bindings
+                .iter()
+                .copied()
+                .filter(|b| self.counts(b.device()))
+                .collect()
         };
         let positive: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.positive)).collect();
         let negative: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.negative)).collect();
@@ -384,7 +388,7 @@ impl Actions {
     }
 
     fn lay_over(&mut self, path: &Path) -> Result<(), String> {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = runity_core::files::read_to_string(path) else {
             return Ok(());
         };
         let theirs: ActionMap =
@@ -471,7 +475,10 @@ mod tests {
         input.handle(&InputEvent::KeyUp(Key::Space));
         input.begin_frame();
         input.handle(&InputEvent::PadDown(PadButton::South));
-        assert!(!actions.held(&input, "jump"), "the pad is not in the keyboard's scheme");
+        assert!(
+            !actions.held(&input, "jump"),
+            "the pad is not in the keyboard's scheme"
+        );
         // Until the pad is touched: then it is the pad's.
         assert_eq!(actions.update(&input), Some("gamepad"));
         assert!(actions.held(&input, "jump"));

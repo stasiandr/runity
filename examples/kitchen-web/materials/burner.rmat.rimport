@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/burner.rmat",
+    hash: "2c72a7c7f0844c2a3713ba47b6cace8e",
+    id: Some("a912190c1194c2f131bdcccbe708729a"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

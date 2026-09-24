@@ -19,7 +19,7 @@
 //! numbers varints (docs/netsim.md, «Трафик»).
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use super::wire::Transport;
 use super::PeerId;

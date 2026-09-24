@@ -154,7 +154,7 @@ impl LiveScene {
         let project = Project::find(&path).ok();
         let (current, prefabs, mut problems) = read(&path, project.as_ref())?;
         let library = match project.as_ref().map(Project::library) {
-            Some(directory) if directory.is_dir() => {
+            Some(directory) if crate::files::is_dir(&directory) => {
                 let (library, skipped) = Library::open(&directory)?;
                 problems.extend(
                     skipped
@@ -220,11 +220,21 @@ impl LiveScene {
     ) -> Vec<crate::streaming::StreamEvent> {
         let scenes = match &self.project {
             Some(project) => project.scenes(),
-            None => self.path.parent().map(Path::to_path_buf).unwrap_or_default(),
+            None => self
+                .path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_default(),
         };
-        let events = self
-            .streamer
-            .update(world, eye, &scenes, &self.prefabs, self.library.as_ref(), gpu, renderer);
+        let events = self.streamer.update(
+            world,
+            eye,
+            &scenes,
+            &self.prefabs,
+            self.library.as_ref(),
+            gpu,
+            renderer,
+        );
         // And the pictures' levels to what the last frame needed of them
         // (mip streaming), a few textures a frame.
         if let Some(library) = &self.library {
@@ -493,6 +503,7 @@ impl LiveScene {
         #[cfg(feature = "physics")]
         crate::physics::attach_collision_meshes(world, spawned.iter().copied(), library);
         for (entity, desc) in &spawned {
+            let _ = world.insert_one(*entity, crate::world::SpawnedId(desc.id));
             problems.extend(
                 components
                     .insert_all(desc, *entity, world)
@@ -534,7 +545,7 @@ impl LiveScene {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("a scene outside a project has no others to go to"))?;
         let path = project.scenes().join(format!("{name}.ron"));
-        if !path.is_file() {
+        if !crate::files::is_file(&path) {
             let names = project.scene_names();
             let near = crate::spelling::closest(name, names.iter().map(String::as_str))
                 .map(|n| format!(" — did you mean `{n}`?"))
@@ -671,7 +682,11 @@ impl LiveScene {
         }
         // A texture already on the GPU is uploaded again under a new handle;
         // the materials that name it find the new one by its id.
-        for asset in out.assets.iter().filter(|a| a.kind == crate::asset::TEXTURE) {
+        for asset in out
+            .assets
+            .iter()
+            .filter(|a| a.kind == crate::asset::TEXTURE)
+        {
             if renderer.texture_for(asset.id).is_some() {
                 if let Some(texture) = library.texture(asset.id) {
                     renderer.upload_texture(gpu, texture);
@@ -744,11 +759,11 @@ pub type Stamps = Vec<(PathBuf, Option<SystemTime>)>;
 ///
 /// Compare two of these to know whether a scene needs reading again.
 pub fn stamps(path: &Path, project: Option<&Project>) -> Stamps {
-    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let modified = |path: &Path| crate::files::modified(path);
     let mut out = vec![(path.to_path_buf(), modified(path))];
     // Hand-written prefabs, then the ones imports built into the library.
     for dir in project.into_iter().flat_map(|p| [p.prefabs(), p.library()]) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Ok(entries) = crate::files::read_dir(dir) else {
             continue;
         };
         let mut prefabs: Vec<PathBuf> = entries

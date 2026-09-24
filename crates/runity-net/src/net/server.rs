@@ -133,10 +133,10 @@ pub struct Server {
     /// What it did that someone may want to read: joins, refusals.
     pub log: Vec<String>,
     /// When the session began: the clock everyone agrees on.
-    began: std::time::Instant,
+    began: web_time::Instant,
     /// Each entity's short number and when it was given; by number; the
     /// next; and the ones given this tick, to tell everyone.
-    shorts: HashMap<EntityId, (u32, std::time::Instant)>,
+    shorts: HashMap<EntityId, (u32, web_time::Instant)>,
     by_short: HashMap<u32, EntityId>,
     next_short: u32,
     given: Vec<(EntityId, u32)>,
@@ -170,7 +170,7 @@ impl Server {
             fingerprint,
             outboxes: BTreeMap::new(),
             log: Vec::new(),
-            began: std::time::Instant::now(),
+            began: web_time::Instant::now(),
             shorts: HashMap::new(),
             by_short: HashMap::new(),
             next_short: 1,
@@ -187,7 +187,7 @@ impl Server {
         }
         let short = self.next_short;
         self.next_short += 1;
-        self.shorts.insert(id, (short, std::time::Instant::now()));
+        self.shorts.insert(id, (short, web_time::Instant::now()));
         self.by_short.insert(short, id);
         self.given.push((id, short));
         short
@@ -831,7 +831,7 @@ impl ServerThread {
             .name("runity-server".into())
             .spawn(move || {
                 while !flag.load(Ordering::Acquire) {
-                    let started = std::time::Instant::now();
+                    let started = web_time::Instant::now();
                     server.tick();
                     for line in server.log.drain(..) {
                         eprintln!("server: {line}");

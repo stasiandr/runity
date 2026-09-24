@@ -173,7 +173,8 @@ impl EntityRef {
     }
 
     /// The entity it links to in a running world: the one spawned from the
-    /// scene line with that ID.
+    /// scene line with that ID, or — in something the game spawned from a
+    /// prefab — from that prefab's line.
     pub fn get(&self, world: &hecs::World) -> Option<hecs::Entity> {
         let id = self.0?;
         world
@@ -181,6 +182,13 @@ impl EntityRef {
             .iter()
             .find(|(_, scene)| scene.0 == id)
             .map(|(entity, _)| entity)
+            .or_else(|| {
+                world
+                    .query::<(hecs::Entity, &crate::world::SpawnedId)>()
+                    .iter()
+                    .find(|(_, spawned)| spawned.0 == id)
+                    .map(|(entity, _)| entity)
+            })
     }
 
     /// Every entity ID linked in a value's RON text: what `check` looks

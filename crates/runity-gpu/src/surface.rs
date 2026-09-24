@@ -11,6 +11,11 @@ use crate::gpu::Gpu;
 pub struct Surface {
     inner: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    /// What the scene is drawn as: the sRGB form of the surface's format.
+    /// The same as the format where the surface has an sRGB one; a
+    /// browser's canvas has none (WebGPU gives `bgra8unorm`), so there the
+    /// frame is viewed as its sRGB twin.
+    view_format: wgpu::TextureFormat,
 }
 
 /// Why a frame could not be acquired.
@@ -42,12 +47,7 @@ impl Surface {
     // Used by every constructor; on a build with no shell feature there is
     // not yet one, and the native entry points land here too.
     #[allow(dead_code)]
-    pub fn configure(
-        gpu: &Gpu,
-        inner: wgpu::Surface<'static>,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub fn configure(gpu: &Gpu, inner: wgpu::Surface<'static>, width: u32, height: u32) -> Self {
         let capabilities = inner.get_capabilities(&gpu.adapter);
         // An sRGB format, so the GPU encodes on write and shading stays
         // linear all the way to the end. Picking the first available format
@@ -58,6 +58,7 @@ impl Surface {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(capabilities.formats[0]);
+        let view_format = format.add_srgb_suffix();
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -68,7 +69,11 @@ impl Surface {
             alpha_mode: capabilities.alpha_modes[0],
             // The same bytes seen as plain RGBA, for a UI that blends as a
             // browser does (`AcquiredFrame::ui_view`).
-            view_formats: vec![format.remove_srgb_suffix()],
+            view_formats: if view_format == format {
+                vec![format.remove_srgb_suffix()]
+            } else {
+                vec![view_format]
+            },
             // The default: the format already says sRGB, and naming a wider
             // space here would change what the encode step means.
             color_space: Default::default(),
@@ -77,7 +82,11 @@ impl Surface {
             desired_maximum_frame_latency: 2,
         };
         inner.configure(&gpu.device, &config);
-        Self { inner, config }
+        Self {
+            inner,
+            config,
+            view_format,
+        }
     }
 
     pub fn width(&self) -> u32 {
@@ -106,7 +115,7 @@ impl Surface {
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        self.view_format
     }
 
     pub fn acquire(&self) -> Result<wgpu::SurfaceTexture, SurfaceError> {
@@ -138,9 +147,10 @@ impl Surface {
     /// over a full one.
     pub fn begin_frame(&self) -> Result<AcquiredFrame, SurfaceError> {
         let texture = self.acquire()?;
-        let view = texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.view_format),
+            ..Default::default()
+        });
         Ok(AcquiredFrame {
             texture,
             view,

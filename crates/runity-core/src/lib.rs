@@ -18,6 +18,10 @@ pub mod asset;
 pub mod components;
 pub mod crash;
 pub mod data;
+pub mod files;
+/// The clock wherever the game runs: `std::time` on the desktop, the
+/// page's `performance.now()` in the browser, where `std`'s panics.
+pub use web_time;
 #[doc(hidden)]
 pub mod defaults;
 pub mod edit;
@@ -57,7 +61,9 @@ pub use edit::History;
 pub use id::{EntityId, EntityRef};
 pub use input::{Input, InputEvent, Key, MouseButton};
 pub use library::{Library, Reloaded};
-pub use links::{AssetLink, MaterialLink, ModelLink, PrefabLink, SceneLink, SoundLink, TextureLink};
+pub use links::{
+    AssetLink, MaterialLink, ModelLink, PrefabLink, SceneLink, SoundLink, TextureLink,
+};
 pub use perf::{FrameSummary, FrameTimes};
 pub use prefab::{Instanced, Prefabs};
 pub use project::{Project, ProjectError};

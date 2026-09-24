@@ -1,0 +1,14 @@
+// The serving window's bell: still, and a ring when a soup goes out — the
+// game triggers `serve` on the window's `Moving`. A graph of the same kind
+// a character plays, here on the things under the window (clips/).
+(
+    start: "still",
+    states: {
+        "still": (clip: "bell_still", transitions: [
+            (to: "ring", when: [Trigger("serve")], fade: 0.0),
+        ]),
+        "ring": (clip: "bell_ring", looping: false, transitions: [
+            (to: "still", when: [Finished], fade: 0.1),
+        ]),
+    },
+)

@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
@@ -146,22 +146,44 @@ pub trait Game {
 /// Set when a hot patch has been applied, until the loop has told the game.
 static PATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// A game callback, through `subsecond::call` so a rebuilt one takes
+/// effect in the running process. The browser has no hot patches: there it
+/// is the call itself.
+fn hot<R>(f: impl FnMut() -> R) -> R {
+    #[cfg(not(target_arch = "wasm32"))]
+    return subsecond::call(f);
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut f = f;
+        f()
+    }
+}
+
 /// Open a window and run until the game or the user says otherwise.
+///
+/// In the browser the "window" is the page's `<canvas id="runity">` (one is
+/// made when the page has none), the loop is the browser's own — this
+/// returns at once and the game runs on `requestAnimationFrame` — and the
+/// device comes up asynchronously, so `Game::start` is called a moment
+/// later, when it has.
 pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<()> {
     // Told on the loop's thread at the next turn, not in the handler: the
     // handler runs wherever the patch arrived, mid-frame for all it knows.
+    #[cfg(not(target_arch = "wasm32"))]
     subsecond::register_handler(Arc::new(|| {
         PATCHED.store(true, std::sync::atomic::Ordering::Release)
     }));
-    let event_loop = EventLoop::new()?;
+    let event_loop = EventLoop::<Running>::with_user_event().build()?;
     // Poll rather than Wait: a game draws continuously, and waiting for an
     // event means the world only advances when the mouse moves.
     event_loop.set_control_flow(ControlFlow::Poll);
     let time = Time::new(config.time);
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut shell = Shell {
         config,
         game,
         state: None,
+        proxy: Some(event_loop.create_proxy()),
         time,
         input: Input::new(),
         pads: match gilrs::Gilrs::new() {
@@ -173,12 +195,18 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
         },
         captured: false,
     };
+    #[cfg(not(target_arch = "wasm32"))]
     event_loop.run_app(&mut shell)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::EventLoopExtWebSys;
+        event_loop.spawn_app(shell);
+    }
     Ok(())
 }
 
 /// Everything that only exists once there is a window.
-struct Running {
+pub struct Running {
     window: Arc<Window>,
     gpu: Gpu,
     surface: Surface,
@@ -190,6 +218,9 @@ struct Shell<G: Game> {
     config: WindowConfig,
     game: G,
     state: Option<Running>,
+    /// Where a device made asynchronously (the browser's) is handed back
+    /// to the loop; taken when the window is made.
+    proxy: Option<EventLoopProxy<Running>>,
     time: Time,
     input: Input,
     /// Gamepads. `None` where the platform has no way to ask — the game
@@ -236,7 +267,25 @@ impl<G: Game> Shell<G> {
         let Some(state) = self.state.as_mut() else {
             return;
         };
+        // The window's size as it is now: a resize that came while the
+        // device was still coming up (in the browser it comes up after the
+        // canvas is laid out) was told to nobody.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (width, height) = state.window.inner_size().into();
+        // In the browser the canvas's pixels are the page's to keep up:
+        // its laid-out size times the device's pixel ratio, the space
+        // winit gives pointer and touch positions in.
+        #[cfg(target_arch = "wasm32")]
+        let (width, height) = canvas_pixels(&state.window);
+        state.surface.resize(&state.gpu, width, height);
+        #[cfg(not(target_arch = "wasm32"))]
         self.time.tick();
+        #[cfg(target_arch = "wasm32")]
+        self.time.tick_at(
+            web_sys::window()
+                .and_then(|w| w.performance())
+                .map_or(0.0, |p| p.now() / 1000.0),
+        );
 
         let mut quit = false;
         // The pointer the game asked for, captured or free, applied once the
@@ -245,7 +294,7 @@ impl<G: Game> Shell<G> {
         if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
             let game = &mut self.game;
-            subsecond::call(|| game.patched(&mut ctx));
+            hot(|| game.patched(&mut ctx));
             quit |= ctx.quit;
             wanted = ctx.capture.or(wanted);
         }
@@ -257,14 +306,14 @@ impl<G: Game> Shell<G> {
             // here.
             let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
             let game = &mut self.game;
-            subsecond::call(|| game.step(&mut ctx));
+            hot(|| game.step(&mut ctx));
             quit |= ctx.quit;
             wanted = ctx.capture.or(wanted);
         }
 
         let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
         let game = &mut self.game;
-        let frame = subsecond::call(|| game.frame(&mut ctx));
+        let frame = hot(|| game.frame(&mut ctx));
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
         if let Some(on) = wanted.filter(|on| *on != self.captured) {
@@ -308,19 +357,93 @@ impl<G: Game> Shell<G> {
     }
 }
 
-impl<G: Game> ApplicationHandler for Shell<G> {
+impl<G: Game> Shell<G> {
+    /// The device and the window are there: the game starts.
+    fn begin(&mut self, mut state: Running) {
+        let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured);
+        self.game.start(&mut ctx);
+        if let Some(on) = ctx.capture {
+            set_captured(&state.window, on);
+            self.captured = on;
+        }
+        self.state = Some(state);
+    }
+}
+
+/// The canvas the game draws on: the page's `#runity`, or a new one over
+/// the whole page.
+#[cfg(target_arch = "wasm32")]
+fn canvas() -> Option<web_sys::HtmlCanvasElement> {
+    use wasm_bindgen::JsCast;
+    let document = web_sys::window()?.document()?;
+    if let Some(found) = document.get_element_by_id("runity") {
+        return found.dyn_into().ok();
+    }
+    let canvas: web_sys::HtmlCanvasElement =
+        document.create_element("canvas").ok()?.dyn_into().ok()?;
+    canvas.set_id("runity");
+    let _ = canvas.set_attribute(
+        "style",
+        "position:fixed;inset:0;width:100vw;height:100vh;touch-action:none",
+    );
+    document.body()?.append_child(&canvas).ok()?;
+    Some(canvas)
+}
+
+/// The canvas's drawing buffer made its laid-out size in device pixels,
+/// and that size.
+#[cfg(target_arch = "wasm32")]
+fn canvas_pixels(window: &Window) -> (u32, u32) {
+    use winit::platform::web::WindowExtWebSys;
+    let Some(canvas) = window.canvas() else {
+        return window.inner_size().into();
+    };
+    let ratio = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio());
+    let width = (canvas.client_width() as f64 * ratio).round().max(1.0) as u32;
+    let height = (canvas.client_height() as f64 * ratio).round().max(1.0) as u32;
+    if canvas.width() != width {
+        canvas.set_width(width);
+    }
+    if canvas.height() != height {
+        canvas.set_height(height);
+    }
+    (width, height)
+}
+
+/// Say on the page what went wrong, where a player can read it: the
+/// browser has no terminal. The page's `runityFailed(why)`, if it has one.
+#[cfg(target_arch = "wasm32")]
+pub fn fail(why: &str) {
+    web_sys::console::error_1(&why.into());
+    if let Some(window) = web_sys::window() {
+        let _ = js_sys::Reflect::get(&window, &"runityFailed".into())
+            .ok()
+            .and_then(|f| wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(f).ok())
+            .map(|f| f.call1(&window, &why.into()));
+    }
+}
+
+impl<G: Game> ApplicationHandler<Running> for Shell<G> {
+    /// A device made asynchronously — the browser's — has come up.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, state: Running) {
+        self.begin(state);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         // Called again after the window is destroyed and recreated, which on
         // Android happens whenever the app comes back to the foreground.
-        if self.state.is_some() {
+        if self.state.is_some() || self.proxy.is_none() {
             return;
         }
-        let mut attributes = Window::default_attributes()
-            .with_title(self.config.title.clone())
-            .with_inner_size(winit::dpi::LogicalSize::new(
+        let mut attributes = Window::default_attributes().with_title(self.config.title.clone());
+        // In the browser the page's layout sizes the canvas; a size here
+        // would pin it in pixels.
+        if cfg!(not(target_arch = "wasm32")) {
+            attributes = attributes.with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.width,
                 self.config.height,
             ));
+        }
         if let Some((x, y, width, height)) = std::env::var(WINDOW_VAR)
             .ok()
             .as_deref()
@@ -329,6 +452,14 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             attributes = attributes
                 .with_position(winit::dpi::LogicalPosition::new(x, y))
                 .with_inner_size(winit::dpi::LogicalSize::new(width, height));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            use winit::platform::web::WindowAttributesExtWebSys;
+            attributes = attributes
+                .with_canvas(canvas())
+                .with_prevent_default(true)
+                .with_focusable(true);
         }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
@@ -339,39 +470,44 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             }
         };
 
-        let gpu = match Gpu::headless_blocking(false) {
-            Ok(gpu) => gpu,
-            Err(e) => {
-                eprintln!("{e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        let surface = match Surface::from_window(&gpu, window.clone()) {
-            Ok(surface) => surface,
-            Err(e) => {
-                eprintln!("{e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        let renderer = Renderer::for_surface(&gpu, &surface);
-        let overlay = crate::ui_render::UiRenderer::for_surface(&gpu, &surface);
-
-        let mut state = Running {
-            window,
-            gpu,
-            surface,
-            renderer,
-            overlay,
-        };
-        let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured);
-        self.game.start(&mut ctx);
-        if let Some(on) = ctx.capture {
-            set_captured(&state.window, on);
-            self.captured = on;
+        let proxy = self.proxy.take().expect("the window is made once");
+        // The browser gives its device only asynchronously: made there and
+        // handed back to the loop as an event.
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = event_loop;
+            wasm_bindgen_futures::spawn_local(async move {
+                let gpu = match Gpu::headless(false).await {
+                    Ok(gpu) => gpu,
+                    Err(e) => return fail(&format!("WebGPU: {e}")),
+                };
+                match running(gpu, window) {
+                    Ok(state) => {
+                        let _ = proxy.send_event(state);
+                    }
+                    Err(e) => fail(&e),
+                }
+            });
         }
-        self.state = Some(state);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = proxy;
+            let gpu = match Gpu::headless_blocking(false) {
+                Ok(gpu) => gpu,
+                Err(e) => {
+                    eprintln!("{e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+            match running(gpu, window) {
+                Ok(state) => self.begin(state),
+                Err(e) => {
+                    eprintln!("{e}");
+                    event_loop.exit();
+                }
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -411,6 +547,10 @@ impl<G: Game> ApplicationHandler for Shell<G> {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_arch = "wasm32")]
+        for event in crate::web::drain() {
+            self.input.handle(&event);
+        }
         if let Some(pads) = self.pads.as_mut() {
             while let Some(event) = pads.next_event() {
                 if let Some(event) = translate_pad(event.event) {
@@ -424,6 +564,20 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             state.window.request_redraw();
         }
     }
+}
+
+/// The surface and the renderers for a window, on a device.
+fn running(gpu: Gpu, window: Arc<Window>) -> Result<Running, String> {
+    let surface = Surface::from_window(&gpu, window.clone()).map_err(|e| e.to_string())?;
+    let renderer = Renderer::for_surface(&gpu, &surface);
+    let overlay = crate::ui_render::UiRenderer::for_surface(&gpu, &surface);
+    Ok(Running {
+        window,
+        gpu,
+        surface,
+        renderer,
+        overlay,
+    })
 }
 
 /// A gilrs button as ours, by where it is on the pad.

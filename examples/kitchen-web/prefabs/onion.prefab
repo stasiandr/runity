@@ -1,0 +1,4 @@
+// An onion (Kenney's): from the crate, to the board, to the pot. Its root is unscaled (spawning places it); the bulb is its size.
+(id: "0dde29a6baa4b71a", name: "onion", model: "", transform: (position: (0.000, 0.000, 0.000)), components: { "item": (thing: Food(Onion)) }, children: [
+(id: "dd2467ac778eedb3", name: "bulb", model: "onion", transform: (position: (0.000, -0.180, 0.000), scale: (1.450, 1.450, 1.450))),
+])
