@@ -202,10 +202,7 @@ pub fn check(project: &Project) -> Vec<Finding> {
         ));
     }
 
-    for path in files(&project.root().join(scrap::project::CONFIGS), "ron") {
-        let file = relative(project, &path);
-        let _: Option<ron::Value> = parse(&path, &file, &mut out);
-    }
+    check_configs(project, &mut out);
 
     // The modules scrap.ron lists hold together, and Cargo.toml builds
     // the engine with them.
@@ -217,6 +214,97 @@ pub fn check(project: &Project) -> Vec<Finding> {
     check_layout(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));
     out
+}
+
+/// Every file in `configs/` is RON, and every table in it holds together
+/// (docs/data.md): what is wrong with each as
+/// written — a name or an id said twice, a `base` that names nothing or goes
+/// round, an `id` not written yet — and, where the game has said what its
+/// tables hold (`library/tables.ron`), a record that does not fit its type
+/// and a link to a record that is not there. A file the game has not named
+/// is a table when it is written as one: a map of records with an `id` or a
+/// `base` among them.
+fn check_configs(project: &Project, out: &mut Vec<Finding>) {
+    use scrap::table;
+    let shapes = table::read_shapes(project.root().join(scrap::project::TABLE_SHAPES))
+        .unwrap_or_default();
+    for shape in &shapes {
+        if !project.root().join(&shape.path).exists() {
+            out.push(error(
+                &shape.path,
+                format!(
+                    "the game reads its `{}` records from here, and there is no such file",
+                    shape.record
+                ),
+            ));
+        }
+    }
+    for path in files(&project.root().join(scrap::project::CONFIGS), "ron") {
+        let file = relative(project, &path);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) => {
+                out.push(error(&file, e));
+                continue;
+            }
+        };
+        // Scanned, not read as one value: serde's reading of a large map
+        // is slow, and a table can be thousands of records.
+        if scrap::ron_text::outline(&text).is_none() {
+            match ron::from_str::<ron::Value>(&text) {
+                Err(e) => out.push(error(&file, e)),
+                Ok(_) => out.push(error(&file, "does not scan as RON")),
+            }
+            continue;
+        }
+        // What is not a table is small: read whole, it says what the scan
+        // lets through (`(gravity: )`).
+        if !scrap::table::is_table(&text) {
+            if let Err(e) = ron::from_str::<ron::Value>(&text) {
+                out.push(error(&file, e));
+                continue;
+            }
+        }
+        let shape = shapes.iter().find(|s| s.holds(&file));
+        let records = match table::written(&text) {
+            Ok(records) => records,
+            Err(e) => {
+                if let Some(shape) = shape {
+                    out.push(error(&file, format!("holds `{}` records: {e}", shape.record)));
+                }
+                continue;
+            }
+        };
+        if shape.is_none() && !records.iter().any(|r| r.id.is_some() || r.base.is_some()) {
+            continue;
+        }
+        for problem in table::problems_of(&records) {
+            out.push(Finding {
+                severity: if problem.warning {
+                    Severity::Warning
+                } else {
+                    Severity::Error
+                },
+                file: file.clone(),
+                message: problem.to_string(),
+            });
+        }
+        if let Some(shape) = shape {
+            let (fields, _) = table::resolved(&records);
+            for (record, fields) in records.iter().zip(fields) {
+                for problem in shape.shape.problems(&table::compose(&fields)) {
+                    out.push(error(
+                        &file,
+                        format!("line {}: `{}`: {problem}", record.line, record.name),
+                    ));
+                }
+            }
+        }
+    }
+    let read = |path: &str| table::read_table_files(project.root(), path);
+    for (file, line, message) in table::link_problems(&shapes, &read) {
+        out.push(error(&file, format!("line {line}: {message}")));
+    }
 }
 
 /// What is at the top of the project that the layout has no place for

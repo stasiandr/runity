@@ -59,10 +59,14 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `text` as tables. An error in words, with the line and column, when it
 /// is not RON.
 pub fn read(text: &str) -> Result<Config, String> {
-    if let Err(e) = scrap::ron::from_str::<scrap::ron::Value>(text) {
-        return Err(e.to_string());
-    }
-    let top = outline(text).ok_or("the file does not scan as RON")?;
+    // The scan is linear; serde's reading of a whole file as a value is
+    // not, so it only says what is wrong.
+    let Some(top) = outline(text) else {
+        return Err(match scrap::ron::from_str::<scrap::ron::Value>(text) {
+            Err(e) => e.to_string(),
+            Ok(_) => "the file does not scan as RON".into(),
+        });
+    };
     let mut config = Config::default();
     match &top.group {
         Some((Kind::Struct, fields)) => {

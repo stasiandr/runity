@@ -54,6 +54,9 @@ pub enum Shape {
     /// An asset by its ID alone, of the kind its field's name says — a
     /// material's `base_map` a texture, its `shader` a shader.
     AssetId(String),
+    /// A link to a record of a table ([`crate::table::Link`]), by the
+    /// records' type: `Material`. A picker of that table's records.
+    Record(String),
 }
 
 /// The shape of `T` as the value of a field called `field`: a link to an
@@ -272,6 +275,7 @@ impl Shape {
             // No entity: the id no entity has.
             Shape::EntityId => "\"0\"".into(),
             Shape::AssetId(_) => "\"0\"".into(),
+            Shape::Record(_) => "\"\"".into(),
             Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
             Shape::Asset(kind) => {
                 let name = crate::links::LINK_KINDS
@@ -316,6 +320,7 @@ impl Shape {
                 | Shape::OneOf(_)
                 | Shape::EntityId
                 | Shape::AssetId(_)
+                | Shape::Record(_)
                 | Shape::Tagged(_),
                 _,
             ) => {}
@@ -420,6 +425,7 @@ impl fmt::Display for Shape {
             Shape::Entity | Shape::EntityId => write!(f, "entity"),
             Shape::AssetId(kind) => write!(f, "{kind} id"),
             Shape::Asset(kind) => write!(f, "{kind}"),
+            Shape::Record(record) => write!(f, "{record}"),
         }
     }
 }
@@ -509,7 +515,12 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         // A link to an asset reads anything a link is written as: an
         // `AssetLink` says so by what it expects, and its kind is the
         // field's it is the value of.
-        if Expecting(&visitor).to_string() == crate::links::LINK_EXPECTING {
+        let expecting = Expecting(&visitor).to_string();
+        if let Some(record) = expecting.strip_prefix(crate::table::RECORD_EXPECTING) {
+            *self.out = Shape::Record(record.trim().trim_matches('`').to_string());
+            return visitor.visit_str("");
+        }
+        if expecting == crate::links::LINK_EXPECTING {
             *self.out = Shape::Asset(
                 crate::links::kind_of_field(FIELD.get())
                     .unwrap_or("asset")

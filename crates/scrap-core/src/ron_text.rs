@@ -137,6 +137,10 @@ pub struct Part<'a> {
     pub key: Option<String>,
     /// The value's text, from its first character to its last.
     pub text: &'a str,
+    /// Where that text is in the document.
+    pub span: Range<usize>,
+    /// Where the entry begins: its key, or the value when it has none.
+    pub at: usize,
     /// A struct, a map or a list, with its entries; `None` for anything
     /// else: a number, a string, a tuple, an enum value without fields.
     pub group: Option<(Kind, Vec<Part<'a>>)>,
@@ -144,25 +148,33 @@ pub struct Part<'a> {
 
 /// `text`'s value, as written. `None` when it does not scan as RON.
 pub fn outline(text: &str) -> Option<Part<'_>> {
-    fn part<'a>(text: &'a str, key: Option<String>, range: Range<usize>, node: &Node) -> Part<'a> {
+    fn part<'a>(
+        text: &'a str,
+        key: Option<String>,
+        at: usize,
+        range: Range<usize>,
+        node: &Node,
+    ) -> Part<'a> {
         let group = match node {
             Node::Group { entries, kind, .. } => Some((
                 *kind,
                 entries
                     .iter()
-                    .map(|e| part(text, e.key.clone(), e.value.clone(), &e.node))
+                    .map(|e| part(text, e.key.clone(), e.body, e.value.clone(), &e.node))
                     .collect(),
             )),
             Node::Atom => None,
         };
         Part {
             key,
-            text: &text[range],
+            text: &text[range.clone()],
+            span: range,
+            at,
             group,
         }
     }
     let (node, range) = scan_document(text)?;
-    Some(part(text, None, range, &node))
+    Some(part(text, None, range.start, range, &node))
 }
 
 #[derive(Clone)]

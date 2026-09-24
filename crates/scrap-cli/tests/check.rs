@@ -358,6 +358,67 @@ fn a_file_outside_the_layout_is_named_with_where_it_goes() {
 }
 
 #[test]
+fn a_table_is_checked_by_record_as_written_and_by_the_game_s_types() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+    }
+    impl scrap::Record for Material {}
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Recipe {
+        tool: scrap::Link<Material>,
+    }
+    impl scrap::Record for Recipe {}
+
+    let project = project("tables");
+    let root = project.root();
+    write(
+        &root.join("configs/materials.ron"),
+        "{\n    \"Палка\": (id: \"1\", hard: 1),\n    \"Доска\": (id: \"1\", base: \"Палко\"),\n    \"Кость\": (hard: \"very\"),\n}\n",
+    );
+    write(
+        &root.join("configs/recipes/tools.ron"),
+        "{ \"Нож\": (id: \"a\", tool: \"Кремень\") }\n",
+    );
+    // A map of numbers by name is no table: nothing here is said of it.
+    write(&root.join("configs/prices.ron"), "{ \"wolf\": (gold: 3) }\n");
+    let lines = |findings: &[Finding], severity: Severity| -> Vec<String> {
+        findings
+            .iter()
+            .filter(|f| f.severity == severity)
+            .map(ToString::to_string)
+            .collect()
+    };
+
+    // What the file says alone.
+    let findings = check(&project);
+    let errors = lines(&findings, Severity::Error);
+    one_containing(&errors, "line 3: `Доска`: has the id of `Палка`");
+    assert!(one_containing(&errors, "base `Палко`").contains("did you mean `Палка`?"));
+    let warnings = lines(&findings, Severity::Warning);
+    one_containing(&warnings, "line 4: `Кость`: no `id` written yet");
+    assert!(!findings.iter().any(|f| f.file.contains("prices")), "{findings:#?}");
+    assert!(!errors.iter().any(|e| e.contains("very")), "no types known yet");
+
+    // What the game says its tables hold.
+    let mut tables = scrap::Tables::new();
+    tables
+        .register::<Material>("configs/materials.ron")
+        .register::<Recipe>("configs/recipes")
+        .register::<Material>("configs/stones.ron");
+    tables
+        .write_shapes(root.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let findings = check(&project);
+    let errors = lines(&findings, Severity::Error);
+    one_containing(&errors, "line 4: `Кость`: `hard` is a whole number");
+    one_containing(&errors, "configs/recipes/tools.ron: line 1: `Нож`: `tool`: no `Material` called `Кремень`");
+    one_containing(&errors, "configs/stones.ron: the game reads its `Material` records from here");
+}
+
+#[test]
 fn the_old_tuning_folder_is_named_with_its_new_name() {
     let project = project("tuning");
     write(&project.root().join("tuning/world.ron"), "(gravity: -9.81)");
