@@ -13,14 +13,15 @@
 //! | drag from empty space | select everything the box touches; shift adds |
 //! | drag a handle | move, turn or stretch the selection — one undo step |
 //! | Ctrl + drag a handle | in steps: ¼ m, 15°, 0.1 where the grid is off |
-//! | Ctrl Shift + drag a move handle | onto whatever is under the cursor |
+//! | Ctrl Shift + drag a move handle, Shift + drag the middle square | onto whatever is under the cursor |
 //! | V + drag from a vertex | that vertex onto another thing's vertex |
 //! | alt + drag | orbit |
 //! | right drag | look around; with W A S D Q E held, fly (shift: faster, wheel: speed) |
 //! | middle drag | pan |
 //! | wheel | zoom |
 //! | Q | the hand: a left drag pans, nothing is picked or moved |
-//! | W / E / R | move / rotate / scale tool |
+//! | W / E / R / T / Y | move / rotate / scale / rect / transform tool, as Unity's |
+//! | pointing at a handle | it goes yellow |
 //! | X | handles along the world's axes or the entity's own |
 //! | Z | handles on the entity's pivot or the selection's middle |
 //! | F | frame the selection |
@@ -76,6 +77,10 @@ impl Session {
         let at = input.mouse_position();
         let (x, y) = (at.x.max(0.0) as u32, at.y.max(0.0) as u32);
         let motion = input.mouse_motion();
+        // The handle under the pointer, yellow while nothing is held.
+        let (w, h) = self.size();
+        let inside = at.x >= 0.0 && at.y >= 0.0 && x < w && y < h;
+        self.set_gizmo_hover(inside.then_some((x, y)));
 
         // The mouse. V held: vertex snapping instead of a click or a handle.
         let vertex = input.held(Key::V) && !ctrl;
@@ -119,9 +124,12 @@ impl Session {
             && self.is_dragging()
             && motion != runity::glam::Vec2::ZERO
         {
-            // Ctrl Shift: onto whatever is under the cursor instead of
-            // along the handle.
-            if ctrl && shift && self.tool() == Tool::Move {
+            // Ctrl Shift, or Shift on the middle square: onto whatever is
+            // under the cursor instead of along the handle.
+            let held = self.gizmo_held();
+            let moving = held.is_some_and(|g| g.tool == Tool::Move);
+            let middle = held == Some(runity::gizmo::Grip::new(Tool::Move, runity::gizmo::Handle::Center));
+            if (ctrl && shift && moving) || (shift && middle) {
                 if self.surface_drag(x, y)? {
                     did.push("place");
                 }
@@ -276,6 +284,8 @@ impl Session {
                 (Key::W, Tool::Move, "move tool"),
                 (Key::E, Tool::Rotate, "rotate tool"),
                 (Key::R, Tool::Scale, "scale tool"),
+                (Key::T, Tool::Rect, "rect tool"),
+                (Key::Y, Tool::Transform, "transform tool"),
             ] {
                 if pressed(key) {
                     self.set_tool(tool);

@@ -72,6 +72,8 @@ fn shoot(
             pose: None,
         }],
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         poses: Vec::new(),
     };
     renderer.render(gpu, target, &frame);

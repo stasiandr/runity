@@ -166,6 +166,8 @@ fn a_source_model_becomes_a_frame() {
             },
         ],
         overlay_draws: Vec::new(),
+        outline_draws: Vec::new(),
+        outline_width: 2.0,
         poses: Vec::new(),
     };
     renderer.render(&gpu, &target, &frame);

@@ -43,6 +43,7 @@ pub mod ssao;
 pub mod streaming_textures;
 pub mod taa;
 pub mod terrain;
+pub mod tools;
 pub mod tour;
 pub mod upscale;
 pub mod volume;

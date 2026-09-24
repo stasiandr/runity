@@ -1,12 +1,14 @@
 //! `frame_bench` — what one editor frame costs, the GPU waited for.
 //!
 //! ```text
-//! cargo run --release -p runity-studio --example frame_bench -- [scene.ron]
+//! cargo run --release -p runity-studio --example frame_bench -- [scene.ron] [select name…]
 //! ```
 //!
 //! The whole studio at 1440×900 points on a 2× display, as the window
 //! draws it, for each graphics preset of the Scene view: the mean and the
 //! slowest of 60 frames, each one finished on the GPU before the next.
+//! Names after the scene are selected first, so the selection's outline
+//! and handles are in what is measured.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,13 +17,20 @@ use runity::gpu::OffscreenTarget;
 use runity::quality::Quality;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let scene = std::env::args()
-        .nth(1)
+    let mut args = std::env::args().skip(1);
+    let scene = args
+        .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(runity_studio::REFERENCE_SCENE));
     let (width, height, scale) = (1440.0, 900.0, 2.0);
     let session = runity_studio::open(&scene)?;
     let mut studio = runity_studio::Studio::new(session, width, height, scale);
+    for name in args {
+        match studio.session.find(&name) {
+            Some(id) => studio.session.add_to_selection(id)?,
+            None => eprintln!("nothing called {name:?}"),
+        }
+    }
     let (pw, ph) = ((width * scale) as u32, (height * scale) as u32);
     let target = OffscreenTarget::new(studio.session.gpu(), pw, ph);
     let mut renderer = studio.renderer(target.format());
@@ -62,6 +71,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         passes.sort_by(|a, b| b.1.total_cmp(&a.1));
         for (pass, ms) in passes.iter().take(6) {
             println!("           {pass:<28} {ms:5.1} ms");
+        }
+        // What goes over the picture, whatever it costs.
+        for (pass, ms) in passes.iter().skip(6) {
+            if ["overlay", "outline", "tools"].contains(&pass.as_str()) {
+                println!("           {pass:<28} {ms:5.2} ms");
+            }
         }
     }
     Ok(())

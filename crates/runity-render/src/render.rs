@@ -567,6 +567,16 @@ pub struct Frame {
     /// reason this exists: you cannot grab what you cannot see, and burying
     /// it is exactly what depth testing does.
     pub overlay_draws: Vec<Draw>,
+    /// Outlined on the finished picture in their material's colour: the
+    /// edge of what they cover on screen, as Unity outlines a selection —
+    /// full where they are seen, faint where something is in front. Their
+    /// silhouettes go into a mask and the edge is found there, so what is
+    /// outlined is the shape itself, not a box round it. Up to
+    /// [`crate::tools::OUTLINE_COLORS`] colours; where two meet, the later
+    /// colour's edge is drawn (a child's inside its parent's).
+    pub outline_draws: Vec<Draw>,
+    /// How wide an outline is, in pixels of the picture.
+    pub outline_width: f32,
     /// Point lights besides the sun.
     pub lights: Vec<PointLight>,
     /// Lamps with a lens flare of their own: where each is, its colour
@@ -641,6 +651,8 @@ impl Default for Frame {
             ray_tracing: crate::ray::RayTracing::default(),
             draws: Vec::new(),
             overlay_draws: Vec::new(),
+            outline_draws: Vec::new(),
+            outline_width: 2.0,
             lights: Vec::new(),
             flares: Vec::new(),
             live_meshes: Vec::new(),
@@ -1073,6 +1085,9 @@ pub struct Renderer {
     samples: u32,
     /// The scene pass being drawn started from the prepass's depth.
     depth_prepassed: bool,
+    /// What handles and outlines are drawn into, made when first wanted
+    /// and again when the picture changes size ([`crate::tools`]).
+    tools: Option<crate::tools::Tools>,
     /// Occlusion culling asked for, however little there is to cull.
     occlusion_always: bool,
     /// The pipelines of the sample count drawn with before this one.
@@ -1572,6 +1587,9 @@ struct Pipelines {
     /// skinned and render face.
     prepass: std::collections::HashMap<(bool, RenderFace, bool), wgpu::RenderPipeline>,
     overlay: wgpu::RenderPipeline,
+    /// How many samples the overlay is drawn with.
+    overlay_samples: u32,
+    outline_mask: wgpu::RenderPipeline,
     sky: wgpu::RenderPipeline,
     /// Rain and snow falling, over the frame.
     precipitation: wgpu::RenderPipeline,
@@ -2025,35 +2043,79 @@ fn build_pipelines(
             cache: None,
         });
 
-    // The same shader and the same vertex layout, onto the finished
-    // picture, with no depth at all — so an overlay neither hides behind
-    // the scene nor blocks anything drawn after it.
-    let overlay = gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("runity::overlay"),
-            layout: Some(layouts.main),
-            vertex: wgpu::VertexState {
-                module: shader,
-                entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: shader,
-                entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(output.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+    // Tools, with the same vertex layout, into the tools' own picture
+    // (crate::tools): no depth at all, so an overlay neither hides behind
+    // the scene nor blocks anything drawn after it; blended, premultiplied,
+    // so a translucent handle is; four samples where the format has them,
+    // so a thin one is smooth.
+    let overlay_samples = if gpu
+        .adapter
+        .get_texture_format_features(output)
+        .flags
+        .sample_count_supported(4)
+    {
+        4
+    } else {
+        1
+    };
+    let tool_pipeline = |label, entry, format, blend, samples, depth: Option<wgpu::DepthStencilState>| {
+        gpu.device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layouts.main),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some("vs_tool"),
+                    compilation_options: Default::default(),
+                    buffers: &buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: depth,
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+    };
+    let overlay = tool_pipeline(
+        "runity::overlay",
+        "fs_tool",
+        output,
+        Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        overlay_samples,
+        None,
+    );
+    // What is outlined, into the mask: the nearest outlined surface a
+    // pixel's, whatever else is in front of it.
+    let outline_mask = tool_pipeline(
+        "runity::outline mask",
+        "fs_outline_mask",
+        crate::tools::MASK_FORMAT,
+        None,
+        1,
+        Some(wgpu::DepthStencilState {
+            format: crate::tools::MASK_DEPTH,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+    );
 
     // The sky: one triangle over the screen at the far plane, drawn after
     // the opaque things so only what they left uncovered is shaded.
@@ -2178,6 +2240,8 @@ fn build_pipelines(
         shadow_clip,
         prepass,
         overlay,
+        overlay_samples,
+        outline_mask,
         sky,
         precipitation,
         fog_inject: compute(layouts.fog_inject, "cs_fog_inject"),
@@ -3136,6 +3200,7 @@ impl Renderer {
             depth_size: (width, height),
             samples,
             depth_prepassed: false,
+            tools: None,
             occlusion_always: false,
             other_samples: None,
             scene: scene_targets(gpu, width, height, samples),
@@ -3868,6 +3933,172 @@ impl Renderer {
         }
     }
 
+    /// Handles and outlines over the finished picture ([`crate::tools`]):
+    /// the outline mask, the overlay, and the two laid over `view`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tools(
+        &mut self,
+        gpu: &Gpu,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        size: (u32, u32),
+        overlay: &Batches,
+        outlines: &Batches,
+        colors: &[[f32; 3]],
+        overlay_base: u32,
+        outline_base: u32,
+        width: f32,
+        view_projection: Mat4,
+    ) {
+        // Only where something is: the composite reads a few pixels round
+        // each one it writes, and a selection is a small part of the view.
+        let reach = width.ceil() + 2.0;
+        let Some(area) = union(
+            self.screen_box(overlay, view_projection, size, 2.0),
+            self.screen_box(outlines, view_projection, size, reach),
+        ) else {
+            return;
+        };
+        let samples = self.pipelines.overlay_samples;
+        if !self
+            .tools
+            .as_ref()
+            .is_some_and(|t| t.size == size && t.samples == samples)
+        {
+            self.tools = Some(crate::tools::Tools::new(gpu, self.format, samples, size));
+        }
+        let Some(tools) = self.tools.as_ref() else {
+            return;
+        };
+        tools.write(gpu, if outlines.is_empty() { &[] } else { colors }, width);
+        let clear = wgpu::Operations {
+            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+            store: wgpu::StoreOp::Store,
+        };
+        if !outlines.is_empty() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("runity::outline mask"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &tools.mask,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: clear,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &tools.mask_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: crate::gpu_timer::render("outline"),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipelines.outline_mask);
+            pass.set_bind_group(0, &self.bind_group, &[]);
+            self.draw_batches(&mut pass, outlines, outline_base, true);
+        }
+        {
+            let (target, resolve) = match &tools.multisampled {
+                Some(many) => (many, Some(&tools.color)),
+                None => (&tools.color, None),
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("runity::overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target,
+                    depth_slice: None,
+                    resolve_target: resolve,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: crate::gpu_timer::render("overlay"),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            if !overlay.is_empty() {
+                pass.set_pipeline(&self.pipelines.overlay);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                self.draw_batches(&mut pass, overlay, overlay_base, true);
+            }
+        }
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("runity::tools"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: crate::gpu_timer::render("tools"),
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_scissor_rect(area[0], area[1], area[2] - area[0], area[3] - area[1]);
+        pass.set_pipeline(&tools.pipeline);
+        pass.set_bind_group(0, &tools.group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// The pixels batches cover on a `size` picture, `margin` more each
+    /// way, as (left, top, right, bottom); `None` when they cover none. From
+    /// their meshes' boxes, so a little more than they cover — and the whole
+    /// picture when one reaches behind the eye.
+    fn screen_box(
+        &self,
+        batches: &Batches,
+        view_projection: Mat4,
+        size: (u32, u32),
+        margin: f32,
+    ) -> Option<[u32; 4]> {
+        let (w, h) = (size.0 as f32, size.1 as f32);
+        let mut low = glam::Vec2::splat(f32::MAX);
+        let mut high = glam::Vec2::splat(f32::MIN);
+        for ((_, handle, _), list) in batches {
+            let Some(mesh) = self.mesh(*handle) else {
+                continue;
+            };
+            let (a, b) = (Vec3::from(mesh.bounds.min), Vec3::from(mesh.bounds.max));
+            for raw in list {
+                let clip = view_projection * Mat4::from_cols_array_2d(&raw.model);
+                for corner in 0..8u32 {
+                    let pick = |axis: usize| if corner & (1 << axis) == 0 { a[axis] } else { b[axis] };
+                    let p = clip * glam::Vec4::new(pick(0), pick(1), pick(2), 1.0);
+                    if p.w <= 1e-4 {
+                        return Some([0, 0, size.0, size.1]);
+                    }
+                    let at = glam::Vec2::new(
+                        (p.x / p.w * 0.5 + 0.5) * w,
+                        (0.5 - p.y / p.w * 0.5) * h,
+                    );
+                    low = low.min(at);
+                    high = high.max(at);
+                }
+            }
+        }
+        if low.x > high.x {
+            return None;
+        }
+        let low = (low - margin).max(glam::Vec2::ZERO).min(glam::Vec2::new(w, h));
+        let high = (high + margin).max(glam::Vec2::ZERO).min(glam::Vec2::new(w, h));
+        let area = [
+            low.x.floor() as u32,
+            low.y.floor() as u32,
+            high.x.ceil() as u32,
+            high.y.ceil() as u32,
+        ];
+        (area[2] > area[0] && area[3] > area[1]).then_some(area)
+    }
+
     /// Whether terrain is drawn by mesh shaders here: asked for, the device
     /// has them, and they built.
     pub fn terrain_by_mesh_shaders(&self) -> bool {
@@ -4519,6 +4750,7 @@ impl Renderer {
                         ambient_occlusion: crate::ssao::AmbientOcclusion::OFF,
                         ray_tracing: crate::ray::RayTracing::default(),
                         overlay_draws: Vec::new(),
+                        outline_draws: Vec::new(),
                         reflection_probes: Vec::new(),
             irradiance_volumes: Vec::new(),
                         ..frame.clone()
@@ -5566,18 +5798,46 @@ impl Renderer {
 
         // Overlays are not culled and cast no shadow: they are tools, not
         // things in the world.
+        // In the order they came, not grouped by mesh: nothing tests their
+        // depth, so a later one is drawn over an earlier one, and a handle
+        // made of a translucent square and its edge needs the edge on top.
         let mut overlay_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         for draw in &frame.overlay_draws {
             let maps = self.maps_of(draw);
             let mut raw = instance_of(draw.transform, &draw.material);
             raw.maps = packed(maps);
-            push(&mut overlay_batches, (None, draw.mesh, self.batch_maps(maps)), raw);
+            push_in_order(&mut overlay_batches, (None, draw.mesh, self.batch_maps(maps)), raw);
+        }
+        // Outlined things, into the mask: each colour a number (the red
+        // channel, out of 255), the colours themselves to the outline pass.
+        let mut outline_colors: Vec<[f32; 3]> = Vec::new();
+        let mut outline_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
+        for draw in &frame.outline_draws {
+            let color = draw.material.base_color;
+            let index = match outline_colors.iter().position(|c| *c == color) {
+                Some(i) => i,
+                None if outline_colors.len() < crate::tools::OUTLINE_COLORS => {
+                    outline_colors.push(color);
+                    outline_colors.len() - 1
+                }
+                None => outline_colors.len() - 1,
+            };
+            let mut material = draw.material;
+            material.base_color = [(index + 1) as f32 / 255.0, 0.0, 0.0];
+            let mut raw = instance_of(draw.transform, &material);
+            raw.maps = packed(self.maps_of(draw));
+            push(
+                &mut outline_batches,
+                (None, draw.mesh, self.batch_maps(self.maps_of(draw))),
+                raw,
+            );
         }
         let sets: Vec<Maps> = shadow_batches
             .iter()
             .chain(clip_batches.iter())
             .chain(batches.iter())
             .chain(overlay_batches.iter())
+            .chain(outline_batches.iter())
             .chain(
                 lamp_batches
                     .iter()
@@ -5608,6 +5868,7 @@ impl Renderer {
             .chain(singles.iter().map(|single| single.4))
             .chain(transparent.iter().map(|t| t.5))
             .chain(overlay_batches.iter().flat_map(|(_, l)| l.iter().copied()))
+            .chain(outline_batches.iter().flat_map(|(_, l)| l.iter().copied()))
             .chain(
                 lamp_batches
                     .iter()
@@ -5931,11 +6192,13 @@ impl Renderer {
         // The lamps' maps, each with the casters its own view sees, after
         // everything else in the instance buffer.
         let overlay_total: u32 = overlay_batches.iter().map(|(_, l)| l.len() as u32).sum();
+        let outline_total: u32 = outline_batches.iter().map(|(_, l)| l.len() as u32).sum();
         let mut base = shadow_total
             + batched_total
             + singles.len() as u32
             + transparent.len() as u32
-            + overlay_total;
+            + overlay_total
+            + outline_total;
         for (i, (solid, clipped)) in lamp_batches.iter().enumerate() {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("runity::lamp shadow"),
@@ -6058,6 +6321,11 @@ impl Renderer {
             picture = "hdr lensed";
         }
         graph.output("post", Kind::Render, &[picture], &["screen"]);
+        // A selection's outline tells where it is seen from where it is
+        // hidden by the prepass's depth.
+        if !frame.outline_draws.is_empty() && screen {
+            graph.output("outline", Kind::Render, &["depth"], &["outline"]);
+        }
         graph.resolve();
         debug_assert!(
             graph.problems(&["shadow map", "rays"]).is_empty(),
@@ -6409,28 +6677,22 @@ impl Renderer {
 
         // Tools go on the finished picture: no tonemapper, bloom or
         // vignette touches a handle's colour.
-        if !overlay_batches.is_empty() {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("runity::overlay"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: crate::gpu_timer::render("overlay"),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipelines.overlay);
-            pass.set_bind_group(0, &self.bind_group, &[]);
+        if !overlay_batches.is_empty() || !outline_batches.is_empty() {
             let base =
                 shadow_total + batched_total + singles.len() as u32 + transparent.len() as u32;
-            self.draw_batches(&mut pass, &overlay_batches, base, true);
+            self.draw_tools(
+                gpu,
+                &mut encoder,
+                view,
+                output,
+                &overlay_batches,
+                &outline_batches,
+                &outline_colors,
+                base,
+                base + overlay_total,
+                frame.outline_width,
+                drawn,
+            );
         }
         if scaling {
             let ms = self.timer.as_ref().and_then(|t| t.frame_ms());
@@ -6589,6 +6851,23 @@ impl BatchIndex {
         };
         batches[at].1.push(raw);
         self.last = Some((key, at));
+    }
+}
+
+/// Two areas of the screen as one that holds both.
+fn union(a: Option<[u32; 4]>, b: Option<[u32; 4]>) -> Option<[u32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Onto the last batch when it has the same key, else a new one: batches
+/// that keep the order the draws came in.
+fn push_in_order(batches: &mut Batches, key: BatchKey, raw: InstanceRaw) {
+    match batches.last_mut() {
+        Some((k, list)) if *k == key => list.push(raw),
+        _ => batches.push((key, vec![raw])),
     }
 }
 

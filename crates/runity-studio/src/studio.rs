@@ -202,13 +202,15 @@ struct StatusLine {
 /// How long an info line stays bright in the status bar.
 const STATUS_FADE: Duration = Duration::from_secs(10);
 
-/// The Scene view's tools, in the strip in its corner: the hand, then the
-/// gizmo's three.
-const TOOLS: [(&str, &str, Option<Tool>); 4] = [
+/// The Scene view's tools, in the strip in its corner, in Unity's order:
+/// the hand, then the gizmo's five.
+const TOOLS: [(&str, &str, Option<Tool>); 6] = [
     ("Hand", "hand", None),
     ("Move", "move-3d", Some(Tool::Move)),
     ("Rotate", "rotate-3d", Some(Tool::Rotate)),
     ("Scale", "scale-3d", Some(Tool::Scale)),
+    ("Rect", "scan", Some(Tool::Rect)),
+    ("Transform", "locate-fixed", Some(Tool::Transform)),
 ];
 
 /// What a line of a menu shows now: its label (Undo says what it would
@@ -294,7 +296,7 @@ pub struct Studio {
     /// The tool strip in the Scene view's corner, and its buttons in
     /// [`TOOLS`]' order.
     tool_strip: NodeId,
-    tools: [NodeId; 4],
+    tools: [NodeId; 6],
     /// The Scene view's bar: where the handles sit (Pivot, Center), which
     /// way they point (Global, Local), and the grid.
     pivot_button: NodeId,
@@ -1173,6 +1175,8 @@ impl Studio {
         if self.session.size() != size {
             self.session.resize(size.0, size.1);
         }
+        // How thick outlines are and how big a turn's angle is written.
+        self.session.set_ui_scale(scale);
         let t1 = Instant::now();
         // Play runs on the frame's time: the simulation takes as many fixed
         // steps as the frame took (paused, none).
@@ -4538,7 +4542,7 @@ fn tool_button_style(on: bool) -> Style {
 
 /// Unity's Tools overlay: the hand and the gizmo's three, a card down the
 /// Scene view's top left corner. Returns the card and its buttons.
-fn build_tool_strip(ui: &mut Ui, frame: NodeId) -> (NodeId, [NodeId; 4]) {
+fn build_tool_strip(ui: &mut Ui, frame: NodeId) -> (NodeId, [NodeId; 6]) {
     let card = ui.add(
         frame,
         Style::column()
@@ -4613,6 +4617,8 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "tool Move" => "Move (W)",
         "tool Rotate" => "Rotate (E)",
         "tool Scale" => "Scale (R)",
+        "tool Rect" => "Rect: resize by the bounds' corners and edges (T)",
+        "tool Transform" => "Transform: move, rotate and scale at once (Y)",
         "handles along" => "Handles along the world's axes or the entity's own (X)",
         "handles at" => "Handles on the entity's pivot or the selection's centre (Z)",
 

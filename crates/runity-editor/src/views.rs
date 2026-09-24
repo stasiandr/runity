@@ -184,10 +184,11 @@ impl Session {
     }
 
     /// Which way the handles point now: the selected entity's turn in the
-    /// world when Local — and always for scale, which stretches the
-    /// entity's own axes whichever way the toggle is, as in Unity.
+    /// world when Local — and always for scale and the rect, which stretch
+    /// the entity's own axes whichever way the toggle is, as in Unity.
     pub(crate) fn handle_orientation(&self) -> runity::glam::Quat {
-        let local = self.space == Space::Local || self.tool == runity::gizmo::Tool::Scale;
+        use runity::gizmo::Tool;
+        let local = self.space == Space::Local || matches!(self.tool, Tool::Scale | Tool::Rect);
         match (local, self.selected) {
             (true, Some(id)) => self
                 .placed(id)
