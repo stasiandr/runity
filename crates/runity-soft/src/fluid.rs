@@ -108,13 +108,22 @@ pub struct FluidState {
     /// The smoothing radius, and the water's own density.
     h: f32,
     rest: f32,
-    grid: std::collections::HashMap<(i32, i32, i32), Vec<u32>>,
+    grid: runity_core::hash::FastMap<(i32, i32, i32), Vec<u32>>,
     neighbours: Vec<Vec<u32>>,
     lambda: Vec<f32>,
     density: Vec<f32>,
     placed: bool,
     owed: f32,
+    /// Still: not stepped until something could move it.
+    sleep: crate::rest::Rest,
+    /// What was solid round it last step.
+    obstacles: Vec<Obstacle>,
 }
+
+/// Metres a second nine in ten of a fluid's particles stay under at rest:
+/// its simmer is a tenth or two (PBF 0.19, SPH 0.12 in a still tank), a
+/// pour or a slosh is several.
+const FLUID_REST: f32 = 0.25;
 
 fn poly6(r2: f32, h: f32) -> f32 {
     let h2 = h * h;
@@ -162,6 +171,8 @@ impl FluidState {
             density: Vec::new(),
             placed: false,
             owed: 0.0,
+            sleep: Default::default(),
+            obstacles: Vec::new(),
         }
     }
 
@@ -212,13 +223,31 @@ impl FluidState {
             self.fill(placed);
         }
         self.owed = (self.owed + seconds.max(0.0)).min(0.1);
+        let mut changed = self.obstacles.as_slice() != obstacles;
+        if changed {
+            self.obstacles.clear();
+            self.obstacles.extend_from_slice(obstacles);
+        }
         while self.owed >= STEP {
             self.owed -= STEP;
+            // Still and left alone: nothing to step.
+            if self.sleep.asleep(&self.particles.x, std::mem::take(&mut changed)) {
+                continue;
+            }
             match self.fluid.method {
                 FluidMethod::Pbf => self.step_pbf(obstacles),
                 FluidMethod::Sph => self.step_sph(obstacles),
             }
+            // A fluid at rest simmers — each pass of its constraints nudges
+            // what is already where it should be — so it sleeps when nine in
+            // ten of it are slow, not every one.
+            self.sleep.stepped_as(crate::rest::share_under(self.particles.v.iter().copied(), 0.9), FLUID_REST);
         }
+    }
+
+    /// Still, and not stepped until something could move it.
+    pub fn asleep(&self) -> bool {
+        self.sleep.sleeping()
     }
 
     /// Each particle's neighbours within the smoothing radius, from a grid
@@ -235,17 +264,19 @@ impl FluidState {
         let n = self.particles.len();
         self.neighbours.resize(n, Vec::new());
         let h2 = h * h;
-        for i in 0..n {
-            let p = self.particles.x[i];
+        // Each particle's own list, from the grid read by all: across the
+        // cores.
+        let (x, grid) = (&self.particles.x, &self.grid);
+        runity_core::jobs::for_each_indexed_mut(&mut self.neighbours, 128, |i, list| {
+            let p = x[i];
             let (cx, cy, cz) = key(p);
-            let list = &mut self.neighbours[i];
             list.clear();
             for dz in -1..=1 {
                 for dy in -1..=1 {
                     for dx in -1..=1 {
-                        if let Some(cell) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) {
+                        if let Some(cell) = grid.get(&(cx + dx, cy + dy, cz + dz)) {
                             for &j in cell {
-                                if self.particles.x[j as usize].distance_squared(p) < h2 {
+                                if x[j as usize].distance_squared(p) < h2 {
                                     list.push(j);
                                 }
                             }
@@ -253,7 +284,7 @@ impl FluidState {
                     }
                 }
             }
-        }
+        });
     }
 
     fn step_pbf(&mut self, obstacles: &[Obstacle]) {
@@ -268,13 +299,18 @@ impl FluidState {
             let n = self.particles.len();
             let dq = poly6((0.2 * h) * (0.2 * h), h);
             for _ in 0..ITERATIONS {
-                for i in 0..n {
-                    let p = self.particles.x[i];
+                // Each particle's density and multiplier from its
+                // neighbours, then its move from theirs: both a particle to
+                // itself, across the cores.
+                let (x, neighbours) = (&self.particles.x, &self.neighbours);
+                let found: Vec<(f32, f32)> = runity_core::jobs::map_range(n, 128, |i| {
+                    let list = &neighbours[i];
+                    let p = x[i];
                     let mut density = 0.0;
                     let mut grad_i = Vec3::ZERO;
                     let mut sum_grad = 0.0;
-                    for &j in &self.neighbours[i] {
-                        let d = p - self.particles.x[j as usize];
+                    for &j in list {
+                        let d = p - x[j as usize];
                         density += poly6(d.length_squared(), h);
                         let g = spiky_gradient(d, h) / rest;
                         grad_i += g;
@@ -283,27 +319,31 @@ impl FluidState {
                         }
                     }
                     sum_grad += grad_i.length_squared();
-                    self.density[i] = density;
                     // Only pushed apart, never pulled together: the free
                     // surface is not held to the water's density.
                     let c = (density / rest - 1.0).max(0.0);
-                    self.lambda[i] = -c / (sum_grad + 100.0);
+                    (density, -c / (sum_grad + 100.0))
+                });
+                for (i, (density, lambda)) in found.into_iter().enumerate() {
+                    self.density[i] = density;
+                    self.lambda[i] = lambda;
                 }
+                let lambda = &self.lambda;
                 let mut moves = vec![Vec3::ZERO; n];
-                for (i, m) in moves.iter_mut().enumerate() {
-                    let p = self.particles.x[i];
-                    for &j in &self.neighbours[i] {
+                runity_core::jobs::for_each_indexed_mut(&mut moves, 128, |i, m| {
+                    let p = x[i];
+                    for &j in &neighbours[i] {
                         let j = j as usize;
                         if j == i {
                             continue;
                         }
-                        let d = p - self.particles.x[j];
+                        let d = p - x[j];
                         // Artificial pressure: a little push apart that
                         // keeps drops from clumping.
                         let corr = -0.001 * (poly6(d.length_squared(), h) / dq).powi(4);
-                        *m += (self.lambda[i] + self.lambda[j] + corr) * spiky_gradient(d, h);
+                        *m += (lambda[i] + lambda[j] + corr) * spiky_gradient(d, h);
                     }
-                }
+                });
                 for (i, m) in moves.iter().enumerate() {
                     self.particles.x[i] += *m / rest;
                 }
@@ -320,18 +360,19 @@ impl FluidState {
         if c <= 0.0 {
             return;
         }
-        let h = self.h;
+        let (h, rest) = (self.h, self.rest);
         let v = self.particles.v.clone();
-        for i in 0..self.particles.len() {
-            let p = self.particles.x[i];
+        let (x, neighbours) = (&self.particles.x, &self.neighbours);
+        runity_core::jobs::for_each_indexed_mut(&mut self.particles.v, 128, |i, vi| {
+            let p = x[i];
             let mut sum = Vec3::ZERO;
-            for &j in &self.neighbours[i] {
+            for &j in &neighbours[i] {
                 let j = j as usize;
-                let w = poly6(p.distance_squared(self.particles.x[j]), h) / self.rest;
+                let w = poly6(p.distance_squared(x[j]), h) / rest;
                 sum += (v[j] - v[i]) * w;
             }
-            self.particles.v[i] += sum * c;
-        }
+            *vi += sum * c;
+        });
     }
 
     fn step_sph(&mut self, obstacles: &[Obstacle]) {
@@ -344,29 +385,33 @@ impl FluidState {
         for _ in 0..SUBSTEPS {
             self.find_neighbours();
             let n = self.particles.len();
-            for i in 0..n {
-                let p = self.particles.x[i];
-                self.density[i] = self.neighbours[i]
+            // Densities, then pressures' pushes: a particle to itself,
+            // across the cores.
+            let (x, neighbours) = (&self.particles.x, &self.neighbours);
+            runity_core::jobs::for_each_indexed_mut(&mut self.density, 128, |i, density| {
+                let p = x[i];
+                *density = neighbours[i]
                     .iter()
-                    .map(|&j| poly6(p.distance_squared(self.particles.x[j as usize]), h))
+                    .map(|&j| poly6(p.distance_squared(x[j as usize]), h))
                     .sum::<f32>()
                     .max(rest * 0.5);
-            }
-            let pressure: Vec<f32> = self.density.iter().map(|d| k * ((d / rest).powi(7) - 1.0).max(0.0)).collect();
-            for i in 0..n {
-                let p = self.particles.x[i];
+            });
+            let density = &self.density;
+            let pressure: Vec<f32> = density.iter().map(|d| k * ((d / rest).powi(7) - 1.0).max(0.0)).collect();
+            runity_core::jobs::for_each_indexed_mut(&mut self.particles.v, 128, |i, v| {
+                let p = x[i];
                 let mut a = Vec3::new(0.0, -9.81, 0.0);
-                for &j in &self.neighbours[i] {
+                for &j in &neighbours[i] {
                     let j = j as usize;
                     if j == i {
                         continue;
                     }
-                    let d = p - self.particles.x[j];
-                    let (di, dj) = (self.density[i] / rest, self.density[j] / rest);
+                    let d = p - x[j];
+                    let (di, dj) = (density[i] / rest, density[j] / rest);
                     a -= spiky_gradient(d, h) / rest * (pressure[i] / (di * di) + pressure[j] / (dj * dj));
                 }
-                self.particles.v[i] += a * dt;
-            }
+                *v += a * dt;
+            });
             for i in 0..n {
                 self.particles.was[i] = self.particles.x[i];
                 self.particles.x[i] += self.particles.v[i] * dt;

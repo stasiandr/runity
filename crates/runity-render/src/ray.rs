@@ -154,24 +154,49 @@ pub(crate) fn blas(
     vertex_count: u32,
     indices: &wgpu::Buffer,
     index_count: u32,
+    live: bool,
 ) -> wgpu::Blas {
-    let size = wgpu::BlasTriangleGeometrySizeDescriptor {
+    let blas = gpu.device.create_blas(
+        &wgpu::CreateBlasDescriptor {
+            label: Some("mesh (rays)"),
+            // A mesh rewritten every frame is built every frame: quick to
+            // build over quick to trace.
+            flags: if live {
+                wgpu::AccelerationStructureFlags::PREFER_FAST_BUILD
+            } else {
+                wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE
+            },
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        },
+        wgpu::BlasGeometrySizeDescriptors::Triangles {
+            descriptors: vec![triangles(vertex_count, index_count)],
+        },
+    );
+    rebuild(gpu, &blas, vertices, vertex_count, indices, index_count);
+    blas
+}
+
+fn triangles(vertex_count: u32, index_count: u32) -> wgpu::BlasTriangleGeometrySizeDescriptor {
+    wgpu::BlasTriangleGeometrySizeDescriptor {
         vertex_format: wgpu::VertexFormat::Float32x3,
         vertex_count,
         index_format: Some(wgpu::IndexFormat::Uint32),
         index_count: Some(index_count),
         flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-    };
-    let blas = gpu.device.create_blas(
-        &wgpu::CreateBlasDescriptor {
-            label: Some("mesh (rays)"),
-            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-        },
-        wgpu::BlasGeometrySizeDescriptors::Triangles {
-            descriptors: vec![size.clone()],
-        },
-    );
+    }
+}
+
+/// Build `blas` again from its buffers, rewritten in place (the same
+/// sizes as it was made with): a live mesh's rays follow it.
+pub(crate) fn rebuild(
+    gpu: &Gpu,
+    blas: &wgpu::Blas,
+    vertices: &wgpu::Buffer,
+    vertex_count: u32,
+    indices: &wgpu::Buffer,
+    index_count: u32,
+) {
+    let size = triangles(vertex_count, index_count);
     let mut encoder = gpu
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -179,7 +204,7 @@ pub(crate) fn blas(
         });
     encoder.build_acceleration_structures(
         std::iter::once(&wgpu::BlasBuildEntry {
-            blas: &blas,
+            blas,
             geometry: wgpu::BlasGeometries::TriangleGeometries(vec![wgpu::BlasTriangleGeometry {
                 size: &size,
                 vertex_buffer: vertices,
@@ -194,7 +219,6 @@ pub(crate) fn blas(
         std::iter::empty(),
     );
     gpu.queue.submit(Some(encoder.finish()));
-    blas
 }
 
 /// What a reflection ray reads of the thing it hits: `RayMaterial` in
@@ -273,7 +297,7 @@ impl RayScene {
                 contents: bytemuck::cast_slice(&[0u32, 1, 2]),
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT,
             });
-        let placeholder = blas(gpu, &vb, 3, &ib, 3);
+        let placeholder = blas(gpu, &vb, 3, &ib, 3, false);
         let capacity = 64;
         let mut scene = Self {
             tlas: Self::tlas(gpu, capacity),
@@ -394,7 +418,12 @@ pub(crate) fn traced(source: &str) -> String {
 }
 
 #[cfg(not(feature = "ray-tracing"))]
-pub(crate) fn blas(_: &Gpu, _: &wgpu::Buffer, _: u32, _: &wgpu::Buffer, _: u32) -> wgpu::Blas {
+pub(crate) fn blas(_: &Gpu, _: &wgpu::Buffer, _: u32, _: &wgpu::Buffer, _: u32, _: bool) -> wgpu::Blas {
+    unreachable!("built without ray tracing: there is no rays' scene to build for")
+}
+
+#[cfg(not(feature = "ray-tracing"))]
+pub(crate) fn rebuild(_: &Gpu, _: &wgpu::Blas, _: &wgpu::Buffer, _: u32, _: &wgpu::Buffer, _: u32) {
     unreachable!("built without ray tracing: there is no rays' scene to build for")
 }
 

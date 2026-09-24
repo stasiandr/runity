@@ -26,6 +26,7 @@ pub use web_time;
 pub mod defaults;
 pub mod edit;
 pub mod embed;
+pub mod hash;
 pub mod id;
 pub mod input;
 pub mod jobs;

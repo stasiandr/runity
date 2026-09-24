@@ -219,6 +219,11 @@ impl LiveMesh {
         }
     }
 
+    /// No triangles yet.
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+
     /// New vertices and triangles.
     pub fn set(&mut self, vertices: Vec<crate::asset::Vertex>, indices: Vec<u32>) {
         self.vertices = std::sync::Arc::new(vertices);
@@ -577,12 +582,12 @@ pub fn follow_cameras(world: &mut World, dt: f32) {
 /// entity has one — the game falls back to the scene's `view`.
 pub fn camera_of(world: &World) -> Option<Camera> {
     let mut best: Option<(i32, std::cmp::Reverse<crate::id::EntityId>, Camera)> = None;
-    for (lens, placed, id) in world
-        .query::<(&CameraLens, &WorldTransform, Option<&SceneId>)>()
+    for (lens, placed, shown, id) in world
+        .query::<(&CameraLens, &WorldTransform, Option<&crate::world::Shown>, Option<&SceneId>)>()
         .without::<&ToTexture>()
         .iter()
     {
-        let camera = lens_camera(lens.0, placed.0);
+        let camera = lens_camera(lens.0, crate::world::drawn_at(placed, shown));
         let key = (
             lens.0.priority,
             std::cmp::Reverse(id.map(|i| i.0).unwrap_or_default()),
@@ -654,9 +659,10 @@ pub fn build_frame_where(
         |line: Option<crate::id::EntityId>| line.is_none_or(|id| !off.contains(&id)) && keep(line);
     let mut draws = Vec::new();
     let mut poses: Vec<crate::render::Pose> = Vec::new();
-    for (placed, model, surface, textured, posed, line) in world
+    for (placed, shown, model, surface, textured, posed, line) in world
         .query::<(
             &WorldTransform,
+            Option<&crate::world::Shown>,
             &Model,
             &Surface,
             Option<&Textured>,
@@ -674,7 +680,7 @@ pub fn build_frame_where(
         });
         draws.push(Draw {
             mesh: model.0,
-            transform: placed.0,
+            transform: crate::world::drawn_at(placed, shown),
             texture: textured.map(|t| t.0).unwrap_or(TextureHandle::WHITE),
             material: surface.0,
             pose,
@@ -715,9 +721,10 @@ pub fn build_frame_where(
             world.get::<&Model>(entity),
             world.get::<&WorldTransform>(entity),
         ) {
+            let at = crate::world::drawn_at(&placed, world.get::<&crate::world::Shown>(entity).ok().as_deref());
             if let Some(draw) = draws
                 .iter_mut()
-                .find(|d| d.mesh == model.0 && d.transform == placed.0)
+                .find(|d| d.mesh == model.0 && d.transform == at)
             {
                 draw.material.base_map = Some(id);
             }

@@ -312,12 +312,15 @@ impl SsaoRenderer {
         eye: Vec3,
         settings: &AmbientOcclusion,
         last_frame: Option<&wgpu::TextureView>,
+        turn: Option<f32>,
     ) {
         let (w, h) = self.size;
         let uniform = SsaoUniform {
             view_projection: view_projection.to_cols_array_2d(),
             inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
-            eye: [eye.x, eye.y, eye.z, 0.0],
+            // w: how far the bounce's rays turn this frame, above 0 when
+            // they turn at all (and half of them are cast).
+            eye: [eye.x, eye.y, eye.z, turn.map_or(0.0, |t| t.max(1e-3))],
             params: [
                 settings.radius.max(0.01),
                 settings.intensity.max(0.0),

@@ -22,6 +22,94 @@ use crate::scene::{EntityDesc, Scene, Transform};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldTransform(pub glam::Mat4);
 
+/// Where a fixed step moved it from and to: set by what steps it (physics
+/// on a dynamic body), for the frame to draw it in between ([`interpolate`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stepped {
+    pub from: glam::Mat4,
+    pub to: glam::Mat4,
+}
+
+/// Where it is drawn this frame, when that is not its [`WorldTransform`]:
+/// between the last two fixed steps ([`interpolate`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shown(pub glam::Mat4);
+
+/// A move longer than this in a step is a jump (a respawn, a teleport),
+/// drawn where it landed rather than slid along.
+const JUMP: f32 = 5.0;
+
+/// Where each stepped thing is drawn this frame: `alpha` of the way from
+/// where the last step found it to where it left it — the frame's share of
+/// the next step, [`Time::interpolation`](crate::time::Time::interpolation).
+/// Without it a simulation at 60 steps a second shown at 120 frames draws
+/// every position twice, and motion judders. What hangs from a stepped
+/// thing (a camera on the player) is drawn with it.
+///
+/// One step behind, as every such scheme: what is drawn is between the
+/// last two steps, never ahead of them. Something moved since its step by
+/// other means (its [`WorldTransform`] is no longer where the step left
+/// it) is drawn where it is.
+pub fn interpolate(world: &mut World, alpha: f32) {
+    let alpha = alpha.clamp(0.0, 1.0);
+    let mut shown: HashMap<hecs::Entity, (glam::Mat4, glam::Mat4)> = HashMap::new();
+    for (entity, placed, stepped) in world.query::<(hecs::Entity, &WorldTransform, &Stepped)>().iter() {
+        if placed.0 != stepped.to {
+            continue;
+        }
+        let (fs, fr, ft) = stepped.from.to_scale_rotation_translation();
+        let (ts, tr, tt) = stepped.to.to_scale_rotation_translation();
+        let at = if ft.distance(tt) > JUMP {
+            stepped.to
+        } else {
+            glam::Mat4::from_scale_rotation_translation(fs.lerp(ts, alpha), fr.slerp(tr, alpha), ft.lerp(tt, alpha))
+        };
+        shown.insert(entity, (at, placed.0));
+    }
+    // What hangs from them: its place relative to the nearest stepped
+    // ancestor kept.
+    if !shown.is_empty() {
+        let mut hanging = Vec::new();
+        for (entity, placed, parent) in world.query::<(hecs::Entity, &WorldTransform, &Parent)>().iter() {
+            if shown.contains_key(&entity) {
+                continue;
+            }
+            let mut up = Some(parent.0);
+            for _ in 0..16 {
+                let Some(ancestor) = up else {
+                    break;
+                };
+                if let Some((at, was)) = shown.get(&ancestor) {
+                    hanging.push((entity, *at * was.inverse() * placed.0, placed.0));
+                    break;
+                }
+                up = world.get::<&Parent>(ancestor).ok().map(|p| p.0);
+            }
+        }
+        for (entity, at, placed) in hanging {
+            shown.insert(entity, (at, placed));
+        }
+    }
+    let stale: Vec<hecs::Entity> = world
+        .query::<(hecs::Entity, &Shown)>()
+        .iter()
+        .filter(|(e, _)| !shown.contains_key(e))
+        .map(|(e, _)| e)
+        .collect();
+    for entity in stale {
+        let _ = world.remove_one::<Shown>(entity);
+    }
+    for (entity, (at, _)) in shown {
+        let _ = world.insert_one(entity, Shown(at));
+    }
+}
+
+/// Where it is drawn this frame: [`Shown`] when [`interpolate`] set it,
+/// else its [`WorldTransform`].
+pub fn drawn_at(placed: &WorldTransform, shown: Option<&Shown>) -> glam::Mat4 {
+    shown.map_or(placed.0, |s| s.0)
+}
+
 /// Which entity of the scene this one was spawned from.
 ///
 /// The [`EntityId`](crate::EntityId) of its line in the file. It is what
@@ -580,5 +668,42 @@ pub fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
     }
     for entity in doomed {
         let _ = world.despawn(entity);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::{Mat4, Vec3};
+
+    #[test]
+    fn a_stepped_thing_is_drawn_between_its_steps_and_what_hangs_from_it_with_it() {
+        let mut world = World::new();
+        let from = Mat4::from_translation(Vec3::ZERO);
+        let to = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let body = world.spawn((WorldTransform(to), Stepped { from, to }));
+        // A camera half a metre above it.
+        let camera = world.spawn((WorldTransform(Mat4::from_translation(Vec3::new(1.0, 0.5, 0.0))), Parent(body)));
+        // Jumped five metres and more in a step: drawn where it landed.
+        let far = Mat4::from_translation(Vec3::new(9.0, 0.0, 0.0));
+        let jumped = world.spawn((WorldTransform(far), Stepped { from, to: far }));
+        // Moved since its step by something else: drawn where it is.
+        let moved = world.spawn((WorldTransform(Mat4::from_translation(Vec3::Y)), Stepped { from, to }));
+
+        interpolate(&mut world, 0.25);
+        fn at(world: &World, e: hecs::Entity) -> Option<Vec3> {
+            world.get::<&Shown>(e).ok().map(|s| s.0.w_axis.truncate())
+        }
+        assert!(at(&world, body).unwrap().abs_diff_eq(Vec3::new(0.25, 0.0, 0.0), 1e-5));
+        assert!(at(&world, camera).unwrap().abs_diff_eq(Vec3::new(0.25, 0.5, 0.0), 1e-5));
+        assert!(at(&world, jumped).unwrap().abs_diff_eq(Vec3::new(9.0, 0.0, 0.0), 1e-5));
+        assert_eq!(at(&world, moved), None);
+        assert_eq!(drawn_at(&WorldTransform(to), None), to);
+
+        // Once it stops being stepped, what was shown goes.
+        let _ = world.remove_one::<Stepped>(body);
+        interpolate(&mut world, 0.5);
+        assert_eq!(at(&world, body), None);
+        assert_eq!(at(&world, camera), None);
     }
 }

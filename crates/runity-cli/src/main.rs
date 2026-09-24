@@ -531,7 +531,10 @@ fn perf(rest: &[String]) -> Result<ExitCode> {
     let project = find(&at)?;
     let mut budgets = runity_cli::perf::read(&project)?;
     let mut over = 0usize;
-    println!("{:<18} {:>9} {:>7} {:>11}", "scene", "gpu ms", "draws", "triangles");
+    println!(
+        "{:<18} {:>9} {:>7} {:>11} {:>8} {:>8} {:>10} {:>9} {:>9}",
+        "scene", "gpu ms", "draws", "triangles", "step ms", "build ms", "render cpu", "frame", "threaded"
+    );
     for name in project.scene_names() {
         if only.as_ref().is_some_and(|o| *o != name) {
             continue;
@@ -543,9 +546,14 @@ fn perf(rest: &[String]) -> Result<ExitCode> {
         let budget = budgets.scenes.get(&name).copied().unwrap_or_default();
         let problems = runity_cli::perf::over(&budget, &measured, real_gpu && !counts);
         println!(
-            "{name:<18} {ms:>9} {:>7} {:>11}{}",
+            "{name:<18} {ms:>9} {:>7} {:>11} {:>8.2} {:>8.2} {:>10.2} {:>9.2} {:>9.2}{}",
             measured.draws,
             measured.triangles,
+            measured.step_ms,
+            measured.build_ms,
+            measured.render_cpu_ms,
+            measured.frame_ms,
+            measured.pipelined_ms,
             if problems.is_empty() { String::new() } else { format!("  over: {}", problems.join("; ")) }
         );
         over += usize::from(!problems.is_empty());

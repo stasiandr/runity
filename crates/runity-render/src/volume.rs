@@ -43,6 +43,49 @@ pub struct Smoke {
     pub density: f32,
     /// How brightly the hot part glows; 0 for smoke that is not fire.
     pub glow: f32,
+    /// Simulated on the GPU ([`crate::smoke_gpu`]): the air is the
+    /// renderer's, and `cells` is empty — the step writes the picture.
+    pub gpu: Option<GpuSmoke>,
+}
+
+/// A smoke the renderer steps: its grid, its source and look, and how far
+/// its clock has gone since the last frame. What is solid in it is the
+/// world's, one flag a cell, `solid_version` changing when it does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuSmoke {
+    /// Which smoke, between frames.
+    pub key: u64,
+    pub n: [u32; 3],
+    /// Cell size, metres.
+    pub dx: f32,
+    /// How wide the source is (m), smoke and heat given off a second.
+    pub source: f32,
+    pub rate: f32,
+    pub heat: f32,
+    pub weight: f32,
+    pub curl: f32,
+    pub fade: f32,
+    /// The wind the air is drawn toward, metres a second.
+    pub wind: glam::Vec3,
+    /// How far its clock has gone, seconds, in whole fixed steps of
+    /// [`SMOKE_STEP`]: the renderer steps its air up to it. A frame drawn
+    /// twice owes nothing the second time.
+    pub clock: f32,
+    pub solid: std::sync::Arc<Vec<u32>>,
+    pub solid_version: u64,
+}
+
+/// A smoke's fixed step, seconds (`runity_fluid::smoke::STEP`).
+pub const SMOKE_STEP: f32 = 1.0 / 30.0;
+
+/// Every so many cells of a grid of `n` along each way, to fit the fog's
+/// picture ([`SMOKE_MOST`]).
+pub fn smoke_stride(n: [u32; 3]) -> [u32; 3] {
+    [
+        n[0].div_ceil(SMOKE_MOST[0]).max(1),
+        n[1].div_ceil(SMOKE_MOST[1]).max(1),
+        n[2].div_ceil(SMOKE_MOST[2]).max(1),
+    ]
 }
 
 /// The largest smoke grid the render takes along each way; a larger one
@@ -208,6 +251,8 @@ pub(crate) struct Volumes {
     inject_group: wgpu::BindGroup,
     integrate_group: wgpu::BindGroup,
     smoke_texture: wgpu::Texture,
+    /// The same, as the GPU smokes write it.
+    pub(crate) smoke_storage: wgpu::TextureView,
     smoke_uniform: wgpu::Buffer,
 }
 
@@ -315,9 +360,12 @@ impl Volumes {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
             format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::STORAGE_BINDING,
             view_formats: &[],
         });
+        let smoke_storage = view(&smoke_texture);
         let smoke_uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("smoke box"),
             size: std::mem::size_of::<SmokeUniforms>() as u64,
@@ -387,25 +435,31 @@ impl Volumes {
             inject_group,
             integrate_group,
             smoke_texture,
+            smoke_storage,
             smoke_uniform,
         }
     }
 
     /// The frame's smokes into the grid the fog samples: the nearest
     /// [`MOST_SMOKES`], each in its own slab of the texture.
-    pub(crate) fn set_smoke(&self, gpu: &Gpu, smokes: &[Smoke]) {
+    /// Those simulated on the GPU come back with their slab and size, for
+    /// [`crate::smoke_gpu::SmokeSim::run`] to write.
+    pub(crate) fn set_smoke<'a>(&self, gpu: &Gpu, smokes: &'a [Smoke]) -> Vec<(u32, [u32; 3], &'a GpuSmoke)> {
         let mut uniforms = SmokeUniforms::zeroed();
         let mut count = 0;
+        let mut simulated = Vec::new();
         for smoke in smokes.iter().filter(|s| s.size.iter().all(|n| *n > 0)).take(MOST_SMOKES) {
             let size = [
                 smoke.size[0].min(SMOKE_MOST[0]),
                 smoke.size[1].min(SMOKE_MOST[1]),
                 smoke.size[2].min(SMOKE_MOST[2]),
             ];
-            if smoke.cells.len() < (size[0] * size[1] * size[2]) as usize {
+            if let Some(sim) = &smoke.gpu {
+                simulated.push((count as u32, size, sim));
+            } else if smoke.cells.len() < (size[0] * size[1] * size[2]) as usize {
                 continue;
-            }
-            gpu.queue.write_texture(
+            } else {
+                gpu.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.smoke_texture,
                     mip_level: 0,
@@ -424,6 +478,7 @@ impl Volumes {
                     depth_or_array_layers: size[2],
                 },
             );
+            }
             uniforms.boxes[count] = SmokeUniform {
                 low: [smoke.low.x, smoke.low.y, smoke.low.z, 1.0],
                 high: [smoke.high.x, smoke.high.y, smoke.high.z, smoke.density.max(0.0)],
@@ -439,6 +494,7 @@ impl Volumes {
         }
         uniforms.count = [count as u32, 0, 0, 0];
         gpu.queue.write_buffer(&self.smoke_uniform, 0, bytemuck::bytes_of(&uniforms));
+        simulated
     }
 
     /// Fill the grid: what each cell scatters, then the sums front to back.

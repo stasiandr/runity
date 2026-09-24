@@ -19,7 +19,7 @@
 use runity::prelude::*;
 use runity::glam::Vec3;
 use runity::render::{Camera, Frame};
-use runity::shell::{run, Context, Game, WindowConfig};
+use runity::shell::{run, Context, Game, StepContext, WindowConfig};
 use runity::{Key, LiveScene, TextRun, Ui};
 
 struct Walk {
@@ -80,7 +80,7 @@ impl Game for Walk {
         }
     }
 
-    fn step(&mut self, ctx: &mut Context) {
+    fn step(&mut self, ctx: &mut StepContext) {
         let dt = ctx.time.settings().fixed_delta;
         let speed = if ctx.input.held(Key::LeftShift) {
             8.0

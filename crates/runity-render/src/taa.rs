@@ -222,6 +222,11 @@ impl Taa {
         self.eye = Some((eye, forward));
     }
 
+    /// Frames blended into the history since it was last started.
+    pub(crate) fn frames(&self) -> u32 {
+        self.frames
+    }
+
     /// How far this frame is moved, in clip space: nothing when there is
     /// no history to blend it with.
     pub(crate) fn jitter(&self) -> Vec2 {

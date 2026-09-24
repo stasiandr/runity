@@ -195,6 +195,13 @@ fn overlap(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
 /// Passes over the contacts each step.
 pub const PASSES: usize = 3;
 
+/// Particles (or a sheet's triangles) a job finds the contacts of: a fixed
+/// run, so what is summed and in what order does not hang on the cores.
+const RUN: usize = 512;
+/// A sheet's triangles a job: each looks through the grid round it, so
+/// fewer than particles.
+const SHEET_RUN: usize = 128;
+
 fn contact_pass(bodies: &mut [Body], sheets: &[Option<Vec<[u32; 3]>>], friction: f32, befores: &[Vec<Vec3>], touching: &[bool]) -> usize {
     if bodies.len() < 2 {
         return 0;
@@ -207,7 +214,7 @@ fn contact_pass(bodies: &mut [Body], sheets: &[Option<Vec<[u32; 3]>>], friction:
         let c = (p / reach).floor();
         (c.x as i32, c.y as i32, c.z as i32)
     };
-    let mut grid: std::collections::HashMap<(i32, i32, i32), Vec<Entry>> = Default::default();
+    let mut grid: runity_core::hash::FastMap<(i32, i32, i32), Vec<Entry>> = Default::default();
     for (b, (particles, _, _)) in bodies.iter().enumerate() {
         if !touching[b] {
             continue;
@@ -221,11 +228,19 @@ fn contact_pass(bodies: &mut [Body], sheets: &[Option<Vec<[u32; 3]>>], friction:
     // as FleX): a stone on six triangles of a cloth, among twenty of its
     // particles, moves it once, not twenty-six times.
     let mut pushes = Pushes::new(bodies);
-    for b in 0..bodies.len() {
-        if !touching[b] {
-            continue;
-        }
-        for i in 0..bodies[b].0.len() {
+    // Each particle's pushes, found on every core a fixed run of particles
+    // at a time, then summed in the order one core would have: the same
+    // sums, bit for bit, on any number of them (DNA, postulate 6).
+    let particles: Vec<(usize, usize)> = (0..bodies.len())
+        .filter(|&b| touching[b])
+        .flat_map(|b| (0..bodies[b].0.len()).map(move |i| (b, i)))
+        .collect();
+    let runs: Vec<&[(usize, usize)]> = particles.chunks(RUN).collect();
+    let bodies_seen: &[Body] = bodies;
+    let found = runity_core::jobs::map(&runs, 1, |run| {
+        let bodies = bodies_seen;
+        let mut out: Vec<(u32, u32, Vec3)> = Vec::new();
+        for &(b, i) in run.iter() {
             let x = bodies[b].0.x[i];
             let (cx, cy, cz) = cell(x);
             for dz in -1..=1 {
@@ -280,20 +295,36 @@ fn contact_pass(bodies: &mut [Body], sheets: &[Option<Vec<[u32; 3]>>], friction:
                                 di -= along * hold * si;
                                 dj += along * hold * sj;
                             }
-                            pushes.add(b, i, di);
-                            pushes.add(o, j, dj);
+                            out.push((b as u32, i as u32, di));
+                            out.push((o as u32, j as u32, dj));
                         }
                     }
                 }
             }
         }
+        out
+    });
+    for (body, index, push) in found.into_iter().flatten() {
+        pushes.add(body as usize, index as usize, push);
     }
-    for (s, tris) in sheets.iter().enumerate() {
-        let Some(tris) = tris else { continue };
-        if !touching.get(s).copied().unwrap_or(false) {
-            continue;
-        }
-        sheet_pass(bodies, s, tris, &grid, reach, befores, &mut pushes);
+    // Every sheet's triangles, in fixed runs, all sheets in one go: an
+    // awning is a few hundred triangles, and a market has a dozen.
+    let most = bodies.iter().map(|b| b.1).fold(0.0f32, f32::max);
+    let sheet_runs: Vec<(usize, &[[u32; 3]])> = sheets
+        .iter()
+        .enumerate()
+        .filter(|(s, _)| touching.get(*s).copied().unwrap_or(false))
+        .filter_map(|(s, tris)| tris.as_deref().map(|t| (s, t)))
+        .flat_map(|(s, tris)| tris.chunks(SHEET_RUN).map(move |run| (s, run)))
+        .collect();
+    let bodies_seen: &[Body] = bodies;
+    let found = runity_core::jobs::map(&sheet_runs, 1, |&(s, run)| {
+        let mut out: Vec<(u32, u32, Vec3)> = Vec::new();
+        sheet_run(bodies_seen, s, run, &grid, reach, befores, bodies_seen[s].1, most, &mut out);
+        out
+    });
+    for (body, index, push) in found.into_iter().flatten() {
+        pushes.add(body as usize, index as usize, push);
     }
     pushes.apply(bodies)
 }
@@ -338,9 +369,18 @@ impl Pushes {
 /// near a triangle, or gone through it since a step ago, is put back on
 /// the side it came from, a sheet's thickness off; the triangle's corners
 /// take their share of the push by how near each is.
-fn sheet_pass(bodies: &[Body], s: usize, tris: &[[u32; 3]], grid: &std::collections::HashMap<(i32, i32, i32), Vec<Entry>>, reach: f32, befores: &[Vec<Vec3>], pushes: &mut Pushes) {
-    let thick = bodies[s].1;
-    let most = bodies.iter().map(|b| b.1).fold(0.0f32, f32::max);
+#[allow(clippy::too_many_arguments)]
+fn sheet_run(
+    bodies: &[Body],
+    s: usize,
+    tris: &[[u32; 3]],
+    grid: &runity_core::hash::FastMap<(i32, i32, i32), Vec<Entry>>,
+    reach: f32,
+    befores: &[Vec<Vec3>],
+    thick: f32,
+    most: f32,
+    out: &mut Vec<(u32, u32, Vec3)>,
+) {
     for t in tris {
         let [a, b, c] = t.map(|k| k as usize);
         if a.max(b).max(c) >= bodies[s].0.len() {
@@ -403,9 +443,9 @@ fn sheet_pass(bodies: &[Body], s: usize, tris: &[[u32; 3]], grid: &std::collecti
                             continue;
                         }
                         let lambda = push / (wp + wt);
-                        pushes.add(o, j, n * (lambda * wp));
+                        out.push((o as u32, j as u32, n * (lambda * wp)));
                         for (m, k) in [a, b, c].into_iter().enumerate() {
-                            pushes.add(s, k, -n * (lambda * bary[m] * wk[m]));
+                            out.push((s as u32, k as u32, -n * (lambda * bary[m] * wk[m])));
                         }
                     }
                 }

@@ -4,7 +4,9 @@
 //! editor instead of opening a window, draws each frame into a texture of
 //! the view's size, reads it back and sends it; what the person does over
 //! the view comes in as input. Everything else — the fixed step, the
-//! frame, hot patches, gamepads — is the windowed loop's.
+//! frame, hot patches, gamepads — is the windowed loop's. Its turns run
+//! one after the other: the frame is read back here anyway, so a render
+//! thread would only wait beside it.
 
 use std::io::{BufReader, BufWriter};
 use std::net::TcpStream;
@@ -14,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use runity_core::embed::{self, Packet, ToEditor, ToGame};
 
-use super::{hot, translate_pad, Context, Game, WindowConfig, PATCHED};
+use super::{hot, run_steps, translate_pad, Context, Game, WindowConfig, PATCHED};
 use crate::gpu::{Gpu, OffscreenTarget};
 use crate::input::Input;
 use crate::render::Renderer;
@@ -114,6 +116,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
     let mut input = Input::new();
     let mut pads = gilrs::Gilrs::new().ok();
     let mut captured = false;
+    let mut loop_times = runity_core::perf::Profiler::new(600);
 
     macro_rules! ctx {
         () => {
@@ -125,6 +128,7 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
                 renderer: &mut renderer,
                 overlay: &mut overlay,
                 cursor_captured: captured,
+                loop_times: &loop_times,
                 quit: false,
                 capture: None,
             }
@@ -169,32 +173,32 @@ pub(super) fn run<G: Game>(address: &str, config: WindowConfig, mut game: G) -> 
             wanted = ctx.capture;
             started = true;
         }
-        time.tick();
         if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
             let mut ctx = ctx!();
             hot(|| game.patched(&mut ctx));
             quit |= ctx.quit;
             wanted = ctx.capture.or(wanted);
         }
-        while time.next_step().is_some() {
-            let mut ctx = ctx!();
-            hot(|| game.step(&mut ctx));
-            quit |= ctx.quit;
-            wanted = ctx.capture.or(wanted);
-        }
+        let steps = Instant::now();
+        quit |= run_steps(&mut game, &mut time, &input, (target.width, target.height));
+        loop_times.record("steps", steps.elapsed());
+        let framed = Instant::now();
         let mut ctx = ctx!();
         let frame = hot(|| game.frame(&mut ctx));
         quit |= ctx.quit;
         wanted = ctx.capture.or(wanted);
+        loop_times.record("frame", framed.elapsed());
         if let Some(on) = wanted.filter(|on| *on != captured) {
             captured = on;
             post(&outbox, |o| o.messages.push(ToEditor::Capture(on)));
         }
 
+        let drawn = Instant::now();
         renderer.draw_ui_pictures(&gpu, &mut overlay, &frame);
         renderer.render(&gpu, &target, &frame);
         overlay.render(&gpu, &target, game.overlay());
         let pixels = target.read_rgba(&gpu);
+        loop_times.record("render", drawn.elapsed());
         let size = (target.width, target.height);
         post(&outbox, |o| o.frame = Some((size.0, size.1, pixels)));
         input.begin_frame();

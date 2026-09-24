@@ -402,14 +402,13 @@ impl ClothState {
     /// The pairs of particles within `reach` of each other that are not
     /// neighbours at rest, from a grid of the particles.
     fn find_close(&mut self, reach: f32) {
-        use std::collections::HashMap;
         self.close.clear();
         let cell = reach.max(1e-3);
         let key = |p: Vec3| {
             let c = (p / cell).floor();
             (c.x as i32, c.y as i32, c.z as i32)
         };
-        let mut grid: HashMap<(i32, i32, i32), Vec<u32>> = HashMap::new();
+        let mut grid: runity_core::hash::FastMap<(i32, i32, i32), Vec<u32>> = Default::default();
         for (k, p) in self.particles.x.iter().enumerate() {
             grid.entry(key(*p)).or_default().push(k as u32);
         }

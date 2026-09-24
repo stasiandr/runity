@@ -120,6 +120,8 @@ pub struct SmokeState {
     placed: bool,
     owed: f32,
     time: f32,
+    /// How many times what is solid in it has changed.
+    solid_version: u64,
 }
 
 impl SmokeState {
@@ -146,6 +148,7 @@ impl SmokeState {
             placed: false,
             owed: 0.0,
             time: 0.0,
+            solid_version: 0,
         }
     }
 
@@ -161,22 +164,6 @@ impl SmokeState {
     /// How many blocks are awake, of all.
     pub fn awake(&self) -> (usize, usize) {
         (self.awake.iter().filter(|a| **a).count(), self.awake.len())
-    }
-
-    /// A value of a field at a point of the grid (in cells), trilinear.
-    fn sample<T: Copy + std::ops::Mul<f32, Output = T> + std::ops::Add<Output = T>>(&self, field: &[T], p: Vec3) -> T {
-        let [nx, ny, nz] = self.n;
-        let p = p - Vec3::splat(0.5);
-        let p = p.clamp(Vec3::ZERO, Vec3::new(nx as f32 - 1.001, ny as f32 - 1.001, nz as f32 - 1.001));
-        let (i, j, k) = (p.x as usize, p.y as usize, p.z as usize);
-        let f = p - Vec3::new(i as f32, j as f32, k as f32);
-        let v = |a: usize, b: usize, c: usize| field[self.at(a, b, c)];
-        let lerp = |a: T, b: T, t: f32| a * (1.0 - t) + b * t;
-        let x00 = lerp(v(i, j, k), v(i + 1, j, k), f.x);
-        let x10 = lerp(v(i, j + 1, k), v(i + 1, j + 1, k), f.x);
-        let x01 = lerp(v(i, j, k + 1), v(i + 1, j, k + 1), f.x);
-        let x11 = lerp(v(i, j + 1, k + 1), v(i + 1, j + 1, k + 1), f.x);
-        lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z)
     }
 
     /// Wake the blocks with smoke or heat in them, and their neighbours.
@@ -249,10 +236,43 @@ impl SmokeState {
             }
         }
         self.solid_from = Some(obstacles.to_vec());
+        self.solid_version += 1;
     }
 
     /// Along by `seconds`, standing where the entity is, round `obstacles`.
     pub fn advance(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
+        self.place(placed, obstacles);
+        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
+        while self.owed >= STEP {
+            self.owed -= STEP;
+            self.step(STEP);
+        }
+    }
+
+    /// The clock and what is solid, as [`SmokeState::advance`] keeps them,
+    /// the air left alone: for whoever steps it elsewhere (the renderer,
+    /// `runity_render::smoke_gpu`) up to [`SmokeState::clock`].
+    pub fn count(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
+        self.place(placed, obstacles);
+        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
+        while self.owed >= STEP {
+            self.owed -= STEP;
+            self.time += STEP;
+        }
+    }
+
+    /// How far its clock has gone, seconds, in whole steps.
+    pub fn clock(&self) -> f32 {
+        self.time
+    }
+
+    /// What is solid, a flag a cell, x fastest, and how many times it has
+    /// changed.
+    pub fn solid(&self) -> (&[bool], u64) {
+        (&self.solid, self.solid_version)
+    }
+
+    fn place(&mut self, placed: Mat4, obstacles: &[Obstacle]) {
         let feet = placed.w_axis.truncate();
         let size = Vec3::new(self.n[0] as f32, self.n[1] as f32, self.n[2] as f32) * self.dx;
         let origin = feet - Vec3::new(size.x * 0.5, 0.0, size.z * 0.5);
@@ -262,11 +282,6 @@ impl SmokeState {
             self.placed = true;
         }
         self.find_solid(obstacles);
-        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
-        while self.owed >= STEP {
-            self.owed -= STEP;
-            self.step(STEP);
-        }
     }
 
     fn step(&mut self, dt: f32) {
@@ -294,73 +309,73 @@ impl SmokeState {
         let cells = self.cells();
         // Forces: heat lifts, smoke weighs, the wind blows.
         let wind = Vec3::new(self.wind.direction.x, 0.0, self.wind.direction.z).normalize_or_zero() * self.wind.strength * 1.5;
-        for &(i, j, k) in &cells {
-            let at = self.at(i, j, k);
-            let lift = self.heat[at] * 3.0 - self.density[at] * s.weight;
-            self.velocity[at].y += lift * dt;
-            let toward = wind - self.velocity[at];
-            // The wind takes the air, more the higher it is off the ground.
-            self.velocity[at] += toward * (1.5 * dt * (0.3 + j as f32 / ny as f32)).min(1.0);
+        {
+            let (heat, density) = (&self.heat, &self.density);
+            each_awake_all(&mut self.velocity, self.n, &self.awake, |_, j, _, at, v| {
+                let lift = heat[at] * 3.0 - density[at] * s.weight;
+                v.y += lift * dt;
+                let toward = wind - *v;
+                // The wind takes the air, more the higher it is off the ground.
+                *v += toward * (1.5 * dt * (0.3 + j as f32 / ny as f32)).min(1.0);
+            });
         }
         self.confine_vorticity(&cells, dt);
-        // Carry the speed along itself.
-        let was = self.velocity.clone();
+        // Carry the speed along itself: each cell's from the old field,
+        // across the cores (each writes only its own).
         let inv = 1.0 / self.dx;
-        for &(i, j, k) in &cells {
-            let at = self.at(i, j, k);
-            let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - was[at] * dt * inv;
-            self.velocity[at] = self.sample(&was, p);
+        let n = self.n;
+        {
+            let was = self.velocity.clone();
+            each_awake_all(&mut self.velocity, n, &self.awake, |i, j, k, at, v| {
+                let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - was[at] * dt * inv;
+                *v = sample(n, &was, p);
+            });
         }
         self.solid_walls(&cells);
         self.project(&cells);
         // Carry smoke and heat along the speed, fading.
-        let (d0, h0) = (self.density.clone(), self.heat.clone());
         let keep = (1.0 - s.fade.max(0.0) * dt).max(0.0);
-        for &(i, j, k) in &cells {
-            let at = self.at(i, j, k);
-            if self.solid[at] {
-                self.density[at] = 0.0;
-                self.heat[at] = 0.0;
-                continue;
-            }
-            let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - self.velocity[at] * dt * inv;
-            self.density[at] = self.sample(&d0, p) * keep;
-            self.heat[at] = self.sample(&h0, p) * keep;
+        let (velocity, solid) = (&self.velocity, &self.solid);
+        for field in [&mut self.density, &mut self.heat] {
+            let was = field.clone();
+            each_awake_all(field, n, &self.awake, |i, j, k, at, c| {
+                *c = if solid[at] {
+                    0.0
+                } else {
+                    let p = Vec3::new(i as f32, j as f32, k as f32) + 0.5 - velocity[at] * dt * inv;
+                    sample(n, &was, p) * keep
+                };
+            });
         }
     }
 
     /// Put back the curls: a push round each swirl's centre (Fedkiw 2001).
     fn confine_vorticity(&mut self, cells: &[(usize, usize, usize)], dt: f32) {
+        let _ = cells;
         let strength = self.smoke.curl.max(0.0);
         if strength <= 0.0 {
             return;
         }
-        let [nx, ny, nz] = self.n;
-        let v = &self.velocity;
-        let get = |i: usize, j: usize, k: usize| v[(k * ny + j) * nx + i];
+        let [nx, ny, _] = self.n;
+        let slice = nx * ny;
+        let (v, dx) = (&self.velocity, self.dx);
         let mut curl = vec![Vec3::ZERO; v.len()];
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let dvz_dy = get(i, j + 1, k).z - get(i, j - 1, k).z;
-            let dvy_dz = get(i, j, k + 1).y - get(i, j, k - 1).y;
-            let dvx_dz = get(i, j, k + 1).x - get(i, j, k - 1).x;
-            let dvz_dx = get(i + 1, j, k).z - get(i - 1, j, k).z;
-            let dvy_dx = get(i + 1, j, k).y - get(i - 1, j, k).y;
-            let dvx_dy = get(i, j + 1, k).x - get(i, j - 1, k).x;
-            curl[(k * ny + j) * nx + i] = Vec3::new(dvz_dy - dvy_dz, dvx_dz - dvz_dx, dvy_dx - dvx_dy) * (0.5 / self.dx);
-        }
-        let len = |i: usize, j: usize, k: usize| curl[(k * ny + j) * nx + i].length();
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let grad = Vec3::new(len(i + 1, j, k) - len(i - 1, j, k), len(i, j + 1, k) - len(i, j - 1, k), len(i, j, k + 1) - len(i, j, k - 1));
+        each_awake(&mut curl, self.n, &self.awake, |_, _, _, at, c| {
+            let dvz_dy = v[at + nx].z - v[at - nx].z;
+            let dvy_dz = v[at + slice].y - v[at - slice].y;
+            let dvx_dz = v[at + slice].x - v[at - slice].x;
+            let dvz_dx = v[at + 1].z - v[at - 1].z;
+            let dvy_dx = v[at + 1].y - v[at - 1].y;
+            let dvx_dy = v[at + nx].x - v[at - nx].x;
+            *c = Vec3::new(dvz_dy - dvy_dz, dvx_dz - dvz_dx, dvy_dx - dvx_dy) * (0.5 / dx);
+        });
+        let curl = &curl;
+        let len = |at: usize| curl[at].length();
+        each_awake(&mut self.velocity, self.n, &self.awake, |_, _, _, at, v| {
+            let grad = Vec3::new(len(at + 1) - len(at - 1), len(at + nx) - len(at - nx), len(at + slice) - len(at - slice));
             let n = grad.normalize_or_zero();
-            let at = (k * ny + j) * nx + i;
-            self.velocity[at] += n.cross(curl[at]) * (strength * self.dx * dt);
-        }
+            *v += n.cross(curl[at]) * (strength * dx * dt);
+        });
     }
 
     /// No air into what is solid, nor out of the box's floor.
@@ -377,39 +392,52 @@ impl SmokeState {
     /// awake cells, its gradient taken off the speed.
     fn project(&mut self, cells: &[(usize, usize, usize)]) {
         let [nx, ny, nz] = self.n;
+        let _ = cells;
         let v = &self.velocity;
-        let get = |i: usize, j: usize, k: usize| v[(k * ny + j) * nx + i];
         let mut divergence = vec![0.0f32; v.len()];
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            divergence[(k * ny + j) * nx + i] = (get(i + 1, j, k).x - get(i - 1, j, k).x + get(i, j + 1, k).y - get(i, j - 1, k).y + get(i, j, k + 1).z - get(i, j, k - 1).z) * 0.5;
-        }
-        self.pressure.fill(0.0);
+        let slice = nx * ny;
+        each_awake(&mut divergence, self.n, &self.awake, |_, _, _, at, d| {
+            *d = (v[at + 1].x - v[at - 1].x + v[at + nx].y - v[at - nx].y + v[at + slice].z - v[at - slice].z) * 0.5;
+        });
+        // Started from the last step's pressure, which the air's is close
+        // to: a few sweeps finish what 24 from nothing did.
         let mut next = self.pressure.clone();
-        for _ in 0..24 {
-            for &(i, j, k) in cells {
-                if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                    continue;
+        // The awake cells: those of the awake blocks.
+        let [bx, by, bz] = [nx / BLOCK, ny / BLOCK, nz / BLOCK];
+        let awake = &self.awake;
+        let is_awake = |i: usize, j: usize, k: usize| {
+            let (a, b, c) = (i / BLOCK, j / BLOCK, k / BLOCK);
+            a < bx && b < by && c < bz && awake[(c * by + b) * bx + a]
+        };
+        for _ in 0..SWEEPS {
+            // Each awake cell's next pressure from its neighbours' last: a
+            // Jacobi sweep, a slice of the grid to a core, each writing
+            // only its own.
+            let (pressure, solid) = (&self.pressure, &self.solid);
+            let slice = nx * ny;
+            runity_core::jobs::for_each_chunk_mut(&mut next, slice, |first, cells| {
+                let k = first / slice;
+                if k == 0 || k + 1 >= nz {
+                    return;
                 }
-                let at = (k * ny + j) * nx + i;
-                if self.solid[at] {
-                    continue;
+                for j in 1..ny - 1 {
+                    for i in 1..nx - 1 {
+                        let at = first + j * nx + i;
+                        if solid[at] || !is_awake(i, j, k) {
+                            continue;
+                        }
+                        let p = |a: usize| if solid[a] { pressure[at] } else { pressure[a] };
+                        cells[j * nx + i] =
+                            (p(at - 1) + p(at + 1) + p(at - nx) + p(at + nx) + p(at - slice) + p(at + slice) - divergence[at]) / 6.0;
+                    }
                 }
-                let p = |a: usize| if self.solid[a] { self.pressure[at] } else { self.pressure[a] };
-                next[at] = (p(at - 1) + p(at + 1) + p(at - nx) + p(at + nx) + p(at - nx * ny) + p(at + nx * ny) - divergence[at]) / 6.0;
-            }
+            });
             std::mem::swap(&mut self.pressure, &mut next);
         }
-        for &(i, j, k) in cells {
-            if i == 0 || j == 0 || k == 0 || i + 1 >= nx || j + 1 >= ny || k + 1 >= nz {
-                continue;
-            }
-            let at = (k * ny + j) * nx + i;
-            let p = &self.pressure;
-            self.velocity[at] -= Vec3::new(p[at + 1] - p[at - 1], p[at + nx] - p[at - nx], p[at + nx * ny] - p[at - nx * ny]) * 0.5;
-        }
+        let p = &self.pressure;
+        each_awake(&mut self.velocity, self.n, &self.awake, |_, _, _, at, v| {
+            *v -= Vec3::new(p[at + 1] - p[at - 1], p[at + nx] - p[at - nx], p[at + slice] - p[at - slice]) * 0.5;
+        });
     }
 
     /// All the smoke in it.
@@ -434,15 +462,80 @@ impl SmokeState {
     }
 }
 
+/// `field` at the point `p` (in cells) of a grid of `n`: between its
+/// eight nearest cells.
+fn sample<T: Copy + std::ops::Mul<f32, Output = T> + std::ops::Add<Output = T>>(n: [usize; 3], field: &[T], p: Vec3) -> T {
+    let [nx, ny, nz] = n;
+    let p = p - Vec3::splat(0.5);
+    let p = p.clamp(Vec3::ZERO, Vec3::new(nx as f32 - 1.001, ny as f32 - 1.001, nz as f32 - 1.001));
+    let (i, j, k) = (p.x as usize, p.y as usize, p.z as usize);
+    let f = p - Vec3::new(i as f32, j as f32, k as f32);
+    let v = |a: usize, b: usize, c: usize| field[(c * ny + b) * nx + a];
+    let lerp = |a: T, b: T, t: f32| a * (1.0 - t) + b * t;
+    let x00 = lerp(v(i, j, k), v(i + 1, j, k), f.x);
+    let x10 = lerp(v(i, j + 1, k), v(i + 1, j + 1, k), f.x);
+    let x01 = lerp(v(i, j, k + 1), v(i + 1, j, k + 1), f.x);
+    let x11 = lerp(v(i, j + 1, k + 1), v(i + 1, j + 1, k + 1), f.x);
+    lerp(lerp(x00, x10, f.y), lerp(x01, x11, f.y), f.z)
+}
+
+/// `f(i, j, k, at, cell)` on every awake cell off the grid's edge, into
+/// `field`: a slice of the grid to a core, each writing only its own.
+fn each_awake<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    each_awake_cell(field, n, awake, 1, f)
+}
+
+/// The same with the grid's edge cells too: every cell of an awake block.
+fn each_awake_all<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    each_awake_cell(field, n, awake, 0, f)
+}
+
+fn each_awake_cell<T: Send>(field: &mut [T], n: [usize; 3], awake: &[bool], edge: usize, f: impl Fn(usize, usize, usize, usize, &mut T) + Sync) {
+    let [nx, ny, nz] = n;
+    let [bx, by, bz] = [nx / BLOCK, ny / BLOCK, nz / BLOCK];
+    let slice = nx * ny;
+    runity_core::jobs::for_each_chunk_mut(field, slice, |first, cells| {
+        let k = first / slice;
+        if k < edge || k + edge >= nz || k / BLOCK >= bz {
+            return;
+        }
+        for j in edge..ny - edge {
+            if j / BLOCK >= by {
+                continue;
+            }
+            for i in edge..nx - edge {
+                let (a, b) = (i / BLOCK, j / BLOCK);
+                if a >= bx || !awake[((k / BLOCK) * by + b) * bx + a] {
+                    continue;
+                }
+                f(i, j, k, first + j * nx + i, &mut cells[j * nx + i]);
+            }
+        }
+    });
+}
+
+/// Jacobi sweeps of the pressure a step, from the last step's.
+const SWEEPS: usize = 10;
+
 /// Every smoke on by `seconds`, round `obstacles`.
 pub fn run_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    each_smoke(world, obstacles, |state, placed, near| state.advance(placed, near, seconds));
+}
+
+/// Every smoke's clock on by `seconds`, round `obstacles`, its steps only
+/// counted ([`SmokeState::count`]): stepped where it is drawn.
+pub fn count_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    each_smoke(world, obstacles, |state, placed, near| state.count(placed, near, seconds));
+}
+
+fn each_smoke(world: &mut hecs::World, obstacles: &Obstacles, mut f: impl FnMut(&mut SmokeState, Mat4, &[Obstacle])) {
     let mut near = Vec::new();
     for (state, placed) in world.query_mut::<(&mut SmokeState, &WorldTransform)>() {
         let feet = placed.0.w_axis.truncate();
         let size = state.smoke.size;
         obstacles.near(feet - Vec3::new(size.x, 0.1, size.z) * 0.6, feet + Vec3::new(size.x * 0.6, size.y, size.z * 0.6), &mut near);
         near.retain(|o| !matches!(o, Obstacle::Plane { .. }));
-        state.advance(placed.0, &near, seconds);
+        f(state, placed.0, &near);
     }
 }
 

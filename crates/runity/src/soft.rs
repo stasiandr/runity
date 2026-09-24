@@ -206,6 +206,9 @@ pub fn show(world: &mut World, _seconds: f32) {
         world.query_mut::<(&FluidState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
     {
         match (live, copies) {
+            // Asleep, it looks as it did: nothing to make again.
+            (_, Some(copies)) if state.asleep() && !copies.placed.is_empty() => {}
+            (Some(live), None) if state.asleep() && !live.is_empty() => {}
             (_, Some(copies)) => copies.placed = state.drops(),
             (Some(live), None) => {
                 let (vertices, indices) = state.surface(placed.0);

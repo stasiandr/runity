@@ -32,6 +32,7 @@ pub mod moods;
 pub mod occlusion;
 pub mod particles;
 pub mod particles_gpu;
+pub(crate) mod smoke_gpu;
 pub mod passes;
 pub mod post;
 pub mod quality;
