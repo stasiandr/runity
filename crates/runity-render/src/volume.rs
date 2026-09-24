@@ -20,9 +20,58 @@
 //! Greenstein): looking towards the sun or a lamp, the fog glows. Off by
 //! default: how misty a place is is the scene's call.
 
+use bytemuck::Zeroable;
 use serde::{Deserialize, Serialize};
 
 use crate::gpu::Gpu;
+
+/// Smoke or fire in a box of the world, from a simulation on a grid —
+/// the fluid module's `smoke` — sampled by the fog's cells as the air's
+/// own is: lit by the sun and sky where it is thin, dark where it is
+/// thick, glowing where it is hot. Each cell of `cells` is its density
+/// (0–255 for 0–3) and its heat (0–255 for none to white-hot); the grid is
+/// `size` cells from `low` to `high`, x fastest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Smoke {
+    pub low: glam::Vec3,
+    pub high: glam::Vec3,
+    pub size: [u32; 3],
+    pub cells: std::sync::Arc<Vec<[u8; 4]>>,
+    /// Linear colour it scatters.
+    pub color: [f32; 3],
+    /// Extinction per metre at a density of 1.
+    pub density: f32,
+    /// How brightly the hot part glows; 0 for smoke that is not fire.
+    pub glow: f32,
+}
+
+/// The largest smoke grid the render takes along each way; a larger one
+/// is thinned to fit by whoever makes it.
+pub const SMOKE_MOST: [u32; 3] = [64, 96, 64];
+/// The most smokes a frame draws: the nearest the eye.
+pub const MOST_SMOKES: usize = 4;
+
+/// The smokes' boxes as the shader reads them, and how many.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct SmokeUniforms {
+    boxes: [SmokeUniform; MOST_SMOKES],
+    count: [u32; 4],
+}
+
+/// One smoke's box as the shader reads it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+struct SmokeUniform {
+    /// Its low corner, and 1 when there is smoke.
+    low: [f32; 4],
+    /// Its high corner, and its extinction per unit of density.
+    high: [f32; 4],
+    /// Its colour, and how brightly it glows.
+    color: [f32; 4],
+    /// How much of the texture it fills along each way.
+    fill: [f32; 4],
+}
 
 /// Cells across the view.
 pub const WIDTH: u32 = 160;
@@ -158,6 +207,8 @@ pub(crate) struct Volumes {
     pub(crate) integrate_layout: wgpu::BindGroupLayout,
     inject_group: wgpu::BindGroup,
     integrate_group: wgpu::BindGroup,
+    smoke_texture: wgpu::Texture,
+    smoke_uniform: wgpu::Buffer,
 }
 
 impl Volumes {
@@ -201,7 +252,35 @@ impl Volumes {
             .device
             .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("fog inject"),
-                entries: &[storage(0)],
+                entries: &[
+                    storage(0),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 10,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 11,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 12,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
         let integrate_layout =
             gpu.device
@@ -223,14 +302,58 @@ impl Volumes {
                 });
         let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
         let scattering_view = view(&scattering);
+        // The smoke's grid, as large as it may be, and its box: none yet.
+        let smoke_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("smoke"),
+            size: wgpu::Extent3d {
+                width: SMOKE_MOST[0],
+                height: SMOKE_MOST[1],
+                // The smokes one above the other along z.
+                depth_or_array_layers: SMOKE_MOST[2] * MOST_SMOKES as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let smoke_uniform = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("smoke box"),
+            size: std::mem::size_of::<SmokeUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        gpu.queue.write_buffer(&smoke_uniform, 0, bytemuck::bytes_of(&SmokeUniforms::zeroed()));
+        let smoke_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("smoke"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let smoke_view = view(&smoke_texture);
         let integrated_view = view(&integrated);
         let inject_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fog inject"),
             layout: &inject_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&scattering_view),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scattering_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&smoke_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::Sampler(&smoke_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: smoke_uniform.as_entire_binding(),
+                },
+            ],
         });
         let integrate_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("fog integrate"),
@@ -263,7 +386,59 @@ impl Volumes {
             integrate_layout,
             inject_group,
             integrate_group,
+            smoke_texture,
+            smoke_uniform,
         }
+    }
+
+    /// The frame's smokes into the grid the fog samples: the nearest
+    /// [`MOST_SMOKES`], each in its own slab of the texture.
+    pub(crate) fn set_smoke(&self, gpu: &Gpu, smokes: &[Smoke]) {
+        let mut uniforms = SmokeUniforms::zeroed();
+        let mut count = 0;
+        for smoke in smokes.iter().filter(|s| s.size.iter().all(|n| *n > 0)).take(MOST_SMOKES) {
+            let size = [
+                smoke.size[0].min(SMOKE_MOST[0]),
+                smoke.size[1].min(SMOKE_MOST[1]),
+                smoke.size[2].min(SMOKE_MOST[2]),
+            ];
+            if smoke.cells.len() < (size[0] * size[1] * size[2]) as usize {
+                continue;
+            }
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.smoke_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: SMOKE_MOST[2] * count as u32 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(&smoke.cells[..(size[0] * size[1] * size[2]) as usize]),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size[0] * 4),
+                    rows_per_image: Some(size[1]),
+                },
+                wgpu::Extent3d {
+                    width: size[0],
+                    height: size[1],
+                    depth_or_array_layers: size[2],
+                },
+            );
+            uniforms.boxes[count] = SmokeUniform {
+                low: [smoke.low.x, smoke.low.y, smoke.low.z, 1.0],
+                high: [smoke.high.x, smoke.high.y, smoke.high.z, smoke.density.max(0.0)],
+                color: [smoke.color[0], smoke.color[1], smoke.color[2], smoke.glow.max(0.0)],
+                fill: [
+                    size[0] as f32 / SMOKE_MOST[0] as f32,
+                    size[1] as f32 / SMOKE_MOST[1] as f32,
+                    size[2] as f32 / SMOKE_MOST[2] as f32,
+                    count as f32,
+                ],
+            };
+            count += 1;
+        }
+        uniforms.count = [count as u32, 0, 0, 0];
+        gpu.queue.write_buffer(&self.smoke_uniform, 0, bytemuck::bytes_of(&uniforms));
     }
 
     /// Fill the grid: what each cell scatters, then the sums front to back.

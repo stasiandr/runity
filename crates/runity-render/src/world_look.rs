@@ -263,6 +263,12 @@ pub struct Copies {
     pub placed: Vec<glam::Mat4>,
 }
 
+/// Smoke or fire in the fog, on the entity that makes it: whoever steps
+/// the smoke writes it each frame, and the frame takes the nearest few
+/// ([`crate::volume::Smoke`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmokeVolume(pub crate::volume::Smoke);
+
 /// A local look at an entity, from its line's `post_volume`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostVolumeBox(pub crate::scene::PostVolume);
@@ -825,12 +831,22 @@ pub fn build_frame_where(
         let linear = |v: f32| crate::material::srgb_to_linear((v * 1.25).clamp(0.0, 1.0));
         puffs.extend(trail.dust([linear(c[0]), linear(c[1]), linear(c[2])]));
     }
+    // The smokes, nearest the eye first: the fog takes the first few.
+    let mut smoke: Vec<crate::volume::Smoke> = world
+        .query::<(&SmokeVolume, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, line)| keep(line.map(|l| l.0)))
+        .map(|(s, _)| s.0.clone())
+        .collect();
+    let d = |s: &crate::volume::Smoke| ((s.low + s.high) * 0.5).distance_squared(camera.position);
+    smoke.sort_by(|a, b| d(a).total_cmp(&d(b)));
     Frame {
         camera,
         lighting,
         reflection_probes,
         decals,
         puffs,
+        smoke,
         gpu_particles,
         plumes,
         terrain,

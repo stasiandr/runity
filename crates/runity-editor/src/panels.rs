@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 35] = [
+pub const FIELDS: [&str; 36] = [
     "name",
     "model",
     "prefab",
@@ -117,6 +117,7 @@ pub const FIELDS: [&str; 35] = [
     "ripples",
     "ocean",
     "floats",
+    "smoke",
     "components.<name>",
 ];
 
@@ -399,6 +400,10 @@ impl Session {
             (
                 "floats".into(),
                 desc.floats().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "smoke".into(),
+                desc.smoke().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -851,6 +856,14 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Floats>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "smoke" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Smoke>(field, text)?)
                 })
                 .as_ref(),
             ),

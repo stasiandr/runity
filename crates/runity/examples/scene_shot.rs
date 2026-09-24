@@ -165,6 +165,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         runity::soft::show(&mut world, 0.0);
     }
+    // Water, snow and smoke run the same few seconds.
+    #[cfg(feature = "fluid")]
+    {
+        for _ in 0..180 {
+            runity::fluid::step(&mut world, 1.0 / 60.0);
+        }
+        runity::fluid::show(&mut world, 0.0);
+    }
     runity::terrain::upload_terrains(&mut world, &gpu, &mut renderer);
     for problem in
         runity::world::upload_material_maps(&world, library.as_ref(), &gpu, &mut renderer)
@@ -173,6 +181,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
+    for smoke in &frame.smoke {
+        let most = smoke.cells.iter().map(|c| c[0]).max().unwrap_or(0);
+        let hot = smoke.cells.iter().map(|c| c[1]).max().unwrap_or(0);
+        eprintln!("smoke {:?} {:?}..{:?}: densest {most}, hottest {hot}", smoke.size, smoke.low, smoke.high);
+    }
     if let Some(scale) = upscale {
         frame.post.upscaling.enabled = true;
         frame.post.upscaling.scale = scale;

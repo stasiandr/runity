@@ -12,10 +12,18 @@ pub mod heightfield;
 pub mod mpm;
 pub mod floats;
 pub mod ocean;
+pub mod smoke;
 
 pub use heightfield::{run_heightfields, water_height, HeightfieldDress, HeightfieldLine, Ripples, RipplesState, ShallowState, ShallowWater};
 pub use mpm::{run_mpm, Mpm, MpmDress, MpmLine, MpmMaterial, MpmState, Transfer};
-pub use ocean::{run_oceans, set_wind, Ocean, OceanDress, OceanLine, OceanState};
+pub use ocean::{run_oceans, Ocean, OceanDress, OceanLine, OceanState};
+pub use smoke::{run_smokes, Smoke, SmokeDress, SmokeLine, SmokeState};
+
+/// Every ocean and smoke moved by this wind: the scene's.
+pub fn set_wind(world: &mut hecs::World, wind: runity_core::wind::Wind) {
+    ocean::set_wind(world, wind);
+    smoke::set_wind(world, wind);
+}
 pub use floats::{Floats, FloatsDress, FloatsLine, Floating};
 
 /// This module's fields of a line, with how to check each one's text.
@@ -24,6 +32,7 @@ pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
     kinds.extend(heightfield::part_kinds());
     kinds.extend(ocean::part_kinds());
     kinds.extend(floats::part_kinds());
+    kinds.extend(smoke::part_kinds());
     kinds
 }
 

@@ -1,0 +1,29 @@
+// Дым, огонь и пар (модуль `fluid`, docs/simulation.md, пункт 7): Stable
+// Fluids на разреженной сетке блоками 8³; рисуется туманом — плотность и
+// жар дыма в объёмной текстуре, которую ячейки тумана пробегают лучом.
+// Костёр горит и светит, из трубы домика тянется дым, пар из люка
+// упирается в навес и обтекает его; ветер сносит всё.
+(
+    view: (position: (-1.0, 1.8, 6.0), target: (-1.0, 1.6, 0.0), fov_deg: 60.0),
+    sun: (hour: 17.5, intensity: 1.2),
+    sky: (mode: Physical),
+    wind: (direction: (1.0, 0.0, 0.2), strength: 0.5),
+    volumetric_fog: (enabled: true, density: 0.002, distance: 40.0),
+    entities: [
+        (id: "c026946b7aeed223", name: "ground", model: "builtin:plane", transform: (scale: (60.0, 1.0, 60.0)), material: "grid", body: Static, collider: Box(half: (0.5, 0.05, 0.5), center: (0.0, -0.05, 0.0))),
+        (id: "f35a76d709e5ca79", name: "campfire", transform: (position: (-3.0, 0.0, 0.0)), smoke: (fire: true, size: (2.5, 5.0, 2.5), resolution: 14.0, source: 0.4, rate: 14.0, heat: 8.0, curl: 3.0, fade: 0.2, color: (0.2, 0.19, 0.18)), light: (color: (1.0, 0.55, 0.2), intensity: 6.0, range: 8.0)),
+        (id: "948282ff19c5afe5", name: "log 0", model: "builtin:cylinder", transform: (position: (-3.0, 0.1, 0.0), rotation_deg: (90.0, 40.0, 0.0), scale: (0.15, 1.0, 0.15)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "61be6baa97cd9a18", name: "log 1", model: "builtin:cylinder", transform: (position: (-3.0, 0.1, 0.0), rotation_deg: (90.0, -40.0, 0.0), scale: (0.15, 1.0, 0.15)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "0997836fc53b8528", name: "log 2", model: "builtin:cylinder", transform: (position: (-3.0, 0.1, 0.0), rotation_deg: (90.0, 90.0, 0.0), scale: (0.15, 1.0, 0.15)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "96477e0fec2c9a8c", name: "house", model: "builtin:cube", transform: (position: (1.5, 1.2, -2.5), scale: (3.0, 2.4, 2.5)), material: (base_color: (0.7, 0.6, 0.5)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "e55cc85f91fb2c60", name: "chimney", model: "builtin:cube", transform: (position: (2.4, 2.9, -2.5), scale: (0.4, 1.2, 0.4)), material: (base_color: (0.5, 0.48, 0.45))),
+        (id: "20d763b62dd555ac", name: "chimney smoke", transform: (position: (2.4, 3.5, -2.5)), smoke: (size: (3.0, 4.0, 2.5), resolution: 12.0, source: 0.18, rate: 3.0, heat: 5.0, fade: 0.2, color: (0.55, 0.55, 0.57))),
+        (id: "c175dbedf7e8bf58", name: "vent", model: "builtin:cylinder", transform: (position: (4.5, 0.05, 1.0), scale: (0.6, 0.1, 0.6)), material: (base_color: (0.5, 0.48, 0.45))),
+        (id: "046178b2c0336f53", name: "steam", transform: (position: (4.5, 0.1, 1.0)), smoke: (size: (3.0, 4.0, 3.0), resolution: 12.0, source: 0.3, rate: 7.0, heat: 5.0, weight: 0.1, fade: 0.35, curl: 2.5, color: (0.92, 0.93, 0.95))),
+        (id: "910cdc0b7c82e791", name: "canopy", model: "builtin:cube", transform: (position: (4.5, 1.8, 1.0), scale: (1.6, 0.08, 1.6)), material: (base_color: (0.35, 0.22, 0.12)), body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
+        (id: "3b425b4b39da4c34", name: "canopy post", model: "builtin:cylinder", transform: (position: (3.8, 0.9, 0.3), scale: (0.06, 1.8, 0.06)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "aac6147e8aea779b", name: "canopy post", model: "builtin:cylinder", transform: (position: (5.2, 0.9, 0.3), scale: (0.06, 1.8, 0.06)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "5c006867146c5acb", name: "canopy post", model: "builtin:cylinder", transform: (position: (3.8, 0.9, 1.7), scale: (0.06, 1.8, 0.06)), material: (base_color: (0.35, 0.22, 0.12))),
+        (id: "6d727399a55ec7c5", name: "canopy post", model: "builtin:cylinder", transform: (position: (5.2, 0.9, 1.7), scale: (0.06, 1.8, 0.06)), material: (base_color: (0.35, 0.22, 0.12))),
+    ],
+)

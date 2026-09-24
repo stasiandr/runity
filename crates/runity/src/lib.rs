@@ -397,7 +397,7 @@ pub mod scene {
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{Dents, Fracture};
     #[cfg(feature = "fluid")]
-    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater};
+    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater, Smoke};
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -447,7 +447,7 @@ pub mod prelude {
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{DentsLine, FractureLine};
     #[cfg(feature = "fluid")]
-    pub use crate::fluid::{FloatsLine, HeightfieldLine, MpmLine, OceanLine};
+    pub use crate::fluid::{FloatsLine, HeightfieldLine, MpmLine, OceanLine, SmokeLine};
 }
 pub use runity_overlay::screen;
 pub use runity_core::shape;

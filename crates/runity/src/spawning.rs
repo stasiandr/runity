@@ -47,6 +47,7 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::fluid::HeightfieldDress));
         out.push(Box::new(crate::fluid::OceanDress));
         out.push(Box::new(crate::fluid::FloatsDress));
+        out.push(Box::new(crate::fluid::SmokeDress));
         out.push(Box::new(crate::fluid::FluidLookDress { cube, palette }));
     }
     #[cfg(feature = "destruction")]

@@ -19,8 +19,9 @@ use crate::world::{Changed, Copies, Dress, LiveMesh, Surface, Unresolved, WorldT
 pub fn step(world: &mut World, seconds: f32) {
     let mpm = world.query::<&MpmState>().iter().next().is_some();
     let heights = world.query::<&ShallowState>().iter().next().is_some() || world.query::<&RipplesState>().iter().next().is_some();
+    let smoke = world.query::<&SmokeState>().iter().next().is_some();
     // What floats rides the water, it is not its bed.
-    let obstacles = if mpm || heights {
+    let obstacles = if mpm || heights || smoke {
         crate::soft::Obstacles::new(crate::soft::obstacles_but(world, |e| world.get::<&Floating>(e).is_ok()))
     } else {
         crate::soft::Obstacles::default()
@@ -31,7 +32,46 @@ pub fn step(world: &mut World, seconds: f32) {
     if heights {
         run_heightfields(world, seconds, &obstacles);
     }
+    if smoke {
+        run_smokes(world, seconds, &obstacles);
+    }
     run_oceans(world, seconds);
+}
+
+/// A smoke's grid as the render's fog takes it: density and heat a byte
+/// each, thinned to fit.
+pub fn smoke_volume(state: &SmokeState) -> crate::volume::Smoke {
+    let most = crate::volume::SMOKE_MOST;
+    let n = state.n;
+    // Every so many cells along each way, to fit.
+    let stride = [(n[0] as u32).div_ceil(most[0]).max(1), (n[1] as u32).div_ceil(most[1]).max(1), (n[2] as u32).div_ceil(most[2]).max(1)];
+    let size = [n[0] as u32 / stride[0], n[1] as u32 / stride[1], n[2] as u32 / stride[2]];
+    // Heat settles far under what the source gives off: a fifth of it is
+    // white-hot.
+    let heat_most = (state.smoke.heat * 0.2).max(0.05);
+    let mut cells = Vec::with_capacity((size[0] * size[1] * size[2]) as usize);
+    for k in 0..size[2] as usize {
+        for j in 0..size[1] as usize {
+            for i in 0..size[0] as usize {
+                let at = ((k * stride[2] as usize) * n[1] + j * stride[1] as usize) * n[0] + i * stride[0] as usize;
+                let d = (state.density[at] / 3.0 * 255.0).clamp(0.0, 255.0) as u8;
+                let h = (state.heat[at] / heat_most * 255.0).clamp(0.0, 255.0) as u8;
+                cells.push([d, h, 0, 255]);
+            }
+        }
+    }
+    let (low, high) = state.bounds();
+    let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+    let c = state.smoke.color;
+    crate::volume::Smoke {
+        low,
+        high,
+        size,
+        cells: std::sync::Arc::new(cells),
+        color: [linear(c[0]), linear(c[1]), linear(c[2])],
+        density: 3.0,
+        glow: if state.smoke.fire { 16.0 } else { 0.0 },
+    }
 }
 
 /// Hold up every body that `floats` by the water under it. Call before the
@@ -85,6 +125,11 @@ pub fn show(world: &mut World, _seconds: f32) {
     for (state, placed, live) in world.query_mut::<(&OceanState, &WorldTransform, &mut LiveMesh)>() {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
+    }
+    let smokes: Vec<(hecs::Entity, crate::volume::Smoke)> =
+        world.query::<(hecs::Entity, &SmokeState)>().iter().map(|(e, s)| (e, smoke_volume(s))).collect();
+    for (entity, volume) in smokes {
+        let _ = world.insert_one(entity, crate::world::SmokeVolume(volume));
     }
 }
 

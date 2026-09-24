@@ -169,6 +169,54 @@ struct Decal {
 @group(3) @binding(0) var fog_scatter_out: texture_storage_3d<rgba16float, write>;
 @group(3) @binding(1) var fog_scatter_in: texture_3d<f32>;
 @group(3) @binding(2) var fog_integrated_out: texture_storage_3d<rgba16float, write>;
+
+// Smoke from a grid, sampled by the fog's cells (`volume::Smoke`).
+struct SmokeBox {
+    // low corner, 1 when there is smoke
+    low: vec4<f32>,
+    // high corner, extinction per unit of density
+    high: vec4<f32>,
+    // colour, glow
+    color: vec4<f32>,
+    // how much of the texture it fills
+    fill: vec4<f32>,
+};
+@group(3) @binding(10) var smoke_volume: texture_3d<f32>;
+@group(3) @binding(11) var smoke_sampler: sampler;
+struct SmokeBoxes {
+    boxes: array<SmokeBox, 4>,
+    count: vec4<u32>,
+};
+@group(3) @binding(12) var<uniform> smokes: SmokeBoxes;
+
+/// The smokes at a point: what they scatter (their colour times their
+/// extinction), their extinction, and their glow.
+struct SmokeHere {
+    scatter: vec3<f32>,
+    extinction: f32,
+    glow: vec3<f32>,
+};
+
+fn smoke_at(p: vec3<f32>) -> SmokeHere {
+    var here = SmokeHere(vec3<f32>(0.0), 0.0, vec3<f32>(0.0));
+    for (var i = 0u; i < min(smokes.count.x, 4u); i = i + 1u) {
+        let b = smokes.boxes[i];
+        let t = (p - b.low.xyz) / max(b.high.xyz - b.low.xyz, vec3<f32>(1e-4));
+        if any(t < vec3<f32>(0.0)) || any(t > vec3<f32>(1.0)) {
+            continue;
+        }
+        // Its slab of the texture: the smokes lie one above another in z.
+        let uvw = vec3<f32>(t.xy * b.fill.xy, (t.z * b.fill.z + b.fill.w) / 4.0);
+        let s = textureSampleLevel(smoke_volume, smoke_sampler, uvw, 0.0);
+        let density = s.r * 3.0 * b.high.w;
+        let heat = s.g;
+        here.scatter += b.color.rgb * density;
+        here.extinction += density;
+        // Fire glows by its heat, deep red to yellow-white.
+        here.glow += mix(vec3<f32>(1.0, 0.18, 0.02), vec3<f32>(1.0, 0.75, 0.35), heat) * heat * heat * b.color.w * max(s.r * 3.0, 0.3);
+    }
+    return here;
+}
 const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 
 // The physical sky (atmosphere.rs): the whole sky from the camera, and per
@@ -957,7 +1005,8 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = ray.start + ray.direction * (depth - ray.start_depth) * ray.stretch;
     let air = fog_density(p);
     let dust = puff_dust(p);
-    let density = air + dust.a;
+    let smoke = smoke_at(p);
+    let density = air + dust.a + smoke.extinction;
     let to_eye = -ray.direction;
     let g = frame.fog_shape.z;
 
@@ -1013,7 +1062,10 @@ fn cs_fog_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     // light bouncing about inside it, not the thin air's single turn
     // towards the eye — and from the ground and sky round it.
     let dust_light = sun_through * 0.45 + mix(frame.ground_color.rgb, frame.sky_color.rgb, 0.5) * 0.9;
-    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * air + dust_light * dust.rgb, density));
+    // Smoke is lit as the dust is, in its own colour; fire glows by its
+    // heat, whatever lights it.
+    let smoke_light = dust_light * smoke.scatter + smoke.glow;
+    textureStore(fog_scatter_out, id, vec4<f32>(light * frame.fog_medium.rgb * air + dust_light * dust.rgb + smoke_light, density));
 }
 
 // Each column front to back: what each cell adds, dimmed by what lies

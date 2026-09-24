@@ -32,7 +32,7 @@ use crate::theme::*;
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 26] = [
+const PARTS: [&str; 27] = [
     "camera",
     "light",
     "particles",
@@ -57,6 +57,7 @@ const PARTS: [&str; 26] = [
     "ripples",
     "ocean",
     "floats",
+    "smoke",
     "spline",
     "along",
 ];
@@ -94,6 +95,7 @@ fn added_value(field: &str) -> Option<&'static str> {
         "ripples" => "()",
         "ocean" => "()",
         "floats" => "()",
+        "smoke" => "()",
         "rope" => "(to: (4.0, 0.0, 0.0))",
         "cloth" => "(size: (2.0, 2.0))",
         "hair" => "(length: 0.3)",
@@ -105,7 +107,7 @@ fn added_value(field: &str) -> Option<&'static str> {
 
 /// The parts a line can have besides the game's components, as the Add
 /// Component list names them.
-const ADDABLE: [(&str, &str); 28] = [
+const ADDABLE: [(&str, &str); 29] = [
     ("model", "Model"),
     ("collider", "Collider"),
     ("body", "Body"),
@@ -121,6 +123,7 @@ const ADDABLE: [(&str, &str); 28] = [
     ("decal", "Decal"),
     ("route", "Route"),
     ("rope", "Rope"),
+    ("smoke", "Smoke"),
     ("floats", "Floats"),
     ("ocean", "Ocean"),
     ("ripples", "Ripples"),
@@ -137,7 +140,7 @@ const ADDABLE: [(&str, &str); 28] = [
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 32] = [
+const REMOVABLE: [&str; 33] = [
     "model",
     "footprints",
     "terrain",
@@ -164,6 +167,7 @@ const REMOVABLE: [&str; 32] = [
     "ripples",
     "ocean",
     "floats",
+    "smoke",
     "joint",
     "joint_break",
     "collider",

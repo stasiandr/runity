@@ -8,7 +8,7 @@
     depends: ["geometry", "soft"],
     runtime: true,
     editor: false,
-    parts: ["mpm", "shallow_water", "ripples", "ocean", "floats"],
+    parts: ["mpm", "shallow_water", "ripples", "ocean", "floats", "smoke"],
     assets: [],
     feature: Some("fluid"),
 )

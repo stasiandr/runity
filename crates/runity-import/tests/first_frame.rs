@@ -139,6 +139,7 @@ fn a_source_model_becomes_a_frame() {
         weather: Default::default(),
         screen_space_reflections: Default::default(),
         puffs: Vec::new(),
+        smoke: Vec::new(),
         gpu_particles: Vec::new(),
         plumes: Vec::new(),
         terrain: None,

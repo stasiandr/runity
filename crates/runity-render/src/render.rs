@@ -547,6 +547,9 @@ pub struct Frame {
     pub volumetric_fog: crate::volume::VolumetricFog,
     /// Balls of dust in the air ([`crate::volume::Puff`]).
     pub puffs: Vec<crate::volume::Puff>,
+    /// Smoke and fire from grids, in the fog ([`crate::volume::Smoke`]),
+    /// the nearest the eye first.
+    pub smoke: Vec<crate::volume::Smoke>,
     /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
     pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
@@ -597,6 +600,7 @@ impl Default for Frame {
             decals: Vec::new(),
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
+            smoke: Vec::new(),
             gpu_particles: Vec::new(),
             plumes: Vec::new(),
             terrain: None,
@@ -4388,7 +4392,8 @@ impl Renderer {
         // Devils and plumes are marched with the clouds, precisely: too
         // thin and too far for the fog's grid.
         let local_dust = !devils.is_empty() || !plumes.is_empty();
-        if !puffs.is_empty() && !volumetric.enabled {
+        let smoke = if probe.is_none() { &frame.smoke[..] } else { &[] };
+        if (!puffs.is_empty() || !smoke.is_empty()) && !volumetric.enabled {
             volumetric = crate::volume::VolumetricFog {
                 enabled: true,
                 density: 0.0,
@@ -5259,6 +5264,7 @@ impl Renderer {
 
         // The fog in the air, once every shadow it looks through is drawn.
         if volumetric.enabled {
+            self.volumes.set_smoke(gpu, &frame.smoke);
             self.volumes.run(
                 &mut encoder,
                 &self.fog_bind_group,
