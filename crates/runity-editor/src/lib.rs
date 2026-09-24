@@ -2956,6 +2956,9 @@ impl Session {
         runity::soft::step(&mut self.world, 1.0 / 30.0);
         runity::soft::show(&mut self.world, 0.0);
         runity::destruction::show(&mut self.world, 0.0);
+        // Water, snow and sand move as they are looked at, too.
+        runity::fluid::step(&mut self.world, 1.0 / 30.0);
+        runity::fluid::show(&mut self.world, 0.0);
         // A clip previewed moves the same way: a thirtieth a frame drawn.
         if !self.previewing.is_empty() && self.play.is_none() {
             runity::advance_animations(&mut self.world, 1.0 / 30.0);
@@ -4080,6 +4083,7 @@ impl Session {
     fn fixed_step(world: &mut hecs::World, physics: &mut runity::PhysicsWorld, fixed: f32) {
         runity::routes::run_routes(world, fixed);
         runity::world::apply_hierarchy(world);
+        runity::fluid::float(world, physics);
         physics.run(world);
         // What the step brought together hard enough breaks or dents.
         runity::destruction::step(world, physics, fixed);

@@ -10,6 +10,7 @@
 //! does not know the physics.
 
 pub mod cloth;
+pub mod fluid;
 pub mod hair;
 pub mod jiggle;
 pub mod obstacle;
@@ -21,6 +22,7 @@ pub mod softbody;
 pub use cloth::{run_cloth, Cloth, ClothDress, ClothLine, ClothState, Pinned};
 pub use hair::{run_hair, Hair, HairDress, HairLine, HairState};
 pub use obstacle::{Obstacle, Obstacles};
+pub use fluid::{run_fluids, Fluid, FluidDress, FluidLine, FluidLook, FluidMethod, FluidState};
 pub use jiggle::{run_jiggle, Jiggle, JiggleDress, JiggleLine, JiggleState};
 pub use softbody::{run_soft_bodies, Method, SoftBody, SoftBodyDress, SoftBodyLine, SoftBodyState, SoftShape};
 pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
@@ -32,6 +34,7 @@ pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
     kinds.extend(hair::part_kinds());
     kinds.extend(softbody::part_kinds());
     kinds.extend(jiggle::part_kinds());
+    kinds.extend(fluid::part_kinds());
     kinds
 }
 

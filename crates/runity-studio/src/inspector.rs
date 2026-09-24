@@ -32,7 +32,7 @@ use crate::theme::*;
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 18] = [
+const PARTS: [&str; 26] = [
     "camera",
     "light",
     "particles",
@@ -49,6 +49,14 @@ const PARTS: [&str; 18] = [
     "hair",
     "soft_body",
     "jiggle",
+    "fluid",
+    "fracture",
+    "dents",
+    "mpm",
+    "shallow_water",
+    "ripples",
+    "ocean",
+    "floats",
     "spline",
     "along",
 ];
@@ -78,6 +86,14 @@ fn added_value(field: &str) -> Option<&'static str> {
         "route" => "(points: [(0.0, 0.0, 0.0), (0.0, 2.0, 0.0)])",
         "soft_body" => "()",
         "jiggle" => "()",
+        "fluid" => "()",
+        "fracture" => "()",
+        "dents" => "()",
+        "mpm" => "()",
+        "shallow_water" => "()",
+        "ripples" => "()",
+        "ocean" => "()",
+        "floats" => "()",
         "rope" => "(to: (4.0, 0.0, 0.0))",
         "cloth" => "(size: (2.0, 2.0))",
         "hair" => "(length: 0.3)",
@@ -89,7 +105,7 @@ fn added_value(field: &str) -> Option<&'static str> {
 
 /// The parts a line can have besides the game's components, as the Add
 /// Component list names them.
-const ADDABLE: [(&str, &str); 20] = [
+const ADDABLE: [(&str, &str); 28] = [
     ("model", "Model"),
     ("collider", "Collider"),
     ("body", "Body"),
@@ -105,6 +121,14 @@ const ADDABLE: [(&str, &str); 20] = [
     ("decal", "Decal"),
     ("route", "Route"),
     ("rope", "Rope"),
+    ("floats", "Floats"),
+    ("ocean", "Ocean"),
+    ("ripples", "Ripples"),
+    ("shallow_water", "Shallow Water"),
+    ("mpm", "MPM"),
+    ("dents", "Dents"),
+    ("fracture", "Fracture"),
+    ("fluid", "Fluid"),
     ("jiggle", "Jiggle"),
     ("soft_body", "Soft Body"),
     ("cloth", "Cloth"),
@@ -113,7 +137,7 @@ const ADDABLE: [(&str, &str); 20] = [
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 24] = [
+const REMOVABLE: [&str; 32] = [
     "model",
     "footprints",
     "terrain",
@@ -132,6 +156,14 @@ const REMOVABLE: [&str; 24] = [
     "hair",
     "soft_body",
     "jiggle",
+    "fluid",
+    "fracture",
+    "dents",
+    "mpm",
+    "shallow_water",
+    "ripples",
+    "ocean",
+    "floats",
     "joint",
     "joint_break",
     "collider",

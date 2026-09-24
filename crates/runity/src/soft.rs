@@ -19,14 +19,20 @@ use crate::world::{Changed, Copies, Dress, LiveMesh, Surface, Unresolved, WorldT
 /// round. Triggers are solid to nothing, and a model's own triangles are
 /// left out: a soft thing meets primitives.
 pub fn obstacles(world: &World) -> Vec<Obstacle> {
+    obstacles_but(world, |_| false)
+}
+
+/// [`obstacles`], leaving out the entities `skip` says: water leaves out
+/// what floats on it.
+pub fn obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> Vec<Obstacle> {
     use crate::bodies::{Physics, Shape};
     use crate::body::{Body, Collider};
     let mut out = Vec::new();
-    for (shape, placed, body) in world
-        .query::<(&Shape, &WorldTransform, Option<&Physics>)>()
+    for (entity, shape, placed, body) in world
+        .query::<(hecs::Entity, &Shape, &WorldTransform, Option<&Physics>)>()
         .iter()
     {
-        if matches!(body, Some(Physics(Body::Trigger))) {
+        if matches!(body, Some(Physics(Body::Trigger))) || skip(entity) {
             continue;
         }
         let placed = placed.0;
@@ -58,10 +64,11 @@ pub fn step(world: &mut World, seconds: f32) {
     let cloth = world.query::<&ClothState>().iter().next().is_some();
     let hair = world.query::<&HairState>().iter().next().is_some();
     let bodies = world.query::<&SoftBodyState>().iter().next().is_some();
+    let fluids = world.query::<&FluidState>().iter().next().is_some();
     // Jiggle bones meet nothing: they go first, and what hangs off them —
     // hair on a jiggling head — goes where they have gone.
     run_jiggle(world, seconds);
-    if !ropes && !cloth && !hair && !bodies {
+    if !ropes && !cloth && !hair && !bodies && !fluids {
         return;
     }
     let obstacles = Obstacles::new(obstacles(world));
@@ -76,6 +83,9 @@ pub fn step(world: &mut World, seconds: f32) {
     }
     if bodies {
         run_soft_bodies(world, seconds, &obstacles);
+    }
+    if fluids {
+        run_fluids(world, seconds, &obstacles);
     }
 }
 
@@ -103,6 +113,18 @@ pub fn show(world: &mut World, _seconds: f32) {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
     }
+    for (state, placed, live, copies) in
+        world.query_mut::<(&FluidState, &WorldTransform, Option<&mut LiveMesh>, Option<&mut Copies>)>()
+    {
+        match (live, copies) {
+            (_, Some(copies)) => copies.placed = state.drops(),
+            (Some(live), None) => {
+                let (vertices, indices) = state.surface(placed.0);
+                live.set(vertices, indices);
+            }
+            _ => {}
+        }
+    }
     for (state, placed, live) in world.query_mut::<(&SoftBodyState, &WorldTransform, &mut LiveMesh)>() {
         let (vertices, indices) = state.mesh(placed.0);
         if !vertices.is_empty() {
@@ -127,19 +149,39 @@ pub struct RopeLook;
 /// own dresser, which takes the surface off a line with no model and puts
 /// a chain's model on it to be drawn once.
 pub struct SoftLookDress<'a> {
-    /// `builtin:link`, found before the look's dresser took the resolver.
+    /// `builtin:link` and `builtin:sphere`, found before the look's
+    /// dresser took the resolver.
     pub link: Option<MeshHandle>,
+    pub sphere: Option<MeshHandle>,
     pub palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
 }
 
 impl Dress for SoftLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["rope", "cloth", "hair", "soft_body", "model", "material"]
+        &["rope", "cloth", "hair", "soft_body", "fluid", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         use crate::prelude::*;
         let (rope, cloth, hair, body) = (line.rope(), line.cloth(), line.hair(), line.soft_body());
+        let fluid = line.fluid();
+        if let Some(fluid) = fluid {
+            // Water is its surface or its drops, not the model it names.
+            let _ = world.remove_one::<crate::world::Model>(entity);
+            let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
+            if fluid.look == FluidLook::Drops {
+                let _ = world.remove_one::<LiveMesh>(entity);
+                if let Some(mesh) = self.sphere {
+                    let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
+                }
+            } else {
+                let _ = world.remove_one::<Copies>(entity);
+                if world.get::<&LiveMesh>(entity).is_err() {
+                    let _ = world.insert_one(entity, LiveMesh::new(Vec::new(), Vec::new()));
+                }
+            }
+            return;
+        }
         if body.is_some() {
             // The model itself is soft: drawn deformed, not as it is.
             let _ = world.remove_one::<crate::world::Model>(entity);

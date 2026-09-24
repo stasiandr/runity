@@ -1,14 +1,14 @@
 // The module's manifest (docs/modules.md): what it is, what it stands
 // on, what it brings. Its tests check `parts` against what the crate reads.
 (
-    name: "soft",
+    name: "fluid",
     version: "0.1.0",
     engine: "0.1",
-    what: "Ropes, cables, chains, cloth and hair, solved as particles and constraints (XPBD).",
-    depends: ["geometry"],
+    what: "Fluids on grids: MPM snow, sand and water, shallow water, ripples, the open sea.",
+    depends: ["geometry", "soft"],
     runtime: true,
     editor: false,
-    parts: ["rope", "cloth", "hair", "soft_body", "jiggle", "fluid"],
+    parts: ["mpm", "shallow_water", "ripples", "ocean", "floats"],
     assets: [],
-    feature: Some("soft"),
+    feature: Some("fluid"),
 )

@@ -391,6 +391,30 @@ fn sim_shots() -> Vec<Shot> {
             (v(-6.0, 3.5, 9.0), v(-3.0, 1.5, -1.0)),
             (v(6.0, 4.0, 10.0), v(4.0, 1.2, 0.0)),
         ),
+        shot(
+            "fluids",
+            "Жидкости на частицах: прорыв плотины — PBF (поверхность Surface Nets) и SPH (капли), вода MPM с FLIP-переносом",
+            "fluids.ron",
+            6.0,
+            (v(-6.5, 1.6, 2.6), v(-4.5, 0.3, -1.0)),
+            (v(-2.5, 1.8, 2.6), v(-2.5, 0.3, -1.2)),
+        ),
+        shot(
+            "flood",
+            "Мелкая вода на трубах: паводок за плотиной обтекает камни, ящики плывут, едущий блок гонит волну",
+            "fluids.ron",
+            7.0,
+            (v(3.5, 3.2, 4.5), v(3.5, 0.0, -1.0)),
+            (v(5.5, 2.6, 3.5), v(3.8, 0.0, -1.0)),
+        ),
+        shot(
+            "ocean",
+            "Открытое море: FFT-океан под ветер сцены, буи, ящики и плот качаются на волнах",
+            "ocean.ron",
+            8.0,
+            (v(-10.0, 5.0, 18.0), v(0.0, 0.0, 0.0)),
+            (v(10.0, 3.0, 16.0), v(0.0, 0.5, 0.0)),
+        ),
     ]
 }
 
@@ -628,7 +652,9 @@ fn render_shot(
         runity::world::apply_hierarchy(&mut world);
         owed += dt * shot.speed;
         while owed >= step {
+            runity::fluid::float(&world, &mut physics);
             physics.run(&mut world);
+            runity::fluid::step(&mut world, step);
             runity::destruction::step(&mut world, &mut physics, step);
             owed -= step;
         }
@@ -637,6 +663,7 @@ fn render_shot(
         runity::soft::step(&mut world, dt * shot.speed);
         runity::soft::show(&mut world, 0.0);
         runity::destruction::show(&mut world, 0.0);
+        runity::fluid::show(&mut world, 0.0);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {

@@ -1315,6 +1315,35 @@ impl PhysicsWorld {
         self.add_impulse(world, entity, force * dt)
     }
 
+    /// A push for the coming step at a point of the body, in newtons, in
+    /// the world: it turns the body as well as moving it — water lifting
+    /// one end of a boat. Unity's `AddForceAtPosition`.
+    pub fn add_force_at(&mut self, world: &World, entity: hecs::Entity, force: Vec3, at: Vec3) -> bool {
+        let dt = self.parameters.dt;
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        let impulse = force * dt;
+        body.apply_impulse_at_point(vector![impulse.x, impulse.y, impulse.z], point![at.x, at.y, at.z], true);
+        true
+    }
+
+    /// Its mass, kilograms.
+    pub fn mass(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
+        Some(self.bodies.get(self.body_of(world, entity)?)?.mass())
+    }
+
+    /// How fast a point of the body is going, in the world: its own speed
+    /// and its turning together.
+    pub fn velocity_at(&self, world: &World, entity: hecs::Entity, at: Vec3) -> Option<Vec3> {
+        let body = self.bodies.get(self.body_of(world, entity)?)?;
+        let v = body.velocity_at_point(&point![at.x, at.y, at.z]);
+        Some(Vec3::new(v.x, v.y, v.z))
+    }
+
     /// Where a ball of `radius` moving from `from` along `direction` first
     /// touches something — Unity's `SphereCast`: will a body this wide fit
     /// through, where does a thrown thing land. Triggers are looked

@@ -169,6 +169,10 @@ pub mod player_loop {
             .add(Phase::PostLateUpdate, "soft_look", crate::soft::show);
         #[cfg(feature = "destruction")]
         player_loop.add(Phase::PostLateUpdate, "dents_look", crate::destruction::show);
+        #[cfg(feature = "fluid")]
+        player_loop
+            .add(Phase::FixedUpdate, "fluid", crate::fluid::step)
+            .add(Phase::PostLateUpdate, "fluid_look", crate::fluid::show);
         runity_render::systems(&mut player_loop);
         player_loop
     }
@@ -183,6 +187,9 @@ pub mod player_loop {
             let mut fixed = vec!["routes", "motion", "animation", "hierarchy"];
             if cfg!(feature = "soft") {
                 fixed.push("soft");
+            }
+            if cfg!(feature = "fluid") {
+                fixed.push("fluid");
             }
             assert_eq!(player_loop.names(Phase::FixedUpdate), fixed);
             assert_eq!(player_loop.names(Phase::LateUpdate), ["cameras"]);
@@ -200,7 +207,7 @@ pub mod modules {
     /// `default-features = false`: `default` in its Cargo.toml, less what
     /// is not a module's (a render pass's, as `ray-tracing`).
     pub const DEFAULT_FEATURES: &[&str] = &[
-        "animation", "destruction", "dialogue", "input", "navigation", "net", "physics", "routes", "soft", "spline",
+        "animation", "destruction", "dialogue", "fluid", "input", "navigation", "net", "physics", "routes", "soft", "spline",
     ];
 
     /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,
@@ -245,6 +252,7 @@ pub mod modules {
         include_str!("../../runity-shell/module.ron"),
         include_str!("../../runity-soft/module.ron"),
         include_str!("../../runity-destruction/module.ron"),
+        include_str!("../../runity-fluid/module.ron"),
         ]
         .iter()
         .map(|text| Manifest::parse(text).expect("an official module's manifest reads"))
@@ -277,6 +285,7 @@ pub mod modules {
             "dialogue" => cfg!(feature = "dialogue"),
             "soft" => cfg!(feature = "soft"),
             "destruction" => cfg!(feature = "destruction"),
+            "fluid" => cfg!(feature = "fluid"),
             _ => false,
         }
     }
@@ -384,9 +393,11 @@ pub mod scene {
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{Cloth, Hair, Jiggle, Rope, RopeKind, SoftBody};
+    pub use crate::soft::{Cloth, Fluid, Hair, Jiggle, Rope, RopeKind, SoftBody};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{Dents, Fracture};
+    #[cfg(feature = "fluid")]
+    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater};
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -409,6 +420,8 @@ pub mod scene {
         kinds.extend(crate::soft::part_kinds());
         #[cfg(feature = "destruction")]
         kinds.extend(crate::destruction::part_kinds());
+        #[cfg(feature = "fluid")]
+        kinds.extend(crate::fluid::part_kinds());
         kinds
     }
 }
@@ -430,9 +443,11 @@ pub mod prelude {
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{ClothLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
+    pub use crate::soft::{ClothLine, FluidLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{DentsLine, FractureLine};
+    #[cfg(feature = "fluid")]
+    pub use crate::fluid::{FloatsLine, HeightfieldLine, MpmLine, OceanLine};
 }
 pub use runity_overlay::screen;
 pub use runity_core::shape;
@@ -440,6 +455,8 @@ pub use runity_core::shape;
 pub mod soft;
 #[cfg(feature = "destruction")]
 pub mod destruction;
+#[cfg(feature = "fluid")]
+pub mod fluid;
 #[cfg(feature = "desktop-shell")]
 pub use runity_shell::shell;
 pub use runity_core::spelling;

@@ -20,6 +20,7 @@ members = [
     "crates/runity-dialogue",
     "crates/runity-discord",
     "crates/runity-editor",
+    "crates/runity-fluid",
     "crates/runity-geometry",
     "crates/runity-gpu",
     "crates/runity-import",

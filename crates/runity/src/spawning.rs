@@ -17,8 +17,13 @@ pub fn dressers<'a>(
     palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Box<dyn Dress + 'a>> {
     let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
+    #[cfg(feature = "fluid")]
+    let cube = resolve(&crate::AssetLink::named("builtin:cube"));
     #[cfg(feature = "soft")]
-    let link = resolve(&crate::AssetLink::named("builtin:link"));
+    let (link, sphere) = (
+        resolve(&crate::AssetLink::named("builtin:link")),
+        resolve(&crate::AssetLink::named("builtin:sphere")),
+    );
     #[cfg(feature = "physics")]
     out.push(Box::new(crate::physics::PhysicsDress));
     #[cfg(feature = "animation")]
@@ -33,7 +38,16 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::soft::HairDress));
         out.push(Box::new(crate::soft::SoftBodyDress));
         out.push(Box::new(crate::soft::JiggleDress));
-        out.push(Box::new(crate::soft::SoftLookDress { link, palette }));
+        out.push(Box::new(crate::soft::FluidDress));
+        out.push(Box::new(crate::soft::SoftLookDress { link, sphere, palette }));
+    }
+    #[cfg(feature = "fluid")]
+    {
+        out.push(Box::new(crate::fluid::MpmDress));
+        out.push(Box::new(crate::fluid::HeightfieldDress));
+        out.push(Box::new(crate::fluid::OceanDress));
+        out.push(Box::new(crate::fluid::FloatsDress));
+        out.push(Box::new(crate::fluid::FluidLookDress { cube, palette }));
     }
     #[cfg(feature = "destruction")]
     {
@@ -88,6 +102,8 @@ fn blow(scene: &Scene, world: &mut World) {
     {
         use crate::prelude::SceneLook;
         crate::soft::set_wind(world, scene.wind().unwrap_or_default());
+        #[cfg(feature = "fluid")]
+        crate::fluid::set_wind(world, scene.wind().unwrap_or_default());
     }
     #[cfg(not(feature = "soft"))]
     let _ = (scene, world);

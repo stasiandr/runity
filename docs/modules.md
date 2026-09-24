@@ -22,7 +22,8 @@ NEXT_STEPS.
 | `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
 | `runity-navigation` | сетка проходимости и A* | physics |
 | `runity-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
-| `runity-soft` | `rope`, `cloth`, `hair`: верёвки, цепи, ткань и волосы на XPBD (docs/simulation.md) | ядро, geometry |
+| `runity-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
+| `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`: верёвки, ткань, волосы, мягкие тела, PBF/SPH (docs/simulation.md) | ядро, geometry |
 | `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
 | `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
 | `runity-gpu` | устройство, поверхность, offscreen | — |

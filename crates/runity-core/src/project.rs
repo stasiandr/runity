@@ -793,6 +793,10 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     profile.time("spin", || systems::spin::run(world, seconds));
     // The modules' systems of the fixed step (`runity::player_loop`).
     modules.run(Phase::FixedUpdate, world, seconds, Some(profile));
+    // @fluid {
+    // What floats is held up by the water under it, for the coming step.
+    runity::fluid::float(world, physics);
+    // @fluid }
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));

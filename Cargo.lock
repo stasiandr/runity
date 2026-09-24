@@ -3054,6 +3054,7 @@ dependencies = [
  "runity-destruction",
  "runity-dialogue",
  "runity-discord",
+ "runity-fluid",
  "runity-geometry",
  "runity-gpu",
  "runity-input",
@@ -3163,6 +3164,19 @@ dependencies = [
  "runity-import",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "runity-fluid"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "runity-soft",
+ "serde",
 ]
 
 [[package]]
