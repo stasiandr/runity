@@ -6,11 +6,15 @@
 //! no copy. Events come through the engine's own translation
 //! (`runity::shell::translate`), in physical pixels, and go on to the studio
 //! in logical ones.
+//!
+//! On macOS the menus are the system's menu bar (`crate::native_menu`); a
+//! line chosen there comes back as a user event, and a key that chose one
+//! goes on to the studio as that key.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use runity::input::InputEvent;
+use runity::input::{InputEvent, Key};
 use runity::surface::{Surface, SurfaceError};
 use runity_ui::render::UiRenderer;
 use winit::application::ApplicationHandler;
@@ -19,6 +23,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
+use crate::native_menu::Chosen;
 use crate::studio::Studio;
 
 struct Running {
@@ -70,6 +75,14 @@ struct App {
     floats: Vec<FloatWindow>,
     /// Closing over unsaved work asks once, in the Console.
     close_asked: bool,
+    /// Keys a menu of the menu bar took and handed on: let go after the
+    /// frame that saw them pressed.
+    keys_up: Vec<Key>,
+    /// The system's menu bar, and where it sends what is chosen.
+    #[cfg(target_os = "macos")]
+    menu: Option<crate::native_menu::mac::MenuBar>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    proxy: winit::event_loop::EventLoopProxy<Chosen>,
     /// When the next frame is due. Vsync paces a visible window; this
     /// paces one that is hidden or on a display that does not, which
     /// would otherwise draw as fast as the GPU goes for nobody.
@@ -82,7 +95,53 @@ const IDLE: Duration = Duration::from_millis(242);
 /// The most frames a second the editor draws.
 const FRAME: Duration = Duration::from_micros(1_000_000 / 120);
 
-impl ApplicationHandler for App {
+impl App {
+    /// The window asked to close, by its button or by Quit: over unsaved
+    /// work, once more first.
+    fn close(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(run) = self.running.as_mut() {
+            if run.studio.session.is_modified() && !self.close_asked {
+                self.close_asked = true;
+                run.studio.session.say(
+                    runity_editor::console::Level::Warning,
+                    "unsaved changes: save first (Ctrl/Cmd S), or close again to discard them",
+                );
+                run.studio.refresh();
+                run.window.request_redraw();
+                return;
+            }
+        }
+        event_loop.exit();
+    }
+}
+
+impl ApplicationHandler<Chosen> for App {
+    /// A line of the system's menu bar.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, chosen: Chosen) {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::native_menu::mac::Asked;
+            let Some(asked) = self.menu.as_ref().and_then(|m| m.asked(&chosen)) else {
+                return;
+            };
+            let Some(run) = self.running.as_mut() else {
+                return;
+            };
+            match asked {
+                Asked::Quit => return self.close(event_loop),
+                // The key's own way: the studio answers keys (see
+                // `native_menu`), a field first.
+                Asked::Key(shortcut) => {
+                    run.studio.handle(&InputEvent::KeyDown(shortcut.key));
+                    self.keys_up.push(shortcut.key);
+                }
+                Asked::Run(action) => run.studio.run(action),
+            }
+            run.window.request_redraw();
+        }
+    }
+
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let Some(run) = self.running.as_ref() else {
             return;
@@ -136,6 +195,20 @@ impl ApplicationHandler for App {
             size.height as f32 / scale,
             scale,
         );
+        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let mut studio = studio;
+        #[cfg(target_os = "macos")]
+        {
+            // After launch, or winit's own menu would replace it.
+            self.menu = Some(crate::native_menu::mac::MenuBar::install());
+            let proxy = std::sync::Mutex::new(self.proxy.clone());
+            crate::native_menu::mac::listen(move |chosen| {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(chosen);
+                }
+            });
+            studio.set_native_menu(true);
+        }
         let renderer = studio.renderer(surface.format());
         window.request_redraw();
         self.running = Some(Running {
@@ -161,19 +234,7 @@ impl ApplicationHandler for App {
             return;
         }
         match &event {
-            WindowEvent::CloseRequested => {
-                if run.studio.session.is_modified() && !self.close_asked {
-                    self.close_asked = true;
-                    run.studio.session.say(
-                        runity_editor::console::Level::Warning,
-                        "unsaved changes: save first (Ctrl/Cmd S), or close again to discard them",
-                    );
-                    run.studio.refresh();
-                    return;
-                }
-                event_loop.exit();
-                return;
-            }
+            WindowEvent::CloseRequested => return self.close(event_loop),
             WindowEvent::Resized(size) => {
                 run.surface
                     .resize(run.studio.session.gpu(), size.width, size.height);
@@ -206,6 +267,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 run.studio.frame();
+                for key in self.keys_up.drain(..) {
+                    run.studio.handle(&InputEvent::KeyUp(key));
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(menu) = &mut self.menu {
+                    menu.refresh(&run.studio);
+                }
                 let cursor = match run.studio.cursor() {
                     crate::studio::Cursor::Default => winit::window::CursorIcon::Default,
                     crate::studio::Cursor::Text => winit::window::CursorIcon::Text,
@@ -232,6 +300,13 @@ impl ApplicationHandler for App {
                 let title = run.studio.title();
                 if title != run.title {
                     run.window.set_title(&title);
+                    // The dot in the close button, as a Mac document has.
+                    #[cfg(target_os = "macos")]
+                    {
+                        use winit::platform::macos::WindowExtMacOS;
+                        run.window
+                            .set_document_edited(run.studio.session.is_modified());
+                    }
                     run.title = title;
                 }
                 let gpu = run.studio.session.gpu();
@@ -350,7 +425,14 @@ fn float_event(run: &mut Running, float: &mut FloatWindow, event: &WindowEvent) 
 
 /// Open the window over `session` and run until it closes.
 pub fn run(session: runity_editor::Session, title: String) {
-    let event_loop = match EventLoop::new() {
+    let mut builder = EventLoop::<Chosen>::with_user_event();
+    // The menu bar is ours (`crate::native_menu`), not winit's default.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        builder.with_default_menu(false);
+    }
+    let event_loop = match builder.build() {
         Ok(l) => l,
         Err(e) => {
             eprintln!("no event loop: {e}");
@@ -362,8 +444,13 @@ pub fn run(session: runity_editor::Session, title: String) {
         running: None,
         floats: Vec::new(),
         close_asked: false,
+        keys_up: Vec::new(),
+        #[cfg(target_os = "macos")]
+        menu: None,
+        proxy: event_loop.create_proxy(),
         next: Instant::now(),
     };
+
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("{e}");
     }

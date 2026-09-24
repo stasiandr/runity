@@ -9,12 +9,19 @@
 //!
 //! Skipped, not failed, where there is no GPU to render the scene with.
 
+use runity::input::{InputEvent, Key, MouseButton};
 #[allow(unused_imports)]
 use runity::prelude::*;
-use runity::input::{InputEvent, Key, MouseButton};
 use runity_studio::Studio;
 
 fn studio() -> Option<(Studio, std::path::PathBuf)> {
+    // The person's colours: an empty folder of the tests' own, never the
+    // real one — whatever someone chose, the tests see Nocturne.
+    static CONFIG: std::sync::Once = std::sync::Once::new();
+    CONFIG.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("runity-studio-config-{}", std::process::id()));
+        std::env::set_var(runity_studio::appearance::CONFIG_DIR_VAR, dir);
+    });
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/valley");
     // A number of its own as well: two tests starting in the same
     // nanosecond must not share a folder and delete each other's files.
@@ -91,6 +98,7 @@ fn double_click(studio: &mut Studio, name: &str) {
         .ui
         .find(name)
         .unwrap_or_else(|| panic!("no node {name:?} in\n{}", studio.ui.dump()));
+    scroll_into_view(studio, node);
     let (x, y) = studio.ui.rect(node).center();
     studio.handle(&InputEvent::MouseMoved { x, y });
     for _ in 0..2 {
@@ -100,12 +108,26 @@ fn double_click(studio: &mut Studio, name: &str) {
     studio.frame();
 }
 
+/// Scroll every list `node` is in until it shows, as a person scrolls to
+/// what they are about to click.
+fn scroll_into_view(studio: &mut Studio, node: runity_ui::NodeId) {
+    let mut at = studio.ui.parent(node);
+    while let Some(list) = at {
+        if studio.ui.style(list).look.clip {
+            studio.ui.scroll_to(list, node);
+        }
+        at = studio.ui.parent(list);
+    }
+    studio.ui.paint();
+}
+
 fn press(studio: &mut Studio, name: &str, button: MouseButton) {
     studio.ui.paint();
     let node = studio
         .ui
         .find(name)
         .unwrap_or_else(|| panic!("no node {name:?} in\n{}", studio.ui.dump()));
+    scroll_into_view(studio, node);
     let (x, y) = studio.ui.rect(node).center();
     studio.handle(&InputEvent::MouseMoved { x, y });
     studio.handle(&InputEvent::MouseDown(button));
@@ -221,6 +243,200 @@ fn keys_after_a_line_act_on_it_in_the_scene() {
     assert_eq!(s.session.tool(), runity::gizmo::Tool::Rotate);
     click(&mut s, "tool Scale");
     assert_eq!(s.session.tool(), runity::gizmo::Tool::Scale);
+}
+
+/// Whether a pointer at the node's middle would reach it: shown, and on
+/// top.
+fn clickable(s: &mut Studio, name: &str) -> bool {
+    s.ui.paint();
+    let node = s.ui.find(name).unwrap();
+    let (x, y) = s.ui.rect(node).center();
+    s.ui.hit(x, y) == Some(node)
+}
+
+/// The glyph's colour of a tool strip button: the accent when it is the
+/// tool.
+fn tool_lit(s: &Studio, name: &str) -> bool {
+    let button = s.ui.find(name).unwrap();
+    let glyph = s.ui.children(button)[0];
+    s.ui.style(glyph).text.color == runity_studio::theme::ACCENT
+}
+
+#[test]
+fn the_tool_strip_in_the_view_and_q_w_e_r() {
+    use runity::gizmo::Tool;
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    // In the Scene view's corner, not the toolbar.
+    s.ui.paint();
+    let strip = s.ui.rect(s.ui.find("tools").expect("the tool strip"));
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    assert!(
+        view.contains(strip.x + 1.0, strip.y + 1.0),
+        "{strip:?} in {view:?}"
+    );
+    assert!(tool_lit(&s, "tool Move") && !tool_lit(&s, "tool Hand"));
+
+    click(&mut s, "tool Hand");
+    assert!(s.session.hand());
+    assert!(tool_lit(&s, "tool Hand") && !tool_lit(&s, "tool Move"));
+    click(&mut s, "tool Rotate");
+    assert!(!s.session.hand());
+    assert_eq!(s.session.tool(), Tool::Rotate);
+    assert!(tool_lit(&s, "tool Rotate") && !tool_lit(&s, "tool Hand"));
+
+    // The keys, with the view holding the keyboard.
+    for (k, tool) in [
+        (Key::W, Tool::Move),
+        (Key::R, Tool::Scale),
+        (Key::E, Tool::Rotate),
+    ] {
+        key(&mut s, k);
+        assert_eq!(s.session.tool(), tool);
+        assert!(!s.session.hand());
+    }
+    key(&mut s, Key::Q);
+    assert!(s.session.hand());
+    assert!(tool_lit(&s, "tool Hand") && !tool_lit(&s, "tool Rotate"));
+
+    // The Game view has no tools.
+    assert!(clickable(&mut s, "tool Move"));
+    click(&mut s, "view game");
+    assert!(!clickable(&mut s, "tool Move"));
+}
+
+#[test]
+fn the_views_bar_says_pivot_or_center_global_or_local_and_the_grid() {
+    use runity_editor::{Pivot, Space};
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let word = |s: &Studio, name: &str| {
+        let b = s.ui.find(name).unwrap();
+        s.ui.text(s.ui.children(b)[0]).unwrap().to_string()
+    };
+    let pivot = s.session.pivot();
+    let space = s.session.space();
+    click(&mut s, "handles at");
+    assert_ne!(s.session.pivot(), pivot);
+    let expect = |p| {
+        if p == Pivot::Center {
+            "Center"
+        } else {
+            "Pivot"
+        }
+    };
+    assert_eq!(word(&s, "handles at"), expect(s.session.pivot()));
+    click(&mut s, "handles along");
+    assert_ne!(s.session.space(), space);
+    let expect = |p| if p == Space::Local { "Local" } else { "Global" };
+    assert_eq!(word(&s, "handles along"), expect(s.session.space()));
+    // Z says it too, and the word follows.
+    key(&mut s, Key::Z);
+    assert_eq!(s.session.pivot(), pivot);
+    assert_eq!(
+        word(&s, "handles at"),
+        if pivot == Pivot::Center {
+            "Center"
+        } else {
+            "Pivot"
+        }
+    );
+
+    let grid = s.session.show_grid();
+    click(&mut s, "grid");
+    assert_ne!(s.session.show_grid(), grid);
+    // No icon buttons for these on the toolbar any more.
+    assert!(s.ui.find("space").is_none() && s.ui.find("pivot").is_none());
+}
+
+#[test]
+fn the_status_bar_shows_the_consoles_newest_line() {
+    use runity_editor::console::Level;
+    use runity_studio::theme::{ERROR, WARNING};
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let line = |s: &mut Studio| {
+        s.frame();
+        let n = s.ui.find("status console line").unwrap();
+        (s.ui.text(n).unwrap().to_string(), s.ui.style(n).text.color)
+    };
+    s.session.say(Level::Warning, "no ground under crate");
+    assert_eq!(line(&mut s), ("no ground under crate".into(), WARNING));
+    s.session.say(Level::Error, "shader: line 3\nand the rest");
+    assert_eq!(line(&mut s), ("shader: line 3".into(), ERROR), "one line");
+    // A repeat of an older line is the newest again.
+    s.session.say(Level::Warning, "no ground under crate");
+    assert_eq!(line(&mut s).0, "no ground under crate");
+    // Long: cut to the room there is.
+    s.session.say(Level::Info, "x".repeat(2000));
+    let (shown, _) = line(&mut s);
+    assert!(
+        shown.ends_with('…') && shown.chars().count() < 400,
+        "{}",
+        shown.len()
+    );
+
+    click(&mut s, "tab settings");
+    click(&mut s, "status console");
+    s.ui.paint();
+    assert!(
+        s.ui.rect(s.ui.find("console lines").unwrap()).width > 0.0,
+        "the click shows the Console"
+    );
+    s.session.clear_console();
+    assert_eq!(line(&mut s).0, "");
+}
+
+#[test]
+fn the_title_is_scene_project_editor_with_a_dot_while_unsaved() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert_eq!(s.title(), "first-light — valley — runity");
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    assert_eq!(s.title(), "• first-light — valley — runity");
+}
+
+#[test]
+fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
+    use runity_studio::menu::Action;
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    // Headless, the toolbar draws them.
+    assert!(!s.native_menu());
+    assert!(clickable(&mut s, "menu bar Edit"));
+
+    let undo = Action::Editor("undo");
+    assert!(!s.menu_state(&undo, "Undo").enabled);
+    let revision = s.menu_revision();
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    let state = s.menu_state(&undo, "Undo");
+    assert!(state.enabled);
+    assert!(state.label.starts_with("Undo "), "{}", state.label);
+    assert_ne!(s.menu_revision(), revision, "the menu bar knows to look");
+    let revision = s.menu_revision();
+    s.frame();
+    assert_eq!(s.menu_revision(), revision, "and not every frame");
+    let grid = s.menu_state(&Action::ToggleGrid, "Grid").checked;
+    s.run(Action::ToggleGrid);
+    assert_ne!(s.menu_state(&Action::ToggleGrid, "Grid").checked, grid);
+
+    // The system's menus: none in the toolbar, the play buttons stay.
+    s.set_native_menu(true);
+    assert!(!clickable(&mut s, "menu bar Edit"));
+    assert!(clickable(&mut s, "play"));
+    s.set_native_menu(false);
+    menu(&mut s, "Entity", "Cube");
+    assert!(
+        s.session.selected().is_some(),
+        "the toolbar's menu works again"
+    );
 }
 
 #[test]
@@ -447,7 +663,10 @@ fn a_colour_typed_or_slid_paints_the_selection() {
         s.frame();
     }
     let m = s.session.material(crate_id).unwrap();
-    assert!(m.base_color.iter().all(|c| *c < 0.01), "black while held: {m:?}");
+    assert!(
+        m.base_color.iter().all(|c| *c < 0.01),
+        "black while held: {m:?}"
+    );
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
     assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
@@ -1016,9 +1235,9 @@ fn play_pause_and_step_stand_in_the_middle_of_the_window() {
     s.resize(1100.0, 800.0, 1.0);
     s.frame();
     s.ui.paint();
-    let grid = s.ui.rect(s.ui.find("grid").unwrap());
+    let last = s.ui.rect(s.ui.find("menu bar Play").unwrap());
     let play = s.ui.rect(s.ui.find("play").unwrap());
-    assert!(play.x > grid.x + grid.width, "{play:?} clear of {grid:?}");
+    assert!(play.x > last.x + last.width, "{play:?} clear of {last:?}");
 }
 
 #[test]
@@ -1039,7 +1258,7 @@ fn the_hierarchy_collapses_and_expands_every_line_at_once() {
 fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();
-    // Line → [arrow, icon, name, tag, tools[eye, lock], dot].
+    // Line → [arrow, icon, name, tag, tools[eye, lock], dot, open].
     let tools = |s: &Studio, name: &str| -> (f32, f32) {
         let line = s.ui.find(name).unwrap();
         let tools = s.ui.children(s.ui.children(line)[4]);
@@ -1098,7 +1317,7 @@ fn debug_mode_edits_the_entity_as_its_ron_on_several_lines() {
     let crate_id = s.session.find("crate").unwrap();
     click(&mut s, "line crate");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Debug");
+    click(&mut s, "menu Debug");
     // The whole block, as the file writes it, and no field rows.
     let ron = s.ui.find("inspector ron").expect("one box");
     assert_eq!(s.ui.text(ron).unwrap(), s.session.entity_ron(crate_id).unwrap());
@@ -2193,7 +2412,6 @@ fn a_field_that_differs_has_a_reset_arrow_and_search_narrows_the_inspector() {
         runity::glam::Vec3::ONE
     );
     assert!(s.ui.find("reset scale").is_none(), "and the arrow goes");
-
 }
 
 #[test]
@@ -2541,18 +2759,27 @@ fn the_inspector_scrubs_adds_takes_away_and_switches_off() {
     let steps = s.session.undo_steps().len();
     s.ui.paint();
     let handle = s.ui.rect(s.ui.find("scrub position x").unwrap());
-    let (hx, hy) = (handle.x + handle.width / 2.0, handle.y + handle.height / 2.0);
+    let (hx, hy) = (
+        handle.x + handle.width / 2.0,
+        handle.y + handle.height / 2.0,
+    );
     s.handle(&InputEvent::MouseMoved { x: hx, y: hy });
     s.handle(&InputEvent::MouseDown(MouseButton::Left));
     s.frame();
     for i in 1..=10 {
-        s.handle(&InputEvent::MouseMoved { x: hx + i as f32 * 10.0, y: hy });
+        s.handle(&InputEvent::MouseMoved {
+            x: hx + i as f32 * 10.0,
+            y: hy,
+        });
         s.frame();
     }
     let moved = s.session.transform(crate_id).unwrap().position.x;
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
-    assert!((moved - x - 1.0).abs() < 0.05, "{x} → {moved}, as it is dragged");
+    assert!(
+        (moved - x - 1.0).abs() < 0.05,
+        "{x} → {moved}, as it is dragged"
+    );
     assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
 
     // A light from Add Component's search, then the trash takes it away.
@@ -2704,7 +2931,7 @@ fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
     };
     assert!(s.ui.find("inspector ron").is_none(), "no RON outside Debug mode");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Debug");
+    click(&mut s, "menu Debug");
     let ron = s.ui.find("inspector ron").expect("the settings as one box");
     let text = s.ui.text(ron).unwrap().to_string();
     assert!(text.contains("sun:") && text.contains("fog:"), "{text}");
@@ -2712,7 +2939,7 @@ fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
     assert!(s.ui.find("scene fog start").is_none(), "no field rows");
     assert!(s.session.inspector_debug(), "remembered");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Normal");
+    click(&mut s, "menu Normal");
     assert!(s.ui.find("inspector ron").is_none());
     assert!(s.ui.find("scene fog start").is_some());
 }
@@ -3030,4 +3257,649 @@ fn a_bone_is_picked_from_the_parents_skeleton() {
     assert!(s.ui.find(&format!("object {first}")).is_some(), "the skeleton's bones: {bones:?}\n{}", s.ui.dump().lines().filter(|l| l.contains("object")).collect::<Vec<_>>().join("\n"));
     click(&mut s, &format!("object {first}"));
     assert_eq!(&field_value(&s, flag, "bone"), first);
+}
+
+#[test]
+fn the_plus_opens_the_create_menu_and_a_cube_lands_at_the_top() {
+    let Some((mut s, _dir)) = studio() else { return };
+    // With a line selected: Unity's `+` still makes at the top level.
+    click(&mut s, "line crate");
+    click(&mut s, "hierarchy create");
+    assert!(s.ui.find("menu Cube").is_some(), "{}", s.ui.dump());
+    let before = s.session.entity_count();
+    click(&mut s, "menu Cube");
+    assert_eq!(s.session.entity_count(), before + 1);
+    let cube = s.session.selected().expect("the new cube is selected");
+    let row = s.session.hierarchy().into_iter().find(|r| r.id == cube).unwrap();
+    assert_eq!(row.depth, 0, "at the top, not under the crate");
+}
+
+#[test]
+fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
+    let Some((mut s, dir)) = studio() else { return };
+    s.ui.paint();
+    let name = s.ui.find("hierarchy scene name").unwrap();
+    assert_eq!(s.ui.text(name), Some("first-light"));
+    assert_eq!(s.ui.style(name).text.weight, 600, "bold");
+    let scene = s.ui.rect(s.ui.find("hierarchy scene").unwrap());
+    let first = s.ui.rect(s.ui.find("line crate").unwrap());
+    assert!(scene.y < first.y, "above every entity");
+    // Entity lines stand one step in from it.
+    let arrow = |s: &Studio, n: &str| s.ui.rect(s.ui.children(s.ui.find(n).unwrap())[0]).x;
+    assert!(arrow(&s, "line crate") > arrow(&s, "hierarchy scene") + 10.0);
+    // Not an entity: a click on it selects nothing.
+    click(&mut s, "line crate");
+    click(&mut s, "hierarchy scene");
+    assert!(s.session.selection().is_empty());
+
+    // An edit: the name says it is unsaved.
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.rename(crate_id, "box").unwrap();
+    s.refresh();
+    s.frame();
+    assert_eq!(s.ui.text(name), Some("first-light*"));
+
+    click(&mut s, "hierarchy scene menu");
+    for entry in [
+        "Save Scene",
+        "Save Scene As…",
+        "Show in Project",
+        "Reload from Disk",
+        "Add Scene (multi-scene — later)",
+    ] {
+        assert!(s.ui.find(&format!("menu {entry}")).is_some(), "no {entry}");
+    }
+    // What is coming does nothing yet.
+    click(&mut s, "menu Add Scene (multi-scene — later)");
+    assert!(s.ui.find("menu Save Scene").is_none(), "the menu closed");
+
+    // Reload from disk: the file's crate is back, and undo takes it away.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Reload from Disk");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    assert!(!s.session.is_modified());
+    click(&mut s, "undo");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("box"));
+
+    // Save: the file has it.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Save Scene");
+    assert!(!s.session.is_modified());
+    let text = std::fs::read_to_string(dir.join("scenes/first-light.ron")).unwrap();
+    assert!(text.contains("\"box\""));
+    assert_eq!(s.ui.text(name), Some("first-light"));
+
+    // Show in Project: the Project comes up.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Show in Project");
+    s.ui.paint();
+    assert!(s.ui.rect(s.ui.find("project search").unwrap()).width > 0.0);
+}
+
+#[test]
+fn an_instance_opens_its_prefab_by_the_arrow_at_its_end() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.rename(fire, "fire instance").unwrap();
+    s.refresh();
+    s.frame();
+    s.ui.paint();
+    let open = s.ui.find("open fire instance").unwrap();
+    assert_eq!(s.ui.style(open).look.opacity, 0.0, "quiet until hovered");
+    let plain = s.ui.find("open crate").unwrap();
+    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has none");
+    let (x, y) = s.ui.rect(s.ui.find("line fire instance").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(s.ui.style(open).look.opacity, 1.0, "under the pointer");
+    click(&mut s, "open fire instance");
+    assert!(s.session.is_prefab(), "prefab mode");
+    // The first line is the prefab now.
+    let name = s.ui.find("hierarchy scene name").unwrap();
+    assert_eq!(s.ui.text(name), Some("campfire"));
+}
+
+#[test]
+fn inactive_lines_are_greyed_and_instances_are_in_the_accent() {
+    let Some((mut s, _dir)) = studio() else { return };
+    use runity_studio::theme::{ACCENT, TEXT};
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.set_field(crate_id, "inactive", "true").unwrap();
+    s.refresh();
+    s.frame();
+    // Line → [arrow, icon, name, …].
+    let part = |s: &Studio, line: &str, i: usize| s.ui.children(s.ui.find(line).unwrap())[i];
+    let name = part(&s, "line crate", 2);
+    assert!(s.ui.style(name).look.opacity < 0.6, "greyed");
+    assert!(s.ui.style(part(&s, "line crate", 1)).look.opacity < 0.6);
+    assert_eq!(s.ui.style(part(&s, "line boulder", 2)).look.opacity, 1.0);
+    // An instance: its icon and name in the accent, its parts paler, a
+    // plain line plain.
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.rename(fire, "fire instance").unwrap();
+    s.session.set_open(fire, true);
+    s.refresh();
+    s.frame();
+    assert_eq!(s.ui.style(part(&s, "line fire instance", 2)).text.color, ACCENT);
+    assert_eq!(s.ui.style(part(&s, "line fire instance", 1)).text.color, ACCENT);
+    let rows = s.session.hierarchy();
+    let i = rows.iter().position(|r| r.part).expect("the instance's parts show");
+    let lines = s.ui.children(s.ui.find("hierarchy lines").unwrap());
+    let ember = s.ui.style(s.ui.children(lines[i])[2]).text.color;
+    assert!(ember != ACCENT && ember != TEXT, "a part: a paler accent");
+    assert_eq!(s.ui.style(part(&s, "line boulder", 2)).text.color, TEXT);
+    // An instance's own `inactive` is its line's: greyed too.
+    s.session.set_field(fire, "inactive", "true").unwrap();
+    s.refresh();
+    s.frame();
+    assert!(s.ui.style(part(&s, "line fire instance", 2)).look.opacity < 0.6);
+    s.session.undo().unwrap();
+    s.refresh();
+    s.frame();
+    // Selected, it reads as selected, not as the accent on the accent.
+    click(&mut s, "line fire instance");
+    assert_ne!(s.ui.style(part(&s, "line fire instance", 2)).text.color, ACCENT);
+}
+
+#[test]
+fn a_line_dropped_on_the_scene_line_goes_to_the_top() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let (boulder, crate_id) = (
+        s.session.find("boulder").unwrap(),
+        s.session.find("crate").unwrap(),
+    );
+    s.session.reparent(boulder, Some(crate_id)).unwrap();
+    s.session.set_open(crate_id, true);
+    s.refresh();
+    s.frame();
+    let depth = |s: &Studio| {
+        s.session
+            .hierarchy()
+            .into_iter()
+            .find(|r| r.id == boulder)
+            .unwrap()
+            .depth
+    };
+    assert_eq!(depth(&s), 1);
+    drag_line(&mut s, "line boulder", "hierarchy scene", 0.5);
+    assert_eq!(depth(&s), 0, "unparented");
+}
+
+/// A second scene beside the first, so there is somewhere to go.
+fn second_scene(s: &mut Studio, dir: &std::path::Path) {
+    std::fs::copy(
+        dir.join("scenes/first-light.ron"),
+        dir.join("scenes/second.ron"),
+    )
+    .unwrap();
+    s.refresh();
+}
+
+#[test]
+fn one_column_shows_files_inside_folders_and_is_remembered() {
+    let Some((mut s, dir)) = studio() else { return };
+    second_scene(&mut s, &dir);
+    click(&mut s, "project one column");
+    s.ui.paint();
+    assert!(s.ui.find("folder line scenes").is_some(), "the folders as lines");
+    assert!(s.ui.find("folder tile scenes").is_none(), "no tiles behind it");
+    assert!(s.ui.find("asset first-light").is_none(), "shut until opened");
+    // Opened by its arrow: its files under it.
+    click(&mut s, "folder line arrow scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    // A double click on a scene's line opens it.
+    double_click(&mut s, "asset second");
+    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    // Remembered for the next run.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    drop(s);
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut again = Studio::new(session, 1440.0, 900.0, 1.0);
+    again.frame();
+    again.ui.paint();
+    assert!(again.ui.find("folder line scenes").is_some(), "one column again");
+}
+
+#[test]
+fn a_chosen_assets_path_is_under_the_project_and_leads_to_its_folder() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder scenes");
+    click(&mut s, "asset first-light");
+    let dump = s.ui.dump();
+    assert!(
+        dump.contains("\"scenes/\"") && dump.contains("\"first-light.ron\""),
+        "{dump}"
+    );
+    // The engine's own: under Built-in.
+    find_in_project(&mut s, "cube");
+    click(&mut s, "asset cube");
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"Built-in/\"") && dump.contains("\"cube\""));
+    // Its folder part goes there, out of the search.
+    click(&mut s, "project search");
+    s.handle(&InputEvent::KeyDown(Key::Escape));
+    s.frame();
+    click(&mut s, "asset path folder");
+    assert!(s.ui.find("crumb Built-in").is_some(), "in the engine's folder");
+}
+
+#[test]
+fn show_asset_goes_to_its_folder_and_chooses_it() {
+    let Some((mut s, _dir)) = studio() else { return };
+    assert!(s.show_in_project("scenes/first-light.ron"));
+    assert!(s.ui.find("crumb scenes").is_some(), "in its folder");
+    assert!(s.ui.dump().contains("\"first-light.ron\""), "chosen");
+    // By name, in one column: the tree opens down to it.
+    click(&mut s, "project one column");
+    assert!(s.show_in_project("cube"));
+    assert!(s.ui.find("asset cube").is_some());
+    assert!(s.ui.dump().contains("\"Built-in/\""));
+    assert!(!s.show_in_project("no such thing"));
+}
+
+#[test]
+fn the_arrows_walk_the_project_and_enter_opens() {
+    let Some((mut s, dir)) = studio() else { return };
+    second_scene(&mut s, &dir);
+    click(&mut s, "folder scenes");
+    click(&mut s, "asset first-light");
+    key(&mut s, Key::Right);
+    assert!(s.ui.dump().contains("\"second.ron\""), "the next tile");
+    key(&mut s, Key::Enter);
+    assert!(s.session.scene_path().unwrap().ends_with("second.ron"));
+    // F2 asks for its new name; Delete asks before deleting.
+    key(&mut s, Key::F2);
+    assert!(s.ui.find("dialog field").is_some(), "renaming");
+    click(&mut s, "dialog cancel");
+    click(&mut s, "asset first-light");
+    key(&mut s, Key::Delete);
+    assert!(s.ui.dump().contains("Delete scenes/first-light.ron"));
+    assert!(dir.join("scenes/first-light.ron").exists(), "only asked");
+    // In one column: right opens a folder, down goes into it.
+    key(&mut s, Key::Escape);
+    click(&mut s, "project one column");
+    click(&mut s, "folder line prefabs");
+    key(&mut s, Key::Right);
+    key(&mut s, Key::Down);
+    let dump = s.ui.dump();
+    assert!(dump.contains("\"prefabs/\""), "a prefab chosen: {dump}");
+}
+
+#[test]
+fn search_in_one_column_is_a_flat_list() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "project one column");
+    find_in_project(&mut s, "cube");
+    let dump = s.ui.dump();
+    assert!(dump.contains("#asset cube"), "found from the top");
+    assert!(!dump.contains("#folder line"), "no folders while searching");
+}
+
+#[test]
+fn the_project_grid_scrolls_with_the_wheel() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder Built-in");
+    s.ui.paint();
+    let grid = s.ui.find("project grid").unwrap();
+    let (x, y) = s.ui.rect(grid).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::Scroll { x: 0.0, y: -3.0 });
+    s.frame();
+    assert!(s.ui.scroll(grid) > 0.0, "scrolled");
+}
+
+/// Drag the tab named `tab` and let go at a point of the window.
+fn drag_tab_to(s: &mut Studio, tab: &str, x: f32, y: f32) {
+    s.ui.paint();
+    let (ax, ay) = s.ui.rect(s.ui.find(tab).unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 10.0,
+        y: ay + 10.0,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+}
+
+fn rect(s: &mut Studio, name: &str) -> runity_ui::Rect {
+    s.ui.paint();
+    let node = s
+        .ui
+        .find(name)
+        .unwrap_or_else(|| panic!("no node {name:?} in\n{}", s.ui.dump()));
+    s.ui.rect(node)
+}
+
+#[test]
+fn a_tab_dropped_on_an_edge_splits_the_stack_which_is_kept_and_folds_when_emptied() {
+    let Some((mut s, dir)) = studio() else { return };
+    // The Project onto the lower edge of the Hierarchy's stack: while it
+    // is held there, the lower half lights up.
+    let left = rect(&mut s, "stack 0");
+    let (x, y) = (left.x + left.width / 2.0, left.y + left.height - 30.0);
+    drag_tab_to(&mut s, "tab project", x, y);
+    let zone = rect(&mut s, "drop zone");
+    assert!(s.ui.is_shown(s.ui.find("drop zone").unwrap()), "the target lights up");
+    assert!(
+        (zone.y - (left.y + left.height / 2.0)).abs() < 2.0
+            && (zone.width - left.width).abs() < 2.0,
+        "the lower half of the stack: {zone:?} of {left:?}"
+    );
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    assert!(!s.ui.is_shown(s.ui.find("drop zone").unwrap()));
+
+    let top = rect(&mut s, "stack 0a");
+    let bottom = rect(&mut s, "stack 0b");
+    let dock0 = rect(&mut s, "dock 0");
+    let project = rect(&mut s, "project search");
+    assert!(bottom.contains(project.x + 1.0, project.y + 1.0), "the Project below");
+    let hierarchy = rect(&mut s, "tab hierarchy");
+    assert!(top.contains(hierarchy.x + 1.0, hierarchy.y + 1.0), "the Hierarchy above");
+    assert!(bottom.y > top.y + top.height && dock0.contains(bottom.x + 1.0, bottom.y + 1.0));
+    assert!(s.ui.find("divider 0").is_some(), "a bar between them");
+
+    // The bar drags: the Hierarchy gets taller.
+    let (bx, by) = rect(&mut s, "divider 0").center();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    for i in 1..=10 {
+        s.handle(&InputEvent::MouseMoved {
+            x: bx,
+            y: by + 6.0 * i as f32,
+        });
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let taller = rect(&mut s, "stack 0a").height;
+    assert!(taller > top.height + 40.0, "{} -> {taller}", top.height);
+
+    // Written down as a tree, and read back next run.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    let text = std::fs::read_to_string(dir.join(".runity/studio.ron")).unwrap();
+    assert!(text.contains("left: down("), "{text}");
+    drop(s);
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
+    s.frame();
+    let top = rect(&mut s, "stack 0a");
+    let bottom = rect(&mut s, "stack 0b");
+    let project = rect(&mut s, "project search");
+    assert!(bottom.contains(project.x + 1.0, project.y + 1.0), "still below");
+    assert!((top.height - taller).abs() < 2.0, "{} vs {taller}", top.height);
+
+    // Taken back under the view, the Project leaves the Hierarchy the
+    // whole column.
+    drag_tab(&mut s, "tab project", "stack 2");
+    assert!(s.ui.find("divider 0").is_none(), "the split is gone");
+    let whole = rect(&mut s, "stack 0");
+    let dock0 = rect(&mut s, "dock 0");
+    assert!(whole.height > dock0.height - 10.0, "{whole:?} in {dock0:?}");
+}
+
+#[test]
+fn tall_puts_the_project_under_the_hierarchy_and_the_console_under_the_view() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    let hierarchy = rect(&mut s, "hierarchy list");
+    let project = rect(&mut s, "project search");
+    assert!(
+        project.y > hierarchy.y && (project.x - hierarchy.x).abs() < 30.0,
+        "the Project under the Hierarchy: {project:?} {hierarchy:?}"
+    );
+    let dock0 = rect(&mut s, "dock 0");
+    assert!(dock0.height > 800.0, "the left column the window's height: {dock0:?}");
+    let view = rect(&mut s, "scene view");
+    let console = rect(&mut s, "console lines");
+    assert!(console.y > view.y + view.height, "the Console under the view");
+    assert!(
+        console.x >= view.x - 10.0 && console.x + console.width <= view.x + view.width + 10.0,
+        "and only under it: {console:?} {view:?}"
+    );
+    let inspector = rect(&mut s, "dock 1");
+    assert!(inspector.height > 800.0, "the Inspector the window's height");
+    let label = s.ui.children(s.ui.find("layout").unwrap())[0];
+    assert_eq!(s.ui.text(label), Some("Tall"));
+
+    // And the Window menu's Default puts them back.
+    menu(&mut s, "Window", "Layout: Default");
+    assert!(s.ui.find("stack 0a").is_none());
+    let lower = rect(&mut s, "dock 2");
+    let view = rect(&mut s, "scene view");
+    assert!(lower.y > view.y + view.height);
+    let project = rect(&mut s, "project search");
+    assert!(lower.contains(project.x + 1.0, project.y + 1.0), "the Project under the view");
+}
+
+#[test]
+fn a_layout_saved_under_a_name_is_listed_applied_and_deleted() {
+    let Some((mut s, dir)) = studio() else { return };
+    let config = dir.join("config");
+    s.set_config_dir(&config);
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    drag_tab(&mut s, "tab history", "stack 0a");
+    click(&mut s, "layout");
+    click(&mut s, "menu Save Layout As…");
+    answer(&mut s, "Mine");
+    let file = config.join("layouts/Mine.ron");
+    let text = std::fs::read_to_string(&file).expect("saved in the config folder");
+    assert!(text.contains("*history"), "{text}");
+    assert!(!text.contains("clear_on_play"), "a panel's option is not the layout's");
+
+    click(&mut s, "layout");
+    click(&mut s, "menu Default");
+    assert!(s.ui.find("stack 0a").is_none());
+    click(&mut s, "layout");
+    click(&mut s, "menu Mine");
+    let history = rect(&mut s, "tab history");
+    assert!(
+        rect(&mut s, "stack 0a").contains(history.x + 1.0, history.y + 1.0),
+        "as saved"
+    );
+    // The Window menu lists it too.
+    click(&mut s, "menu bar Window");
+    assert!(s.ui.find("menu Layout: Mine").is_some());
+    click(&mut s, "menu overlay");
+
+    click(&mut s, "layout");
+    click(&mut s, "menu Delete Layout…");
+    answer(&mut s, "Mine");
+    assert!(!file.exists(), "deleted");
+    click(&mut s, "layout");
+    assert!(s.ui.find("menu Mine").is_none(), "no longer listed");
+    assert!(s.ui.find("menu Tall").is_some());
+}
+
+#[test]
+fn the_consoles_menu_clears_it_when_play_starts() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "tab console");
+    assert!(
+        s.ui.find("console lock").is_none_or(|n| !s.ui.is_shown(n)),
+        "no padlock where it means nothing"
+    );
+    click(&mut s, "console more");
+    assert!(s.ui.find("menu Float in its own window").is_some(), "what every panel has");
+    assert!(s.ui.find("menu Close Tab").is_some());
+    click(&mut s, "menu Clear on Play");
+    s.session.say(runity_editor::console::Level::Info, "before play");
+    s.frame();
+    click(&mut s, "play");
+    assert!(
+        !s.session.console().iter().any(|l| l.text == "before play"),
+        "cleared: {:?}",
+        s.session.console()
+    );
+    click(&mut s, "play");
+    // Off again: the Console keeps what it had.
+    click(&mut s, "console more");
+    click(&mut s, "menu Clear on Play");
+    s.session.say(runity_editor::console::Level::Info, "kept");
+    click(&mut s, "play");
+    assert!(s.session.console().iter().any(|l| l.text == "kept"));
+    click(&mut s, "play");
+}
+
+#[test]
+fn a_maximized_stack_of_a_split_takes_the_window_and_gives_it_back() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    let before = rect(&mut s, "stack 0b");
+    pause_then_double_click(&mut s, "tab project");
+    let big = rect(&mut s, "stack 0b");
+    assert!(big.width > 1300.0 && big.height > 700.0, "{big:?}");
+    assert!(!s.ui.is_shown(s.ui.find("stack 0a").unwrap()), "the Hierarchy gave way");
+    assert!(!s.ui.is_shown(s.ui.find("scene view").unwrap()));
+    pause_then_double_click(&mut s, "tab project");
+    let back = rect(&mut s, "stack 0b");
+    assert!(
+        (back.height - before.height).abs() < 1.0 && (back.width - before.width).abs() < 1.0,
+        "{back:?} was {before:?}"
+    );
+    assert!(s.ui.is_shown(s.ui.find("stack 0a").unwrap()));
+    // Shift Space over it does the same.
+    let (x, y) = back.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    key(&mut s, Key::Space);
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    assert!(rect(&mut s, "stack 0b").width > 1300.0);
+}
+
+#[test]
+fn a_closed_tab_comes_back_from_the_window_menu() {
+    let Some((mut s, _dir)) = studio() else { return };
+    press(&mut s, "tab history", MouseButton::Right);
+    click(&mut s, "menu Close Tab");
+    assert!(s.ui.find("tab history").is_none());
+    menu(&mut s, "Window", "History");
+    assert!(s.ui.find("tab history").is_some());
+    assert!(s.ui.is_shown(s.ui.find("history").unwrap()), "on top");
+}
+
+/// A folder for one test's own colours, and the preset's colour of a token.
+fn my_colours(s: &mut Studio, dir: &std::path::Path) -> std::path::PathBuf {
+    let me = dir.join("me");
+    s.set_config_dir(me.clone());
+    me
+}
+
+/// Click on the Appearance page, scrolled to where the node is: the
+/// lower dock is short.
+fn click_page(s: &mut Studio, name: &str) {
+    s.ui.paint();
+    let page = s.ui.find("appearance").unwrap();
+    let node = s.ui.find(name).unwrap();
+    s.ui.scroll_to(page, node);
+    click(s, name);
+}
+
+fn preset_rgb(preset: &str, token: &str) -> [u8; 3] {
+    runity_studio::theme::preset(preset).unwrap().get(token)
+}
+
+fn drawn(s: &Studio, c: runity_ui::Color) -> [u8; 3] {
+    let t = s.ui.tint(c);
+    [t.r, t.g, t.b]
+}
+
+#[test]
+fn choosing_a_preset_recolours_the_built_tree() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    my_colours(&mut s, &dir);
+    // A panel's card, built before the choice.
+    let surface = runity_studio::theme::SURFACE;
+    let mut card = s.ui.find("tab inspector");
+    while let Some(n) = card {
+        if s.ui.style(n).look.background == surface {
+            break;
+        }
+        card = s.ui.parent(n);
+    }
+    let card = card.expect("a panel on the surface");
+    assert_eq!(drawn(&s, surface), [surface.r, surface.g, surface.b]);
+
+    click(&mut s, "tab settings");
+    let daylight = s.ui.find("theme daylight").unwrap();
+    click_page(&mut s, "theme daylight");
+    assert!(s.ui.exists(card), "not rebuilt");
+    assert_eq!(s.ui.find("theme daylight"), Some(daylight));
+    assert_eq!(
+        s.ui.style(card).look.background,
+        surface,
+        "the style as built"
+    );
+    assert_eq!(drawn(&s, surface), preset_rgb("daylight", "SURFACE"));
+    let want = preset_rgb("daylight", "SURFACE");
+    assert!(
+        s.ui.paint()
+            .iter()
+            .flat_map(|l| l.rects.iter())
+            .any(|r| [r.fill.r, r.fill.g, r.fill.b] == want),
+        "panels drawn in Daylight's surface"
+    );
+}
+
+#[test]
+fn the_choice_is_the_persons_and_a_new_editor_reads_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let me = my_colours(&mut s, &dir);
+    menu(&mut s, "View", "Theme › Graphite");
+    assert_eq!(s.theme().preset().name, "graphite");
+    let file = std::fs::read_to_string(me.join(runity_studio::appearance::FILE)).unwrap();
+    assert!(file.contains("\"graphite\""), "{file}");
+
+    let Some((mut again, dir2)) = studio() else {
+        return;
+    };
+    assert_eq!(again.theme().preset().name, "nocturne", "another folder");
+    again.set_config_dir(me);
+    assert_eq!(again.theme().preset().name, "graphite");
+    assert_eq!(
+        drawn(&again, runity_studio::theme::BG),
+        preset_rgb("graphite", "BG")
+    );
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[test]
+fn a_custom_accent_recolours_the_accent_and_its_ramp() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let me = my_colours(&mut s, &dir);
+    click(&mut s, "tab settings");
+    click_page(&mut s, "accent hex");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "#e07a5f");
+    key(&mut s, Key::Enter);
+    assert_eq!(drawn(&s, runity_studio::theme::ACCENT), [0xe0, 0x7a, 0x5f]);
+    assert_ne!(
+        drawn(&s, runity_studio::theme::ACCENT_900),
+        preset_rgb("nocturne", "ACCENT_900"),
+        "the selection follows"
+    );
+    let file = std::fs::read_to_string(me.join(runity_studio::appearance::FILE)).unwrap();
+    assert!(file.contains("#e07a5f"), "{file}");
+
+    // A swatch, then back to the preset.
+    click_page(&mut s, "accent 1");
+    assert_ne!(drawn(&s, runity_studio::theme::ACCENT), [0xe0, 0x7a, 0x5f]);
+    click_page(&mut s, "appearance reset");
+    assert_eq!(
+        drawn(&s, runity_studio::theme::ACCENT),
+        preset_rgb("nocturne", "ACCENT")
+    );
+    assert!(s.theme().user.tokens.is_empty());
 }

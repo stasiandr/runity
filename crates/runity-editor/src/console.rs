@@ -78,17 +78,23 @@ const KEEP: usize = 1000;
 #[derive(Debug, Default)]
 pub(crate) struct Console {
     lines: Vec<Line>,
+    /// The line said last — a repeat counts on its old line, so it is not
+    /// always the one at the end — and how many times anything was said.
+    last: Option<usize>,
+    said: u64,
 }
 
 impl Console {
     pub(crate) fn say(&mut self, level: Level, text: impl Into<String>) {
         let text = text.into();
-        if let Some(line) = self
+        self.said += 1;
+        if let Some(i) = self
             .lines
-            .iter_mut()
-            .find(|l| l.level == level && l.text == text)
+            .iter()
+            .position(|l| l.level == level && l.text == text)
         {
-            line.count += 1;
+            self.lines[i].count += 1;
+            self.last = Some(i);
             return;
         }
         if self.lines.len() == KEEP {
@@ -99,6 +105,7 @@ impl Console {
             text,
             count: 1,
         });
+        self.last = Some(self.lines.len() - 1);
     }
 }
 
@@ -126,6 +133,15 @@ impl Session {
 
     pub fn clear_console(&mut self) {
         self.console.lines.clear();
+        self.console.last = None;
+    }
+
+    /// The line said most recently, a repeat included, and a number that
+    /// grows each time anything is said: the status bar shows the one and
+    /// knows from the other that it is new again.
+    pub fn last_said(&self) -> Option<(&Line, u64)> {
+        let line = self.console.lines.get(self.console.last?)?;
+        Some((line, self.console.said))
     }
 
     /// Add a line — for a window or a tool driving the session.
@@ -144,6 +160,19 @@ mod tests {
             text: text.into(),
             count: 1,
         }
+    }
+
+    #[test]
+    fn the_line_said_last_is_the_repeat_not_the_end() {
+        let mut console = Console::default();
+        console.say(Level::Warning, "no ground");
+        console.say(Level::Info, "saved");
+        assert_eq!(console.lines[console.last.unwrap()].text, "saved");
+        let said = console.said;
+        console.say(Level::Warning, "no ground");
+        assert_eq!(console.lines.len(), 2);
+        assert_eq!(console.lines[console.last.unwrap()].text, "no ground");
+        assert!(console.said > said);
     }
 
     #[test]

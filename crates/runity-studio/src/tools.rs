@@ -6,6 +6,8 @@
 //! saved only when it still reads as RON. The engine picks the change up
 //! from disk as it picks up any other (DNA, postulate 1); nothing here
 //! knows what the fields mean, so nothing here goes stale when they grow.
+//! Above the files, Appearance: the person's colours, which are not the
+//! project's (`crate::appearance`); its page is what Settings opens on.
 //!
 //! **Profiler** is what a frame of the editor costs, as Unity's Profiler
 //! shows a frame of the game: the last seconds as bars, each split into
@@ -22,6 +24,10 @@ use crate::theme::*;
 
 pub struct Settings {
     pub root: NodeId,
+    /// Where the Appearance page goes, in place of a file.
+    pub page: NodeId,
+    appearance: NodeId,
+    right: NodeId,
     list: NodeId,
     editor: NodeId,
     title: NodeId,
@@ -35,24 +41,34 @@ impl Settings {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
         let root = ui.add(parent, Style::row().fill().full_width());
         ui.set_name(root, "settings");
-        let list = ui.add(
+        let left = ui.add(
             root,
             Style::column()
                 .width(200.0)
                 .full_height()
                 .fixed()
                 .padding(SPACE_2)
-                .gap(2.0)
-                .clip(),
+                .gap(2.0),
         );
+        let appearance = settings_row(ui, left, "palette", "Appearance");
+        ui.set_name(appearance, "settings appearance");
+        ui.restyle(appearance, |s| s.background(ACCENT_900));
+        ui.add_text(
+            left,
+            caption().padding_x(SPACE_2).padding_y(SPACE_2),
+            "PROJECT",
+        );
+        let list = ui.add(left, Style::column().fill().full_width().gap(2.0).clip());
         ui.set_name(list, "settings files");
+        let page = ui.add(root, Style::column().fill().full_height());
         let right = ui.add(
             root,
             Style::column()
                 .fill()
                 .full_height()
                 .padding(SPACE_2)
-                .gap(SPACE_2),
+                .gap(SPACE_2)
+                .hidden(),
         );
         let bar = ui.add(right, Style::row().full_width().gap(SPACE_2).center_items());
         let title = ui.add_text(
@@ -76,6 +92,9 @@ impl Settings {
         ui.set_name(editor, "settings text");
         Self {
             root,
+            page,
+            appearance,
+            right,
             list,
             editor,
             title,
@@ -127,21 +146,8 @@ impl Settings {
                 .strip_prefix(&root)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let row = ui.add(
-                self.list,
-                Style::row()
-                    .full_width()
-                    .height(24.0)
-                    .fixed()
-                    .padding_x(SPACE_2)
-                    .gap(SPACE_2)
-                    .center_items()
-                    .radius(RADIUS_SM)
-                    .hover(HOVER),
-            );
+            let row = settings_row(ui, self.list, "settings", &name);
             ui.set_name(row, format!("settings {name}"));
-            icon(ui, row, "settings", MUTED);
-            ui.add_text(row, text(), &name);
             self.files.push((row, path));
         }
     }
@@ -161,6 +167,7 @@ impl Settings {
                     .to_string();
                 ui.set_text(self.title, &name);
                 ui.restyle(self.title, |s| s.text_color(TEXT));
+                self.show_page(ui, false);
                 for (row, p) in &self.files {
                     let on = *p == path;
                     ui.restyle(*row, |s| {
@@ -197,8 +204,28 @@ impl Settings {
         ancestor(ui, node, self.root)
     }
 
+    /// The Appearance page, or the open file.
+    pub fn show_page(&mut self, ui: &mut Ui, page: bool) {
+        ui.restyle(self.page, |s| if page { s.shown() } else { s.hidden() });
+        ui.restyle(self.right, |s| if page { s.hidden() } else { s.shown() });
+        ui.restyle(self.appearance, |s| {
+            s.background(if page {
+                ACCENT_900
+            } else {
+                runity_ui::Color::TRANSPARENT
+            })
+        });
+        if page {
+            self.open = None;
+            for (row, _) in &self.files {
+                ui.restyle(*row, |s| s.background(runity_ui::Color::TRANSPARENT));
+            }
+        }
+    }
+
     pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
         match event {
+            Event::Click { .. } if node == self.appearance => self.show_page(ui, true),
             Event::Click { .. } if node == self.save => self.save(ui, session),
             Event::Submit(_) if node == self.editor => self.save(ui, session),
             Event::Click { .. } => {
@@ -214,6 +241,25 @@ impl Settings {
             _ => {}
         }
     }
+}
+
+/// A line of the list on the left: an icon and a name.
+fn settings_row(ui: &mut Ui, parent: NodeId, glyph: &str, name: &str) -> NodeId {
+    let row = ui.add(
+        parent,
+        Style::row()
+            .full_width()
+            .height(24.0)
+            .fixed()
+            .padding_x(SPACE_2)
+            .gap(SPACE_2)
+            .center_items()
+            .radius(RADIUS_SM)
+            .hover(HOVER),
+    );
+    icon(ui, row, glyph, MUTED);
+    ui.add_text(row, text(), name);
+    row
 }
 
 /// Whether `node` is `root` or under it.
@@ -255,12 +301,7 @@ pub struct Profiler {
 
 /// The parts' colours: the three accents of the gizmo and a neutral.
 fn part_colors() -> [runity_ui::Color; 4] {
-    [
-        runity_ui::Color::hex(0x8cc26b),
-        runity_ui::Color::hex(0x6f9be5),
-        ACCENT,
-        NEUTRAL_500,
-    ]
+    [AXIS_Y, AXIS_Z, ACCENT, NEUTRAL_500]
 }
 
 impl Profiler {

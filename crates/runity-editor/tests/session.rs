@@ -2696,6 +2696,65 @@ fn an_axis_view_is_a_plan_that_pans_zooms_and_picks() {
 }
 
 #[test]
+fn the_hand_pans_and_neither_picks_nor_moves() {
+    use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
+    let Some((mut session, _)) = open("hand") else {
+        return;
+    };
+    let mut input = Input::new();
+    let crate_id = id(&session, "crate");
+    session.select(Some(crate_id)).unwrap();
+    session.focus_selected();
+    session.set_tool(runity::gizmo::Tool::Rotate);
+    let (w, h) = session.size();
+    let centre = (w as f32 / 2.0, h as f32 / 2.0);
+
+    let did = view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::Q)]);
+    assert!(did.contains(&"hand tool"), "{did:?}");
+    assert!(session.hand());
+    view_frame(&mut session, &mut input, centre, &[E::KeyUp(Key::Q)]);
+    let (x, y) = (centre.0 as u32, centre.1 as u32);
+    assert_eq!(session.gizmo_hover(x, y), None, "no handles to point at");
+
+    // A press on the crate's middle and a drag: the view pans, the crate
+    // stays where it is and stays the only thing selected.
+    let camera = session.camera();
+    let at = session.transform(crate_id).unwrap().position;
+    let did = view_frame(&mut session, &mut input, centre, &[E::MouseDown(M::Left)]);
+    assert!(
+        !did.contains(&"select") && !did.contains(&"grab"),
+        "{did:?}"
+    );
+    let did = view_frame(&mut session, &mut input, (centre.0 + 30.0, centre.1), &[]);
+    assert!(did.contains(&"pan"), "{did:?}");
+    view_frame(
+        &mut session,
+        &mut input,
+        (centre.0 + 30.0, centre.1),
+        &[E::MouseUp(M::Left)],
+    );
+    assert_ne!(session.camera().target, camera.target);
+    assert_eq!(session.transform(crate_id).unwrap().position, at);
+    assert_eq!(session.selection(), vec![crate_id]);
+    assert!(!session.can_undo(), "the view is not an edit");
+
+    // A click on empty sky does not clear the selection either.
+    view_frame(
+        &mut session,
+        &mut input,
+        (1.0, 1.0),
+        &[E::MouseDown(M::Left)],
+    );
+    view_frame(&mut session, &mut input, (1.0, 1.0), &[E::MouseUp(M::Left)]);
+    assert_eq!(session.selected(), Some(crate_id));
+
+    // E puts the hand down for the rotate tool.
+    view_frame(&mut session, &mut input, centre, &[E::KeyDown(Key::E)]);
+    assert!(!session.hand());
+    assert_eq!(session.tool(), runity::gizmo::Tool::Rotate);
+}
+
+#[test]
 fn a_right_drag_looks_and_wasd_flies_without_touching_the_tools() {
     use runity::input::{Input, InputEvent as E, Key, MouseButton as M};
     let Some((mut session, _)) = open("flythrough") else {
@@ -5086,4 +5145,46 @@ fn a_picker_lists_textures_entities_and_bones_by_name() {
     let bones = session.bone_names(flag);
     assert!(!bones.is_empty(), "the banner's skeleton");
     assert!(session.bone_names(banner).is_empty(), "no parent, no bones");
+fn an_inactive_line_and_what_is_under_it_are_off_in_the_hierarchy() {
+    let Some((mut session, _)) = open("hierarchy-inactive") else {
+        return;
+    };
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
+    let off = |s: &Session, id| {
+        s.hierarchy()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .inactive
+    };
+    assert!(!off(&session, crate_id) && !off(&session, lid));
+    session.set_field(crate_id, "inactive", "true").unwrap();
+    assert!(off(&session, crate_id));
+    assert!(off(&session, lid), "under an inactive line: off too");
+    assert!(!off(&session, id(&session, "ground")));
+    // The search's flat lines say the same.
+    let found = session.hierarchy_matching("lid").unwrap();
+    assert!(found[0].inactive);
+    session.undo().unwrap();
+    assert!(!off(&session, lid));
+}
+
+#[test]
+fn reverting_to_disk_throws_the_edits_away_as_one_undo_step() {
+    let Some((mut session, _)) = open("revert-to-disk") else {
+        return;
+    };
+    let lid = id(&session, "lid");
+    assert!(!session.revert_to_disk().unwrap(), "nothing to throw away");
+    session.rename(lid, "cover").unwrap();
+    assert!(session.is_modified());
+    assert!(session.revert_to_disk().unwrap());
+    assert_eq!(session.find("lid"), Some(lid));
+    assert!(!session.is_modified(), "as the file has it");
+    session.undo().unwrap();
+    assert_eq!(
+        session.entity_name(lid).as_deref(),
+        Some("cover"),
+        "undo takes it back"
+    );
 }
