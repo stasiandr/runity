@@ -273,6 +273,10 @@ pub struct Lighting {
     pub sky_sun: Option<(Vec3, f32)>,
     /// How much it is night, 0 to 1: the stars come out.
     pub night: f32,
+    /// The light from all round as the scene says it, linear: above, at
+    /// the horizon, below. Set, it is what faces see instead of the sky
+    /// and the ground's bounce.
+    pub ambient: Option<[Vec3; 3]>,
 }
 
 impl Default for Lighting {
@@ -286,6 +290,7 @@ impl Default for Lighting {
             ground_albedo: Vec3::new(0.107, 0.089, 0.069),
             sky_sun: None,
             night: 0.0,
+            ambient: None,
         }
     }
 }
@@ -788,6 +793,9 @@ struct FrameUniform {
     /// The scene's distance field: its box and 1 when there is one; its
     /// far corner and range.
     distance: [[f32; 4]; 2],
+    /// The light a face turned sideways sees, when the scene says its
+    /// light from all round; `w` is 1 then.
+    ambient_equator: [f32; 4],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -4947,6 +4955,12 @@ impl Renderer {
         let storm = weather.sandstorm.clamp(0.0, 1.0);
         let sun_light =
             sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
+        // A scene that says its light from all round has it, whatever the
+        // sky would work out: above, the horizon, below.
+        let (sky_light, ground_light, equator) = match frame.lighting.ambient {
+            Some([sky, equator, ground]) => (sky, ground, extend(equator, 1.0)),
+            None => (sky_light, ground_light, [0.0; 4]),
+        };
         let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
         let ground_light = ground_light.lerp(Vec3::new(0.35, 0.25, 0.15), storm * 0.7);
         let mut foliage = crate::foliage::FoliageUniform::new(
@@ -5263,6 +5277,7 @@ impl Renderer {
             vsm: if virtual_on { self.vsm.uniform } else { crate::vsm::OFF },
             restir: self.restir.uniform(restir_on),
             distance: crate::distance::uniform(frame.distance_field.as_ref()),
+            ambient_equator: equator,
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {

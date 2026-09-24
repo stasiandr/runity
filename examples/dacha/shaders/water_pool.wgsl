@@ -17,9 +17,9 @@
 // the engine's own (Schlick, i.e. Fresnel power 5) with a high smoothness.
 // Unlit is imitated with a black albedo and the colour in `emission`.
 
-const WATER_POOL_SURFACE_COLOR = vec3<f32>(0.03551086, 0.17905739, 0.3584906);
-const WATER_POOL_DEEP_COLOR = vec3<f32>(0.0, 0.4444444, 1.0);
-const WATER_POOL_ADDITIONAL_COLOR = vec3<f32>(0.3127893, 0.5917418, 0.9339623);
+const WATER_POOL_SURFACE_COLOR = vec3<f32>(0.00275, 0.02695, 0.10561); // sRGB 0.036, 0.179, 0.358
+const WATER_POOL_DEEP_COLOR = vec3<f32>(0.0, 0.16617, 1.0); // sRGB 0, 0.444, 1
+const WATER_POOL_ADDITIONAL_COLOR = vec3<f32>(0.07973, 0.30899, 0.8563); // sRGB 0.313, 0.592, 0.934
 const WATER_POOL_ADDITIONAL_POWER = 3.45;
 const WATER_POOL_ADDITIONAL_MAX = 1.0;
 const WATER_POOL_DEPTH_DISTANCE = 5.05;

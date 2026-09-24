@@ -9,8 +9,9 @@
 // (x141.5), masked by the same texture laid over the screen and faded out
 // with scene depth near the camera.
 // Here the road and both noise textures are the material's own, read as the
-// graph reads them. Vertex colour (not given to a surface) is a low-frequency
-// world-space noise. The glimmer texture would be a fifth, so its specks are
+// graph reads them. Vertex colour red is painted on the mesh (the .glb
+// carries COLOR_0) but the importer does not keep it and a surface is not
+// given it, so it is a low-frequency world-space noise here. The glimmer texture would be a fifth, so its specks are
 // procedural: a rare lit cell in a fine grid on the UVs, twinkling with time
 // where the original twinkles as the screen-space mask slides over it; the
 // depth fade is left out (no scene depth or camera here). The final

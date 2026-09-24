@@ -8,12 +8,18 @@
 // T_SM_Refrigerator_1_TXTR). Both triplanar textures are read from the
 // material with the graph's tiling and blend; the projection uses world
 // position, not object position (Translate and Rotation are zero in every
-// material, so only that differs). The blink's scene-depth falloff is
+// material, so only that differs: on a prop that moves the grunge slides). The blink's scene-depth falloff is
 // dropped. The two toggles come from the material (M_Atlas_Triplanar_01 1
 // has Up Vecto?, with T_Road_01_D_2 as its up texture;
-// M_Atlas_Triplanar_Blink_01 has Blink?); the other values are the graph's
-// defaults, which the three materials share. An unset up texture reads
-// white, as in Unity.
+// M_Atlas_Triplanar_Blink_01 has Blink?); the other values (tiling 0.31,
+// grunge 25%, smoothness 0.426) are the materials', the same in all three,
+// not the graph's defaults. Metallic is the graph's 0, not the .mat's
+// _Metallic = 1. An unset up texture reads
+// white, as in Unity. M_Atlas_Triplanar_01 is a material variant of
+// M_Atlas_Triplanar_01 1 and inherits its grunge texture; where the
+// material brings none (every projection reads the white stand-in, which
+// the greyscale grunge, at most 0.91, never does) the overlay is skipped
+// rather than laid in white, which would lighten the atlas by a quarter.
 // runity:params _Up_Vecto _Blink
 // runity:textures _Triplanar_Texture _Up_Vector_Texture
 
@@ -46,7 +52,8 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     // all pixels run together, and the toggle below only picks.
     let grunge = atlas_triplanar(in, 0u, p, w);
     let up_texture = atlas_triplanar(in, 1u, p, w);
-    var color = mix(out.albedo, atlas_overlay(out.albedo, grunge), ATLAS_TRIPLANAR_INT);
+    let has_grunge = any(grunge < vec3<f32>(0.999));
+    var color = mix(out.albedo, atlas_overlay(out.albedo, grunge), ATLAS_TRIPLANAR_INT * f32(has_grunge));
     if in.params[0].x > 0.5 {
         let mid = pow(0.5, 2.2);
         let up = clamp(dot(in.normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0, 1.0);

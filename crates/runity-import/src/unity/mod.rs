@@ -457,8 +457,12 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             entities,
             ..Default::default()
         };
-        if let Some(sun) = scene::sun(&text) {
+        let ambient = look::ambient(&text);
+        if let Some(mut sun) = scene::sun(&text) {
+            sun.ambient = ambient;
             scene.set_part(&sun);
+        } else if ambient.is_some() {
+            scene.set_part(&runity::scene::Sun { ambient, ..Default::default() });
         }
         // How it looks: its fog, and its global Volume's grade.
         if let Some(fog) = look::fog(&text) {
@@ -540,7 +544,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
 
 /// A Unity model's origin is where its scenes put it: its mesh is not
 /// moved down to stand on y = 0, as a model dropped into a runity project
-/// is. Every converted model's sidecar says so — a new one, or an old one
+/// is; and it is one mesh, not a scene of its nodes. Every converted model's sidecar says so — a new one, or an old one
 /// set right and made to import again.
 fn keep_origins(dir: &Path) -> Result<()> {
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -556,8 +560,11 @@ fn keep_origins(dir: &Path) -> Result<()> {
                 path.file_name().unwrap_or_default().to_string_lossy()
             )),
         };
-        if settings.origin_to_base || !sidecar.is_file() {
+        // One mesh, whatever its nodes: a scene names a model as one
+        // thing — its pieces are there for a renderer that names one.
+        if settings.origin_to_base || settings.scene || !sidecar.is_file() {
             settings.origin_to_base = false;
+            settings.scene = false;
             settings.hash = String::new();
             settings.save(&sidecar)?;
         }

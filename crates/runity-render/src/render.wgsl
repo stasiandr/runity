@@ -128,6 +128,9 @@ struct Frame {
     // the scene's distance field (distance.rs): its box and 1 when there
     // is one; its far corner and range in metres
     distance: array<vec4<f32>, 2>,
+    // What a face turned sideways sees when the scene says its light from
+    // all round (sky above, ground below); w is 1 then.
+    ambient_equator: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -2513,7 +2516,18 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let here = sky_toward(normal);
         sky_light = sky_light * here / max(up, vec3<f32>(1e-4));
     }
-    var ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    var all_round = mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5);
+    if frame.ambient_equator.w > 0.5 {
+        // The scene's three colours, blended as smoothly as Unity's
+        // gradient is once it is spherical harmonics: straight up sees
+        // only the sky, sideways half the horizon and a quarter each of
+        // the sky and the ground.
+        let y = clamp(normal.y, -1.0, 1.0);
+        all_round = frame.sky_color.rgb * (1.0 + y) * (1.0 + y) * 0.25
+            + frame.ground_color.rgb * (1.0 - y) * (1.0 - y) * 0.25
+            + frame.ambient_equator.rgb * (1.0 - y * y) * 0.5;
+    }
+    var ambient = around(in.world_position, normal, all_round);
     // Inside an irradiance volume its probes give the diffuse light.
     let volume = ddgi_irradiance(in.world_position, normal, to_eye);
     let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);

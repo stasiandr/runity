@@ -9,7 +9,8 @@
 // at 0.5 with discard. _Color and _Color_2 (sRGB) come from the material. The
 // wind sway is left out: a surface function cannot move vertices. Shadows are
 // cut by the base map's alpha (the importer makes _baza the base map), not by
-// its green, as the shadow pass does not run this function.
+// its green, as the shadow pass does not run this function; the _baza
+// textures have no alpha, so a card's shadow is its whole quad.
 // runity:params _Color.r _Color.g _Color.b _Color_2.r _Color_2.g _Color_2.b
 // runity:textures _baza
 
