@@ -26,6 +26,7 @@ pub mod material;
 pub mod moods;
 pub mod particles;
 pub mod particles_gpu;
+pub mod occlusion;
 pub mod passes;
 pub mod post;
 pub mod ray;

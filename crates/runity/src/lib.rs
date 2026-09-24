@@ -125,6 +125,7 @@ pub mod motion {
 pub use runity_navigation::navigation;
 #[cfg(feature = "net")]
 pub use runity_net::net;
+pub use runity_render::occlusion;
 pub use runity_render::particles;
 pub use runity_render::particles_gpu;
 pub use runity_render::passes;

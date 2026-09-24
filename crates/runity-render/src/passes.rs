@@ -29,6 +29,9 @@ pub struct Passes {
     /// Particles on the GPU (`particles: (gpu: true)`): their compute step
     /// and their draw. Those on the CPU are the scene's draws.
     pub gpu_particles: bool,
+    /// Instances hidden behind last frame's depth left out on the GPU
+    /// ([`crate::occlusion`]); off, every instance in the view is drawn.
+    pub occlusion_culling: bool,
     pub clouds: bool,
     /// Temporal antialiasing.
     pub taa: bool,
@@ -57,6 +60,7 @@ impl Passes {
         reflection_probes: true,
         volumetric_fog: true,
         gpu_particles: true,
+        occlusion_culling: true,
         clouds: true,
         taa: true,
         lens: true,
@@ -74,6 +78,7 @@ impl Passes {
         reflection_probes: false,
         volumetric_fog: false,
         gpu_particles: false,
+        occlusion_culling: false,
         clouds: false,
         taa: false,
         lens: false,
