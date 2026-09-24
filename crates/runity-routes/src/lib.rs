@@ -6,6 +6,12 @@ pub mod routes;
 
 pub use routes::{run_routes, Route, RouteDress, RouteEnds, RouteLine};
 
+/// This module's systems in the loop: entities on their routes, in the
+/// fixed step before the hierarchy places them.
+pub fn systems(player_loop: &mut runity_core::player_loop::PlayerLoop) {
+    player_loop.add(runity_core::player_loop::Phase::FixedUpdate, "routes", run_routes);
+}
+
 // The core, under the names this module's code knows it by.
 #[allow(unused_imports)]
 use runity_core::{defaults, id, impl_parts, world};

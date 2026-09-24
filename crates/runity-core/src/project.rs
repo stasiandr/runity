@@ -717,6 +717,7 @@ const GAME: &str = r#"//! {name}.
 
 use runity::hecs::World;
 use runity::party::{Event, Party};
+use runity::player_loop::{Phase, PlayerLoop};
 use runity::prelude::*;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
@@ -758,6 +759,8 @@ struct Game {
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
+    /// The modules' systems, by phase (Unity's PlayerLoop).
+    modules: PlayerLoop,
     party: Party,
     components: Components,
     /// The mixer; `None` on a machine with no sound device.
@@ -780,26 +783,16 @@ impl Game {
     }
 }
 
-/// One fixed step of the game: the systems in order, then physics. The
-/// window runs it, and so does the play-mode test below — the same step
-/// with nothing drawn.
-fn tick(world: &mut World, physics: &mut PhysicsWorld, profile: &mut runity::perf::Profiler, seconds: f32) {
+/// One fixed step of the game (Unity's FixedUpdate): the game's systems in
+/// order, then the modules' — platforms on their routes, clips and
+/// characters' animation, everything placed — then physics. The window
+/// runs it, and so does the play-mode test below — the same step with
+/// nothing drawn.
+fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop, profile: &mut runity::perf::Profiler, seconds: f32) {
     // systems, in order
     profile.time("spin", || systems::spin::run(world, seconds));
-    // @routes {
-    // Platforms and lifts on their routes, and lines with an `animator`
-    // moving what is under them; then everything placed.
-    profile.time("routes", || runity::routes::run_routes(world, seconds));
-    // @routes }
-    // @animation {
-    profile.time("motion", || runity::motion::run(world, seconds));
-    // Characters: their graphs pick the clip, the skeleton takes the pose.
-    profile.time("animation", || {
-        runity::animgraph::run_controllers(world);
-        runity::advance_animations(world, seconds);
-    });
-    // @animation }
-    runity::world::apply_hierarchy(world);
+    // The modules' systems of the fixed step (`runity::player_loop`).
+    modules.run(Phase::FixedUpdate, world, seconds, Some(profile));
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));
@@ -846,7 +839,7 @@ impl shell::Game for Game {
     fn step(&mut self, ctx: &mut Context) {
         let seconds = ctx.time.settings().fixed_delta;
         self.physics.gravity.y = self.tuning.gravity;
-        tick(&mut self.world, &mut self.physics, &mut self.profile, seconds);
+        tick(&mut self.world, &mut self.physics, &mut self.modules, &mut self.profile, seconds);
     }
 
     fn frame(&mut self, ctx: &mut Context) -> Frame {
@@ -946,13 +939,13 @@ impl shell::Game for Game {
                 self.ui.text(TextRun::new(20.0, at, 16.0, runity::glam::Vec4::ONE, line));
             }
         }
-        // Sparks and dust move on the frame's time: they are for the eye.
-        runity::particles::run_particles(&mut self.world, ctx.time.delta());
-        runity::footprints::run_footprints(&mut self.world, ctx.time.delta());
+        // The modules' late systems: cameras that follow keep after their
+        // targets; sparks and dust move on the frame's time.
+        let delta = ctx.time.delta();
+        for phase in [Phase::Update, Phase::LateUpdate, Phase::PostLateUpdate] {
+            self.modules.run(phase, &mut self.world, delta, Some(&mut self.profile));
+        }
         let scene = self.live.scene();
-        // Cameras that follow keep after their targets, then the one that
-        // looks is found.
-        runity::world::follow_cameras(&mut self.world, ctx.time.delta());
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
@@ -1050,6 +1043,7 @@ fn main() -> anyhow::Result<()> {
         ui: Ui::new(),
         world: World::new(),
         physics: PhysicsWorld::default(),
+        modules: runity::player_loop::modules(),
         party,
         components: game_components(),
         audio: runity::audio::Audio::new().map_err(|e| eprintln!("no sound: {e}")).ok(),
@@ -1087,9 +1081,10 @@ mod tests {
 
         let seconds = settings.fixed_delta();
         let mut physics = PhysicsWorld::new(seconds);
+        let mut modules = runity::player_loop::modules();
         let mut profile = runity::perf::Profiler::new(8);
         for _ in 0..(2.0 / seconds) as usize {
-            tick(&mut world, &mut physics, &mut profile, seconds);
+            tick(&mut world, &mut physics, &mut modules, &mut profile, seconds);
         }
         for (_, transform) in world.query::<(runity::hecs::Entity, &runity::Transform)>().iter() {
             assert!(transform.position.is_finite(), "something flew off: {transform:?}");
@@ -1111,6 +1106,7 @@ const GAME_BARE: &str = r#"//! {name}, on the bare core: no window, no picture, 
 //! `build.rs` finds them, and `tick` below runs the systems in order.
 
 use runity::hecs::World;
+use runity::player_loop::{Phase, PlayerLoop};
 use runity::{Components, Scene};
 
 /// Every file in src/components/, registered by its file name.
@@ -1123,12 +1119,20 @@ mod systems {
     include!(concat!(env!("OUT_DIR"), "/systems.rs"));
 }
 
-/// One fixed step of the game: the systems in order, then everything
-/// placed.
-fn tick(world: &mut World, seconds: f32) {
+/// One fixed step of the game (Unity's FixedUpdate): the game's systems in
+/// order, then the core's — everything placed.
+fn tick(world: &mut World, modules: &mut PlayerLoop, seconds: f32) {
     // systems, in order
     systems::spin::run(world, seconds);
-    runity::world::apply_hierarchy(world);
+    modules.run(Phase::FixedUpdate, world, seconds, None);
+}
+
+/// The systems of the modules the game has, by phase: on the bare core,
+/// the core's own.
+fn modules() -> PlayerLoop {
+    let mut modules = PlayerLoop::new();
+    runity::player_loop::systems(&mut modules);
+    modules
 }
 
 /// Every component the game has, by name.
@@ -1171,8 +1175,9 @@ fn main() -> anyhow::Result<()> {
     let seconds = settings.fixed_delta();
     eprintln!("{project_name}: {playing}, {} steps a second", settings.steps_per_second);
     let step = std::time::Duration::from_secs_f32(seconds);
+    let mut modules = modules();
     loop {
-        tick(&mut world, seconds);
+        tick(&mut world, &mut modules, seconds);
         std::thread::sleep(step);
     }
 }
@@ -1193,8 +1198,9 @@ mod tests {
         );
         let mut world = start(&scene).unwrap();
         let seconds = settings.fixed_delta();
+        let mut modules = modules();
         for _ in 0..(2.0 / seconds) as usize {
-            tick(&mut world, seconds);
+            tick(&mut world, &mut modules, seconds);
         }
         for (_, transform) in world.query::<(runity::hecs::Entity, &runity::Transform)>().iter() {
             assert!(transform.position.is_finite(), "something flew off: {transform:?}");

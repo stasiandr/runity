@@ -17,6 +17,17 @@ pub mod motion;
 pub use animator::{advance_animations, Animator, Playing};
 pub use runity_geometry::animation::Posed;
 
+/// This module's systems in the loop: characters' graphs pick their clips
+/// and skeletons take the pose, in the fixed step. Motion clips are run by
+/// the engine, which hands their sound and particle tracks to the modules
+/// that own them ([`motion::run_with`]).
+pub fn systems(player_loop: &mut runity_core::player_loop::PlayerLoop) {
+    player_loop.add(runity_core::player_loop::Phase::FixedUpdate, "animation", |world, seconds| {
+        animgraph::run_controllers(world);
+        advance_animations(world, seconds);
+    });
+}
+
 // The core and geometry, under the names this module's code knows them by.
 #[allow(unused_imports)]
 use runity_core::{id, impl_parts, project, ron_edit, spelling, AssetLink, Transform};

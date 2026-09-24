@@ -42,6 +42,17 @@ pub use render::{
 };
 pub use world_look::build_frame;
 
+/// This module's systems in the loop: cameras that follow keep after their
+/// targets once the frame's moves are done, and sparks and footprints move
+/// on the frame's time — they are for the eye.
+pub fn systems(player_loop: &mut runity_core::player_loop::PlayerLoop) {
+    use runity_core::player_loop::Phase;
+    player_loop
+        .add(Phase::LateUpdate, "cameras", world_look::follow_cameras)
+        .add(Phase::PostLateUpdate, "particles", particles::run_particles)
+        .add(Phase::PostLateUpdate, "footprints", footprints::run_footprints);
+}
+
 // The core, geometry, the GPU and the overlay, under the names this
 // module's code knows them by.
 #[allow(unused_imports)]

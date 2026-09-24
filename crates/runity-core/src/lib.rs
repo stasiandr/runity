@@ -29,6 +29,7 @@ pub mod merge;
 pub mod module;
 pub mod parts;
 pub mod perf;
+pub mod player_loop;
 pub mod player_prefs;
 pub mod prefab;
 pub mod project;

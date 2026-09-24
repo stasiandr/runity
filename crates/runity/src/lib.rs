@@ -128,6 +128,41 @@ pub use runity_core::prefab;
 pub use runity_core::project;
 pub mod query;
 
+/// The loop by phases (Unity's PlayerLoop; `runity_core::player_loop`),
+/// with every module of this build's systems in it.
+pub mod player_loop {
+    pub use runity_core::player_loop::*;
+
+    /// The build's modules' systems, in the order a frame needs them: in
+    /// the fixed step routes, motion clips and characters' animation, then
+    /// the hierarchy placed; cameras following in LateUpdate; particles
+    /// and footprints as the frame is built. A game runs a phase where its
+    /// own systems want it.
+    pub fn modules() -> PlayerLoop {
+        let mut player_loop = PlayerLoop::new();
+        runity_routes::systems(&mut player_loop);
+        player_loop.add(Phase::FixedUpdate, "motion", crate::motion::run);
+        runity_animation::systems(&mut player_loop);
+        runity_core::player_loop::systems(&mut player_loop);
+        runity_render::systems(&mut player_loop);
+        player_loop
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_modules_put_their_systems_where_unity_would() {
+            let player_loop = super::modules();
+            use super::Phase;
+            assert_eq!(
+                player_loop.names(Phase::FixedUpdate),
+                ["routes", "motion", "animation", "hierarchy"]
+            );
+            assert_eq!(player_loop.names(Phase::LateUpdate), ["cameras"]);
+        }
+    }
+}
+
 /// The engine's modules by their manifests (`module.ron`, docs/modules.md):
 /// what a project's `runity.ron` lists, and what `runity check` holds the
 /// list against.
