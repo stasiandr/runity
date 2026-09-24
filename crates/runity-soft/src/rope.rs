@@ -270,7 +270,9 @@ impl RopeState {
         Some(crate::net::Frame {
             points: rod.particles.x.clone(),
             turns: if self.rope.kind == RopeKind::Rope { Vec::new() } else { rod.turn.clone() },
-            extra: vec![a.x, a.y, a.z, b.x, b.y, b.z, stretched],
+            // How hard it pulls each end — along itself, as a rope does,
+            // so the size says it all — and how long it is drawn out.
+            extra: vec![a.length(), b.length(), stretched],
         })
     }
 
@@ -850,9 +852,16 @@ pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, sender: u32, tick
     // The pulls on its ends as the owner has them now, not as the picture
     // a couple of ticks behind has them: a hand here feels them as soon
     // as they come.
-    if let (Ok(mut state), Some(e)) = (world.get::<&mut RopeState>(entity), frame.extra.get(0..7)) {
-        state.pulls = [Vec3::new(e[0], e[1], e[2]), Vec3::new(e[3], e[4], e[5])];
-        state.owner_length = Some(e[6]);
+    if let (Ok(mut state), Some(e)) = (world.get::<&mut RopeState>(entity), frame.extra.get(0..3)) {
+        // Each end pulled toward the rope's next particle.
+        let p = &frame.points;
+        let toward = |from: usize, to: usize| match (p.get(from), p.get(to)) {
+            (Some(a), Some(b)) => (*b - *a).normalize_or_zero(),
+            _ => Vec3::ZERO,
+        };
+        let n = p.len();
+        state.pulls = [toward(0, 1) * e[0], toward(n.saturating_sub(1), n.saturating_sub(2)) * e[1]];
+        state.owner_length = Some(e[2]);
     }
     if let Ok(mut presented) = world.get::<&mut crate::net::PresentedParticles>(entity) {
         presented.push(sender, tick, frame);
