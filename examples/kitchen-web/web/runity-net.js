@@ -13,8 +13,9 @@ const PREFIX = "runity-kitchen-rush-";
 const LETTERS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const JOIN_TIMEOUT_MS = 20000;
 // How two browsers find a way to each other: STUN for the address a home
-// router shows the world (most pairs connect on that), PeerJS's own TURN
-// relay as the last resort.
+// router shows the world (most pairs connect on that), a TURN relay for
+// the rest (two phones on mobile data) — Metered's, below, when the site
+// was built with one; PeerJS's own is the fallback.
 const PEER_OPTIONS = {
   debug: 1,
   config: {
@@ -24,6 +25,31 @@ const PEER_OPTIONS = {
     ],
   },
 };
+
+// Where fresh TURN credentials come from (a Metered app's REST endpoint),
+// written in by web/build.sh from RUNITY_TURN_URL; left as is, there is no
+// relay and only devices STUN can join meet.
+const TURN_URL = "__RUNITY_TURN_URL__";
+
+// The ICE servers for a new peer: the relay's credentials fetched fresh,
+// or STUN alone when there is no relay or it does not answer in time.
+async function peerOptions() {
+  if (!TURN_URL || TURN_URL.startsWith("__")) return PEER_OPTIONS;
+  try {
+    const answer = await Promise.race([
+      fetch(TURN_URL).then((r) => (r.ok ? r.json() : null)),
+      new Promise((r) => setTimeout(() => r(null), 4000)),
+    ]);
+    if (Array.isArray(answer) && answer.length) {
+      const config = { iceServers: [...PEER_OPTIONS.config.iceServers.slice(0, 1), ...answer] };
+      // `?relay`: through the relay only, as two phones behind strict NATs
+      // would go — to check it works.
+      if (new URLSearchParams(location.search).has("relay")) config.iceTransportPolicy = "relay";
+      return { ...PEER_OPTIONS, config };
+    }
+  } catch (_) {}
+  return PEER_OPTIONS;
+}
 
 function randomCode(n = 5) {
   const bytes = crypto.getRandomValues(new Uint8Array(n));
@@ -85,6 +111,12 @@ const net = {
   _fail(why) {
     this._state = "failed:" + why;
     this.onRoom(null);
+    this._say("Could not join: " + why, 9000);
+  },
+
+  // A line at the bottom of the page: how joining goes, step by step.
+  _say(text, ms) {
+    window.runityToast && window.runityToast(text, ms);
   },
 
   host() {
@@ -92,9 +124,25 @@ const net = {
     const code = randomCode();
     this._code = code;
     this._state = "hosting";
-    const peer = new Peer(PREFIX + code, PEER_OPTIONS);
+    this._everOpened = false;
+    this._open(code, 0);
+    return code;
+  },
+
+  // The room's peer at the broker, by the room's code. The code is kept for
+  // as long as the room is: a phone that locked or switched apps comes back
+  // to the same code, so the link a friend has still works.
+  async _open(code, tries) {
+    const options = await peerOptions();
+    if (this._state !== "hosting" || this._code !== code) return;
+    const peer = new Peer(PREFIX + code, options);
     this._peer = peer;
-    peer.on("open", () => this.onRoom(code));
+    let opened = false;
+    peer.on("open", () => {
+      opened = true;
+      this.onRoom(code);
+      if (tries === 0) this._say("Room " + code + " is open. Keep this page in front while friends join.", 6000);
+    });
     peer.on("connection", (conn) => {
       conn.on("data", (data) => {
         const bytes = this._deliver(data);
@@ -113,37 +161,81 @@ const net = {
       if (this._peer === peer && !peer.destroyed) peer.reconnect();
     });
     peer.on("error", (e) => {
-      if (e.type === "unavailable-id") {
-        // Someone has this code already: another one.
+      if (this._peer !== peer || this._state !== "hosting") return;
+      if (e.type === "unavailable-id" && !opened && tries === 0 && !this._everOpened) {
+        // Someone else has this code: another one.
+        this.leave();
         this.host();
-        this.onRoom(this._code);
+      } else if (e.type === "unavailable-id" || e.type === "network" || e.type === "server-error" || e.type === "socket-error" || e.type === "socket-closed") {
+        // Our own room, still held at the broker from before the phone
+        // slept, or the broker out of reach: the same code again shortly.
+        try { peer.destroy(); } catch (_) {}
+        setTimeout(() => {
+          if (this._state === "hosting" && this._code === code) this._open(code, tries + 1);
+        }, Math.min(1000 * (tries + 1), 5000));
       } else if (e.type !== "peer-unavailable") {
         console.warn("room:", e);
       }
     });
-    return code;
+    peer.on("open", () => { this._everOpened = true; });
   },
 
-  join(code) {
+  // Back in front after the phone slept or another app was up: the room
+  // is found at the broker again.
+  _wake() {
+    const peer = this._peer;
+    if (this._state !== "hosting" || !peer) return;
+    if (peer.destroyed) this._open(this._code, 1);
+    else if (peer.disconnected) peer.reconnect();
+  },
+
+  async join(code) {
     code = String(code || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!code) return;
     this.leave();
     this._code = code;
     this._state = "joining";
-    const peer = new Peer(PEER_OPTIONS);
+    this._say("Joining " + code + "…", JOIN_TIMEOUT_MS);
+    const options = await peerOptions();
+    if (this._state !== "joining" || this._code !== code) return;
+    const peer = new Peer(options);
     this._peer = peer;
+    let step = "reaching the broker";
+    this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);
     this._timer = setTimeout(() => {
       if (this._state === "joining") {
-        this._fail("no kitchen answered at " + code);
+        this._fail("no answer from kitchen " + code + " (stuck " + step + ")");
         this._close();
       }
     }, JOIN_TIMEOUT_MS);
     peer.on("open", () => {
+      step = "calling the kitchen";
+      this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);
       const conn = peer.connect(PREFIX + code, { reliable: false, serialization: "raw" });
       this._host = conn;
+      // How the two phones find a way to each other, for the message if
+      // they do not.
+      const watch = () => {
+        const pc = conn.peerConnection;
+        if (!pc) return setTimeout(watch, 200);
+        pc.addEventListener("iceconnectionstatechange", () => {
+          const ice = pc.iceConnectionState;
+          if (ice === "checking") {
+            step = "finding a way between the phones";
+            this._say("Joining " + code + ": " + step + "…", JOIN_TIMEOUT_MS);
+          }
+          if (ice === "failed" && this._state === "joining") {
+            clearTimeout(this._timer);
+            this._fail("the two devices could not reach each other — their networks block it. Try both on the same Wi-Fi.");
+            this._close();
+          }
+        });
+      };
+      watch();
       conn.on("open", () => {
         clearTimeout(this._timer);
         this._state = "open";
+        this._say("In kitchen " + code + "!", 2500);
       });
       conn.on("data", (data) => this._deliver(data));
       conn.on("close", () => {
@@ -221,3 +313,7 @@ const net = {
 };
 
 window.runityNet = net;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") net._wake();
+});
+addEventListener("pageshow", () => net._wake());

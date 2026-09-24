@@ -52,8 +52,37 @@ impl TextureHandle {
     pub const FLAT_NORMAL: TextureHandle = TextureHandle(1);
 }
 
-/// A surface's four maps, as bound: base, normal, mask, emission.
-type Maps = [TextureHandle; 4];
+/// A surface's maps, as bound: base, normal, mask, emission, then the
+/// four textures its material hands its own shader (white where none).
+type Maps = [TextureHandle; 8];
+
+/// Textures a material's own shader reads, at most: its `texture_at`
+/// slots.
+pub const MATERIAL_TEXTURES: usize = 4;
+
+/// What a material shader's `// runity:textures` line names, in slot
+/// order: the names its material's textures go by (Unity's property
+/// names), at most [`MATERIAL_TEXTURES`] of them.
+pub fn declared_textures(shader: &str) -> Vec<String> {
+    shader
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("// runity:textures"))
+        .map(|rest| {
+            rest.split_whitespace()
+                .take(MATERIAL_TEXTURES)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An instance's eight map handles, two to a number: the four maps in
+/// the low halves, the material's own textures in the high — what the
+/// bindless shader indexes by ([`crate::bindless`]; its array holds
+/// fewer than 65536). Without bindless the shader does not read them.
+fn packed(maps: Maps) -> [u32; 4] {
+    std::array::from_fn(|i| (maps[i].0 & 0xffff) | (maps[i + 4].0 << 16))
+}
 
 impl MeshHandle {
     /// A handle that refers to nothing, for tests that build a draw list
@@ -854,8 +883,9 @@ struct InstanceRaw {
     params: [[f32; 4]; 2],
     /// Light under the surface: its colour (linear), and how far it goes.
     subsurface: [f32; 4],
-    /// Its maps' handles — base, normal, mask, emission — for the
-    /// bindless shader ([`crate::bindless`]).
+    /// Its maps' handles — base, normal, mask, emission, and its
+    /// material's own textures — for the bindless shader, two to a number
+    /// ([`packed`]).
     maps: [u32; 4],
 }
 
@@ -1006,6 +1036,9 @@ pub struct Renderer {
     /// Materials' own `surface` functions, by id: built again whenever the
     /// standard shader is reloaded.
     material_shaders: std::collections::HashMap<crate::asset::AssetId, String>,
+    /// What each of those reads through `texture_at`, by its
+    /// `// runity:textures` line: the names of its slots.
+    shader_textures: std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     /// The uniform alone. The shadow pass writes the map it is drawing into,
@@ -2366,6 +2399,7 @@ impl Renderer {
         self.pipelines.scene.extend(built.0);
         self.pipelines.prepassed.extend(built.1);
         self.material_shaders.insert(id, surface.to_string());
+        self.shader_textures.insert(id, declared_textures(surface));
         Ok(())
     }
 
@@ -2831,6 +2865,11 @@ impl Renderer {
                         map_entry(2),
                         map_entry(3),
                         map_entry(4),
+                        // The material's own four, for its shader.
+                        map_entry(5),
+                        map_entry(6),
+                        map_entry(7),
+                        map_entry(8),
                     ],
                 })
         };
@@ -3078,6 +3117,7 @@ impl Renderer {
             graph: crate::graph::FrameGraph::new(),
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
+            shader_textures: std::collections::HashMap::new(),
             layout,
             bind_group,
             shadow_bind_group,
@@ -3497,9 +3537,7 @@ impl Renderer {
         self.by_asset.get(&id).copied()
     }
 
-    /// The four maps a draw takes: its material's, where uploaded, else
-    /// the draw's own texture for the colour and neutral ones for the rest
-    /// — a missing map leaves a plain surface, not a hole.
+    /// The maps a draw takes: see [`DrawLookup::maps_of`].
     fn maps_of(&self, draw: &Draw) -> Maps {
         self.lookup().maps_of(draw)
     }
@@ -3512,6 +3550,7 @@ impl Renderer {
             lods: &self.lods,
             looks: &self.looks,
             by_asset: &self.by_asset,
+            shader_textures: &self.shader_textures,
         }
     }
 
@@ -3570,6 +3609,22 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(view(maps[3])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(view(maps[4])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(view(maps[5])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(view(maps[6])),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(view(maps[7])),
                     },
                 ],
             });
@@ -4361,9 +4416,7 @@ impl Renderer {
     fn render_picture(&mut self, gpu: &Gpu, picture: &TextureView, size: (u32, u32)) {
         self.picture_target(gpu, picture.id, size);
         let mut frame = (*picture.frame).clone();
-        let shows = |m: &Material| {
-            [m.base_map, m.normal_map, m.mask_map, m.emission_map].contains(&Some(picture.id))
-        };
+        let shows = |m: &Material| m.maps().any(|id| id == picture.id);
         frame.draws.retain(|d| !shows(&d.material));
         frame.texture_views.clear();
         let view = self.targets[&picture.id]
@@ -5323,7 +5376,7 @@ impl Renderer {
         let prepared = runity_core::jobs::map(&frame.draws, 256, |draw| {
             let mut raw = instance_of(draw.transform, &draw.material);
             let maps = this.maps_of(draw);
-            raw.maps = maps.map(|h| h.0);
+            raw.maps = packed(maps);
             let skinned = draw.pose.is_some()
                 && this
                     .meshes
@@ -5376,9 +5429,12 @@ impl Renderer {
             // the screen in pixels, times how often it tiles them.
             if streaming_textures && visible && level.is_some() {
                 let texels = covers * height as f32 * raw.uv[0].abs().max(raw.uv[1].abs()).max(1.0);
-                for handle in raw.maps {
-                    if let Some(stream) = self.streams.get_mut(&TextureHandle(handle)) {
-                        stream.see(texels);
+                for (i, handle) in maps.iter().enumerate() {
+                    if let Some(stream) = self.streams.get_mut(handle) {
+                        // A shader's own textures are tiled as only it
+                        // knows — a road forty times across a field — so
+                        // they are asked for whole.
+                        stream.see(if i < 4 { texels } else { f32::MAX });
                     }
                 }
             }
@@ -5474,7 +5530,7 @@ impl Renderer {
                 };
                 let maps = self.maps_of(draw);
                 let mut raw = instance_of(draw.transform, &draw.material);
-                raw.maps = maps.map(|h| h.0);
+                raw.maps = packed(maps);
                 push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
@@ -5499,7 +5555,7 @@ impl Renderer {
         for draw in &frame.overlay_draws {
             let maps = self.maps_of(draw);
             let mut raw = instance_of(draw.transform, &draw.material);
-            raw.maps = maps.map(|h| h.0);
+            raw.maps = packed(maps);
             push(&mut overlay_batches, (None, draw.mesh, self.batch_maps(maps)), raw);
         }
         let sets: Vec<Maps> = shadow_batches
@@ -6390,12 +6446,16 @@ struct DrawLookup<'a> {
     lods: &'a std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
     looks: &'a std::collections::HashMap<MeshHandle, TextureHandle>,
     by_asset: &'a std::collections::HashMap<crate::asset::AssetId, TextureHandle>,
+    shader_textures: &'a std::collections::HashMap<crate::asset::AssetId, Vec<String>>,
 }
 
 impl DrawLookup<'_> {
-    /// The four maps a draw takes: its material's, where uploaded, else
+    /// The maps a draw takes: its material's four, where uploaded, else
     /// the draw's own texture for the colour and neutral ones for the rest
-    /// — a missing map leaves a plain surface, not a hole.
+    /// — a missing map leaves a plain surface, not a hole. Then its own
+    /// shader's slots: slot `i` the material's texture named by the
+    /// shader's `i`th `// runity:textures` name, white where it has none
+    /// or it is not uploaded.
     fn maps_of(&self, draw: &Draw) -> Maps {
         let m = &draw.material;
         let find = |id: Option<crate::asset::AssetId>| id.and_then(|id| self.by_asset.get(&id).copied());
@@ -6404,11 +6464,28 @@ impl DrawLookup<'_> {
             Some(look) if draw.texture == TextureHandle::WHITE => *look,
             _ => draw.texture,
         };
+        let mut slots = [TextureHandle::WHITE; MATERIAL_TEXTURES];
+        // Only a material with textures and a shader that reads some
+        // looks its set up; every other draw is done here.
+        if let (false, Some(names)) = (
+            m.textures.is_empty(),
+            m.shader.and_then(|s| self.shader_textures.get(&s)),
+        ) {
+            let entries = m.textures.entries();
+            for (slot, name) in slots.iter_mut().zip(names) {
+                let id = entries.iter().find(|e| e.name == *name).map(|e| e.texture);
+                *slot = find(id).unwrap_or(TextureHandle::WHITE);
+            }
+        }
         [
             find(m.base_map).unwrap_or(own),
             find(m.normal_map).unwrap_or(TextureHandle::FLAT_NORMAL),
             find(m.mask_map).unwrap_or(TextureHandle::WHITE),
             find(m.emission_map).unwrap_or(TextureHandle::WHITE),
+            slots[0],
+            slots[1],
+            slots[2],
+            slots[3],
         ]
     }
 
@@ -6848,6 +6925,23 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shader_names_its_texture_slots_on_a_line_of_its_own() {
+        let shader = "// Road.\n// runity:params _Speed\n  // runity:textures _Road _Noise _A _B _Past\nfn surface() {}";
+        assert_eq!(declared_textures(shader), ["_Road", "_Noise", "_A", "_B"], "four at most");
+        assert!(declared_textures("fn surface() {}").is_empty());
+    }
+
+    #[test]
+    fn an_instances_eight_handles_go_two_to_a_number() {
+        let maps: Maps = std::array::from_fn(|i| TextureHandle(i as u32 + 1));
+        let packed = packed(maps);
+        for i in 0..4 {
+            assert_eq!(packed[i] & 0xffff, maps[i].0, "the map in the low half");
+            assert_eq!(packed[i] >> 16, maps[i + 4].0, "the material's own in the high");
+        }
+    }
 
     fn unit_box() -> crate::asset::Bounds {
         crate::asset::Bounds {

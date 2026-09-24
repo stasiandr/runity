@@ -2,19 +2,28 @@
 // From Assets/Content/Art/Materials/Landscape_Shader_01.shadergraph (M_Landscape_01).
 // The original lerps two road textures (T_Road_01_D_1 at UV x40, T_Road_01_D_2
 // at x60, the second graded by contrast and saturation) by vertex colour red,
-// then by a noise texture (x5), then towards a stronger grade by a scrolling
-// noise texture; emission is sparse glimmer specks, masked by a screen-space
-// glimmer texture and faded out with scene depth near the camera.
-// Here: the road textures are their mean colour plus procedural grain, the
-// noise textures are value noise, vertex colour (not given to a surface) is a
-// low-frequency world-space noise, and the glimmer is a world-space speck that
-// twinkles with time instead of with the screen; its depth fade is left out
-// (no scene depth or camera here). The final hue/saturation/contrast pass is
-// identity at the material's values and is skipped. Metallic is the graph's 0,
-// not the .mat's _Metallic = 1; the .mat's base map (a stale refrigerator
-// texture) is ignored.
+// then by the red of T_Sand_01_T_Noise_01 (x5, times _Multi) towards a
+// differently graded second road, then by the red of T_Road_01_Noise_Animate
+// (x5, scrolling in v with time, times _Multi_Anim) towards a stronger grade
+// of the result; emission is sparse glimmer specks from T_Noise_Glimmer_01_M
+// (x141.5), masked by the same texture laid over the screen and faded out
+// with scene depth near the camera.
+// Here the road and both noise textures are the material's own, read as the
+// graph reads them. Vertex colour (not given to a surface) is a low-frequency
+// world-space noise. The glimmer texture would be a fifth, so its specks are
+// procedural: a rare lit cell in a fine grid on the UVs, twinkling with time
+// where the original twinkles as the screen-space mask slides over it; the
+// depth fade is left out (no scene depth or camera here). The final
+// hue/saturation/contrast pass is identity at the material's values and is
+// skipped. Metallic is the graph's 0, not the .mat's _Metallic = 1; the .mat's
+// base map (a stale refrigerator texture) is ignored.
+// runity:textures _SampleTexture2D_5f1339acdb164c14b236042c20de1ef1_Texture_1_Texture2D _SampleTexture2D_353fddecd0514a679b12f6c2ebe27635_Texture_1_Texture2D _SampleTexture2D_54c0ff5071964b64bf228a86c4406d03_Texture_1_Texture2D _SampleTexture2D_94a9ef748c05450ebe18c4ea0db054a7_Texture_1_Texture2D
 
-const LANDSCAPE_ROAD = vec3<f32>(0.508, 0.304, 0.162);
+const LANDSCAPE_ROAD_1 = 0u;
+const LANDSCAPE_ROAD_2 = 1u;
+const LANDSCAPE_NOISE = 2u;
+const LANDSCAPE_NOISE_ANIM = 3u;
+
 const LANDSCAPE_TILING = 40.0;
 const LANDSCAPE_TILING_1 = 5.0;
 const LANDSCAPE_TILING_3 = 60.0;
@@ -64,34 +73,27 @@ fn landscape_saturation(c: vec3<f32>, s: f32) -> vec3<f32> {
     return luma + s * (c - luma);
 }
 
-// A road texture: its mean colour with a fine grain.
-fn landscape_road(uv: vec2<f32>, seed: f32) -> vec3<f32> {
-    let g = landscape_fbm(uv * 3.0 + seed) - 0.5;
-    return LANDSCAPE_ROAD * (1.0 + g * 0.08);
-}
-
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
     let uv = in.uv;
 
-    let road_1 = landscape_road(uv * LANDSCAPE_TILING, 0.0);
-    let road_2 = landscape_road(uv * LANDSCAPE_TILING_3, 31.0);
+    let road_1 = texture_at(in, LANDSCAPE_ROAD_1, uv * LANDSCAPE_TILING).rgb;
+    let road_2 = texture_at(in, LANDSCAPE_ROAD_2, uv * LANDSCAPE_TILING_3).rgb;
+    let noise = texture_at(in, LANDSCAPE_NOISE, uv * LANDSCAPE_TILING_1).r;
+    let anim_uv = uv * LANDSCAPE_TILING_1 + vec2<f32>(0.0, in.time * LANDSCAPE_SPEED);
+    let noise_anim = texture_at(in, LANDSCAPE_NOISE_ANIM, anim_uv).r;
 
     // Vertex colour red stands in as a broad world-space patchiness.
     let painted = smoothstep(0.35, 0.65, landscape_fbm(in.world_position.xz * 0.08));
     let graded_1 = landscape_saturation(landscape_contrast(road_2, LANDSCAPE_CONTRAST_01), LANDSCAPE_SATURATION);
     let c1 = mix(road_1, graded_1, painted);
 
-    // T_Sand_01_T_Noise_01: soft blotches, about 0.03 to 0.2 once linear.
-    let blotch = pow(mix(0.21, 0.49, landscape_fbm(uv * LANDSCAPE_TILING_1 * 4.0)), 2.2);
+    // The lerps are unclamped, as the graph's are: past 1 they overshoot.
     let graded_2 = landscape_saturation(landscape_contrast(road_2, LANDSCAPE_CONTRAST_02), LANDSCAPE_SATURATION_2);
-    let c2 = mix(c1, graded_2, blotch * LANDSCAPE_MULTI);
+    let c2 = mix(c1, graded_2, noise * LANDSCAPE_MULTI);
 
-    // T_Road_01_Noise_Animate, scrolling in v: sparse bright flecks.
-    let anim_uv = uv * LANDSCAPE_TILING_1 * 8.0 + vec2<f32>(0.0, in.time * LANDSCAPE_SPEED * 8.0);
-    let fleck = pow(smoothstep(0.6, 1.0, landscape_noise(anim_uv)), 3.0) * 0.25;
     let graded_anim = landscape_saturation(landscape_contrast(c2, LANDSCAPE_CONTRAST_ANIM), LANDSCAPE_SATURATION_ANIM);
-    let c3 = mix(c2, graded_anim, fleck * LANDSCAPE_MULTI_ANIM);
+    let c3 = mix(c2, graded_anim, noise_anim * LANDSCAPE_MULTI_ANIM);
 
     // Glimmer: rare specks in a fine grid, each lit now and then.
     let g = uv * LANDSCAPE_GLIMMER_TILING;
