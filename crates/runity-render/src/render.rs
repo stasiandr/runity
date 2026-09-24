@@ -1049,6 +1049,9 @@ pub struct Renderer {
     started: std::time::Instant,
     /// The stroke of lightning of the frame being drawn, if any.
     bolt: Option<crate::weather::Bolt>,
+    /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
+    timer: Option<crate::gpu_timer::GpuTimer>,
+    timing: bool,
     /// The physical sky's table and aerial grid.
     atmosphere: crate::atmosphere::AtmosphereRenderer,
     /// One texel of depth, bound in place of the prepass's while it draws.
@@ -2806,6 +2809,8 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             bolt: None,
+            timer: crate::gpu_timer::GpuTimer::new(gpu),
+            timing: std::env::var_os("RUNITY_GPU_TIMES").is_some(),
             atmosphere,
             clouds,
             terrain_heights,
@@ -3513,6 +3518,20 @@ impl Renderer {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
+    /// Time each pass of the screen's frame on the GPU, or stop: see
+    /// [`Self::gpu_times`]. `RUNITY_GPU_TIMES=1` starts it on.
+    pub fn profile_gpu(&mut self, on: bool) {
+        self.timing = on;
+    }
+
+    /// Each pass's time on the GPU, milliseconds, averaged over the last
+    /// frames it was timed, in the order the passes run — nothing when
+    /// not timing or on a device without timestamps. A frame or two
+    /// behind: the frame does not wait for them.
+    pub fn gpu_times(&self) -> Vec<(String, f32)> {
+        self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
+    }
+
     /// The frame as a stroke of lightning lights it, when one is coming
     /// down now; and the bolt for the sky to draw.
     fn lightning(&mut self, frame: &Frame) -> Option<Frame> {
@@ -3835,6 +3854,14 @@ impl Renderer {
             &masked
         };
         let aspect = width as f32 / height.max(1) as f32;
+        // The screen's frame timed, when asked: not a probe's face or a
+        // picture's.
+        let timed = self.timing && probe.is_none() && view.is_some() && !self.picturing;
+        if timed {
+            if let Some(timer) = self.timer.as_mut() {
+                timer.begin(gpu);
+            }
+        }
         if self.depth_size != (width, height) {
             self.depth = depth_view(gpu, width, height, self.samples);
             self.scene = scene_targets(gpu, width, height, self.samples);
@@ -4760,7 +4787,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("shadows"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -4795,7 +4822,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("lamp shadows"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -4888,7 +4915,7 @@ impl Renderer {
                         }),
                         stencil_ops: None,
                     }),
-                    timestamp_writes: None,
+                    timestamp_writes: crate::gpu_timer::render("prepass"),
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
@@ -5013,7 +5040,7 @@ impl Renderer {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("scene"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -5159,7 +5186,7 @@ impl Renderer {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
+                timestamp_writes: crate::gpu_timer::render("overlay"),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -5169,7 +5196,17 @@ impl Renderer {
                 shadow_total + batched_total + singles.len() as u32 + transparent.len() as u32;
             self.draw_batches(&mut pass, &overlay_batches, base, true);
         }
-        gpu.queue.submit(Some(encoder.finish()));
+        let timer = self.timer.as_mut().filter(|_| timed);
+        match timer {
+            Some(timer) => {
+                timer.end(&mut encoder);
+                gpu.queue.submit(Some(encoder.finish()));
+                timer.submitted();
+            }
+            None => {
+                gpu.queue.submit(Some(encoder.finish()));
+            }
+        }
     }
 }
 

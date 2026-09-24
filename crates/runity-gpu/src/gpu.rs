@@ -123,6 +123,10 @@ impl Gpu {
             required_limits = required_limits.using_recommended_minimum_mesh_shader_values();
         }
         let mut required_features = wgpu::Features::empty();
+        // Timestamps at the passes' ends, for the GPU profiler.
+        if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            required_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
         if ray_tracing {
             required_features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
         }

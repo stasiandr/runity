@@ -62,7 +62,7 @@ use runity_core::{defaults, id, impl_parts, input, library, AssetLink, Library, 
 #[allow(unused_imports)]
 use runity_geometry::{animation, builtin};
 #[allow(unused_imports)]
-use runity_gpu::{gpu, surface};
+use runity_gpu::{gpu, gpu_timer, surface};
 #[allow(unused_imports)]
 use runity_overlay::{ui, ui_render};
 

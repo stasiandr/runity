@@ -21,7 +21,7 @@ pub use ui_render::UiRenderer;
 #[allow(unused_imports)]
 use runity_core::{input, strings, Tuned};
 #[allow(unused_imports)]
-use runity_gpu::{gpu, surface};
+use runity_gpu::{gpu, gpu_timer, surface};
 
 /// This module's manifest (`module.ron`): its name, what it stands on,
 /// the fields of a line it reads.
