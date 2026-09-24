@@ -54,6 +54,7 @@ fn entity_fields() -> Value {
         "particles": { "type": "string", "description": "RON: particles given off along its up — (rate: 30.0, life: 0.8, speed: 2.0, spread_deg: 20.0, size: 0.06, gravity: -1.0, color: (1.0, 0.6, 0.2)) — sparks, dust, spray; or None" },
         "light": { "type": "string", "description": "RON: a point light at this entity — (color: (1.0, 0.6, 0.3), intensity: 2.0, range: 6.0), colour as a picker says it; add cone_deg: 30.0 for a spot along its +z — or None" },
         "physics": { "type": "string", "description": "RON, only what differs: (friction: 0.5, bounce: 0.0, density: 1.0) — a ball is (bounce: 0.8), iron is (density: 8.0); freeze_turn: \"xz\" keeps it upright, freeze_move: \"y\" at its height" },
+        "wires": { "type": "string", "description": "RON, on a Trigger (or any body): what it does to other things when something comes in or goes out — [(on: Enter|Leave|Empty, to: \"<id>\", do: Trigger(\"open\")|Set(\"lit\", true)|Activate|Deactivate|Toggle|Spawn(prefab: \"crate\"), only: \"player\", once: true)]; Empty is when the last one left; Trigger and Set pull the target's animator; Spawn puts the prefab where the target stands; only is a layer; or None. No conditions or sequences: logic is the game's code" },
         "joint": { "type": "string", "description": "RON, on the body that moves: None, Hinge(to: \"<id>\", anchor: (x, y, z), axis: (x, y, z), limits_deg: (min, max)), Ball(to: \"<id>\", anchor: (x, y, z)), Fixed(to: \"<id>\"), Slider(to: \"<id>\", axis: (x, y, z), limits: (min, max)). Anchor and axis in its own space; leave out `to` to hang from the world" },
         "components": { "type": "object", "additionalProperties": { "type": ["string", "null"] }, "description": "the game's components by registered name, each value in RON, e.g. {\"door\": \"(open_angle: 90.0)\"}; null removes one" },
     })
@@ -89,7 +90,7 @@ pub fn list() -> Vec<Value> {
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
         tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic, has:light|camera|particles|probe|decal|route|joint|collider, layer:debris; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
         tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides. With `ids`, for several at once: — where they disagree.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } } }), &[]),
-        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
+        tool("set_field", "Set one field of an entity from text, as typing into the Inspector: name, model, prefab, position \"(x, y, z)\", rotation, scale, material, body, collider, physics, layer, joint, wires, camera, components.<name>. One undo step; on a prefab's part, an override. With `ids` instead of `id`, the same field of all of them, still one step.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } }, "field": { "type": "string" }, "value": { "type": "string" } }), &["field", "value"]),
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("add_entity", "Add an entity, as one undo step. Returns its id.", add, &[]),
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
@@ -120,6 +121,14 @@ pub fn list() -> Vec<Value> {
             "erase": { "type": "boolean" },
             "seed": { "type": "integer" },
         }), &["what", "centre", "radius"]),
+        tool("wire", "Wire a trigger to what it does, without code (docs/wires.md): when something comes into `from`'s body (on: Enter), goes out (Leave) or the last one has gone (Empty), `to` gets `do` — Trigger(\"open\") or Set(\"lit\", true) on its animator, Activate, Deactivate, Toggle, or Spawn(prefab: \"crate\") where it stands. only: a layer (the player, not a crate); once: the first time only. Appended to `from`'s `wires`, one undo step; `problems` then says if its animator lacks that trigger or it has no body. Play (simulate) runs wires, animators and physics without the game.", json!({
+            "from": { "type": "string", "description": "the trigger's id" },
+            "to": { "type": "string", "description": "the id of what it acts on" },
+            "do": { "type": "string", "description": "RON: Trigger(\"open\"), Set(\"lit\", true), Activate, Deactivate, Toggle, Spawn(prefab: \"crate\")" },
+            "on": { "type": "string", "enum": ["Enter", "Leave", "Empty"] },
+            "only": { "type": "string", "description": "a collision layer from layers.ron; empty for anything" },
+            "once": { "type": "boolean" },
+        }), &["from", "to", "do"]),
         tool("fence", "Copies of a model along a line through points — a fence, a row of lamps, a colonnade — as one entity with a spline and a spacing. The copies are built from those two and rebuilt when either changes (set_field `spline` or `along`); the file keeps only the line. One undo step; returns the entity's id.", json!({
             "what": { "type": "string", "description": "a model; builtin:cylinder makes posts" },
             "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "world points the line goes through, at least two" },
@@ -538,6 +547,41 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .get(group)
                 .map_or(0, |g| g.children.len());
             Ok(vec![text(format!("{group}: {placed} placed"))])
+        }
+        "wire" => {
+            let from = id(args, "from")?;
+            let act: scrap::scene::Act =
+                ron::from_str(&string(args, "do")?).map_err(|e| format!("do: {e}"))?;
+            let on = match optional_string(args, "on")? {
+                Some(on) => ron::from_str(&on)
+                    .map_err(|_| format!("on is Enter, Leave or Empty, not {on}"))?,
+                None => scrap::scene::On::Enter,
+            };
+            let wire = scrap::scene::Wire {
+                on,
+                only: optional_string(args, "only")?.unwrap_or_default(),
+                to: id(args, "to")?,
+                act,
+                once: args.get("once").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let session = server.session()?;
+            session.wire(from, wire).map_err(|e| e.to_string())?;
+            let problems: Vec<String> = session
+                .problems()
+                .into_iter()
+                .filter(|d| d.entity == Some(from))
+                .map(|d| d.message)
+                .collect();
+            let wires = session
+                .inspect(from)
+                .and_then(|f| f.into_iter().find(|f| f.name == "wires"))
+                .map(|f| f.value)
+                .unwrap_or_default();
+            let mut said = format!("{from} wires = {wires}");
+            for problem in problems {
+                said.push_str(&format!("\n{problem}"));
+            }
+            Ok(vec![text(said)])
         }
         "fence" => {
             let what = string(args, "what")?;
@@ -1587,6 +1631,20 @@ fn apply(desc: &mut EntityDesc, args: &Value) -> Result<(), String> {
                         .map_err(|e| format!("camera: {e}"))?,
                 )
             })
+            .as_ref(),
+        );
+    }
+    if let Some(wires) = optional_string(args, "wires")? {
+        desc.set_part_opt(
+            (if wires.trim() == "None" {
+                None
+            } else {
+                Some(
+                    ron::from_str::<scrap::scene::Wires>(&wires)
+                        .map_err(|e| format!("wires: {e}"))?,
+                )
+            })
+            .filter(|w| !w.0.is_empty())
             .as_ref(),
         );
     }

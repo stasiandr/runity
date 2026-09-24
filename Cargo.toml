@@ -41,6 +41,7 @@ members = [
     "crates/scrap-steam",
     "crates/scrap-studio",
     "crates/scrap-ui",
+    "crates/scrap-wires",
 ]
 
 [workspace.package]

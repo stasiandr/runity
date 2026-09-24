@@ -157,12 +157,15 @@ pub mod player_loop {
     pub use scrap_core::player_loop::*;
 
     /// The build's modules' systems, in the order a frame needs them: in
-    /// the fixed step routes, motion clips and characters' animation, then
+    /// the fixed step the wires first, so what they pull moves in the same
+    /// step, then routes, motion clips and characters' animation, then
     /// the hierarchy placed; cameras following in LateUpdate; particles
     /// and footprints as the frame is built. A game runs a phase where its
     /// own systems want it.
     pub fn modules() -> PlayerLoop {
         let mut player_loop = PlayerLoop::new();
+        #[cfg(feature = "wires")]
+        scrap_wires::systems(&mut player_loop);
         #[cfg(feature = "routes")]
         scrap_routes::systems(&mut player_loop);
         #[cfg(feature = "animation")]
@@ -206,6 +209,9 @@ pub mod player_loop {
             let player_loop = super::modules();
             use super::Phase;
             let mut fixed = vec!["routes", "motion", "animation", "hierarchy"];
+            if cfg!(feature = "wires") {
+                fixed.insert(0, "wires");
+            }
             if cfg!(feature = "soft") {
                 fixed.push("soft");
             }
@@ -243,6 +249,7 @@ pub mod modules {
         "routes",
         "soft",
         "spline",
+        "wires",
     ];
 
     /// The sets `scrap new` offers (DNA, postulate 8), by name: `bare`,
@@ -283,6 +290,7 @@ pub mod modules {
             include_str!("../../scrap-input/module.ron"),
             include_str!("../../scrap-spline/module.ron"),
             include_str!("../../scrap-routes/module.ron"),
+            include_str!("../../scrap-wires/module.ron"),
             include_str!("../../scrap-dialogue/module.ron"),
             include_str!("../../scrap-reports/module.ron"),
             include_str!("../../scrap-discord/module.ron"),
@@ -320,6 +328,7 @@ pub mod modules {
             "input" => cfg!(feature = "input"),
             "spline" => cfg!(feature = "spline"),
             "routes" => cfg!(feature = "routes"),
+            "wires" => cfg!(feature = "wires"),
             "dialogue" => cfg!(feature = "dialogue"),
             "soft" => cfg!(feature = "soft"),
             "destruction" => cfg!(feature = "destruction"),
@@ -367,6 +376,8 @@ pub use scrap_render::render;
 pub use scrap_reports::reports;
 #[cfg(feature = "routes")]
 pub use scrap_routes::routes;
+#[cfg(feature = "wires")]
+pub use scrap_wires::wires;
 
 /// Saving a game in progress, and the report a running game sends the
 /// editor: the core's save with what the modules add to it.
@@ -446,6 +457,8 @@ pub mod scene {
     pub use crate::sound::*;
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
+    #[cfg(feature = "wires")]
+    pub use crate::wires::{Act, On, Wire, Wires};
     pub use scrap_geometry::line::*;
 
     /// Every field of a line, an override or a scene's look the modules
@@ -463,6 +476,8 @@ pub mod scene {
         kinds.extend(crate::motion::part_kinds());
         #[cfg(feature = "routes")]
         kinds.extend(crate::routes::part_kinds());
+        #[cfg(feature = "wires")]
+        kinds.extend(crate::wires::part_kinds());
         kinds.extend(crate::sound::part_kinds());
         #[cfg(feature = "spline")]
         kinds.extend(crate::spline::part_kinds());
@@ -504,6 +519,8 @@ pub mod prelude {
     pub use crate::sound::SoundLine;
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
+    #[cfg(feature = "wires")]
+    pub use crate::wires::WireLine;
     pub use scrap_geometry::line::{GeometryLine, GeometryOverride};
 }
 pub use scrap_core::shape;

@@ -98,6 +98,23 @@ impl Spawned {
     }
 }
 
+/// Take every prefab wires asked for out of the world.
+#[cfg(feature = "wires")]
+fn take_orders(world: &mut World) -> Vec<crate::wires::SpawnOrder> {
+    let asked: Vec<(hecs::Entity, crate::wires::SpawnOrder)> = world
+        .query::<(hecs::Entity, &crate::wires::SpawnOrder)>()
+        .iter()
+        .map(|(e, o)| (e, o.clone()))
+        .collect();
+    asked
+        .into_iter()
+        .map(|(e, order)| {
+            let _ = world.despawn(e);
+            order
+        })
+        .collect()
+}
+
 /// What one [`LiveScene::reload`] found and did.
 #[derive(Debug, Default)]
 pub struct Reload {
@@ -567,7 +584,9 @@ impl LiveScene {
     }
 
     /// [`LiveScene::reload`], at most every [`POLL_SECONDS`]: call it every
-    /// frame with the frame's delta.
+    /// frame with the frame's delta. Every frame, it spawns the prefabs
+    /// wires asked for ([`crate::wires::SpawnOrder`]); what could not be
+    /// spawned is among its problems.
     pub fn poll(
         &mut self,
         delta: f32,
@@ -575,12 +594,52 @@ impl LiveScene {
         gpu: &Gpu,
         renderer: &mut Renderer,
     ) -> Reload {
+        #[cfg(feature = "wires")]
+        let ordered = self.spawn_ordered(world, gpu, renderer);
+        #[cfg(not(feature = "wires"))]
+        let ordered: Vec<String> = Vec::new();
         self.since_poll += delta;
-        if self.since_poll < POLL_SECONDS {
-            return Reload::default();
+        let mut out = if self.since_poll < POLL_SECONDS {
+            Reload::default()
+        } else {
+            self.since_poll = 0.0;
+            self.reload(world, gpu, renderer)
+        };
+        out.problems.extend(ordered);
+        out
+    }
+
+    /// Take the prefabs wires asked for out of the world and spawn each
+    /// where it was asked for: the game's, as [`Self::spawn_prefab`]
+    /// makes them. What could not be, in words.
+    #[cfg(feature = "wires")]
+    pub fn spawn_ordered(
+        &mut self,
+        world: &mut World,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> Vec<String> {
+        let mut problems = Vec::new();
+        for order in take_orders(world) {
+            match self.spawn_prefab(order.prefab.as_str(), order.at, None, world, gpu, renderer) {
+                Ok(made) => problems.extend(made.problems),
+                Err(e) => problems.push(format!("a wire's spawn: {e}")),
+            }
         }
-        self.since_poll = 0.0;
-        self.reload(world, gpu, renderer)
+        problems
+    }
+
+    /// [`Self::spawn_ordered`] without a GPU — a test, a server.
+    #[cfg(feature = "wires")]
+    pub fn spawn_ordered_headless(&mut self, world: &mut World) -> Vec<String> {
+        let mut problems = Vec::new();
+        for order in take_orders(world) {
+            match self.spawn_prefab_headless(order.prefab.as_str(), order.at, None, world) {
+                Ok(made) => problems.extend(made.problems),
+                Err(e) => problems.push(format!("a wire's spawn: {e}")),
+            }
+        }
+        problems
     }
 
     /// Look at the files and bring the world up to date with them.

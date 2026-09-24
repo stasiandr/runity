@@ -5578,3 +5578,105 @@ fn the_selection_is_outlined_round_its_shape_and_its_children_in_blue() {
         count(&session, blue)
     );
 }
+
+const WIRED: &str = r#"(
+    entities: [
+        (id: "f1", name: "floor", model: "builtin:plane", transform: (scale: (20.0, 1.0, 20.0)),
+         body: Static, collider: Box(half: (10.0, 0.05, 10.0))),
+        (id: "20", name: "porch", transform: (position: (0.0, 2.0, 0.0)), body: Trigger, collider: Box(half: (1.0, 0.5, 1.0))),
+        (id: "30", name: "ball", model: "builtin:sphere", transform: (position: (0.0, 5.0, 0.0)),
+         body: Dynamic, collider: Sphere(radius: 0.25)),
+        (id: "d0", name: "door", model: "builtin:cube", transform: (position: (5.0, 1.0, 0.0)), animator: "door"),
+    ],
+)"#;
+
+/// A porch wired to a door, the way a designer does it: the wire is a
+/// field with a picker, a wrong trigger is a problem with a suggestion,
+/// and play slides the door open when the ball drops onto the porch —
+/// the door's animator, without the game's code.
+#[test]
+fn a_ball_onto_a_wired_porch_slides_the_door_open_in_play() {
+    let Some((mut session, path)) = open_with("wires", WIRED) else {
+        return;
+    };
+    let root = root_of(&path);
+    std::fs::create_dir_all(root.join("animators")).unwrap();
+    std::fs::create_dir_all(root.join("clips")).unwrap();
+    std::fs::write(
+        root.join("animators/door.ron"),
+        r#"(start: "shut", states: {
+            "shut": (clip: "door_shut", transitions: [(to: "open", when: [Trigger("open")])]),
+            "open": (clip: "door_open", looping: false),
+        })"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("clips/door_shut.ron"),
+        "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0)])])",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("clips/door_open.ron"),
+        "(length: 0.5, tracks: [(what: X, keys: [(0.0, 5.0), (0.5, 7.0)])])",
+    )
+    .unwrap();
+    let (porch, door) = (id(&session, "porch"), id(&session, "door"));
+    let wire = |to: EntityId, trigger: &str| scrap::scene::Wire {
+        on: scrap::scene::On::Enter,
+        only: String::new(),
+        to,
+        act: scrap::scene::Act::Trigger(trigger.into()),
+        once: false,
+    };
+
+    // To nothing: refused.
+    let nowhere: EntityId = "123".parse().unwrap();
+    assert_eq!(
+        session.wire(porch, wire(nowhere, "open")),
+        Err(EditError::NoEntity(nowhere))
+    );
+    // A trigger the door's graph does not have: said, with the one it has.
+    session.wire(porch, wire(door, "opne")).unwrap();
+    let said: Vec<String> = session.problems().into_iter().map(|d| d.message).collect();
+    assert!(
+        said.iter()
+            .any(|m| m.contains("porch") && m.contains("did you mean `open`")),
+        "{said:?}"
+    );
+    assert!(session.undo().unwrap());
+    session.wire(porch, wire(door, "open")).unwrap();
+    assert!(session
+        .problems()
+        .iter()
+        .all(|d| !d.message.contains("wire")));
+    let fields = session.inspect(porch).unwrap();
+    let wires = fields.iter().find(|f| f.name == "wires").unwrap();
+    assert_eq!(
+        wires.value,
+        r#"[(on:Enter,to:"00000000000000d0",do:Trigger("open"))]"#
+    );
+    assert!(
+        session.field_shape("wires").is_some(),
+        "a form, with a picker for `to`"
+    );
+
+    let x = |session: &Session| session.world_position(door).unwrap().x;
+    session.play();
+    for _ in 0..30 {
+        session.step(1.0 / 60.0);
+    }
+    assert!(
+        (x(&session) - 5.0).abs() < 1e-3,
+        "shut while the ball falls"
+    );
+    for _ in 0..120 {
+        session.step(1.0 / 60.0);
+    }
+    assert!(
+        (x(&session) - 7.0).abs() < 1e-2,
+        "slid open: {}",
+        x(&session)
+    );
+    session.stop();
+    assert!((x(&session) - 5.0).abs() < 1e-3, "and back when play stops");
+}

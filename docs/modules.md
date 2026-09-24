@@ -23,6 +23,7 @@ NEXT_STEPS.
 | `scrap-navigation` | сетка проходимости и A* | physics |
 | `scrap-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
 | `scrap-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
+| `scrap-wires` | `wires`: триггер → действие над целью без кода (docs/wires.md) | ядро, physics, animation по желанию |
 | `scrap-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
 | `scrap-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`, `grains`, `distance_field`: верёвки, ткань, волосы, мягкие тела, PBF/SPH, гравий, SDF сцены и общие контакты между ними (docs/simulation.md) | ядро, geometry |
 | `scrap-animation` | аниматор, графы, motion-клипы | ядро, geometry |
