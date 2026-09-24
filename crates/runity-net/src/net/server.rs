@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::link::{Ended, Link, LinkEvent, Mode};
-use super::protocol::{self, Blob, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
+use super::protocol::{self, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
 use super::PeerId;
 use crate::id::EntityId;
 
@@ -50,7 +50,52 @@ struct Client {
     key: Key,
     name: String,
     ready: bool,
+    /// Others' entries waiting to go to it, the newest of each entity.
+    pending: HashMap<EntityId, Pending>,
+    /// Bytes it may be sent now, and when that was reckoned.
+    allowance: f32,
+    reckoned: std::time::Instant,
 }
+
+/// An entry waiting for its turn to one client: whose, of which tick,
+/// whether partial, and how many flushes it has waited.
+struct Pending {
+    owner: PeerId,
+    tick: u64,
+    partial: bool,
+    entry: Entry,
+    waited: f32,
+}
+
+impl Pending {
+    /// A newer entry of the same entity over this one: a whole one, or
+    /// another owner's, replaces it; a partial one lays its blobs over it,
+    /// so a change in the one it replaces is not lost.
+    fn take(&mut self, owner: PeerId, tick: u64, partial: bool, entry: Entry) {
+        if owner != self.owner || !partial {
+            (self.owner, self.partial, self.entry) = (owner, partial, entry);
+        } else {
+            for (name, bytes) in entry.blobs {
+                match self.entry.blobs.iter_mut().find(|(n, _)| *n == name) {
+                    Some(slot) => slot.1 = bytes,
+                    None => self.entry.blobs.push((name, bytes)),
+                }
+            }
+        }
+        self.tick = tick;
+    }
+
+    fn size(&self) -> usize {
+        self.entry.blobs.iter().map(|(_, b)| b.len() + 3).sum::<usize>() + 12
+    }
+}
+
+/// Bytes a second of others' snapshots the server sends one client at
+/// most: twice what one peer may send ([`super::sync::BUDGET`] at 30
+/// ticks). Past it, what has waited longest goes first and the rest waits,
+/// the newest of each (docs/netsim.md, «Трафик»); the last words go at
+/// once.
+pub const CLIENT_BUDGET: f32 = 60.0 * 1024.0;
 
 /// An entity as the server holds it.
 struct Held {
@@ -97,6 +142,8 @@ pub struct Server {
     given: Vec<(EntityId, u32)>,
     /// [`SHORT_AGE`], unless a test says.
     pub short_age: Duration,
+    /// [`CLIENT_BUDGET`], unless the game says.
+    pub client_budget: f32,
 }
 
 /// How long after a short number is given before the server names an
@@ -129,6 +176,7 @@ impl Server {
             next_short: 1,
             given: Vec::new(),
             short_age: SHORT_AGE,
+            client_budget: CLIENT_BUDGET,
         }
     }
 
@@ -220,6 +268,7 @@ impl Server {
             let pairs = std::mem::take(&mut self.given);
             self.broadcast(ToClient::Shorts { pairs }, None, Mode::Reliable);
         }
+        self.send_pending();
         for (peer, outbox) in std::mem::take(&mut self.outboxes) {
             let Some(client) = self.clients.get(&peer) else {
                 continue;
@@ -428,6 +477,9 @@ impl Server {
                 key,
                 name,
                 ready: false,
+                pending: HashMap::new(),
+                allowance: 0.0,
+                reckoned: std::time::Instant::now(),
             },
         );
         let accepted = ToClient::JoinAccepted {
@@ -574,31 +626,101 @@ impl Server {
         for message in removed {
             self.broadcast(message, Some(peer), Mode::Reliable);
         }
-        if !forward.is_empty() {
-            // Named short once everyone has had time to hear the number.
-            let forward = forward
-                .into_iter()
-                .map(|entry| match self.shorts.get(&entry.id) {
-                    Some(&(short, given)) if given.elapsed() >= self.short_age => entry.shortened(short),
-                    _ => entry,
-                })
-                .collect();
-            let mode = if settle {
-                Mode::Reliable
-            } else {
-                Mode::Unreliable
-            };
-            self.broadcast(
-                ToClient::Snapshot {
-                    owner: peer,
+        if forward.is_empty() {
+            return;
+        }
+        let others: Vec<PeerId> = self.clients.iter().filter(|(p, c)| c.ready && **p != peer).map(|(p, _)| *p).collect();
+        if settle {
+            // The last word goes at once, reliably, and what waited of the
+            // same is stale.
+            for other in &others {
+                if let Some(client) = self.clients.get_mut(other) {
+                    for entry in &forward {
+                        if client.pending.get(&entry.id).is_some_and(|p| p.owner == peer && p.tick <= tick) {
+                            client.pending.remove(&entry.id);
+                        }
+                    }
+                }
+            }
+            let forward = forward.into_iter().map(|entry| self.shortened(entry)).collect();
+            self.broadcast(ToClient::Snapshot { owner: peer, tick, settle, partial, entries: forward }, Some(peer), Mode::Reliable);
+            return;
+        }
+        for other in others {
+            let Some(client) = self.clients.get_mut(&other) else { continue };
+            for entry in &forward {
+                match client.pending.get_mut(&entry.id) {
+                    Some(waiting) => waiting.take(peer, tick, partial, entry.clone()),
+                    None => {
+                        client.pending.insert(entry.id, Pending { owner: peer, tick, partial, entry: entry.clone(), waited: 0.0 });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Named short once everyone has had time to hear the number.
+    fn shortened(&self, entry: Entry) -> Entry {
+        match self.shorts.get(&entry.id) {
+            Some(&(short, given)) if given.elapsed() >= self.short_age => entry.shortened(short),
+            _ => entry,
+        }
+    }
+
+    /// Each client's waiting entries within its allowance, the longest
+    /// waited first (Fiedler's priority accumulator, as the peers' own
+    /// budget): what does not fit gains a point and waits.
+    fn send_pending(&mut self) {
+        let now = std::time::Instant::now();
+        let budget = self.client_budget;
+        let mut out: Vec<(PeerId, ToClient)> = Vec::new();
+        for (&peer, client) in &mut self.clients {
+            let dt = now.duration_since(client.reckoned).as_secs_f32();
+            client.reckoned = now;
+            // At most a tenth of a second's worth saved up.
+            client.allowance = (client.allowance + budget * dt).min(budget * 0.1);
+            if client.pending.is_empty() {
+                continue;
+            }
+            let mut order: Vec<(EntityId, f32)> = client.pending.iter().map(|(id, p)| (*id, p.waited)).collect();
+            order.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            let mut going: Vec<Pending> = Vec::new();
+            for (id, _) in order {
+                let size = client.pending[&id].size();
+                if client.allowance < size as f32 && !(going.is_empty() && client.allowance > 0.0) {
+                    continue;
+                }
+                client.allowance -= size as f32;
+                going.push(client.pending.remove(&id).expect("listed"));
+            }
+            for waiting in client.pending.values_mut() {
+                waiting.waited += 1.0;
+            }
+            // One message for each owner's tick.
+            going.sort_by_key(|p| (p.owner, p.tick, p.partial));
+            let mut messages: Vec<(PeerId, u64, bool, Vec<Entry>)> = Vec::new();
+            for p in going {
+                match messages.last_mut() {
+                    Some((o, t, partial, entries)) if *o == p.owner && *t == p.tick && *partial == p.partial => entries.push(p.entry),
+                    _ => messages.push((p.owner, p.tick, p.partial, vec![p.entry])),
+                }
+            }
+            for (owner, tick, partial, entries) in messages {
+                out.push((peer, ToClient::Snapshot { owner, tick, settle: false, partial, entries }));
+            }
+        }
+        for (peer, message) in out {
+            let message = match message {
+                ToClient::Snapshot { owner, tick, settle, partial, entries } => ToClient::Snapshot {
+                    owner,
                     tick,
                     settle,
                     partial,
-                    entries: forward,
+                    entries: entries.into_iter().map(|e| self.shortened(e)).collect(),
                 },
-                Some(peer),
-                mode,
-            );
+                other => other,
+            };
+            self.outboxes.entry(peer).or_default().unreliable.push(message);
         }
     }
 
@@ -608,6 +730,7 @@ impl Server {
         self.entities.clear();
         for client in self.clients.values_mut() {
             client.ready = false;
+            client.pending.clear();
         }
         let everyone: Vec<PeerId> = self.clients.keys().copied().collect();
         for peer in everyone {
@@ -738,6 +861,7 @@ impl Drop for ServerThread {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::protocol::Blob;
     use crate::net::wire::Loopback;
 
     /// A component's number in these tests.
@@ -922,6 +1046,81 @@ mod tests {
             })
             .collect();
         assert_eq!(snaps, [(PeerId(2), 3)]);
+    }
+
+    fn many(tick: u64, count: u64, size: usize) -> ToServer {
+        ToServer::Snapshot {
+            epoch: 1,
+            tick,
+            settle: false,
+            partial: false,
+            entries: (0..count).map(|n| Entry::new(id(100 + n), vec![(HP, vec![tick as u8; size])])).collect(),
+        }
+    }
+
+    fn heard_entries(heard: &[ToClient]) -> Vec<EntityId> {
+        heard
+            .iter()
+            .flat_map(|m| match m {
+                ToClient::Snapshot { entries, .. } => entries.iter().map(|e| e.id).collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn over_a_clients_budget_the_longest_waited_go_first_and_none_is_left_behind() {
+        let mut rig = Rig::all_in(2);
+        // 30 KB a second, flushed every 10 ms: about 300 bytes a flush,
+        // two or three entries of the ten that change every time.
+        rig.server.client_budget = 30_000.0;
+        let mut last_heard: HashMap<EntityId, usize> = HashMap::new();
+        let mut most_waited = 0;
+        let mut bytes = 0usize;
+        let flushes = 40;
+        for tick in 1..=flushes as u64 {
+            std::thread::sleep(Duration::from_millis(10));
+            rig.say(0, vec![many(tick, 10, 100)]);
+            let heard = rig.run();
+            bytes += heard[1].iter().map(|m| postcard::to_stdvec(m).unwrap().len()).sum::<usize>();
+            for e in heard_entries(&heard[1]) {
+                if let Some(last) = last_heard.insert(e, tick as usize) {
+                    most_waited = most_waited.max(tick as usize - last);
+                }
+            }
+        }
+        assert_eq!(last_heard.len(), 10, "every one went");
+        assert!(most_waited <= 6, "none waited more than six flushes: {most_waited}");
+        let seconds = flushes as f32 * 0.0105;
+        assert!((bytes as f32 / seconds) < 40_000.0, "{} bytes a second", bytes as f32 / seconds);
+    }
+
+    #[test]
+    fn partial_entries_that_waited_together_are_laid_over_each_other() {
+        let mut rig = Rig::all_in(2);
+        rig.server.client_budget = 0.0;
+        rig.say(0, vec![snapshot(1, 4, 1)]);
+        rig.run();
+        const MANA: BlobId = 2;
+        let partial = |tick: u64, blobs: Vec<Blob>| ToServer::Snapshot { epoch: 1, tick, settle: false, partial: true, entries: vec![Entry::new(id(4), blobs)] };
+        rig.say(0, vec![partial(2, vec![(MANA, vec![5])])]);
+        rig.run();
+        rig.say(0, vec![partial(3, vec![(HP, vec![9])])]);
+        rig.run();
+        rig.server.client_budget = 1e9;
+        std::thread::sleep(Duration::from_millis(5));
+        let heard = rig.run();
+        let entries: Vec<&Entry> = heard[1]
+            .iter()
+            .flat_map(|m| match m {
+                ToClient::Snapshot { entries, tick: 3, .. } => entries.iter().collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(entries.len(), 1, "{heard:?}");
+        let mut blobs = entries[0].blobs.clone();
+        blobs.sort();
+        assert_eq!(blobs, [(HP, vec![9]), (MANA, vec![5])], "the newer health and the older mana");
     }
 
     #[test]
