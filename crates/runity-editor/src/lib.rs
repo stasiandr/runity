@@ -2951,6 +2951,10 @@ impl Session {
         // Emitters play while they are looked at, as Unity previews them:
         // a thirtieth of a second a frame drawn.
         runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
+        // Ropes hang, sway and lie on what is below them the same way,
+        // so a line strung in the editor shows its sag as it is strung.
+        runity::soft::step(&mut self.world, 1.0 / 30.0);
+        runity::soft::show(&mut self.world, 0.0);
         // A clip previewed moves the same way: a thirtieth a frame drawn.
         if !self.previewing.is_empty() && self.play.is_none() {
             runity::advance_animations(&mut self.world, 1.0 / 30.0);

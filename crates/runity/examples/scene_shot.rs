@@ -152,6 +152,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // editing a line rather than by patching this file.
     let camera = runity::scene_camera(&scene.view());
 
+    // Ropes hang a few seconds before the picture, to rest where they
+    // would: strung as a parabola, they sway into a catenary and settle on
+    // what is under them.
+    #[cfg(feature = "soft")]
+    {
+        runity::world::apply_hierarchy(&mut world);
+        for _ in 0..180 {
+            runity::soft::step(&mut world, 1.0 / 60.0);
+        }
+        runity::soft::show(&mut world, 0.0);
+    }
     runity::terrain::upload_terrains(&mut world, &gpu, &mut renderer);
     for problem in
         runity::world::upload_material_maps(&world, library.as_ref(), &gpu, &mut renderer)

@@ -17,6 +17,8 @@ pub fn dressers<'a>(
     palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Box<dyn Dress + 'a>> {
     let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
+    #[cfg(feature = "soft")]
+    let link = resolve(&crate::AssetLink::named("builtin:link"));
     #[cfg(feature = "physics")]
     out.push(Box::new(crate::physics::PhysicsDress));
     #[cfg(feature = "animation")]
@@ -24,6 +26,11 @@ pub fn dressers<'a>(
     #[cfg(feature = "routes")]
     out.push(Box::new(crate::routes::RouteDress));
     out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
+    #[cfg(feature = "soft")]
+    {
+        out.push(Box::new(crate::soft::RopeDress));
+        out.push(Box::new(crate::soft::SoftLookDress { link, palette }));
+    }
     #[cfg(feature = "audio")]
     out.push(Box::new(crate::audio::SoundDress));
     out
@@ -59,7 +66,21 @@ pub fn spawn_scene_with(
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Unresolved> {
     let mut dressers = dressers(&mut resolve, &palette);
-    spawn_scene_dressed(scene, world, &mut dressers)
+    let missing = spawn_scene_dressed(scene, world, &mut dressers);
+    drop(dressers);
+    blow(scene, world);
+    missing
+}
+
+/// The scene's wind into what it swings that keeps its own: ropes.
+fn blow(scene: &Scene, world: &mut World) {
+    #[cfg(feature = "soft")]
+    {
+        use crate::prelude::SceneLook;
+        crate::soft::set_wind(world, scene.wind().unwrap_or_default());
+    }
+    #[cfg(not(feature = "soft"))]
+    let _ = (scene, world);
 }
 
 /// instances already expanded — so a changed prefab is a changed scene.
@@ -71,7 +92,10 @@ pub fn patch_scene(
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Patched {
     let mut dressers = dressers(&mut resolve, &palette);
-    patch_scene_dressed(before, after, world, &mut dressers)
+    let patched = patch_scene_dressed(before, after, world, &mut dressers);
+    drop(dressers);
+    blow(after, world);
+    patched
 }
 
 /// Spawn an entity and everything under it as the game's own rather than

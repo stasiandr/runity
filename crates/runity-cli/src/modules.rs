@@ -184,7 +184,7 @@ mod tests {
             cargo_features(&cargo).unwrap(),
             [
                 "animation", "audio", "desktop-shell", "dialogue", "input", "navigation", "net",
-                "physics", "routes", "spline"
+                "physics", "routes", "soft", "spline"
             ]
         );
         let cargo = cargo.replace("\"audio\"]", "\"audio\", \"ray-tracing\"]");

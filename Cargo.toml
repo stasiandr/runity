@@ -32,6 +32,7 @@ members = [
     "crates/runity-reports",
     "crates/runity-routes",
     "crates/runity-shell",
+    "crates/runity-soft",
     "crates/runity-spline",
     "crates/runity-steam",
     "crates/runity-studio",

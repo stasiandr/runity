@@ -3051,6 +3051,7 @@ dependencies = [
  "runity-reports",
  "runity-routes",
  "runity-shell",
+ "runity-soft",
  "runity-spline",
  "runity-steam",
  "serde",
@@ -3309,6 +3310,18 @@ dependencies = [
  "runity-render",
  "subsecond",
  "winit",
+]
+
+[[package]]
+name = "runity-soft"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "runity-core",
+ "runity-geometry",
+ "serde",
 ]
 
 [[package]]

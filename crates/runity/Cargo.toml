@@ -25,6 +25,7 @@ runity-geometry = { path = "../runity-geometry" }
 runity-gpu = { path = "../runity-gpu" }
 runity-overlay = { path = "../runity-overlay" }
 runity-physics = { path = "../runity-physics", default-features = false }
+runity-soft = { path = "../runity-soft", optional = true }
 anyhow = "1.0.104"
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 hecs = "0.11.0"
@@ -39,7 +40,7 @@ tracing = "0.1.44"
 # manifest (`module.ron`) names its feature.
 [features]
 default = [
-    "animation", "dialogue", "input", "navigation", "net", "physics", "ray-tracing", "routes", "spline",
+    "animation", "dialogue", "input", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
 ]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
@@ -57,6 +58,9 @@ input = ["dep:runity-input"]
 spline = ["dep:runity-spline"]
 # Entities travelling their routes.
 routes = ["dep:runity-routes"]
+# Ropes, cables and chains: particles and constraints, solved by XPBD
+# (docs/simulation.md).
+soft = ["dep:runity-soft"]
 # Conversations.
 dialogue = ["dep:runity-dialogue"]
 # Where things can walk: a grid baked from the physics world.

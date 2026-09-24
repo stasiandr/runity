@@ -254,6 +254,15 @@ impl LiveMesh {
     }
 }
 
+/// Many of one mesh, drawn with the entity's material, each placed in the
+/// world as it says — a chain's links, a fence's pickets: one mesh, drawn
+/// as instances of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Copies {
+    pub mesh: crate::render::MeshHandle,
+    pub placed: Vec<glam::Mat4>,
+}
+
 /// A local look at an entity, from its line's `post_volume`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostVolumeBox(pub crate::scene::PostVolume);
@@ -636,6 +645,21 @@ pub fn build_frame_where(
             material: surface.0,
             pose,
         });
+    }
+    // Copies of one mesh: the renderer draws them as instances.
+    for (copies, surface, line) in world
+        .query::<(&Copies, &Surface, Option<&SceneId>)>()
+        .iter()
+    {
+        if keep(line.map(|l| l.0)) {
+            draws.extend(copies.placed.iter().map(|placed| Draw {
+                mesh: copies.mesh,
+                transform: *placed,
+                texture: TextureHandle::WHITE,
+                material: surface.0,
+                pose: None,
+            }));
+        }
     }
     // Screens in the world: their pictures, and the things showing them.
     let mut ui_pictures = Vec::new();

@@ -183,3 +183,27 @@ fn a_physics_step_grows_linearly() {
         })
     });
 }
+
+#[test]
+fn a_rope_step_grows_linearly() {
+    // A rope strung from every tenth crate to the next along, lying on the
+    // crates between: ropes and colliders grow together, which is where a
+    // rope trying every collider would go quadratic.
+    curve("rope step", |scene| {
+        let mut scene = scene.clone();
+        for line in scene.entities.iter_mut().skip(1).step_by(10) {
+            line.set_part(&runity::soft::Rope {
+                to: glam::Vec3::new(2.0, 0.5, 0.0),
+                segments: 12,
+                ..Default::default()
+            });
+        }
+        let mut world = hecs::World::new();
+        runity::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        runity::world::apply_hierarchy(&mut world);
+        for _ in 0..5 {
+            runity::soft::step(&mut world, 1.0 / 60.0);
+        }
+        best(1, || runity::soft::step(&mut world, 1.0 / 60.0))
+    });
+}

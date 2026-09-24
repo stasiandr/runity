@@ -157,6 +157,12 @@ pub mod player_loop {
         #[cfg(feature = "animation")]
         runity_animation::systems(&mut player_loop);
         runity_core::player_loop::systems(&mut player_loop);
+        // Ropes swing once everything they hang from is placed, and are
+        // drawn as the frame is built.
+        #[cfg(feature = "soft")]
+        player_loop
+            .add(Phase::FixedUpdate, "soft", crate::soft::step)
+            .add(Phase::PostLateUpdate, "soft_look", crate::soft::show);
         runity_render::systems(&mut player_loop);
         player_loop
     }
@@ -168,10 +174,11 @@ pub mod player_loop {
         fn the_modules_put_their_systems_where_unity_would() {
             let player_loop = super::modules();
             use super::Phase;
-            assert_eq!(
-                player_loop.names(Phase::FixedUpdate),
-                ["routes", "motion", "animation", "hierarchy"]
-            );
+            let mut fixed = vec!["routes", "motion", "animation", "hierarchy"];
+            if cfg!(feature = "soft") {
+                fixed.push("soft");
+            }
+            assert_eq!(player_loop.names(Phase::FixedUpdate), fixed);
             assert_eq!(player_loop.names(Phase::LateUpdate), ["cameras"]);
         }
     }
@@ -187,7 +194,7 @@ pub mod modules {
     /// `default-features = false`: `default` in its Cargo.toml, less what
     /// is not a module's (a render pass's, as `ray-tracing`).
     pub const DEFAULT_FEATURES: &[&str] = &[
-        "animation", "dialogue", "input", "navigation", "net", "physics", "routes", "spline",
+        "animation", "dialogue", "input", "navigation", "net", "physics", "routes", "soft", "spline",
     ];
 
     /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,
@@ -230,6 +237,7 @@ pub mod modules {
         include_str!("../../runity-reports/module.ron"),
         include_str!("../../runity-discord/module.ron"),
         include_str!("../../runity-shell/module.ron"),
+        include_str!("../../runity-soft/module.ron"),
         ]
         .iter()
         .map(|text| Manifest::parse(text).expect("an official module's manifest reads"))
@@ -260,6 +268,7 @@ pub mod modules {
             "spline" => cfg!(feature = "spline"),
             "routes" => cfg!(feature = "routes"),
             "dialogue" => cfg!(feature = "dialogue"),
+            "soft" => cfg!(feature = "soft"),
             _ => false,
         }
     }
@@ -366,6 +375,8 @@ pub mod scene {
     pub use crate::sound::*;
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
+    #[cfg(feature = "soft")]
+    pub use crate::soft::{Rope, RopeKind};
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -384,6 +395,8 @@ pub mod scene {
         kinds.extend(crate::sound::part_kinds());
         #[cfg(feature = "spline")]
         kinds.extend(crate::spline::part_kinds());
+        #[cfg(feature = "soft")]
+        kinds.extend(crate::soft::part_kinds());
         kinds
     }
 }
@@ -404,9 +417,13 @@ pub mod prelude {
     pub use crate::sound::SoundLine;
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
+    #[cfg(feature = "soft")]
+    pub use crate::soft::RopeLine;
 }
 pub use runity_overlay::screen;
 pub use runity_core::shape;
+#[cfg(feature = "soft")]
+pub mod soft;
 #[cfg(feature = "desktop-shell")]
 pub use runity_shell::shell;
 pub use runity_core::spelling;
