@@ -2675,8 +2675,8 @@ impl Session {
     }
 
     /// Every asset of a kind a typed link can name (`model`, `material`,
-    /// `prefab`, `sound`, `texture`, `scene`), by name: what a picker
-    /// lists, sorted.
+    /// `prefab`, `sound`, `texture`, `scene`, and an `animator` graph), by
+    /// name: what a picker lists, sorted.
     pub fn assets_of_kind(&self, kind: &str) -> Vec<String> {
         use runity::asset::AssetKind;
         let library = |k: AssetKind| -> Vec<String> {
@@ -2705,11 +2705,32 @@ impl Session {
                 .as_ref()
                 .map(|p| p.scene_names())
                 .unwrap_or_default(),
+            "animator" => self.animator_names(),
             _ => Vec::new(),
         };
         out.sort();
         out.dedup();
         out
+    }
+
+    /// The animator graphs in `animators/`, by file stem.
+    fn animator_names(&self) -> Vec<String> {
+        let Some(project) = self.project.as_ref() else {
+            return Vec::new();
+        };
+        std::fs::read_dir(project.root().join(runity::project::ANIMATORS))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().is_some_and(|x| x == "ron") {
+                    Some(p.file_stem()?.to_string_lossy().into_owned())
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Whether a typed link finds its asset: by its ID, or by its name.
@@ -2726,6 +2747,7 @@ impl Session {
             "sound" => library(runity::asset::SOUND),
             "texture" => library(runity::asset::TEXTURE),
             "prefab" => self.prefabs.find(link).is_some(),
+            "animator" => self.animator_names().iter().any(|n| n == link.as_str()),
             "scene" => {
                 let Some(project) = self.project.as_ref() else {
                     return false;

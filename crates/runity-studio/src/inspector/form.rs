@@ -197,14 +197,45 @@ impl Inspector {
         if is_plain(&f.name) || f.name.starts_with("game") {
             return false;
         }
-        // A material by name is a name; one written out in full a form.
-        !(f.name == "material" && (f.value.trim_start().starts_with('"') || f.value == MIXED))
+        // A material is an object field, its parts under it when it is
+        // written out in full (`entity_form_parts`).
+        f.name != "material"
     }
 
     /// One field of what is shown as a form: its line, and the lines of
     /// its parts under it. `line` is the field's line, its label in it
     /// already.
     pub(super) fn entity_form(&mut self, ui: &mut Ui, session: &Session, line: NodeId, f: &Field) {
+        let Some(cx) = self.entity_cx(session, f) else {
+            return;
+        };
+        let place = Place {
+            owner: Owner::Entity(f.name.clone()),
+            path: Vec::new(),
+        };
+        self.form_root(ui, session, &cx, line, place);
+    }
+
+    /// The lines of a field's parts only, a level in, under a line laid out
+    /// otherwise: a material written out in full, under its object field.
+    pub(super) fn entity_form_parts(&mut self, ui: &mut Ui, session: &Session, f: &Field) {
+        let Some(cx) = self.entity_cx(session, f) else {
+            return;
+        };
+        let Some(root) = tree::parse(&cx.text) else {
+            return;
+        };
+        let shape = session.field_shape(&f.name);
+        let shape = one_of(shape.as_ref(), &root);
+        let place = Place {
+            owner: Owner::Entity(f.name.clone()),
+            path: Vec::new(),
+        };
+        self.form_children(ui, session, &cx, &place, &root, shape, 1, false);
+    }
+
+    /// What a field of what is shown is laid out from.
+    fn entity_cx(&self, session: &Session, f: &Field) -> Option<Cx> {
         let mut text = f.value.clone();
         let mut others = Vec::new();
         if f.value == MIXED {
@@ -221,9 +252,7 @@ impl Inspector {
                         .map(|g| g.value)
                 })
                 .collect();
-            let Some(first) = values.first() else {
-                return;
-            };
+            let first = values.first()?;
             text = first.clone();
             others = values[1..]
                 .iter()
@@ -235,17 +264,12 @@ impl Inspector {
             .strip_prefix("components.")
             .unwrap_or(&f.name)
             .to_string();
-        let cx = Cx {
+        Some(Cx {
             prefix,
             text,
             others,
             field: f.name.clone(),
-        };
-        let place = Place {
-            owner: Owner::Entity(f.name.clone()),
-            path: Vec::new(),
-        };
-        self.form_root(ui, session, &cx, line, place);
+        })
     }
 
     /// One field of a game component laid out by its shape, where the
@@ -403,8 +427,20 @@ impl Inspector {
         unknown: bool,
     ) {
         let (shape, optional) = unwrap_option(shape);
+        let shape = one_of(shape, node);
         let name = cx.name(&place.path);
         let mixed = !unknown && cx.mixed(&place.path, node);
+        // A link to an asset: Unity's object field, never its name typed.
+        if let Some(Shape::Asset(kind)) = shape {
+            if let Some(linked) = super::object::linked_name(&cx.text[node.span.clone()]) {
+                let target = super::object::ObjectRef {
+                    slot: super::object::Slot::Form(place.clone()),
+                    kind: kind.clone(),
+                };
+                self.object_field(ui, line, &name, target, Some(&linked), mixed, false);
+                return;
+            }
+        }
         let key = place
             .path
             .iter()
@@ -885,7 +921,12 @@ impl Inspector {
         depth: usize,
     ) {
         let Some(shape) = shape else { return };
-        let mut candidates = vec![shape.example()];
+        // A link left out links nothing: `""`, not a typed link's `ModelLink("")`.
+        let example = match shape {
+            Shape::Asset(_) => "\"\"".to_string(),
+            other => other.example(),
+        };
+        let mut candidates = vec![example.clone()];
         match shape {
             Shape::Bool => candidates.push("true".into()),
             Shape::Enum(names) => candidates.extend(names.iter().skip(1).cloned()),
@@ -901,7 +942,7 @@ impl Inspector {
                 .and_then(|normal| tree::parse(&normal))
                 .is_some_and(|root| root.get(&place.path).is_none())
         });
-        let stand_in = known.clone().unwrap_or_else(|| shape.example());
+        let stand_in = known.clone().unwrap_or(example);
         self.stand_ins.insert(place.clone(), stand_in.clone());
         // Laid out as the value will be once written: the stand-in written
         // in, so every box's place is where it will be.
@@ -1402,6 +1443,21 @@ fn owner_field(owner: &Owner) -> &str {
 
 fn same_variant(node: &Node, name: &str) -> bool {
     matches!(&node.kind, Kind::Struct { name: Some(n), .. } | Kind::Tuple { name: Some(n), .. } if n == name)
+}
+
+/// Which of an untagged enum's shapes a value is written as: a name or a
+/// link for a link, `( … )` for a struct. Anything else as it is.
+fn one_of<'a>(shape: Option<&'a Shape>, node: &Node) -> Option<&'a Shape> {
+    let Some(Shape::OneOf(shapes)) = shape else {
+        return shape;
+    };
+    let linked = matches!(node.kind, Kind::Text(_))
+        || matches!(&node.kind, Kind::Tuple { name: None, items } if items.first().is_some_and(|i| matches!(i.kind, Kind::Text(_))));
+    shapes.iter().find(|s| match s {
+        Shape::Asset(_) => linked,
+        Shape::Struct(_) => matches!(node.kind, Kind::Struct { .. } | Kind::Unit),
+        _ => false,
+    })
 }
 
 /// Whether a value is shown as a group of lines under its own.

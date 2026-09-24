@@ -2399,7 +2399,7 @@ fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
     s.session.add_component(boulder, "spawner").unwrap();
     click(&mut s, "line boulder");
     click(&mut s, "spawner what");
-    click(&mut s, "menu campfire");
+    click(&mut s, "object campfire");
     let value = s
         .session
         .inspect(boulder)
@@ -2767,4 +2767,118 @@ fn a_collider_picks_its_shape_and_edits_its_numbers() {
         .unwrap()
         .iter()
         .any(|f| f.name == "body" && f.value == "Dynamic"));
+}
+
+/// Press on the Project tile `tile` and let go over the node `onto`.
+fn drag_tile_onto(s: &mut Studio, tile: &str, onto: &str) {
+    s.ui.paint();
+    let from = s.ui.rect(s.ui.find(tile).unwrap_or_else(|| panic!("no {tile}")));
+    let to = s.ui.rect(s.ui.find(onto).unwrap_or_else(|| panic!("no {onto}")));
+    let (ax, ay) = from.center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 20.0,
+        y: ay - 20.0,
+    });
+    s.frame();
+    let (bx, by) = to.center();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+}
+
+#[test]
+fn a_model_is_picked_from_a_list_and_never_typed() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    click(&mut s, "line crate");
+    let model = s.ui.find("model").expect("the model's field");
+    assert!(!s.ui.is_field(model), "not a box to type a name into");
+    assert!(inspector_boxes(&mut s).iter().all(|(n, _)| n != "model"));
+
+    // The picker: typed into, it narrows; Enter takes the first.
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "model");
+    assert!(s.ui.find("object picker").is_some());
+    assert!(s.ui.find("object cone").is_some(), "every model to pick");
+    type_text(&mut s, "sphe");
+    s.frame();
+    assert!(s.ui.find("object cone").is_none(), "narrowed");
+    key(&mut s, Key::Enter);
+    assert!(s.ui.find("object picker").is_none(), "closed");
+    assert_eq!(
+        s.session.entity_model(crate_id).as_deref(),
+        Some("builtin:sphere")
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+
+    // Arrows move the choice; Escape leaves it as it was.
+    click(&mut s, "model pick");
+    key(&mut s, Key::Down);
+    key(&mut s, Key::Escape);
+    assert!(s.ui.find("object picker").is_none());
+    assert_eq!(
+        s.session.entity_model(crate_id).as_deref(),
+        Some("builtin:sphere")
+    );
+}
+
+#[test]
+fn a_material_is_set_by_dragging_one_from_the_project() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    click(&mut s, "line crate");
+    assert_eq!(s.session.material_name(crate_id).as_deref(), Some("earth"));
+
+    // A model is no material: nothing changes.
+    find_in_project(&mut s, "sphere");
+    drag_tile_onto(&mut s, "asset sphere", "material");
+    assert_eq!(s.session.material_name(crate_id).as_deref(), Some("earth"));
+
+    // A material is.
+    click(&mut s, "project search");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "bark");
+    s.frame();
+    let steps = s.session.undo_steps().len();
+    drag_tile_onto(&mut s, "asset bark", "material");
+    assert_eq!(s.session.material_name(crate_id).as_deref(), Some("bark"));
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+}
+
+#[test]
+fn an_inline_materials_shading_is_a_list_from_the_engine() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(crate_id, "material", "(base_color: (0.5, 0.4, 0.3))")
+        .unwrap();
+    click(&mut s, "line crate");
+    let shading = s.ui.find("material shading").expect("a shading list");
+    assert!(!s.ui.is_field(shading), "picked, not typed");
+    click(&mut s, "material shading");
+    assert!(s.ui.find("menu Lit").is_some());
+    assert!(s.ui.find("menu Unlit").is_some());
+    click(&mut s, "menu Unlit");
+    let material = s
+        .session
+        .inspect(crate_id)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "material")
+        .unwrap()
+        .value;
+    assert!(material.contains("shading:Unlit"), "{material}");
+    assert!(material.contains("base_color:(0.5,0.4,0.3)"), "the rest kept: {material}");
 }

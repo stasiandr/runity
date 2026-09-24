@@ -127,7 +127,7 @@ impl<'de> serde::Deserialize<'de> for AssetLink {
             type Value = AssetLink;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "an asset's name, or (name: \"…\", id: \"…\")")
+                f.write_str(LINK_EXPECTING)
             }
 
             fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<AssetLink, E> {
@@ -292,6 +292,25 @@ asset_link_kind!(
     SceneLink,
     "scene"
 );
+
+/// What an [`AssetLink`] says it expects: how [`crate::shape`] knows one.
+pub const LINK_EXPECTING: &str = "an asset's name, or (name: \"…\", id: \"…\")";
+
+/// The kind of asset a field of this name links, by the engine's naming:
+/// `model` a model, `clip` a sound, `material` a material. `None` for a
+/// name that does not say.
+pub fn kind_of_field(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "model" | "collision_model" | "mesh" => "model",
+        "material" => "material",
+        "clip" | "sound" => "sound",
+        "prefab" => "prefab",
+        "texture" => "texture",
+        "scene" => "scene",
+        "animator" => "animator",
+        _ => return None,
+    })
+}
 
 /// Every typed link: its name in a file, and the kind of asset it links.
 pub const LINK_KINDS: [(&str, &str); 6] = [

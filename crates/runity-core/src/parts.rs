@@ -31,6 +31,16 @@ pub trait Part: Serialize + DeserializeOwned {
     fn is_default(&self) -> bool {
         false
     }
+
+    /// What its value looks like, for a form: its type traced, a link in
+    /// it of the kind the field's name says. A type serde cannot tell the
+    /// shape of — an untagged enum — says it here.
+    fn shape() -> crate::shape::Shape
+    where
+        Self: Sized,
+    {
+        crate::shape::of_field::<Self>(Self::NAME)
+    }
 }
 
 /// A field some module of this build reads: its name, and how to tell
@@ -62,7 +72,7 @@ impl PartKind {
                     .map(|_| ())
                     .map_err(|e| e.to_string())
             },
-            shape: crate::shape::of::<T>,
+            shape: T::shape,
             variants: crate::shape::variants_of::<T>,
             normal: |text| {
                 ron::from_str::<T>(text)
@@ -223,13 +233,17 @@ pub fn to_text<T: Serialize>(value: &T) -> String {
 /// ```
 #[macro_export]
 macro_rules! impl_parts {
-    ($($ty:ty => $name:literal $(, default if $default:expr)?;)*) => {
+    ($($ty:ty => $name:literal $(, default if $default:expr)? $(, shape $shape:expr)?;)*) => {
         $(
             impl $crate::parts::Part for $ty {
                 const NAME: &'static str = $name;
                 $(fn is_default(&self) -> bool {
                     let check: fn(&Self) -> bool = $default;
                     check(self)
+                })?
+                $(fn shape() -> $crate::shape::Shape {
+                    let shape: fn() -> $crate::shape::Shape = $shape;
+                    shape()
                 })?
             }
         )*

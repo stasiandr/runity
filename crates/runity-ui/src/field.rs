@@ -365,8 +365,11 @@ impl Ui {
                 let end = line_start(&text, line) + text.split('\n').nth(line).map_or(0, str::len);
                 moved(self, end, &mut state);
             }
-            Key::Home | Key::Up => moved(self, 0, &mut state),
-            Key::End | Key::Down => moved(self, text.len(), &mut state),
+            Key::Home => moved(self, 0, &mut state),
+            Key::End => moved(self, text.len(), &mut state),
+            // Up and Down in a one-line field are not the field's: a list
+            // under a search box moves its choice with them.
+            Key::Up | Key::Down => return false,
             Key::Backspace => {
                 if range.is_empty() {
                     state.anchor = prev_boundary(&text, state.cursor);

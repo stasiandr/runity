@@ -258,6 +258,11 @@ impl Style {
         self
     }
 
+    pub fn max_height(mut self, h: f32) -> Self {
+        self.layout.max_size.height = length(h);
+        self
+    }
+
     pub fn min_height(mut self, h: f32) -> Self {
         self.layout.min_size.height = length(h);
         self

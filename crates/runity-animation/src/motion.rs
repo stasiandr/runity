@@ -728,7 +728,10 @@ pub struct AnimatorRef(pub String);
 pub struct BoneName(pub String);
 
 crate::impl_parts! {
-    AnimatorRef => "animator", default if |a| a.0.is_empty();
+    // A graph in `animators/` by name: a picker of them, not text.
+    AnimatorRef => "animator", default if |a| a.0.is_empty(), shape || {
+        runity_core::shape::Shape::Asset("animator".into())
+    };
     BoneName => "bone", default if |b| b.0.is_empty();
 }
 

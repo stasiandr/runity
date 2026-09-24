@@ -4983,3 +4983,44 @@ fn an_entity_and_the_scene_settings_are_edited_as_the_ron_the_file_holds() {
     session.undo().unwrap();
     assert_eq!(session.scene_settings_ron().unwrap(), settings);
 }
+
+#[test]
+fn a_field_that_names_an_asset_says_which_kind() {
+    use runity::shape::Shape;
+    let Some((session, path)) = open("asset-kinds") else {
+        return;
+    };
+    assert_eq!(session.field_shape("model"), Some(Shape::Asset("model".into())));
+    assert_eq!(
+        session.field_shape("animator"),
+        Some(Shape::Asset("animator".into()))
+    );
+    // A material by name, or spelled out — its shading one of the engine's.
+    let Some(Shape::OneOf(material)) = session.field_shape("material") else {
+        panic!("a material is a name or a material")
+    };
+    assert_eq!(material[0], Shape::Asset("material".into()));
+    let Shape::Struct(fields) = &material[1] else {
+        panic!("{material:?}")
+    };
+    assert!(fields.iter().any(|(k, s)| k == "shading"
+        && matches!(s, Shape::Enum(v) if v.contains(&"Lit".to_string()) && v.contains(&"Unlit".to_string()))));
+    // Links inside a module's value: a sound's clip, a particle's model.
+    let Some(Shape::Struct(sound)) = session.field_shape("sound") else {
+        panic!("a struct")
+    };
+    assert_eq!(sound[0], ("clip".to_string(), Shape::Asset("sound".into())));
+    let Some(Shape::Struct(particles)) = session.field_shape("particles") else {
+        panic!("a struct")
+    };
+    assert!(particles
+        .iter()
+        .any(|(k, s)| k == "model" && *s == Shape::Asset("model".into())));
+
+    // The animators a picker offers are the graphs in `animators/`.
+    let root = root_of(&path);
+    std::fs::create_dir_all(root.join("animators")).unwrap();
+    std::fs::write(root.join("animators/door.ron"), "()").unwrap();
+    assert_eq!(session.assets_of_kind("animator"), vec!["door".to_string()]);
+    assert!(session.link_exists("animator", &runity::AssetLink::named("door")));
+}

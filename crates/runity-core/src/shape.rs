@@ -36,8 +36,37 @@ pub enum Shape {
     /// an editor shows as a picker.
     Entity,
     /// A link to an asset of a kind — `model`, `prefab`, `sound`… — by the
-    /// typed links in [`crate::links`]: a picker of that kind's assets.
+    /// typed links in [`crate::links`], or an [`crate::AssetLink`] in a field
+    /// whose name says the kind ([`crate::links::kind_of_field`]): a picker
+    /// of that kind's assets.
     Asset(String),
+    /// Any one of these, told apart by how it is written — serde's
+    /// untagged enum: a material by name, or one spelled out. Serde asks
+    /// nothing that says so; a type says it itself ([`crate::parts::Part::shape`]).
+    OneOf(Vec<Shape>),
+}
+
+/// The shape of `T` as the value of a field called `field`: a link to an
+/// asset in it is of the kind the name says (`model`, `clip`…).
+pub fn of_field<'de, T: Deserialize<'de>>(field: &'static str) -> Shape {
+    let before = FIELD.replace(field);
+    let shape = of::<T>();
+    FIELD.set(before);
+    shape
+}
+
+std::thread_local! {
+    /// The name of the field being traced: what a link in it is a link to.
+    static FIELD: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// A visitor's `expecting`, as text.
+struct Expecting<'a, V>(&'a V);
+
+impl<'de, V: Visitor<'de>> fmt::Display for Expecting<'_, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.expecting(f)
+    }
 }
 
 /// The shape of `T`.
@@ -102,6 +131,7 @@ impl Shape {
                     .join(", ")
             ),
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
+            Shape::OneOf(shapes) => shapes.first().map(Shape::example).unwrap_or_default(),
             Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
             Shape::Asset(kind) => {
                 let name = crate::links::LINK_KINDS
@@ -138,7 +168,10 @@ impl Shape {
             out.push(format!("{here} is {wanted}, not {}", describe(value)))
         };
         match (self, value) {
-            (Shape::Any | Shape::Enum(_) | Shape::Entity | Shape::Asset(_), _) => {}
+            (
+                Shape::Any | Shape::Enum(_) | Shape::Entity | Shape::Asset(_) | Shape::OneOf(_),
+                _,
+            ) => {}
             (Shape::Bool, V::Bool(_)) => {}
             (Shape::Bool, _) => wrong(out, "true or false"),
             (Shape::Int, V::Number(n)) if n.into_f64().fract() == 0.0 => {}
@@ -222,6 +255,10 @@ impl fmt::Display for Shape {
                 write!(f, "({})", fields.join(", "))
             }
             Shape::Enum(variants) => write!(f, "{}", variants.join(" | ")),
+            Shape::OneOf(shapes) => {
+                let shapes: Vec<String> = shapes.iter().map(ToString::to_string).collect();
+                write!(f, "{}", shapes.join(" or "))
+            }
             Shape::Entity => write!(f, "entity"),
             Shape::Asset(kind) => write!(f, "{kind}"),
         }
@@ -287,8 +324,10 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         deserialize_f32 => Shape::Float, visit_f32(0.0);
         deserialize_f64 => Shape::Float, visit_f64(0.0);
         deserialize_char => Shape::Char, visit_char('a');
-        deserialize_str => Shape::Text, visit_str("");
-        deserialize_string => Shape::Text, visit_string(String::new());
+        // `0`, not nothing: text a type parses further — an entity's or an
+        // asset's id — reads it, and the trace goes on past it.
+        deserialize_str => Shape::Text, visit_str("0");
+        deserialize_string => Shape::Text, visit_string("0".to_string());
         deserialize_bytes => Shape::Any, visit_bytes(&[]);
         deserialize_byte_buf => Shape::Any, visit_byte_buf(Vec::new());
         deserialize_unit => Shape::Unit, visit_unit();
@@ -297,6 +336,17 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
     }
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Stop> {
+        // A link to an asset reads anything a link is written as: an
+        // `AssetLink` says so by what it expects, and its kind is the
+        // field's it is the value of.
+        if Expecting(&visitor).to_string() == crate::links::LINK_EXPECTING {
+            *self.out = Shape::Asset(
+                crate::links::kind_of_field(FIELD.get())
+                    .unwrap_or("asset")
+                    .to_string(),
+            );
+            return visitor.visit_str("");
+        }
         *self.out = Shape::Any;
         visitor.visit_unit()
     }
@@ -505,10 +555,13 @@ impl<'de> de::MapAccess<'de> for Fields<'_> {
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Stop> {
         let index = self.next;
         self.next += 1;
-        seed.deserialize(Tracer {
+        let before = FIELD.replace(self.names[index]);
+        let value = seed.deserialize(Tracer {
             out: &mut self.shapes[index],
             depth: self.depth,
-        })
+        });
+        FIELD.set(before);
+        value
     }
 }
 
@@ -720,6 +773,30 @@ mod tests {
         );
         let example = shape.example();
         assert!(ron::from_str::<Door>(&example).is_ok(), "{example}");
+    }
+
+    #[test]
+    fn a_link_to_an_asset_is_of_the_kind_its_field_names() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct Emitter {
+            model: crate::AssetLink,
+            clip: Option<crate::AssetLink>,
+            rate: f32,
+        }
+        let Shape::Struct(fields) = of::<Emitter>() else {
+            panic!("a struct")
+        };
+        assert_eq!(fields[0].1, Shape::Asset("model".into()));
+        assert_eq!(
+            fields[1].1,
+            Shape::Option(Box::new(Shape::Asset("sound".into())))
+        );
+        assert_eq!(fields[2].1, Shape::Float, "traced on past the links");
+        assert_eq!(
+            of_field::<crate::AssetLink>("material"),
+            Shape::Asset("material".into())
+        );
     }
 
     #[test]

@@ -639,7 +639,12 @@ pub struct BendsGrass(pub f32);
 
 
 crate::impl_parts! {
-    MaterialRef => "material", default if |m| m.is_default();
+    // By name, or spelled out: serde's untagged enum, which a trace of
+    // its type cannot see into.
+    MaterialRef => "material", default if |m| m.is_default(), shape || {
+        use runity_core::shape::{self, Shape};
+        Shape::OneOf(vec![Shape::Asset("material".into()), shape::of::<Material>()])
+    };
     BendsGrass => "bends_grass", default if |b| b.0 == 0.0;
     Lens => "camera";
     Light => "light";

@@ -77,6 +77,8 @@ pub struct Requests {
     pub dropped: Option<Asset>,
     /// A Project entry was clicked: show it in the Inspector.
     pub inspect: Option<Asset>,
+    /// Show this entry in the Project: an Inspector field pointed at it.
+    pub ping: Option<Asset>,
 }
 
 /// A panel torn off into a window of its own.
@@ -2099,7 +2101,12 @@ impl Studio {
             self.bottom.update(&mut self.ui, s);
         }
         let t2 = Instant::now();
+        // The Inspector's object fields: the Project's pictures, and the
+        // one a dragged entry would land in lit.
+        self.inspector.set_pictures(self.bottom.pictures());
         self.inspector.update(&mut self.ui, s);
+        let dragged = self.bottom.dragged(&self.ui);
+        self.inspector.hover_drop(&mut self.ui, dragged.as_ref());
         let t3 = Instant::now();
         self.update_toolbar();
         self.update_status();
@@ -2555,6 +2562,10 @@ impl Studio {
         if let Some(asset) = requests.dropped {
             self.drop_asset(asset);
         }
+        if let Some(asset) = requests.ping {
+            self.bottom.ping(&mut self.ui, &self.session, asset);
+            self.refresh();
+        }
         if let Some((items, x, y)) = requests.menu {
             self.open_popup(items, x, y);
         }
@@ -2578,6 +2589,14 @@ impl Studio {
     /// A Project entry let go somewhere: in the Scene view, placed where
     /// it landed; a material, onto what it landed on.
     fn drop_asset(&mut self, asset: Asset) {
+        // Onto an Inspector field that names an asset: set there if it fits.
+        if self
+            .inspector
+            .drop_asset(&mut self.ui, &mut self.session, &asset)
+        {
+            self.refresh();
+            return;
+        }
         let (px, py) = self.ui.pointer();
         // Onto the Hierarchy: under the line it lands on, or at the top.
         if let Some(parent) = self.hierarchy.drop_target(&self.ui) {

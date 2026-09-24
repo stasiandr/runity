@@ -88,6 +88,9 @@ pub struct Bottom {
     folder_tiles: HashMap<NodeId, String>,
     crumb_nodes: HashMap<NodeId, String>,
     entries: HashMap<NodeId, Asset>,
+    /// The entry an Inspector field pointed at (Unity's ping): outlined,
+    /// and scrolled to once.
+    pinged: Option<(Asset, bool)>,
     /// Each tile's files, absolute: the asset's own and, for a model, its
     /// import settings beside it.
     tile_files: HashMap<NodeId, Vec<PathBuf>>,
@@ -327,6 +330,7 @@ impl Bottom {
             folder_tiles: HashMap::new(),
             crumb_nodes: HashMap::new(),
             entries: HashMap::new(),
+            pinged: None,
             tile_files: HashMap::new(),
             marks: Default::default(),
             counts,
@@ -375,6 +379,30 @@ impl Bottom {
                 }
             }
         }
+    }
+
+    /// The entry being dragged from the grid, if one is: what the Inspector
+    /// lights a field for.
+    pub fn dragged(&self, ui: &Ui) -> Option<Asset> {
+        ui.dragging().and_then(|n| self.entries.get(&n).cloned())
+    }
+
+    /// The pictures drawn so far, by what each is asked for by
+    /// ([`picture_key`]): what the Inspector shows beside an asset's name.
+    pub fn pictures(&self) -> HashMap<String, ImageId> {
+        self.thumbs
+            .iter()
+            .filter(|(_, (_, ready))| *ready)
+            .map(|(name, (id, _))| (name.clone(), *id))
+            .collect()
+    }
+
+    /// Show an entry in the grid — its folder chosen, the search left, its
+    /// tile outlined — as Unity pings what an object field names.
+    pub fn ping(&mut self, ui: &mut Ui, session: &Session, asset: Asset) {
+        ui.set_text(self.search, "");
+        self.go_to(folder_of(&asset, session, &material_sources(session)));
+        self.pinged = Some((asset, false));
     }
 
     /// Show `folder`, its way open in the tree, and leave searching.
@@ -808,8 +836,20 @@ impl Bottom {
                 self.tile_files.insert(tile, files);
             }
             let current = matches!(&asset, Asset::Scene(p) if Some(p) == open.as_ref());
+            let pinged = match &mut self.pinged {
+                Some((p, scrolled)) if *p == asset => {
+                    if !*scrolled {
+                        *scrolled = true;
+                        ui.scroll_to(self.grid, tile);
+                    }
+                    true
+                }
+                _ => false,
+            };
             ui.restyle(tile, |s| {
-                if current {
+                if pinged {
+                    s.border(1.0, ACCENT).background(ACCENT_900)
+                } else if current {
                     s.border(1.0, ACCENT.alpha(40)).background(ACCENT_900)
                 } else {
                     s.border(1.0, runity_ui::Color::TRANSPARENT)
@@ -1251,6 +1291,7 @@ impl Bottom {
                 button: runity::input::MouseButton::Left,
             } => {
                 if let Some(asset) = self.entries.get(&node).cloned() {
+                    self.pinged = None;
                     requests.inspect = Some(asset);
                 }
             }
@@ -1388,7 +1429,7 @@ fn mark_dot(ui: &mut Ui, tile: NodeId, label: &str, x: f32, y: f32) {
 /// What a Project entry's picture is asked for by: the model's or prefab's
 /// name, a material's with `Session::thumbnail`'s prefix, a scene's path
 /// after `scene:`. A sound has none.
-fn picture_key(asset: &Asset) -> Option<String> {
+pub fn picture_key(asset: &Asset) -> Option<String> {
     match asset {
         Asset::Model(name, _) | Asset::Prefab(name) => Some(name.clone()),
         Asset::Material(name) => Some(format!("{}{name}", runity_editor::MATERIAL_PICTURE)),
