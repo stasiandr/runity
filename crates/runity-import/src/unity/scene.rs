@@ -863,6 +863,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 } else {
                     1.0
                 },
+                // Unity's own default is a kilogram.
+                mass: Some(b.f32("m_Mass").unwrap_or(1.0)),
+                // Continuous, speculative or dynamic: checked between steps.
+                fast: b.i64("m_CollisionDetection").is_some_and(|m| m != 0),
                 ..BodyProps::default()
             });
         }

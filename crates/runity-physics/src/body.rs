@@ -213,6 +213,10 @@ pub struct BodyProps {
     /// 8 is a crate of iron that a wooden one does not push aside.
     #[serde(default = "unit", skip_serializing_if = "is_one")]
     pub density: f32,
+    /// Its mass in kilograms, when said: a shovel of 2 kg is 2 kg whatever
+    /// its collider's size. Wins over `density`. Unity's Rigidbody mass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass: Option<f32>,
     /// How fast it slows by itself, per second: air, water, a sled on snow.
     /// Unity's drag.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -297,6 +301,7 @@ impl Default for BodyProps {
             friction: 0.5,
             bounce: 0.0,
             density: 1.0,
+            mass: None,
             drag: 0.0,
             spin_drag: 0.0,
             gravity: 1.0,

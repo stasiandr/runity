@@ -574,6 +574,9 @@ impl PhysicsWorld {
             collider.set_collision_groups(layered);
             collider.set_solver_groups(layered);
             collider.set_density(props.density.max(1e-3));
+            if let Some(mass) = props.mass.filter(|m| *m > 0.0) {
+                collider.set_mass(mass);
+            }
             if physics.0 == Body::Trigger {
                 collider.set_sensor(true);
                 // A zone notices whatever enters it, a kinematic player or
