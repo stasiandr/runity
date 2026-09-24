@@ -171,6 +171,18 @@ cargo test --workspace
 На macOS всегда есть Metal, на Windows — WARP. Если адаптера нет вообще, тест
 говорит об этом одной строкой и пропускается.
 
+Тесты поделены на три уровня по цене ([.config/nextest.toml](.config/nextest.toml)),
+гоняет их [cargo-nextest](https://nexte.st) (`cargo install --locked cargo-nextest`):
+
+```
+cargo nextest run              # быстрые: без GPU, < 1 с каждый — после каждой правки
+cargo nextest run -P ci        # + средние: GPU, редактор, бюджеты — CI на каждый push
+cargo nextest run -P daily     # + медленные: > 5 с каждый — CI раз в день
+```
+
+Бюджеты (постулаты 1 и 6) медленными не бывают: они на каждом коммите.
+`cargo test --workspace` по-прежнему гоняет всё, включая доктесты.
+
 ## Ассеты
 
 Ничего, что грузит игра, не является исходным форматом. Исходник импортируется

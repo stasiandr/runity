@@ -1,0 +1,100 @@
+# Tests in three tiers, by what they cost.
+#
+#   fast    no GPU, under a second each. Every change, locally and by agents:
+#             cargo nextest run
+#   medium  opens a GPU or a whole editor, or takes 1–5 s, or holds a budget.
+#           CI on every push runs fast + medium:
+#             cargo nextest run -P ci
+#   slow    over ~5 s each. Once a day on CI, and before a merge that
+#           touches what they cover:
+#             cargo nextest run -P daily
+#
+# A new test is fast until it says otherwise: if it opens a GPU, add its
+# binary to MEDIUM; if it runs longer than a second, add it by name. The
+# daily run prints every test slower than its tier allows
+# (tools/test-tiers.py), so the lists do not drift.
+#
+# A budget is never slow, however long it runs: DNA postulates 1 and 6 hold
+# iteration time and performance on every commit. `scaling`,
+# `iteration_budget` and "the editor stays quick" stay in medium.
+#
+# nextest has no named filters, so SLOW is written out twice: in `default`
+# and in `ci`. Change both.
+#
+# Doctests: nextest does not run them. `cargo test --doc` does (CI runs it
+# beside `-P ci`); plain `cargo test --workspace` still runs everything.
+
+[profile.default]
+# fast = not (MEDIUM or SLOW)
+default-filter = """
+not (
+  (package(runity) & kind(test) & not binary(/^(netsim|scaling|iteration_budget|example_files|preserving_save)$/))
+  | package(runity-studio)
+  | binary_id(runity-ui::render)
+  | binary_id(/^runity-import::(first_frame|skinning|textured)$/)
+  | binary_id(runity::scaling) | binary_id(/::iteration_budget$/)
+  | test(=a_thousand_lines_lay_out_once_and_then_cost_nothing)
+  | test(=a_hover_over_a_long_list_repaints_quickly)
+  | (binary_id(runity-editor::session) & test(/^(the_transform_tool_is_y_and_each_of_its_parts_does_its_own_drag|the_view_ring_turns_in_snapped_steps_and_says_how_far|a_rect_corner_resizes_with_the_far_corner_staying_put|the_link_puts_its_port_back_when_another_editor_took_it|a_grid_surface_shows_its_metres_and_a_plain_one_does_not|the_rotate_tool_turns_the_thing_it_is_on_and_undoes_in_one_step)$/))
+  | (package(runity-net) & test(=party::tests::everything_converges_over_an_awful_link))
+  | (package(runity-fluid) & test(/^(mpm::tests::flip_keeps_the_particles_own_speed_and_pic_smooths_it|smoke::tests::hot_smoke_rises_and_only_the_blocks_it_is_in_are_awake|smoke::tests::the_wind_bends_the_plume_and_a_roof_stops_it)$/))
+  | (package(runity-soft) & test(=unified::tests::gravel_poured_into_a_hammock_lies_in_it))
+  | binary_id(runity::netsim)
+  | (package(runity-soft) & test(/^(grains::tests::rough_grains_heap_steeper_than_smooth_and_none_sink|fluid::tests::a_dam_breaks_runs_along_the_tank_and_keeps_its_volume)$/))
+  | (package(runity-fluid) & test(=mpm::tests::water_spreads_flat_sand_heaps_and_jelly_keeps_its_shape))
+  | (package(runity-net) & test(=bench::tests::the_rotor_hands_the_crate_around_and_everyone_sees_it))
+  | (binary_id(runity) & test(=fluid::tests::a_crate_floats_on_a_pond_and_snow_falls_as_grains))
+)
+"""
+
+[profile.ci]
+# fast + medium = not SLOW
+default-filter = """
+not (
+  (binary_id(runity::netsim) & test(/^(a_rough_cape_is_no_further_from_its_owners_than_a_local_one|a_player_knocked_limp_sags_and_gets_up_alike_for_everyone|two_players_pull_a_rope_apart_and_nothing_breaks_at_150_ms_and_5_percent_lost|two_players_pull_a_rope_apart_and_both_see_the_stronger_win_on_a_poor_link|a_chain_with_a_load_handed_over_three_times_mid_swing_never_jumps_or_drops_it|a_cape_and_a_tail_on_someone_elses_runner_do_not_shake_on_an_awful_link)$/))
+  | (binary_id(runity::material_shader) & test(/^(a_materials_own_textures_reach_its_shader_in_the_slots_it_names|a_materials_own_numbers_reach_its_shader|what_an_own_shader_cuts_away_shows_what_is_behind)$/))
+  | (binary_id(runity::bindless) & test(=thirty_pictures_are_one_draw_bindless_and_the_same_picture))
+  | (binary_id(runity::shader_reload) & test(=an_edited_shader_draws_the_next_frame_and_a_broken_one_does_not_draw_at_all))
+  | (package(runity-soft) & test(/^(grains::tests::rough_grains_heap_steeper_than_smooth_and_none_sink|fluid::tests::a_dam_breaks_runs_along_the_tank_and_keeps_its_volume)$/))
+  | (package(runity-fluid) & test(=mpm::tests::water_spreads_flat_sand_heaps_and_jelly_keeps_its_shape))
+  | (package(runity-net) & test(=bench::tests::the_rotor_hands_the_crate_around_and_everyone_sees_it))
+  | (binary_id(runity) & test(=fluid::tests::a_crate_floats_on_a_pond_and_snow_falls_as_grains))
+)
+"""
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[profile.daily]
+default-filter = "all()"
+fail-fast = false
+
+[profile.daily.junit]
+path = "junit.xml"
+
+# A GPU is one device. A dozen processes rendering on it at once each wait
+# for the others, and a two-second test takes a minute and a half.
+[test-groups]
+gpu = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = """
+  (package(runity) & kind(test) & not binary(/^(netsim|scaling|iteration_budget|example_files|preserving_save)$/))
+  | package(runity-studio)
+  | binary_id(runity-ui::render)
+  | binary_id(/^runity-import::(first_frame|skinning|textured)$/)
+"""
+test-group = "gpu"
+
+# What measures time measures it alone: a budget held on a machine busy
+# with twenty other tests fails for the other tests, not for itself.
+[[profile.default.overrides]]
+filter = """
+  binary_id(runity::netsim) | binary_id(runity::scaling) | binary_id(/::iteration_budget$/)
+  | binary_id(runity::quality) | binary_id(runity::gpu_times) | binary_id(runity::upscaling)
+  | test(=a_big_scene_stays_quick)
+  | test(=a_thousand_lines_lay_out_once_and_then_cost_nothing)
+  | test(=a_hover_over_a_long_list_repaints_quickly)
+"""
+threads-required = "num-test-threads"
