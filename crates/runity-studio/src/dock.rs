@@ -121,11 +121,15 @@ pub enum Docked {
     Handled,
     /// A tab was right-clicked: its menu, at the pointer.
     Menu(Panel),
+    /// A tab was double-clicked: its dock over the whole window, or back.
+    Maximize(usize),
 }
 
 pub struct Docks {
     docks: Vec<Dock>,
     roots: HashMap<Panel, NodeId>,
+    /// A tab is being dragged: an empty dock shows, to be dropped on.
+    dragging: bool,
 }
 
 fn tab_style(on: bool) -> Style {
@@ -200,7 +204,11 @@ impl Docks {
                 active: None,
             });
         }
-        let mut this = Self { docks, roots };
+        let mut this = Self {
+            docks,
+            roots,
+            dragging: false,
+        };
         let mut placed = Vec::new();
         for (i, panels) in layout.iter().enumerate() {
             for panel in panels {
@@ -265,6 +273,22 @@ impl Docks {
     pub fn is_active(&self, panel: Panel) -> bool {
         self.dock_of(panel)
             .is_some_and(|i| self.docks[i].active == Some(panel))
+    }
+
+    /// Whether dock `i` holds no panel: the studio folds it away, and the
+    /// view takes its room, until a tab is dragged.
+    pub fn is_empty(&self, i: usize) -> bool {
+        self.docks[i].tabs.is_empty()
+    }
+
+    /// Whether a tab is being dragged.
+    pub fn dragging(&self) -> bool {
+        self.dragging
+    }
+
+    /// The dock at a point of the window.
+    pub fn dock_at(&self, ui: &Ui, x: f32, y: f32) -> Option<usize> {
+        self.docks.iter().position(|d| ui.rect(d.card).contains(x, y))
     }
 
     fn show_empty(&mut self, ui: &mut Ui, i: usize) {
@@ -349,11 +373,16 @@ impl Docks {
                 button: runity::input::MouseButton::Right,
                 ..
             } => Some(Docked::Menu(panel)),
+            Event::Click { count: 2, .. } => {
+                self.activate(ui, panel);
+                self.dock_of(panel).map(Docked::Maximize)
+            }
             Event::Click { .. } => {
                 self.activate(ui, panel);
                 Some(Docked::Handled)
             }
             Event::Drag { .. } => {
+                self.dragging = true;
                 // The dock under the pointer lights up.
                 let (x, y) = ui.pointer();
                 for d in &self.docks {
@@ -372,6 +401,7 @@ impl Docks {
                 Some(Docked::Handled)
             }
             Event::DragEnd { .. } => {
+                self.dragging = false;
                 for d in &self.docks {
                     ui.restyle(d.card, |s| s.border(1.0, runity_ui::Color::TRANSPARENT));
                 }

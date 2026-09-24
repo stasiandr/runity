@@ -267,6 +267,28 @@ impl Session {
         }
     }
 
+    /// Open or close every line of the Hierarchy that has lines under it:
+    /// Expand All and Collapse All. A view setting, not an edit.
+    pub fn set_all_open(&mut self, open: bool) {
+        let mut ids = Vec::new();
+        parents(&self.expanded().entities, &mut ids);
+        for id in ids {
+            self.set_open(id, open);
+        }
+    }
+
+    /// Open or close a line and every line under it, as Alt and the arrow
+    /// do in Unity.
+    pub fn set_open_below(&mut self, id: EntityId, open: bool) {
+        let mut ids = Vec::new();
+        if let Some(e) = find_desc(&self.expanded().entities, id) {
+            parents(std::slice::from_ref(e), &mut ids);
+        }
+        for id in ids {
+            self.set_open(id, open);
+        }
+    }
+
     /// The Inspector for one entity: its fields as text.
     pub fn inspect(&self, id: EntityId) -> Option<Vec<Field>> {
         let desc = self.line(id)?;
@@ -1032,4 +1054,24 @@ impl Session {
         }
         self.update(id, |desc| *desc = next)
     }
+}
+
+/// The entities among `entities`, at any depth, that have children.
+fn parents(entities: &[EntityDesc], out: &mut Vec<EntityId>) {
+    for e in entities {
+        if !e.children.is_empty() {
+            out.push(e.id);
+            parents(&e.children, out);
+        }
+    }
+}
+
+fn find_desc(entities: &[EntityDesc], id: EntityId) -> Option<&EntityDesc> {
+    entities.iter().find_map(|e| {
+        if e.id == id {
+            Some(e)
+        } else {
+            find_desc(&e.children, id)
+        }
+    })
 }

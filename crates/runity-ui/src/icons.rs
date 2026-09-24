@@ -25,6 +25,14 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/chevron-up.svg"),
     ),
     (
+        "chevrons-down-up",
+        include_bytes!("../assets/icons/chevrons-down-up.svg"),
+    ),
+    (
+        "chevrons-up-down",
+        include_bytes!("../assets/icons/chevrons-up-down.svg"),
+    ),
+    (
         "circle-alert",
         include_bytes!("../assets/icons/circle-alert.svg"),
     ),

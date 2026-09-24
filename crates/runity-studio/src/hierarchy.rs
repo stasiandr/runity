@@ -5,7 +5,7 @@
 //! node per line, matched to the lines by entity id so that a change to
 //! one line changes one node, and turns what happens to the nodes into the
 //! calls an agent makes: a click selects (Shift or Cmd adds), a double
-//! click frames it, the arrow opens it, the eye hides it, the lock keeps
+//! click frames it, the arrow opens it (with Alt, all under it), the eye hides it, the lock keeps
 //! the Scene view's clicks off it, a line dropped on another becomes its
 //! child, a right click opens the context menu, F2 renames.
 
@@ -35,6 +35,9 @@ const LINE: f32 = 24.0;
 pub struct Hierarchy {
     pub card: NodeId,
     count: NodeId,
+    /// Open every line, and fold every line.
+    expand_all: NodeId,
+    collapse_all: NodeId,
     search: NodeId,
     list: NodeId,
     parts: HashMap<NodeId, Part>,
@@ -85,6 +88,9 @@ impl Hierarchy {
         ui.set_name(search, "hierarchy search");
         ui.set_placeholder(search, "Search  (c:door  m:bark)");
         let count = ui.add_text(bar, caption(), "");
+        let expand_all = icon_button(ui, bar, "hierarchy expand all", "chevrons-up-down", false);
+        let collapse_all =
+            icon_button(ui, bar, "hierarchy collapse all", "chevrons-down-up", false);
         let list = ui.add(
             body,
             Style::column()
@@ -113,6 +119,8 @@ impl Hierarchy {
             indicator,
             card,
             count,
+            expand_all,
+            collapse_all,
             search,
             list,
             parts: HashMap::new(),
@@ -232,7 +240,11 @@ impl Hierarchy {
 
     /// Whether `node` is this panel's.
     pub fn owns(&self, ui: &Ui, node: NodeId) -> bool {
-        node == self.search || node == self.list || self.parts.contains_key(&node) || {
+        node == self.search
+            || node == self.list
+            || node == self.expand_all
+            || node == self.collapse_all
+            || self.parts.contains_key(&node) || {
             let mut at = ui.parent(node);
             while let Some(p) = at {
                 if p == self.card {
@@ -252,6 +264,13 @@ impl Hierarchy {
         event: &Event,
         requests: &mut Requests,
     ) {
+        if node == self.expand_all || node == self.collapse_all {
+            if matches!(event, Event::Click { .. }) {
+                session.set_all_open(node == self.expand_all);
+                requests.refresh = true;
+            }
+            return;
+        }
         if node == self.search {
             if matches!(event, Event::Changed(_) | Event::Cancel) {
                 requests.refresh = true;
@@ -274,7 +293,12 @@ impl Hierarchy {
             }
             (Some(Part::Arrow(id)), Event::Click { .. }) => {
                 let open = self.row(id).is_some_and(|r| r.open);
-                session.set_open(id, !open);
+                // Alt opens or folds everything under the line too.
+                if ui.modifiers().2 {
+                    session.set_open_below(id, !open);
+                } else {
+                    session.set_open(id, !open);
+                }
                 requests.refresh = true;
             }
             (Some(Part::Eye(id)), Event::Click { .. }) => {

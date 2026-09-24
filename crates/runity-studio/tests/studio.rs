@@ -894,6 +894,119 @@ fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
 }
 
 #[test]
+fn a_dock_left_without_tabs_folds_away_and_shows_again_while_a_tab_is_dragged() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let view_before = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    drag_tab(&mut s, "tab inspector", "dock 2");
+    s.frame();
+    s.ui.paint();
+    assert!(!s.ui.is_shown(s.ui.find("dock 1").unwrap()), "nothing is left on the right");
+    let view_after = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    assert!(
+        view_after > view_before + 200.0,
+        "the view took its room: {view_before} -> {view_after}"
+    );
+    // Picking the tab up shows the empty dock, to put it back on.
+    let (ax, ay) = s.ui.rect(s.ui.find("tab inspector").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 10.0,
+        y: ay + 10.0,
+    });
+    s.frame();
+    s.ui.paint();
+    let right = s.ui.rect(s.ui.find("dock 1").unwrap());
+    assert!(right.width > 100.0, "shown while dragging: {right:?}");
+    let (bx, by) = right.center();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    s.ui.paint();
+    let right = s.ui.rect(s.ui.find("dock 1").unwrap());
+    let inspector = s.ui.rect(s.ui.find("tab inspector").unwrap());
+    assert!(
+        right.contains(inspector.x + 1.0, inspector.y + 1.0),
+        "back on the right"
+    );
+}
+
+/// A double click after the last one's time has run out: not a third
+/// and fourth click.
+fn pause_then_double_click(s: &mut Studio, name: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    double_click(s, name);
+}
+
+#[test]
+fn a_double_clicked_tab_takes_the_whole_window_and_gives_it_back() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let lower = s.ui.rect(s.ui.find("dock 2").unwrap());
+    pause_then_double_click(&mut s, "tab project");
+    s.ui.paint();
+    let big = s.ui.rect(s.ui.find("dock 2").unwrap());
+    assert!(
+        big.width > 1300.0 && big.height > 700.0,
+        "the lower dock over the window: {big:?}"
+    );
+    assert!(!s.ui.is_shown(s.ui.find("scene view").unwrap()), "the view gave way");
+    assert!(!s.ui.is_shown(s.ui.find("dock 0").unwrap()));
+    pause_then_double_click(&mut s, "tab project");
+    s.ui.paint();
+    let back = s.ui.rect(s.ui.find("dock 2").unwrap());
+    assert!(
+        (back.height - lower.height).abs() < 1.0 && (back.width - lower.width).abs() < 1.0,
+        "as it was: {back:?}, was {lower:?}"
+    );
+    // A side dock too, and the Scene tab for the view.
+    pause_then_double_click(&mut s, "tab hierarchy");
+    s.ui.paint();
+    assert!(s.ui.rect(s.ui.find("dock 0").unwrap()).width > 1300.0);
+    pause_then_double_click(&mut s, "tab hierarchy");
+    pause_then_double_click(&mut s, "view scene");
+    s.ui.paint();
+    assert!(!s.ui.is_shown(s.ui.find("dock 0").unwrap()));
+    assert!(s.ui.rect(s.ui.find("scene view").unwrap()).width > 1300.0);
+}
+
+#[test]
+fn play_pause_and_step_stand_in_the_middle_of_the_window() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let (x, _) = s.ui.rect(s.ui.find("pause").unwrap()).center();
+    assert!((x - 720.0).abs() < 2.0, "pause at {x}, the middle is 720");
+    s.resize(1700.0, 900.0, 1.0);
+    s.frame();
+    s.ui.paint();
+    let (x, _) = s.ui.rect(s.ui.find("pause").unwrap()).center();
+    assert!((x - 850.0).abs() < 2.0, "pause at {x}, the middle is 850");
+    // Too narrow for the middle: pushed aside, never over the tools.
+    s.resize(1100.0, 800.0, 1.0);
+    s.frame();
+    s.ui.paint();
+    let grid = s.ui.rect(s.ui.find("grid").unwrap());
+    let play = s.ui.rect(s.ui.find("play").unwrap());
+    assert!(play.x > grid.x + grid.width, "{play:?} clear of {grid:?}");
+}
+
+#[test]
+fn the_hierarchy_collapses_and_expands_every_line_at_once() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_some(), "the campfire starts open");
+    click(&mut s, "hierarchy collapse all");
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_none(), "folded");
+    assert!(s.ui.find("line campfire").is_some());
+    click(&mut s, "hierarchy expand all");
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_some(), "open again");
+}
+
+#[test]
 fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
     let Some((mut s, _dir)) = studio() else {
         return;

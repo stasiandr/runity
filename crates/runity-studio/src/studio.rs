@@ -264,9 +264,9 @@ pub struct Studio {
     /// while after one.
     last_input: Instant,
     /// Which of the Hierarchy, the Inspector and the lower panel show, and
-    /// whether the view has the whole window.
+    /// what has the whole window, if anything does.
     panels: [bool; 3],
-    maximized: bool,
+    maximized: Option<Zoom>,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
     /// A long background import has been announced.
@@ -318,6 +318,8 @@ pub struct Studio {
     bottom: Bottom,
     status: Status,
     splits: [NodeId; 3],
+    /// The column of the view and the lower dock.
+    center: NodeId,
     view_slot: NodeId,
     /// The lower dock's height before the UI Builder went wide.
     lower_before_wide: Option<f32>,
@@ -651,7 +653,7 @@ impl Studio {
             cam_image,
             cam_registered: None,
             compass,
-            maximized: false,
+            maximized: None,
             stroke: None,
             tooltip: None,
             resting: None,
@@ -662,6 +664,7 @@ impl Studio {
             bottom,
             status,
             splits: [split_left, split_lower, split_right],
+            center,
             view_slot,
             lower_before_wide: None,
             theme_stamp: None,
@@ -891,8 +894,15 @@ impl Studio {
                     self.open_search();
                     return;
                 }
+                // Shift Space maximizes what is under the pointer, as in
+                // Unity: a dock, or else the view.
                 if *key == Key::Space && self.ui.modifiers().0 {
-                    self.run(Action::Maximize);
+                    let (x, y) = self.ui.pointer();
+                    let zoom = match self.maximized {
+                        Some(z) => z,
+                        None => self.docks.dock_at(&self.ui, x, y).map_or(Zoom::View, Zoom::Dock),
+                    };
+                    self.toggle_zoom(zoom);
                     return;
                 }
                 if *key == Key::K && self.session.is_playing() {
@@ -1121,17 +1131,58 @@ impl Studio {
         }
     }
 
-    /// Show the panels that are on, or only the view when it is maximized.
+    /// Show the panels that are on, or only what is maximized. A dock with
+    /// no panels folds away and gives the view its room, except while a tab
+    /// is dragged: then it shows, to be dropped on.
     fn show_panels(&mut self) {
+        // The UI Builder gone wide lays the window out itself.
+        if self.lower_before_wide.is_some() {
+            return;
+        }
         let [left, lower, right] = self.splits;
         let slots = [(self.left, left), (self.right, right), (self.lower, lower)];
+        let dragging = self.docks.dragging();
         for (i, (slot, split)) in slots.into_iter().enumerate() {
-            let on = self.panels[i] && !self.maximized;
-            for n in [slot, split] {
-                self.ui
-                    .restyle(n, |s| if on { s.shown() } else { s.hidden() });
-            }
+            let zoomed = self.maximized == Some(Zoom::Dock(i));
+            let on = match self.maximized {
+                None => self.panels[i] && (dragging || !self.docks.is_empty(i)),
+                Some(_) => zoomed,
+            };
+            let split_on = on && self.maximized.is_none();
+            self.ui.restyle(slot, |s| {
+                let s = if on { s.shown() } else { s.hidden() };
+                if zoomed {
+                    s.fill()
+                } else {
+                    s.unfilled()
+                }
+            });
+            self.ui
+                .restyle(split, |s| if split_on { s.shown() } else { s.hidden() });
         }
+        let side = matches!(self.maximized, Some(Zoom::Dock(0 | 1)));
+        let lower_zoomed = self.maximized == Some(Zoom::Dock(2));
+        self.ui
+            .restyle(self.center, |s| if side { s.hidden() } else { s.shown() });
+        self.ui.restyle(self.view_slot, |s| {
+            if lower_zoomed {
+                s.hidden()
+            } else {
+                s.shown()
+            }
+        });
+    }
+
+    /// Give `zoom` the whole window, or, when it has it, give the window
+    /// back.
+    fn toggle_zoom(&mut self, zoom: Zoom) {
+        self.maximized = if self.maximized == Some(zoom) {
+            None
+        } else {
+            Some(zoom)
+        };
+        self.show_panels();
+        self.refresh();
     }
 
     /// Draw the selected camera's view into the corner, or hide the box.
@@ -1725,14 +1776,16 @@ impl Studio {
 
     /// The panels' sizes and the bottom tab, as RON.
     fn layout_text(&self) -> String {
-        let w = |n: NodeId| self.ui.rect(n).width.round();
+        // The sizes asked for, not the ones laid out: a folded dock is
+        // laid out at none, a maximized one at the whole window.
+        let w = |n: NodeId| self.ui.style(n).layout.size.width.value().round();
         let (docks, active) = self.docks.layout();
         format!(
             "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
             w(self.left),
             w(self.right),
             self.lower_before_wide
-                .unwrap_or(self.ui.rect(self.lower).height)
+                .unwrap_or(self.ui.style(self.lower).layout.size.height.value())
                 .round(),
         )
     }
@@ -1786,6 +1839,7 @@ impl Studio {
 
     /// Tell the lower panels which of them are on top.
     fn sync_visible(&mut self) {
+        self.show_panels();
         let on = |p| self.docks.is_showing(p);
         self.bottom.set_visible([
             on(Panel::Project),
@@ -2271,6 +2325,11 @@ impl Studio {
                 }
                 return;
             }
+            Some(Docked::Maximize(i)) => {
+                self.toggle_zoom(Zoom::Dock(i));
+                self.sync_visible();
+                return;
+            }
             Some(Docked::Menu(panel)) => {
                 let (x, y) = self.ui.pointer();
                 requests.menu = Some((
@@ -2383,6 +2442,10 @@ impl Studio {
             return true;
         }
         if node == self.tab_scene || node == self.tab_game {
+            if matches!(event, Event::Click { count: 2, .. }) {
+                self.toggle_zoom(Zoom::View);
+                return true;
+            }
             requests.action = Some(Action::GameView(node == self.tab_game));
             requests.keyboard_to_scene = true;
             return true;
@@ -3018,14 +3081,11 @@ impl Studio {
                 }
                 Action::ClearConsole => s.clear_console(),
                 Action::TogglePanel(i) => {
-                    self.maximized = false;
+                    self.maximized = None;
                     self.panels[i] = !self.panels[i];
                     self.show_panels();
                 }
-                Action::Maximize => {
-                    self.maximized = !self.maximized;
-                    self.show_panels();
-                }
+                Action::Maximize => self.toggle_zoom(Zoom::View),
                 Action::NewTerrain => {
                     let mut name = "terrain".to_string();
                     let mut n = 1;
@@ -3562,7 +3622,7 @@ fn splitter(ui: &mut Ui, parent: NodeId, vertical: bool, name: &str) -> NodeId {
 fn segment_style(on: bool, first: bool) -> Style {
     let mut s = Style::row()
         .full_height()
-        .padding_x(SPACE_3)
+        .padding_x(SPACE_2)
         .gap(6.0)
         .center_items()
         .clickable();
@@ -3595,8 +3655,18 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .center_items(),
     );
     ui.set_name(bar, "toolbar");
+    // Three parts: Play, Pause and Step in the middle of the window, the
+    // two sides sharing what is left evenly. A side wider than its half
+    // pushes the middle over instead of running under it.
+    let side = |ui: &mut Ui| {
+        ui.add(
+            bar,
+            Style::row().share().full_height().gap(SPACE_2).center_items(),
+        )
+    };
+    let left = side(ui);
     let brand = ui.add(
-        bar,
+        left,
         Style::row().gap(SPACE_2).center_items().padding_x(SPACE_1),
     );
     ui.add(
@@ -3615,7 +3685,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let mut menus = Vec::new();
     for (title, items) in menu::menu_bar() {
         let m = ui.add(
-            bar,
+            left,
             Style::row()
                 .height(26.0)
                 .padding_x(SPACE_2)
@@ -3628,27 +3698,9 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
         ui.add_text(m, text().text_color(LABEL), title);
         menus.push((m, items));
     }
-    separator(ui, bar);
-    let doc = ui.add(
-        bar,
-        Style::row().gap(SPACE_2).center_items().min_width(120.0),
-    );
-    let scene_name = ui.add_text(
-        doc,
-        Style::default().text_size(13.0).text_color(MUTED).nowrap(),
-        "",
-    );
-    ui.set_name(scene_name, "scene name");
-    let modified = ui.add(
-        doc,
-        Style::row()
-            .size(6.0, 6.0)
-            .radius(3.0)
-            .background(ACCENT_400),
-    );
-
+    separator(ui, left);
     let seg = ui.add(
-        bar,
+        left,
         Style::row()
             .height(26.0)
             .fixed()
@@ -3667,22 +3719,18 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     {
         let opt = ui.add(seg, segment_style(i == 0, i == 0));
         ui.set_name(opt, format!("tool {word}"));
+        // The glyph alone, as in Unity: the tooltip names it and its key.
         icon(ui, opt, glyph, LABEL);
-        ui.add_text(
-            opt,
-            Style::default().text_size(12.0).text_color(LABEL).nowrap(),
-            word,
-        );
         tools[i] = opt;
     }
-    separator(ui, bar);
-    let space = icon_button(ui, bar, "space", "globe", false);
-    let pivot = icon_button(ui, bar, "pivot", "crosshair", false);
-    let grid = icon_button(ui, bar, "grid", "grid-3x3", true);
-    spacer(ui, bar);
+    separator(ui, left);
+    let space = icon_button(ui, left, "space", "globe", false);
+    let pivot = icon_button(ui, left, "pivot", "crosshair", false);
+    let grid = icon_button(ui, left, "grid", "grid-3x3", true);
     let play_group = ui.add(
         bar,
         Style::row()
+            .fixed()
             .gap(SPACE_1)
             .padding(2.0)
             .radius(RADIUS_MD)
@@ -3692,11 +3740,32 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let play = icon_button(ui, play_group, "play", "play", false);
     let pause = icon_button(ui, play_group, "pause", "pause", false);
     let step = icon_button(ui, play_group, "step", "step-forward", false);
-    spacer(ui, bar);
-    let undo = icon_button(ui, bar, "undo", "undo-2", false);
-    let redo = icon_button(ui, bar, "redo", "redo-2", false);
-    separator(ui, bar);
-    let save = button(ui, bar, "save", "Save", false);
+    let right = side(ui);
+    spacer(ui, right);
+    // The document beside what saves it: its name, and a dot while it
+    // has changes.
+    let doc = ui.add(
+        right,
+        Style::row().gap(SPACE_2).center_items(),
+    );
+    let scene_name = ui.add_text(
+        doc,
+        Style::default().text_size(13.0).text_color(MUTED).nowrap(),
+        "",
+    );
+    ui.set_name(scene_name, "scene name");
+    let modified = ui.add(
+        doc,
+        Style::row()
+            .size(6.0, 6.0)
+            .radius(3.0)
+            .background(ACCENT_400),
+    );
+    separator(ui, right);
+    let undo = icon_button(ui, right, "undo", "undo-2", false);
+    let redo = icon_button(ui, right, "redo", "redo-2", false);
+    separator(ui, right);
+    let save = button(ui, right, "save", "Save", false);
     (
         Toolbar {
             menus,
@@ -3782,6 +3851,15 @@ fn set_view_tab(ui: &mut Ui, tab: NodeId, on: bool) {
     ui.restyle(kids[1], |s| s.text_color(if on { TEXT } else { LABEL }));
 }
 
+/// What has the whole window below the toolbar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Zoom {
+    /// The Scene or Game view.
+    View,
+    /// Dock `i`: left, right, lower.
+    Dock(usize),
+}
+
 /// What a control does, for its tooltip — by the control's name.
 fn tooltip(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -3807,8 +3885,10 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "view top" => "Look down from above",
         "view front" => "Look from the front",
         "view right" => "Look from the right",
-        "view scene" => "The Scene view: edit",
-        "view game" => "The Game view: what the game's camera sees",
+        "view scene" => "The Scene view: edit (double-click: over the whole window)",
+        "view game" => "The Game view: what the game's camera sees (double-click: over the whole window)",
+        "hierarchy expand all" => "Expand all (Alt click an arrow: all under it)",
+        "hierarchy collapse all" => "Collapse all",
         "console clear" => "Clear the Console",
         "status problems" => "Show the Console",
         _ => return None,

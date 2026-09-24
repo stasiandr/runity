@@ -1048,6 +1048,19 @@ impl Ui {
         }
     }
 
+    /// Whether `id` is laid out and drawn: neither it nor anything above
+    /// it is hidden. A hidden node keeps the rectangle it last had.
+    pub fn is_shown(&self, id: NodeId) -> bool {
+        let mut at = Some(id);
+        while let Some(n) = at {
+            if self.node(n).style.layout.display == taffy::Display::None {
+                return false;
+            }
+            at = self.parent(n);
+        }
+        true
+    }
+
     pub fn focused(&self) -> Option<NodeId> {
         self.focused
     }

@@ -34,3 +34,7 @@ path = "examples/shot.rs"
 [[bin]]
 name = "runity-studio"
 path = "src/main.rs"
+
+[[example]]
+name = "frame_bench"
+path = "examples/frame_bench.rs"

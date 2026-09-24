@@ -3146,9 +3146,12 @@ impl Session {
         // The Scene view answers at once, as Unity's does: temporal
         // antialiasing would fade a handle or an outline in over frames,
         // and an exposure finding its level would change what is compared.
-        // The Game view is what the player sees, and has it.
+        // The Game view is what the player sees, and has it. FXAA smooths
+        // the edges in its place: with nothing smoothing them the renderer
+        // draws four samples a pixel, several times the whole frame's cost.
         if !self.game_view {
             frame.post.taa = false;
+            frame.post.fxaa = true;
             frame.post.auto_exposure.enabled = false;
         }
         // The maps its materials draw with, uploaded the first time they
@@ -3496,6 +3499,7 @@ impl Session {
         // many samples it draws with twice a frame.
         let mut frame = self.base_frame(camera);
         frame.post.taa = false;
+        frame.post.fxaa = true;
         frame.post.auto_exposure.enabled = false;
         let target = self.preview_target.as_ref().expect("made above");
         self.renderer.render(&self.gpu, target, &frame);
@@ -3527,6 +3531,22 @@ impl Session {
         if !readback {
             self.pixels = Vec::new();
         }
+    }
+
+    /// The Scene view's graphics preset (`runity::quality`); `None` draws
+    /// the scene as it asks, rays and all.
+    pub fn set_quality(&mut self, quality: Option<runity::quality::Quality>) {
+        self.renderer.set_quality(quality);
+    }
+
+    pub fn quality(&self) -> Option<runity::quality::Quality> {
+        self.renderer.quality()
+    }
+
+    /// Each pass of the Scene view on the GPU, milliseconds, while
+    /// `RUNITY_GPU_TIMES` is set (see `Renderer::gpu_times`).
+    pub fn gpu_times(&self) -> Vec<(String, f32)> {
+        self.renderer.gpu_times()
     }
 
     /// The GPU the session renders with: a window that wants to show the

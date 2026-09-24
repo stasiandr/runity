@@ -2174,11 +2174,12 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
             })
             .collect();
         let (lo, hi) = (*luma.iter().min()?, *luma.iter().max()?);
-        // Dark dips along the row: grid lines crossed.
+        // Dark dips along the row: grid lines crossed. A line a pixel wide
+        // comes out of FXAA a few percent under the floor, not ten.
         let mean = luma.iter().sum::<u32>() / luma.len() as u32;
         let dips = luma
             .windows(2)
-            .filter(|w| w[0] >= mean * 9 / 10 && w[1] < mean * 9 / 10)
+            .filter(|w| w[0] >= mean * 95 / 100 && w[1] < mean * 95 / 100)
             .count();
         Some((hi - lo, dips))
     };
@@ -2190,7 +2191,9 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
         plain < 12 && plain_dips == 0,
         "a plain floor is even: {plain}, {plain_dips}"
     );
-    assert!(grid > 60, "lines darker than the floor: {grid}");
+    // FXAA, which the Scene view smooths with in place of four samples a
+    // pixel, softens a line a pixel wide: darker still, by less.
+    assert!(grid > 45, "lines darker than the floor: {grid}");
     assert!(
         grid_dips >= 4,
         "a line per metre across the view: {grid_dips}"
@@ -2375,6 +2378,19 @@ fn the_hierarchy_and_the_inspector_are_data_a_window_draws() {
         ["camp", "fire", "ember"]
     );
     assert!(rows[2].part && rows[1].prefab.as_deref() == Some("campfire"));
+    assert!(!session.can_undo(), "folding is not an edit");
+    // Everything at once, prefab instances too.
+    session.set_all_open(true);
+    let all = ["camp", "tent", "fire", "ember"];
+    let shown = |session: &Session| -> Vec<String> {
+        session.hierarchy().into_iter().map(|r| r.name).collect()
+    };
+    assert_eq!(shown(&session), all);
+    session.set_all_open(false);
+    assert_eq!(shown(&session), ["camp", "fire"]);
+    session.set_open_below(camp, true);
+    assert_eq!(shown(&session), ["camp", "tent", "fire"]);
+    session.set_all_open(true);
     assert!(!session.can_undo(), "folding is not an edit");
 
     // The Inspector: fields as text, set by name, one step each.
