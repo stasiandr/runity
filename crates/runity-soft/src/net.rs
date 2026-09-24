@@ -2,9 +2,10 @@
 //! a compact frame of bytes, and the buffer a replica is shown from.
 //!
 //! * [`Frame`] — particles, the turns of a rod's links and a few numbers
-//!   more (the pull on each end), quantized: positions in 16 bits an axis
-//!   inside the frame's box, turns in four bytes. A rope of forty links,
-//!   turns and all, is about 450 bytes.
+//!   more (the pull on each end), quantized: each point a quarter-millimetre
+//!   step from the one before, a link's turn its twist about the link, both
+//!   packed at the bits the frame needs. A chain of forty links, turns and
+//!   all, is about 250 bytes.
 //! * [`PresentedParticles`] — the owner's frames as they came, shown a
 //!   couple of network ticks in the past between the two around the clock,
 //!   the dacha simulator's interpolation buffer for bodies made to hold a
@@ -58,36 +59,54 @@ impl Frame {
     /// from the one before in steps of [`POINT_STEP`], packed at as few
     /// bits as the frame's longest step needs (docs/netsim.md, «Трафик»)
     /// — each step taken from where the one before will be read, so the
-    /// rounding never adds up along the rope; the turns at four bytes, the
-    /// extras whole. A rope of forty links, turns and all, is about 350
-    /// bytes; of twenty-four without its turns, about 130.
+    /// rounding never adds up along the rope; a rod's links' turns as
+    /// their twists (the first whole), other turns at four bytes; the
+    /// extras whole. A chain of forty links, turns and all, is about 250
+    /// bytes; a rope of twenty-four, which sends no turns, about 130.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(16 + self.points.len() * 5 + self.turns.len() * 4 + self.extra.len() * 4);
         varint(&mut out, self.points.len() as u32);
         varint(&mut out, self.turns.len() as u32);
         out.push(self.extra.len().min(255) as u8);
+        let mut read_points = Vec::with_capacity(self.points.len());
         if let Some(first) = self.points.first() {
             for c in first.to_array() {
                 out.extend_from_slice(&c.to_le_bytes());
             }
             let mut read = *first;
+            read_points.push(read);
             let mut steps = Vec::with_capacity(self.points.len() * 3);
             for p in &self.points[1..] {
                 let q = ((*p - read) / POINT_STEP).round().clamp(Vec3::splat(-(1 << 30) as f32), Vec3::splat((1 << 30) as f32));
                 read += q * POINT_STEP;
+                read_points.push(read);
                 steps.extend(q.to_array().map(|c| c as i32));
             }
-            let most = steps.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
-            let bits = 33 - most.leading_zeros().min(32);
-            out.push(bits as u8);
-            let mut w = Bits::default();
-            for s in steps {
-                w.put((s as u32).wrapping_add(if bits >= 32 { 0 } else { 1 << (bits - 1) }) as u64, bits);
-            }
-            out.extend(w.finish());
+            pack_signed(&mut out, &steps);
         }
-        for q in &self.turns {
-            out.extend_from_slice(&pack_quat(*q).to_le_bytes());
+        if twisted(read_points.len(), self.turns.len()) {
+            // A rod's links: the first turn whole, then each as its twist
+            // about its link from the one before carried along — all the
+            // rest of a link's turn is where it lies, which the points say.
+            let first = along(&read_points, 0, self.turns[0]);
+            out.extend_from_slice(&pack_quat(first).to_le_bytes());
+            let mut before = unpack_quat(pack_quat(first));
+            let mut twists = Vec::with_capacity(self.turns.len());
+            for k in 1..self.turns.len() {
+                let carried = along(&read_points, k, before);
+                let lying = along(&read_points, k, self.turns[k]);
+                let d = carried.inverse() * lying;
+                let angle = 2.0 * d.z.atan2(d.w);
+                let angle = (angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                let q = (angle / TWIST_STEP).round() as i32;
+                twists.push(q);
+                before = carried * Quat::from_rotation_z(q as f32 * TWIST_STEP);
+            }
+            pack_signed(&mut out, &twists);
+        } else {
+            for q in &self.turns {
+                out.extend_from_slice(&pack_quat(*q).to_le_bytes());
+            }
         }
         for e in self.extra.iter().take(255) {
             out.extend_from_slice(&e.to_le_bytes());
@@ -106,25 +125,25 @@ impl Frame {
         if n > 0 {
             let mut at = r.vec3()?;
             points.push(at);
-            let bits = r.take(1)?[0] as u32;
-            if bits > 32 {
-                return None;
-            }
-            let packed = r.take(((n - 1) * 3 * bits as usize).div_ceil(8))?;
-            let mut b = BitReader { bytes: packed, at: 0 };
-            let bias = if bits >= 32 { 0 } else { 1u32 << (bits.max(1) - 1) };
-            for _ in 1..n {
-                let mut q = [0.0f32; 3];
-                for c in &mut q {
-                    *c = (b.get(bits)? as u32).wrapping_sub(bias) as i32 as f32;
-                }
-                at += Vec3::from_array(q) * POINT_STEP;
+            let steps = unpack_signed(&mut r, (n - 1) * 3)?;
+            for q in steps.chunks(3) {
+                at += Vec3::new(q[0] as f32, q[1] as f32, q[2] as f32) * POINT_STEP;
                 points.push(at);
             }
         }
         let mut turns = Vec::with_capacity(m.min(bytes.len()));
-        for _ in 0..m {
-            turns.push(unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?)));
+        if twisted(n, m) {
+            let mut before = unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?));
+            turns.push(before);
+            for q in unpack_signed(&mut r, m - 1)? {
+                let carried = along(&points, turns.len(), before);
+                before = carried * Quat::from_rotation_z(q as f32 * TWIST_STEP);
+                turns.push(before);
+            }
+        } else {
+            for _ in 0..m {
+                turns.push(unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?)));
+            }
         }
         let mut extra = Vec::with_capacity(e);
         for _ in 0..e {
@@ -149,6 +168,50 @@ impl Frame {
 
 /// Of a metre, the step a frame's points go in: a quarter millimetre.
 pub const POINT_STEP: f32 = 1.0 / 4096.0;
+
+/// Of a turn, the step a link's twist goes in: about a tenth of a degree.
+pub const TWIST_STEP: f32 = std::f32::consts::TAU / 4096.0;
+
+/// A frame's turns are a rod's links' — one a link between its points —
+/// and go as twists.
+fn twisted(points: usize, turns: usize) -> bool {
+    points >= 2 && turns + 1 == points
+}
+
+/// `turn` brought the shortest way round to lie along link `k` of
+/// `points`: its own axis (Z) along the link.
+fn along(points: &[Vec3], k: usize, turn: Quat) -> Quat {
+    match (points[k + 1] - points[k]).try_normalize() {
+        Some(dir) => (Quat::from_rotation_arc((turn * Vec3::Z).normalize(), dir) * turn).normalize(),
+        None => turn,
+    }
+}
+
+/// Whole numbers at as few bits each as the largest needs: the width in a
+/// byte, then the numbers packed end to end, offset to be positive.
+fn pack_signed(out: &mut Vec<u8>, values: &[i32]) {
+    let most = values.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+    let bits = 33 - most.leading_zeros().min(32);
+    out.push(bits as u8);
+    let bias = if bits >= 32 { 0 } else { 1u32 << (bits - 1) };
+    let mut w = Bits::default();
+    for v in values {
+        w.put((*v as u32).wrapping_add(bias) as u64, bits);
+    }
+    out.extend(w.finish());
+}
+
+/// [`pack_signed`]'s `count` numbers back.
+fn unpack_signed(r: &mut Reader, count: usize) -> Option<Vec<i32>> {
+    let bits = r.take(1)?[0] as u32;
+    if bits > 32 {
+        return None;
+    }
+    let packed = r.take((count * bits as usize).div_ceil(8))?;
+    let mut b = BitReader { bytes: packed, at: 0 };
+    let bias = if bits >= 32 { 0 } else { 1u32 << (bits.max(1) - 1) };
+    (0..count).map(|_| Some((b.get(bits)? as u32).wrapping_sub(bias) as i32)).collect()
+}
 
 fn varint(out: &mut Vec<u8>, mut v: u32) {
     while v >= 0x80 {
@@ -695,7 +758,7 @@ mod tests {
             extra: vec![12.5, -3.0],
         };
         let bytes = frame.encode();
-        assert!(bytes.len() < 360, "{} bytes", bytes.len());
+        assert!(bytes.len() < 260, "{} bytes", bytes.len());
         let back = Frame::decode(&bytes).unwrap();
         // The rounding does not add up along the rope.
         for (a, b) in frame.points.iter().zip(&back.points) {
@@ -704,8 +767,13 @@ mod tests {
         let still = Frame { points: vec![Vec3::new(1.0, 2.0, 3.0); 3], ..Default::default() };
         assert_eq!(Frame::decode(&still.encode()).unwrap().points, still.points);
         assert_eq!(Frame::decode(&Frame::default().encode()).unwrap(), Frame::default());
-        for (a, b) in frame.turns.iter().zip(&back.turns) {
-            assert!(a.angle_between(*b) < 0.004, "{a} {b}");
+        // A link's turn comes back lying along its link as read, twisted
+        // as it was.
+        for (k, (a, b)) in frame.turns.iter().zip(&back.turns).enumerate() {
+            let link = (back.points[k + 1] - back.points[k]).normalize();
+            assert!((*b * Vec3::Z).dot(link) > 0.99999, "{k}: along its link");
+            let lying = along(&frame.points, k, *a);
+            assert!(lying.angle_between(*b) < 0.004, "{k}: {lying} {b}");
         }
         assert_eq!(back.extra, frame.extra);
         assert!(Frame::decode(&bytes[..10]).is_none());
