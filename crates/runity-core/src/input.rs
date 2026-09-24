@@ -95,6 +95,19 @@ pub enum Key {
     F10,
     F11,
     F12,
+    /// The punctuation keys, by what a US layout prints on them: what an
+    /// editor's shortcuts use (⌘, opens the preferences).
+    Comma,
+    Period,
+    Slash,
+    Semicolon,
+    Quote,
+    Minus,
+    Equal,
+    BracketLeft,
+    BracketRight,
+    Backslash,
+    Backquote,
     /// Anything the shell knows about and this enum does not. Carrying the
     /// platform's code keeps a rebindable game from losing keys it has no
     /// name for.

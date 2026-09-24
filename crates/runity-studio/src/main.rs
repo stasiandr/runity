@@ -42,7 +42,13 @@ fn scene_to_open(bundled: bool) -> Option<PathBuf> {
     if !bundled && reference.is_file() {
         return Some(reference);
     }
-    if let Some(last) = last_opened().filter(|p| p.is_file()) {
+    // Unless Preferences › General says to start from a pick every time.
+    let config = runity_studio::appearance::config_dir();
+    let (personal, _) = runity_studio::preferences::Personal::load(config.as_deref());
+    if let Some(last) = last_opened()
+        .filter(|p| p.is_file())
+        .filter(|_| personal.open_last_scene)
+    {
         return Some(last);
     }
     if !bundled {

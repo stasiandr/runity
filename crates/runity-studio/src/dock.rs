@@ -39,10 +39,13 @@ pub enum Panel {
     Screens,
     Animator,
     Dialogues,
+    /// The person's own settings, in every project: a window of its own
+    /// when opened (⌘,), never in a dock unless someone puts it there.
+    Preferences,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 12] = [
+    pub const ALL: [Panel; 13] = [
         Panel::Hierarchy,
         Panel::Inspector,
         Panel::Project,
@@ -55,6 +58,7 @@ impl Panel {
         Panel::Screens,
         Panel::Animator,
         Panel::Dialogues,
+        Panel::Preferences,
     ];
 
     pub fn name(self) -> &'static str {
@@ -65,12 +69,15 @@ impl Panel {
             Panel::Console => "console",
             Panel::History => "history",
             Panel::Git => "git",
+            // The project's settings; the name is the one layouts saved
+            // before Preferences split off, so they still load.
             Panel::Settings => "settings",
             Panel::Profiler => "profiler",
             Panel::Animation => "animation",
             Panel::Screens => "screens",
             Panel::Animator => "animator",
             Panel::Dialogues => "dialogues",
+            Panel::Preferences => "preferences",
         }
     }
 
@@ -82,12 +89,13 @@ impl Panel {
             Panel::Console => "Console",
             Panel::History => "History",
             Panel::Git => "Git",
-            Panel::Settings => "Settings",
+            Panel::Settings => "Project Settings",
             Panel::Profiler => "Profiler",
             Panel::Animation => "Animation",
             Panel::Screens => "UI Builder",
             Panel::Animator => "Animator",
             Panel::Dialogues => "Dialogues",
+            Panel::Preferences => "Preferences",
         }
     }
 
@@ -105,6 +113,7 @@ impl Panel {
             Panel::Screens => "layout-dashboard",
             Panel::Animator => "route",
             Panel::Dialogues => "type",
+            Panel::Preferences => "sliders-horizontal",
         }
     }
 
@@ -117,6 +126,12 @@ impl Panel {
 
     pub fn from_name(name: &str) -> Option<Panel> {
         Panel::ALL.into_iter().find(|p| p.name() == name)
+    }
+
+    /// Whether the panel lives in a window of its own rather than a dock:
+    /// out of the docks until opened, and closed again when its window is.
+    pub fn floats(self) -> bool {
+        self == Panel::Preferences
     }
 }
 
@@ -384,7 +399,7 @@ impl Arrangement {
                     Panel::Profiler,
                 ]),
             ],
-            closed: Vec::new(),
+            closed: vec![Panel::Preferences],
         }
     }
 
@@ -412,7 +427,7 @@ impl Arrangement {
                     Panel::Profiler,
                 ]),
             ],
-            closed: Vec::new(),
+            closed: vec![Panel::Preferences],
         }
     }
 
@@ -453,6 +468,11 @@ impl Arrangement {
         self.closed.retain(|p| !seen.contains(p));
         self.closed.dedup();
         for panel in Panel::ALL {
+            // One that lives in a window waits closed, out of the docks.
+            if panel.floats() && !seen.contains(&panel) && !self.closed.contains(&panel) {
+                self.closed.push(panel);
+                continue;
+            }
             if !seen.contains(&panel) && !self.closed.contains(&panel) {
                 let path = self.regions[2].first_stack();
                 self.regions[2].insert(&path, panel, Zone::Center);
@@ -1044,9 +1064,27 @@ impl Docks {
     /// Take a panel out of its stack, tab and all: it is going to a window
     /// of its own. Its content waits hidden until the caller moves it.
     pub fn take(&mut self, ui: &mut Ui, panel: Panel) -> Option<NodeId> {
+        // A closed panel waits on the shelf: it goes as it is.
+        if self.is_closed(panel) {
+            self.arrangement.closed.retain(|p| *p != panel);
+            return Some(self.roots[&panel]);
+        }
         self.lift(panel)?;
         self.rebuild(ui);
         Some(self.roots[&panel])
+    }
+
+    /// A panel back on the shelf, closed, from wherever it was taken to
+    /// (its window closed).
+    pub fn put_away(&mut self, ui: &mut Ui, panel: Panel) {
+        if self.place_of(panel).is_some() {
+            self.close(ui, panel);
+            return;
+        }
+        ui.move_to(self.roots[&panel], self.shelf);
+        if !self.arrangement.closed.contains(&panel) {
+            self.arrangement.closed.push(panel);
+        }
     }
 
     /// Close a panel's tab: its content waits hidden until the Window menu
@@ -1373,6 +1411,22 @@ mod tests {
         for r in &a.regions {
             r.panels(&mut all);
         }
-        assert_eq!(all.len(), Panel::ALL.len(), "{all:?}");
+        // All but Preferences, which waits closed for its window.
+        assert_eq!(all.len(), Panel::ALL.len() - 1, "{all:?}");
+        assert!(!all.contains(&Panel::Preferences));
+        assert_eq!(a.closed, vec![Panel::Preferences]);
+    }
+
+    /// Layouts written before Preferences split off name the project's
+    /// settings `settings`: that is still the Project Settings tab.
+    #[test]
+    fn an_old_layouts_settings_is_project_settings() {
+        let mut a =
+            Arrangement::read("(left: [*hierarchy], right: [*inspector], lower: [*settings], closed: [])")
+                .unwrap();
+        a.normalize();
+        assert!(matches!(&a.regions[2], Tree::Stack { active: Some(Panel::Settings), .. }));
+        assert_eq!(Panel::Settings.label(), "Project Settings");
+        assert!(a.closed.contains(&Panel::Preferences));
     }
 }

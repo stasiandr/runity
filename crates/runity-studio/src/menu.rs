@@ -3,10 +3,10 @@
 //! Every menu entry, toolbar button and context-menu line is an [`Action`],
 //! and `Studio::run` is the one place an action turns into session calls —
 //! so the menu bar, a right click and a test all do the same thing.
-//! Shortcuts are shown next to entries; the Scene view's own keyboard
-//! handling (`Session::scene_view`) is what answers them, so the label and
-//! the key cannot disagree about what happens — in macOS's menu bar too
-//! (`crate::native_menu`).
+//! Shortcuts are shown next to entries, and they come from the keymap
+//! (`crate::keymap`) the studio answers keys from, so the label and the
+//! key cannot disagree about what happens — in macOS's menu bar too
+//! (`crate::native_menu`), and after a key is rebound in Preferences.
 
 use std::path::PathBuf;
 
@@ -156,8 +156,15 @@ pub enum Action {
     ToggleClearOnPlay,
     /// A colour preset by name (`theme::PRESETS`), as the person's choice.
     Theme(&'static str),
-    /// Settings, on its Appearance page.
-    Appearance,
+    /// Preferences — the person's, in every project — in their window, on
+    /// a page or where they were last.
+    Preferences(Option<crate::preferences::Page>),
+    /// Project Settings: the project's own files, in git.
+    ProjectSettings,
+    /// The selection to where the view is looking from, or turned to look
+    /// the way the view does (Unity's GameObject menu).
+    MoveToView,
+    AlignWithView,
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -165,7 +172,8 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuItem {
     pub label: String,
-    pub shortcut: Option<&'static str>,
+    /// As this platform writes it: "⇧⌘Z", "Ctrl+Shift+Z".
+    pub shortcut: Option<String>,
     pub action: Option<Action>,
     /// Shown, greyed, and not clickable: what is coming.
     pub disabled: bool,
@@ -195,8 +203,8 @@ impl MenuItem {
         self
     }
 
-    pub fn key(mut self, shortcut: &'static str) -> Self {
-        self.shortcut = Some(shortcut);
+    pub fn key(mut self, shortcut: &str) -> Self {
+        self.shortcut = Some(shortcut.to_string());
         self
     }
 
@@ -215,32 +223,21 @@ fn item(label: &str, action: Action) -> MenuItem {
     MenuItem::new(label, action)
 }
 
-/// An editor action's item, as the registry has it: its label and key are
-/// the ones the agent's tool of the same name answers to.
+/// An editor action's item, as the registry has it: its label is the one
+/// the agent's tool of the same name answers to, and its key the keymap's.
 fn editor(name: &'static str) -> MenuItem {
     let action = runity_editor::actions::find(name).expect("a registered editor action");
-    let item = MenuItem::new(action.label, Action::Editor(name));
-    match action.key() {
-        Some(key) => item.key(key),
-        None => item,
-    }
+    MenuItem::new(action.label, Action::Editor(name))
 }
 
-/// The shortcut key, as the platform writes it.
-const CMD: bool = cfg!(target_os = "macos");
-
-macro_rules! key {
-    ($mac:expr, $other:expr) => {
-        if CMD {
-            $mac
-        } else {
-            $other
-        }
-    };
-}
-
-/// The menu bar: its titles and what each opens.
+/// The menu bar: its titles and what each opens, with the default keys.
+/// The studio shows the person's (`Studio::menu_bar`).
 pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
+    crate::keymap::Keymap::default().label_bar(bare_menu_bar())
+}
+
+/// The menu bar without keys: what they are is the keymap's.
+pub fn bare_menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
     vec![
         (
             "File",
@@ -267,18 +264,25 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 editor("undo"),
                 editor("redo"),
                 MenuItem::separator(),
-                item("Copy", Action::Copy).key(key!("⌘C", "Ctrl+C")),
-                item("Paste", Action::Paste).key(key!("⌘V", "Ctrl+V")),
+                item("Copy", Action::Copy),
+                item("Paste", Action::Paste),
                 editor("duplicate_entity"),
                 editor("delete_entity"),
-                item("Rename", Action::Rename).key("F2"),
+                item("Rename", Action::Rename),
                 MenuItem::separator(),
-                item("Select All", Action::SelectAll).key(key!("⌘A", "Ctrl+A")),
-                item("Select None", Action::SelectNone).key("Esc"),
+                item("Select All", Action::SelectAll),
+                item("Select None", Action::SelectNone),
                 MenuItem::separator(),
-                item("Frame Selected", Action::Frame).key("F"),
+                item("Frame Selected", Action::Frame),
+                item("Move to View", Action::MoveToView),
+                item("Align with View", Action::AlignWithView),
                 editor("drop_to_ground"),
                 item("Snap to Grid", Action::SnapToGrid),
+                MenuItem::separator(),
+                // Unity's two: the project's, in git, and the person's,
+                // in every project (on a Mac, «runity › Settings…»).
+                item("Project Settings…", Action::ProjectSettings),
+                item("Preferences…", Action::Preferences(None)),
             ],
         ),
         (
@@ -298,7 +302,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
         (
             "View",
             vec![
-                item("Search…", Action::Search).key(key!("⌘K", "Ctrl+K")),
+                item("Search…", Action::Search),
                 MenuItem::separator(),
                 item("Scene View", Action::GameView(false)),
                 item("Game View", Action::GameView(true)),
@@ -310,7 +314,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Back", Action::View(Side::Back)),
                 item("Left", Action::View(Side::Left)),
                 MenuItem::separator(),
-                item("Hide Selection", Action::Hide).key("H"),
+                item("Hide Selection", Action::Hide),
                 editor("isolate"),
                 item("Show All", Action::ShowAll),
                 MenuItem::separator(),
@@ -320,9 +324,20 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Snap Settings…", Action::SnapSettings),
                 item("Navigation", Action::ToggleNavigation),
                 MenuItem::separator(),
-                // A submenu, «Theme ›», where the menu bar has them: the
-                // label's first part is its title.
-                item("Theme › Appearance Settings…", Action::Appearance),
+                // The Scene view's tools, where their keys can be seen.
+                item("Tool › Hand", Action::Hand),
+                item("Tool › Move", Action::Tool(Tool::Move)),
+                item("Tool › Rotate", Action::Tool(Tool::Rotate)),
+                item("Tool › Scale", Action::Tool(Tool::Scale)),
+                item("Tool › Global / Local", Action::ToggleSpace),
+                item("Tool › Pivot / Center", Action::TogglePivot),
+                MenuItem::separator(),
+                // Quick switches between presets; the rest of the colours
+                // are Preferences › Appearance.
+                item(
+                    "Theme › Theme Settings…",
+                    Action::Preferences(Some(crate::preferences::Page::Appearance)),
+                ),
             ]
             .into_iter()
             .chain(
@@ -339,7 +354,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Right Dock", Action::TogglePanel(1)),
                 item("Bottom Dock", Action::TogglePanel(2)),
                 MenuItem::separator(),
-                item("Maximize the View", Action::Maximize).key("⇧Space"),
+                item("Maximize the View", Action::Maximize),
                 MenuItem::separator(),
                 item(
                     "Float the Inspector",
@@ -367,26 +382,29 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Animator", Action::ShowPanel(crate::dock::Panel::Animator)),
                 item("Dialogues", Action::ShowPanel(crate::dock::Panel::Dialogues)),
                 item("UI Builder", Action::ShowPanel(crate::dock::Panel::Screens)),
-                item("Settings", Action::ShowPanel(crate::dock::Panel::Settings)),
+                item(
+                    "Project Settings",
+                    Action::ShowPanel(crate::dock::Panel::Settings),
+                ),
                 item("Profiler", Action::ShowPanel(crate::dock::Panel::Profiler)),
             ],
         ),
         (
             "Play",
             vec![
-                item("Play / Stop", Action::Play).key(key!("⌘P", "Ctrl+P")),
-                item("Pause", Action::Pause).key(key!("⇧⌘P", "Ctrl+Shift+P")),
-                item("Step", Action::Step).key(key!("⌥⌘P", "Ctrl+Alt+P")),
-                item("Keep Simulation Changes", Action::KeepSimulation).key("K"),
+                item("Play / Stop", Action::Play),
+                item("Pause", Action::Pause),
+                item("Step", Action::Step),
+                item("Keep Simulation Changes", Action::KeepSimulation),
             ],
         ),
     ]
 }
 
 fn create_items(with_group: bool) -> Vec<MenuItem> {
-    let mut v = vec![item("Create Empty", Action::CreateEmpty).key(key!("⇧⌘N", "Ctrl+Shift+N"))];
+    let mut v = vec![item("Create Empty", Action::CreateEmpty)];
     if with_group {
-        v.push(item("Group Selection", Action::Group).key(key!("⇧⌘G", "Ctrl+Shift+G")));
+        v.push(item("Group Selection", Action::Group));
     }
     v.push(MenuItem::separator());
     for (label, model) in [
@@ -434,15 +452,15 @@ pub fn scene_menu(path: Option<PathBuf>, prefab: bool) -> Vec<MenuItem> {
 /// A right click on a line of the Hierarchy.
 pub fn context_menu() -> Vec<MenuItem> {
     vec![
-        item("Rename", Action::Rename).key("F2"),
+        item("Rename", Action::Rename),
         editor("duplicate_entity"),
         editor("delete_entity"),
         item("Copy", Action::Copy),
         item("Paste", Action::Paste),
         MenuItem::separator(),
-        item("Frame Selected", Action::Frame).key("F"),
+        item("Frame Selected", Action::Frame),
         item("Group Selection", Action::Group),
-        item("Hide", Action::Hide).key("H"),
+        item("Hide", Action::Hide),
         item("Isolate", Action::Editor("isolate")),
         MenuItem::separator(),
         item("Make Prefab", Action::MakePrefab),

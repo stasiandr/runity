@@ -96,7 +96,7 @@ impl Layer {
     /// the Advanced list shows them.
     pub fn text(&self) -> String {
         let mut out = String::from(
-            "// The editor's colours, yours in every project: Settings › Appearance.\n{\n",
+            "// The editor's colours, yours in every project: Preferences › Appearance.\n{\n",
         );
         if let Some(p) = &self.preset {
             out.push_str(&format!("    \"preset\": {p:?},\n"));
@@ -374,7 +374,7 @@ struct TokenRow {
     reset: NodeId,
 }
 
-/// The Appearance page of Settings.
+/// The Appearance page of Preferences.
 pub struct Appearance {
     pub root: NodeId,
     where_: NodeId,

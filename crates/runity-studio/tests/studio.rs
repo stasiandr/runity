@@ -3831,7 +3831,7 @@ fn choosing_a_preset_recolours_the_built_tree() {
     let card = card.expect("a panel on the surface");
     assert_eq!(drawn(&s, surface), [surface.r, surface.g, surface.b]);
 
-    click(&mut s, "tab settings");
+    shortcut(&mut s, Key::Comma);
     let daylight = s.ui.find("theme daylight").unwrap();
     click_page(&mut s, "theme daylight");
     assert!(s.ui.exists(card), "not rebuilt");
@@ -3882,7 +3882,7 @@ fn a_custom_accent_recolours_the_accent_and_its_ramp() {
         return;
     };
     let me = my_colours(&mut s, &dir);
-    click(&mut s, "tab settings");
+    shortcut(&mut s, Key::Comma);
     click_page(&mut s, "accent hex");
     shortcut(&mut s, Key::A);
     type_text(&mut s, "#e07a5f");
@@ -3960,4 +3960,217 @@ fn a_components_enum_with_a_payload_picks_its_variant_and_what_it_holds() {
     click(&mut s, "station kind");
     click(&mut s, "menu Crate");
     assert!(value(&s).contains("Crate(Cabbage)"), "{}", value(&s));
+}
+
+// --- Preferences and Project Settings ------------------------------------
+
+/// Whether `node` is under `root`.
+fn is_under(s: &Studio, node: runity_ui::NodeId, root: runity_ui::NodeId) -> bool {
+    let mut at = Some(node);
+    while let Some(n) = at {
+        if n == root {
+            return true;
+        }
+        at = s.ui.parent(n);
+    }
+    false
+}
+
+/// The key a menu line shows, as the menu draws it.
+fn menu_key(s: &mut Studio, bar: &str, entry: &str) -> Option<String> {
+    click(s, &format!("menu bar {bar}"));
+    let line = s
+        .ui
+        .find(&format!("menu {entry}"))
+        .unwrap_or_else(|| panic!("no {bar} › {entry}"));
+    let texts: Vec<String> = s
+        .ui
+        .children(line)
+        .into_iter()
+        .filter_map(|c| s.ui.text(c).map(str::to_string))
+        .collect();
+    key(s, Key::Escape);
+    (texts.len() > 1).then(|| texts.last().unwrap().clone())
+}
+
+fn floating_names(s: &Studio) -> Vec<String> {
+    s.floating().into_iter().map(|(n, _)| n).collect()
+}
+
+#[test]
+fn command_comma_opens_preferences_in_a_window_of_its_own_on_appearance() {
+    let Some((mut s, dir)) = studio() else { return };
+    my_colours(&mut s, &dir);
+    shortcut(&mut s, Key::Comma);
+    assert_eq!(floating_names(&s), ["preferences"]);
+    assert!(s.ui.find("tab preferences").is_none(), "not in a dock");
+    assert_eq!(s.preferences_page(), runity_studio::preferences::Page::Appearance);
+    let frame = s.ui.find("float preferences").unwrap();
+    let page = s.ui.find("preferences page appearance").unwrap();
+    assert!(is_under(&s, page, frame));
+    assert!(s.ui.is_shown(page));
+    assert!(s.ui.find("theme graphite").is_some(), "the palette's page");
+
+    // Asked for again: the one window, brought forward.
+    shortcut(&mut s, Key::Comma);
+    assert_eq!(floating_names(&s), ["preferences"]);
+    assert_eq!(s.take_raise().as_deref(), Some("preferences"));
+
+    // Its window closed: away, not into a dock.
+    s.close_float("preferences");
+    s.frame();
+    assert!(s.floating().is_empty());
+    assert!(s.ui.find("tab preferences").is_none());
+    assert!(s.ui.find("float preferences").is_none());
+
+    // And from the menus: Edit › Preferences…, Theme › Theme Settings….
+    click(&mut s, "menu bar Edit");
+    click(&mut s, "menu Preferences…");
+    assert_eq!(floating_names(&s), ["preferences"]);
+    click(&mut s, "preferences keys");
+    s.close_float("preferences");
+    menu(&mut s, "View", "Theme › Theme Settings…");
+    assert_eq!(s.preferences_page(), runity_studio::preferences::Page::Appearance);
+    assert_eq!(floating_names(&s), ["preferences"]);
+}
+
+#[test]
+fn project_settings_are_the_projects_files_and_no_appearance() {
+    let Some((mut s, _dir)) = studio() else { return };
+    menu(&mut s, "Edit", "Project Settings…");
+    let panel = s.ui.find("settings").unwrap();
+    assert!(s.ui.is_shown(panel));
+    assert!(s.ui.find("settings runity.ron").is_some());
+    assert!(s.ui.find("settings appearance").is_none());
+    let appearance = s.ui.find("appearance").unwrap();
+    assert!(!is_under(&s, appearance, panel), "Appearance is Preferences'");
+    // It opens on runity.ron rather than on nothing.
+    let text = s.ui.text(s.ui.find("settings text").unwrap()).unwrap().to_string();
+    assert!(!text.is_empty());
+    assert!(s.ui.dump().contains("Project Settings"), "its tab says whose");
+}
+
+#[test]
+fn a_rebound_key_works_reads_in_the_menu_and_is_kept_for_the_next_editor() {
+    let Some((mut s, dir)) = studio() else { return };
+    let me = my_colours(&mut s, &dir);
+    assert_eq!(menu_key(&mut s, "View", "Tool › Move").as_deref(), Some("W"));
+    shortcut(&mut s, Key::Comma);
+    click(&mut s, "preferences keys");
+    click(&mut s, "key move");
+    assert_eq!(s.ui.text(s.ui.find("key move").and_then(|c| s.ui.children(c).first().copied()).unwrap()), Some("Press a key…"));
+    key(&mut s, Key::M);
+    assert_eq!(s.keymap().keys("move").len(), 1);
+    assert_eq!(s.keymap().keys("move")[0].key, Key::M);
+
+    // M is Move now, and W is nothing.
+    key(&mut s, Key::E);
+    assert_eq!(s.session.tool(), runity::gizmo::Tool::Rotate);
+    key(&mut s, Key::W);
+    assert_eq!(s.session.tool(), runity::gizmo::Tool::Rotate, "W is no tool now");
+    key(&mut s, Key::M);
+    assert_eq!(s.session.tool(), runity::gizmo::Tool::Move);
+    assert_eq!(menu_key(&mut s, "View", "Tool › Move").as_deref(), Some("M"));
+
+    let file = std::fs::read_to_string(me.join(runity_studio::keymap::FILE)).unwrap();
+    assert!(file.contains("\"move\": [\"M\"]"), "{file}");
+    assert!(!file.contains("rotate"), "only what differs: {file}");
+
+    let Some((mut again, dir2)) = studio() else { return };
+    again.set_config_dir(me);
+    assert_eq!(again.keymap().keys("move")[0].key, Key::M);
+    key(&mut again, Key::E);
+    key(&mut again, Key::M);
+    assert_eq!(again.session.tool(), runity::gizmo::Tool::Move);
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[test]
+fn a_key_taken_from_another_command_is_its_no_longer_until_reset() {
+    let Some((mut s, dir)) = studio() else { return };
+    my_colours(&mut s, &dir);
+    shortcut(&mut s, Key::Comma);
+    click(&mut s, "preferences keys");
+    click(&mut s, "key move");
+    key(&mut s, Key::F);
+    assert_eq!(s.keymap().keys("move")[0].key, Key::F);
+    assert!(s.keymap().keys("frame").is_empty(), "Frame lost F");
+    let note = s.ui.text(s.ui.find("keys note").unwrap()).unwrap().to_string();
+    assert!(note.contains("Frame Selected"), "{note}");
+    assert_eq!(menu_key(&mut s, "Edit", "Frame Selected"), None);
+    key(&mut s, Key::E);
+    key(&mut s, Key::F);
+    assert_eq!(s.session.tool(), runity::gizmo::Tool::Move, "F moves now");
+
+    // Frame's own key back: Move gives it up.
+    click(&mut s, "key reset frame");
+    assert_eq!(s.keymap().keys("frame")[0].key, Key::F);
+    assert!(s.keymap().keys("move").is_empty());
+    click(&mut s, "keys reset all");
+    assert_eq!(s.keymap().keys("move")[0].key, Key::W);
+    assert!(s.keymap().commands().iter().all(|c| s.keymap().is_default(c.id)));
+
+    // The search keeps the rows that match.
+    click(&mut s, "keys search");
+    type_text(&mut s, "rotate");
+    s.frame();
+    assert!(s.ui.is_shown(s.ui.find("key row rotate").unwrap()));
+    assert!(!s.ui.is_shown(s.ui.find("key row undo").unwrap()));
+    // Esc while listening keeps the key.
+    click(&mut s, "key rotate");
+    key(&mut s, Key::Escape);
+    assert_eq!(s.keymap().keys("rotate")[0].key, Key::E);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_code_editor_chosen_is_what_a_console_line_opens_with() {
+    let Some((mut s, dir)) = studio() else { return };
+    let me = my_colours(&mut s, &dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/door.rs"), "fn main() {}\n").unwrap();
+    let out = dir.join("opened.txt");
+    shortcut(&mut s, Key::Comma);
+    click(&mut s, "preferences tools");
+    click(&mut s, "tools editor");
+    type_text(&mut s, &format!("sh -c \"echo {{file}}:{{line}} > {}\"", out.display()));
+    s.frame();
+    assert!(s.personal().code_editor.starts_with("sh -c"));
+    let kept = std::fs::read_to_string(me.join(runity_studio::preferences::FILE)).unwrap();
+    assert!(kept.contains("sh -c"), "{kept}");
+
+    s.close_float("preferences");
+    s.session.clear_console();
+    s.session.say(
+        runity_editor::console::Level::Error,
+        "error[E0308]: mismatched types\n --> src/door.rs:12:9",
+    );
+    s.frame();
+    click(&mut s, "tab console");
+    double_click(&mut s, "console line 0");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !out.is_file() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let opened = std::fs::read_to_string(&out).expect("the editor command ran");
+    assert!(opened.trim().ends_with("src/door.rs:12"), "{opened}");
+}
+
+#[test]
+fn saved_layouts_are_renamed_and_deleted_in_preferences() {
+    let Some((mut s, dir)) = studio() else { return };
+    let me = my_colours(&mut s, &dir);
+    let layout = runity_studio::layouts::Layout::built_in("Tall").unwrap();
+    runity_studio::layouts::save(&me, "Wide", &layout).unwrap();
+    shortcut(&mut s, Key::Comma);
+    click(&mut s, "preferences layouts");
+    click(&mut s, "layout name Wide");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "Painting");
+    key(&mut s, Key::Enter);
+    assert_eq!(runity_studio::layouts::saved(&me), ["Painting"]);
+    assert!(s.ui.find("layout name Painting").is_some(), "the page shows it");
+    click(&mut s, "layout delete Painting");
+    assert!(runity_studio::layouts::saved(&me).is_empty());
+    assert!(s.ui.find("layout name Painting").is_none());
 }

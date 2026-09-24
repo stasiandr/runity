@@ -45,8 +45,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // One panel in a window of its own, at a size that shows all of it:
     // `RUNITY_SHOT_FLOAT=settings` photographs the Settings panel alone.
+    // `RUNITY_SHOT_FLOAT_SIZE=780x560`: the window at the size it opens at.
     let float = std::env::var("RUNITY_SHOT_FLOAT").ok();
-    let (fw, fh) = (1000.0, 1240.0);
+    let (fw, fh) = std::env::var("RUNITY_SHOT_FLOAT_SIZE")
+        .ok()
+        .and_then(|s| {
+            let (w, h) = s.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((1000.0, 1240.0));
     studio.frame();
     if let Some(panel) = &float {
         studio.float_panel(panel);

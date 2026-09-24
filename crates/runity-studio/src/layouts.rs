@@ -245,6 +245,23 @@ pub fn load(config: Option<&Path>, name: &str) -> Result<Layout, String> {
     Ok(layout)
 }
 
+/// Call a saved layout by another name (Preferences › Layouts). Refused
+/// over one that is there already: that would lose it.
+pub fn rename(config: &Path, old: &str, new: &str) -> Result<(), String> {
+    let old = check_name(old)?;
+    let new = check_name(new)?;
+    let from = file(config, old);
+    if !from.is_file() {
+        return Err(format!("no layout called {old}"));
+    }
+    let to = file(config, new);
+    // Only the case changed is the same file on a Mac: still a rename.
+    if to.exists() && !old.eq_ignore_ascii_case(new) {
+        return Err(format!("there is a layout called {new} already"));
+    }
+    std::fs::rename(&from, &to).map_err(|e| format!("{}: {e}", from.display()))
+}
+
 /// Delete a saved layout.
 pub fn delete(config: &Path, name: &str) -> Result<(), String> {
     let name = name.trim();
