@@ -2840,8 +2840,87 @@ fn the_dialogues_window_draws_a_conversation_and_reads_a_line() {
     click(&mut s, "line ask");
     let dump = s.ui.dump();
     assert!(dump.contains("Help me?"), "{dump}");
-    assert!(dump.contains("“No” → bye if not broke"), "{dump}");
-    assert!(dump.contains("sets agreed"), "{dump}");
+    assert!(
+        dump.contains(r#"to: \"bye\", when: [Not(\"broke\")]"#),
+        "the answers as written: {dump}"
+    );
+    assert!(dump.contains(r#"set: [\"agreed\"]"#), "{dump}");
+}
+
+#[test]
+fn the_dialogues_window_edits_a_conversation_and_plays_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let file = dir.join("dialogues/captain.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        r#"// At the pier.
+(
+    start: "hello",
+    lines: {
+        "hello": (speaker: "Captain", text: "Ahoy.", next: "ask"), // first
+        "ask": (speaker: "Captain", text: "Help me?", choices: [
+            (text: "Yes", to: "thanks", set: ["agreed"]),
+            (text: "No", to: "bye", when: [Not("broke")]),
+        ]),
+        "thanks": (text: "Good."),
+        "bye": (text: "Pity."),
+    },
+)
+"#,
+    )
+    .unwrap();
+    let read = || -> scrap::dialogue::Dialogue {
+        scrap::ron::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap()
+    };
+    click(&mut s, "tab dialogues");
+    click(&mut s, "dialogues wide");
+    s.frame();
+    click(&mut s, "dialogue captain");
+
+    // A line's words, and a condition on it with somewhere else to go.
+    click(&mut s, "line thanks");
+    fill(&mut s, "dialogues field text", "Good man.");
+    fill(&mut s, "dialogues field when", r#"Var("trust", Ge, 1)"#);
+    fill(&mut s, "dialogues field else", "bye");
+    let d = read();
+    assert_eq!(d.lines["thanks"].text, "Good man.");
+    assert_eq!(d.lines["thanks"].otherwise, "bye");
+    // A new line said after it, renamed.
+    click(&mut s, "dialogues add line");
+    fill(&mut s, "dialogues field name", "later");
+    fill(&mut s, "dialogues field text", "See you.");
+    let d = read();
+    assert_eq!(d.lines["thanks"].next, "later", "{d:?}");
+    assert_eq!(d.lines["later"].text, "See you.");
+    // An answer edited as it is written.
+    click(&mut s, "line ask");
+    fill(
+        &mut s,
+        "dialogues answer 0",
+        r#"(text: "Yes", to: "thanks", add: {"trust": 1})"#,
+    );
+    assert_eq!(read().lines["ask"].choices[0].add["trust"], 1);
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("// At the pier.") && text.contains("// first"),
+        "{text}"
+    );
+
+    // Played here: yes, then the trusted line.
+    click(&mut s, "dialogue captain");
+    click(&mut s, "dialogues play");
+    assert!(s.ui.dump().contains("Ahoy."));
+    click(&mut s, "dialogues next");
+    click(&mut s, "dialogues say 0");
+    let dump = s.ui.dump();
+    assert!(dump.contains("Good man."), "{dump}");
+    assert!(dump.contains("numbers: trust = 1"), "{dump}");
+    click(&mut s, "dialogues next");
+    assert!(s.ui.dump().contains("See you."));
+    click(&mut s, "dialogues stop");
 }
 
 #[test]

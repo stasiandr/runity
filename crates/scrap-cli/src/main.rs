@@ -6,6 +6,7 @@
 //! scrap run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]  the game
 //! scrap sync  [PROJECT]     build library/ from the sources
 //! scrap check [PROJECT]     what does not resolve, with file and entity
+//! scrap lines [PROJECT] [--out DIR]  what the dialogues say, a sheet per language
 //! scrap modules [sync] [PROJECT]  the engine's modules; Cargo.toml from scrap.ron
 //! scrap rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! scrap perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
@@ -78,6 +79,12 @@ scrap sync [PROJECT]
 scrap check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
+scrap lines [PROJECT] [--out DIR]
+    Everything the dialogues say, as a CSV sheet per language of strings/
+    (DIR/<language>.csv; build/lines/ by default): a row a line or an
+    answer — its stable name <dialogue>/<line> (what its recording is
+    called), who says it, the strings/ key and the words. For recording
+    voices and for translators; strings/ stays the truth.
 scrap modules [PROJECT]
     Every module of the engine, what it is and stands on, and whether the
     project lists it in scrap.ron (`modules: [...]`).
@@ -237,6 +244,7 @@ fn run() -> Result<ExitCode> {
             })
         }
         "check" => check(&find(&rest)?),
+        "lines" => lines(&rest),
         "modules" => {
             let (sync, rest) = match rest.split_first() {
                 Some((first, rest)) if first == "sync" => (true, rest.to_vec()),
@@ -714,6 +722,27 @@ fn build(rest: &[String]) -> Result<ExitCode> {
         built.folder.display(),
         built.executable.display()
     );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `scrap lines`: the dialogues' sheets for voices and translators.
+fn lines(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut out: Option<PathBuf> = None;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--out" => out = Some(args.next().context("--out wants a folder")?.into()),
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let project = find(&at)?;
+    let out = out.unwrap_or_else(|| project.root().join("build").join("lines"));
+    let written = scrap_cli::lines::export(&project, &out).map_err(|e| anyhow::anyhow!("{e}"))?;
+    for file in written {
+        println!("{}", file.display());
+    }
     Ok(ExitCode::SUCCESS)
 }
 

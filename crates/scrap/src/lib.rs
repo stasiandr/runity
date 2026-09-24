@@ -70,6 +70,11 @@ pub use scrap_core::files;
 pub use scrap_core::web_time;
 #[cfg(feature = "dialogue")]
 pub use scrap_dialogue::dialogue;
+#[cfg(feature = "dialogue")]
+pub use scrap_dialogue::quest;
+/// A dialogue as the files are written by hand, patched where it changed.
+#[cfg(feature = "dialogue")]
+pub use scrap_dialogue::text as dialogue_text;
 #[cfg(feature = "discord")]
 pub use scrap_discord::discord;
 pub use scrap_geometry::builtin;

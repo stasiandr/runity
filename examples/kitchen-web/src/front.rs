@@ -475,7 +475,7 @@ impl Front {
 
     /// The head chef starts talking: the dialogue from its start.
     pub fn brief(&mut self) {
-        let mut flags = std::collections::BTreeSet::new();
+        let mut flags = scrap::dialogue::State::default();
         let talk = scrap::dialogue::Conversation::begin(self.chef.clone(), &mut flags);
         self.talk = Some((talk, 0.0));
     }
@@ -488,7 +488,7 @@ impl Front {
         *shown += seconds;
         if *shown >= LINE_SECONDS {
             *shown = 0.0;
-            talk.next(&mut std::collections::BTreeSet::new());
+            talk.next(&mut scrap::dialogue::State::default());
             if talk.over() {
                 self.talk = None;
             }

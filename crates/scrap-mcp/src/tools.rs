@@ -204,6 +204,22 @@ pub fn list() -> Vec<Value> {
         }), &["name", "from", "to"]),
         tool("graph_disconnect", "Remove the transitions from one state to another in an animator graph.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
         tool("graph_rename", "Rename a state in an animator graph, and everything that names it: the start, the transitions, and the graph's cases (animators/<name>.cases.ron).", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("dialogue", "A dialogue (dialogues/<name>.ron): its start, every line with who says it, what, when, and where it goes, every answer, what is wrong with it, its cases (dialogues/<name>.cases.ron) played, and what changed since the last commit. An empty name lists the dialogues.", json!({ "name": { "type": "string", "description": "the dialogue's path in dialogues/ without .ron" } }), &["name"]),
+        tool("dialogue_line", "Write one line of a dialogue, into the file where it goes (the rest of the file as it was). `entry` is the line as RON — (speaker: \"@chef\", text: \"@chef.hi\", next: \"ask\"), with when: [Is(\"f\"), Not(\"f\"), Var(\"n\", Ge, 3)], else, set: [\"f\"], add: {\"n\": 1}, put: {\"n\": 0}, event, choices: [(text, to, when, once: true, set, add, put, event)]; an empty entry removes the line. A dialogue that is not there is made, starting at this line.", json!({
+            "name": { "type": "string" },
+            "line": { "type": "string" },
+            "entry": { "type": "string" },
+            "start": { "type": "boolean", "description": "make it the line the dialogue starts at" },
+        }), &["name", "line", "entry"]),
+        tool("dialogue_rename", "Rename a line of a dialogue, and everything that names it: the start, next, else, answers' to, and the dialogue's cases.", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
+        tool("dialogue_play", "Play a dialogue without the game: from the start (or `from`), on through lines, answering with `answers` (by the answer's text) in turn, until an answer is wanted and none is left, or it is over. Says every line, the answers on offer, the events told, and the flags and numbers at the end.", json!({
+            "name": { "type": "string" },
+            "answers": { "type": "array", "items": { "type": "string" } },
+            "flags": { "type": "array", "items": { "type": "string" }, "description": "flags set before it begins" },
+            "vars": { "type": "object", "description": "numbers before it begins, {\"coins\": 3}" },
+            "from": { "type": "string", "description": "a line to begin at instead of the start" },
+        }), &["name"]),
+        tool("export_lines", "Everything the dialogues say as a CSV sheet per language of strings/ (id <dialogue>/<line>, speaker, key, text), for recording voices and for translators — what `scrap lines` writes.", json!({ "out": { "type": "string", "description": "folder relative to the project; build/lines by default" } }), &[]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed, except the entities in `keep`, which stay where they fell (one undo step).", simulate, &["seconds"]),
     ]
     .into_iter()
@@ -1369,6 +1385,9 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         "graph" | "graph_connect" | "graph_disconnect" | "graph_rename" => {
             graph_tool(server, name, args)
         }
+        "dialogue" | "dialogue_line" | "dialogue_rename" | "dialogue_play" | "export_lines" => {
+            dialogue_tool(server, name, args)
+        }
         other => Err(format!("no tool `{other}`")),
     }
 }
@@ -2027,6 +2046,273 @@ fn graph_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value
                 }
             }
             Ok(vec![text(format!("`{from}` is `{to}` in {name}{also}"))])
+        }
+    }
+}
+
+/// The dialogue tools: read one, write a line, rename a line, play it,
+/// and the sheets of what they all say.
+fn dialogue_tool(server: &mut Server, tool: &str, args: &Value) -> Result<Vec<Value>, String> {
+    use scrap::dialogue::{describe, named_twice, Cases, Conversation, Dialogue, State};
+    let session = server.session()?;
+    let project = session.project().ok_or("the open scene is in no project")?;
+    if tool == "export_lines" {
+        let out = optional_string(args, "out")?.unwrap_or_else(|| "build/lines".into());
+        let written = scrap_cli::lines::export(project, &project.root().join(out))?;
+        let files: Vec<String> = written
+            .iter()
+            .map(|p| {
+                project
+                    .relative(p)
+                    .unwrap_or_else(|| p.display().to_string())
+            })
+            .collect();
+        return Ok(vec![text(format!("wrote {}", files.join(", ")))]);
+    }
+    let dir = project.root().join(scrap::dialogue::DIR);
+    let name = string(args, "name")?;
+    let (all, _) = scrap_cli::lines::dialogues(project);
+    if tool == "dialogue" && name.is_empty() {
+        let names: Vec<String> = all.iter().map(|(_, d)| d.name.clone()).collect();
+        return Ok(vec![text(if names.is_empty() {
+            "no dialogues yet: dialogue_line makes one".to_string()
+        } else {
+            names.join("\n")
+        })]);
+    }
+    let path = dir.join(format!("{name}.ron"));
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut dialogue: Dialogue = if old.is_empty() && tool == "dialogue_line" {
+        Dialogue::default()
+    } else if old.is_empty() {
+        let near = scrap::spelling::closest(&name, all.iter().map(|(_, d)| d.name.as_str()))
+            .map(|n| format!(" — did you mean `{n}`?"))
+            .unwrap_or_default();
+        return Err(format!("no dialogue `{name}` in dialogues/{near}"));
+    } else {
+        scrap::ron::from_str(&old).map_err(|e| format!("{}: {e}", path.display()))?
+    };
+    dialogue.name = name.clone();
+    let save = |d: &Dialogue| -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&path, scrap::dialogue_text::write(&old, d)).map_err(|e| e.to_string())
+    };
+    let cases_path = path.with_extension("cases.ron");
+    match tool {
+        "dialogue" => {
+            let mut out = format!("start: {}\n", dialogue.start);
+            for (line_name, line) in &dialogue.lines {
+                let who = if line.speaker.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}: ", line.speaker)
+                };
+                out.push_str(&format!("line {line_name}: {who}{}", line.text));
+                if !line.when.is_empty() {
+                    let otherwise = if line.otherwise.is_empty() {
+                        &line.next
+                    } else {
+                        &line.otherwise
+                    };
+                    out.push_str(&format!(
+                        " (said if {}, else → {otherwise})",
+                        describe(&line.when)
+                    ));
+                }
+                if !line.next.is_empty() {
+                    out.push_str(&format!(" → {}", line.next));
+                }
+                if !line.set.is_empty() {
+                    out.push_str(&format!(", sets {}", line.set.join(", ")));
+                }
+                if !line.event.is_empty() {
+                    out.push_str(&format!(", tells `{}`", line.event));
+                }
+                out.push('\n');
+                for (i, c) in line.choices.iter().enumerate() {
+                    out.push_str(&format!("  answer {}: “{}” → {}", i + 1, c.text, c.to));
+                    if !c.when.is_empty() {
+                        out.push_str(&format!(" if {}", describe(&c.when)));
+                    }
+                    if c.once {
+                        out.push_str(", once");
+                    }
+                    if !c.set.is_empty() {
+                        out.push_str(&format!(", sets {}", c.set.join(", ")));
+                    }
+                    if !c.event.is_empty() {
+                        out.push_str(&format!(", tells `{}`", c.event));
+                    }
+                    out.push('\n');
+                }
+            }
+            for problem in named_twice(&old).into_iter().chain(dialogue.problems()) {
+                out.push_str(&format!("problem: {problem}\n"));
+            }
+            if let Ok(cases_text) = std::fs::read_to_string(&cases_path) {
+                match scrap::ron::from_str::<Cases>(&cases_text) {
+                    Ok(cases) => {
+                        let failed = cases.run(&dialogue);
+                        out.push_str(&format!(
+                            "cases: {} of {} pass\n",
+                            cases.cases.len().saturating_sub(failed.len()),
+                            cases.cases.len()
+                        ));
+                        for f in failed {
+                            out.push_str(&format!("case failed: {f}\n"));
+                        }
+                    }
+                    Err(e) => out.push_str(&format!("cases: {e}\n")),
+                }
+            }
+            if let Some(head) = scrap_editor::history::show(&path, "HEAD")
+                .ok()
+                .and_then(|t| scrap::ron::from_str::<Dialogue>(&t).ok())
+            {
+                let mut head = head;
+                head.name = name.clone();
+                for change in scrap::dialogue::diff(&head, &dialogue) {
+                    out.push_str(&format!("since the last commit: {change}\n"));
+                }
+            }
+            Ok(vec![text(out)])
+        }
+        "dialogue_line" => {
+            let line = string(args, "line")?;
+            let entry = string(args, "entry")?;
+            if line.is_empty() {
+                return Err("a line needs a name".into());
+            }
+            let said = if entry.trim().is_empty() {
+                if dialogue.lines.remove(&line).is_none() {
+                    return Err(format!("{name} has no line `{line}`"));
+                }
+                format!("`{line}` removed from {name}")
+            } else {
+                let parsed: scrap::dialogue::Line =
+                    scrap::ron::from_str(&entry).map_err(|e| format!("entry: {e}"))?;
+                let was = dialogue.lines.insert(line.clone(), parsed).is_some();
+                if dialogue.start.is_empty() {
+                    dialogue.start = line.clone();
+                }
+                format!(
+                    "`{line}` {} in {name}",
+                    if was { "written" } else { "added" }
+                )
+            };
+            if args.get("start").and_then(Value::as_bool) == Some(true) {
+                dialogue.start = line.clone();
+            }
+            save(&dialogue)?;
+            let problems = dialogue.problems();
+            Ok(vec![text(if problems.is_empty() {
+                said
+            } else {
+                format!("{said}; now: {}", problems.join("; "))
+            })])
+        }
+        "dialogue_rename" => {
+            let (from, to) = (string(args, "from")?, string(args, "to")?);
+            scrap::dialogue::rename(&mut dialogue, &from, &to)
+                .map_err(|e| format!("{name}: {e}"))?;
+            save(&dialogue)?;
+            // The dialogue's cases name lines too.
+            let mut also = String::new();
+            if let Ok(cases) = std::fs::read_to_string(&cases_path) {
+                let renamed = cases
+                    .replace(&format!("At({from:?})"), &format!("At({to:?})"))
+                    .replace(&format!("Next({from:?})"), &format!("Next({to:?})"))
+                    .replace(&format!(", {from:?})"), &format!(", {to:?})"));
+                if renamed != cases {
+                    std::fs::write(&cases_path, renamed).map_err(|e| e.to_string())?;
+                    also = format!(", and in {name}.cases.ron");
+                }
+            }
+            Ok(vec![text(format!("`{from}` is `{to}` in {name}{also}"))])
+        }
+        _ => {
+            let mut state = State::default();
+            if let Some(flags) = args.get("flags").and_then(Value::as_array) {
+                state
+                    .flags
+                    .extend(flags.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            if let Some(vars) = args.get("vars").and_then(Value::as_object) {
+                for (k, v) in vars {
+                    let n = v
+                        .as_i64()
+                        .ok_or_else(|| format!("vars: {k} is a whole number, not {v}"))?;
+                    state.vars.insert(k.clone(), n);
+                }
+            }
+            let mut answers: std::collections::VecDeque<String> = args
+                .get("answers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut talk = match optional_string(args, "from")? {
+                Some(from) => Conversation::begin_at(dialogue.clone(), &from, &mut state),
+                None => Conversation::begin(dialogue.clone(), &mut state),
+            };
+            let mut out = String::new();
+            for _ in 0..1000 {
+                let Some(line) = talk.line().cloned() else {
+                    out.push_str("— over\n");
+                    break;
+                };
+                let who = if line.speaker.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}: ", line.speaker)
+                };
+                out.push_str(&format!(
+                    "{} — {who}{}\n",
+                    talk.at().unwrap_or(""),
+                    line.text
+                ));
+                for event in talk.events() {
+                    out.push_str(&format!("  tells `{event}`\n"));
+                }
+                if line.choices.is_empty() {
+                    talk.next(&mut state);
+                    continue;
+                }
+                let offered: Vec<(usize, String)> = talk
+                    .choices(&state)
+                    .map(|(i, c)| (i, c.text.clone()))
+                    .collect();
+                let words: Vec<String> = offered.iter().map(|(_, t)| format!("“{t}”")).collect();
+                out.push_str(&format!("  answers on offer: {}\n", words.join(", ")));
+                let Some(answer) = answers.pop_front() else {
+                    out.push_str("— waits for an answer\n");
+                    break;
+                };
+                let Some((index, _)) = offered.iter().find(|(_, t)| *t == answer) else {
+                    out.push_str(&format!("— “{answer}” is not on offer\n"));
+                    break;
+                };
+                out.push_str(&format!("  answers “{answer}”\n"));
+                talk.choose(*index, &mut state);
+            }
+            let flags: Vec<&str> = state.flags.iter().map(String::as_str).collect();
+            let vars: Vec<String> = state
+                .vars
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect();
+            out.push_str(&format!(
+                "flags: {}\nnumbers: {}\n",
+                flags.join(", "),
+                vars.join(", ")
+            ));
+            Ok(vec![text(out)])
         }
     }
 }
