@@ -216,10 +216,61 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
 /// Everything that only exists once there is a window.
 struct Running {
     window: Arc<Window>,
-    gpu: Gpu,
+    gpu: Arc<Gpu>,
+    /// What draws: here between frames, with the render thread while it
+    /// draws one.
+    drawing: Option<Box<Drawing>>,
+    render: Option<RenderThread>,
+}
+
+/// What a frame is drawn with: handed to the render thread and back.
+struct Drawing {
     surface: Surface,
     renderer: Renderer,
     overlay: crate::ui_render::UiRenderer,
+}
+
+/// A frame to draw, and what drew it back.
+struct Job {
+    drawing: Box<Drawing>,
+    frame: Frame,
+    ui: crate::ui::Ui,
+}
+
+struct Done {
+    drawing: Box<Drawing>,
+    drawn: Drawn,
+    times: Vec<(&'static str, std::time::Duration)>,
+}
+
+/// The render thread: made the first time a frame is drawn on it, kept
+/// until the window goes. What draws is sent to it with the frame and
+/// comes back with the frame shown — one thread has it at a time.
+struct RenderThread {
+    jobs: std::sync::mpsc::Sender<Job>,
+    done: std::sync::mpsc::Receiver<Done>,
+}
+
+impl RenderThread {
+    fn new(gpu: Arc<Gpu>) -> Self {
+        let (jobs, inbox) = std::sync::mpsc::channel::<Job>();
+        let (outbox, done) = std::sync::mpsc::channel::<Done>();
+        std::thread::Builder::new()
+            .name("runity-render".into())
+            .spawn(move || {
+                // Ends when the window's side hangs up.
+                for mut job in inbox {
+                    let mut times = Vec::with_capacity(3);
+                    let d = &mut *job.drawing;
+                    let drawn = draw_frame(&gpu, &d.surface, &mut d.renderer, &mut d.overlay, &job.frame, &job.ui, &mut times);
+                    if outbox.send(Done { drawing: job.drawing, drawn, times }).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("a thread to draw on");
+        Self { jobs, done }
+    }
 }
 
 struct Shell<G: Game> {
@@ -231,8 +282,8 @@ struct Shell<G: Game> {
     render_thread: bool,
     /// The next frame's steps were run while the last one was drawn.
     stepped_ahead: bool,
-    /// What the last frame's steps took: a thread for the drawing costs
-    /// a tenth of a millisecond, so steps cheaper than that do not get one.
+    /// What the last frame's steps took: steps cheaper than the handover
+    /// to the render thread are not worth drawing beside.
     last_steps: std::time::Duration,
     loop_times: runity_core::perf::Profiler,
     /// `RUNITY_LOOP_TIMES`: the loop's times to stderr every few seconds,
@@ -250,13 +301,14 @@ impl<G: Game> Shell<G> {
         input: &'a Input,
         loop_times: &'a runity_core::perf::Profiler,
     ) -> Context<'a> {
+        let drawing = state.drawing.as_deref_mut().expect("back from the render thread");
         Context {
             time,
             input,
             gpu: &state.gpu,
-            size: (state.surface.width(), state.surface.height()),
-            renderer: &mut state.renderer,
-            overlay: &mut state.overlay,
+            size: (drawing.surface.width(), drawing.surface.height()),
+            renderer: &mut drawing.renderer,
+            overlay: &mut drawing.overlay,
             loop_times,
             quit: false,
         }
@@ -284,8 +336,9 @@ fn run_steps<G: Game>(game: &mut G, time: &mut Time, input: &Input, size: (u32, 
     quit
 }
 
-/// Steps at least this long get the drawing on a thread beside them.
-const THREAD_FROM: std::time::Duration = std::time::Duration::from_micros(300);
+/// Steps at least this long get the drawing on the render thread beside
+/// them: handing a frame over and back costs tens of microseconds.
+const THREAD_FROM: std::time::Duration = std::time::Duration::from_micros(100);
 
 /// How drawing a frame went.
 enum Drawn {
@@ -336,7 +389,10 @@ impl<G: Game> Shell<G> {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        let size = (state.surface.width(), state.surface.height());
+        let size = {
+            let drawing = state.drawing.as_ref().expect("back from the render thread");
+            (drawing.surface.width(), drawing.surface.height())
+        };
         let mut quit = false;
         if !self.stepped_ahead {
             let start = std::time::Instant::now();
@@ -366,41 +422,25 @@ impl<G: Game> Shell<G> {
             // The overlay is the game's, which the steps are about to
             // change: the drawing gets its own copy.
             let ui = self.game.overlay().clone();
-            let Running {
-                gpu,
-                surface,
-                renderer,
-                overlay,
-                ..
-            } = state;
-            let (gpu, surface) = (&*gpu, &*surface);
-            let (game, time, input) = (&mut self.game, &mut self.time, &self.input);
-            let times = &mut times;
-            let (drawn, stepped, steps_took) = std::thread::scope(|scope| {
-                let drawing = std::thread::Builder::new()
-                    .name("runity-render".into())
-                    .spawn_scoped(scope, move || draw_frame(gpu, surface, renderer, overlay, &frame, &ui, times))
-                    .expect("a thread to draw on");
-                let start = std::time::Instant::now();
-                let stepped = run_steps(game, time, input, size);
-                let took = start.elapsed();
-                (drawing.join().expect("the render thread panicked"), stepped, took)
-            });
-            quit |= stepped;
+            let thread = state.render.get_or_insert_with(|| RenderThread::new(state.gpu.clone()));
+            let drawing = state.drawing.take().expect("back from the render thread");
+            thread
+                .jobs
+                .send(Job { drawing, frame, ui })
+                .expect("the render thread is gone");
+            let start = std::time::Instant::now();
+            quit |= run_steps(&mut self.game, &mut self.time, &self.input, size);
+            let took = start.elapsed();
+            let done = thread.done.recv().expect("the render thread panicked");
+            state.drawing = Some(done.drawing);
+            times = done.times;
             self.stepped_ahead = true;
-            self.last_steps = steps_took;
-            self.loop_times.record("steps", steps_took);
-            drawn
+            self.last_steps = took;
+            self.loop_times.record("steps", took);
+            done.drawn
         } else {
-            draw_frame(
-                &state.gpu,
-                &state.surface,
-                &mut state.renderer,
-                &mut state.overlay,
-                &frame,
-                self.game.overlay(),
-                &mut times,
-            )
+            let d = state.drawing.as_deref_mut().expect("back from the render thread");
+            draw_frame(&state.gpu, &d.surface, &mut d.renderer, &mut d.overlay, &frame, self.game.overlay(), &mut times)
         };
         for (name, took) in times {
             self.loop_times.record(name, took);
@@ -409,7 +449,11 @@ impl<G: Game> Shell<G> {
             Drawn::Shown => {}
             // Routine: the window is being dragged or is minimised. Rebuild
             // the swapchain and let the next frame have it.
-            Drawn::Outdated => state.surface.reconfigure(&state.gpu),
+            Drawn::Outdated => {
+                if let Some(d) = state.drawing.as_ref() {
+                    d.surface.reconfigure(&state.gpu);
+                }
+            }
             Drawn::Failed(e) => {
                 eprintln!("{e}");
                 quit = true;
@@ -489,10 +533,13 @@ impl<G: Game> ApplicationHandler for Shell<G> {
 
         let mut state = Running {
             window,
-            gpu,
-            surface,
-            renderer,
-            overlay,
+            gpu: Arc::new(gpu),
+            drawing: Some(Box::new(Drawing {
+                surface,
+                renderer,
+                overlay,
+            })),
+            render: None,
         };
         let mut ctx = Self::context(&mut state, &self.time, &self.input, &self.loop_times);
         self.game.start(&mut ctx);
@@ -506,7 +553,9 @@ impl<G: Game> ApplicationHandler for Shell<G> {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                state.surface.resize(&state.gpu, size.width, size.height);
+                if let Some(d) = state.drawing.as_mut() {
+                    d.surface.resize(&state.gpu, size.width, size.height);
+                }
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),
             other => {

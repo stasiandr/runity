@@ -17,6 +17,7 @@ pub mod hair;
 pub mod jiggle;
 pub mod obstacle;
 pub mod particles;
+pub mod rest;
 pub mod rod;
 pub mod rope;
 pub mod softbody;

@@ -16,8 +16,10 @@
 //! simulation (soft bodies, water, physics), the frame built from the
 //! world, and the renderer's own work on it (preparing, recording,
 //! submitting). What a render thread takes off the main thread is the
-//! last of them; what it runs beside is the first. These are listed, not
-//! held: a CPU's time depends on the machine more than a budget can say.
+//! last of them; what it runs beside is the first. The step is held to
+//! `step_ms` as the GPU's time is, on the machine the budgets were taken
+//! on: a real-time frame is 16 ms for everything, and a scene's
+//! simulation has a few of them. The rest are listed.
 //!
 //! A scene with no budget is measured and listed, not held to anything. A
 //! GPU time is held only on a real GPU: a software renderer (a CI runner's)
@@ -33,6 +35,10 @@ use anyhow::{Context, Result};
 use runity::Project;
 use serde::{Deserialize, Serialize};
 
+/// The most a scene's step may be given: a quarter of a 60 Hz frame,
+/// the rest the game's and the drawing's.
+pub const STEP_MOST_MS: f32 = 4.0;
+
 /// Where a project keeps its budgets.
 pub const BUDGETS: &str = "budgets.ron";
 
@@ -46,6 +52,8 @@ pub struct Budget {
     pub draws: Option<u32>,
     /// Triangles the colour pass draws.
     pub triangles: Option<u64>,
+    /// Milliseconds of a fixed step of the scene's simulation, on the CPU.
+    pub step_ms: Option<f32>,
 }
 
 /// A project's budgets: the size its scenes are measured at, and each
@@ -92,6 +100,11 @@ pub fn over(budget: &Budget, measured: &Measured, real_gpu: bool) -> Vec<String>
             out.push(format!("{ms:.2} ms on the GPU, budget {most:.2}"));
         }
     }
+    if let (Some(most), true) = (budget.step_ms, real_gpu) {
+        if measured.step_ms > most {
+            out.push(format!("{:.2} ms a step, budget {most:.2}", measured.step_ms));
+        }
+    }
     if let Some(most) = budget.draws {
         if measured.draws > most {
             out.push(format!("{} draws, budget {most}", measured.draws));
@@ -111,6 +124,8 @@ pub fn with_room(measured: &Measured) -> Budget {
         gpu_ms: measured.gpu_ms.map(|ms| (ms * 1.5 * 10.0).ceil() / 10.0),
         draws: Some((measured.draws as f32 * 1.2).ceil() as u32),
         triangles: Some((measured.triangles as f64 * 1.2).ceil() as u64),
+        // A step's room, and never above what a real-time frame spares.
+        step_ms: Some(((measured.step_ms * 1.5 * 10.0).ceil() / 10.0).clamp(0.5, STEP_MOST_MS)),
     }
 }
 
@@ -197,6 +212,7 @@ mod tests {
             gpu_ms: Some(5.0),
             draws: Some(100),
             triangles: None,
+            step_ms: None,
         };
         let measured = Measured {
             gpu_ms: Some(7.0),

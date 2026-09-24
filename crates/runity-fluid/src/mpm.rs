@@ -140,6 +140,10 @@ pub struct MpmState {
     solid_from: Option<Vec<Obstacle>>,
     placed: bool,
     owed: f32,
+    /// Settled: not stepped until something could move it.
+    rest: runity_soft::rest::Rest,
+    /// Where the grains are, for [`runity_soft::rest::Rest::asleep`].
+    at: Vec<Vec3>,
 }
 
 impl MpmState {
@@ -157,6 +161,8 @@ impl MpmState {
             solid_from: None,
             placed: false,
             owed: 0.0,
+            rest: Default::default(),
+            at: Vec::new(),
         }
     }
 
@@ -239,16 +245,30 @@ impl MpmState {
         if !self.placed {
             self.fill(placed);
         }
+        let changed = self.solid_from.as_deref() != Some(obstacles);
         self.find_solid(obstacles);
         self.owed = (self.owed + seconds.max(0.0)).min(0.1);
+        let mut changed = changed;
         while self.owed >= STEP {
             self.owed -= STEP;
+            // Settled and left alone: nothing to step.
+            self.at.clear();
+            self.at.extend(self.grains.iter().map(|g| g.x));
+            if self.rest.asleep(&self.at, std::mem::take(&mut changed)) {
+                continue;
+            }
             let substeps = self.substeps();
             let dt = STEP / substeps as f32;
             for _ in 0..substeps {
                 self.substep(dt);
             }
+            self.rest.stepped(runity_soft::rest::fastest(self.grains.iter().map(|g| g.v)));
         }
+    }
+
+    /// Settled, and not stepped until something could move it.
+    pub fn asleep(&self) -> bool {
+        self.rest.sleeping()
     }
 
     /// Substeps a step: as many as its stiffness and the grid need to stay

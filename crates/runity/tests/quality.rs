@@ -21,9 +21,11 @@ fn each_preset_runs_no_more_than_the_one_above_and_low_is_cheapest() {
         "/../../examples/valley/scenes/materials.ron"
     )))
     .expect("the scene reads");
-    let target = OffscreenTarget::new(&gpu, 640, 360);
-    let mut times = Vec::new();
-    for quality in Quality::ALL {
+    let target = OffscreenTarget::new(&gpu, 1280, 720);
+    let mut times: Vec<(f32, Vec<String>)> = Vec::new();
+    // Twice round, each preset's least kept: the first measured would
+    // otherwise pay for the GPU's clock coming up.
+    for (round, quality) in Quality::ALL.iter().copied().cycle().take(Quality::ALL.len() * 2).enumerate() {
         let mut renderer = Renderer::new(&gpu, &target);
         renderer.set_quality(Some(quality));
         renderer.profile_gpu(true);
@@ -42,14 +44,23 @@ fn each_preset_runs_no_more_than_the_one_above_and_low_is_cheapest() {
         let camera = runity::scene_camera(&scene.view());
         let mut frame = runity::build_frame(&world, camera, runity::scene_lighting(&scene.sun()), Default::default());
         runity::world::scene_look(&mut frame, &scene);
-        for _ in 0..30 {
-            renderer.render(&gpu, &target, &frame);
-            target.read_rgba(&gpu);
+        // The least of a few settled readings: the GPU's clock and power
+        // move a single one by more than the presets differ.
+        let mut ms = f32::MAX;
+        for _ in 0..3 {
+            for _ in 0..20 {
+                renderer.render(&gpu, &target, &frame);
+                target.read_rgba(&gpu);
+            }
+            ms = ms.min(renderer.gpu_times().iter().map(|(_, t)| t).sum());
         }
-        let ms: f32 = renderer.gpu_times().iter().map(|(_, t)| t).sum();
         let lit: Vec<String> = renderer.gpu_times().into_iter().map(|(name, _)| name).collect();
         eprintln!("{quality:?}: {ms:.2} ms, {lit:?}");
-        times.push((ms, lit));
+        let at = round % Quality::ALL.len();
+        match times.get_mut(at) {
+            Some(kept) => kept.0 = kept.0.min(ms),
+            None => times.push((ms, lit)),
+        }
     }
     // What runs goes away going down (the upscale's own passes aside).
     let heavy = |passes: &Vec<String>| {

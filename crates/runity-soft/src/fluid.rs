@@ -109,6 +109,10 @@ pub struct FluidState {
     density: Vec<f32>,
     placed: bool,
     owed: f32,
+    /// Still: not stepped until something could move it.
+    sleep: crate::rest::Rest,
+    /// What was solid round it last step.
+    obstacles: Vec<Obstacle>,
 }
 
 fn poly6(r2: f32, h: f32) -> f32 {
@@ -157,6 +161,8 @@ impl FluidState {
             density: Vec::new(),
             placed: false,
             owed: 0.0,
+            sleep: Default::default(),
+            obstacles: Vec::new(),
         }
     }
 
@@ -207,13 +213,28 @@ impl FluidState {
             self.fill(placed);
         }
         self.owed = (self.owed + seconds.max(0.0)).min(0.1);
+        let mut changed = self.obstacles.as_slice() != obstacles;
+        if changed {
+            self.obstacles.clear();
+            self.obstacles.extend_from_slice(obstacles);
+        }
         while self.owed >= STEP {
             self.owed -= STEP;
+            // Still and left alone: nothing to step.
+            if self.sleep.asleep(&self.particles.x, std::mem::take(&mut changed)) {
+                continue;
+            }
             match self.fluid.method {
                 FluidMethod::Pbf => self.step_pbf(obstacles),
                 FluidMethod::Sph => self.step_sph(obstacles),
             }
+            self.sleep.stepped(crate::rest::fastest(self.particles.v.iter().copied()));
         }
+    }
+
+    /// Still, and not stepped until something could move it.
+    pub fn asleep(&self) -> bool {
+        self.sleep.sleeping()
     }
 
     /// Each particle's neighbours within the smoothing radius, from a grid
