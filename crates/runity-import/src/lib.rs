@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use runity::animation::{Channel, Clip, Joint, Path as AnimPath, PoseTransform, Skeleton};
 use runity::asset::{
-    AssetId, AssetKind, Bounds, MaterialAsset, MeshAsset, MeshSkin, SoundAsset, Submesh,
+    AssetId, Bounds, MaterialAsset, MeshAsset, MeshSkin, SoundAsset, Submesh,
     TextureAsset, TextureLevel, Vertex,
 };
 use runity::material::{Material, Shading};
@@ -1526,57 +1526,57 @@ pub fn import_to(
         "gltf" | "glb" => {
             let mesh = mesh_from_gltf(source, &settings)?;
             (
-                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                runity::asset::to_bytes(&mesh, runity::asset::MESH)?,
                 mesh.id,
-                AssetKind::Mesh,
+                runity::asset::MESH,
             )
         }
         "obj" => {
             let mesh = mesh_from_obj(source, &settings)?;
             (
-                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                runity::asset::to_bytes(&mesh, runity::asset::MESH)?,
                 mesh.id,
-                AssetKind::Mesh,
+                runity::asset::MESH,
             )
         }
         "rpoly" => {
             let mesh = poly::mesh_from_poly(source, &settings)?;
             (
-                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                runity::asset::to_bytes(&mesh, runity::asset::MESH)?,
                 mesh.id,
-                AssetKind::Mesh,
+                runity::asset::MESH,
             )
         }
         "rterrain" => {
             let mesh = terrain::mesh_from_terrain(source, &settings)?;
             (
-                runity::asset::to_bytes(&mesh, AssetKind::Mesh)?,
+                runity::asset::to_bytes(&mesh, runity::asset::MESH)?,
                 mesh.id,
-                AssetKind::Mesh,
+                runity::asset::MESH,
             )
         }
         "wav" | "mp3" | "ogg" | "flac" => {
             let sound = sound_from_file(source, &settings)?;
             (
-                runity::asset::to_bytes(&sound, AssetKind::Sound)?,
+                runity::asset::to_bytes(&sound, runity::asset::SOUND)?,
                 sound.id,
-                AssetKind::Sound,
+                runity::asset::SOUND,
             )
         }
         "rmat" => {
             let material = material_from_ron(source, &settings)?;
             (
-                runity::asset::to_bytes(&material, AssetKind::Material)?,
+                runity::asset::to_bytes(&material, runity::asset::MATERIAL)?,
                 material.id,
-                AssetKind::Material,
+                runity::asset::MATERIAL,
             )
         }
         "png" | "jpg" | "jpeg" | "tga" | "bmp" => {
             let texture = texture_from_image(source, &settings)?;
             (
-                runity::asset::to_bytes(&texture, AssetKind::Texture)?,
+                runity::asset::to_bytes(&texture, runity::asset::TEXTURE)?,
                 texture.id,
-                AssetKind::Texture,
+                runity::asset::TEXTURE,
             )
         }
         other => anyhow::bail!("no importer for .{other} yet"),
@@ -2308,7 +2308,7 @@ f 1 4 3
         let bytes = runity::asset::read(&out.asset).unwrap();
         assert_eq!(
             runity::asset::kind_of(&bytes).unwrap(),
-            runity::asset::AssetKind::Texture,
+            runity::asset::TEXTURE,
             "the header says what it is, so a library never casts one for the other"
         );
         let texture = runity::asset::view::<runity::asset::TextureAsset>(&bytes).unwrap();

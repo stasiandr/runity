@@ -72,7 +72,7 @@ mod world {
 /// The core's archive with geometry's formats and this module's.
 #[allow(unused_imports)]
 mod asset {
-    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset};
+    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset, MATERIAL};
     pub use runity_core::asset::*;
     pub use runity_geometry::mesh_asset::*;
 }

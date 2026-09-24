@@ -33,7 +33,7 @@ mod world {
 /// The core's archive with this module's format.
 #[allow(unused_imports)]
 mod asset {
-    pub use crate::sound::{ArchivedSoundAsset, SoundAsset};
+    pub use crate::sound::{ArchivedSoundAsset, SoundAsset, SOUND};
     pub use runity_core::asset::*;
 }
 

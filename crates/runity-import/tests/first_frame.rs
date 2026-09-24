@@ -270,7 +270,7 @@ fn an_asset_from_an_older_format_does_not_reach_the_gpu() {
             look: None,
             bounds: runity::Bounds::of(&[]),
         },
-        runity::asset::AssetKind::Mesh,
+        runity::asset::MESH,
     )
     .unwrap();
     bytes[8] = 0;

@@ -2,7 +2,7 @@
 //! is, cut where its alpha says, left off what does not face the way it is
 //! pressed.
 
-use runity::asset::{AssetId, AssetKind, TextureAsset};
+use runity::asset::{AssetId, TextureAsset};
 use runity::decals::Decal;
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, Draw, Frame, Lighting, ShadowSettings, Sky, SkyMode, TextureHandle};
@@ -31,7 +31,7 @@ fn half_texture() -> Vec<u8> {
         mips: Vec::new(),
         srgb: true,
     };
-    runity::asset::to_bytes(&asset, AssetKind::Texture).unwrap()
+    runity::asset::to_bytes(&asset, runity::asset::TEXTURE).unwrap()
 }
 
 #[test]

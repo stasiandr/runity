@@ -35,33 +35,54 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 /// An asset built by an older importer is re-imported, never guessed at.
 pub const FORMAT_VERSION: u32 = 17;
 
-/// What kind of asset a file holds.
+/// What kind of asset a file holds: the byte in its header.
 ///
 /// Stored in the header rather than inferred from the extension, because a
 /// library reads whatever is in a directory and casting a texture's bytes to
 /// a mesh is not an error any type system catches.
 ///
-/// The formats themselves are the modules' — a mesh is geometry's, a
-/// sound the sound module's (docs/modules.md) — and the core reads a
-/// library by the header alone. This list of kinds is still the core's:
-/// a module registering a kind of its own is the step after.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum AssetKind {
-    Mesh = 1,
-    Texture = 2,
-    Sound = 3,
-    Material = 4,
+/// The kinds are the modules' (DNA, postulate 3: the core does not know
+/// the word "mesh"): the module that owns a format names its kind —
+/// geometry's `MESH` and `TEXTURE`, the sound module's `SOUND`, the
+/// render's `MATERIAL` — and the core reads a library by the header alone.
+/// Two modules taking one byte is what the engine's test of every kind
+/// catches. A kind read off a header has only its byte; one a module
+/// names has a name for messages too.
+#[derive(Debug, Clone, Copy, Eq)]
+pub struct AssetKind {
+    pub byte: u8,
+    pub name: &'static str,
 }
 
 impl AssetKind {
+    /// A module's kind: its byte in the header, and what to call it.
+    pub const fn new(byte: u8, name: &'static str) -> Self {
+        Self { byte, name }
+    }
+
     fn from_byte(byte: u8) -> Option<Self> {
-        match byte {
-            1 => Some(AssetKind::Mesh),
-            2 => Some(AssetKind::Texture),
-            3 => Some(AssetKind::Sound),
-            4 => Some(AssetKind::Material),
-            _ => None,
+        (byte != 0).then_some(Self { byte, name: "" })
+    }
+}
+
+impl PartialEq for AssetKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.byte == other.byte
+    }
+}
+
+impl std::hash::Hash for AssetKind {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.byte.hash(state)
+    }
+}
+
+impl std::fmt::Display for AssetKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.name.is_empty() {
+            write!(f, "kind {}", self.byte)
+        } else {
+            f.write_str(self.name)
         }
     }
 }
@@ -221,7 +242,7 @@ impl std::fmt::Display for AssetError {
                 write!(f, "asset kind {byte} is not one this build knows")
             }
             AssetError::WrongKind { found, wanted } => {
-                write!(f, "asset holds a {found:?}, not a {wanted:?}")
+                write!(f, "asset holds a {found}, not a {wanted}")
             }
             AssetError::Corrupt(e) => write!(f, "corrupt asset: {e}"),
         }
@@ -273,7 +294,7 @@ where
     let mut out = Vec::with_capacity(len + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    out.push(kind as u8);
+    out.push(kind.byte);
     out.extend_from_slice(&[0u8; 3]);
     out.extend_from_slice(&value.id().0.to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());

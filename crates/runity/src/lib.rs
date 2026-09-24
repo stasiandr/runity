@@ -34,9 +34,28 @@ mod asset_tests;
 /// one name as before they were cut apart.
 pub mod asset {
     pub use crate::asset_core::*;
-    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset};
+    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset, MATERIAL};
     pub use crate::mesh_asset::*;
-    pub use crate::sound::{ArchivedSoundAsset, SoundAsset, LONG_SOUND_SECONDS};
+    pub use crate::sound::{ArchivedSoundAsset, SoundAsset, LONG_SOUND_SECONDS, SOUND};
+
+    /// Every kind of asset this build's modules name: what a library can
+    /// hold. Each module picks its byte; two picking one is caught here.
+    pub fn kinds() -> Vec<AssetKind> {
+        vec![MESH, TEXTURE, SOUND, MATERIAL]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn no_two_modules_name_one_kind() {
+            let kinds = super::kinds();
+            for (i, a) in kinds.iter().enumerate() {
+                for b in &kinds[i + 1..] {
+                    assert_ne!(a, b, "{} and {} share byte {}", a.name, b.name, a.byte);
+                }
+            }
+        }
+    }
 }
 pub use runity_render::atmosphere;
 #[cfg(feature = "audio")]

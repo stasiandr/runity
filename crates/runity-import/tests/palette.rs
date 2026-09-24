@@ -89,7 +89,7 @@ fn a_hex_colour_becomes_a_material_a_scene_can_name() {
     // The content browser can list the palette without knowing what else is
     // in the library.
     let materials: Vec<&str> = library
-        .names_of(runity::asset::AssetKind::Material)
+        .names_of(runity::asset::MATERIAL)
         .collect();
     assert_eq!(materials, vec!["mossy_stone"]);
 }
@@ -165,7 +165,7 @@ fn editing_the_hex_changes_what_the_scene_draws() {
 
     let changed = library.reload_changed();
     assert_eq!(changed.len(), 1);
-    assert_eq!(changed[0].kind, runity::asset::AssetKind::Material);
+    assert_eq!(changed[0].kind, runity::asset::MATERIAL);
 
     let after = library.material_by_name("clay").unwrap();
     assert_ne!(after, before);

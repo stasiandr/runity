@@ -12,6 +12,10 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+
+/// A material's kind in an asset's header: this module's.
+pub const MATERIAL: crate::asset::AssetKind = crate::asset::AssetKind::new(4, "material");
+
 /// Whether the sun touches a surface.
 ///
 /// Archivable as well as serde-serializable: a material is both something a
@@ -650,15 +654,15 @@ pub trait MaterialLibrary {
 
 impl MaterialLibrary for crate::library::Library {
     fn material(&self, id: crate::asset::AssetId) -> Option<Material> {
-        let bytes = self.bytes_of(id, crate::asset::AssetKind::Material)?;
+        let bytes = self.bytes_of(id, MATERIAL)?;
         crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
     }
     fn material_by_name(&self, name: &str) -> Option<Material> {
-        let bytes = self.bytes_named(name, crate::asset::AssetKind::Material)?;
+        let bytes = self.bytes_named(name, MATERIAL)?;
         crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
     }
     fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
-        let bytes = self.bytes_linked(link, crate::asset::AssetKind::Material)?;
+        let bytes = self.bytes_linked(link, MATERIAL)?;
         crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
     }
 }

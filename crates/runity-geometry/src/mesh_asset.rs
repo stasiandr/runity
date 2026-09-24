@@ -7,6 +7,11 @@
 use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::asset::{Asset, AssetId, AssetKind};
+
+/// A mesh's kind in an asset's header: this module's.
+pub const MESH: AssetKind = AssetKind::new(1, "mesh");
+/// A texture's kind in an asset's header: this module's.
+pub const TEXTURE: AssetKind = AssetKind::new(2, "texture");
 use crate::library::Library;
 
 /// One vertex, in the layout the vertex buffer uses.
@@ -194,13 +199,13 @@ pub trait MeshLibrary {
 
 impl MeshLibrary for Library {
     fn mesh(&self, id: AssetId) -> Option<&ArchivedMeshAsset> {
-        crate::asset::view::<MeshAsset>(self.bytes_of(id, AssetKind::Mesh)?).ok()
+        crate::asset::view::<MeshAsset>(self.bytes_of(id, MESH)?).ok()
     }
     fn mesh_by_name(&self, name: &str) -> Option<&ArchivedMeshAsset> {
-        crate::asset::view::<MeshAsset>(self.bytes_named(name, AssetKind::Mesh)?).ok()
+        crate::asset::view::<MeshAsset>(self.bytes_named(name, MESH)?).ok()
     }
     fn mesh_link(&self, link: &crate::AssetLink) -> Option<&ArchivedMeshAsset> {
-        crate::asset::view::<MeshAsset>(self.bytes_linked(link, AssetKind::Mesh)?).ok()
+        crate::asset::view::<MeshAsset>(self.bytes_linked(link, MESH)?).ok()
     }
 }
 
@@ -212,9 +217,9 @@ pub trait TextureLibrary {
 
 impl TextureLibrary for Library {
     fn texture(&self, id: AssetId) -> Option<&ArchivedTextureAsset> {
-        crate::asset::view::<TextureAsset>(self.bytes_of(id, AssetKind::Texture)?).ok()
+        crate::asset::view::<TextureAsset>(self.bytes_of(id, TEXTURE)?).ok()
     }
     fn texture_by_name(&self, name: &str) -> Option<&ArchivedTextureAsset> {
-        crate::asset::view::<TextureAsset>(self.bytes_named(name, AssetKind::Texture)?).ok()
+        crate::asset::view::<TextureAsset>(self.bytes_named(name, TEXTURE)?).ok()
     }
 }

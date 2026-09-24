@@ -258,7 +258,7 @@ impl Library {
     ///
     /// What the editor's content browser lists, and what makes a palette
     /// visible: the materials in a project are whatever this returns for
-    /// [`AssetKind::Material`], in the order they were read.
+    /// a material, in the order they were read.
     pub fn names_of(&self, kind: AssetKind) -> impl Iterator<Item = &str> {
         self.entries
             .iter()

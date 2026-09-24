@@ -4,6 +4,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::asset::{Asset, AssetId, AssetKind};
+
+/// A sound's kind in an asset's header: this module's.
+pub const SOUND: AssetKind = AssetKind::new(3, "sound");
 use crate::library::Library;
 
 #[allow(unused_imports)]
@@ -149,13 +152,13 @@ pub trait SoundLibrary {
 
 impl SoundLibrary for Library {
     fn sound(&self, id: AssetId) -> Option<&ArchivedSoundAsset> {
-        crate::asset::view::<SoundAsset>(self.bytes_of(id, AssetKind::Sound)?).ok()
+        crate::asset::view::<SoundAsset>(self.bytes_of(id, SOUND)?).ok()
     }
     fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
-        crate::asset::view::<SoundAsset>(self.bytes_named(name, AssetKind::Sound)?).ok()
+        crate::asset::view::<SoundAsset>(self.bytes_named(name, SOUND)?).ok()
     }
     fn sound_of(&self, link: &crate::AssetLink) -> Option<&ArchivedSoundAsset> {
-        let (id, _) = self.find(link, AssetKind::Sound)?;
+        let (id, _) = self.find(link, SOUND)?;
         self.sound(id)
     }
 }

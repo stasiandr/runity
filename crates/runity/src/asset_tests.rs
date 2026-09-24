@@ -35,7 +35,7 @@ mod tests {
     #[test]
     fn an_asset_is_read_back_without_being_decoded() {
         let mesh = cube();
-        let bytes = to_bytes(&mesh, AssetKind::Mesh).unwrap();
+        let bytes = to_bytes(&mesh, crate::asset::MESH).unwrap();
         let archived = view::<MeshAsset>(&bytes).unwrap();
         assert_eq!(archived.vertices.len(), 8);
         assert_eq!(archived.name.as_str(), "cube");
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn an_older_format_asks_for_a_re_import_instead_of_guessing() {
-        let mut bytes = to_bytes(&cube(), AssetKind::Mesh).unwrap();
+        let mut bytes = to_bytes(&cube(), crate::asset::MESH).unwrap();
         bytes[8] = 0; // pretend it was written by format v0
         match view::<MeshAsset>(&bytes) {
             Err(AssetError::Version { found, expected }) => {

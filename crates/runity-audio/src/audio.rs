@@ -533,7 +533,7 @@ mod tests {
     }
 
     fn archived() -> Vec<u8> {
-        crate::asset::to_bytes(&tone(), crate::asset::AssetKind::Sound).unwrap()
+        crate::asset::to_bytes(&tone(), crate::sound::SOUND).unwrap()
     }
 
     /// A WAV file's bytes, a second of silence at 8 kHz, mono 16-bit.
@@ -566,7 +566,7 @@ mod tests {
             seconds: 1.0,
             ..tone()
         };
-        let bytes = crate::asset::to_bytes(&long, crate::asset::AssetKind::Sound).unwrap();
+        let bytes = crate::asset::to_bytes(&long, crate::sound::SOUND).unwrap();
         let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
         let mut music = audio.play_in("music", sound, 0.8).expect("it streams");
         music.set_volume(0.5);
@@ -575,7 +575,7 @@ mod tests {
             encoded: b"not a sound".to_vec(),
             ..long
         };
-        let bytes = crate::asset::to_bytes(&broken, crate::asset::AssetKind::Sound).unwrap();
+        let bytes = crate::asset::to_bytes(&broken, crate::sound::SOUND).unwrap();
         let sound = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
         assert!(
             audio.play(sound, 1.0).is_err(),

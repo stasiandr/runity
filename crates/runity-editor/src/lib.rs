@@ -1447,8 +1447,8 @@ impl Session {
                 ),
             });
         }
-        let models = names_of(AssetKind::Mesh);
-        let materials = names_of(AssetKind::Material);
+        let models = names_of(runity::asset::MESH);
+        let materials = names_of(runity::asset::MATERIAL);
         let components = self.project.as_ref().and_then(|p| p.component_names());
         for (desc, _) in self.instanced.scene.flatten() {
             if let Some(to) = desc.joint().to().filter(|to| !to.is_unassigned()) {
@@ -2238,7 +2238,7 @@ impl Session {
     pub fn palette(&self) -> Vec<(String, Material)> {
         let mut out: Vec<(String, Material)> = Vec::new();
         if let Some(library) = self.library.as_ref() {
-            for name in library.names_of(runity::asset::AssetKind::Material) {
+            for name in library.names_of(runity::asset::MATERIAL) {
                 if let Some(material) = library.material_by_name(name) {
                     out.push((name.to_string(), material));
                 }
@@ -2673,13 +2673,13 @@ impl Session {
         };
         let mut out: Vec<String> = match kind {
             "model" => {
-                let mut v = library(AssetKind::Mesh);
+                let mut v = library(runity::asset::MESH);
                 v.extend(builtin::NAMES.iter().map(|n| n.to_string()));
                 v
             }
-            "material" => library(AssetKind::Material),
-            "sound" => library(AssetKind::Sound),
-            "texture" => library(AssetKind::Texture),
+            "material" => library(runity::asset::MATERIAL),
+            "sound" => library(runity::asset::SOUND),
+            "texture" => library(runity::asset::TEXTURE),
             "prefab" => self
                 .prefabs
                 .names()
@@ -2707,10 +2707,10 @@ impl Session {
                 .is_some_and(|l| l.find(link, k).is_some())
         };
         match kind {
-            "model" => builtin::by_name(link).is_some() || library(AssetKind::Mesh),
-            "material" => library(AssetKind::Material),
-            "sound" => library(AssetKind::Sound),
-            "texture" => library(AssetKind::Texture),
+            "model" => builtin::by_name(link).is_some() || library(runity::asset::MESH),
+            "material" => library(runity::asset::MATERIAL),
+            "sound" => library(runity::asset::SOUND),
+            "texture" => library(runity::asset::TEXTURE),
             "prefab" => self.prefabs.find(link).is_some(),
             "scene" => {
                 let Some(project) = self.project.as_ref() else {
@@ -2738,25 +2738,24 @@ impl Session {
     /// A link to an asset of a kind by its name, with its ID when it has
     /// one: what a picker writes (docs/refs.md).
     pub fn link_to(&self, kind: &str, name: &str) -> runity::AssetLink {
-        use runity::asset::AssetKind;
         let mut link = runity::AssetLink::named(name);
         let found = match kind {
             "model" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Mesh)),
+                .and_then(|l| l.find(&link, runity::asset::MESH)),
             "material" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Material)),
+                .and_then(|l| l.find(&link, runity::asset::MATERIAL)),
             "sound" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Sound)),
+                .and_then(|l| l.find(&link, runity::asset::SOUND)),
             "texture" => self
                 .library
                 .as_ref()
-                .and_then(|l| l.find(&link, AssetKind::Texture)),
+                .and_then(|l| l.find(&link, runity::asset::TEXTURE)),
             _ => None,
         }
         .map(|(id, name)| (id, name.to_string()));

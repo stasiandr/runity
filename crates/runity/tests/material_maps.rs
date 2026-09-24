@@ -2,7 +2,7 @@
 //! way its channels say — red towards +u, green towards the top of the
 //! image — and a mask's alpha takes the shine away.
 
-use runity::asset::{AssetId, AssetKind, TextureAsset};
+use runity::asset::{AssetId, TextureAsset};
 use runity::glam::{Mat4, Vec3};
 use runity::render::{Camera, Draw, Frame, Lighting, ShadowSettings, Sky, SkyMode, TextureHandle};
 use runity::{builtin, Gpu, Material, OffscreenTarget, Renderer};
@@ -20,7 +20,7 @@ fn texture(id: u128, rgba: [u8; 4], srgb: bool) -> Vec<u8> {
         mips: Vec::new(),
         srgb,
     };
-    runity::asset::to_bytes(&asset, AssetKind::Texture).unwrap()
+    runity::asset::to_bytes(&asset, runity::asset::TEXTURE).unwrap()
 }
 
 /// How bright the middle of a floor is, lit from `sun` (the way the light

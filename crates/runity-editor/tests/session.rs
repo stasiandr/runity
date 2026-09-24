@@ -573,7 +573,7 @@ fn write_material(directory: &Path, name: &str, material: Material) {
             name: name.into(),
             material,
         },
-        runity::asset::AssetKind::Material,
+        runity::asset::MATERIAL,
     )
     .unwrap();
     std::fs::write(directory.join(format!("{name}.rasset")), bytes).unwrap();

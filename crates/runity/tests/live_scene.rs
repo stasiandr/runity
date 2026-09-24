@@ -9,7 +9,7 @@
 use runity::prelude::*;
 use std::path::Path;
 
-use runity::asset::{self, AssetKind};
+use runity::asset;
 use runity::{builtin, Gpu, LiveScene, Model, OffscreenTarget, Project, Renderer, SceneId};
 
 /// Something the game put on an entity, which no file knows about.
@@ -44,7 +44,7 @@ fn rock(project: &Project, size: f32) {
     let mut mesh = builtin::cube(size);
     mesh.name = "rock".into();
     mesh.id = runity::AssetId::from_source("assets/rock.obj", 0);
-    let bytes = asset::to_bytes(&mesh, AssetKind::Mesh).unwrap();
+    let bytes = asset::to_bytes(&mesh, runity::asset::MESH).unwrap();
     write(&project.library().join("rock.obj.rasset"), bytes);
 }
 

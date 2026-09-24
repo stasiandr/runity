@@ -32,7 +32,6 @@ use std::time::SystemTime;
 
 use hecs::World;
 
-use crate::asset::AssetKind;
 use crate::gpu::Gpu;
 use crate::library::{Library, Reloaded};
 use crate::render::{MeshHandle, Renderer};
@@ -614,7 +613,7 @@ impl LiveScene {
         // stays until the renderer goes, which is a development build's
         // trade, not a shipped game's.
         let mut swapped: HashMap<MeshHandle, MeshHandle> = HashMap::new();
-        for asset in out.assets.iter().filter(|a| a.kind == AssetKind::Mesh) {
+        for asset in out.assets.iter().filter(|a| a.kind == crate::asset::MESH) {
             let Some(name) = library.name(asset.id) else {
                 continue;
             };
@@ -636,7 +635,7 @@ impl LiveScene {
         }
         // A texture already on the GPU is uploaded again under a new handle;
         // the materials that name it find the new one by its id.
-        for asset in out.assets.iter().filter(|a| a.kind == AssetKind::Texture) {
+        for asset in out.assets.iter().filter(|a| a.kind == crate::asset::TEXTURE) {
             if renderer.texture_for(asset.id).is_some() {
                 if let Some(texture) = library.texture(asset.id) {
                     renderer.upload_texture(gpu, texture);

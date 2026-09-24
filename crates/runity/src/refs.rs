@@ -300,13 +300,12 @@ pub fn settle(
     library: Option<&crate::Library>,
     prefabs: &crate::Prefabs,
 ) -> usize {
-    use crate::asset::AssetKind;
     let mut changed = 0;
     let model = |link: &mut AssetLink, changed: &mut usize| {
         if link.is_empty() || crate::builtin::by_name(link).is_some() {
             return;
         }
-        if let Some((id, name)) = library.and_then(|l| l.find(link, AssetKind::Mesh)) {
+        if let Some((id, name)) = library.and_then(|l| l.find(link, crate::asset::MESH)) {
             *changed += usize::from(link.settle(name, id));
         }
     };
@@ -319,7 +318,7 @@ pub fn settle(
         if link.starts_with("builtin:") {
             return;
         }
-        if let Some((id, name)) = library.and_then(|l| l.find(link, AssetKind::Material)) {
+        if let Some((id, name)) = library.and_then(|l| l.find(link, crate::asset::MATERIAL)) {
             *changed += usize::from(link.settle(name, id));
         }
     };
@@ -347,7 +346,7 @@ pub fn settle(
             }
         }
         if let Some(mut sound) = desc.sound() {
-            if let Some((id, name)) = library.and_then(|l| l.find(&sound.clip, AssetKind::Sound)) {
+            if let Some((id, name)) = library.and_then(|l| l.find(&sound.clip, crate::asset::SOUND)) {
                 if sound.clip.settle(name, id) {
                     changed += 1;
                     desc.set_part(&sound);
