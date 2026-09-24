@@ -1271,6 +1271,56 @@ fn min_max(v: &Yaml) -> Option<f32> {
     })
 }
 
+/// A Shuriken value over the whole of a play — a rate that swells and
+/// dies away — as its average: a curve evaluated as Unity does (Hermite
+/// between keys) and averaged.
+fn min_max_mean(v: &Yaml) -> Option<f32> {
+    let scalar = v.f32("scalar")?;
+    Some(match v.i64("minMaxState").unwrap_or(0) {
+        3 => (scalar + v.f32("minScalar").unwrap_or(scalar)) * 0.5,
+        1 => scalar * curve_mean(&v["maxCurve"]).unwrap_or(1.0),
+        2 => {
+            scalar
+                * (curve_mean(&v["maxCurve"]).unwrap_or(1.0) + curve_mean(&v["minCurve"]).unwrap_or(1.0))
+                * 0.5
+        }
+        _ => scalar,
+    })
+}
+
+/// An AnimationCurve's average over its keys' span (0 to 1 for Shuriken).
+fn curve_mean(curve: &Yaml) -> Option<f32> {
+    let keys: Vec<[f32; 4]> = curve
+        .list("m_Curve")
+        .iter()
+        .filter_map(|k| Some([k.f32("time")?, k.f32("value")?, k.f32("inSlope").unwrap_or(0.0), k.f32("outSlope").unwrap_or(0.0)]))
+        .collect();
+    match keys.len() {
+        0 => return None,
+        1 => return Some(keys[0][1]),
+        _ => {}
+    }
+    let at = |t: f32| {
+        let i = keys.iter().rposition(|k| k[0] <= t).unwrap_or(0).min(keys.len() - 2);
+        let (a, b) = (keys[i], keys[i + 1]);
+        let span = (b[0] - a[0]).max(1e-6);
+        let u = ((t - a[0]) / span).clamp(0.0, 1.0);
+        // An infinite tangent is a step: the value held to the next key.
+        if !a[3].is_finite() || !b[2].is_finite() {
+            return a[1];
+        }
+        let (u2, u3) = (u * u, u * u * u);
+        (2.0 * u3 - 3.0 * u2 + 1.0) * a[1]
+            + (u3 - 2.0 * u2 + u) * span * a[3]
+            + (-2.0 * u3 + 3.0 * u2) * b[1]
+            + (u3 - u2) * span * b[2]
+    };
+    let (start, end) = (keys[0][0], keys[keys.len() - 1][0]);
+    let steps = 64;
+    let sum: f32 = (0..steps).map(|i| at(start + (end - start) * (i as f32 + 0.5) / steps as f32)).sum();
+    Some(sum / steps as f32).filter(|m| m.is_finite())
+}
+
 fn curve_end(curve: &Yaml) -> Option<f32> {
     curve.list("m_Curve").last().and_then(|k| k.f32("value"))
 }
@@ -1301,21 +1351,23 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     let e = &mut emitter;
     let main = &b["InitialModule"];
     let rgb = |c: [f32; 4]| (c[0], c[1], c[2]);
-    e.life = min_max(&main["startLifetime"]).unwrap_or(5.0);
-    e.speed = min_max(&main["startSpeed"]).unwrap_or(5.0);
-    e.size = min_max(&main["startSize"]).unwrap_or(1.0);
+    e.life = min_max_mean(&main["startLifetime"]).unwrap_or(5.0);
+    e.speed = min_max_mean(&main["startSpeed"]).unwrap_or(5.0);
+    e.size = min_max_mean(&main["startSize"]).unwrap_or(1.0);
     if let Some((start, _)) = gradient(&main["startColor"]) {
         e.color = rgb(start);
         e.alpha = start[3];
     }
     e.gravity = -9.81 * min_max(&main["gravityModifier"]).unwrap_or(0.0);
+    // 0 Hierarchy, 1 Local: sizes by the transform's scale; 2 Shape: not.
+    e.scaled = b.i64("scalingMode").unwrap_or(1) != 2;
     // 0 is Local, 1 World.
     e.local = b.i64("moveWithTransform") == Some(0);
     let emission = &b["EmissionModule"];
     e.rate = if emission.i64("enabled") == Some(0) {
         0.0
     } else {
-        min_max(&emission["rateOverTime"]).unwrap_or(10.0)
+        min_max_mean(&emission["rateOverTime"]).unwrap_or(10.0)
     };
     e.bursts = emission
         .list("m_Bursts")
@@ -1341,18 +1393,46 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     e.once = b.i64("looping") == Some(0);
     e.waits = b.i64("playOnAwake") == Some(0);
     let shape = &b["ShapeModule"];
+    // Unity's cone points along forward, and Z is mirrored.
+    e.direction = Some(Vec3::new(0.0, 0.0, -1.0));
     if shape.i64("enabled") != Some(0) {
-        e.spread_deg = match shape.i64("type").unwrap_or(4) {
+        let kind = shape.i64("type").unwrap_or(4);
+        e.spread_deg = match kind {
             // Sphere, hemisphere.
             0 | 1 => 180.0,
             2 | 3 => 90.0,
+            // A box gives off straight along its forward.
+            5 | 15 | 16 => 0.0,
             _ => shape.f32("angle").unwrap_or(25.0),
         };
+        // Where the shape is and how it is turned, mirrored in Z as the
+        // scene is.
+        let mirror = |v: [f32; 3]| Vec3::new(v[0], v[1], -v[2]);
+        let from = shape.vec3("m_Position").map(mirror).unwrap_or(Vec3::ZERO);
+        e.from = (from != Vec3::ZERO).then_some(from);
+        let turn = shape.vec3("m_Rotation").map(|r| Vec3::new(-r[0], -r[1], r[2])).unwrap_or(Vec3::ZERO);
+        let scale = shape.vec3("m_Scale").map(Vec3::from_array).unwrap_or(Vec3::ONE);
+        if turn != Vec3::ZERO {
+            e.shape_turn_deg = Some(turn);
+            let q = runity::glam::Quat::from_euler(
+                runity::glam::EulerRot::YXZ,
+                turn.y.to_radians(),
+                turn.x.to_radians(),
+                turn.z.to_radians(),
+            );
+            e.direction = Some(q * Vec3::new(0.0, 0.0, -1.0));
+        }
+        match kind {
+            5 | 15 | 16 => e.box_size = Some(scale),
+            // Cones, circles and spheres: their radius, as scaled.
+            0..=4 | 7..=11 => {
+                e.radius = shape["radius"].f32("value").unwrap_or(1.0) * scale.x.abs().max(scale.z.abs());
+            }
+            _ => {}
+        }
     } else {
         e.spread_deg = 0.0;
     }
-    // Unity's cone points along forward, and Z is mirrored.
-    e.direction = Some(Vec3::new(0.0, 0.0, -1.0));
     let size = &b["SizeModule"];
     if size.i64("enabled") == Some(1) {
         e.end_size = Some(e.size * min_max(&size["curve"]).unwrap_or(1.0));
@@ -1365,6 +1445,29 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
             e.end_color = Some((e.color.0 * end[0], e.color.1 * end[1], e.color.2 * end[2]));
             e.end_alpha = Some(e.alpha * end[3]);
         }
+    }
+    // Texture Sheet Animation, grid mode: which frame of the sheet each
+    // is, as a share of the whole sheet.
+    let uv = &b["UVModule"];
+    if uv.i64("enabled") == Some(1) && uv.i64("mode").unwrap_or(0) == 0 {
+        let (across, down) = (uv.i64("tilesX").unwrap_or(1).max(1) as u32, uv.i64("tilesY").unwrap_or(1).max(1) as u32);
+        let count = (across * down) as f32;
+        let start = min_max(&uv["startFrame"]).unwrap_or(0.0) / count;
+        let over = &uv["frameOverTime"];
+        let scalar = over.f32("scalar").unwrap_or(0.0);
+        let (from, to, random) = match over.i64("minMaxState").unwrap_or(0) {
+            3 => (over.f32("minScalar").unwrap_or(0.0), scalar, true),
+            1 | 2 => {
+                let keys = over["maxCurve"].list("m_Curve");
+                let first = keys.first().and_then(|k| k.f32("value")).unwrap_or(0.0);
+                let last = keys.last().and_then(|k| k.f32("value")).unwrap_or(1.0);
+                (first * scalar, last * scalar, false)
+            }
+            _ => (scalar, scalar, false),
+        };
+        e.sheet = Some((across, down));
+        e.frames = (start + from, start + to);
+        e.frames_random = random;
     }
     for module in [
         "NoiseModule",
@@ -1704,6 +1807,20 @@ fn link(r: &Ref, refs: &Refs) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rate_that_swells_and_dies_away_comes_over_as_its_average() {
+        let hump = super::yaml::documents(
+            "--- !u!1 &1\nX:\n  v:\n    scalar: 20\n    minMaxState: 1\n    maxCurve:\n      m_Curve:\n      - time: 0\n        value: 0\n        inSlope: 4\n        outSlope: 4\n      - time: 1\n        value: 0\n        inSlope: -4\n        outSlope: -4\n",
+        );
+        // A parabola 4t(1-t) has slopes 4 and -4 at its ends, and averages 2/3.
+        let rate = min_max_mean(&hump[0].body["v"]).unwrap();
+        assert!((rate - 20.0 * 2.0 / 3.0).abs() < 0.1, "{rate}");
+        let step = super::yaml::documents(
+            "--- !u!1 &1\nX:\n  v:\n    scalar: 10\n    minMaxState: 1\n    maxCurve:\n      m_Curve:\n      - time: 0\n        value: 1\n        inSlope: Infinity\n        outSlope: Infinity\n      - time: 1\n        value: 0\n        inSlope: Infinity\n        outSlope: Infinity\n",
+        );
+        assert_eq!(min_max_mean(&step[0].body["v"]), Some(10.0), "a step holds its value, never NaN");
+    }
+
     use super::*;
 
     fn unity() -> Unity {

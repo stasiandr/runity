@@ -23,6 +23,8 @@ struct Particle {
     at: Vec3,
     velocity: Vec3,
     age: f32,
+    /// Its frame of the sheet when picked at birth, 0 to 1.
+    frame: f32,
 }
 
 /// An emitter on an entity, and what it has given off.
@@ -167,7 +169,7 @@ impl Emitting {
             return;
         }
         let e = self.emitter.clone();
-        let (_, turn, origin) = self.placed.to_scale_rotation_translation();
+        let (_, turn, _) = self.placed.to_scale_rotation_translation();
         for _ in 0..count {
             if self.particles.len() >= MOST {
                 break;
@@ -180,10 +182,33 @@ impl Emitting {
                 Quat::from_rotation_arc(Vec3::Y, d.normalize_or(Vec3::Y))
             });
             let along = axis * Quat::from_rotation_y(round) * Quat::from_rotation_x(off) * Vec3::Y;
+            // Where in the emitter's shape: a point in its box, or within
+            // its radius — across the cone's mouth, or in a ball.
+            let mut at = e.from.unwrap_or(Vec3::ZERO);
+            if let Some(size) = e.box_size {
+                let r = Vec3::new(self.random(), self.random(), self.random()) - Vec3::splat(0.5);
+                let shape = e.shape_turn_deg.map_or(Quat::IDENTITY, |d| {
+                    Quat::from_euler(glam::EulerRot::YXZ, d.y.to_radians(), d.x.to_radians(), d.z.to_radians())
+                });
+                at += shape * (r * size);
+            } else if e.radius > 0.0 {
+                let angle = self.random() * std::f32::consts::TAU;
+                at += if e.spread_deg >= 90.0 {
+                    // A ball: a way out, and how far, evenly through it.
+                    let y = self.random() * 2.0 - 1.0;
+                    let ring = (1.0 - y * y).max(0.0).sqrt();
+                    let way = Vec3::new(angle.cos() * ring, y, angle.sin() * ring);
+                    way * e.radius * self.random().cbrt()
+                } else {
+                    // A disc across the cone's mouth.
+                    let reach = e.radius * self.random().sqrt();
+                    axis * Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach)
+                };
+            }
             let (from, direction) = if e.local {
-                (Vec3::ZERO, along)
+                (at, along)
             } else {
-                (origin, turn * along)
+                (self.placed.transform_point3(at), turn * along)
             };
             // Given off some time within the step: as far on as it would
             // have got by now, gravity too — so what falls in one step is a
@@ -195,10 +220,12 @@ impl Emitting {
                 Vec3::Y
             };
             let pull = down * e.gravity;
+            let frame = e.frames.0 + (e.frames.1 - e.frames.0) * self.random();
             self.particles.push(Particle {
                 at: from + direction * e.speed * born + pull * (0.5 * born * born),
                 velocity: direction * e.speed + pull * born,
                 age: born,
+                frame,
             });
         }
     }
@@ -221,14 +248,16 @@ impl Emitting {
         let (start, end) = (linear(e.color), linear(e.end_color.unwrap_or(e.color)));
         let life = e.life.max(1e-3);
         let placed = self.placed;
-        let (_, turn, _) = placed.to_scale_rotation_translation();
+        let (grown, turn, _) = placed.to_scale_rotation_translation();
+        let times = if e.scaled { grown.abs().max_element() } else { 1.0 };
         self.particles.iter().map(move |p| {
             let t = (p.age / life).clamp(0.0, 1.0);
             let size = match e.end_size {
                 Some(end) => e.size + (end - e.size) * t,
                 None => e.size * (1.0 - t),
             }
-            .max(0.0);
+            .max(0.0)
+                * times;
             let (at, velocity) = if e.local {
                 (placed.transform_point3(p.at), turn * p.velocity)
             } else {
@@ -275,6 +304,21 @@ impl Emitting {
             if fading {
                 material.surface = crate::material::SurfaceType::Transparent;
                 material.alpha *= alpha.clamp(0.0, 1.0);
+            }
+            // One frame of a sheet: the square's picture moved onto it.
+            if let Some((across, down)) = e.sheet.filter(|(a, d)| *a * *d > 1) {
+                let count = (across * down) as f32;
+                let at_frame = if e.frames_random {
+                    p.frame
+                } else {
+                    e.frames.0 + (e.frames.1 - e.frames.0) * t
+                };
+                let n = ((at_frame * count).floor() as u32).min(across * down - 1);
+                material.tiling = [material.tiling[0] / across as f32, material.tiling[1] / down as f32];
+                material.offset = [
+                    material.offset[0] + (n % across) as f32 / across as f32,
+                    material.offset[1] + (n / across) as f32 / down as f32,
+                ];
             }
             Draw {
                 mesh: self.mesh,
@@ -336,6 +380,42 @@ mod tests {
         // And one on the CPU says nothing to the GPU.
         let cpu = Emitting::new(Emitter::default(), MeshHandle::TEST);
         assert!(cpu.gpu(3).is_none());
+    }
+
+    #[test]
+    fn a_box_emitter_gives_off_all_through_its_box_and_each_is_a_frame_of_its_sheet() {
+        let mut emitting = Emitting::new(
+            Emitter {
+                rate: 2000.0,
+                speed: 0.0,
+                from: Some(Vec3::new(10.0, 0.0, 0.0)),
+                box_size: Some(Vec3::new(4.0, 2.0, 6.0)),
+                sheet: Some((2, 2)),
+                frames: (0.5, 0.75),
+                frames_random: true,
+                scaled: true,
+                end_size: Some(0.1),
+                ..Emitter::default()
+            },
+            MeshHandle::TEST,
+        );
+        let placed = Mat4::from_scale(Vec3::splat(3.0));
+        emitting.advance(placed, 0.1);
+        let draws: Vec<Draw> = emitting.draws().collect();
+        assert!(draws.len() > 100, "{}", draws.len());
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for d in &draws {
+            let (size, _, at) = d.transform.to_scale_rotation_translation();
+            lo = lo.min(at);
+            hi = hi.max(at);
+            assert!((size.x - 0.3).abs() < 1e-3, "a size by the emitter's scale: {size}");
+            // Frame 2 of four: the sheet's bottom left.
+            assert_eq!(d.material.tiling, [0.5, 0.5]);
+            assert_eq!(d.material.offset, [0.0, 0.5]);
+        }
+        // The box about (10, 0, 0), both scaled by three.
+        assert!(lo.x > 23.9 && hi.x < 36.1 && lo.z > -9.1 && hi.z < 9.1, "{lo} {hi}");
+        assert!(hi.x - lo.x > 10.0 && hi.z - lo.z > 15.0, "all through it: {lo} {hi}");
     }
 
     use super::*;

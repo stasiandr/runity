@@ -245,6 +245,38 @@ pub struct Emitter {
     /// Unity's cones point along forward — an imported one says so here.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub direction: Option<Vec3>,
+    /// Its material's picture is a sheet of this many frames across and
+    /// down, and each is drawn as one of them. Unity's Texture Sheet
+    /// Animation.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub sheet: Option<(u32, u32)>,
+    /// Which frame of the sheet, 0 the first and 1 past the last: from the
+    /// first number to the second over each one's life — or, with
+    /// `frames_random`, one picked between them when it is born.
+    #[serde(default = "all_frames", skip_serializing_if = "is_all_frames")]
+    pub frames: (f32, f32),
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frames_random: bool,
+    /// Sizes times the entity's own scale in the world: a small emitter's
+    /// puffs are small. Unity's Scaling Mode Local and Hierarchy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scaled: bool,
+    /// Where they are born, in the entity's own axes: its origin when not
+    /// said. Unity's Shape position.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub from: Option<Vec3>,
+    /// Born anywhere in a box this size about `from` — dust over a whole
+    /// level — turned by `shape_turn_deg`. Unity's Box shape.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub box_size: Option<Vec3>,
+    /// Born anywhere within this many metres of `from`: across the cone's
+    /// mouth, or in a ball when they leave every way. Unity's radius.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: f32,
+    /// How the box is turned in the entity's axes, degrees. Unity's Shape
+    /// rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub shape_turn_deg: Option<Vec3>,
     /// Each is a flat square turned to the camera — smoke, sparks, dust
     /// with a picture — instead of a small solid. Unity's Billboard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -273,6 +305,12 @@ pub struct Emitter {
     pub collide: bool,
 }
 
+fn all_frames() -> (f32, f32) {
+    (0.0, 1.0)
+}
+fn is_all_frames(f: &(f32, f32)) -> bool {
+    *f == (0.0, 1.0)
+}
 fn emit_duration() -> f32 {
     5.0
 }
