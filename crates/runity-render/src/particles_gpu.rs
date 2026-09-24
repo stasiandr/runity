@@ -338,6 +338,12 @@ impl GpuParticles {
         }
     }
 
+    /// Drawn into a scene of `samples` a pixel now: the draw pipeline made
+    /// again, the pools kept.
+    pub(crate) fn resample(&mut self, gpu: &Gpu, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32) {
+        self.draw = Self::new(gpu, format, depth, samples).draw;
+    }
+
     /// Give off and step this frame's particles, before the colour pass.
     pub(crate) fn run(
         &mut self,

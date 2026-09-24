@@ -2166,6 +2166,21 @@ impl Renderer {
         Ok(())
     }
 
+    /// Draw the scene with `samples` a pixel: its targets made again on
+    /// the next frame, its pipelines now.
+    fn set_samples(&mut self, gpu: &Gpu, samples: u32) {
+        let before = self.samples;
+        self.samples = samples;
+        let shader = self.base_shader.clone();
+        if let Err(e) = self.reload_shader(gpu, &shader) {
+            eprintln!("the scene's pipelines do not build with {samples} samples: {e}");
+            self.samples = before;
+            return;
+        }
+        self.gpu_particles.resample(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples);
+        self.depth_size = (0, 0);
+    }
+
     /// The pipeline for a look: a material's own shader's, or the standard
     /// one's while that shader is not in (not yet written, or broken).
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
@@ -4342,6 +4357,17 @@ impl Renderer {
             }
             if let Some(timer) = self.timer.as_mut() {
                 timer.begin(gpu);
+            }
+        }
+        // Multisampling only where nothing else smooths the edges: TAA,
+        // MetalFX temporal (on only with TAA, in its place) and FXAA do it
+        // at a fraction of four samples' cost — which is three to eight
+        // times a whole frame's without them.
+        if screen {
+            let smoothed = frame.post.enabled && (frame.post.taa || frame.post.fxaa);
+            let wanted = if smoothed { 1 } else { sample_count(gpu) };
+            if wanted != self.samples {
+                self.set_samples(gpu, wanted);
             }
         }
         if self.depth_size != (width, height) {
