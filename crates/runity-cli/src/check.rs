@@ -114,8 +114,13 @@ pub fn check(project: &Project) -> Vec<Finding> {
 
     let input = project.root().join(runity::project::INPUT);
     if input.is_file() {
-        if let Err(e) = runity::Actions::load(&input) {
-            out.push(error(runity::project::INPUT, e));
+        match runity::Actions::load(&input) {
+            Ok(actions) => {
+                for problem in actions.map.problems() {
+                    out.push(error(runity::project::INPUT, problem));
+                }
+            }
+            Err(e) => out.push(error(runity::project::INPUT, e)),
         }
     }
 

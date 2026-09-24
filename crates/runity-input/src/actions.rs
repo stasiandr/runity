@@ -20,8 +20,32 @@
 //! rebinding is a one-line diff, and — polled like scenes are — takes
 //! effect while the game runs. A file that does not parse is reported and
 //! the bindings stay as they were.
+//!
+//! The rest of the Input System, when a game wants it (DNA, "Ввод — как
+//! Unity Input System"; the file above is its simplest case):
+//!
+//! ```text
+//! (
+//!     actions: { "pause": [Key(Escape), Pad(Start)] },  // always on
+//!     maps: {                                          // Action Maps
+//!         "walking": (actions: { "jump": [Key(Space), Pad(South)] }),
+//!         "menu": (actions: { "back": [Key(Backspace), Pad(East)] }),
+//!     },
+//!     schemes: {                                       // Control Schemes
+//!         "keyboard": [Keyboard, Mouse],
+//!         "gamepad": [Gamepad],
+//!     },
+//! )
+//! ```
+//!
+//! A map is switched on and off by the game ([`Actions::disable_map`]: the
+//! menu opens, walking stops answering); its actions answer by name, or as
+//! `"menu/back"`. A scheme is which devices count: with schemes, the one
+//! the player last touched a device of is on ([`Actions::update`]), and a
+//! binding of another counts for nothing — Unity's PlayerInput switching
+//! between keyboard and pad.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -37,6 +61,25 @@ pub enum Binding {
     Pad(PadButton),
 }
 
+impl Binding {
+    /// The device it is on.
+    pub fn device(self) -> Device {
+        match self {
+            Binding::Key(_) => Device::Keyboard,
+            Binding::Mouse(_) => Device::Mouse,
+            Binding::Pad(_) => Device::Gamepad,
+        }
+    }
+}
+
+/// A kind of device a control scheme is made of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Device {
+    Keyboard,
+    Mouse,
+    Gamepad,
+}
+
 /// A value from −1 to 1 made of two sets of bindings.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Axis {
@@ -50,13 +93,32 @@ pub struct Axis {
     pub analog: Vec<PadAxis>,
 }
 
-/// What `input.ron` holds.
+/// What `input.ron` holds: the actions and axes that are always on, the
+/// maps a game switches, and the control schemes.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ActionMap {
     #[serde(default)]
     pub actions: BTreeMap<String, Vec<Binding>>,
     #[serde(default)]
     pub axes: BTreeMap<String, Axis>,
+    /// Unity's Action Maps, by name: actions and axes the game switches on
+    /// and off together. One level: a map has no maps of its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub maps: BTreeMap<String, ActionMap>,
+    /// Unity's Control Schemes, by name: the devices each is made of.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemes: BTreeMap<String, Vec<Device>>,
+}
+
+impl ActionMap {
+    /// What does not hold together, in words: a map inside a map.
+    pub fn problems(&self) -> Vec<String> {
+        self.maps
+            .iter()
+            .filter(|(_, m)| !m.maps.is_empty())
+            .map(|(name, _)| format!("map `{name}` has maps of its own; a map is one level"))
+            .collect()
+    }
 }
 
 /// The project's actions, and where they came from.
@@ -67,6 +129,10 @@ pub struct Actions {
     stamp: Option<SystemTime>,
     /// A player's own bindings, laid over the project's after every reload.
     player: Option<PathBuf>,
+    /// Maps the game switched off.
+    disabled: BTreeSet<String>,
+    /// The control scheme on: `None` counts every device.
+    scheme: Option<String>,
 }
 
 fn modified(path: &Path) -> Option<SystemTime> {
@@ -77,9 +143,7 @@ impl Actions {
     pub fn new(map: ActionMap) -> Self {
         Self {
             map,
-            path: None,
-            stamp: None,
-            player: None,
+            ..Self::default()
         }
     }
 
@@ -93,7 +157,7 @@ impl Actions {
             map,
             stamp: modified(&path),
             path: Some(path),
-            player: None,
+            ..Self::default()
         })
     }
 
@@ -119,8 +183,96 @@ impl Actions {
         })
     }
 
-    fn bindings(&self, name: &str) -> &[Binding] {
-        self.map.actions.get(name).map_or(&[], Vec::as_slice)
+    /// The maps an action or axis called `name` is looked for in, with
+    /// the name there: the always-on one, then every map switched on — or,
+    /// for `"menu/back"`, the map `menu` alone.
+    fn looked_in(&self, name: &str) -> Vec<(&ActionMap, String)> {
+        if let Some((map, action)) = name.split_once('/') {
+            return self
+                .map
+                .maps
+                .get(map)
+                .filter(|_| self.map_enabled(map))
+                .map(|m| (m, action.to_string()))
+                .into_iter()
+                .collect();
+        }
+        std::iter::once(&self.map)
+            .chain(
+                self.map
+                    .maps
+                    .iter()
+                    .filter(|(n, _)| self.map_enabled(n))
+                    .map(|(_, m)| m),
+            )
+            .map(|m| (m, name.to_string()))
+            .collect()
+    }
+
+    /// Whether the scheme on counts `device`.
+    fn counts(&self, device: Device) -> bool {
+        match self.scheme.as_ref().and_then(|s| self.map.schemes.get(s)) {
+            Some(devices) => devices.contains(&device),
+            None => true,
+        }
+    }
+
+    fn bindings(&self, name: &str) -> Vec<Binding> {
+        self.looked_in(name)
+            .into_iter()
+            .filter_map(|(map, name)| map.actions.get(&name))
+            .flatten()
+            .copied()
+            .filter(|b| self.counts(b.device()))
+            .collect()
+    }
+
+    /// Switch a map's actions on: they answer again.
+    pub fn enable_map(&mut self, map: &str) {
+        self.disabled.remove(map);
+    }
+
+    /// Switch a map's actions off: the menu opens, and walking stops
+    /// answering.
+    pub fn disable_map(&mut self, map: &str) {
+        self.disabled.insert(map.to_string());
+    }
+
+    pub fn map_enabled(&self, map: &str) -> bool {
+        !self.disabled.contains(map)
+    }
+
+    /// The control scheme on, when the file has schemes.
+    pub fn scheme(&self) -> Option<&str> {
+        self.scheme.as_deref()
+    }
+
+    /// Put a scheme on by name, or `None` for every device.
+    pub fn set_scheme(&mut self, scheme: Option<&str>) {
+        self.scheme = scheme.map(str::to_string);
+    }
+
+    /// Once a frame, before asking: with schemes, the one the player just
+    /// touched a device of goes on — a key, and the keyboard's scheme is
+    /// on; a pad's button, the pad's. Returns the scheme when it changed.
+    pub fn update(&mut self, input: &Input) -> Option<&str> {
+        let touched = input
+            .pressed_keys()
+            .next()
+            .map(|_| Device::Keyboard)
+            .or_else(|| input.pressed_buttons().next().map(|_| Device::Mouse))
+            .or_else(|| input.pressed_pad_buttons().next().map(|_| Device::Gamepad))?;
+        if self.scheme.is_some() && self.counts(touched) {
+            return None;
+        }
+        let scheme = self
+            .map
+            .schemes
+            .iter()
+            .find(|(_, devices)| devices.contains(&touched))
+            .map(|(name, _)| name.clone())?;
+        self.scheme = Some(scheme);
+        self.scheme.as_deref()
     }
 
     pub fn held(&self, input: &Input, name: &str) -> bool {
@@ -147,21 +299,26 @@ impl Actions {
     /// −1..1: −1, 0 or 1 from keys and buttons — 0 when both sides are
     /// held — or, when none is, from its sticks.
     pub fn axis(&self, input: &Input, name: &str) -> f32 {
-        let Some(axis) = self.map.axes.get(name) else {
-            return 0.0;
+        let axes: Vec<Axis> = self
+            .looked_in(name)
+            .into_iter()
+            .filter_map(|(map, name)| map.axes.get(&name).cloned())
+            .collect();
+        let counted = |bindings: &[Binding]| -> Vec<Binding> {
+            bindings.iter().copied().filter(|b| self.counts(b.device())).collect()
         };
+        let positive: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.positive)).collect();
+        let negative: Vec<Binding> = axes.iter().flat_map(|a| counted(&a.negative)).collect();
         let side = |bindings: &[Binding]| f32::from(bindings.iter().any(|b| held(input, *b)));
-        let digital = side(&axis.positive) - side(&axis.negative);
-        let pressed = axis
-            .positive
-            .iter()
-            .chain(&axis.negative)
-            .any(|b| held(input, *b));
+        let pressed = positive.iter().chain(&negative).any(|b| held(input, *b));
         if pressed {
-            return digital;
+            return side(&positive) - side(&negative);
         }
-        axis.analog
-            .iter()
+        if !self.counts(Device::Gamepad) {
+            return 0.0;
+        }
+        axes.iter()
+            .flat_map(|a| &a.analog)
             .map(|a| input.pad_axis(*a))
             .fold(
                 0.0,
@@ -241,13 +398,20 @@ impl Actions {
     /// the closest one it does: call it once at start, and a typo is a
     /// sentence rather than a key that silently does nothing.
     pub fn missing(&self, names: &[&str]) -> Vec<String> {
-        let known: Vec<&str> = self
+        let mut known: Vec<String> = self
             .map
             .actions
             .keys()
             .chain(self.map.axes.keys())
-            .map(String::as_str)
+            .cloned()
             .collect();
+        for (map, inner) in &self.map.maps {
+            for name in inner.actions.keys().chain(inner.axes.keys()) {
+                known.push(name.clone());
+                known.push(format!("{map}/{name}"));
+            }
+        }
+        let known: Vec<&str> = known.iter().map(String::as_str).collect();
         names
             .iter()
             .filter(|name| !known.contains(name))
@@ -276,6 +440,43 @@ fn held(input: &Input, binding: Binding) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_switch_and_the_scheme_follows_the_device_touched_last() {
+        use crate::input::InputEvent;
+        let map: ActionMap = ron::from_str(
+            r#"(
+                actions: { "pause": [Key(Escape), Pad(Start)] },
+                maps: {
+                    "walking": (actions: { "jump": [Key(Space), Pad(South)] }),
+                    "menu": (actions: { "back": [Key(Backspace), Pad(East)] }),
+                },
+                schemes: { "keyboard": [Keyboard, Mouse], "gamepad": [Gamepad] },
+            )"#,
+        )
+        .unwrap();
+        assert!(map.problems().is_empty());
+        let mut actions = Actions::new(map);
+        let mut input = Input::new();
+        input.handle(&InputEvent::KeyDown(Key::Space));
+        assert!(actions.pressed(&input, "jump") && actions.pressed(&input, "walking/jump"));
+        actions.disable_map("walking");
+        assert!(!actions.pressed(&input, "jump"), "the menu is open");
+        actions.enable_map("walking");
+        assert!(actions.missing(&["menu/back", "back", "pause"]).is_empty());
+
+        // A key: the keyboard's scheme goes on, and the pad counts for nothing.
+        assert_eq!(actions.update(&input), Some("keyboard"));
+        input.begin_frame();
+        input.handle(&InputEvent::KeyUp(Key::Space));
+        input.begin_frame();
+        input.handle(&InputEvent::PadDown(PadButton::South));
+        assert!(!actions.held(&input, "jump"), "the pad is not in the keyboard's scheme");
+        // Until the pad is touched: then it is the pad's.
+        assert_eq!(actions.update(&input), Some("gamepad"));
+        assert!(actions.held(&input, "jump"));
+        assert!(!actions.held(&input, "pause"));
+    }
 
     #[test]
     fn a_player_rebinds_a_key_and_it_is_theirs_over_the_project() {
