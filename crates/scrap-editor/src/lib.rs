@@ -3716,6 +3716,16 @@ impl Session {
         self.renderer.gpu_times()
     }
 
+    /// Time each pass of the Scene view on the GPU, or stop: the
+    /// Profiler's switch for [`Self::gpu_times`]. Off costs nothing.
+    pub fn profile_gpu(&mut self, on: bool) {
+        self.renderer.profile_gpu(on);
+    }
+
+    pub fn profiling_gpu(&self) -> bool {
+        self.renderer.profiling_gpu()
+    }
+
     /// The GPU the session renders with: a window that wants to show the
     /// frame without a copy makes its surface on this one.
     pub fn gpu(&self) -> &Gpu {

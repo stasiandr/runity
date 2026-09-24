@@ -1417,7 +1417,7 @@ impl Studio {
             });
             let live = self.wants_frame();
             if live && self.docks.is_showing(Panel::Profiler) {
-                self.profiler.update(&mut self.ui);
+                self.profiler.update(&mut self.ui, &self.session);
             }
             if self.docks.is_showing(Panel::Animation) {
                 self.animation.update(&mut self.ui, &self.session);
@@ -3395,6 +3395,8 @@ impl Studio {
             self.animation
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.profiler.owns(&self.ui, node) {
+            self.profiler
+                .event(&mut self.ui, &mut self.session, node, event);
         } else if self.bottom.owns(&self.ui, node) {
             self.bottom
                 .event(&mut self.ui, &mut self.session, node, event, requests);

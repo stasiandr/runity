@@ -1569,6 +1569,54 @@ fn the_profiler_shows_what_frames_cost() {
             .unwrap()
             .to_string();
     assert!(summary.contains("median"), "{summary}");
+    // Each part's numbers, the whole frame's last.
+    let frame = s.ui.find("profiler part frame").unwrap();
+    let cells: Vec<String> =
+        s.ui.children(frame)
+            .into_iter()
+            .flat_map(|c| s.ui.children(c))
+            .filter_map(|n| s.ui.text(n).map(str::to_string))
+            .collect();
+    assert!(cells.iter().any(|c| c.parse::<f32>().is_ok()), "{cells:?}");
+    // No game runs: the systems table says how to get one.
+    let note =
+        s.ui.text(s.ui.find("profiler systems note").unwrap())
+            .unwrap()
+            .to_string();
+    assert!(note.contains("Run Game"), "{note}");
+
+    // Paused, the chart holds still.
+    click(&mut s, "profiler pause");
+    let held = s.ui.children(s.ui.find("profiler bars").unwrap()).len();
+    for _ in 0..3 {
+        s.handle(&InputEvent::MouseMoved { x: 610.0, y: 400.0 });
+        s.frame();
+    }
+    assert_eq!(
+        s.ui.children(s.ui.find("profiler bars").unwrap()).len(),
+        held
+    );
+    // Pointing at a bar spells its frame out.
+    let first = s.ui.children(s.ui.find("profiler bars").unwrap())[0];
+    let (x, y) = s.ui.rect(first).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    let detail =
+        s.ui.text(s.ui.find("profiler detail").unwrap())
+            .unwrap()
+            .to_string();
+    assert!(
+        detail.contains("frames ago") && detail.contains("render"),
+        "{detail}"
+    );
+    click(&mut s, "profiler pause");
+
+    // GPU timing is a switch the renderer hears.
+    assert!(!s.session.profiling_gpu());
+    click(&mut s, "profiler gpu");
+    assert!(s.session.profiling_gpu());
+    click(&mut s, "profiler gpu");
+    assert!(!s.session.profiling_gpu());
 }
 
 #[test]
