@@ -694,6 +694,7 @@ Material:
         let file = |name: &str| dir.join(name);
         let unity = Unity {
             layers: Default::default(),
+            pieces: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ggg", file("Landscape_Shader.shadergraph")),
