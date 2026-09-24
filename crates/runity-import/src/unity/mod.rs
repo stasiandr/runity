@@ -31,6 +31,8 @@ pub struct Report {
     pub models: usize,
     pub animators: usize,
     pub motions: usize,
+    /// ScriptableObjects, as data files under `data/`.
+    pub data: usize,
     /// What was left behind, by kind, with how many times: a component
     /// with no counterpart, a modification it could not carry.
     pub skipped: BTreeMap<String, usize>,
@@ -48,7 +50,7 @@ impl std::fmt::Display for Report {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators, {} clips",
+            "{} scenes, {} prefabs, {} materials, {} textures, {} sounds, {} models, {} animators, {} clips, {} data",
             self.scenes,
             self.prefabs,
             self.materials,
@@ -56,7 +58,8 @@ impl std::fmt::Display for Report {
             self.sounds,
             self.models,
             self.animators,
-            self.motions
+            self.motions,
+            self.data
         )?;
         if !self.skipped.is_empty() {
             writeln!(f, "left behind:")?;
@@ -130,6 +133,7 @@ pub fn kind_of(path: &Path) -> Option<&'static str> {
         "controller" => "animator",
         "anim" => "motion",
         "cs" => "script",
+        "asset" => "data",
         _ => return None,
     })
 }
@@ -443,6 +447,22 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
             .save(project.scenes().join(format!("{name}.ron")))
             .with_context(|| format!("scene {name}"))?;
         report.scenes += 1;
+    }
+
+    // ScriptableObjects: a game's configs and graphs, its own fields as
+    // RON under `data/`, named as Unity names the asset. Other `.asset`
+    // files (lighting, terrain, settings) are not a MonoBehaviour and pass.
+    for (guid, path) in unity.of_kind("data") {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Some((script, body)) = scene::data_asset(&unity, &text) else {
+            continue;
+        };
+        let name = &unity.names[guid];
+        let text = format!("// {script}, from {}\n{body}\n", path.display());
+        write(&project.root().join("data").join(format!("{name}.ron")), &text)?;
+        report.data += 1;
     }
 
     for (guid, path) in unity.of_kind("animator") {

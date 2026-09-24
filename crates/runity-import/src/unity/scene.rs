@@ -1190,6 +1190,26 @@ const UNITY_FIELDS: [&str; 10] = [
     "m_EditorClassIdentifier",
 ];
 
+/// A ScriptableObject `.asset` as data: the script it is an instance of,
+/// and its own fields as a RON struct. `None` when the file is not one, or
+/// its script is not the project's (a package's: fonts, render settings).
+pub fn data_asset(unity: &Unity, text: &str) -> Option<(String, String)> {
+    let docs = yaml::documents(text);
+    let doc = docs.iter().find(|d| d.kind == "MonoBehaviour")?;
+    let script = doc
+        .body
+        .reference("m_Script")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))
+        .map(|p| super::stem(p))?;
+    let refs = Refs {
+        unity,
+        entity_of: HashMap::new(),
+        body_object: HashMap::new(),
+    };
+    Some((script, mono_behaviour(&doc.body, &refs)))
+}
+
 /// A MonoBehaviour's own fields as a RON struct.
 fn mono_behaviour(b: &Yaml, refs: &Refs) -> String {
     let Yaml::Hash(hash) = b else {
@@ -1488,6 +1508,18 @@ ParticleSystemRenderer:
   m_Materials:
   - {fileID: 2100000, guid: mmm, type: 2}
 ";
+
+    #[test]
+    fn a_scriptable_object_becomes_data() {
+        let text = "%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_ObjectHideFlags: 0\n  m_Script: {fileID: 11500000, guid: sss, type: 3}\n  m_Name: GardenSoil\n  graphName: garden_soil\n  nodes:\n  - prefab: {fileID: 100, guid: ppp, type: 3}\n    branches:\n    - condition: 2\n      requires: [seeds]\n";
+        let (script, body) = data_asset(&unity(), text).unwrap();
+        assert_eq!(script, "Door");
+        assert!(body.contains("graphName: \"garden_soil\""), "{body}");
+        assert!(body.contains("PrefabLink(\"Lamp\")"), "{body}");
+        assert!(body.contains("condition: 2"), "{body}");
+        assert!(!body.contains("m_Name"), "{body}");
+        assert!(data_asset(&unity(), "%YAML 1.1\n--- !u!29 &1\nOcclusionCullingSettings:\n  m_ObjectHideFlags: 0\n").is_none());
+    }
 
     #[test]
     fn an_instance_moves_a_part_and_takes_its_light_away() {
