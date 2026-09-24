@@ -1335,6 +1335,31 @@ impl Session {
         Ok(SceneReload::Unchanged)
     }
 
+    /// Throw this session's edits away: the document as its file has it —
+    /// the Hierarchy's Reload from disk. One undo step, so a slip is taken
+    /// back; `false` when there was nothing to throw away, and no step.
+    pub fn revert_to_disk(&mut self) -> EditResult<bool> {
+        self.refuse_while_playing()?;
+        let path = self.scene_path.clone().ok_or(EditError::NoPath)?;
+        let scene = load_document(&path)?;
+        let stamps = runity::live::stamps(&path, self.project.as_ref());
+        let changed = &scene != self.history.scene();
+        if changed {
+            *self.history.edit() = scene.clone();
+            if self
+                .selected
+                .is_some_and(|id| self.history.scene().get(id).is_none())
+            {
+                self.selected = None;
+            }
+        }
+        self.on_disk = Some((scene, stamps));
+        if changed {
+            self.respawn();
+        }
+        Ok(changed)
+    }
+
     /// The document as it stands.
     pub fn scene(&self) -> &Scene {
         self.history.scene()

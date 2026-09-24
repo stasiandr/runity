@@ -23,6 +23,10 @@ pub enum Action {
     OpenSceneDialog,
     /// Ask where, and save the scene there.
     SaveAs,
+    /// Throw the edits away: the scene as its file has it (one undo step).
+    ReloadScene,
+    /// Show a file's tile in the Project panel.
+    ShowInProject(PathBuf),
     /// Ask for files and import them into the project.
     Import,
     OpenPrefab(String),
@@ -143,6 +147,8 @@ pub struct MenuItem {
     pub label: String,
     pub shortcut: Option<&'static str>,
     pub action: Option<Action>,
+    /// Shown, greyed, and not clickable: what is coming.
+    pub disabled: bool,
 }
 
 impl MenuItem {
@@ -151,7 +157,13 @@ impl MenuItem {
             label: label.to_string(),
             shortcut: None,
             action: Some(action),
+            disabled: false,
         }
+    }
+
+    pub fn disabled(mut self) -> Self {
+        self.disabled = true;
+        self
     }
 
     pub fn key(mut self, shortcut: &'static str) -> Self {
@@ -164,6 +176,7 @@ impl MenuItem {
             label: String::new(),
             shortcut: None,
             action: None,
+            disabled: false,
         }
     }
 }
@@ -337,6 +350,25 @@ fn create_items(with_group: bool) -> Vec<MenuItem> {
 /// A right click on nothing in the Hierarchy: make something.
 pub fn create_menu() -> Vec<MenuItem> {
     create_items(false)
+}
+
+/// The ⋮ of the Hierarchy's scene line: the document as a whole — its
+/// file, when it has one, and whether it is a prefab being edited.
+pub fn scene_menu(path: Option<PathBuf>, prefab: bool) -> Vec<MenuItem> {
+    let mut save = editor("save_scene");
+    save.label = format!("Save {}", if prefab { "Prefab" } else { "Scene" });
+    let mut v = vec![save];
+    if !prefab {
+        v.push(item("Save Scene As…", Action::SaveAs));
+    }
+    if let Some(path) = path {
+        v.push(item("Show in Project", Action::ShowInProject(path)));
+        v.push(item("Reload from Disk", Action::ReloadScene));
+    }
+    v.push(MenuItem::separator());
+    // Several scenes open at once: not yet, and said so where it will be.
+    v.push(item("Add Scene (multi-scene — later)", Action::OpenSceneDialog).disabled());
+    v
 }
 
 /// A right click on a line of the Hierarchy.

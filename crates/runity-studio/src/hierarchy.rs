@@ -7,7 +7,15 @@
 //! calls an agent makes: a click selects (Shift or Cmd adds), a double
 //! click frames it, the arrow opens it (with Alt, all under it), the eye hides it, the lock keeps
 //! the Scene view's clicks off it, a line dropped on another becomes its
-//! child, a right click opens the context menu, F2 renames.
+//! child, a right click opens the context menu, F2 renames, the `>` of an
+//! instance opens its prefab.
+//!
+//! Above the lines stands the document itself, as Unity has it: the scene's
+//! (or the prefab's) line, bold, always open, with its ⋮ menu — save,
+//! reload, show in the Project. It is not an entity: a click on it selects
+//! nothing, and a line dropped on it goes to the top level. The `+` left of
+//! the search makes something, at the top level as Unity's does: under a
+//! line is the line's right click (Create Empty Child).
 
 use std::collections::{HashMap, HashSet};
 
@@ -27,10 +35,16 @@ enum Part {
     Eye(EntityId),
     Lock(EntityId),
     Rename(EntityId),
+    /// The `>` of an instance: open its prefab.
+    Open(EntityId),
 }
 
 const INDENT: f32 = 14.0;
 const LINE: f32 = 24.0;
+/// How much of an inactive line shows.
+const INACTIVE: f32 = 0.4;
+/// A prefab's part: the accent, paler.
+const PART: runity_ui::Color = ACCENT_300;
 
 pub struct Hierarchy {
     pub card: NodeId,
@@ -39,7 +53,17 @@ pub struct Hierarchy {
     expand_all: NodeId,
     collapse_all: NodeId,
     search: NodeId,
+    /// The `+` left of the search: the create menu.
+    add: NodeId,
+    /// What scrolls: the scene's line, then the entities' lines.
     list: NodeId,
+    /// The document's own line, its icon and name, and its ⋮.
+    scene: NodeId,
+    scene_icon: NodeId,
+    scene_name: NodeId,
+    scene_menu: NodeId,
+    /// The entities' lines, matched to the rows by id.
+    entities: NodeId,
     parts: HashMap<NodeId, Part>,
     /// A line being renamed: its field, in place of its label.
     renaming: Option<(EntityId, NodeId)>,
@@ -70,6 +94,8 @@ enum Drop {
     After(EntityId),
     /// Below every line: the end of the top level.
     End,
+    /// On the scene's line: the top level too, at its end.
+    Scene,
 }
 
 impl Hierarchy {
@@ -88,9 +114,10 @@ impl Hierarchy {
                 .fixed()
                 .center_items(),
         );
+        let add = icon_button(ui, bar, "hierarchy create", "plus", false);
         let search = ui.add_field(bar, field_style().fill().height(24.0), "");
         ui.set_name(search, "hierarchy search");
-        ui.set_placeholder(search, "Search  (c:door  m:bark)");
+        ui.set_placeholder(search, "Search  (c:door)");
         let count = ui.add_text(bar, caption(), "");
         let expand_all = icon_button(ui, bar, "hierarchy expand all", "chevrons-up-down", false);
         let collapse_all =
@@ -106,6 +133,9 @@ impl Hierarchy {
                 .clickable(),
         );
         ui.set_name(list, "hierarchy list");
+        let (scene, scene_icon, scene_name, scene_menu) = make_scene_line(ui, list);
+        let entities = ui.add(list, Style::column().full_width().fixed());
+        ui.set_name(entities, "hierarchy lines");
         let indicator = ui.add(
             card,
             Style::row()
@@ -126,7 +156,13 @@ impl Hierarchy {
             expand_all,
             collapse_all,
             search,
+            add,
             list,
+            scene,
+            scene_icon,
+            scene_name,
+            scene_menu,
+            entities,
             parts: HashMap::new(),
             renaming: None,
             followed: None,
@@ -147,6 +183,7 @@ impl Hierarchy {
     /// Make the lines match the document.
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
         ui.set_text(self.count, &session.entity_count().to_string());
+        self.update_scene_line(ui, session);
         let rows = self.rows(ui, session);
         let keys: Vec<u64> = rows.iter().map(|r| r.id.raw()).collect();
         let by_key: HashMap<u64, &Row> = rows.iter().map(|r| (r.id.raw(), r)).collect();
@@ -155,7 +192,7 @@ impl Hierarchy {
         // they are made; a line kept keeps its parts.
         let mut made: Vec<(EntityId, NodeId)> = Vec::new();
         ui.sync_children(
-            self.list,
+            self.entities,
             &keys,
             |ui, list, key| {
                 let row = by_key[key];
@@ -172,6 +209,7 @@ impl Hierarchy {
             self.parts.insert(kids[0], Part::Arrow(id));
             self.parts.insert(tools[0], Part::Eye(id));
             self.parts.insert(tools[1], Part::Lock(id));
+            self.parts.insert(kids[6], Part::Open(id));
             self.lines.insert(id, line);
         }
         // Lines whose rows went: forget their parts.
@@ -215,6 +253,23 @@ impl Hierarchy {
                 ui.scroll_to(self.list, line);
             }
         }
+    }
+
+    /// The document's line: its name (with `*` while it has unsaved
+    /// edits, as Unity's), and a scene's icon or a prefab's.
+    fn update_scene_line(&mut self, ui: &mut Ui, session: &Session) {
+        let prefab = session.is_prefab();
+        let name = session
+            .scene_path()
+            .and_then(|p| p.file_stem())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "untitled".into());
+        let modified = if session.is_modified() { "*" } else { "" };
+        ui.set_text(self.scene_name, &format!("{name}{modified}"));
+        ui.set_icon(self.scene_icon, if prefab { "package" } else { "mountain" });
+        ui.restyle(self.scene_icon, |s| {
+            s.text_color(if prefab { ACCENT } else { LABEL })
+        });
     }
 
     /// Mark the lines of entities not as committed, and unmark the rest.
@@ -291,6 +346,7 @@ impl Hierarchy {
             || node == self.list
             || node == self.expand_all
             || node == self.collapse_all
+            || node == self.add
             || self.parts.contains_key(&node) || {
             let mut at = ui.parent(node);
             while let Some(p) = at {
@@ -316,6 +372,37 @@ impl Hierarchy {
                 session.set_all_open(node == self.expand_all);
                 requests.refresh = true;
             }
+            return;
+        }
+        if node == self.add {
+            if matches!(event, Event::Click { .. }) {
+                let r = ui.rect(node);
+                requests.menu = Some((crate::menu::create_menu(), r.x, r.y + r.height + 4.0));
+            }
+            return;
+        }
+        if node == self.scene_menu || node == self.scene {
+            use runity::input::MouseButton;
+            let Event::Click { button, .. } = event else {
+                return;
+            };
+            if node == self.scene && *button != MouseButton::Right {
+                // Not an entity: a click on it is a click on nothing.
+                let _ = session.select(None);
+                requests.refresh = true;
+                return;
+            }
+            let (x, y) = if node == self.scene_menu {
+                let r = ui.rect(node);
+                (r.x, r.y + r.height + 4.0)
+            } else {
+                ui.pointer()
+            };
+            let items = crate::menu::scene_menu(
+                session.scene_path().map(std::path::Path::to_path_buf),
+                session.is_prefab(),
+            );
+            requests.menu = Some((items, x, y));
             return;
         }
         if node == self.search {
@@ -347,6 +434,11 @@ impl Hierarchy {
                     session.set_open(id, !open);
                 }
                 requests.refresh = true;
+            }
+            (Some(Part::Open(id)), Event::Click { .. }) => {
+                if let Some(prefab) = self.row(id).and_then(|r| r.prefab.clone()) {
+                    requests.action = Some(crate::menu::Action::OpenPrefab(prefab));
+                }
             }
             (Some(Part::Eye(id)), Event::Click { .. }) => {
                 let hidden = self.row(id).is_some_and(|r| r.hidden);
@@ -425,7 +517,7 @@ impl Hierarchy {
     pub fn drop_target(&self, ui: &Ui) -> Option<Option<EntityId>> {
         match self.drop_at(ui)? {
             Drop::Into(id) | Drop::Before(id) | Drop::After(id) => Some(Some(id)),
-            Drop::End => Some(None),
+            Drop::End | Drop::Scene => Some(None),
         }
     }
 
@@ -435,7 +527,10 @@ impl Hierarchy {
         if !ui.rect(self.list).contains(x, y) {
             return None;
         }
-        for (line, row) in ui.children(self.list).into_iter().zip(&self.shown) {
+        if ui.rect(self.scene).contains(x, y) {
+            return Some(Drop::Scene);
+        }
+        for (line, row) in ui.children(self.entities).into_iter().zip(&self.shown) {
             let r = ui.rect(line);
             if y >= r.y && y < r.y + r.height {
                 let t = (y - r.y) / r.height;
@@ -459,7 +554,7 @@ impl Hierarchy {
         };
         let card = ui.rect(self.card);
         let line_of = |id: EntityId| {
-            ui.children(self.list)
+            ui.children(self.entities)
                 .into_iter()
                 .zip(&self.shown)
                 .find(|(_, r)| r.id == id)
@@ -470,7 +565,7 @@ impl Hierarchy {
                 let Some((r, depth)) = line_of(id) else {
                     return;
                 };
-                let indent = 22.0 + depth as f32 * INDENT;
+                let indent = 22.0 + (depth + 1) as f32 * INDENT;
                 match drop {
                     Drop::Before(_) => (r.y - 1.0, r.x + indent, r.width - indent, 2.0),
                     Drop::After(_) => (r.y + r.height - 1.0, r.x + indent, r.width - indent, 2.0),
@@ -478,12 +573,16 @@ impl Hierarchy {
                 }
             }
             Drop::End => {
-                let last = ui.children(self.list).last().map(|n| ui.rect(*n));
-                let Some(r) = last else { return };
+                let last = ui.children(self.entities).last().map(|n| ui.rect(*n));
+                let r = last.unwrap_or_else(|| ui.rect(self.scene));
                 (r.y + r.height, r.x, r.width, 2.0)
             }
+            Drop::Scene => {
+                let r = ui.rect(self.scene);
+                (r.y, r.x, r.width, r.height)
+            }
         };
-        let into = matches!(drop, Drop::Into(_));
+        let into = matches!(drop, Drop::Into(_) | Drop::Scene);
         ui.restyle(self.indicator, |s| {
             let s = s.shown().absolute(x - card.x, y - card.y).size(w, h);
             if into {
@@ -530,7 +629,7 @@ impl Hierarchy {
             Drop::After(t) if t == id => return,
             Drop::Before(t) => (parent_of(t), Some(index_of(t))),
             Drop::After(t) => (parent_of(t), Some(index_of(t) + 1)),
-            Drop::End => (None, None),
+            Drop::End | Drop::Scene => (None, None),
         };
         // A line of the selection takes the whole selection with it, in the
         // order the lines are shown, as one undo step.
@@ -642,6 +741,42 @@ impl Hierarchy {
     }
 }
 
+/// The document's line: an open arrow that does nothing (a scene is always
+/// open), its icon, its name in bold, and a ⋮ at the right end.
+fn make_scene_line(ui: &mut Ui, list: NodeId) -> (NodeId, NodeId, NodeId, NodeId) {
+    let line = ui.add(
+        list,
+        Style::row()
+            .height(LINE)
+            .fixed()
+            .full_width()
+            .gap(SPACE_1)
+            .padding_left(4.0)
+            .center_items()
+            .radius(RADIUS_SM)
+            .border(1.0, runity_ui::Color::TRANSPARENT)
+            .hover(TEXT.alpha(5)),
+    );
+    ui.set_name(line, "hierarchy scene");
+    let arrow = ui.add(line, Style::row().size(16.0, 16.0).fixed().center());
+    icon(ui, arrow, "chevron-down", TEXT.alpha(30));
+    let kind = icon(ui, line, "mountain", LABEL);
+    let name = ui.add_text(line, text().weight(600).fill(), "");
+    ui.set_name(name, "hierarchy scene name");
+    let more = ui.add(
+        line,
+        Style::row()
+            .size(20.0, 20.0)
+            .fixed()
+            .center()
+            .radius(RADIUS_SM)
+            .hover(HOVER),
+    );
+    ui.set_name(more, "hierarchy scene menu");
+    icon(ui, more, "ellipsis-vertical", LABEL);
+    (line, kind, name, more)
+}
+
 fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
     let line = ui.add(
         list,
@@ -698,6 +833,20 @@ fn make_line(ui: &mut Ui, list: NodeId, row: &Row) -> NodeId {
             .opacity(0.0),
     );
     ui.set_name(dot, format!("mark {}", row.name));
+    // 6: an instance's `>`, on hover: its prefab, opened
+    let open = ui.add(
+        line,
+        Style::row()
+            .size(20.0, 20.0)
+            .fixed()
+            .center()
+            .radius(RADIUS_SM)
+            .hover(HOVER)
+            .opacity(0.0)
+            .hidden(),
+    );
+    ui.set_name(open, format!("open {}", row.name));
+    icon(ui, open, "chevron-right", LABEL);
     line
 }
 
@@ -711,6 +860,17 @@ fn show_tools(ui: &mut Ui, line: NodeId, row: &Row, hovered: bool) {
     let lock = hovered || row.locked;
     ui.restyle(tools[0], |s| s.opacity(if eye { 1.0 } else { 0.0 }));
     ui.restyle(tools[1], |s| s.opacity(if lock { 1.0 } else { 0.0 }));
+    // An instance's `>` holds its place and shows only under the pointer,
+    // as Unity's; other lines have none.
+    let instance = row.prefab.is_some();
+    ui.restyle(kids[6], |s| {
+        let s = s.opacity(if hovered { 1.0 } else { 0.0 });
+        if instance {
+            s.shown()
+        } else {
+            s.hidden()
+        }
+    });
 }
 
 /// The dot at a line's end: its entity is not as the last commit has it.
@@ -728,9 +888,9 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
     let mut style = ui
         .style(line)
         .clone()
-        .padding_left(4.0 + row.depth as f32 * INDENT)
+        .padding_left(4.0 + (row.depth + 1) as f32 * INDENT)
         .padding_x(0.0)
-        .padding_left(4.0 + row.depth as f32 * INDENT);
+        .padding_left(4.0 + (row.depth + 1) as f32 * INDENT);
     style = if row.selected {
         style.background(ACCENT_900).border(1.0, ACCENT.alpha(40))
     } else {
@@ -759,23 +919,28 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
             },
         );
     }
-    // What it is.
+    // What it is. An instance is in the accent, Unity's blue, and its
+    // parts in a paler one; what the scene owns outright stays plain.
     let (kind, tint) = if row.prefab.is_some() {
         ("package", ACCENT)
     } else if row.has_children {
-        ("boxes", MUTED)
+        ("boxes", if row.part { PART } else { MUTED })
     } else {
-        ("box", MUTED)
+        ("box", if row.part { PART } else { MUTED })
     };
+    // Off in the game: the icon, the name and the tag faded.
+    let fade = if row.inactive { INACTIVE } else { 1.0 };
     ui.set_icon(kids[1], kind);
-    ui.restyle(kids[1], |s| s.text_color(tint));
+    ui.restyle(kids[1], |s| s.text_color(tint).opacity(fade));
     // The name.
     let ink = if row.selected {
         ACCENT_200
     } else if row.hidden {
         MUTED
+    } else if row.prefab.is_some() {
+        ACCENT
     } else if row.part {
-        LABEL
+        PART
     } else {
         TEXT
     };
@@ -789,7 +954,7 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
         },
     );
     ui.restyle(kids[2], |s| {
-        let s = s.text_color(ink);
+        let s = s.text_color(ink).opacity(fade);
         if being_renamed {
             s.hidden()
         } else {
@@ -798,6 +963,7 @@ fn update_line(ui: &mut Ui, line: NodeId, row: &Row, renaming: Option<(EntityId,
     });
     // The prefab's name as a tag.
     let slot = kids[3];
+    ui.restyle(slot, |s| s.opacity(fade));
     let has_tag = !ui.children(slot).is_empty();
     match (&row.prefab, has_tag) {
         (Some(p), false) => {
