@@ -1569,6 +1569,10 @@ pub struct Scene {
     /// device does not trace.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub ray_tracing: Option<crate::ray::RayTracing>,
+    /// The sun's shadow from virtual shadow maps, sharp near and far, out
+    /// to 200 m: `virtual_shadows: true`. See [`crate::vsm`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub virtual_shadows: bool,
     /// Light seen in the air: `volumetric_fog: (enabled: true, density:
     /// 0.05)`. See [`crate::volume`].
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
@@ -2012,6 +2016,7 @@ mod tests {
             sky: None,
             ambient_occlusion: None,
             ray_tracing: None,
+            virtual_shadows: false,
             volumetric_fog: None,
             wind: None,
             weather: None,

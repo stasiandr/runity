@@ -1324,6 +1324,12 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     if let Some(ambient_occlusion) = scene.ambient_occlusion {
         frame.ambient_occlusion = ambient_occlusion;
     }
+    if scene.virtual_shadows {
+        frame.shadows.virtual_maps = true;
+        frame.shadows.max_distance = frame.shadows.max_distance.max(200.0);
+        // A pool of a thousand pages: what a 1080p view needs at every level.
+        frame.shadows.resolution = frame.shadows.resolution.max(4096);
+    }
     if let Some(ray_tracing) = scene.ray_tracing {
         frame.ray_tracing = ray_tracing;
     }

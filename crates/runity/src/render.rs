@@ -418,6 +418,11 @@ pub struct ShadowSettings {
     /// dark where things meet — a cup on a table, a foot on the ground —
     /// that a cascade's texel is too coarse to hold. 0 is none.
     pub contact: f32,
+    /// The sun's shadow from virtual shadow maps instead of the cascades
+    /// ([`crate::vsm`]): pages of 1.5 cm texels near, coarser far, each
+    /// drawn once and kept. `max_distance` still bounds it; `resolution`
+    /// is the pool's side.
+    pub virtual_maps: bool,
 }
 
 impl Default for ShadowSettings {
@@ -432,6 +437,7 @@ impl Default for ShadowSettings {
             cascade_splits: [0.067, 0.2, 0.467],
             light_resolution: 512,
             contact: 0.35,
+            virtual_maps: false,
         }
     }
 }
@@ -447,6 +453,7 @@ impl ShadowSettings {
         cascade_splits: [0.067, 0.2, 0.467],
         light_resolution: 1,
         contact: 0.0,
+        virtual_maps: false,
     };
 
     /// Where each cascade ends, in metres from the eye.
@@ -733,6 +740,9 @@ struct FrameUniform {
     bolt: [[f32; 4]; crate::weather::BOLT_POINTS],
     /// The irradiance volume ([`crate::ddgi`]): its grid, and its biases.
     ddgi: [[f32; 4]; 4],
+    /// Virtual shadow maps ([`crate::vsm`]): the light's frame, the levels'
+    /// windows.
+    vsm: [[f32; 4]; 8],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1093,6 +1103,8 @@ pub struct Renderer {
     clusters: crate::cluster::Clusters,
     /// Probes the rays keep lit ([`crate::ddgi`]).
     ddgi: crate::ddgi::Ddgi,
+    /// The sun's virtual shadow maps ([`crate::vsm`]).
+    vsm: crate::vsm::VirtualShadows,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -2431,6 +2443,17 @@ impl Renderer {
                 count: None,
             },
         ]);
+        // The virtual shadow maps' page table.
+        frame_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 26,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
         // The irradiance volume's probes' pictures.
         frame_entries.push(wgpu::BindGroupLayoutEntry {
             binding: 25,
@@ -2532,11 +2555,13 @@ impl Renderer {
         let clouds = crate::clouds::CloudRenderer::new(gpu);
         let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
         let mut ddgi = crate::ddgi::Ddgi::new(gpu, &layout);
+        let vsm_table = crate::vsm::table_buffer(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
                 ddgi: &ddgi.probes,
+                vsm_pages: &vsm_table,
                 terrain_heights: &terrain_heights,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
@@ -2803,6 +2828,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let vsm = crate::vsm::VirtualShadows::new(gpu, &shadow_layout, caster_stride, DEPTH_FORMAT, shadow_resolution, vsm_table);
         let mut clusters = crate::cluster::Clusters::new(gpu, &layout, &texture_layout);
         clusters.pipelines = clusters.make_pipelines(gpu, &shader, samples);
         (ddgi.trace, ddgi.update) = ddgi.make_pipelines(gpu, &shader, gpu.ray_tracing);
@@ -2812,6 +2838,7 @@ impl Renderer {
             pipelines,
             clusters,
             ddgi,
+            vsm,
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -2940,6 +2967,7 @@ impl Renderer {
             &self.layout,
             &FrameInputs {
                 ddgi: &self.ddgi.probes,
+                vsm_pages: &self.vsm.table,
                 terrain_heights: &self.terrain_heights,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
@@ -3747,6 +3775,12 @@ impl Renderer {
         self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
     }
 
+    /// The sun's virtual shadow maps' pages: how many are kept drawn, and
+    /// how many the last frame drew.
+    pub fn virtual_shadow_pages(&self) -> (usize, usize) {
+        self.vsm.stats()
+    }
+
     /// Cull dense meshes a cluster at a time, where the device can
     /// ([`crate::cluster`]): on by default.
     pub fn set_cluster_culling(&mut self, on: bool) {
@@ -4183,6 +4217,7 @@ impl Renderer {
         if frame.shadows.enabled && self.shadow_resolution != frame.shadows.resolution {
             self.shadow_resolution = frame.shadows.resolution.max(1);
             (self.shadow_map, self.shadow_layers) = shadow_view(gpu, self.shadow_resolution);
+            self.vsm.resize(self.shadow_resolution);
             self.rebind(gpu);
         }
 
@@ -4285,7 +4320,17 @@ impl Renderer {
             && frame.shadows.contact > 0.0
             && probe.is_none()
             && !traced_sun;
-        let cascades = if frame.shadows.enabled && !traced_sun {
+        // The screen's sun from virtual shadow maps, where asked: a probe's
+        // face and a picture keep the cascades, so the pages stay the
+        // screen's.
+        let virtual_on = frame.shadows.enabled
+            && frame.shadows.virtual_maps
+            && !traced_sun
+            && probe.is_none()
+            && view.is_some()
+            && !self.picturing
+            && sun.length_squared() > 0.5;
+        let cascades = if frame.shadows.enabled && !traced_sun && !virtual_on {
             self.cascades(frame, sun, aspect)
         } else {
             Vec::new()
@@ -4428,6 +4473,47 @@ impl Renderer {
                 .time
                 .unwrap_or_else(|| self.started.elapsed().as_secs_f32()),
         );
+        // The pages this frame needs, and those to draw.
+        let vsm_jobs = if virtual_on {
+            let mut casters = Vec::new();
+            for draw in &frame.draws {
+                if draw.material.is_transparent() {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get(draw.mesh.0 as usize) else { continue };
+                let (lo, hi) = world_box(mesh.bounds, draw.transform);
+                use std::hash::{Hash, Hasher};
+                let mut hash = std::collections::hash_map::DefaultHasher::new();
+                draw.mesh.0.hash(&mut hash);
+                for v in draw.transform.to_cols_array() {
+                    v.to_bits().hash(&mut hash);
+                }
+                draw.material.alpha_clip.to_bits().hash(&mut hash);
+                casters.push(crate::vsm::Caster {
+                    rect: self.vsm.rect_of(sun, lo, hi),
+                    key: hash.finish(),
+                });
+            }
+            let camera = &frame.camera;
+            // Texels half a screen pixel: the filter's nine taps then stay
+            // inside the pixel's own width.
+            let footprint = 0.5
+                * match camera.ortho {
+                    Some(half) => -(2.0 * half / height.max(1) as f32),
+                    None => 2.0 * (camera.fov_y_degrees.to_radians() * 0.5).tan() / height.max(1) as f32,
+                };
+            let plan_view = crate::vsm::View {
+                eye: camera.position,
+                inverse_view_projection: camera.view_projection(aspect).inverse(),
+                near: camera.near,
+                far: camera.far,
+                footprint,
+                max_distance: frame.shadows.max_distance,
+            };
+            self.vsm.plan(gpu, sun, &plan_view, casters, bytemuck::bytes_of(&foliage))
+        } else {
+            Vec::new()
+        };
         let casters: Vec<u8> = light_view_projection
             .iter()
             .chain(light_views.iter())
@@ -4664,6 +4750,7 @@ impl Renderer {
                 out
             },
             ddgi: if probe.is_none() { self.ddgi.uniform() } else { [[0.0; 4]; 4] },
+            vsm: if virtual_on { self.vsm.uniform } else { crate::vsm::OFF },
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -5164,6 +5251,88 @@ impl Renderer {
                 pass.set_pipeline(&self.pipelines.shadow_clip);
                 pass.set_bind_group(0, &self.shadow_bind_group, &offset);
                 self.draw_batches(&mut pass, &clip_batches, solid_casters, true);
+            }
+        }
+
+        // The virtual shadow maps' pages this frame draws, each into its
+        // tile of the pool, with the casters over it.
+        if !vsm_jobs.is_empty() {
+            let pool = &self.shadow_layers[MAX_CASCADES];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("runity::virtual shadows"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: pool,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: crate::gpu_timer::render("virtual shadows"),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // Each caster's rectangle across the light, in the instance
+            // buffer's order.
+            let rects: Vec<Vec<[f32; 4]>> = shadow_batches
+                .iter()
+                .chain(clip_batches.iter())
+                .map(|((_, handle, _), list)| {
+                    let bounds = self.mesh(*handle).map(|m| m.bounds);
+                    list.iter()
+                        .map(|raw| match bounds {
+                            Some(b) => {
+                                let (lo, hi) = world_box(b, Mat4::from_cols_array_2d(&raw.model));
+                                self.vsm.rect_of(sun, lo, hi)
+                            }
+                            None => [0.0; 4],
+                        })
+                        .collect()
+                })
+                .collect();
+            for (i, job) in vsm_jobs.iter().enumerate() {
+                let (x, y, side) = self.vsm.tile(job.physical);
+                pass.set_viewport(x, y, side, side, 0.0, 1.0);
+                pass.set_scissor_rect(x as u32, y as u32, side as u32, side as u32);
+                pass.set_pipeline(&self.vsm.clear);
+                pass.draw(0..3, 0..1);
+                let offset = [self.vsm.offset(i)];
+                let over = |r: &[f32; 4]| r[0] <= job.rect[1] && r[1] >= job.rect[0] && r[2] <= job.rect[3] && r[3] >= job.rect[2];
+                let mut first = 0u32;
+                for (b, ((_, handle, maps), list)) in shadow_batches.iter().chain(clip_batches.iter()).enumerate() {
+                    let count = list.len() as u32;
+                    let clipped = b >= shadow_batches.len();
+                    let Some(mesh) = self.mesh(*handle) else {
+                        first += count;
+                        continue;
+                    };
+                    let mut bound = false;
+                    let mut k = 0usize;
+                    while k < list.len() {
+                        if !over(&rects[b][k]) {
+                            k += 1;
+                            continue;
+                        }
+                        let start = k;
+                        while k < list.len() && over(&rects[b][k]) {
+                            k += 1;
+                        }
+                        if !bound {
+                            pass.set_pipeline(if clipped { &self.pipelines.shadow_clip } else { &self.pipelines.shadow });
+                            pass.set_bind_group(0, &self.vsm.page_group, &offset);
+                            if clipped {
+                                self.bind_maps(&mut pass, *maps);
+                            }
+                            pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                            pass.set_vertex_buffer(1, self.instances.slice(..));
+                            pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                            bound = true;
+                        }
+                        pass.draw_indexed(0..mesh.index_count, 0, first + start as u32..first + k as u32);
+                    }
+                    first += count;
+                }
             }
         }
 
@@ -5755,6 +5924,8 @@ struct FrameInputs<'a> {
     terrain_heights: &'a wgpu::TextureView,
     /// The irradiance volume's probes.
     ddgi: &'a wgpu::Buffer,
+    /// The virtual shadow maps' page table.
+    vsm_pages: &'a wgpu::Buffer,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -5818,6 +5989,7 @@ fn frame_bind_group(
         view(4, inputs.occlusion),
         buffer(6, inputs.lights),
         buffer(25, inputs.ddgi),
+        buffer(26, inputs.vsm_pages),
         buffer(7, inputs.cells),
         buffer(8, inputs.indices),
         view(9, inputs.light_shadow_map),
@@ -5884,7 +6056,8 @@ fn pose_bind_group(
 /// The cascades' maps: one texture of [`MAX_CASCADES`] layers, viewed whole
 /// to sample and a layer at a time to draw into.
 fn shadow_view(gpu: &Gpu, resolution: u32) -> (wgpu::TextureView, Vec<wgpu::TextureView>) {
-    shadow_layers_view(gpu, resolution, MAX_CASCADES as u32)
+    // And one more: the virtual shadow maps' pool of pages.
+    shadow_layers_view(gpu, resolution, MAX_CASCADES as u32 + 1)
 }
 
 /// `layers` depth maps in one array: viewed whole, and each on its own.

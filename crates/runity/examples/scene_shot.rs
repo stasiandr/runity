@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut timed = 0u32;
     let mut at: Option<f32> = None;
     let mut upscale: Option<f32> = None;
+    let mut virtual_shadows = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -30,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--time" => timed = args.next().and_then(|n| n.parse().ok()).unwrap_or(30),
             "--at" => at = args.next().and_then(|n| n.parse().ok()),
             "--upscale" => upscale = args.next().and_then(|n| n.parse().ok()),
+            "--virtual-shadows" => virtual_shadows = true,
             "--size" => {
                 if let Some(size) = args.next() {
                     let (w, h) = size.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
@@ -39,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "-h" | "--help" => {
                 println!(
-                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N] [--at SECONDS] [--upscale SCALE]\n\n\
+                    "scene_shot <scene.ron> [-o out.png] [--size WxH] [--library DIR] [--time N] [--at SECONDS] [--upscale SCALE] [--virtual-shadows]\n\n\
                      Prefabs and the library come from the project the scene is in;\n\
                      --library overrides the library."
                 );
@@ -160,6 +162,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut frame = runity::build_frame(&world, camera, lighting, fog);
     runity::world::scene_look(&mut frame, &scene);
+    if virtual_shadows {
+        frame.shadows.virtual_maps = true;
+        frame.shadows.max_distance = frame.shadows.max_distance.max(200.0);
+        // A pool of a thousand pages: what a 1080p view needs at every level.
+        frame.shadows.resolution = frame.shadows.resolution.max(4096);
+    }
     if let Some(scale) = upscale {
         frame.post.upscaling.enabled = true;
         frame.post.upscaling.scale = scale;
@@ -174,7 +182,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // a second's worth: its probes settle over it.
     let warm = if !frame.irradiance_volumes.is_empty() {
         90
-    } else if upscale.is_some() {
+    } else if upscale.is_some() || frame.shadows.virtual_maps {
+        // Virtual shadow maps draw their pages over a few frames, coarsest
+        // first.
         16
     } else {
         2

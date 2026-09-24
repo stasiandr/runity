@@ -102,6 +102,7 @@ pub mod taa;
 pub mod upscale;
 pub mod cluster;
 pub mod ddgi;
+pub mod vsm;
 pub mod terrain;
 pub mod time;
 pub mod timers;

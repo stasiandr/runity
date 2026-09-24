@@ -116,6 +116,11 @@ struct Frame {
     // probes along each axis and 1 when on; the biases along the normal
     // and toward the eye, and the farthest a distance counts.
     ddgi: array<vec4<f32>, 4>,
+    // Virtual shadow maps (vsm.rs): the light's across and the pool's
+    // pages across; its up and where depth starts; along it and how deep;
+    // on, levels, a pixel's metres a metre (negative: anywhere), how far;
+    // then each level's window, two levels a vec4.
+    vsm: array<vec4<f32>, 8>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -723,7 +728,94 @@ fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) ->
 /// From the first cascade whose sphere holds the point — the finest one
 /// that covers it — and fading out over the last tenth of the last one, so
 /// the shadow distance is not a line on the ground.
+// Virtual shadow maps (vsm.rs): each level's window of pages, the pool's
+// tile a drawn page is in, plus one; 0 for none.
+@group(0) @binding(26) var<storage, read> vsm_pages: array<u32>;
+
+const VSM_PAGE: f32 = 128.0;
+const VSM_FINEST: f32 = 0.015;
+const VSM_WINDOW: i32 = 32;
+/// The pool is the layer of the shadow map past the cascades.
+const VSM_LAYER: i32 = 4;
+
+struct VsmTexel {
+    uv: vec2<f32>,
+    // the tile's texels, less half a texel all round: where taps may go
+    low: vec2<f32>,
+    high: vec2<f32>,
+    depth: f32,
+    texel: f32,
+    found: bool,
+};
+
+/// Where `p` (turned `normal`) is in the virtual shadow map: the finest
+/// drawn page for its distance, or a coarser one while that is not drawn.
+fn vsm_find(p: vec3<f32>, normal: vec3<f32>, push: f32) -> VsmTexel {
+    var out: VsmTexel;
+    out.found = false;
+    let distance_to = distance(p, frame.camera_position.xyz);
+    if distance_to > frame.vsm[3].w {
+        return out;
+    }
+    let footprint = frame.vsm[3].z;
+    let pixel = select(distance_to * footprint, -footprint, footprint < 0.0);
+    let levels = u32(frame.vsm[3].y);
+    let pool = frame.vsm[0].w;
+    var level = u32(clamp(ceil(log2(max(pixel, 1e-9) / VSM_FINEST)), 0.0, f32(levels) - 1.0));
+    for (; level < levels; level = level + 1u) {
+        let texel = VSM_FINEST * f32(1u << level);
+        let size = texel * VSM_PAGE;
+        let q = p + normal * texel * push;
+        let u = dot(q, frame.vsm[0].xyz) / size;
+        let v = dot(q, frame.vsm[1].xyz) / size;
+        let page = vec2<i32>(i32(floor(u)), i32(floor(v)));
+        let windows = frame.vsm[4u + level / 2u];
+        let window = select(windows.xy, windows.zw, (level & 1u) == 1u);
+        let slot = page - vec2<i32>(window);
+        if any(slot < vec2<i32>(0)) || any(slot >= vec2<i32>(VSM_WINDOW)) {
+            continue;
+        }
+        let entry = vsm_pages[level * u32(VSM_WINDOW * VSM_WINDOW) + u32(slot.y * VSM_WINDOW + slot.x)];
+        if entry == 0u {
+            continue;
+        }
+        let tile = vec2<f32>(f32((entry - 1u) % u32(pool)), f32((entry - 1u) / u32(pool)));
+        let local = vec2<f32>(u - f32(page.x), f32(page.y + 1) - v);
+        let side = pool * VSM_PAGE;
+        out.uv = (tile + local) / pool;
+        out.low = (tile * VSM_PAGE + 0.5) / side;
+        out.high = ((tile + 1.0) * VSM_PAGE - 0.5) / side;
+        out.depth = (dot(q, frame.vsm[2].xyz) - frame.vsm[1].w) / frame.vsm[2].w;
+        out.texel = 1.0 / side;
+        out.found = true;
+        return out;
+    }
+    return out;
+}
+
+/// The sun through the virtual shadow map: nine taps inside the page.
+fn vsm_sunlight(p: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let at = vsm_find(p, normal, 1.5);
+    if !at.found || at.depth > 1.0 || at.depth < 0.0 {
+        return 1.0;
+    }
+    // A centimetre, in the pages' depth.
+    let reference = at.depth - 0.01 / frame.vsm[2].w;
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let tap = clamp(at.uv + vec2<f32>(f32(x), f32(y)) * at.texel, at.low, at.high);
+            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, VSM_LAYER, reference);
+        }
+    }
+    let fade = clamp((frame.vsm[3].w - distance(p, frame.camera_position.xyz)) / (frame.vsm[3].w * 0.1), 0.0, 1.0);
+    return mix(1.0, sum / 9.0, fade);
+}
+
 fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if frame.vsm[3].x > 0.5 {
+        return vsm_sunlight(world_position, normal);
+    }
     let count = u32(frame.shadow_params.w + 0.5);
     if count == 0u {
         return 1.0;
@@ -781,6 +873,15 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
 /// map, how far past the first surface toward the sun the point lies — the
 /// thickness of what it is under. −1 when there is no map there.
 fn sun_thickness(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if frame.vsm[3].x > 0.5 {
+        let at = vsm_find(world_position, normal, -1.5);
+        if !at.found || at.depth > 1.0 {
+            return -1.0;
+        }
+        let size = vec2<f32>(textureDimensions(shadow_map));
+        let first = textureLoad(shadow_map, vec2<i32>(at.uv * size), VSM_LAYER, 0);
+        return max(at.depth - first, 0.0) * frame.vsm[2].w;
+    }
     let count = u32(frame.shadow_params.w + 0.5);
     if count == 0u {
         return -1.0;

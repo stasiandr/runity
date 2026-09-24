@@ -231,6 +231,7 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
         post: scene.post,
         ambient_occlusion: scene.ambient_occlusion,
         ray_tracing: scene.ray_tracing,
+        virtual_shadows: scene.virtual_shadows,
         volumetric_fog: scene.volumetric_fog,
         wind: scene.wind,
         weather: scene.weather,
