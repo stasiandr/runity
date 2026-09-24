@@ -29,6 +29,7 @@ pub fn dressers<'a>(
     #[cfg(feature = "soft")]
     {
         out.push(Box::new(crate::soft::RopeDress));
+        out.push(Box::new(crate::soft::ClothDress));
         out.push(Box::new(crate::soft::SoftLookDress { link, palette }));
     }
     #[cfg(feature = "audio")]

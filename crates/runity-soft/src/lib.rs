@@ -1,24 +1,36 @@
 //! Soft things (docs/simulation.md): particles held by constraints and
 //! solved by XPBD in small substeps — one solver for everything that bends,
 //! stretches, twists and hangs. So far: ropes, cables and chains as
-//! Cosserat rods ([`rope`]), lying on simple [`obstacle`]s.
+//! Cosserat rods ([`rope`]) and cloth ([`cloth`]), lying on simple
+//! [`obstacle`]s.
 //!
 //! Headless: it hands out points, a tube's triangles and where a chain's
 //! links are; drawing them is the render's, and the facade hands them over.
 //! Colliders reach it the same way, as [`obstacle::Obstacle`]s: the module
 //! does not know the physics.
 
+pub mod cloth;
 pub mod obstacle;
 pub mod particles;
 pub mod rod;
 pub mod rope;
 
+pub use cloth::{run_cloth, Cloth, ClothDress, ClothLine, ClothState, Pinned};
 pub use obstacle::{Obstacle, Obstacles};
-pub use rope::{run_ropes, set_wind, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
+pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
 
 /// This module's fields of a line, with how to check each one's text.
 pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
-    rope::part_kinds()
+    let mut kinds = rope::part_kinds();
+    kinds.extend(cloth::part_kinds());
+    kinds
+}
+
+/// Every soft thing swung by this wind: the scene's, as it is spawned or
+/// changes.
+pub fn set_wind(world: &mut hecs::World, wind: runity_core::wind::Wind) {
+    rope::set_wind(world, wind);
+    cloth::set_wind(world, wind);
 }
 
 /// This module's manifest (`module.ron`): its name, what it stands on,

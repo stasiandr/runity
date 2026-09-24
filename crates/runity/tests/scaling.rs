@@ -207,3 +207,27 @@ fn a_rope_step_grows_linearly() {
         best(1, || runity::soft::step(&mut world, 1.0 / 60.0))
     });
 }
+
+#[test]
+fn a_cloth_step_grows_linearly() {
+    // A flag of 8×8 on every tenth crate, lying against the crates about
+    // it as the wind takes it.
+    curve("cloth step", |scene| {
+        let mut scene = scene.clone();
+        for line in scene.entities.iter_mut().skip(1).step_by(10) {
+            line.set_part(&runity::soft::Cloth {
+                size: [1.0, 1.0],
+                cells: [8, 8],
+                pinned: runity::soft::Pinned::Left,
+                ..Default::default()
+            });
+        }
+        let mut world = hecs::World::new();
+        runity::spawn_scene(&scene, &mut world, |_| Some(MeshHandle::TEST));
+        runity::world::apply_hierarchy(&mut world);
+        for _ in 0..5 {
+            runity::soft::step(&mut world, 1.0 / 60.0);
+        }
+        best(1, || runity::soft::step(&mut world, 1.0 / 60.0))
+    });
+}

@@ -398,7 +398,7 @@ impl RopeState {
             for j in 0..around as u32 {
                 let a = ring * stride + j;
                 let (b, c, d) = (a + 1, a + stride, a + stride + 1);
-                indices.extend_from_slice(&[a, c, b, b, c, d]);
+                indices.extend_from_slice(&[a, b, c, b, d, c]);
             }
         }
         (vertices, indices)
@@ -670,6 +670,14 @@ mod tests {
         assert_eq!(vertices.len(), (24 * 3 + 1) * 7);
         assert!(indices.iter().all(|&i| (i as usize) < vertices.len()));
         assert!(vertices.iter().all(|v| v.position.iter().all(|c| c.is_finite())));
+        // Wound outward, as its normals face: seen from outside, not
+        // through.
+        for t in indices.chunks_exact(3) {
+            let at = |i: u32| Vec3::from_array(vertices[i as usize].position);
+            let wound = (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0]));
+            let normal = Vec3::from_array(vertices[t[0] as usize].normal);
+            assert!(wound.dot(normal) > 0.0, "a face wound inward");
+        }
     }
 
     #[test]

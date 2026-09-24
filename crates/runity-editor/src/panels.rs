@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 23] = [
+pub const FIELDS: [&str; 24] = [
     "name",
     "model",
     "prefab",
@@ -105,6 +105,7 @@ pub const FIELDS: [&str; 23] = [
     "bends_grass",
     "route",
     "rope",
+    "cloth",
     "components.<name>",
 ];
 
@@ -339,6 +340,10 @@ impl Session {
             (
                 "rope".into(),
                 desc.rope().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "cloth".into(),
+                desc.cloth().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -719,6 +724,14 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Rope>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "cloth" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Cloth>(field, text)?)
                 })
                 .as_ref(),
             ),

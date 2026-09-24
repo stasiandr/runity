@@ -376,7 +376,7 @@ pub mod scene {
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{Rope, RopeKind};
+    pub use crate::soft::{Cloth, Rope, RopeKind};
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -418,7 +418,7 @@ pub mod prelude {
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
     #[cfg(feature = "soft")]
-    pub use crate::soft::RopeLine;
+    pub use crate::soft::{ClothLine, RopeLine};
 }
 pub use runity_overlay::screen;
 pub use runity_core::shape;

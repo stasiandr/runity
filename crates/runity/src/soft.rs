@@ -1,8 +1,9 @@
-//! Soft things — the `soft` module's ropes, cables and chains — where they
-//! meet the modules they do not know: the physics' colliders become what
-//! they lie on ([`obstacles`]), and the render draws them — a tube as a
-//! live mesh, a chain as copies of `builtin:link` ([`show`]) — in the
-//! entity's material ([`SoftLookDress`]).
+//! Soft things — the `soft` module's ropes, cables, chains and cloth —
+//! where they meet the modules they do not know: the physics' colliders
+//! become what they lie on ([`obstacles`]), and the render draws them — a
+//! rope's tube and a cloth as live meshes, a chain as copies of
+//! `builtin:link` ([`show`]) — in the entity's material
+//! ([`SoftLookDress`]).
 
 pub use runity_soft::*;
 
@@ -54,11 +55,18 @@ pub fn obstacles(world: &World) -> Vec<Obstacle> {
 /// Every soft thing on by `seconds`, lying on the physics' colliders: the
 /// module's fixed-step system.
 pub fn step(world: &mut World, seconds: f32) {
-    if world.query::<&RopeState>().iter().next().is_none() {
+    let ropes = world.query::<&RopeState>().iter().next().is_some();
+    let cloth = world.query::<&ClothState>().iter().next().is_some();
+    if !ropes && !cloth {
         return;
     }
     let obstacles = Obstacles::new(obstacles(world));
-    run_ropes(world, seconds, &obstacles);
+    if ropes {
+        run_ropes(world, seconds, &obstacles);
+    }
+    if cloth {
+        run_cloth(world, seconds, &obstacles);
+    }
 }
 
 /// Where each soft thing is, into what the render draws: a rope's tube
@@ -77,14 +85,19 @@ pub fn show(world: &mut World, _seconds: f32) {
             live.set(vertices, indices);
         }
     }
+    for (state, placed, live) in world.query_mut::<(&ClothState, &WorldTransform, &mut LiveMesh)>() {
+        let (vertices, indices) = state.mesh(placed.0);
+        live.set(vertices, indices);
+    }
 }
 
 /// Sides round a rope's tube, and rings along each link of it.
 const TUBE_SIDES: usize = 8;
 const TUBE_RINGS: usize = 3;
 
-/// What an entity shows its rope with: put on by [`SoftLookDress`], so
-/// that taking the rope off takes off only what it put on.
+/// What an entity shows its rope or cloth with: put on by
+/// [`SoftLookDress`], so that taking them off takes off only what it put
+/// on.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RopeLook;
 
@@ -101,19 +114,20 @@ pub struct SoftLookDress<'a> {
 
 impl Dress for SoftLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["rope", "model", "material"]
+        &["rope", "cloth", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         use crate::prelude::*;
-        let Some(rope) = line.rope() else {
+        let (rope, cloth) = (line.rope(), line.cloth());
+        if rope.is_none() && cloth.is_none() {
             if world.remove_one::<RopeLook>(entity).is_ok() {
                 let _ = world.remove::<(LiveMesh, Copies)>(entity);
             }
             return;
-        };
+        }
         let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
-        if rope.kind == RopeKind::Chain {
+        if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() {
             let _ = world.remove_one::<LiveMesh>(entity);
             // The line's model is its link, drawn at each link and not
             // once at the entity.
@@ -151,6 +165,7 @@ mod tests {
                  model: "builtin:cube", body: Static, collider: Box(half: (0.5, 0.5, 0.5))),
                 (name: "chain", transform: (position: (3.0, 3.0, 0.0)),
                  rope: (to: (0.0, -1.0, 0.0), ends: Start, kind: Chain, segments: 8)),
+                (name: "flag", transform: (position: (-3.0, 3.0, 0.0)), cloth: (pinned: Left)),
             ])"#,
         )
         .unwrap();
@@ -177,11 +192,13 @@ mod tests {
         let bark = crate::material::builtin::by_name("bark").unwrap();
         assert_eq!(world.get::<&Surface>(line).unwrap().0, bark);
         let links = world.query::<&Copies>().iter().map(|c| (c.mesh, c.placed.len())).next();
+        let flag = world.query::<(hecs::Entity, &ClothState)>().iter().next().map(|(e, _)| e).unwrap();
+        assert!(!world.get::<&LiveMesh>(flag).unwrap().vertices().is_empty());
         assert_eq!(links, Some((MeshHandle::TEST, 8)));
         // The frame draws the crate, and the chain's links as eight copies
         // of the link — not the link once at the chain's entity.
         let frame = crate::world::build_frame(&world, Default::default(), Default::default(), Default::default());
         assert_eq!(frame.draws.len(), 1 + 8);
-        assert_eq!(frame.live_meshes.len(), 1);
+        assert_eq!(frame.live_meshes.len(), 2);
     }
 }

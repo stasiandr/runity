@@ -32,7 +32,7 @@ use crate::theme::*;
 const OBJECT: [&str; 5] = ["model", "material", "prefab", "animator", "bends_grass"];
 const TRANSFORM: [&str; 3] = ["position", "rotation", "scale"];
 const PHYSICS: [&str; 5] = ["body", "collider", "physics", "joint", "joint_break"];
-const PARTS: [&str; 14] = [
+const PARTS: [&str; 15] = [
     "camera",
     "light",
     "particles",
@@ -45,6 +45,7 @@ const PARTS: [&str; 14] = [
     "terrain",
     "route",
     "rope",
+    "cloth",
     "spline",
     "along",
 ];
@@ -73,6 +74,7 @@ fn added_value(field: &str) -> Option<&'static str> {
         "post_volume" => "(size: (10.0, 10.0, 10.0))",
         "route" => "(points: [(0.0, 0.0, 0.0), (0.0, 2.0, 0.0)])",
         "rope" => "(to: (4.0, 0.0, 0.0))",
+        "cloth" => "(size: (2.0, 2.0))",
         "render_texture" => "(name: \"picture\")",
         "sound" => "(clip: \"\")",
         _ => return None,
@@ -81,7 +83,7 @@ fn added_value(field: &str) -> Option<&'static str> {
 
 /// The parts a line can have besides the game's components, as the Add
 /// Component list names them.
-const ADDABLE: [(&str, &str); 16] = [
+const ADDABLE: [(&str, &str); 17] = [
     ("model", "Model"),
     ("collider", "Collider"),
     ("body", "Body"),
@@ -97,11 +99,12 @@ const ADDABLE: [(&str, &str); 16] = [
     ("decal", "Decal"),
     ("route", "Route"),
     ("rope", "Rope"),
+    ("cloth", "Cloth"),
     ("post_volume", "Post Volume"),
 ];
 
 /// Fields a line can be without: what the trash on a field takes off.
-const REMOVABLE: [&str; 20] = [
+const REMOVABLE: [&str; 21] = [
     "model",
     "footprints",
     "terrain",
@@ -116,6 +119,7 @@ const REMOVABLE: [&str; 20] = [
     "reflection_probe",
     "route",
     "rope",
+    "cloth",
     "joint",
     "joint_break",
     "collider",

@@ -21,7 +21,7 @@ NEXT_STEPS.
 | `runity-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
 | `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
 | `runity-navigation` | сетка проходимости и A* | physics |
-| `runity-soft` | `rope`: верёвки, кабели, цепи на XPBD (docs/simulation.md) | ядро, geometry |
+| `runity-soft` | `rope`, `cloth`: верёвки, кабели, цепи и ткань на XPBD (docs/simulation.md) | ядро, geometry |
 | `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
 | `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
 | `runity-gpu` | устройство, поверхность, offscreen | — |
@@ -40,8 +40,8 @@ NEXT_STEPS.
 всех модулей сборки, `motion::run` (дорожки громкости и частиц клипа),
 `gizmo::collider_draws` (контур коллайдера из физики, нарисованный
 гизмо рендера), `save::capture` (состояние аниматоров), `soft`
-(коллайдеры физики — препятствия верёвок, верёвка — живой меш или копии
-звена рендера).
+(коллайдеры физики — препятствия верёвок и ткани; верёвка и ткань —
+живой меш или копии звена рендера).
 
 Виды ассетов — модулей: `AssetKind` в ядре — только байт заголовка и имя,
 а `MESH` и `TEXTURE` объявляет geometry, `SOUND` — звук, `MATERIAL` —
