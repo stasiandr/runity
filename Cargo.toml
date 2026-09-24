@@ -14,6 +14,8 @@ members = [
     "crates/runity",
     "crates/runity-core",
     "crates/runity-geometry",
+    "crates/runity-gpu",
+    "crates/runity-overlay",
     "crates/runity-physics",
     "crates/runity-cli",
     "crates/runity-editor",

@@ -3592,6 +3592,22 @@ impl Renderer {
         self.render_view(gpu, Some(view), width, height, &frame, None);
     }
 
+    /// Draw a frame's world screens into their pictures with the UI
+    /// module's renderer: call before the frame is rendered, so the things
+    /// showing them show this frame's.
+    pub fn draw_ui_pictures(
+        &mut self,
+        gpu: &Gpu,
+        ui: &mut crate::ui_render::UiRenderer,
+        frame: &Frame,
+    ) {
+        for picture in &frame.ui_pictures {
+            let view = self.picture_target(gpu, picture.id, picture.size);
+            self.clear_picture(gpu, &view, picture.background);
+            ui.render_into(gpu, &view, picture.size.0, picture.size.1, &picture.ui);
+        }
+    }
+
     /// The texture a picture of `id` is drawn into, `size` pixels, made
     /// (or made again at a new size) and registered for materials to show.
     pub fn picture_target(

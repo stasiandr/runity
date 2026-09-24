@@ -31,12 +31,12 @@ pub struct Gpu {
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     /// Whether the device traces rays in hardware — an experiment
-    /// ([`crate::render::RayTracing`]), on where the adapter can and
+    /// (the render module's `RayTracing`), on where the adapter can and
     /// `RUNITY_NO_RAY_TRACING` is not set.
     pub ray_tracing: bool,
     /// Whether the device runs mesh shaders — task and mesh stages in place
     /// of the vertex one — an experiment the terrain can be drawn with
-    /// ([`crate::terrain`]): on where the adapter has them and
+    /// (the render module's terrain): on where the adapter has them and
     /// `RUNITY_MESH_SHADERS` is set. Off by default: measured on an M5
     /// through wgpu 30, the terrain by mesh shaders costs a frame more
     /// than by the vertex shader.
@@ -179,9 +179,9 @@ impl Gpu {
 pub struct OffscreenTarget {
     pub width: u32,
     pub height: u32,
-    pub(crate) format: wgpu::TextureFormat,
-    pub(crate) texture: wgpu::Texture,
-    pub(crate) view: wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
     /// Readback needs rows padded to `COPY_BYTES_PER_ROW_ALIGNMENT`; this is
     /// the padded stride, which is usually larger than `width * 4`.
     padded_bytes_per_row: u32,

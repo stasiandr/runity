@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 runity-core = { path = "../runity-core" }
 runity-geometry = { path = "../runity-geometry" }
+runity-gpu = { path = "../runity-gpu" }
+runity-overlay = { path = "../runity-overlay" }
 runity-physics = { path = "../runity-physics", default-features = false }
 anyhow = "1.0.104"
 bytemuck = { version = "1.25.2", features = ["derive"] }
@@ -65,7 +67,7 @@ discord = ["dep:discord-rich-presence"]
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
 # architecture.
-desktop-shell = ["dep:winit", "dep:gilrs"]
+desktop-shell = ["dep:winit", "dep:gilrs", "runity-gpu/winit"]
 
 [dev-dependencies]
 hecs = "0.11.0"

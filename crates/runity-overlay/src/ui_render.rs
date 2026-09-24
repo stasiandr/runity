@@ -199,21 +199,6 @@ impl UiRenderer {
         }
     }
 
-    /// Draw a frame's world screens into their pictures: call before the
-    /// frame is rendered, so the things showing them show this frame's.
-    pub fn draw_pictures(
-        &mut self,
-        gpu: &Gpu,
-        renderer: &mut crate::render::Renderer,
-        frame: &crate::render::Frame,
-    ) {
-        for picture in &frame.ui_pictures {
-            let view = renderer.picture_target(gpu, picture.id, picture.size);
-            renderer.clear_picture(gpu, &view, picture.background);
-            self.render_into(gpu, &view, picture.size.0, picture.size.1, &picture.ui);
-        }
-    }
-
     /// Draw the list over an offscreen target's existing contents.
     pub fn render(&mut self, gpu: &Gpu, target: &crate::gpu::OffscreenTarget, ui: &Ui) {
         self.render_into(gpu, &target.view, target.width, target.height, ui);
@@ -232,7 +217,7 @@ impl UiRenderer {
     ///
     /// Loads rather than clears: this runs after the scene, and clearing
     /// would throw the frame away.
-    pub(crate) fn render_into(
+    pub fn render_into(
         &mut self,
         gpu: &Gpu,
         view: &wgpu::TextureView,

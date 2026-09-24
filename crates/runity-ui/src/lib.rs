@@ -29,7 +29,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Weight};
-use runity::input::{InputEvent, Key, MouseButton};
+use runity_core::input::{InputEvent, Key, MouseButton};
 use taffy::{AvailableSpace, TaffyTree};
 
 pub use field::Clipboard;

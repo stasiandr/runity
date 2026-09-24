@@ -57,7 +57,7 @@ pub mod floaters;
 pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
-pub mod gpu;
+pub use runity_gpu::gpu;
 pub mod graph_text;
 pub use runity_core::id;
 pub use runity_core::input;
@@ -170,7 +170,7 @@ pub mod prelude {
     pub use crate::sound::SoundLine;
     pub use crate::spline::SplineLine;
 }
-pub mod screen;
+pub use runity_overlay::screen;
 pub use runity_core::shape;
 #[cfg(feature = "desktop-shell")]
 pub mod shell;
@@ -179,18 +179,18 @@ pub mod ssao;
 #[cfg(feature = "steam")]
 pub mod steam;
 pub use runity_core::strings;
-pub mod surface;
+pub use runity_gpu::surface;
 pub mod taa;
 pub mod terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
 pub mod tour;
 pub use runity_core::tuned;
-pub mod ui;
-pub mod ui_render;
+pub use runity_overlay::ui;
+pub use runity_overlay::ui_render;
 pub mod volume;
 pub mod weather;
-pub mod widgets;
+pub use runity_overlay::widgets;
 /// The world as the core has it: hierarchy, identity, spawning.
 pub use runity_core::world as world_core;
 pub mod world_look;

@@ -2536,6 +2536,8 @@ dependencies = [
  "ron",
  "runity-core",
  "runity-geometry",
+ "runity-gpu",
+ "runity-overlay",
  "runity-physics",
  "serde",
  "steamworks",
@@ -2567,6 +2569,31 @@ dependencies = [
  "rkyv",
  "runity-core",
  "serde",
+]
+
+[[package]]
+name = "runity-gpu"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "runity-overlay"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "glyphon",
+ "ron",
+ "runity-core",
+ "runity-gpu",
+ "serde",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]

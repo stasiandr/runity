@@ -3048,6 +3048,8 @@ dependencies = [
  "ron",
  "runity-core",
  "runity-geometry",
+ "runity-gpu",
+ "runity-overlay",
  "runity-physics",
  "serde",
  "serde_json",
@@ -3108,6 +3110,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-gpu"
+version = "0.1.0"
+dependencies = [
+ "pollster 1.0.1",
+ "tracing",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "runity-import"
 version = "0.1.0"
 dependencies = [
@@ -3136,6 +3148,21 @@ dependencies = [
  "runity-editor",
  "runity-import",
  "serde_json",
+]
+
+[[package]]
+name = "runity-overlay"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "glam 0.32.1",
+ "glyphon",
+ "ron",
+ "runity-core",
+ "runity-gpu",
+ "serde",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -3178,7 +3205,8 @@ dependencies = [
  "image",
  "pollster 1.0.1",
  "resvg",
- "runity",
+ "runity-core",
+ "runity-gpu",
  "taffy",
  "wgpu",
 ]

@@ -654,7 +654,7 @@ impl Peer {
             dof.focal_length = focal_length;
             dof.aperture = aperture;
         }
-        r.overlay.draw_pictures(&r.gpu, &mut r.renderer, &frame);
+        r.renderer.draw_ui_pictures(&r.gpu, &mut r.overlay, &frame);
         r.renderer.render(&r.gpu, &r.target, &frame);
         let mut ui = runity::ui::Ui::new();
         let mut widgets = runity::widgets::Widgets::with_style(crate::front::style());

@@ -42,7 +42,7 @@ impl Surface {
     // Used by every constructor; on a build with no shell feature there is
     // not yet one, and the native entry points land here too.
     #[allow(dead_code)]
-    pub(crate) fn configure(
+    pub fn configure(
         gpu: &Gpu,
         inner: wgpu::Surface<'static>,
         width: u32,
@@ -109,7 +109,7 @@ impl Surface {
         self.config.format
     }
 
-    pub(crate) fn acquire(&self) -> Result<wgpu::SurfaceTexture, SurfaceError> {
+    pub fn acquire(&self) -> Result<wgpu::SurfaceTexture, SurfaceError> {
         use wgpu::CurrentSurfaceTexture as Acquired;
         match self.inner.get_current_texture() {
             Acquired::Success(texture) => Ok(texture),
@@ -158,8 +158,8 @@ impl Surface {
 
 /// A frame in progress: acquired, drawn into, not yet shown.
 pub struct AcquiredFrame {
-    pub(crate) texture: wgpu::SurfaceTexture,
-    pub(crate) view: wgpu::TextureView,
+    pub texture: wgpu::SurfaceTexture,
+    pub view: wgpu::TextureView,
     pub width: u32,
     pub height: u32,
 }
@@ -222,7 +222,7 @@ impl Surface {
     }
 }
 
-#[cfg(feature = "desktop-shell")]
+#[cfg(feature = "winit")]
 impl Surface {
     /// Take a winit window's surface.
     ///

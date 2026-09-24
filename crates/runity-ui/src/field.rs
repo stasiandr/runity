@@ -6,7 +6,7 @@
 //! [`Event::Cancel`] — a panel never sees Backspace. Positions are byte
 //! offsets into the text, always on a character boundary.
 
-use runity::input::Key;
+use runity_core::input::Key;
 
 use crate::{Color, Event, NodeId, Rect, RectPaint, Ui};
 
