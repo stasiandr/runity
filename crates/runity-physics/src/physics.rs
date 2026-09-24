@@ -2271,7 +2271,7 @@ mod tests {
         attach_scene_collision_meshes(&mut world, &scene, None);
         let mut physics = PhysicsWorld::new(1.0 / 50.0);
         physics.run(&mut world);
-        assert!(!physics.overlap_sphere(Vec3::ZERO, 0.1).is_empty(), "solid by the sphere, with nothing drawn");
+        assert!(!physics.overlap_sphere(Vec3::new(0.0, 0.5, 0.0), 0.1).is_empty(), "solid by the sphere, with nothing drawn");
     }
 
     /// A kinematic body under a parent that moves goes with it: a tool's

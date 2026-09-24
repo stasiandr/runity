@@ -1,5 +1,5 @@
 //! How a line of a scene is solid: the physics module's fields — `body`,
-//! `collider`, `physics`, `joint`, `joint_break`, `layer` — as types, and
+//! `collider`, `physics`, `joint`, `joint_break`, `collision_model`, `layer` — as types, and
 //! the reading of them off a line ([`PhysicsLine`]). See docs/modules.md.
 
 use glam::Vec3;
