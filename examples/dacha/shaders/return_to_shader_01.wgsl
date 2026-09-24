@@ -4,6 +4,7 @@
 // _Lines_Int and _Speed_Lines_Roll come from the material (the M_Return.mat
 // in Art/Materials has _ALL_INT 0 and draws nothing).
 // runity:params _ALL_INT _Lines_Int _Speed_Lines_Roll
+// runity:textures _Mask
 //
 // A "rewind" overlay: the scene behind, read with a noise-jittered screen
 // position and made grey, darkened towards the edges, with faint posterized
@@ -11,9 +12,9 @@
 // (T_SexyMouse2, a mouse-head silhouette).
 //
 // This port: the scene colour cannot be read, so a flat grey stands in for
-// it and the jitter is dropped; the mask texture is a rough procedural
-// mouse head (a disc and two ears). The .mat says _Surface: 0, so unless
-// the material is made transparent the alpha has no effect.
+// it and the jitter is dropped. The mask's red channel is read from the
+// material's _Mask (white where it has none, as in Art/Materials'
+// M_Return).
 
 const RETURN_TO_SCENE_GREY: f32 = 0.5;
 const RETURN_TO_POSTERIZE: vec3<f32> = vec3<f32>(5.95, 36.42, 4.0);
@@ -55,15 +56,6 @@ fn return_to_contrast(x: f32, c: f32) -> f32 {
     return (x - mid) * c + mid;
 }
 
-// Stand-in for T_SexyMouse2, in image coordinates (top row first).
-fn return_to_mask(uv: vec2<f32>) -> f32 {
-    let head = length((uv - vec2<f32>(0.5, 0.6)) / vec2<f32>(0.3, 0.22));
-    let left = length(uv - vec2<f32>(0.36, 0.33)) / 0.1;
-    let right = length(uv - vec2<f32>(0.7, 0.33)) / 0.12;
-    let d = min(head, min(left, right));
-    return 1.0 - smoothstep(0.9, 1.0, d);
-}
-
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
     // Unity's v runs up the texture; runity's runs down.
@@ -79,6 +71,6 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     o.metallic = 0.0;
     o.smoothness = 0.0;
     o.emission = mix(back, lines, in.params[0].y);
-    o.alpha = clamp(in.params[0].x * return_to_mask(in.uv), 0.0, 1.0);
+    o.alpha = clamp(in.params[0].x * texture_at(in, 0u, in.uv).r, 0.0, 1.0);
     return o;
 }

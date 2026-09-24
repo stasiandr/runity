@@ -1,7 +1,8 @@
 // From Assets/Thirdparty/VFX_Klaus/Shaders/Explosion_lab_SG.shadergraph (URP Unlit).
 // The VFX demo room's backdrop: an unlit two-colour gradient by height,
 // Down colour below, Up colour above, blended over a short band.
-// Port: uses world y where the graph used object-space y. Unlit is
+// Port: uses world y where the graph used object-space z (the room
+// mesh's up, as modelled Z-up). Unlit is
 // imitated by black albedo and the colour as emission (fog still applies).
 // Values from VFX_lab.mat.
 

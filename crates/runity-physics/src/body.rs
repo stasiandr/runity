@@ -1,5 +1,5 @@
 //! How a line of a scene is solid: the physics module's fields — `body`,
-//! `collider`, `physics`, `joint`, `joint_break`, `layer` — as types, and
+//! `collider`, `physics`, `joint`, `joint_break`, `collision_model`, `layer` — as types, and
 //! the reading of them off a line ([`PhysicsLine`]). See docs/modules.md.
 
 use glam::Vec3;
@@ -371,6 +371,13 @@ impl Body {
 
 
 
+/// `collision_model: "rock_lod2"` — the model a `Model` collider is made
+/// of, where it is not the one drawn: Unity's MeshCollider names its own
+/// mesh, and a thing can be solid by a mesh it does not show.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CollisionModel(pub crate::AssetLink);
+
 /// `joint_break: 400.0` — the joint breaks when pulled harder than this
 /// many newtons: Unity's Break Force (`PhysicsWorld::broken`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -384,6 +391,7 @@ crate::impl_parts! {
     BodyProps => "physics", default if |p| p.is_default();
     Joint => "joint", default if |j| j.is_none();
     JointBreak => "joint_break";
+    CollisionModel => "collision_model", default if |m| m.0.is_empty();
 }
 
 /// How a line of a scene is solid, read off it: what was `desc.body` before

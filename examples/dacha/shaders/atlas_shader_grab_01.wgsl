@@ -3,7 +3,10 @@
 // smoothness 0.
 // Port: _Color (sRGB) and _Speed come from the material. The importer gives
 // these materials their _BaseColor, not the graph's _Color, so the albedo
-// from the material is ignored here.
+// from the material is ignored here. The graph samples no texture: the
+// SM_Refrigerator_1_TXTR its materials still hold (a Sample Texture 2D
+// property left over from the atlas graph) is not read, so the shader
+// names no textures.
 // runity:params _Color.r _Color.g _Color.b _Speed
 
 fn grab_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {

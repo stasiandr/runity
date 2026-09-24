@@ -4,12 +4,15 @@
 // red (lerping _Color to _Color_2) and the blade shape in green (alpha, clipped
 // at 0.5); in the vertex stage the mesh sways along x with gradient noise over
 // world position and time, more towards the top of the UVs.
-// Here _baza is read from the material's base map (give it that texture with a
-// white colour): red picks the colour, green is cut at 0.5 with discard.
-// _Color and _Color_2 (sRGB) come from the material. The wind sway is left
-// out: a surface function cannot move vertices. Shadows still fall from the
-// whole card, as the shadow pass only knows the base map's alpha.
+// Here _baza is read from the material by UV0 (each material its own:
+// T_Grass_Mesh_01..04, T_Tumbleweed_01_M): red picks the colour, green is cut
+// at 0.5 with discard. _Color and _Color_2 (sRGB) come from the material. The
+// wind sway is left out: a surface function cannot move vertices. Shadows are
+// cut by the base map's alpha (the importer makes _baza the base map), not by
+// its green, as the shadow pass does not run this function; the _baza
+// textures have no alpha, so a card's shadow is its whole quad.
 // runity:params _Color.r _Color.g _Color.b _Color_2.r _Color_2.g _Color_2.b
+// runity:textures _baza
 
 const GRASS_CLIP = 0.5;
 
@@ -21,7 +24,7 @@ fn grass_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
-    let baza = out.albedo;
+    let baza = texture_at(in, 0u, in.uv);
     if baza.g < GRASS_CLIP {
         discard;
     }

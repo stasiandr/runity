@@ -128,6 +128,9 @@ struct Frame {
     // the scene's distance field (distance.rs): its box and 1 when there
     // is one; its far corner and range in metres
     distance: array<vec4<f32>, 2>,
+    // What a face turned sideways sees when the scene says its light from
+    // all round (sky above, ground below); w is 1 then.
+    ambient_equator: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -570,6 +573,29 @@ fn mask_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
 fn emission_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
     return textureSample(emission_map, surface_sampler, uv);
 }
+// The textures a material hands its own shader, in the order the shader's
+// `// runity:textures` line names them; white where it has none.
+@group(1) @binding(5) var material_texture_0: texture_2d<f32>;
+@group(1) @binding(6) var material_texture_1: texture_2d<f32>;
+@group(1) @binding(7) var material_texture_2: texture_2d<f32>;
+@group(1) @binding(8) var material_texture_3: texture_2d<f32>;
+
+// A material's own texture `slot` (0 to 3) at `uv`, for its `surface`:
+// repeated past the edges and mipmapped as the base map is. By the
+// gradients of `uv` taken here, so it may be read inside a branch; it
+// has to be called where every pixel of the draw still runs together,
+// as `textureSample` does. A slot past the fourth is white.
+fn texture_at(in: SurfaceIn, slot: u32, uv: vec2<f32>) -> vec4<f32> {
+    let dx = dpdx(uv);
+    let dy = dpdy(uv);
+    switch slot {
+        case 0u: { return textureSampleGrad(material_texture_0, surface_sampler, uv, dx, dy); }
+        case 1u: { return textureSampleGrad(material_texture_1, surface_sampler, uv, dx, dy); }
+        case 2u: { return textureSampleGrad(material_texture_2, surface_sampler, uv, dx, dy); }
+        case 3u: { return textureSampleGrad(material_texture_3, surface_sampler, uv, dx, dy); }
+        default: { return vec4<f32>(1.0); }
+    }
+}
 // maps: end
 
 struct VertexInput {
@@ -595,7 +621,9 @@ struct VertexInput {
     @location(15) params_1: vec4<f32>,
     // light under the surface: its colour, and how far it goes
     @location(16) subsurface: vec4<f32>,
-    // the maps' handles: base, normal, mask, emission (bindless.rs)
+    // the maps' handles, two to a number (bindless.rs): base, normal,
+    // mask, emission in the low halves, the material's own four
+    // textures in the high
     @location(17) maps: vec4<u32>,
 };
 
@@ -2173,6 +2201,8 @@ struct SurfaceIn {
     // The material's own eight numbers (`params` in its .rmat), in the
     // order its shader's `// runity:params` line names them.
     params: array<vec4<f32>, 2>,
+    // Where its textures are, for `texture_at`: not to be read otherwise.
+    maps: vec4<u32>,
 };
 
 // What the standard shader worked out for the fragment, before the light:
@@ -2316,7 +2346,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
 
     // The material's own shader has its say, before the light.
     let shaped = surface(
-        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1)),
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps),
         Surface(albedo, alpha, in.surface.x * mask.r * weather.metal, smoothness, normal, in.emission.rgb * emitted),
     );
     albedo = shaped.albedo;
@@ -2486,7 +2516,18 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
         let here = sky_toward(normal);
         sky_light = sky_light * here / max(up, vec3<f32>(1e-4));
     }
-    var ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    var all_round = mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5);
+    if frame.ambient_equator.w > 0.5 {
+        // The scene's three colours, blended as smoothly as Unity's
+        // gradient is once it is spherical harmonics: straight up sees
+        // only the sky, sideways half the horizon and a quarter each of
+        // the sky and the ground.
+        let y = clamp(normal.y, -1.0, 1.0);
+        all_round = frame.sky_color.rgb * (1.0 + y) * (1.0 + y) * 0.25
+            + frame.ground_color.rgb * (1.0 - y) * (1.0 - y) * 0.25
+            + frame.ambient_equator.rgb * (1.0 - y * y) * 0.5;
+    }
+    var ambient = around(in.world_position, normal, all_round);
     // Inside an irradiance volume its probes give the diffuse light.
     let volume = ddgi_irradiance(in.world_position, normal, to_eye);
     let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);

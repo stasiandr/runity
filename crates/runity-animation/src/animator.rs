@@ -207,13 +207,16 @@ impl Animator {
         })
     }
 
-    /// Whether a non-looping clip has run out.
+    /// Whether the clip has played through once — a looping one too, as
+    /// Unity's exit time of 1 waits for the end of the first pass: a
+    /// drone's flying in that loops on landing still goes on to its next
+    /// state.
     pub fn finished(&self) -> bool {
         match (
             self.current,
             self.current.and_then(|p| self.clips.get(p.clip)),
         ) {
-            (Some(playing), Some(clip)) => !playing.looping && playing.time >= clip.duration,
+            (Some(playing), Some(clip)) => playing.time >= clip.duration,
             _ => false,
         }
     }
@@ -392,6 +395,16 @@ mod tests {
             }],
         };
         Arc::new(vec![at("low", 10.0), at("high", 20.0)])
+    }
+
+    #[test]
+    fn a_looping_clip_has_finished_once_it_has_played_through() {
+        let mut a = Animator::new(skeleton(), clips());
+        a.play(0, 0.0);
+        a.advance(0.5);
+        assert!(!a.finished(), "half way");
+        a.advance(0.6);
+        assert!(a.finished(), "one pass done, looping or not");
     }
 
     fn animator() -> Animator {

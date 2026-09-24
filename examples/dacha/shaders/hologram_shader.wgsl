@@ -2,16 +2,17 @@
 // transparent, both faces). _Color (sRGB), the Fresnel power and the two
 // line sets' strengths and speeds come from the material.
 // runity:params _Color.r _Color.g _Color.b _Fresnel_int _Int_Small_Lines _Int_Big_Lines _Speed_Small_Lines _Speed_Big_Lines
+// runity:textures _SampleTexture2D_d1e16623bfa34629bae7ce91e3854ab1_Texture_1_Texture2D
 //
 // The original glows in _Color by a Fresnel term and fades its alpha with a
 // vertical gradient, minus fine scrolling noise lines, plus bright scrolling
 // bands sampled from T_SunLines_M, all flickering with sin(2t) and noise.
 //
-// This port: the T_SunLines_M bands are procedural stripes; the optional
-// _Mask / _Blink texture branch (used by M_Eyes and M_Hologram_Selection)
-// is left out; the colour goes to emission over a black albedo since runity
-// lights the surface. The M_Hologram_01 .mat says _Surface: 0, so unless the material
-// is made transparent the alpha has no effect.
+// This port reads T_SunLines_M from the material. The _Mask / _Blink
+// branch (on only in M_Eyes: alpha plus its _Mask_1 / _Mask_2 textures,
+// blinking between them) is left out: the switch is a ninth number the
+// params line has no room for. The colour goes to emission over a black
+// albedo.
 
 fn hologram_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;
@@ -50,20 +51,6 @@ fn hologram_noise(uv: vec2<f32>, scale: f32) -> f32 {
     return t;
 }
 
-// Stand-in for T_SunLines_M sampled at (g, g): soft horizontal streaks of
-// uneven brightness, dark towards the texture's left and right edges.
-fn hologram_sunlines(g: f32) -> f32 {
-    let y = g * 14.0;
-    let row = floor(y);
-    let f = fract(y);
-    let width = mix(0.08, 0.35, hologram_hash(vec2<f32>(row, 7.0)));
-    let d = (f - 0.5) / width;
-    let bright = 0.6 * pow(hologram_hash(vec2<f32>(row, 3.0)), 1.5);
-    let x = fract(g);
-    let edges = smoothstep(0.08, 0.3, x) * (1.0 - smoothstep(0.7, 0.9, x));
-    return bright * exp(-d * d) * edges;
-}
-
 // Unity's gradient: keys 0 -> 0, 0.038 -> 0.03, 0.488 -> 1, 0.976 -> 0.
 fn hologram_gradient(t: f32) -> f32 {
     if t < 0.0382 {
@@ -86,7 +73,8 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let small_g = v + in.params[1].z * t;
     let small = hologram_noise(vec2<f32>(small_g), 500.0) * in.params[1].x;
     let big_g = v + in.params[1].w * t;
-    let big = hologram_sunlines(big_g) * in.params[1].y;
+    // Unity samples at (g, g); its v runs up the texture, runity's down.
+    let big = texture_at(in, 0u, vec2<f32>(big_g, 1.0 - big_g)).r * in.params[1].y;
     let lines = clamp(hologram_gradient(v) * fresnel - (small - big), 0.0, 1.0);
 
     let pulse = clamp(sin(t * 2.0), 0.0, 1.0) + 0.8;

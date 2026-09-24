@@ -21,6 +21,10 @@ const RECT_TRANSFORM: u32 = 224;
 const PREFAB_INSTANCE: u32 = 1001;
 /// The fileID Unity gives a model's root GameObject, in every model.
 const MODEL_ROOT: i64 = 919132149155446097;
+/// And its root's Transform: what a placed model's move, turn and scale
+/// name. Any other of a model's transforms is a node inside it, which a
+/// model brought over whole has no part for.
+const MODEL_ROOT_TRANSFORM: i64 = -8679921383154817045;
 
 /// An entity's ID from a Unity fileID: the same object, the same ID, every
 /// time the file is imported (docs/unity-import.md).
@@ -196,8 +200,15 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
                         && c.body.i64("m_Enabled") == Some(0)
                 });
-                // (A mesh collider still needs its mesh.)
-                if hidden && desc.part::<Collider>() != Some(Collider::Model) {
+                // A mesh collider keeps its mesh as its collision model.
+                if hidden {
+                    if desc.part::<Collider>() == Some(Collider::Model)
+                        && desc.part::<runity::scene::CollisionModel>().is_none()
+                    {
+                        if let Some(drawn) = desc.part::<runity::scene::ModelRef>() {
+                            desc.set_part(&runity::scene::CollisionModel(drawn.0));
+                        }
+                    }
                     desc.clear_part::<runity::scene::ModelRef>();
                     desc.clear_part::<MaterialRef>();
                 }
@@ -242,7 +253,13 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         }
     }
     // Transforms come to entities last: a GameObject's position is its
-    // transform's.
+    // transform's — a RectTransform's from its anchors in its parent's.
+    let rect_docs: HashMap<i64, Yaml> = docs
+        .iter()
+        .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+        .map(|d| (d.file_id, d.body.clone()))
+        .collect();
+    let rects = |id: i64| rect_docs.get(&id).cloned();
     for d in docs
         .iter()
         .filter(|d| matches!(d.class, TRANSFORM | RECT_TRANSFORM) && !d.stripped)
@@ -252,6 +269,9 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         };
         if let Some(desc) = entities.get_mut(go) {
             desc.transform = transform(&d.body);
+            if d.class == RECT_TRANSFORM {
+                desc.transform.position = position(rect_position(&d.body, &rects));
+            }
         }
     }
     // Components added to a prefab instance's parts in this file land on
@@ -374,6 +394,47 @@ struct Refs<'a> {
     scoped: HashMap<i64, EntityId>,
 }
 
+/// A RectTransform's local position, Unity's hand: its anchored position
+/// from the point its anchors pick in its parent's rectangle (the anchors'
+/// span taken at its pivot), and its z. `rects` finds a RectTransform by
+/// its fileID; a parent that is not one has no size.
+fn rect_position(t: &Yaml, rects: &dyn Fn(i64) -> Option<Yaml>) -> [f32; 3] {
+    let v2 = |y: &Yaml, key: &str, or: [f32; 2]| -> [f32; 2] {
+        let v = &y[key];
+        [v.f32("x").unwrap_or(or[0]), v.f32("y").unwrap_or(or[1])]
+    };
+    // A rectangle's size: its size delta plus its anchors' share of its
+    // parent's.
+    fn size(t: &Yaml, rects: &dyn Fn(i64) -> Option<Yaml>, depth: usize) -> [f32; 2] {
+        let v2 = |key: &str, or: f32| -> [f32; 2] {
+            let v = &t[key];
+            [v.f32("x").unwrap_or(or), v.f32("y").unwrap_or(or)]
+        };
+        let (delta, lo, hi) = (v2("m_SizeDelta", 0.0), v2("m_AnchorMin", 0.5), v2("m_AnchorMax", 0.5));
+        let parent = (depth < 32)
+            .then(|| t.reference("m_Father").filter(|r| r.file_id != 0))
+            .flatten()
+            .and_then(|r| rects(r.file_id))
+            .map(|p| size(&p, rects, depth + 1))
+            .unwrap_or([0.0, 0.0]);
+        [delta[0] + (hi[0] - lo[0]) * parent[0], delta[1] + (hi[1] - lo[1]) * parent[1]]
+    }
+    let parent = t.reference("m_Father").filter(|r| r.file_id != 0).and_then(|r| rects(r.file_id));
+    let (parent_size, parent_pivot) = match &parent {
+        Some(p) => (size(p, rects, 0), v2(p, "m_Pivot", [0.5, 0.5])),
+        None => ([0.0, 0.0], [0.5, 0.5]),
+    };
+    let (lo, hi, pivot) = (v2(t, "m_AnchorMin", [0.5, 0.5]), v2(t, "m_AnchorMax", [0.5, 0.5]), v2(t, "m_Pivot", [0.5, 0.5]));
+    let anchored = v2(t, "m_AnchoredPosition", [0.0, 0.0]);
+    let at = |i: usize| {
+        let min = -parent_pivot[i] * parent_size[i];
+        let anchor = lo[i] + (hi[i] - lo[i]) * pivot[i];
+        min + parent_size[i] * anchor + anchored[i]
+    };
+    let z = t.vec3("m_LocalPosition").map_or(0.0, |p| p[2]);
+    [at(0), at(1), z]
+}
+
 fn transform(t: &Yaml) -> Transform {
     let mut out = Transform {
         position: t
@@ -436,6 +497,14 @@ fn instance(
     let of = source.guid.as_deref().map(|g| parts.of(unity, g, 0));
     let key_of = |t: Option<i64>| of.as_ref().and_then(|o| o.keys.get(&t?).copied());
     let root_key = of.as_ref().and_then(|o| o.root);
+    // What the modifications leave out is as the prefab has its root —
+    // Unity writes a scale only where it differs from the prefab's.
+    if let Some(base) = root_key.and_then(|k| of.as_ref()?.places.get(&k).copied()) {
+        let (bp, bq) = (base.position, base.rotation());
+        p = [bp.x, bp.y, -bp.z];
+        q = [-bq.x, -bq.y, bq.z, bq.w];
+        s = base.scale.to_array();
+    }
     let mut root_target = modification
         .list("m_Modifications")
         .iter()
@@ -446,6 +515,12 @@ fn instance(
     let mut moved: BTreeMap<EntityId, Axes> = BTreeMap::new();
     // A component's fields changed: the prefab's component, changed.
     let mut behaviours: BTreeMap<i64, Behaviour> = BTreeMap::new();
+    // Whether an anchored position is said: then it, not the local
+    // position's x and y, is where a RectTransform stands.
+    let anchored_too = modification
+        .list("m_Modifications")
+        .iter()
+        .any(|m| m.str("propertyPath").is_some_and(|p| p.starts_with("m_AnchoredPosition")));
     for m in modification.list("m_Modifications") {
         let Some(path) = m.str("propertyPath") else {
             continue;
@@ -462,9 +537,14 @@ fn instance(
             let rest = path.strip_prefix(name)?.strip_prefix('.')?;
             ["x", "y", "z", "w"].iter().position(|a| *a == rest)
         };
-        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale"]
+        // A RectTransform's place is its anchored position (x, y) and its
+        // local z: taken as the position, as it is under a parent that is
+        // not a rectangle.
+        let transforming = ["m_LocalPosition", "m_LocalRotation", "m_LocalScale", "m_AnchoredPosition"]
             .iter()
-            .find_map(|f| Some((*f, axis(f)?)));
+            .find_map(|f| Some((*f, axis(f)?)))
+            .map(|(f, i)| if f == "m_AnchoredPosition" { ("m_LocalPosition", i) } else { (f, i) })
+            .filter(|(f, i)| !(path.starts_with("m_LocalPosition") && *f == "m_LocalPosition" && *i < 2 && anchored_too));
         if let Some((field, i)) = transforming {
             if field == "m_LocalPosition" {
                 root_target = root_target.or(target);
@@ -514,6 +594,25 @@ fn instance(
         } else if path == "m_Name" {
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
+            }
+        } else if path == "m_Enabled" && value == 0.0 && kind == "model" {
+            // A placed model's renderer or collider switched off: drawn
+            // not at all, solid by its mesh still if its collider is on.
+            desc.set_part(&runity::scene::CollisionModel(AssetLink::named(name)));
+            desc.clear_part::<runity::scene::ModelRef>();
+            report.skip("a placed model's renderer switched off (drawn not at all)");
+        } else if path == "m_Enabled" && value == 0.0 {
+            // A part's renderer or collider switched off in this instance:
+            // taken off it.
+            let found = target.and_then(|t| of.as_ref()?.components.get(&t).cloned());
+            match found {
+                Some((part, what)) if what == "collider" || what == "model" => {
+                    let change = desc.overrides.entry(part).or_default();
+                    if !change.removed.contains(&what) {
+                        change.removed.push(what);
+                    }
+                }
+                _ => report.skip(format!("a prefab modification of `{path}`")),
             }
         } else if path == "m_IsActive" || path == "m_Layer" {
             // On the part it names — the prefab's root being the instance
@@ -728,6 +827,7 @@ impl Parts {
         if unity.named(guid).is_some_and(|(kind, _)| kind == "model") {
             let root = entity_id(MODEL_ROOT);
             out.keys.insert(MODEL_ROOT, root);
+            out.keys.insert(MODEL_ROOT_TRANSFORM, root);
             out.root = Some(root);
         }
         let text = unity
@@ -736,6 +836,12 @@ impl Parts {
             .and_then(|_| unity.guids.get(guid))
             .and_then(|path| std::fs::read_to_string(path).ok());
         let docs = text.as_deref().map(yaml::documents).unwrap_or_default();
+        let rect_docs: HashMap<i64, Yaml> = docs
+            .iter()
+            .filter(|d| d.class == RECT_TRANSFORM && !d.stripped)
+            .map(|d| (d.file_id, d.body.clone()))
+            .collect();
+        let rects = |id: i64| rect_docs.get(&id).cloned();
         // What each object of the file is a part of: a GameObject itself,
         // a component its GameObject, a placeholder its prefab instance.
         let links: std::rc::Rc<HashMap<i64, EntityId>> = std::rc::Rc::new(
@@ -765,7 +871,11 @@ impl Parts {
                         out.root = go;
                     }
                     if let Some(go) = go {
-                        out.places.insert(go, transform(&d.body));
+                        let mut place = transform(&d.body);
+                        if d.class == RECT_TRANSFORM {
+                            place.position = position(rect_position(&d.body, &rects));
+                        }
+                        out.places.insert(go, place);
                         // A move names the transform: the same part.
                         out.keys.insert(d.file_id, go);
                     }
@@ -932,12 +1042,14 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
     match c.kind.as_str() {
         "MeshFilter" => {
             if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
                 desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
             }
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                    let model = piece(refs.unity, model, &desc.name);
                     desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));
                 }
             }
@@ -983,6 +1095,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         }
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
+            // Its own mesh, which need not be the one drawn.
+            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
+                desc.set_part(&runity::scene::CollisionModel(AssetLink::named(model)));
+            }
             solid(desc, b);
         }
         "Rigidbody" => {
@@ -1297,6 +1414,28 @@ fn model(r: &Ref, unity: &Unity) -> Option<String> {
     (kind == "model").then(|| name.to_string())
 }
 
+/// Which mesh of a model a renderer on `object` draws, in that object's
+/// frame: the piece named as the object is (Unity's "(1)" copies aside),
+/// or a model's only piece. The whole model, in its root's frame, when it
+/// cannot tell — or has no pieces converted.
+fn piece(unity: &Unity, model: String, object: &str) -> String {
+    let Some(pieces) = unity.pieces.get(&model) else {
+        return model;
+    };
+    let bare = object.trim_end_matches(|c: char| c == ')' || c.is_ascii_digit());
+    let bare = bare.strip_suffix(" (").unwrap_or(object).trim();
+    for name in [object, bare] {
+        let wanted = super::piece_name(name);
+        if pieces.iter().any(|p| *p == wanted) {
+            return format!("{model}@{wanted}");
+        }
+    }
+    match pieces.as_slice() {
+        [only] => format!("{model}@{only}"),
+        _ => model,
+    }
+}
+
 /// Fields a MonoBehaviour's document has that are Unity's, not the game's.
 const UNITY_FIELDS: [&str; 10] = [
     "m_ObjectHideFlags",
@@ -1569,6 +1708,7 @@ mod tests {
 
     fn unity() -> Unity {
         Unity {
+            pieces: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
@@ -1763,6 +1903,18 @@ ParticleSystemRenderer:
         assert_eq!(items[0]["count"].as_i64(), Some(4));
         assert_eq!(yaml::number(&body["rideSeconds"]), Some(12.5));
         assert_eq!(body["volume"]["fileID"].as_i64(), Some(9));
+    }
+
+    #[test]
+    fn a_renderer_draws_the_piece_of_a_model_named_as_its_object() {
+        let mut unity = unity();
+        unity.pieces.insert("level".into(), vec!["Sand".into(), "Rock_2".into()]);
+        unity.pieces.insert("sheet".into(), vec!["Cube_054".into()]);
+        assert_eq!(piece(&unity, "level".into(), "Sand (3)"), "level@Sand");
+        assert_eq!(piece(&unity, "level".into(), "Rock.2"), "level@Rock_2");
+        assert_eq!(piece(&unity, "level".into(), "Tree"), "level", "not one of its pieces: the whole");
+        assert_eq!(piece(&unity, "sheet".into(), "SM_Sheet_01 (7)"), "sheet@Cube_054", "its only piece");
+        assert_eq!(piece(&unity, "crate".into(), "Crate"), "crate", "no pieces converted");
     }
 
     #[test]

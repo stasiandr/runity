@@ -354,6 +354,7 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
             ground_albedo: albedo,
             sky_sun: None,
             night: 0.0,
+            ambient: scene_ambient(sun),
         };
     }
     // Night: the moon is the light above — cold, an eighth of the sun, and
@@ -385,7 +386,14 @@ pub fn scene_lighting(sun: &crate::scene::Sun) -> Lighting {
         ground_albedo: albedo,
         sky_sun: Some((sun.true_direction(), sun.intensity)),
         night,
+        ambient: scene_ambient(sun),
     }
+}
+
+/// The light from all round a scene says itself, linear.
+fn scene_ambient(sun: &crate::scene::Sun) -> Option<[glam::Vec3; 3]> {
+    let linear = |c: [f32; 3]| c.map(|v| crate::material::srgb_to_linear(v.max(0.0))).into();
+    sun.ambient.map(|a| [linear(a.sky), linear(a.equator), linear(a.ground)])
 }
 
 /// The fog a scene describes.
