@@ -335,9 +335,6 @@ enum Part {
     Dismiss,
     /// A box of a form, and what using it does.
     Form(Place, form::Control),
-    /// In the list the ⋮ next to the padlock opens: Normal (`false`) or
-    /// Debug (`true`).
-    Mode(bool),
     /// Debug mode's box of RON, and its Apply.
     DebugRon,
     DebugApply,
@@ -384,10 +381,6 @@ enum Popover {
         square_mark: NodeId,
         hue_mark: NodeId,
     },
-    /// The ⋮ menu's Normal and Debug.
-    Modes {
-        root: NodeId,
-    },
     /// An object field's picker: its list, what it sets, every name it
     /// can offer, what the search leaves (`None` for None), the one lit.
     Object {
@@ -405,7 +398,6 @@ impl Popover {
         match self {
             Popover::Add { root, .. }
             | Popover::Color { root, .. }
-            | Popover::Modes { root }
             | Popover::Object { root, .. } => *root,
         }
     }
@@ -557,7 +549,6 @@ pub struct Inspector {
     built: bool,
     /// Unity's padlock: the entities shown whatever is selected after.
     locked: Option<Vec<EntityId>>,
-    lock_button: NodeId,
     /// Which fields had a reset arrow at the last build: an arrow that
     /// comes or goes is a new layout.
     resets: Vec<String>,
@@ -584,7 +575,6 @@ pub struct Inspector {
     pictures: HashMap<String, runity_ui::ImageId>,
     /// The object field lit for what is dragged over it.
     drop_lit: Option<NodeId>,
-    more_button: NodeId,
     /// Which groups of a form are folded or opened, by their node name.
     folds: HashMap<String, bool>,
     /// What a part the value leaves out was shown as, by place: what a box
@@ -603,20 +593,8 @@ impl Inspector {
     pub fn new(ui: &mut Ui, parent: NodeId) -> Self {
         let card = ui.add(parent, Style::column().fill().full_width());
         ui.set_name(card, "inspector");
-        // A strip over the fields for the padlock.
-        let strip = ui.add(
-            card,
-            Style::row()
-                .full_width()
-                .height(22.0)
-                .fixed()
-                .padding_x(SPACE_2)
-                .center_items(),
-        );
-        ui.add(strip, Style::row().fill());
-        let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
-        // Unity's ⋮ beside the padlock: Normal or Debug.
-        let more_button = icon_button(ui, strip, "inspector more", "ellipsis-vertical", false);
+        // The padlock and the ⋮ (Normal or Debug) are in the dock's tab
+        // strip, as every panel's are: see `is_locked` and `set_debug`.
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
             debug: false,
@@ -625,14 +603,12 @@ impl Inspector {
             objects: Vec::new(),
             pictures: HashMap::new(),
             drop_lit: None,
-            more_button,
             folds: HashMap::new(),
             stand_ins: HashMap::new(),
             form_nodes: HashMap::new(),
             last_label: None,
             form_values: Vec::new(),
             locked: None,
-            lock_button,
             resets: Vec::new(),
             popover: None,
             popover_parts: HashMap::new(),
@@ -667,9 +643,7 @@ impl Inspector {
     }
 
     pub fn owns(&self, node: NodeId) -> bool {
-        node == self.lock_button
-            || node == self.more_button
-            || self.parts.contains_key(&node)
+        self.parts.contains_key(&node)
             || self.popover_parts.contains_key(&node)
     }
 
@@ -701,20 +675,30 @@ impl Inspector {
     }
 
     /// Lock on what is shown, or let go.
-    pub fn toggle_lock(&mut self, ui: &mut Ui) {
+    pub fn toggle_lock(&mut self) {
         self.locked = match self.locked {
             Some(_) => None,
             None if !self.showing.is_empty() => Some(self.showing.clone()),
             None => None,
         };
-        let on = self.locked.is_some();
-        set_icon_button(
-            ui,
-            self.lock_button,
-            if on { "lock" } else { "lock-open" },
-            on,
-            true,
-        );
+    }
+
+    /// Whether the padlock is shut: the dock's strip shows it so.
+    pub fn is_locked(&self) -> bool {
+        self.locked.is_some()
+    }
+
+    /// Normal (`false`): every field a form; Debug (`true`): every field
+    /// as the RON its file holds. Remembered in the person's preferences.
+    pub fn set_debug(&mut self, ui: &mut Ui, session: &mut Session, debug: bool) {
+        self.close_popover(ui);
+        self.debug_read = true;
+        if debug != self.debug {
+            self.debug = debug;
+            session.set_inspector_debug(debug);
+            self.built = false;
+            self.shape.clear();
+        }
     }
 
     pub fn update(&mut self, ui: &mut Ui, session: &Session) {
@@ -724,13 +708,12 @@ impl Inspector {
         let mut ids = self.targets(session);
         if self.locked.is_some() && ids.is_empty() {
             // What it was locked on is gone: back to the selection.
-            self.toggle_lock(ui);
+            self.toggle_lock();
             ids = session.selection();
         }
         if !self.debug_read {
             self.debug_read = true;
             self.debug = session.inspector_debug();
-            set_icon_button(ui, self.more_button, "ellipsis-vertical", self.debug, true);
         }
         if self.debug {
             if !self.built || ids != self.showing {
@@ -1929,20 +1912,6 @@ impl Inspector {
             self.popover_event(ui, session, node, part, event, requests);
             return;
         }
-        if node == self.lock_button {
-            if let Event::Click { .. } = event {
-                self.toggle_lock(ui);
-                requests.refresh = true;
-            }
-            return;
-        }
-        if node == self.more_button {
-            if let Event::Click { .. } = event {
-                let r = ui.rect(node);
-                self.open_modes(ui, r);
-            }
-            return;
-        }
         let Some(part) = self.parts.get(&node).cloned() else {
             return;
         };
@@ -2396,36 +2365,6 @@ impl Inspector {
         (ground, card)
     }
 
-    /// The ⋮ menu: Normal, every field a form, or Debug, every field as
-    /// the RON its file holds.
-    fn open_modes(&mut self, ui: &mut Ui, at: runity_ui::Rect) {
-        let (ground, card) =
-            self.popover_card(ui, at.x + at.width - 160.0, at.y + at.height + 4.0, 160.0);
-        ui.set_name(card, "inspector modes");
-        for (label, debug) in [("Normal", false), ("Debug", true)] {
-            let row = ui.add(
-                card,
-                Style::row()
-                    .full_width()
-                    .height(24.0)
-                    .padding_x(SPACE_2)
-                    .gap(SPACE_2)
-                    .center_items()
-                    .radius(RADIUS_SM)
-                    .hover(HOVER)
-                    .clickable(),
-            );
-            ui.set_name(row, format!("inspector mode {label}"));
-            let mark = ui.add(row, Style::row().size(14.0, 14.0).fixed());
-            if debug == self.debug {
-                icon(ui, mark, "check", ACCENT);
-            }
-            ui.add_text(row, text().nowrap(), label);
-            self.popover_parts.insert(row, Part::Mode(debug));
-        }
-        self.popover = Some(Popover::Modes { root: ground });
-    }
-
     /// Unity's Add Component: a search, and what matches it.
     fn open_add(&mut self, ui: &mut Ui, session: &Session, at: runity_ui::Rect) {
         let (ground, card) = self.popover_card(ui, at.x, at.y + at.height + 4.0, at.width.max(220.0));
@@ -2660,17 +2599,6 @@ impl Inspector {
             (Part::Dismiss, Event::Click { .. }) => self.close_popover(ui),
             (part @ (Part::PickSearch | Part::PickEntry(_)), _) => {
                 self.object_picker_event(ui, session, node, &part, event, requests);
-            }
-            (Part::Mode(debug), Event::Click { .. }) => {
-                self.close_popover(ui);
-                if debug != self.debug {
-                    self.debug = debug;
-                    session.set_inspector_debug(debug);
-                    self.built = false;
-                    self.shape.clear();
-                }
-                set_icon_button(ui, self.more_button, "ellipsis-vertical", debug, true);
-                requests.refresh = true;
             }
             (Part::AddSearch, Event::Changed(text)) => {
                 let text = text.clone();

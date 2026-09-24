@@ -141,6 +141,9 @@ pub struct Bottom {
     expanded: std::collections::HashSet<usize>,
     /// Each Console row's line, by index.
     console_rows: HashMap<NodeId, usize>,
+    /// Unity's Clear on Play: the Console is emptied when Play starts
+    /// (the studio clears it; the Console's ⋮ turns it on).
+    pub clear_on_play: bool,
     // History
     history_list: NodeId,
     /// Each History row: how many steps from the start it stands for.
@@ -447,6 +450,7 @@ impl Bottom {
             seen_lines: 0,
             expanded: Default::default(),
             console_rows: HashMap::new(),
+            clear_on_play: false,
             history_list,
             history_rows: HashMap::new(),
             git_list,
