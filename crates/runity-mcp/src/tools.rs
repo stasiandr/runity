@@ -86,7 +86,6 @@ pub fn list() -> Vec<Value> {
         tool("open_scene", "Open a scene file; its project's prefabs, materials and library come with it.", json!({ "path": { "type": "string" } }), &["path"]),
         tool("new_scene", "Make scenes/<name>.ron in the open project — a ground with the metre grid, solid — and open it. Save the open scene first if it has changes. Lists the project's scenes.", json!({ "name": { "type": "string", "description": "snake_case, like level_2" } }), &["name"]),
         tool("open_prefab", "Prefab Mode: open prefabs/<name>.prefab as the document. Every tool then edits the prefab (a variant's part edits become its overrides) and save_scene writes the prefab file; open_scene goes back.", json!({ "name": { "type": "string" } }), &["name"]),
-        tool("save_scene", "Write the scene to its file, or to path.", json!({ "path": { "type": "string" } }), &[]),
         tool("scene_tree", "The open scene as an indented tree: id, name, model or prefab, material, place.", json!({}), &[]),
         tool("find", "Search the scene like the hierarchy's search box: words match names; c:door (has component), m:stone (material), p:campfire (prefab instance), model:pine_large, body:dynamic, has:light|camera|particles|probe|decal|route|joint|collider, layer:debris; quoted \"phrases\"; terms combine with and. Prefab parts included. Returns id and name per line.", json!({ "query": { "type": "string" } }), &["query"]),
         tool("inspect", "The Inspector for an entity: every field as text, and for a prefab's part which ones this instance overrides. With `ids`, for several at once: — where they disagree.", json!({ "id": { "type": "string", "description": ID }, "ids": { "type": "array", "items": { "type": "string" } } }), &[]),
@@ -94,8 +93,6 @@ pub fn list() -> Vec<Value> {
         tool("get_entity", "One entity's line in the scene's RON, children included.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("add_entity", "Add an entity, as one undo step. Returns its id.", add, &[]),
         tool("update_entity", "Change any fields of an entity, as one undo step.", update, &["id"]),
-        tool("delete_entity", "Delete an entity and everything under it.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
-        tool("duplicate_entity", "Copy an entity with its children, as its next sibling. Returns the copy's id.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("reparent", "Move an entity under another, or to the top without parent. Refuses loops. Its transform stays as written (now relative to the new parent) unless `stay` is true, which keeps it where it is in the world as a Hierarchy drag does; `index` puts it at that place among its new siblings (0 first) — the same parent reorders.", json!({ "id": { "type": "string", "description": ID }, "parent": { "type": "string", "description": ID }, "index": { "type": "integer" }, "stay": { "type": "boolean" } }), &["id"]),
         tool("make_prefab", "Turn an entity into prefabs/<name>.prefab and leave an instance in its place.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
         tool("make_variant", "Save a prefab instance, with its overrides, material, components and children, as prefabs/<name>.prefab — a variant of its prefab — and make it an instance of that. Later changes to the base still reach the variant where it said nothing.", json!({ "id": { "type": "string", "description": ID }, "name": { "type": "string" } }), &["id", "name"]),
@@ -159,8 +156,6 @@ pub fn list() -> Vec<Value> {
         tool("snap_selection", "Put the selection on the grid: positions to the nearest snap step (a metre when snapping is off), turns to the nearest angle step when there is one — Unity's Snap All Axes. One undo step; says how many moved.", json!({}), &[]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
-        tool("isolate", "Show only these entities (and what is under them) in `render`; an empty list shows everything again, hidden ones too. A view setting, like `hide`.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
-        tool("drop_to_ground", "Put entities down on whatever is beneath them — the real shape of it: a slope, a terrain — as one undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" } }), &["ids"]),
         tool("path", "Can something walk from one point to another in the scene as it stands, and which way? Baked from the static colliders: slope, step height and the walker's radius decide. Returns the corners and the length, or says there is no way.", json!({
             "from": vec3("start, on or above the ground"),
             "to": vec3("goal"),
@@ -174,9 +169,7 @@ pub fn list() -> Vec<Value> {
         tool("unpack_prefab", "Turn a prefab instance into plain entities of the scene, overrides applied, no longer following the prefab file. One undo step; its parts keep their ids.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("replace_with_prefab", "Put a prefab where each thing a search finds is — the greybox cubes named `crate` become the real crate — keeping ids, names and places. One undo step.", json!({ "query": { "type": "string", "description": "what to replace, as find takes it: `crate`, `m:grid model:builtin:cube`" }, "prefab": { "type": "string" } }), &["query", "prefab"]),
         tool("revert_overrides", "Drop a prefab instance's overrides: it is the prefab again. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
-        tool("undo", "Take back the last edit; says what it was (\"move `crate`\").", json!({}), &[]),
         tool("edits", "Every edit undo can take back in this session, oldest first, in words: what has been done since the scene was opened.", json!({}), &[]),
-        tool("redo", "Put back the last edit taken back.", json!({}), &[]),
         tool("render", "Draw the view and return it as a PNG. Camera arguments move the view first and are not an edit.", camera, &[]),
         tool("look", "The scene's look — sun, fog, sky (mode: Procedural|Physical, clouds), post (bloom, grading, depth_of_field, lens_flare...), ambient_occlusion, volumetric_fog, weather (rain, wetness, puddles, snow, snowfall), wind, screen_space_reflections, ray_tracing — as the file writes them. Give any of them as RON to set them, all in one undo step; \"None\" clears an optional one back to the engine's default. Returns the look after; render to see it.", json!({
             "sun": { "type": "string", "description": "(hour: 17.5, intensity: 1.2)" },
@@ -213,20 +206,67 @@ pub fn list() -> Vec<Value> {
         tool("graph_rename", "Rename a state in an animator graph, and everything that names it: the start, the transitions, and the graph's cases (animators/<name>.cases.ron).", json!({ "name": { "type": "string" }, "from": { "type": "string" }, "to": { "type": "string" } }), &["name", "from", "to"]),
         tool("simulate", "Play the scene for some seconds, report where the physics bodies ended up, render, and stop. The document is not changed, except the entities in `keep`, which stay where they fell (one undo step).", simulate, &["seconds"]),
     ]
+    .into_iter()
+    .chain(runity_editor::actions::registry().iter().map(action_tool))
+    .collect()
+}
+
+/// An editor action as a tool: the same name, sentence and arguments the
+/// menu's item has (`runity_editor::actions`).
+fn action_tool(action: &runity_editor::actions::EditorAction) -> Value {
+    use runity_editor::actions::Kind;
+    let mut properties = serde_json::Map::new();
+    for param in action.params {
+        let schema = match param.kind {
+            Kind::Id | Kind::Text => json!({ "type": "string", "description": param.about }),
+            Kind::Ids => json!({ "type": "array", "items": { "type": "string" }, "description": param.about }),
+            Kind::Flag => json!({ "type": "boolean", "description": param.about }),
+        };
+        properties.insert(param.name.to_string(), schema);
+    }
+    tool(action.name, action.about, Value::Object(properties), &[])
+}
+
+/// A tool call's arguments as an editor action takes them.
+fn action_args(action: &runity_editor::actions::EditorAction, args: &Value) -> Result<runity_editor::actions::Args, String> {
+    use runity_editor::actions::{Arg, Args, Kind};
+    let mut out = Args::default();
+    for param in action.params {
+        let Some(value) = args.get(param.name).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        let parse = |v: &Value| {
+            v.as_str()
+                .and_then(|s| s.parse::<EntityId>().ok())
+                .ok_or_else(|| format!("{} is {ID}, not {v}", param.name))
+        };
+        let arg = match param.kind {
+            Kind::Id => Arg::Id(parse(value)?),
+            Kind::Ids => Arg::Ids(
+                value
+                    .as_array()
+                    .ok_or_else(|| format!("{} is a list of entity ids", param.name))?
+                    .iter()
+                    .map(parse)
+                    .collect::<Result<_, _>>()?,
+            ),
+            Kind::Text => Arg::Text(value.as_str().ok_or_else(|| format!("{} is text", param.name))?.to_string()),
+            Kind::Flag => Arg::Flag(value.as_bool().ok_or_else(|| format!("{} is true or false", param.name))?),
+        };
+        out = out.with(param.name, arg);
+    }
+    Ok(out)
 }
 
 pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
+    // An editor action: the same one the menu runs.
+    if let Some(action) = runity_editor::actions::find(name) {
+        let args = action_args(&action, args)?;
+        return Ok(vec![text((action.run)(server.session()?, &args)?)]);
+    }
     match name {
         "new_project" => new_project(server, args),
         "open_scene" => open_scene(server, &string(args, "path")?),
-        "save_scene" => {
-            let path = optional_string(args, "path")?.map(PathBuf::from);
-            let session = server.session()?;
-            session
-                .save_scene(path.as_deref())
-                .map_err(|e| e.to_string())?;
-            Ok(vec![text("saved")])
-        }
         "open_prefab" => {
             let name = string(args, "name")?;
             let skipped = server
@@ -314,16 +354,6 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
         }
         "add_entity" => add_entity(server, args),
         "update_entity" => update_entity(server, args),
-        "delete_entity" => {
-            let id = id(args, "id")?;
-            server.session()?.delete(id).map_err(|e| e.to_string())?;
-            Ok(vec![text(format!("deleted {id}"))])
-        }
-        "duplicate_entity" => {
-            let id = id(args, "id")?;
-            let copy = server.session()?.duplicate(id).map_err(|e| e.to_string())?;
-            Ok(vec![text(format!("{copy}"))])
-        }
         "reparent" => {
             let id = id(args, "id")?;
             let parent = optional_id(args, "parent")?;
@@ -1062,42 +1092,6 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 session.hidden().len()
             ))])
         }
-        "isolate" => {
-            let ids = id_list(args)?;
-            let session = server.session()?;
-            if ids.is_empty() {
-                session.show_all();
-                return Ok(vec![text("everything is shown".to_string())]);
-            }
-            session.isolate(&ids).map_err(|e| e.to_string())?;
-            Ok(vec![text(format!("showing {} alone", ids.len()))])
-        }
-        "drop_to_ground" => {
-            let ids = match args.get("ids") {
-                Some(Value::Array(items)) => items
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .and_then(|s| s.parse::<EntityId>().ok())
-                            .ok_or_else(|| format!("ids are {ID}, not {v}"))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                _ => return Err("ids is a list of entity ids".into()),
-            };
-            let session = server.session()?;
-            for (i, id) in ids.iter().enumerate() {
-                if i == 0 {
-                    session.select(Some(*id)).map_err(|e| e.to_string())?;
-                } else {
-                    session.add_to_selection(*id).map_err(|e| e.to_string())?;
-                }
-            }
-            let landed = session.drop_to_ground().map_err(|e| e.to_string())?;
-            Ok(vec![text(format!(
-                "{landed} of {} found ground",
-                ids.len()
-            ))])
-        }
         "path" => {
             let from = optional_vec3(args, "from")?.ok_or("from is required")?;
             let to = optional_vec3(args, "to")?.ok_or("to is required")?;
@@ -1186,16 +1180,6 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                 .map_err(|e| e.to_string())?;
             Ok(vec![text(format!("{id} is the prefab again"))])
         }
-        "undo" => {
-            let session = server.session()?;
-            let what = session.undo_label();
-            let done = session.undo().map_err(|e| e.to_string())?;
-            Ok(vec![text(match (done, what) {
-                (true, Some(what)) => format!("undone: {what}"),
-                (true, None) => "undone".into(),
-                (false, _) => "nothing to undo".into(),
-            })])
-        }
         "edits" => {
             let steps = server.session()?.undo_steps();
             Ok(vec![text(if steps.is_empty() {
@@ -1207,16 +1191,6 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
                     .map(|(i, s)| format!("{}. {s}", i + 1))
                     .collect::<Vec<_>>()
                     .join("\n")
-            })])
-        }
-        "redo" => {
-            let session = server.session()?;
-            let what = session.redo_label();
-            let done = session.redo().map_err(|e| e.to_string())?;
-            Ok(vec![text(match (done, what) {
-                (true, Some(what)) => format!("redone: {what}"),
-                (true, None) => "redone".into(),
-                (false, _) => "nothing to redo".into(),
             })])
         }
         "render" => {

@@ -2376,13 +2376,13 @@ impl Studio {
             let mut items = items.clone();
             for item in &mut items {
                 match item.action {
-                    Some(Action::Undo) => {
+                    Some(Action::Editor("undo")) => {
                         item.label = match self.session.undo_label() {
                             Some(l) => format!("Undo {l}"),
                             None => "Undo".into(),
                         }
                     }
-                    Some(Action::Redo) => {
+                    Some(Action::Editor("redo")) => {
                         item.label = match self.session.redo_label() {
                             Some(l) => format!("Redo {l}"),
                             None => "Redo".into(),
@@ -2409,11 +2409,11 @@ impl Studio {
         } else if node == t.step {
             Action::Step
         } else if node == t.undo {
-            Action::Undo
+            Action::Editor("undo")
         } else if node == t.redo {
-            Action::Redo
+            Action::Editor("redo")
         } else if node == t.save {
-            Action::Save
+            Action::Editor("save_scene")
         } else {
             return false;
         };
@@ -2776,9 +2776,12 @@ impl Studio {
                         }
                     }
                 }
-                Action::Save => {
-                    s.save_scene(None).map_err(e)?;
-                    s.say(Level::Info, "saved");
+                // The registry's actions: what the agent's tools run too.
+                Action::Editor(name) => {
+                    let said = runity_editor::actions::run(s, name, &Default::default())?;
+                    if name == "save_scene" {
+                        s.say(Level::Info, said);
+                    }
                 }
                 Action::CheckProject => {
                     let project = s.project().ok_or("no project is open")?;
@@ -2830,12 +2833,6 @@ impl Studio {
                 Action::StopGame => {
                     s.stop_game();
                 }
-                Action::Undo => {
-                    s.undo().map_err(e)?;
-                }
-                Action::Redo => {
-                    s.redo().map_err(e)?;
-                }
                 Action::Copy => {
                     let text = s.copy_selection();
                     self.clipboard.set(text);
@@ -2843,12 +2840,6 @@ impl Studio {
                 Action::Paste => {
                     let text = self.clipboard.get().unwrap_or_default();
                     s.paste(&text, None).map_err(e)?;
-                }
-                Action::Duplicate => {
-                    s.duplicate_selection().map_err(e)?;
-                }
-                Action::Delete => {
-                    s.delete_selection().map_err(e)?;
                 }
                 Action::SelectAll => {
                     s.select_everything().map_err(e)?;
@@ -2859,9 +2850,6 @@ impl Studio {
                 }
                 Action::Frame => {
                     s.focus_selected();
-                }
-                Action::DropToGround => {
-                    s.drop_to_ground().map_err(e)?;
                 }
                 Action::SnapToGrid => {
                     s.snap_selection().map_err(e)?;
@@ -2930,10 +2918,6 @@ impl Studio {
                 }
                 Action::Hide => {
                     s.toggle_hidden().map_err(e)?;
-                }
-                Action::Isolate => {
-                    let ids = s.selection();
-                    s.isolate(&ids).map_err(e)?;
                 }
                 Action::ShowAll => s.show_all(),
                 Action::View(side) => s.look_from(side),

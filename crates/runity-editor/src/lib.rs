@@ -19,6 +19,7 @@
 
 #[allow(unused_imports)]
 use runity::prelude::*;
+pub mod actions;
 mod animation;
 mod blockout;
 pub mod console;

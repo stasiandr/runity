@@ -14,6 +14,9 @@ use runity_editor::Side;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
+    /// An editor action by its name (`runity_editor::actions`): the one
+    /// the agent calls as a tool, with its label and key from there.
+    Editor(&'static str),
     NewScene,
     OpenScene(PathBuf),
     /// Ask for a scene file and open it.
@@ -25,7 +28,6 @@ pub enum Action {
     OpenPrefab(String),
     /// Save the prefab and go back to the scene it was opened from.
     ExitPrefab,
-    Save,
     ReloadAssets,
     /// `runity check`, its findings in the Console.
     CheckProject,
@@ -33,17 +35,12 @@ pub enum Action {
     Build(bool),
     StartGame,
     StopGame,
-    Undo,
-    Redo,
     Copy,
     Paste,
-    Duplicate,
-    Delete,
     SelectAll,
     SelectNone,
     Rename,
     Frame,
-    DropToGround,
     SnapToGrid,
     CreateEmpty,
     /// An empty entity under the selection.
@@ -57,7 +54,6 @@ pub enum Action {
     RevertOverrides,
     Unpack,
     Hide,
-    Isolate,
     ShowAll,
     View(Side),
     Perspective,
@@ -171,6 +167,17 @@ fn item(label: &str, action: Action) -> MenuItem {
     MenuItem::new(label, action)
 }
 
+/// An editor action's item, as the registry has it: its label and key are
+/// the ones the agent's tool of the same name answers to.
+fn editor(name: &'static str) -> MenuItem {
+    let action = runity_editor::actions::find(name).expect("a registered editor action");
+    let item = MenuItem::new(action.label, Action::Editor(name));
+    match action.key() {
+        Some(key) => item.key(key),
+        None => item,
+    }
+}
+
 /// The shortcut key, as the platform writes it.
 const CMD: bool = cfg!(target_os = "macos");
 
@@ -192,7 +199,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             vec![
                 item("New Scene", Action::NewScene),
                 item("Open Scene…", Action::OpenSceneDialog),
-                item("Save", Action::Save).key(key!("⌘S", "Ctrl+S")),
+                editor("save_scene"),
                 item("Save As…", Action::SaveAs),
                 MenuItem::separator(),
                 item("Import…", Action::Import),
@@ -209,20 +216,20 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
         (
             "Edit",
             vec![
-                item("Undo", Action::Undo).key(key!("⌘Z", "Ctrl+Z")),
-                item("Redo", Action::Redo).key(key!("⇧⌘Z", "Ctrl+Y")),
+                editor("undo"),
+                editor("redo"),
                 MenuItem::separator(),
                 item("Copy", Action::Copy).key(key!("⌘C", "Ctrl+C")),
                 item("Paste", Action::Paste).key(key!("⌘V", "Ctrl+V")),
-                item("Duplicate", Action::Duplicate).key(key!("⌘D", "Ctrl+D")),
-                item("Delete", Action::Delete).key("Delete"),
+                editor("duplicate_entity"),
+                editor("delete_entity"),
                 item("Rename", Action::Rename).key("F2"),
                 MenuItem::separator(),
                 item("Select All", Action::SelectAll).key(key!("⌘A", "Ctrl+A")),
                 item("Select None", Action::SelectNone).key("Esc"),
                 MenuItem::separator(),
                 item("Frame Selected", Action::Frame).key("F"),
-                item("Drop to Ground", Action::DropToGround).key("End"),
+                editor("drop_to_ground"),
                 item("Snap to Grid", Action::SnapToGrid),
             ],
         ),
@@ -255,7 +262,7 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                 item("Left", Action::View(Side::Left)),
                 MenuItem::separator(),
                 item("Hide Selection", Action::Hide).key("H"),
-                item("Isolate Selection", Action::Isolate).key("⇧H"),
+                editor("isolate"),
                 item("Show All", Action::ShowAll),
                 MenuItem::separator(),
                 item("Grid", Action::ToggleGrid),
@@ -330,15 +337,15 @@ pub fn create_menu() -> Vec<MenuItem> {
 pub fn context_menu() -> Vec<MenuItem> {
     vec![
         item("Rename", Action::Rename).key("F2"),
-        item("Duplicate", Action::Duplicate).key(key!("⌘D", "Ctrl+D")),
-        item("Delete", Action::Delete).key("Delete"),
+        editor("duplicate_entity"),
+        editor("delete_entity"),
         item("Copy", Action::Copy),
         item("Paste", Action::Paste),
         MenuItem::separator(),
         item("Frame Selected", Action::Frame).key("F"),
         item("Group Selection", Action::Group),
         item("Hide", Action::Hide).key("H"),
-        item("Isolate", Action::Isolate),
+        item("Isolate", Action::Editor("isolate")),
         MenuItem::separator(),
         item("Make Prefab", Action::MakePrefab),
         item("Make Prefab Variant…", Action::MakeVariant),
@@ -350,4 +357,28 @@ pub fn context_menu() -> Vec<MenuItem> {
         item("Create Empty", Action::CreateEmpty),
         item("Cube", Action::Create("builtin:cube")),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An action is registered once and seen by the menu and the agent:
+    /// every one of the registry's stands in the menu it names.
+    #[test]
+    fn every_editor_action_is_in_its_menu() {
+        let bar = menu_bar();
+        for action in runity_editor::actions::registry() {
+            let (_, items) = bar
+                .iter()
+                .find(|(title, _)| *title == action.menu)
+                .unwrap_or_else(|| panic!("no menu {} for {}", action.menu, action.name));
+            assert!(
+                items.iter().any(|i| i.action == Some(Action::Editor(action.name))),
+                "{} is not in {}",
+                action.name,
+                action.menu
+            );
+        }
+    }
 }
