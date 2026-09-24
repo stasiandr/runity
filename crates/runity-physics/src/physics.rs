@@ -1183,7 +1183,18 @@ impl PhysicsWorld {
                 continue;
             };
             let i = joint.impulses;
-            let force = (i[0] * i[0] + i[1] * i[1] + i[2] * i[2]).sqrt() / dt;
+            let mut force = (i[0] * i[0] + i[1] * i[1] + i[2] * i[2]).sqrt() / dt;
+            // A spring holds by its motors, which the joint's impulses do
+            // not count: its pull is its stiffness times how far apart its
+            // two anchors are.
+            if let crate::scene::Joint::Spring { stiffness, .. } = built.joint {
+                if let (Some(one), Some(two)) = (self.bodies.get(joint.body1), self.bodies.get(joint.body2)) {
+                    let a = one.position() * joint.data.local_frame1;
+                    let b = two.position() * joint.data.local_frame2;
+                    let apart = (a.translation.vector - b.translation.vector).norm();
+                    force = force.max(stiffness.max(0.0) * apart);
+                }
+            }
             if force > limit.0 {
                 snapped.push(entity);
             }
@@ -2162,6 +2173,30 @@ mod tests {
         }
         let angle = physics.hinge_angle(&world, door).unwrap();
         assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
+    }
+
+    /// A crop tethered to its bed by a spring that breaks at 250 N: pulled
+    /// gently it stays, pulled hard it comes loose.
+    #[test]
+    fn a_spring_tether_breaks_when_pulled_past_its_strength() {
+        for (pull, loose) in [(100.0, false), (600.0, true)] {
+            let text = r#"(entities: [
+                (id: "0000000000000001", name: "sponge", model: "builtin:cube", body: Dynamic,
+                 collider: Box(half: (0.2, 0.2, 0.2)), physics: (mass: Some(1.5), gravity: 0.0),
+                 joint: Spring(stiffness: 1000.0, damping: 10.0), joint_break: 250.0),
+            ])"#;
+            let scene: Scene = ron::from_str(text).unwrap();
+            let mut world = World::new();
+            spawn(&scene, &mut world);
+            let mut physics = PhysicsWorld::new(1.0 / 50.0);
+            physics.run(&mut world);
+            let sponge = world.query::<(hecs::Entity, &Physics)>().iter().next().map(|(e, _)| e).unwrap();
+            for _ in 0..50 {
+                physics.add_force(&world, sponge, Vec3::new(0.0, pull, 0.0));
+                physics.run(&mut world);
+            }
+            assert_eq!(world.get::<&JointBroken>(sponge).is_ok(), loose, "pulled with {pull} N");
+        }
     }
 
     /// A hinge held at an angle by its spring gets there, and against a
