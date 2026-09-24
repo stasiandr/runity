@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::link::{Ended, Link, LinkEvent, Mode};
-use super::protocol::{self, Entry, Record, ToClient, ToServer, PROTOCOL};
+use super::protocol::{self, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
 use super::PeerId;
 use crate::id::EntityId;
 
@@ -58,7 +58,7 @@ struct Held {
     prefab: Option<String>,
     despawn_with_owner: bool,
     gone: bool,
-    blobs: BTreeMap<String, Vec<u8>>,
+    blobs: BTreeMap<BlobId, Vec<u8>>,
     /// The newest tick taken from the owner; forgotten when it changes
     /// hands, since two owners' ticks are two clocks.
     tick: Option<u64>,
@@ -89,7 +89,21 @@ pub struct Server {
     pub log: Vec<String>,
     /// When the session began: the clock everyone agrees on.
     began: web_time::Instant,
+    /// Each entity's short number and when it was given; by number; the
+    /// next; and the ones given this tick, to tell everyone.
+    shorts: HashMap<EntityId, (u32, web_time::Instant)>,
+    by_short: HashMap<u32, EntityId>,
+    next_short: u32,
+    given: Vec<(EntityId, u32)>,
+    /// [`SHORT_AGE`], unless a test says.
+    pub short_age: Duration,
 }
+
+/// How long after a short number is given before the server names an
+/// entity by it: long enough that the reliable word of it is in on all
+/// but a failing link. Until then, and for anyone whose word is late, the
+/// entry is whole — or dropped, and the next one comes.
+pub const SHORT_AGE: Duration = Duration::from_secs(1);
 
 impl Server {
     /// A server for a game of `scene`, whose components hash to
@@ -110,7 +124,25 @@ impl Server {
             outboxes: BTreeMap::new(),
             log: Vec::new(),
             began: web_time::Instant::now(),
+            shorts: HashMap::new(),
+            by_short: HashMap::new(),
+            next_short: 1,
+            given: Vec::new(),
+            short_age: SHORT_AGE,
         }
+    }
+
+    /// An entity's short number, given now if it has none.
+    fn short(&mut self, id: EntityId) -> u32 {
+        if let Some((short, _)) = self.shorts.get(&id) {
+            return *short;
+        }
+        let short = self.next_short;
+        self.next_short += 1;
+        self.shorts.insert(id, (short, web_time::Instant::now()));
+        self.by_short.insert(short, id);
+        self.given.push((id, short));
+        short
     }
 
     pub fn session(&self) -> u64 {
@@ -184,6 +216,10 @@ impl Server {
     }
 
     fn flush(&mut self) {
+        if !self.given.is_empty() {
+            let pairs = std::mem::take(&mut self.given);
+            self.broadcast(ToClient::Shorts { pairs }, None, Mode::Reliable);
+        }
         for (peer, outbox) in std::mem::take(&mut self.outboxes) {
             let Some(client) = self.clients.get(&peer) else {
                 continue;
@@ -268,6 +304,7 @@ impl Server {
                         .push(format!("{id}: spawned twice; the second is dropped"));
                     return;
                 }
+                self.short(id);
                 self.entities.insert(
                     id,
                     Held {
@@ -340,6 +377,9 @@ impl Server {
     /// the scene's: nobody announces a level, and an entity nobody has
     /// touched has no record at all.
     fn held(&mut self, id: EntityId) -> Option<&mut Held> {
+        if !self.entities.contains_key(&id) {
+            self.short(id);
+        }
         Some(self.entities.entry(id).or_insert(Held {
             owner: PeerId::HOST,
             prefab: None,
@@ -430,6 +470,12 @@ impl Server {
             Some(peer),
             Mode::Reliable,
         );
+        // Every short number so far, before the world that may use them.
+        let mut pairs: Vec<(EntityId, u32)> = self.shorts.iter().map(|(id, (short, _))| (*id, *short)).collect();
+        pairs.sort_by_key(|p| p.1);
+        for pairs in pairs.chunks(64) {
+            self.reliable(peer, ToClient::Shorts { pairs: pairs.to_vec() });
+        }
         let mut records: Vec<Record> = self
             .entities
             .iter()
@@ -477,7 +523,14 @@ impl Server {
     fn snapshot(&mut self, peer: PeerId, tick: u64, settle: bool, entries: Vec<Entry>) {
         let mut forward = Vec::new();
         let mut removed = Vec::new();
-        for entry in entries {
+        for mut entry in entries {
+            if entry.short != 0 {
+                let Some(&id) = self.by_short.get(&entry.short) else {
+                    continue;
+                };
+                entry.id = id;
+                entry.short = 0;
+            }
             let known = self.entities.contains_key(&entry.id);
             // A scene entity first heard of in a snapshot is registered as
             // the host's; anyone else's word about it is not yet worth
@@ -495,7 +548,7 @@ impl Server {
                 continue;
             }
             held.tick = Some(tick);
-            let names: Vec<String> = held
+            let names: Vec<BlobId> = held
                 .blobs
                 .keys()
                 .filter(|n| !entry.blobs.iter().any(|(m, _)| m == *n))
@@ -505,7 +558,7 @@ impl Server {
                 held.blobs.remove(name);
             }
             for (name, bytes) in &entry.blobs {
-                held.blobs.insert(name.clone(), bytes.clone());
+                held.blobs.insert(*name, bytes.clone());
             }
             if !names.is_empty() {
                 removed.push(ToClient::ComponentsRemoved {
@@ -520,6 +573,14 @@ impl Server {
             self.broadcast(message, Some(peer), Mode::Reliable);
         }
         if !forward.is_empty() {
+            // Named short once everyone has had time to hear the number.
+            let forward = forward
+                .into_iter()
+                .map(|entry| match self.shorts.get(&entry.id) {
+                    Some(&(short, given)) if given.elapsed() >= self.short_age => entry.shortened(short),
+                    _ => entry,
+                })
+                .collect();
             let mode = if settle {
                 Mode::Reliable
             } else {
@@ -676,6 +737,9 @@ mod tests {
     use super::*;
     use crate::net::wire::Loopback;
 
+    /// A component's number in these tests.
+    const HP: BlobId = 1;
+
     /// A server on endpoint 0 of a loopback, and clients 1.. as raw links,
     /// so a test speaks the protocol itself.
     struct Rig {
@@ -754,10 +818,7 @@ mod tests {
             epoch: 1,
             tick,
             settle: false,
-            entries: vec![Entry {
-                id: id(n),
-                blobs: vec![("hp".into(), vec![value])],
-            }],
+            entries: vec![Entry::new(id(n), vec![(HP, vec![value])])],
         }
     }
 
@@ -802,7 +863,7 @@ mod tests {
             _ => None,
         });
         let world = world.expect("the world after the roster");
-        assert_eq!(world[0].blobs, [("hp".to_string(), vec![1])]);
+        assert_eq!(world[0].blobs, [(HP, vec![1])]);
         assert_eq!(world[0].owner, PeerId::HOST);
     }
 
@@ -872,18 +933,63 @@ mod tests {
                 epoch: 1,
                 tick: 6,
                 settle: true,
-                entries: vec![Entry {
-                    id: id(4),
-                    blobs: vec![],
-                }],
+                entries: vec![Entry::new(id(4), vec![])],
             }],
         );
         let heard = rig.run();
         assert!(heard[1].contains(&ToClient::ComponentsRemoved {
             id: id(4),
             tick: 6,
-            names: vec!["hp".into()]
+            names: vec![HP]
         }));
+    }
+
+    #[test]
+    fn an_entity_gets_a_short_number_told_to_all_and_is_named_by_it_both_ways() {
+        let mut rig = Rig::all_in(2);
+        rig.server.short_age = Duration::ZERO;
+        rig.say(0, vec![snapshot(1, 4, 1)]);
+        let heard = rig.run();
+        let told = ToClient::Shorts { pairs: vec![(id(4), 1)] };
+        assert!(heard[0].contains(&told) && heard[1].contains(&told), "{heard:?}");
+        let forwarded = |heard: &[ToClient]| {
+            heard.iter().find_map(|m| match m {
+                ToClient::Snapshot { entries, .. } => Some(entries.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(forwarded(&heard[1]), Some(vec![Entry::new(id(4), vec![(HP, vec![1])]).shortened(1)]));
+        // The owner names it short too; an unknown number is dropped.
+        rig.say(
+            0,
+            vec![ToServer::Snapshot {
+                epoch: 1,
+                tick: 2,
+                settle: false,
+                entries: vec![Entry::new(id(4), vec![(HP, vec![2])]).shortened(1), Entry::new(id(9), vec![]).shortened(77)],
+            }],
+        );
+        let heard = rig.run();
+        assert_eq!(forwarded(&heard[1]), Some(vec![Entry::new(id(4), vec![(HP, vec![2])]).shortened(1)]));
+        assert_eq!(rig.server.owner(id(9)), None);
+    }
+
+    #[test]
+    fn someone_coming_in_hears_every_short_number_before_the_world() {
+        let mut rig = Rig::new(2);
+        rig.say(0, vec![join("host")]);
+        rig.run();
+        rig.say(0, vec![ToServer::Ready { epoch: 1 }]);
+        rig.run();
+        rig.say(0, vec![snapshot(1, 4, 1), snapshot(1, 5, 1)]);
+        rig.run();
+        rig.say(1, vec![join("late")]);
+        rig.run();
+        rig.say(1, vec![ToServer::Ready { epoch: 1 }]);
+        let heard = rig.run().remove(1);
+        let shorts = heard.iter().position(|m| *m == ToClient::Shorts { pairs: vec![(id(4), 1), (id(5), 2)] });
+        let world = heard.iter().position(|m| matches!(m, ToClient::WorldState { .. }));
+        assert!(shorts.is_some() && shorts < world, "{heard:?}");
     }
 
     #[test]
