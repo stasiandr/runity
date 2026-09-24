@@ -21,6 +21,9 @@
 
 use std::sync::Arc;
 
+#[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+use crate::dlss;
+
 /// A device and the queue that feeds it.
 ///
 /// Held behind `Arc` because everything that allocates a buffer needs it and
@@ -47,7 +50,15 @@ pub struct Gpu {
     /// fragment, unless `RUNITY_NO_BINDLESS` is set. A test may turn it off
     /// before making a renderer.
     pub bindless: bool,
+    /// NVIDIA's DLSS, where the engine was built with the `dlss` feature,
+    /// the device is an RTX card on Vulkan and `RUNITY_NO_DLSS` is not set:
+    /// the render module's upscaler takes it before its own.
+    #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+    pub dlss: Option<dlss::Dlss>,
 }
+
+/// Set to leave DLSS off even where the device has it.
+pub const NO_DLSS_VAR: &str = "RUNITY_NO_DLSS";
 
 /// Set to leave hardware ray tracing off even where the adapter has it.
 pub const NO_RAY_TRACING_VAR: &str = "RUNITY_NO_RAY_TRACING";
@@ -88,18 +99,47 @@ impl Gpu {
     /// exists, which is what a golden-image run wants: the reference should
     /// not change because the machine running it has a different card.
     pub async fn headless(prefer_software: bool) -> Result<Self, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::None,
-                force_fallback_adapter: prefer_software,
-                compatible_surface: None,
-                // Defaults: we ask for downlevel limits anyway, so there is
-                // nothing to bucket.
-                apply_limit_buckets: Default::default(),
-            })
-            .await
-            .map_err(|_| GpuError::NoAdapter)?;
+        // DLSS asks for its own Vulkan extensions when the instance and the
+        // device are made, so where it may be wanted both are made through
+        // it; anything that goes wrong there leaves the plain way.
+        let options = wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::None,
+            force_fallback_adapter: prefer_software,
+            compatible_surface: None,
+            // Defaults: we ask for downlevel limits anyway, so there is
+            // nothing to bucket.
+            apply_limit_buckets: Default::default(),
+        };
+        let plain = || wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+        let (instance, adapter, mut dlss_support) = {
+            let through_dlss = (!prefer_software && std::env::var_os(NO_DLSS_VAR).is_none())
+                .then(dlss::instance)
+                .flatten();
+            // The DLSS instance is Vulkan's alone: without a Vulkan card
+            // behind it, the plain one, with every backend.
+            let found = match through_dlss {
+                Some((instance, support)) => match instance.request_adapter(&options).await {
+                    Ok(adapter) => Some((instance, adapter, Some(support))),
+                    Err(_) => None,
+                },
+                None => None,
+            };
+            match found {
+                Some(found) => found,
+                None => {
+                    let instance = plain();
+                    let adapter = instance.request_adapter(&options).await.map_err(|_| GpuError::NoAdapter)?;
+                    (instance, adapter, None)
+                }
+            }
+        };
+        #[cfg(not(all(feature = "dlss", any(windows, target_os = "linux"))))]
+        let (instance, adapter) = {
+            let instance = plain();
+            let adapter = instance.request_adapter(&options).await.map_err(|_| GpuError::NoAdapter)?;
+            (instance, adapter)
+        };
 
         // Hardware ray queries, where there are any: an experiment, so
         // asked for on top of the downlevel defaults rather than instead of
@@ -176,26 +216,43 @@ impl Gpu {
             required_features |= bindless_features;
             required_limits.max_binding_array_elements_per_shader_stage = 4096;
         }
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("runity"),
+            // Deliberately the downlevel defaults: whatever runs here has
+            // to run on a phone, and asking for desktop limits is how you
+            // find that out two months late.
+            required_limits,
+            required_features,
+            // SAFETY: wgpu's experimental features may misbehave or
+            // change; ray queries are used only by the renderer's ray
+            // tracing, an experiment that is off unless a frame asks,
+            // and mesh shaders only by the terrain, which has a way
+            // without them.
+            experimental_features: if ray_tracing || mesh_shaders {
+                unsafe { wgpu::ExperimentalFeatures::enabled() }
+            } else {
+                wgpu::ExperimentalFeatures::disabled()
+            },
+            ..Default::default()
+        };
+        #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+        let (device, queue, dlss) = match dlss_support.as_mut() {
+            Some(support) if adapter.get_info().backend == wgpu::Backend::Vulkan => {
+                let (device, queue) = dlss::device(&adapter, &descriptor, support)?;
+                let dlss = dlss::Dlss::new(&device, support);
+                (device, queue, dlss)
+            }
+            _ => {
+                let (device, queue) = adapter
+                    .request_device(&descriptor)
+                    .await
+                    .map_err(|e| GpuError::NoDevice(e.to_string()))?;
+                (device, queue, None)
+            }
+        };
+        #[cfg(not(all(feature = "dlss", any(windows, target_os = "linux"))))]
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("runity"),
-                // Deliberately the downlevel defaults: whatever runs here has
-                // to run on a phone, and asking for desktop limits is how you
-                // find that out two months late.
-                required_limits,
-                required_features,
-                // SAFETY: wgpu's experimental features may misbehave or
-                // change; ray queries are used only by the renderer's ray
-                // tracing, an experiment that is off unless a frame asks,
-                // and mesh shaders only by the terrain, which has a way
-                // without them.
-                experimental_features: if ray_tracing || mesh_shaders {
-                    unsafe { wgpu::ExperimentalFeatures::enabled() }
-                } else {
-                    wgpu::ExperimentalFeatures::disabled()
-                },
-                ..Default::default()
-            })
+            .request_device(&descriptor)
             .await
             .map_err(|e| GpuError::NoDevice(e.to_string()))?;
 
@@ -207,6 +264,8 @@ impl Gpu {
             ray_tracing,
             mesh_shaders,
             bindless,
+            #[cfg(all(feature = "dlss", any(windows, target_os = "linux")))]
+            dlss,
         })
     }
 
