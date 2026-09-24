@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/Textures/colormap.png",
+    hash: "515fa4db219bfda400cbdfd7cb5e9801",
+    id: Some("be74325ae3f5d86889e2ab8d67fb0308"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

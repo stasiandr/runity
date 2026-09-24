@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/cabbage.glb",
+    hash: "b0b79523dce96d1df74e1098b1cefff2",
+    id: Some("a0245582184e7cc62cb98c6b31203099"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

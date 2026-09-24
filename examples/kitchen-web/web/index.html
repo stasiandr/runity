@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#1d1b24">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Kitchen Rush</title>
+<meta name="description" content="A little Overcooked on the runity engine, in the browser: WebGPU, touch sticks, and a room code to cook with friends.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🍲</text></svg>">
+<style>
+  :root {
+    --bg: #1d1b24;
+    --ink: #fff8ec;
+    --muted: #cbbfae;
+    --accent: #f2a541;
+    --accent-ink: #2a1c05;
+    --glass: rgba(20, 17, 28, 0.55);
+    --ring: rgba(255, 248, 236, 0.35);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  canvas#runity { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; outline: none; }
+
+  /* Loading and failing */
+  #cover {
+    position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; background: radial-gradient(ellipse at 50% 35%, #3a2f45 0%, var(--bg) 70%); z-index: 20; padding: 24px; text-align: center;
+    transition: opacity .4s ease;
+  }
+  #cover.gone { opacity: 0; pointer-events: none; }
+  #cover h1 { margin: 0; font-size: clamp(30px, 7vw, 54px); letter-spacing: .02em; }
+  #cover p { margin: 0; color: var(--muted); max-width: 30em; }
+  .bar { width: min(320px, 70vw); height: 8px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); border-radius: inherit; transition: width .2s; }
+  #cover.failed .bar { display: none; }
+  #cover a { color: var(--accent); }
+
+  /* Room badge */
+  #room {
+    position: fixed; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 10;
+    display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 99px;
+    background: var(--glass); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font-weight: 600;
+  }
+  #room[hidden] { display: none; }
+  #room b { letter-spacing: .18em; font-size: 17px; }
+  /* In the kitchen on a phone the badge makes room for the orders. */
+  body.touch.kitchen #room { font-size: 12px; padding: 3px 4px 3px 10px; gap: 6px; }
+  body.touch.kitchen #room b { font-size: 13px; }
+  body.touch.kitchen #room .pill { padding: 4px 10px; }
+  button.pill {
+    border: 0; border-radius: 99px; padding: 7px 14px; background: var(--accent); color: var(--accent-ink);
+    font: inherit; font-weight: 700; cursor: pointer;
+  }
+
+  /* Join dialog */
+  #join-dialog {
+    position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center;
+    background: rgba(10, 8, 14, .6); padding: 16px;
+  }
+  #join-dialog[hidden] { display: none; }
+  #join-dialog form {
+    background: #2a2533; border-radius: 18px; padding: 22px; width: min(360px, 100%);
+    display: flex; flex-direction: column; gap: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  }
+  #join-dialog h2 { margin: 0; font-size: 20px; }
+  #join-dialog input {
+    font: 700 26px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .3em; text-align: center; text-transform: uppercase;
+    padding: 12px; border-radius: 12px; border: 2px solid var(--ring); background: #1d1a24; color: var(--ink); width: 100%;
+    -webkit-user-select: text; user-select: text;
+  }
+  #join-dialog .row { display: flex; gap: 10px; justify-content: flex-end; }
+  #join-dialog .ghost { background: transparent; color: var(--ink); box-shadow: inset 0 0 0 2px var(--ring); }
+
+  #toast {
+    position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 40;
+    background: var(--glass); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    padding: 10px 16px; border-radius: 12px; max-width: calc(100vw - 32px); overflow-wrap: anywhere;
+    opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+
+  /* Touch controls: only on touch screens, only in the kitchen */
+  #pad { position: fixed; inset: 0; z-index: 5; pointer-events: none; display: none; }
+  body.touch.kitchen #pad { display: block; }
+  #stick-zone {
+    position: absolute; left: 0; bottom: 0; width: 45vw; height: 70vh; pointer-events: auto; touch-action: none;
+  }
+  #stick {
+    position: absolute; width: 132px; height: 132px; margin: -66px 0 0 -66px; border-radius: 50%;
+    border: 2px solid var(--ring); background: rgba(20, 17, 28, .28);
+    left: calc(max(24px, env(safe-area-inset-left)) + 90px); top: calc(100% - max(24px, env(safe-area-inset-bottom)) - 90px);
+    transition: opacity .2s; opacity: .75;
+  }
+  #stick.held { opacity: 1; transition: none; }
+  #knob {
+    position: absolute; left: 50%; top: 50%; width: 58px; height: 58px; margin: -29px 0 0 -29px; border-radius: 50%;
+    background: rgba(255, 248, 236, .85); box-shadow: 0 4px 14px rgba(0,0,0,.35);
+  }
+  #buttons {
+    position: absolute; right: max(18px, env(safe-area-inset-right)); bottom: calc(max(12px, env(safe-area-inset-bottom)) + 40px);
+    width: 212px; height: 212px; pointer-events: none;
+  }
+  .act {
+    position: absolute; width: 78px; height: 78px; border-radius: 50%; pointer-events: auto; touch-action: none;
+    border: 0; color: var(--accent-ink); font: 800 13px/1.05 system-ui, sans-serif; text-transform: uppercase;
+    display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 2px;
+    box-shadow: 0 5px 0 rgba(0,0,0,.28), 0 8px 20px rgba(0,0,0,.25); opacity: .92;
+  }
+  .act span { font-size: 22px; line-height: 1; }
+  .act.down { transform: translateY(3px); box-shadow: 0 2px 0 rgba(0,0,0,.28); opacity: 1; }
+  .act[data-button="South"] { right: 67px; bottom: 0; background: #f2a541; width: 86px; height: 86px; }
+  .act[data-button="West"]  { right: 142px; bottom: 58px; background: #7cc6a4; }
+  .act[data-button="East"]  { right: 0; bottom: 80px; background: #ef7a6d; }
+  .act[data-button="North"] { right: 70px; bottom: 132px; background: #a8b7f0; width: 64px; height: 64px; font-size: 11px; }
+  #menu-btn {
+    position: absolute; left: max(12px, env(safe-area-inset-left)); top: 38%;
+    width: 46px; height: 46px; border-radius: 14px; border: 0; pointer-events: auto; font-size: 20px;
+    background: var(--glass); color: var(--ink); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+
+  #turn {
+    display: none; position: fixed; inset: 0; z-index: 25; background: var(--bg);
+    align-items: center; justify-content: center; flex-direction: column; gap: 12px; text-align: center; padding: 24px;
+  }
+  #turn div { font-size: 54px; animation: turn 2s ease-in-out infinite; }
+  @keyframes turn { 0%, 30% { transform: rotate(0) } 60%, 100% { transform: rotate(-90deg) } }
+  @media (orientation: portrait) and (pointer: coarse) { body.started #turn { display: flex; } }
+</style>
+</head>
+<body>
+<canvas id="runity" tabindex="0"></canvas>
+
+<div id="cover">
+  <h1>🍲 Kitchen Rush</h1>
+  <p id="cover-text">Heating up the stoves…</p>
+  <div class="bar"><i id="bar"></i></div>
+</div>
+
+<div id="room" hidden>
+  <span>Room</span><b id="room-code"></b>
+  <button class="pill" id="room-share" type="button">Invite</button>
+</div>
+
+<div id="join-dialog" hidden>
+  <form id="join-form" autocomplete="off">
+    <h2>Join a friend's kitchen</h2>
+    <input name="code" maxlength="8" inputmode="text" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
+    <div class="row">
+      <button class="pill ghost" type="button" id="join-cancel">Cancel</button>
+      <button class="pill" type="submit">Join</button>
+    </div>
+  </form>
+</div>
+
+<div id="pad" aria-hidden="true">
+  <div id="stick-zone"><div id="stick"><div id="knob"></div></div></div>
+  <div id="buttons">
+    <button class="act" data-button="South"><span>✋</span>Grab</button>
+    <button class="act" data-button="West"><span>🔪</span>Chop</button>
+    <button class="act" data-button="East"><span>🍅</span>Throw</button>
+    <button class="act" data-button="North"><span>📍</span>Here</button>
+  </div>
+  <button id="menu-btn" data-button="Select" aria-label="Pause">⏸</button>
+</div>
+
+<div id="turn"><div>📱</div><p>Turn your phone sideways to cook.</p></div>
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="runity-net.js"></script>
+<script src="pad.js"></script>
+<script type="module">
+  import init, * as wasm from "./kitchen.js";
+
+  const cover = document.getElementById("cover");
+  const coverText = document.getElementById("cover-text");
+  const bar = document.getElementById("bar");
+
+  function fail(why) {
+    cover.classList.remove("gone");
+    cover.classList.add("failed");
+    coverText.innerHTML = why;
+  }
+  window.runityFailed = (why) => fail("Something went wrong: " + String(why).replace(/</g, "&lt;"));
+
+  const toast = document.getElementById("toast");
+  let toastTimer = null;
+  window.runityToast = (text) => {
+    toast.textContent = text;
+    toast.classList.add("on");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove("on"), 3500);
+  };
+
+  // The player's files (prefs, best score), kept in the browser between visits.
+  const SAVED = "runity:file:";
+  function pack(entries) {
+    const enc = new TextEncoder();
+    const parts = [];
+    let size = 4;
+    for (const [path, bytes] of entries) {
+      const name = enc.encode(path);
+      parts.push([name, bytes]);
+      size += 8 + name.length + bytes.length;
+    }
+    const out = new Uint8Array(size);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, parts.length, true);
+    let at = 4;
+    for (const [name, bytes] of parts) {
+      view.setUint32(at, name.length, true); at += 4; out.set(name, at); at += name.length;
+      view.setUint32(at, bytes.length, true); at += 4; out.set(bytes, at); at += bytes.length;
+    }
+    return out;
+  }
+  function saved() {
+    const entries = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key.startsWith(SAVED)) continue;
+        const text = atob(localStorage.getItem(key));
+        entries.push([key.slice(SAVED.length), Uint8Array.from(text, (c) => c.charCodeAt(0))]);
+      }
+    } catch (_) {}
+    return pack(entries);
+  }
+
+  let data = null;
+  window.runityPage = {
+    data: () => data,
+    saved,
+    save(path, bytes) {
+      try {
+        let text = "";
+        for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+        localStorage.setItem(SAVED + path, btoa(text));
+      } catch (_) {}
+    },
+    phase(name) {
+      document.body.classList.toggle("kitchen", name === "kitchen");
+      window.runityPad && window.runityPad.reset();
+    },
+    // `?quality=low|medium|high|ultra`; a phone starts on low.
+    quality() {
+      const asked = new URLSearchParams(location.search).get("quality");
+      if (asked) return asked;
+      return document.body.classList.contains("touch") ? "low" : "";
+    },
+  };
+
+  // Sound may only start after the player touches the page: every audio
+  // context the game makes is woken on the first touch or key.
+  const contexts = [];
+  for (const name of ["AudioContext", "webkitAudioContext"]) {
+    const Real = window[name];
+    if (!Real) continue;
+    window[name] = class extends Real {
+      constructor(...args) {
+        super(...args);
+        contexts.push(this);
+      }
+    };
+  }
+  const wake = () => {
+    for (const ctx of contexts) if (ctx.state !== "running") ctx.resume().catch(() => {});
+  };
+  for (const type of ["pointerdown", "keydown", "touchend"]) addEventListener(type, wake, { capture: true, passive: true });
+
+  // Where the room is shown and shared.
+  const room = document.getElementById("room");
+  document.getElementById("room-share").addEventListener("click", () => runityNet.invite());
+  runityNet.onRoom = (code) => {
+    room.hidden = !code || runityNet.state() !== "hosting";
+    document.getElementById("room-code").textContent = code || "";
+  };
+  const dialog = document.getElementById("join-dialog");
+  document.getElementById("join-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    dialog.hidden = true;
+    runityNet.join(e.target.code.value);
+    document.getElementById("runity").focus();
+  });
+  document.getElementById("join-cancel").addEventListener("click", () => { dialog.hidden = true; });
+
+  async function fetchData(url) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(url + ": " + response.status);
+    const total = Number(response.headers.get("content-length")) || 0;
+    const reader = response.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      bar.style.width = (total ? Math.min(95, (got / total) * 90) : Math.min(90, got / 3e4)) + "%";
+    }
+    const blob = new Blob(chunks);
+    const plain = blob.stream().pipeThrough(new DecompressionStream("gzip"));
+    return new Uint8Array(await new Response(plain).arrayBuffer());
+  }
+
+  async function main() {
+    if (!navigator.gpu) {
+      fail("This browser has no WebGPU, which the kitchen is drawn with.<br>Try a recent Chrome or Edge, Safari on iOS&nbsp;26 / macOS&nbsp;26, or Chrome on Android.");
+      return;
+    }
+    const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+    if (!adapter) {
+      fail("WebGPU is here but gave no adapter. It may be switched off in this browser's settings.");
+      return;
+    }
+    coverText.textContent = "Fetching the kitchen…";
+    // The data first: the game's `main` runs as soon as it is loaded, and
+    // reads it at once.
+    data = await fetchData("data.bin.gz");
+    coverText.textContent = "Lighting the stoves…";
+    bar.style.width = "100%";
+    await init();
+    runityNet.wasm = wasm;
+    // A link with a room in it: straight to the friend's kitchen.
+    const join = /join=([A-Za-z0-9]+)/.exec(location.hash);
+    if (join) runityNet.join(join[1]);
+    document.body.classList.add("started");
+    // Gone once the first frames are up.
+    setTimeout(() => cover.classList.add("gone"), 900);
+  }
+  main().catch((e) => fail("Could not start: " + String(e && e.message || e).replace(/</g, "&lt;")));
+</script>
+</body>
+</html>

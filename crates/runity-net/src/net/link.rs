@@ -17,7 +17,7 @@
 //! acknowledgement, `3` a ping, `4` goodbye.
 
 use std::collections::{BTreeMap, HashMap};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use super::wire::Transport;
 use super::PeerId;

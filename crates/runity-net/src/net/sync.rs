@@ -25,7 +25,7 @@
 //!   change of owner rather than restarting.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use web_time::Instant;
 
 use glam::{Quat, Vec3};
 

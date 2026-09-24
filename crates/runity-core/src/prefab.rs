@@ -58,7 +58,7 @@ impl Prefabs {
     pub fn open(directory: impl AsRef<Path>) -> std::io::Result<(Self, Vec<(PathBuf, String)>)> {
         let mut prefabs = Self::new();
         let mut problems = Vec::new();
-        for entry in std::fs::read_dir(directory.as_ref())? {
+        for entry in crate::files::read_dir(directory.as_ref())? {
             let path = entry?.path();
             if path.extension().and_then(|e| e.to_str()) != Some(EXTENSION) {
                 continue;
@@ -86,9 +86,12 @@ impl Prefabs {
             if !path.ends_with(&format!(".{EXTENSION}")) {
                 continue;
             }
-            let read = data.read_text(&path).map_err(|e| e.to_string()).and_then(|text| {
-                ron::from_str::<EntityDesc>(&text).map_err(|e| format!("{path}:{e}"))
-            });
+            let read = data
+                .read_text(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| {
+                    ron::from_str::<EntityDesc>(&text).map_err(|e| format!("{path}:{e}"))
+                });
             match read {
                 Ok(mut desc) => {
                     crate::scene::derive_ids(std::slice::from_mut(&mut desc), &mut HashSet::new());
@@ -132,7 +135,7 @@ impl Prefabs {
     /// it is the one somebody chose to write.
     pub fn add_imported(&mut self, library: impl AsRef<Path>) -> Vec<(PathBuf, String)> {
         let mut problems = Vec::new();
-        let Ok(entries) = std::fs::read_dir(library.as_ref()) else {
+        let Ok(entries) = crate::files::read_dir(library.as_ref()) else {
             return problems;
         };
         let mut paths: Vec<PathBuf> = entries
@@ -166,7 +169,8 @@ impl Prefabs {
     /// Read one prefab file, returning its name and what is in it.
     pub fn read(path: impl AsRef<Path>) -> Result<(String, EntityDesc), String> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text =
+            crate::files::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut desc: EntityDesc =
             ron::from_str(&text).map_err(|e| format!("{}:{e}", path.display()))?;
         // The same rule as a scene: an entity without an ID gets one, and a
@@ -303,7 +307,11 @@ pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
 /// [`instantiate`], with what the modules grow on an expanded scene —
 /// copies set along a spline — added before who owns what is read off it:
 /// what grows under a line is that line's.
-pub fn instantiate_with(scene: &Scene, prefabs: &Prefabs, grow: impl Fn(&mut [EntityDesc])) -> Instanced {
+pub fn instantiate_with(
+    scene: &Scene,
+    prefabs: &Prefabs,
+    grow: impl Fn(&mut [EntityDesc]),
+) -> Instanced {
     let mut problems = Vec::new();
     let mut parts = HashMap::new();
     let mut entities: Vec<EntityDesc> = scene
@@ -702,4 +710,3 @@ fn resolve(
     }
     Some(root)
 }
-

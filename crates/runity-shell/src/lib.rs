@@ -5,6 +5,9 @@
 //! on the desktop. The editor, iOS and Android are hosts of their own.
 
 pub mod shell;
+/// The page's own controls, in the browser: sticks and buttons on screen.
+#[cfg(target_arch = "wasm32")]
+pub mod web;
 
 pub use shell::{run, Game, WindowConfig};
 

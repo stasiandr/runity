@@ -554,7 +554,11 @@ impl PostProcess {
             } else {
                 self.auto_exposure
             },
-            upscaling: if half { other.upscaling } else { self.upscaling },
+            upscaling: if half {
+                other.upscaling
+            } else {
+                self.upscaling
+            },
             lens_flare: LensFlare {
                 intensity: f(self.lens_flare.intensity, other.lens_flare.intensity),
                 tint: v3(self.lens_flare.tint, other.lens_flare.tint),
@@ -735,7 +739,7 @@ pub(crate) struct PostRenderer {
     size: (u32, u32),
     /// Whether the output format encodes sRGB itself.
     output_srgb: bool,
-    started: std::time::Instant,
+    started: web_time::Instant,
     /// The meter and the exposure it keeps ([`crate::exposure`]).
     metering: crate::exposure::Metering,
     /// The camera's vertical field of view, 0 for an orthographic one:
@@ -882,7 +886,7 @@ impl PostRenderer {
             black,
             size: (0, 0),
             output_srgb: output.is_srgb(),
-            started: std::time::Instant::now(),
+            started: web_time::Instant::now(),
             metering: crate::exposure::Metering::new(gpu),
             fov_y_degrees: 0.0,
             flares: Vec::new(),

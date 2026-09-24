@@ -1,0 +1,8 @@
+// A cook (Kenney's mini character): standing, walking, running by how fast
+// it goes — `speed`, which the game sets from how far it moved (pose.rs).
+(
+    start: "move",
+    states: {
+        "move": (blend_by: "speed", blend: [(0.0, "idle"), (1.6, "walk"), (4.0, "sprint")]),
+    },
+)

@@ -5,7 +5,6 @@
 //! diff, and `git` can show either one. Nothing here knows about rendering or
 //! physics; it is the description they are both built from.
 
-
 use std::collections::BTreeMap;
 
 use std::path::Path;
@@ -15,7 +14,6 @@ use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 
 use crate::id::EntityId;
-
 
 /// Position, rotation and scale, in the form a person can edit.
 ///
@@ -490,7 +488,9 @@ impl Scene {
     /// A scene read through a game's [`crate::data::Data`], at its path
     /// there: the same scene on the desktop and on the web.
     pub fn load_from(data: &dyn crate::data::Data, path: &str) -> anyhow::Result<Self> {
-        let text = data.read_text(path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+        let text = data
+            .read_text(path)
+            .map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
         let mut scene: Scene = ron::from_str(&text).map_err(|e| anyhow::anyhow!("{path}:{e}"))?;
         scene.assign_ids();
         Ok(scene)
@@ -498,7 +498,7 @@ impl Scene {
 
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path)
+        let text = crate::files::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
         // The path goes into the message: ron says where in the file and what
         // it expected, and without the file that is half an answer.
@@ -786,7 +786,6 @@ impl EntityDesc {
         self.parts.remove(name);
         self
     }
-
 }
 
 impl Override {

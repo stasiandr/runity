@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/fx/smoke_02.png",
+    hash: "e389c87939faa8c7e9f382082f244ca4",
+    id: Some("e57499c022ddabee7f8b92b2ce4027ad"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

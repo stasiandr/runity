@@ -40,6 +40,21 @@ pub struct Style {
     pub shadow: f32,
 }
 
+impl Style {
+    /// The same look at `scale` times the size: what a screen laid out at
+    /// 1280×720 draws its widgets with on a bigger or smaller one, so a
+    /// button's words grow with the button.
+    pub fn scaled(self, scale: f32) -> Self {
+        Self {
+            text_size: self.text_size * scale,
+            radius: self.radius * scale,
+            bevel: self.bevel * scale,
+            shadow: self.shadow * scale,
+            ..self
+        }
+    }
+}
+
 impl Default for Style {
     fn default() -> Self {
         Self {

@@ -11,7 +11,7 @@
 //! between homes. Those need a platform (Steam) or a relay, and stay open.
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 

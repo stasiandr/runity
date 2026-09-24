@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/furniture/kitchenSink.glb",
+    hash: "c93f2dd25cff48589fa46950a3a9884a",
+    id: Some("f20f5f52833b246eed122739f3b2bdc7"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

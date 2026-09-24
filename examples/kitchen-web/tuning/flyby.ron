@@ -1,0 +1,28 @@
+// The camera's tour of the kitchen while players gather: from shot to shot
+// on a smooth curve, a pause at each. `at` is where the camera is, `look`
+// what it looks at — a little right of what it shows, as the lobby card
+// is on the right. Change and save while the game runs.
+(
+    travel: 3.5,
+    hold: 2.0,
+    // The lens: focused on what the camera looks at, a long lens wide open
+    // leaves the rest soft.
+    focal_length: 100.0,
+    aperture: 1.4,
+    shots: [
+        // The whole kitchen, from the front.
+        (at: (0.5, 5.4, 6.7), look: (1.9, 0.4, 0.2)),
+        // The tomato crates.
+        (at: (-3.2, 3.0, -0.5), look: (-1.7, 1.0, -2.8)),
+        // The boards, knives ready.
+        (at: (-2.5, 3.0, -0.9), look: (-4.8, 1.0, -2.3)),
+        // The stoves: the pots, the burners.
+        (at: (1.5, 2.8, -0.7), look: (2.3, 1.1, -3.0)),
+        // The plates.
+        (at: (2.5, 3.0, -1.0), look: (4.8, 1.0, 0.3)),
+        // The window, its bell, the customers beyond.
+        (at: (-1.5, 3.2, 0.2), look: (-2.4, 1.0, 3.0)),
+        // The onions.
+        (at: (-2.6, 3.0, 1.0), look: (-5.3, 1.0, 1.3)),
+    ],
+)

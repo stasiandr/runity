@@ -20,6 +20,16 @@ rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
 wgpu = "30"
+# The clock: `std::time` on the desktop, the page's in the browser.
+web-time = "1.1"
+
+# In the browser wgpu is WebGPU: its objects are made shareable across the
+# one thread there is (the render prepares draws with `jobs::map`, which
+# asks for `Sync`), and naga comes in for the shader checks `reload_shader`
+# does, which on native wgpu's own core brings.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", features = ["fragile-send-sync-non-atomic-wasm", "naga-ir"] }
+naga = { version = "30", features = ["wgsl-in"] }
 
 # MetalFX, Apple's upscaler (`upscale`): reached through wgpu's Metal
 # handles, so only on Apple's systems, and only with the `metalfx` feature.

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/food/loaf-round.glb",
+    hash: "7153828d0790a3faa5eafc30fbc94cf6",
+    id: Some("8eda55fa8c6e299b5d3ca15d8bc11b37"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -89,7 +89,8 @@ pub struct Dialogue {
 impl Dialogue {
     pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = runity_core::files::read_to_string(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         ron::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 

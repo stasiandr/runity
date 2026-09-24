@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "ui/speech.ron",
+    id: Some("faf146ad17561b1a8a5009868fe06a53"),
+)

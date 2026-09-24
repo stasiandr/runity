@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/star_fx.rmat",
+    hash: "8ed76f70c7554392201cb739052fdce7",
+    id: Some("4df6a5556e923f32e94fedb0cfd0651d"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

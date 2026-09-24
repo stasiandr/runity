@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use crate::net::{PeerId, Transport};
 

@@ -1,0 +1,10 @@
+// Escape in the kitchen: carry on, or leave. Alone, the kitchen waits; in
+// a session it goes on without you.
+(
+    elements: [
+        (id: "card", anchor: Center, at: (0, 0), size: (360, 220), kind: Panel),
+        (id: "title", anchor: Center, at: (0, -70), size: (320, 44), kind: Text("@pause.title"), text_size: 34, align: Center),
+        (id: "resume", anchor: Center, at: (0, -6), size: (260, 44), kind: Button("@pause.resume")),
+        (id: "leave", anchor: Center, at: (0, 52), size: (260, 44), kind: Button("@pause.leave")),
+    ],
+)

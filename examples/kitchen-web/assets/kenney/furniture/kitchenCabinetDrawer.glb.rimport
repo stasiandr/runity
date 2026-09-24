@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/kenney/furniture/kitchenCabinetDrawer.glb",
+    hash: "cb65ad6fbf797ac41cf5d34ccbaef6ac",
+    id: Some("b74b7844c96df687ef97a8e247f33617"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

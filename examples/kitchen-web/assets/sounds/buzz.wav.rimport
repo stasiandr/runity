@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "assets/sounds/buzz.wav",
+    hash: "dab5bb2b30987f99bac1b15d182b5163",
+    id: Some("fe86e81a474773cc3c8042c86b6f9537"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

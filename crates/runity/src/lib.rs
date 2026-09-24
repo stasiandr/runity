@@ -20,17 +20,17 @@ pub use hecs;
 pub use ron;
 pub use runity_core::impl_parts;
 
-#[cfg(feature = "input")]
-pub use runity_input::actions;
-pub use runity_geometry::animation;
-pub use runity_render::appearance;
 #[cfg(feature = "animation")]
 pub use runity_animation::animator;
 #[cfg(feature = "animation")]
 pub use runity_animation::animgraph;
 /// The asset archive as the core has it: its header, its ID.
 pub use runity_core::asset as asset_core;
+pub use runity_geometry::animation;
 pub use runity_geometry::mesh_asset;
+#[cfg(feature = "input")]
+pub use runity_input::actions;
+pub use runity_render::appearance;
 mod asset_tests;
 
 /// Assets: the core's archive and IDs, and every module's formats, under
@@ -60,51 +60,53 @@ pub mod asset {
         }
     }
 }
-pub use runity_render::atmosphere;
 #[cfg(feature = "audio")]
 pub use runity_audio::audio;
-#[cfg(feature = "physics")]
-pub use runity_net::bench;
-pub use runity_geometry::builtin;
-pub use runity_render::clouds;
-pub use runity_render::cluster;
 pub use runity_core::components;
 pub use runity_core::crash;
-pub use runity_render::decals;
-pub use runity_render::distance;
+pub use runity_core::edit;
+pub use runity_core::files;
+pub use runity_core::web_time;
 #[cfg(feature = "dialogue")]
 pub use runity_dialogue::dialogue;
 #[cfg(feature = "discord")]
 pub use runity_discord::discord;
-pub use runity_core::edit;
+pub use runity_geometry::builtin;
+#[cfg(feature = "physics")]
+pub use runity_net::bench;
+pub use runity_render::atmosphere;
+pub use runity_render::clouds;
+pub use runity_render::cluster;
+pub use runity_render::decals;
+pub use runity_render::distance;
 pub use runity_render::exposure;
 pub use runity_render::floaters;
 pub use runity_render::foliage;
 pub use runity_render::footprints;
 #[cfg(feature = "physics")]
 pub mod gizmo;
-pub use runity_gpu::gpu;
 #[cfg(feature = "animation")]
 pub use runity_animation::graph_text;
 pub use runity_core::id;
 pub use runity_core::input;
-#[cfg(feature = "net")]
-pub use runity_net::lan;
 pub use runity_core::layers;
-pub use runity_render::graph;
-pub use runity_render::lens;
-pub use runity_render::vsm;
-pub use runity_render::ddgi;
-pub use runity_render::upscale;
-pub use runity_render::occlusion;
-pub use runity_render::particles_gpu;
-pub use runity_render::lod;
 pub use runity_core::library;
 pub use runity_core::links;
+pub use runity_gpu::gpu;
+#[cfg(feature = "net")]
+pub use runity_net::lan;
+pub use runity_render::ddgi;
+pub use runity_render::graph;
+pub use runity_render::lens;
 pub use runity_render::lights;
+pub use runity_render::lod;
+pub use runity_render::occlusion;
+pub use runity_render::particles_gpu;
+pub use runity_render::upscale;
+pub use runity_render::vsm;
 pub mod live;
-pub use runity_render::material;
 pub use runity_core::merge;
+pub use runity_render::material;
 pub use runity_render::moods;
 /// Clips that move a scene's things: the animation module's, with the
 /// sound and particles a clip turns written by the modules that own them.
@@ -130,22 +132,22 @@ pub mod motion {
         })
     }
 }
+pub use runity_core::parts;
+pub use runity_core::perf;
+pub use runity_core::player_prefs;
+pub use runity_core::prefab;
+pub use runity_core::project;
 #[cfg(feature = "navigation")]
 pub use runity_navigation::navigation;
 #[cfg(feature = "net")]
 pub use runity_net::net;
-pub use runity_render::particles;
-pub use runity_render::passes;
-pub use runity_core::parts;
 #[cfg(feature = "net")]
 pub use runity_net::party;
-pub use runity_core::perf;
 #[cfg(feature = "physics")]
 pub use runity_physics::physics;
-pub use runity_core::player_prefs;
+pub use runity_render::particles;
+pub use runity_render::passes;
 pub use runity_render::post;
-pub use runity_core::prefab;
-pub use runity_core::project;
 pub mod query;
 
 /// The loop by phases (Unity's PlayerLoop; `runity_core::player_loop`),
@@ -174,7 +176,11 @@ pub mod player_loop {
             .add(Phase::FixedUpdate, "soft", crate::soft::step)
             .add(Phase::PostLateUpdate, "soft_look", crate::soft::show);
         #[cfg(feature = "destruction")]
-        player_loop.add(Phase::PostLateUpdate, "dents_look", crate::destruction::show);
+        player_loop.add(
+            Phase::PostLateUpdate,
+            "dents_look",
+            crate::destruction::show,
+        );
         #[cfg(feature = "fluid")]
         player_loop
             .add(Phase::FixedUpdate, "fluid", crate::fluid::step)
@@ -182,7 +188,11 @@ pub mod player_loop {
         #[cfg(feature = "character")]
         player_loop
             .add(Phase::FixedUpdate, "crawl", crate::character::crawl)
-            .add(Phase::PostLateUpdate, "character_look", crate::character::show);
+            .add(
+                Phase::PostLateUpdate,
+                "character_look",
+                crate::character::show,
+            );
         runity_render::systems(&mut player_loop);
         player_loop
     }
@@ -220,7 +230,18 @@ pub mod modules {
     /// `default-features = false`: `default` in its Cargo.toml, less what
     /// is not a module's (a render pass's, as `ray-tracing`).
     pub const DEFAULT_FEATURES: &[&str] = &[
-        "animation", "character", "destruction", "dialogue", "fluid", "input", "navigation", "net", "physics", "routes", "soft", "spline",
+        "animation",
+        "character",
+        "destruction",
+        "dialogue",
+        "fluid",
+        "input",
+        "navigation",
+        "net",
+        "physics",
+        "routes",
+        "soft",
+        "spline",
     ];
 
     /// The sets `runity new` offers (DNA, postulate 8), by name: `bare`,
@@ -232,7 +253,9 @@ pub mod modules {
     pub fn set(name: &str) -> Option<Vec<String>> {
         let names: Vec<&str> = match name {
             "bare" => Vec::new(),
-            "basic" => vec!["render", "input", "overlay", "audio", "physics", "net", "shell"],
+            "basic" => vec![
+                "render", "input", "overlay", "audio", "physics", "net", "shell",
+            ],
             "full" => return Some(official().into_iter().map(|m| m.name).collect()),
             _ => return None,
         };
@@ -245,28 +268,28 @@ pub mod modules {
     /// Every official module's manifest, whether this build has it or not.
     pub fn official() -> Vec<Manifest> {
         [
-        include_str!("../../runity-geometry/module.ron"),
-        include_str!("../../runity-physics/module.ron"),
-        include_str!("../../runity-navigation/module.ron"),
-        include_str!("../../runity-animation/module.ron"),
-        include_str!("../../runity-audio/module.ron"),
-        include_str!("../../runity-gpu/module.ron"),
-        include_str!("../../runity-render/module.ron"),
-        include_str!("../../runity-overlay/module.ron"),
-        include_str!("../../runity-ui/module.ron"),
-        include_str!("../../runity-net/module.ron"),
-        include_str!("../../runity-steam/module.ron"),
-        include_str!("../../runity-input/module.ron"),
-        include_str!("../../runity-spline/module.ron"),
-        include_str!("../../runity-routes/module.ron"),
-        include_str!("../../runity-dialogue/module.ron"),
-        include_str!("../../runity-reports/module.ron"),
-        include_str!("../../runity-discord/module.ron"),
-        include_str!("../../runity-shell/module.ron"),
-        include_str!("../../runity-soft/module.ron"),
-        include_str!("../../runity-destruction/module.ron"),
-        include_str!("../../runity-fluid/module.ron"),
-        include_str!("../../runity-character/module.ron"),
+            include_str!("../../runity-geometry/module.ron"),
+            include_str!("../../runity-physics/module.ron"),
+            include_str!("../../runity-navigation/module.ron"),
+            include_str!("../../runity-animation/module.ron"),
+            include_str!("../../runity-audio/module.ron"),
+            include_str!("../../runity-gpu/module.ron"),
+            include_str!("../../runity-render/module.ron"),
+            include_str!("../../runity-overlay/module.ron"),
+            include_str!("../../runity-ui/module.ron"),
+            include_str!("../../runity-net/module.ron"),
+            include_str!("../../runity-steam/module.ron"),
+            include_str!("../../runity-input/module.ron"),
+            include_str!("../../runity-spline/module.ron"),
+            include_str!("../../runity-routes/module.ron"),
+            include_str!("../../runity-dialogue/module.ron"),
+            include_str!("../../runity-reports/module.ron"),
+            include_str!("../../runity-discord/module.ron"),
+            include_str!("../../runity-shell/module.ron"),
+            include_str!("../../runity-soft/module.ron"),
+            include_str!("../../runity-destruction/module.ron"),
+            include_str!("../../runity-fluid/module.ron"),
+            include_str!("../../runity-character/module.ron"),
         ]
         .iter()
         .map(|text| Manifest::parse(text).expect("an official module's manifest reads"))
@@ -315,7 +338,10 @@ pub mod modules {
             // Physics, navigation and the rest of the default set are built.
             let built: Vec<String> = super::built().into_iter().map(|m| m.name).collect();
             assert!(built.iter().any(|n| n == "render"));
-            assert_eq!(built.iter().any(|n| n == "physics"), cfg!(feature = "physics"));
+            assert_eq!(
+                built.iter().any(|n| n == "physics"),
+                cfg!(feature = "physics")
+            );
             for set in super::SETS {
                 let listed = super::set(set).unwrap();
                 assert!(super::list_problems(&listed, &all, env!("CARGO_PKG_VERSION")).is_empty());
@@ -329,17 +355,17 @@ pub use runity_render::reflections;
 pub mod refs;
 pub mod shot;
 pub mod streaming;
+pub use runity_core::ron_edit;
+pub use runity_core::ron_text;
+/// Saving a game in progress, as the core has it.
+pub use runity_core::save as save_core;
 #[cfg(feature = "net")]
 pub use runity_net::relay;
 pub use runity_render::render;
 #[cfg(feature = "reports")]
 pub use runity_reports::reports;
-pub use runity_core::ron_edit;
-pub use runity_core::ron_text;
 #[cfg(feature = "routes")]
 pub use runity_routes::routes;
-/// Saving a game in progress, as the core has it.
-pub use runity_core::save as save_core;
 
 /// Saving a game in progress, and the report a running game sends the
 /// editor: the core's save with what the modules add to it.
@@ -385,13 +411,13 @@ pub mod save {
         capture_with(world, components, scene, &animator_state)
     }
 }
+pub use runity_audio::sound;
+pub use runity_core::defaults;
 /// The scene file as the core has it: a line's identity, place and tree,
 /// its modules' fields as parts (docs/modules.md).
 pub use runity_core::scene as scene_core;
 pub use runity_physics::body;
-pub use runity_core::defaults;
 pub use runity_render::look;
-pub use runity_audio::sound;
 #[cfg(feature = "spline")]
 pub use runity_spline::spline;
 mod scene_tests;
@@ -400,24 +426,26 @@ mod scene_tests;
 /// the fields on them, under one name as before they were cut apart.
 pub mod scene {
     pub use crate::body::*;
+    #[cfg(feature = "character")]
+    pub use crate::character::{Crawler, Ragdoll};
+    #[cfg(feature = "destruction")]
+    pub use crate::destruction::{Dents, Fracture};
+    #[cfg(feature = "fluid")]
+    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater, Smoke, SnowCover};
     pub use crate::look::*;
-    pub use runity_geometry::line::*;
     #[cfg(feature = "animation")]
     pub use crate::motion::{AnimatorRef, BoneName};
     #[cfg(feature = "routes")]
     pub use crate::routes::{Route, RouteEnds};
     pub use crate::scene_core::*;
+    #[cfg(feature = "soft")]
+    pub use crate::soft::{
+        Cloth, DistanceField, Fluid, Grains, Hair, Jiggle, Rope, RopeKind, SoftBody,
+    };
     pub use crate::sound::*;
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
-    #[cfg(feature = "soft")]
-    pub use crate::soft::{Cloth, DistanceField, Fluid, Grains, Hair, Jiggle, Rope, RopeKind, SoftBody};
-    #[cfg(feature = "destruction")]
-    pub use crate::destruction::{Dents, Fracture};
-    #[cfg(feature = "fluid")]
-    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater, Smoke, SnowCover};
-    #[cfg(feature = "character")]
-    pub use crate::character::{Crawler, Ragdoll};
+    pub use runity_geometry::line::*;
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -453,64 +481,67 @@ pub mod scene {
 /// runity::prelude::*` once.
 pub mod prelude {
     pub use crate::body::{PhysicsLine, PhysicsOverride};
-    pub use runity_geometry::line::{GeometryLine, GeometryOverride};
-    pub use crate::material::MaterialLibrary;
-    pub use crate::mesh_asset::{MeshLibrary, TextureLibrary};
-    pub use crate::sound::SoundLibrary;
-    pub use crate::look::{LookLine, LookOverride, SceneLook};
-    #[cfg(feature = "animation")]
-    pub use crate::motion::AnimationLine;
-    #[cfg(feature = "routes")]
-    pub use crate::routes::RouteLine;
-    pub use crate::sound::SoundLine;
-    #[cfg(feature = "spline")]
-    pub use crate::spline::SplineLine;
-    #[cfg(feature = "soft")]
-    pub use crate::soft::{ClothLine, DistanceFieldLine, FluidLine, GrainsLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
+    #[cfg(feature = "character")]
+    pub use crate::character::{CrawlerLine, RagdollLine};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{DentsLine, FractureLine};
     #[cfg(feature = "fluid")]
     pub use crate::fluid::{FloatsLine, HeightfieldLine, MpmLine, OceanLine, SmokeLine};
-    #[cfg(feature = "character")]
-    pub use crate::character::{CrawlerLine, RagdollLine};
+    pub use crate::look::{LookLine, LookOverride, SceneLook};
+    pub use crate::material::MaterialLibrary;
+    pub use crate::mesh_asset::{MeshLibrary, TextureLibrary};
+    #[cfg(feature = "animation")]
+    pub use crate::motion::AnimationLine;
+    #[cfg(feature = "routes")]
+    pub use crate::routes::RouteLine;
+    #[cfg(feature = "soft")]
+    pub use crate::soft::{
+        ClothLine, DistanceFieldLine, FluidLine, GrainsLine, HairLine, JiggleLine, RopeLine,
+        SoftBodyLine,
+    };
+    pub use crate::sound::SoundLibrary;
+    pub use crate::sound::SoundLine;
+    #[cfg(feature = "spline")]
+    pub use crate::spline::SplineLine;
+    pub use runity_geometry::line::{GeometryLine, GeometryOverride};
 }
-pub use runity_overlay::screen;
 pub use runity_core::shape;
-#[cfg(feature = "soft")]
-pub mod soft;
+pub use runity_overlay::screen;
+#[cfg(feature = "character")]
+pub mod character;
 #[cfg(feature = "destruction")]
 pub mod destruction;
 #[cfg(feature = "fluid")]
 pub mod fluid;
-#[cfg(feature = "character")]
-pub mod character;
-#[cfg(feature = "desktop-shell")]
-pub use runity_shell::shell;
+#[cfg(feature = "soft")]
+pub mod soft;
 pub use runity_core::spelling;
-pub use runity_render::ssao;
-#[cfg(feature = "steam")]
-pub use runity_steam::steam;
 pub use runity_core::strings;
-pub use runity_gpu::surface;
-pub use runity_render::taa;
-pub use runity_render::terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
-pub use runity_render::tour;
 pub use runity_core::tuned;
-pub use runity_overlay::ui;
-pub use runity_overlay::ui_render;
-pub use runity_render::volume;
-pub use runity_render::weather;
-pub use runity_overlay::widgets;
 /// The world as the core has it: hierarchy, identity, spawning.
 pub use runity_core::world as world_core;
-pub use runity_render::world_look;
+pub use runity_gpu::surface;
+pub use runity_overlay::ui;
+pub use runity_overlay::ui_render;
+pub use runity_overlay::widgets;
 pub use runity_physics::bodies;
-pub mod spawning;
-mod world_tests;
+pub use runity_render::ssao;
+pub use runity_render::taa;
+pub use runity_render::terrain;
+pub use runity_render::tour;
+pub use runity_render::volume;
+pub use runity_render::weather;
+pub use runity_render::world_look;
+#[cfg(feature = "desktop-shell")]
+pub use runity_shell::shell;
+#[cfg(feature = "steam")]
+pub use runity_steam::steam;
 #[cfg(test)]
 mod core_tests;
+pub mod spawning;
+mod world_tests;
 
 /// A world of entities: the core's hierarchy and spawning, and every
 /// module's components of it, under one name as before they were cut
@@ -570,9 +601,9 @@ pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,
 };
-pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
 #[cfg(feature = "spline")]
 pub use scene::{Along, Spline};
+pub use scene::{Body, EntityDesc, Fog, Scene, Sun, Transform, View};
 pub use surface::{AcquiredFrame, SurfaceError};
 pub use time::{Time, TimeSettings};
 pub use tuned::Tuned;

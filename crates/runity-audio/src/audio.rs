@@ -13,6 +13,7 @@ use glam::Vec3;
 use kira::backend::cpal::CpalBackend;
 use kira::backend::Backend;
 use kira::sound::static_sound::{StaticSoundData, StaticSoundHandle};
+#[cfg(not(target_arch = "wasm32"))]
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
 use kira::track::{TrackBuilder, TrackHandle};
 use kira::{AudioManager, AudioManagerSettings, Decibels, Tween};
@@ -66,6 +67,7 @@ pub struct Playing(Handle);
 /// Decoded and played from memory, or streamed from its compressed bytes.
 enum Handle {
     Decoded(StaticSoundHandle),
+    #[cfg(not(target_arch = "wasm32"))]
     Streamed(StreamingSoundHandle<kira::sound::FromFileError>),
 }
 
@@ -73,6 +75,7 @@ impl Playing {
     pub fn stop(&mut self) {
         match &mut self.0 {
             Handle::Decoded(h) => h.stop(kira::Tween::default()),
+            #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.stop(kira::Tween::default()),
         }
     }
@@ -82,6 +85,7 @@ impl Playing {
         let rate = kira::PlaybackRate(pitch.max(0.01) as f64);
         match &mut self.0 {
             Handle::Decoded(h) => h.set_playback_rate(rate, kira::Tween::default()),
+            #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.set_playback_rate(rate, kira::Tween::default()),
         }
     }
@@ -90,6 +94,7 @@ impl Playing {
         let volume = gain_to_decibels(gain);
         match &mut self.0 {
             Handle::Decoded(h) => h.set_volume(volume, kira::Tween::default()),
+            #[cfg(not(target_arch = "wasm32"))]
             Handle::Streamed(h) => h.set_volume(volume, kira::Tween::default()),
         }
     }
@@ -207,6 +212,26 @@ where
     ) -> Result<Playing, String> {
         let rate = kira::PlaybackRate(pitch.max(0.01) as f64);
         let volume = gain_to_decibels(gain);
+        // The browser has no thread to stream on: a long sound is decoded
+        // whole when it starts instead.
+        #[cfg(target_arch = "wasm32")]
+        if !sound.encoded.is_empty() {
+            let mut data =
+                StaticSoundData::from_cursor(std::io::Cursor::new(sound.encoded.to_vec()))
+                    .map_err(|e| format!("{}: {e}", sound.name))?
+                    .volume(volume)
+                    .playback_rate(rate);
+            if looped {
+                data = data.loop_region(0.0..);
+            }
+            let handle = match group {
+                Some(group) => self.group(group)?.0.play(data),
+                None => self.manager.play(data),
+            }
+            .map_err(|e| e.to_string())?;
+            return Ok(Playing(Handle::Decoded(handle)));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         if !sound.encoded.is_empty() {
             let mut data = streamed(sound)?.volume(volume).playback_rate(rate);
             if looped {
@@ -479,6 +504,7 @@ fn gain_to_decibels(gain: f32) -> Decibels {
 }
 
 /// A long sound's compressed bytes, to be streamed.
+#[cfg(not(target_arch = "wasm32"))]
 fn streamed(
     sound: &ArchivedSoundAsset,
 ) -> Result<StreamingSoundData<kira::sound::FromFileError>, String> {
@@ -622,7 +648,11 @@ mod tests {
         ));
         let mut sources = Sources::new();
         assert!(sources.update(&mut audio, &world, find).is_empty());
-        assert_eq!(sources.len(), 1, "the far loop runs quiet; the far bang never starts");
+        assert_eq!(
+            sources.len(),
+            1,
+            "the far loop runs quiet; the far bang never starts"
+        );
         sources.play(waits);
         sources.update(&mut audio, &world, find);
         assert_eq!(sources.len(), 2, "asked to, it plays");
