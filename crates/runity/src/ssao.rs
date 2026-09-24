@@ -40,6 +40,23 @@ pub struct AmbientOcclusion {
     pub bounce: f32,
     /// How far a bounce ray is followed, metres.
     pub bounce_radius: f32,
+    /// How the occlusion is found: GTAO (the default) or URP's SSAO.
+    pub method: Method,
+}
+
+/// How ambient occlusion is found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Method {
+    /// Ground-truth ambient occlusion (Jimenez et al.): along slices across
+    /// the screen, the highest the depth rises on either side — the
+    /// horizon — and from those and the normal, how much of the sky's
+    /// cosine-weighted dome the point sees, worked out exactly. Crevices
+    /// darken as much as they are closed, not as a count of hits.
+    #[default]
+    Gtao,
+    /// URP's: points in the hemisphere over the surface, the share that
+    /// fall behind what the camera sees.
+    Ssao,
 }
 
 impl Default for AmbientOcclusion {
@@ -53,6 +70,7 @@ impl Default for AmbientOcclusion {
             samples: 8,
             bounce: 0.0,
             bounce_radius: 3.0,
+            method: Method::Gtao,
         }
     }
 }
@@ -67,6 +85,7 @@ impl AmbientOcclusion {
         samples: 8,
         bounce: 0.0,
         bounce_radius: 3.0,
+        method: Method::Gtao,
     };
 }
 
@@ -294,7 +313,7 @@ impl SsaoRenderer {
                     0.0
                 },
                 settings.bounce_radius.max(0.1),
-                0.0,
+                if settings.method == Method::Gtao { 1.0 } else { 0.0 },
                 0.0,
             ],
         };
