@@ -93,6 +93,7 @@ pub use runity_core::input;
 #[cfg(feature = "net")]
 pub use runity_net::lan;
 pub use runity_core::layers;
+pub use runity_render::graph;
 pub use runity_render::lens;
 pub use runity_render::vsm;
 pub use runity_render::ddgi;
@@ -294,6 +295,7 @@ pub mod modules {
         }
     }
 }
+pub use runity_render::quality;
 pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;

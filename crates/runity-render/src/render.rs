@@ -369,6 +369,9 @@ pub struct FrameStats {
     pub shadow_casters: u32,
     /// Triangles the colour pass draws, at the levels of detail picked.
     pub triangles: u64,
+    /// Batches of the colour pass: draws that share mesh, look (and,
+    /// without bindless, maps) go in one.
+    pub batches: u32,
 }
 
 /// How shadows are cast, or that they are not.
@@ -840,6 +843,9 @@ struct InstanceRaw {
     params: [[f32; 4]; 2],
     /// Light under the surface: its colour (linear), and how far it goes.
     subsurface: [f32; 4],
+    /// Its maps' handles — base, normal, mask, emission — for the
+    /// bindless shader ([`crate::bindless`]).
+    maps: [u32; 4],
 }
 
 /// Bits of [`InstanceRaw::emission`]'s `w`.
@@ -945,6 +951,7 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
             material.subsurface[2].max(0.0),
             material.subsurface_radius.max(0.0005),
         ],
+        maps: [TextureHandle::WHITE.0, TextureHandle::FLAT_NORMAL.0, TextureHandle::WHITE.0, TextureHandle::WHITE.0],
     }
 }
 
@@ -1046,6 +1053,8 @@ pub struct Renderer {
     /// Which passes run, whatever the frame asks for: the game's graphics
     /// settings ([`crate::passes`]).
     passes: crate::passes::Passes,
+    /// The graphics preset, if one is chosen.
+    quality: Option<crate::quality::Quality>,
     /// The frame's lights ([`crate::lights`]), each cell's run of them, and
     /// the runs themselves.
     light_buffer: wgpu::Buffer,
@@ -1082,6 +1091,9 @@ pub struct Renderer {
     /// A bind group per set of four maps in use, made before the frame's
     /// passes and kept.
     map_groups: std::collections::HashMap<Maps, wgpu::BindGroup>,
+    /// Every texture in one array the shader indexes, where the device can
+    /// ([`crate::bindless`]).
+    bindless: Option<crate::bindless::Bindless>,
     texture_layout: wgpu::BindGroupLayout,
     texture_sampler: wgpu::Sampler,
     /// Kept to rebuild the pipelines when the shader is reloaded.
@@ -1115,6 +1127,8 @@ pub struct Renderer {
     vsm: crate::vsm::VirtualShadows,
     /// The lamps by ReSTIR ([`crate::restir`]).
     restir: crate::restir::Restir,
+    /// The last screen frame's passes as a graph ([`crate::graph`]).
+    graph: crate::graph::FrameGraph,
     /// Coarser levels of the meshes that have them ([`crate::lod`]): each
     /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
     /// share of the screen each is drawn for.
@@ -1490,10 +1504,10 @@ struct Layouts<'a> {
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 13] = wgpu::vertex_attr_array![
     3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4,
-    14 => Float32x4, 15 => Float32x4, 16 => Float32x4
+    14 => Float32x4, 15 => Float32x4, 16 => Float32x4, 17 => Uint32x4
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
@@ -2080,13 +2094,15 @@ impl Renderer {
     pub fn reload_shader(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
         let original = source;
         use wgpu::naga;
-        let traced;
-        let source = if self.ray.is_some() {
-            traced = crate::ray::traced(source);
-            traced.as_str()
-        } else {
-            source
-        };
+        let prepared = crate::bindless::prepared(
+            &if self.ray.is_some() {
+                crate::ray::traced(source)
+            } else {
+                source.to_string()
+            },
+            self.bindless.is_some(),
+        );
+        let source = prepared.as_str();
         let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
@@ -2167,11 +2183,14 @@ impl Renderer {
         surface: &str,
     ) -> Result<(), String> {
         let composed = with_surface(&self.base_shader, surface)?;
-        let source = if self.ray.is_some() {
-            crate::ray::traced(&composed)
-        } else {
-            composed
-        };
+        let source = crate::bindless::prepared(
+            &if self.ray.is_some() {
+                crate::ray::traced(&composed)
+            } else {
+                composed
+            },
+            self.bindless.is_some(),
+        );
         use wgpu::naga;
         let module =
             naga::front::wgsl::parse_str(&source).map_err(|e| e.emit_to_string(&source))?;
@@ -2234,11 +2253,17 @@ impl Renderer {
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("runity::render"),
-                source: wgpu::ShaderSource::Wgsl(if gpu.ray_tracing {
-                    crate::ray::traced(SHADER).into()
-                } else {
-                    SHADER.into()
-                }),
+                source: wgpu::ShaderSource::Wgsl(
+                    crate::bindless::prepared(
+                        &if gpu.ray_tracing {
+                            crate::ray::traced(SHADER)
+                        } else {
+                            SHADER.to_string()
+                        },
+                        gpu.bindless && !gpu.mesh_shaders,
+                    )
+                    .into(),
+                ),
             });
 
         let frame_buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2615,7 +2640,12 @@ impl Renderer {
             },
         );
 
-        let texture_layout =
+        // Bindless where the device can and the terrain is not drawn by
+        // mesh shaders (whose stage carries no maps).
+        let bindless_on = gpu.bindless && !gpu.mesh_shaders;
+        let texture_layout = if bindless_on {
+            crate::bindless::layout(gpu)
+        } else {
             gpu.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("surface maps"),
@@ -2631,7 +2661,8 @@ impl Renderer {
                         map_entry(3),
                         map_entry(4),
                     ],
-                });
+                })
+        };
         let texture_sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("surface"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -2822,11 +2853,14 @@ impl Renderer {
         let fog_inject_layout = fog_layout("runity::fog inject", &volumes.inject_layout);
         let fog_integrate_layout = fog_layout("runity::fog integrate", &volumes.integrate_layout);
         let samples = sample_count(gpu);
-        let shader_source = if gpu.ray_tracing {
-            crate::ray::traced(SHADER)
-        } else {
-            SHADER.to_string()
-        };
+        let shader_source = crate::bindless::prepared(
+            &if gpu.ray_tracing {
+                crate::ray::traced(SHADER)
+            } else {
+                SHADER.to_string()
+            },
+            bindless_on,
+        );
         let pipelines = build_pipelines(
             gpu,
             &shader,
@@ -2866,6 +2900,7 @@ impl Renderer {
             ddgi,
             vsm,
             restir,
+            graph: crate::graph::FrameGraph::new(),
             base_shader: SHADER.to_string(),
             material_shaders: std::collections::HashMap::new(),
             layout,
@@ -2893,6 +2928,7 @@ impl Renderer {
             terrain_made: None,
             ray,
             passes: crate::passes::Passes::MAX,
+            quality: None,
             light_buffer,
             cell_buffer,
             index_buffer,
@@ -2921,6 +2957,7 @@ impl Renderer {
             by_asset: std::collections::HashMap::new(),
             looks: std::collections::HashMap::new(),
             map_groups: std::collections::HashMap::new(),
+            bindless: bindless_on.then(crate::bindless::Bindless::new),
             texture_layout,
             texture_sampler,
             pipeline_layout,
@@ -3277,8 +3314,26 @@ impl Renderer {
         ]
     }
 
-    /// Make the bind groups for sets of maps not seen before.
+    /// The maps a batch is keyed by: its own, or with bindless one set for
+    /// all ([`crate::bindless`]).
+    fn batch_maps(&self, maps: Maps) -> Maps {
+        if self.bindless.is_some() {
+            crate::bindless::KEY
+        } else {
+            maps
+        }
+    }
+
+    /// Make the bind groups for sets of maps not seen before — or, bindless,
+    /// the one group of every texture, when there are new ones.
     fn prepare_maps(&mut self, gpu: &Gpu, sets: impl IntoIterator<Item = Maps>) {
+        if let Some(bindless) = &mut self.bindless {
+            let views: Vec<&wgpu::TextureView> = self.textures.iter().map(|t| &t.view).collect();
+            if let Some(group) = bindless.group(gpu, &self.texture_layout, &views, &self.texture_sampler) {
+                self.map_groups.insert(crate::bindless::KEY, group);
+            }
+            return;
+        }
         for maps in sets {
             if self.map_groups.contains_key(&maps) {
                 continue;
@@ -3814,6 +3869,12 @@ impl Renderer {
         self.timer.as_ref().map(|t| t.times()).unwrap_or_default()
     }
 
+    /// The last screen frame's passes as a graph: which ran, what each
+    /// read and wrote ([`crate::graph`]).
+    pub fn frame_graph(&self) -> &crate::graph::FrameGraph {
+        &self.graph
+    }
+
     /// The sun's virtual shadow maps' pages: how many are kept drawn, and
     /// how many the last frame drew.
     pub fn virtual_shadow_pages(&self) -> (usize, usize) {
@@ -3935,6 +3996,16 @@ impl Renderer {
         self.passes
     }
 
+    /// A graphics menu's preset ([`crate::quality`]), over the passes
+    /// switched; `None` (the default) draws each frame as it asks.
+    pub fn set_quality(&mut self, quality: Option<crate::quality::Quality>) {
+        self.quality = quality;
+    }
+
+    pub fn quality(&self) -> Option<crate::quality::Quality> {
+        self.quality
+    }
+
     /// Draw a frame's world screens into their pictures with the UI
     /// module's renderer: call before the frame is rendered, so the things
     /// showing them show this frame's.
@@ -3987,6 +4058,9 @@ impl Renderer {
             }
             // Bind groups made with the old picture point at nothing.
             self.map_groups.clear();
+            if let Some(bindless) = &mut self.bindless {
+                bindless.invalidate();
+            }
             self.targets.insert(id, (texture, size));
         }
         self.targets[&id]
@@ -4157,12 +4231,17 @@ impl Renderer {
         frame: &Frame,
         probe: Option<u32>,
     ) {
-        // Graphics settings: what is switched off is taken out of the frame.
+        // Graphics settings: what is switched off is taken out of the frame,
+        // by the preset and by the passes switched.
         let masked;
-        let frame = if self.passes == crate::passes::Passes::MAX {
+        let frame = if self.passes == crate::passes::Passes::MAX && self.quality.is_none() {
             frame
         } else {
-            masked = self.passes.apply(frame);
+            let preset = match self.quality {
+                Some(quality) => quality.apply(frame),
+                None => frame.clone(),
+            };
+            masked = self.passes.apply(&preset);
             &masked
         };
         let aspect = width as f32 / height.max(1) as f32;
@@ -4945,8 +5024,12 @@ impl Renderer {
         let eye = frame.camera.apparent_eye();
         let terrain_mesh = fine_terrain.map(|t| t.mesh);
         for draw in &frame.draws {
-            let raw = instance_of(draw.transform, &draw.material);
+            let mut raw = instance_of(draw.transform, &draw.material);
             let maps = self.maps_of(draw);
+            raw.maps = maps.map(|h| h.0);
+            // Bindless: the maps travel with the instance, and draws are not
+            // split by them.
+            let maps = self.batch_maps(maps);
             let skinned = draw.pose.is_some()
                 && self
                     .meshes
@@ -5018,6 +5101,7 @@ impl Renderer {
                 push(&mut batches, (Some(look), mesh, maps), raw);
             }
         }
+        stats.batches = batches.len() as u32;
         stats.triangles = batches
             .iter()
             .map(|((_, mesh, _), list)| (list.len(), *mesh))
@@ -5049,11 +5133,10 @@ impl Renderer {
                 } else {
                     &mut solid
                 };
-                push(
-                    list,
-                    (None, draw.mesh, self.maps_of(draw)),
-                    instance_of(draw.transform, &draw.material),
-                );
+                let maps = self.maps_of(draw);
+                let mut raw = instance_of(draw.transform, &draw.material);
+                raw.maps = maps.map(|h| h.0);
+                push(list, (None, draw.mesh, self.batch_maps(maps)), raw);
             }
             lamp_batches.push((solid, clipped));
         }
@@ -5075,11 +5158,10 @@ impl Renderer {
         // things in the world.
         let mut overlay_batches: Vec<(BatchKey, Vec<InstanceRaw>)> = Vec::new();
         for draw in &frame.overlay_draws {
-            push(
-                &mut overlay_batches,
-                (None, draw.mesh, self.maps_of(draw)),
-                instance_of(draw.transform, &draw.material),
-            );
+            let maps = self.maps_of(draw);
+            let mut raw = instance_of(draw.transform, &draw.material);
+            raw.maps = maps.map(|h| h.0);
+            push(&mut overlay_batches, (None, draw.mesh, self.batch_maps(maps)), raw);
         }
         let sets: Vec<Maps> = shadow_batches
             .iter()
@@ -5518,15 +5600,50 @@ impl Renderer {
         let bounce_on = ssao_on && frame.ambient_occlusion.bounce > 0.0 && probe.is_none();
         // And the dust wall, to stand behind what is in front of it.
         let wall_on = frame.weather.dust_wall > 0.0 && probe.is_none();
-        let prepass_drawn = ssao_on
-            || lens_on
-            || water_on
-            || ssr_on
-            || wall_on
-            || taa_on
-            || local_dust
-            || contact_on
-            || restir_on;
+        // The frame's passes as a graph (crate::graph): the prepass runs
+        // when something live reads its depth or normals.
+        use crate::graph::Kind;
+        let mut graph = crate::graph::FrameGraph::new();
+        graph.pass("prepass", Kind::Render, &[], &["depth", "normals"]);
+        if ssao_on {
+            graph.pass("ssao", Kind::Render, &["depth", "normals"], &["occlusion"]);
+        }
+        if restir_on {
+            graph.pass("restir", Kind::Compute, &["depth", "normals", "rays"], &["reservoirs"]);
+        }
+        let mut scene_reads: Vec<&'static str> = vec!["shadow map"];
+        if ssao_on {
+            scene_reads.push("occlusion");
+        }
+        if restir_on {
+            scene_reads.push("reservoirs");
+        }
+        // Water, the screen's reflections, dust in the air and contact
+        // shadows read the depth themselves.
+        if water_on || ssr_on || wall_on || local_dust || contact_on {
+            scene_reads.push("depth");
+        }
+        graph.pass("scene", Kind::Render, &scene_reads, &["hdr"]);
+        let mut picture = "hdr";
+        if taa_on {
+            graph.output("taa", Kind::Render, &[picture, "depth"], &["hdr antialiased"]);
+            picture = "hdr antialiased";
+        }
+        if lens_on {
+            graph.pass("lens", Kind::Render, &[picture, "depth"], &["hdr lensed"]);
+            picture = "hdr lensed";
+        }
+        graph.output("post", Kind::Render, &[picture], &["screen"]);
+        graph.resolve();
+        debug_assert!(
+            graph.problems(&["shadow map", "rays"]).is_empty(),
+            "{:?}",
+            graph.problems(&["shadow map", "rays"])
+        );
+        let prepass_drawn = graph.runs("prepass");
+        if probe.is_none() && view.is_some() && !self.picturing {
+            self.graph = graph;
+        }
         if prepass_drawn {
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

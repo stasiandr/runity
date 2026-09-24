@@ -11,6 +11,7 @@
 
 pub mod appearance;
 pub mod atmosphere;
+pub mod bindless;
 pub mod cloth;
 pub mod clouds;
 pub mod cluster;
@@ -21,6 +22,7 @@ pub mod floaters;
 pub mod foliage;
 pub mod footprints;
 pub mod gizmo;
+pub mod graph;
 pub mod heap;
 pub mod lens;
 pub mod lights;
@@ -33,6 +35,7 @@ pub mod particles;
 pub mod particles_gpu;
 pub mod passes;
 pub mod post;
+pub mod quality;
 pub mod ray;
 pub mod reflections;
 pub mod render;

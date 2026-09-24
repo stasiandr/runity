@@ -434,6 +434,7 @@ struct Caster {
 };
 @group(0) @binding(3) var<uniform> caster: Caster;
 
+// maps: begin
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
 // untextured surface is its colour times one.
@@ -445,6 +446,22 @@ struct Caster {
 @group(1) @binding(2) var normal_map: texture_2d<f32>;
 @group(1) @binding(3) var mask_map: texture_2d<f32>;
 @group(1) @binding(4) var emission_map: texture_2d<f32>;
+
+// The maps read, by the draw's bound ones; `maps` (the instance's
+// handles) is for the bindless shader in their place (bindless.rs).
+fn surface_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(surface_texture, surface_sampler, uv);
+}
+fn normal_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(normal_map, surface_sampler, uv);
+}
+fn mask_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(mask_map, surface_sampler, uv);
+}
+fn emission_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(emission_map, surface_sampler, uv);
+}
+// maps: end
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -469,6 +486,8 @@ struct VertexInput {
     @location(15) params_1: vec4<f32>,
     // light under the surface: its colour, and how far it goes
     @location(16) subsurface: vec4<f32>,
+    // the maps' handles: base, normal, mask, emission (bindless.rs)
+    @location(17) maps: vec4<u32>,
 };
 
 struct VertexOutput {
@@ -485,6 +504,7 @@ struct VertexOutput {
     @location(8) params_0: vec4<f32>,
     @location(9) params_1: vec4<f32>,
     @location(10) subsurface: vec4<f32>,
+    @location(11) @interpolate(flat) maps: vec4<u32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -543,6 +563,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
+    out.maps = in.maps;
     return out;
 }
 
@@ -603,6 +624,7 @@ struct ClipOut {
     @location(0) uv: vec2<f32>,
     // alpha, threshold
     @location(1) alpha: vec2<f32>,
+    @location(2) @interpolate(flat) maps: vec4<u32>,
 };
 
 /// The same, for what is cut out by its alpha: a leaf's shadow is a leaf.
@@ -614,12 +636,13 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     out.position = caster.view_projection * vec4<f32>(world, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
+    out.maps = in.maps;
     return out;
 }
 
 @fragment
 fn fs_shadow_clip(in: ClipOut) {
-    if in.alpha.x * textureSample(surface_texture, surface_sampler, in.uv).a < in.alpha.y {
+    if in.alpha.x * surface_at(in.maps, in.uv).a < in.alpha.y {
         discard;
     }
 }
@@ -1455,6 +1478,7 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     // only the rest.
     out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
     out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+    out.maps = vec4<u32>(0u);
     return out;
 }
 
@@ -1470,11 +1494,13 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
 /// against the sky. Its normal is the slope of what it was raised to.
 @vertex
 fn vs_terrain(in: VertexInput) -> VertexOutput {
-    return terrain_vertex(
+    var out = terrain_vertex(
         in.position.xz,
         in.position.y,
         TerrainLook(in.color_and_shading, in.surface, in.emission, in.uv_transform, in.detail, in.params_0, in.params_1),
     );
+    out.maps = in.maps;
+    return out;
 }
 
 @vertex
@@ -1508,7 +1534,7 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
         return none;
     }
     let v = cluster_indices[d.first + corner] * 8u;
-    let s = d.instance * 12u;
+    let s = d.instance * 13u;
     var in: VertexInput;
     in.position = vec3<f32>(cluster_vertices[v], cluster_vertices[v + 1u], cluster_vertices[v + 2u]);
     in.normal = vec3<f32>(cluster_vertices[v + 3u], cluster_vertices[v + 4u], cluster_vertices[v + 5u]);
@@ -1525,6 +1551,7 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
     in.params_0 = cluster_instances[s + 9u];
     in.params_1 = cluster_instances[s + 10u];
     in.subsurface = cluster_instances[s + 11u];
+    in.maps = bitcast<vec4<u32>>(cluster_instances[s + 12u]);
     return standard_vertex(in);
 }
 
@@ -1551,6 +1578,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
+    out.maps = in.maps;
     return out;
 }
 
@@ -2003,10 +2031,10 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             base_uv.x = 1.0 - base_uv.x;
         }
     }
-    let sampled = textureSample(surface_texture, surface_sampler, base_uv);
-    let normal_texel = textureSample(normal_map, surface_sampler, in.uv).xyz;
-    let mask = textureSample(mask_map, surface_sampler, in.uv);
-    let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;
+    let sampled = surface_at(in.maps, base_uv);
+    let normal_texel = normal_at(in.maps, in.uv).xyz;
+    let mask = mask_at(in.maps, in.uv);
+    let emitted = emission_at(in.maps, in.uv).rgb;
     // A face seen from behind — a two-sided leaf — is lit from its own side.
     let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
     var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
@@ -2321,7 +2349,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
 /// what is solid, cut out where the surface is.
 @fragment
 fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let alpha = in.surface.z * textureSample(surface_texture, surface_sampler, in.uv).a;
+    let alpha = in.surface.z * surface_at(in.maps, in.uv).a;
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }
