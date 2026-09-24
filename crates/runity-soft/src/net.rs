@@ -54,32 +54,37 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// The frame as bytes: counts, the box, the points in it at 16 bits
-    /// an axis, the turns at four bytes, the extras whole.
+    /// The frame as bytes: counts, the first point whole, then each point
+    /// from the one before in steps of [`POINT_STEP`], packed at as few
+    /// bits as the frame's longest step needs (docs/netsim.md, «Трафик»)
+    /// — each step taken from where the one before will be read, so the
+    /// rounding never adds up along the rope; the turns at four bytes, the
+    /// extras whole. A rope of forty links, turns and all, is about 350
+    /// bytes; of twenty-four without its turns, about 130.
     pub fn encode(&self) -> Vec<u8> {
-        let (mut low, mut high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        for p in &self.points {
-            low = low.min(*p);
-            high = high.max(*p);
-        }
-        if self.points.is_empty() {
-            (low, high) = (Vec3::ZERO, Vec3::ZERO);
-        }
-        let span = (high - low).max(Vec3::splat(1e-6));
-        let mut out = Vec::with_capacity(32 + self.points.len() * 6 + self.turns.len() * 4 + self.extra.len() * 4);
-        out.extend_from_slice(&(self.points.len() as u16).to_le_bytes());
-        out.extend_from_slice(&(self.turns.len() as u16).to_le_bytes());
+        let mut out = Vec::with_capacity(16 + self.points.len() * 5 + self.turns.len() * 4 + self.extra.len() * 4);
+        varint(&mut out, self.points.len() as u32);
+        varint(&mut out, self.turns.len() as u32);
         out.push(self.extra.len().min(255) as u8);
-        for v in [low, span] {
-            for c in v.to_array() {
+        if let Some(first) = self.points.first() {
+            for c in first.to_array() {
                 out.extend_from_slice(&c.to_le_bytes());
             }
-        }
-        for p in &self.points {
-            let q = ((*p - low) / span * 65535.0).round().clamp(Vec3::ZERO, Vec3::splat(65535.0));
-            for c in q.to_array() {
-                out.extend_from_slice(&(c as u16).to_le_bytes());
+            let mut read = *first;
+            let mut steps = Vec::with_capacity(self.points.len() * 3);
+            for p in &self.points[1..] {
+                let q = ((*p - read) / POINT_STEP).round().clamp(Vec3::splat(-(1 << 30) as f32), Vec3::splat((1 << 30) as f32));
+                read += q * POINT_STEP;
+                steps.extend(q.to_array().map(|c| c as i32));
             }
+            let most = steps.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+            let bits = 33 - most.leading_zeros().min(32);
+            out.push(bits as u8);
+            let mut w = Bits::default();
+            for s in steps {
+                w.put((s as u32).wrapping_add(if bits >= 32 { 0 } else { 1 << (bits - 1) }) as u64, bits);
+            }
+            out.extend(w.finish());
         }
         for q in &self.turns {
             out.extend_from_slice(&pack_quat(*q).to_le_bytes());
@@ -94,17 +99,30 @@ impl Frame {
     /// an old build, a truncated datagram: expected, never fatal.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         let mut r = Reader { bytes, at: 0 };
-        let n = r.u16()? as usize;
-        let m = r.u16()? as usize;
+        let n = r.varint()? as usize;
+        let m = r.varint()? as usize;
         let e = r.take(1)?[0] as usize;
-        let low = r.vec3()?;
-        let span = r.vec3()?;
-        let mut points = Vec::with_capacity(n);
-        for _ in 0..n {
-            let q = Vec3::new(r.u16()? as f32, r.u16()? as f32, r.u16()? as f32) / 65535.0;
-            points.push(low + q * span);
+        let mut points = Vec::with_capacity(n.min(bytes.len()));
+        if n > 0 {
+            let mut at = r.vec3()?;
+            points.push(at);
+            let bits = r.take(1)?[0] as u32;
+            if bits > 32 {
+                return None;
+            }
+            let packed = r.take(((n - 1) * 3 * bits as usize).div_ceil(8))?;
+            let mut b = BitReader { bytes: packed, at: 0 };
+            let bias = if bits >= 32 { 0 } else { 1u32 << (bits.max(1) - 1) };
+            for _ in 1..n {
+                let mut q = [0.0f32; 3];
+                for c in &mut q {
+                    *c = (b.get(bits)? as u32).wrapping_sub(bias) as i32 as f32;
+                }
+                at += Vec3::from_array(q) * POINT_STEP;
+                points.push(at);
+            }
         }
-        let mut turns = Vec::with_capacity(m);
+        let mut turns = Vec::with_capacity(m.min(bytes.len()));
         for _ in 0..m {
             turns.push(unpack_quat(u32::from_le_bytes(r.take(4)?.try_into().ok()?)));
         }
@@ -129,6 +147,65 @@ impl Frame {
     }
 }
 
+/// Of a metre, the step a frame's points go in: a quarter millimetre.
+pub const POINT_STEP: f32 = 1.0 / 4096.0;
+
+fn varint(out: &mut Vec<u8>, mut v: u32) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// Numbers of a few bits each, packed end to end.
+#[derive(Default)]
+struct Bits {
+    out: Vec<u8>,
+    word: u64,
+    filled: u32,
+}
+
+impl Bits {
+    fn put(&mut self, v: u64, bits: u32) {
+        if bits == 0 {
+            return;
+        }
+        self.word |= (v & ((1u64 << bits) - 1)) << self.filled;
+        self.filled += bits;
+        while self.filled >= 8 {
+            self.out.push(self.word as u8);
+            self.word >>= 8;
+            self.filled -= 8;
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        if self.filled > 0 {
+            self.out.push(self.word as u8);
+        }
+        self.out
+    }
+}
+
+/// [`Bits`] read back.
+struct BitReader<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl BitReader<'_> {
+    fn get(&mut self, bits: u32) -> Option<u64> {
+        let mut v = 0u64;
+        for i in 0..bits as usize {
+            let bit = self.at + i;
+            v |= (((*self.bytes.get(bit / 8)? >> (bit % 8)) & 1) as u64) << i;
+        }
+        self.at += bits as usize;
+        Some(v)
+    }
+}
+
 /// Bytes read in order; `None` past the end.
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -142,8 +219,16 @@ impl<'a> Reader<'a> {
         Some(s)
     }
 
-    fn u16(&mut self) -> Option<u16> {
-        Some(u16::from_le_bytes(self.take(2)?.try_into().ok()?))
+    fn varint(&mut self) -> Option<u32> {
+        let mut v = 0u32;
+        for i in 0..5 {
+            let b = self.take(1)?[0];
+            v |= ((b & 0x7f) as u32) << (7 * i);
+            if b & 0x80 == 0 {
+                return Some(v);
+            }
+        }
+        None
     }
 
     fn f32(&mut self) -> Option<f32> {
@@ -610,11 +695,15 @@ mod tests {
             extra: vec![12.5, -3.0],
         };
         let bytes = frame.encode();
-        assert!(bytes.len() < 460, "{} bytes", bytes.len());
+        assert!(bytes.len() < 360, "{} bytes", bytes.len());
         let back = Frame::decode(&bytes).unwrap();
+        // The rounding does not add up along the rope.
         for (a, b) in frame.points.iter().zip(&back.points) {
-            assert!(a.distance(*b) < 1e-3, "{a} {b}");
+            assert!(a.distance(*b) < POINT_STEP, "{a} {b}");
         }
+        let still = Frame { points: vec![Vec3::new(1.0, 2.0, 3.0); 3], ..Default::default() };
+        assert_eq!(Frame::decode(&still.encode()).unwrap().points, still.points);
+        assert_eq!(Frame::decode(&Frame::default().encode()).unwrap(), Frame::default());
         for (a, b) in frame.turns.iter().zip(&back.turns) {
             assert!(a.angle_between(*b) < 0.004, "{a} {b}");
         }
