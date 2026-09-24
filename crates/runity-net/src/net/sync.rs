@@ -96,6 +96,10 @@ pub struct Sync {
     pub budget: usize,
     /// How long each changed thing not yet sent has waited, ticks.
     waiting: HashMap<EntityId, f32>,
+    /// The server's short numbers for entities ([`ToClient::Shorts`]),
+    /// both ways.
+    shorts: HashMap<EntityId, u32>,
+    by_short: HashMap<u32, EntityId>,
     /// Bytes of changes sent, all told.
     pub sent_bytes: u64,
 }
@@ -135,6 +139,17 @@ impl Sync {
             budget: BUDGET,
             waiting: HashMap::new(),
             sent_bytes: 0,
+            shorts: HashMap::new(),
+            by_short: HashMap::new(),
+        }
+    }
+
+    /// An entry of ours, named short when the server has given a number.
+    fn entry(&self, id: EntityId, blobs: Vec<Blob>) -> Entry {
+        let entry = Entry::new(id, blobs);
+        match self.shorts.get(&id) {
+            Some(&short) => entry.shortened(short),
+            None => entry,
         }
     }
 
@@ -352,11 +367,11 @@ impl Sync {
                     base.quiet += 1;
                     if base.quiet >= SETTLE_TICKS && !base.settled {
                         base.settled = true;
-                        settling.push(Entry { id, blobs });
+                        settling.push(self.entry(id, blobs));
                     }
                 }
                 _ => {
-                    changed.push((id, Entry { id, blobs }, bytes));
+                    changed.push((id, self.entry(id, blobs), bytes));
                 }
             }
         }
@@ -528,6 +543,12 @@ impl Sync {
                     components.remove_by_name(name, world, entity);
                 }
             }
+            ToClient::Shorts { pairs } => {
+                for (id, short) in pairs {
+                    self.shorts.insert(id, short);
+                    self.by_short.insert(short, id);
+                }
+            }
             ToClient::Snapshot {
                 owner,
                 tick,
@@ -651,8 +672,17 @@ impl Sync {
         sender: PeerId,
         tick: u64,
         settle: bool,
-        entry: Entry,
+        mut entry: Entry,
     ) {
+        if entry.short != 0 {
+            // A number not yet heard of: its word is on the way, and the
+            // next entry will do.
+            let Some(&id) = self.by_short.get(&entry.short) else {
+                self.tally.unknown += 1;
+                return;
+            };
+            entry.id = id;
+        }
         let Some(&entity) = addressable(world).get(&entry.id) else {
             self.tally.unknown += 1;
             return;

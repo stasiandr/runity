@@ -41,8 +41,27 @@ pub type Blob = (BlobId, Vec<u8>);
 /// the server says so to everyone ([`ToClient::ComponentsRemoved`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
+    /// Who it is — or nought, when [`Entry::short`] says.
     pub id: EntityId,
+    /// The server's short number for it ([`ToClient::Shorts`]), or nought
+    /// when the id says: a number of a byte or two in place of an id of
+    /// ten.
+    pub short: u32,
     pub blobs: Vec<Blob>,
+}
+
+impl Entry {
+    /// An entry named by its id.
+    pub fn new(id: EntityId, blobs: Vec<Blob>) -> Self {
+        Self { id, short: 0, blobs }
+    }
+
+    /// Named by `short` in place of its id.
+    pub fn shortened(mut self, short: u32) -> Self {
+        self.id = EntityId::from_raw(0);
+        self.short = short;
+        self
+    }
 }
 
 /// An entity as the server holds it, for someone joining late.
@@ -180,6 +199,10 @@ pub enum ToClient {
         sent: f64,
         server: f64,
     },
+    /// Short numbers for entities (docs/netsim.md, «Трафик»): an entry
+    /// may name one by it from now on, both ways. Given once for the
+    /// session, never reused; everything so far to someone coming in.
+    Shorts { pairs: Vec<(EntityId, u32)> },
 }
 
 /// Several messages in one datagram.
@@ -223,19 +246,25 @@ pub const POSITION_STEP: f32 = 1.0 / 1000.0;
 /// A transform in about a dozen bytes (docs/netsim.md, «Трафик»): a flag
 /// byte, the position in millimetres as three zigzag varints, the turn as
 /// the smallest three in six bytes (fifteen bits each, some thousandths of
-/// a degree), and the scale whole only when it is not one. What a body at
-/// rest trembles by in the last bits of an f32 does not show in these
-/// bytes, so a resting thing reads as unchanged and is not sent.
+/// a degree), and the scale only when it is not one — one number when it
+/// is the same each way. What a body at rest trembles by in the last bits
+/// of an f32 does not show in these bytes, so a resting thing reads as
+/// unchanged and is not sent; nor does a scale of one read back off a
+/// matrix a hair off.
 pub fn encode_transform(t: &crate::scene::Transform) -> Vec<u8> {
-    let scaled = (t.scale - glam::Vec3::ONE).abs().max_element() > 1e-6;
+    let near = |a: f32, b: f32| (a - b).abs() <= 1e-4 * b.abs().max(1.0);
+    let scaled = !(near(t.scale.x, 1.0) && near(t.scale.y, 1.0) && near(t.scale.z, 1.0));
+    let uniform = near(t.scale.y, t.scale.x) && near(t.scale.z, t.scale.x);
     let mut out = Vec::with_capacity(16);
-    out.push(scaled as u8);
+    out.push(scaled as u8 | ((scaled && uniform) as u8) << 1);
     for v in t.position.to_array() {
         let q = (v / POSITION_STEP).round().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
         varint(&mut out, ((q << 1) ^ (q >> 31)) as u32);
     }
     out.extend_from_slice(&pack_turn(t.rotation()).to_le_bytes()[..6]);
-    if scaled {
+    if scaled && uniform {
+        out.extend_from_slice(&t.scale.x.to_le_bytes());
+    } else if scaled {
         for v in t.scale.to_array() {
             out.extend_from_slice(&v.to_le_bytes());
         }
@@ -257,7 +286,9 @@ pub fn decode_transform(bytes: &[u8]) -> Option<crate::scene::Transform> {
     turn[..6].copy_from_slice(rest.get(..6)?);
     rest = &rest[6..];
     let mut scale = glam::Vec3::ONE;
-    if flags & 1 != 0 {
+    if flags & 3 == 3 {
+        scale = glam::Vec3::splat(f32::from_le_bytes(rest.get(..4)?.try_into().ok()?));
+    } else if flags & 1 != 0 {
         let mut s = [0.0f32; 3];
         for v in &mut s {
             *v = f32::from_le_bytes(rest.get(..4)?.try_into().ok()?);
@@ -365,6 +396,11 @@ mod tests {
         assert_eq!(back.scale, Vec3::ONE);
         let scaled = Transform { scale: Vec3::new(2.0, 1.0, 0.5), ..t };
         assert_eq!(decode_transform(&encode_transform(&scaled)).unwrap().scale, scaled.scale);
+        let even = Transform { scale: Vec3::splat(0.25), ..t };
+        assert_eq!(encode_transform(&even).len(), bytes.len() + 4);
+        assert_eq!(decode_transform(&encode_transform(&even)).unwrap().scale, even.scale);
+        let hair = Transform { scale: Vec3::new(0.99999, 1.0, 1.00001), ..t };
+        assert_eq!(encode_transform(&hair), bytes, "a scale a hair off one is one");
         assert_eq!(decode_transform(&bytes[..5]), None);
         // What a body at rest trembles by is not in the bytes.
         let trembling = Transform { position: t.position + Vec3::splat(1e-6), ..t };

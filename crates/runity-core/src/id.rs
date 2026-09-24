@@ -129,16 +129,27 @@ impl std::str::FromStr for EntityId {
     }
 }
 
+/// Hex text in a file a person reads; the number itself in a binary
+/// format (the wire), where the text would be seventeen bytes for a
+/// number of at most ten.
 impl Serialize for EntityId {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
+        if serializer.is_human_readable() {
+            serializer.collect_str(self)
+        } else {
+            serializer.serialize_u64(self.0)
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for EntityId {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
-        text.parse().map_err(serde::de::Error::custom)
+        if deserializer.is_human_readable() {
+            let text = String::deserialize(deserializer)?;
+            text.parse().map_err(serde::de::Error::custom)
+        } else {
+            u64::deserialize(deserializer).map(EntityId)
+        }
     }
 }
 
