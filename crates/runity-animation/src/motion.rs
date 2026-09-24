@@ -236,11 +236,19 @@ pub fn attach(
     if waiting.is_empty() {
         return Vec::new();
     }
-    let by_id: HashMap<EntityId, hecs::Entity> = world
+    // By the scene's ids and by a run-time prefab's own: a building stage
+    // spawned mid-level has a drone its clips fly.
+    let mut by_id: HashMap<EntityId, hecs::Entity> = world
         .query::<(hecs::Entity, &crate::world::SceneId)>()
         .iter()
         .map(|(e, s)| (s.0, e))
         .collect();
+    by_id.extend(
+        world
+            .query::<(hecs::Entity, &crate::world::SpawnedId)>()
+            .iter()
+            .map(|(e, s)| (s.0, e)),
+    );
     let mut problems = Vec::new();
     for (entity, animates) in waiting {
         let Some(graph) = motions.graphs.get(&animates.graph) else {
