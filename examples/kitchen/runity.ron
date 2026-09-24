@@ -9,4 +9,16 @@
         steps_per_second: 60,
         language: "en",
     ),
+    modules: [
+        "render",
+        "overlay",
+        "input",
+        "physics",
+        "animation",
+        "audio",
+        "net",
+        "steam",
+        "dialogue",
+        "shell",
+    ],
 )

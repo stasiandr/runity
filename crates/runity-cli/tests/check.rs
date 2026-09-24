@@ -499,3 +499,24 @@ fn a_field_no_module_reads_is_kept_and_named_and_one_that_does_not_fit_is_an_err
         text.trim()
     );
 }
+
+#[test]
+fn the_modules_runity_ron_lists_and_what_cargo_builds_are_held_together() {
+    let root = project("modules").root().to_path_buf();
+    let manifest = root.join("runity.ron");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let listed = text.trim_end().trim_end_matches(')').to_string()
+        + "    modules: [\"render\", \"physics\", \"shel\"],\n)\n";
+    write(&manifest, &listed);
+    let said = errors(&check(&Project::open(&root).unwrap()));
+    one_containing(&said, "did you mean `shell`");
+
+    write(&manifest, &listed.replace("\"shel\"", "\"shell\""));
+    let project = Project::open(&root).unwrap();
+    // A new game asks for the shell and sound; the list says physics too.
+    let said = errors(&check(&project));
+    one_containing(&said, "runity modules sync");
+    let features = runity_cli::modules::sync(&project).unwrap();
+    assert_eq!(features, ["desktop-shell", "physics"]);
+    assert!(errors(&check(&project)).is_empty());
+}

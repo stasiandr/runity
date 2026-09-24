@@ -3122,6 +3122,7 @@ name = "runity-discord"
 version = "0.1.0"
 dependencies = [
  "discord-rich-presence",
+ "runity-core",
 ]
 
 [[package]]
@@ -3152,6 +3153,7 @@ name = "runity-gpu"
 version = "0.1.0"
 dependencies = [
  "pollster 1.0.1",
+ "runity-core",
  "tracing",
  "wgpu",
  "winit",

@@ -1,0 +1,13 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "spline",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Curves through points, and copies of a model grown along them.",
+    depends: ["geometry"],
+    runtime: true,
+    editor: false,
+    parts: ["spline", "along"],
+    assets: [],
+)

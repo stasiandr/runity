@@ -1,0 +1,13 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "animation",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Skeletons posed from clips, animator graphs, motion clips.",
+    depends: ["geometry"],
+    runtime: true,
+    editor: false,
+    parts: ["animator", "bone"],
+    assets: [],
+)

@@ -6,6 +6,7 @@
 //! runity run   [PROJECT] [--hot] [--release] [--scene NAME] [--players N [--link BAD]]  the game
 //! runity sync  [PROJECT]     build library/ from the sources
 //! runity check [PROJECT]     what does not resolve, with file and entity
+//! runity modules [sync] [PROJECT]  the engine's modules; Cargo.toml from runity.ron
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
 //! runity build [PROJECT] [--out DIR] [--debug]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
@@ -71,6 +72,12 @@ runity sync [PROJECT]
 runity check [PROJECT]
     Every model, material and prefab a scene names, every id, every sidecar.
     Exits 1 when something does not resolve.
+runity modules [PROJECT]
+    Every module of the engine, what it is and stands on, and whether the
+    project lists it in runity.ron (`modules: [...]`).
+runity modules sync [PROJECT]
+    Write the engine's features in the game's Cargo.toml from the modules
+    runity.ron lists and what they stand on. `check` says when they part.
 runity build [PROJECT] [--out DIR] [--debug]
     Sync the library, compile the game (release unless --debug), and lay out
     DIR (build/ in the project by default): the executable and data/ with
@@ -211,6 +218,35 @@ fn run() -> Result<ExitCode> {
             })
         }
         "check" => check(&find(&rest)?),
+        "modules" => {
+            let (sync, rest) = match rest.split_first() {
+                Some((first, rest)) if first == "sync" => (true, rest.to_vec()),
+                _ => (false, rest.to_vec()),
+            };
+            let project = find(&rest)?;
+            if sync {
+                let features = runity_cli::modules::sync(&project)?;
+                println!("Cargo.toml: runity with [{}]", features.join(", "));
+            } else {
+                for (module, on) in runity_cli::modules::table(&project) {
+                    let depends = if module.depends.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (on {})", module.depends.join(", "))
+                    };
+                    println!(
+                        "{} {:<11} {}{depends}",
+                        if on { "+" } else { " " },
+                        module.name,
+                        module.what
+                    );
+                }
+                if project.manifest().modules.is_empty() {
+                    println!("runity.ron lists no modules: the engine's default set");
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
         "relay" => {
             // A server between homes: peers in a room (a code the host reads
             // out) hear each other through it, NAT or not.

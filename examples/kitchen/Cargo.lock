@@ -2533,7 +2533,6 @@ dependencies = [
  "runity-geometry",
  "runity-gpu",
  "runity-input",
- "runity-navigation",
  "runity-net",
  "runity-overlay",
  "runity-physics",
@@ -2624,16 +2623,6 @@ dependencies = [
  "runity-core",
  "serde",
  "tracing",
-]
-
-[[package]]
-name = "runity-navigation"
-version = "0.1.0"
-dependencies = [
- "glam 0.32.1",
- "hecs",
- "runity-core",
- "runity-physics",
 ]
 
 [[package]]

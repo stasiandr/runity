@@ -202,6 +202,12 @@ pub fn check(project: &Project) -> Vec<Finding> {
         let _: Option<ron::Value> = parse(&path, &file, &mut out);
     }
 
+    // The modules runity.ron lists hold together, and Cargo.toml builds
+    // the engine with them.
+    for problem in crate::modules::problems(project) {
+        out.push(error(runity::project::FILE, problem));
+    }
+
     check_sidecars(project, &mut out);
     check_layout(project, &mut out);
     out.sort_by(|a, b| (a.severity, &a.file).cmp(&(b.severity, &b.file)));

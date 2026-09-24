@@ -140,6 +140,13 @@ pub struct Manifest {
     /// lines anyone can read in a diff.
     #[serde(default)]
     pub game: GameSettings,
+    /// The project's modules by name (docs/modules.md): the one list of
+    /// what the game is built with. The engine's cargo features in the
+    /// game's `Cargo.toml` follow from it (`runity modules`), and `runity
+    /// check` says where they part. Absent in a project made before
+    /// modules were listed, empty: the engine's default set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
 }
 
 /// The game's window, clock, first scene and language.
@@ -311,6 +318,7 @@ impl Project {
             name: name.to_string(),
             engine: env!("CARGO_PKG_VERSION").to_string(),
             game: GameSettings::default(),
+            modules: Vec::new(),
         };
         let pretty = ron::ser::PrettyConfig::new();
         let text = ron::ser::to_string_pretty(&manifest, pretty)

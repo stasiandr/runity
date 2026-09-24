@@ -9,3 +9,6 @@ repository.workspace = true
 
 [dependencies]
 discord-rich-presence = "0.2"
+
+[dev-dependencies]
+runity-core = { path = "../runity-core" }

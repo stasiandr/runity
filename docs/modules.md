@@ -110,6 +110,16 @@ NEXT_STEPS.
 Официальные модули — одной версией с ядром (поезд). Модуль без кода —
 манифест и `assets/`.
 
+Сделано (2026-09-24): `module.ron` лежит у каждого крейта модуля, крейт
+отдаёт его как `MANIFEST`, и его тест сверяет `parts` с полями, которые
+модуль читает. `runity::modules::official()` — все официальные модули,
+`built()` — те, что есть в этой сборке. Проект перечисляет модули в
+`runity.ron` (`modules: ["render", "physics", …]`); то, на чём они стоят,
+приходит само. `runity modules` показывает модули, `runity modules sync`
+пишет строку `runity` в `Cargo.toml` игры (`default-features = false` и
+фичи перечисленных), а `runity check` называет модуль, которого нет, и
+`Cargo.toml`, который разошёлся со списком.
+
 ### Фазы
 
 Цикл — как PlayerLoop в Unity: `Initialization`, `EarlyUpdate`,

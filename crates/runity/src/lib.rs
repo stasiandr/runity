@@ -108,6 +108,80 @@ pub use runity_render::post;
 pub use runity_core::prefab;
 pub use runity_core::project;
 pub mod query;
+
+/// The engine's modules by their manifests (`module.ron`, docs/modules.md):
+/// what a project's `runity.ron` lists, and what `runity check` holds the
+/// list against.
+pub mod modules {
+    pub use runity_core::module::{features, list_problems, with_depends, Manifest};
+
+    /// The features `runity` builds with when a game does not say
+    /// `default-features = false`: `default` in its Cargo.toml.
+    pub const DEFAULT_FEATURES: &[&str] = &["navigation", "physics"];
+
+    /// Every official module's manifest, whether this build has it or not.
+    pub fn official() -> Vec<Manifest> {
+        [
+        include_str!("../../runity-geometry/module.ron"),
+        include_str!("../../runity-physics/module.ron"),
+        include_str!("../../runity-navigation/module.ron"),
+        include_str!("../../runity-animation/module.ron"),
+        include_str!("../../runity-audio/module.ron"),
+        include_str!("../../runity-gpu/module.ron"),
+        include_str!("../../runity-render/module.ron"),
+        include_str!("../../runity-overlay/module.ron"),
+        include_str!("../../runity-ui/module.ron"),
+        include_str!("../../runity-net/module.ron"),
+        include_str!("../../runity-steam/module.ron"),
+        include_str!("../../runity-input/module.ron"),
+        include_str!("../../runity-spline/module.ron"),
+        include_str!("../../runity-routes/module.ron"),
+        include_str!("../../runity-dialogue/module.ron"),
+        include_str!("../../runity-reports/module.ron"),
+        include_str!("../../runity-discord/module.ron"),
+        include_str!("../../runity-shell/module.ron"),
+        ]
+        .iter()
+        .map(|text| Manifest::parse(text).expect("an official module's manifest reads"))
+        .collect()
+    }
+
+    /// The modules this build of the engine has: every one without a
+    /// feature, and those whose feature is on.
+    pub fn built() -> Vec<Manifest> {
+        official()
+            .into_iter()
+            .filter(|m| m.feature.as_deref().is_none_or(feature_on))
+            .collect()
+    }
+
+    fn feature_on(feature: &str) -> bool {
+        match feature {
+            "physics" => cfg!(feature = "physics"),
+            "navigation" => cfg!(feature = "navigation"),
+            "audio" => cfg!(feature = "audio"),
+            "steam" => cfg!(feature = "steam"),
+            "reports" => cfg!(feature = "reports"),
+            "discord" => cfg!(feature = "discord"),
+            "desktop-shell" => cfg!(feature = "desktop-shell"),
+            _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_official_modules_stand_on_each_other_and_on_nothing_else() {
+            let all = super::official();
+            let names: Vec<String> = all.iter().map(|m| m.name.clone()).collect();
+            assert!(super::list_problems(&names, &all, env!("CARGO_PKG_VERSION")).is_empty());
+            // Physics, navigation and the rest of the default set are built.
+            let built: Vec<String> = super::built().into_iter().map(|m| m.name).collect();
+            assert!(built.iter().any(|n| n == "render"));
+            assert_eq!(built.iter().any(|n| n == "physics"), cfg!(feature = "physics"));
+        }
+    }
+}
 pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;

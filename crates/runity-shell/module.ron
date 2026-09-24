@@ -1,0 +1,14 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "shell",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "A plain desktop window for running a game without the editor.",
+    depends: ["gpu", "render", "overlay"],
+    runtime: true,
+    editor: false,
+    parts: [],
+    assets: [],
+    feature: Some("desktop-shell"),
+)

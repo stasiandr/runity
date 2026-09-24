@@ -1,0 +1,13 @@
+// The module's manifest (docs/modules.md): what it is, what it stands
+// on, what it brings. Its tests check `parts` against what the crate reads.
+(
+    name: "dialogue",
+    version: "0.1.0",
+    engine: "0.1",
+    what: "Conversations as graphs of lines and choices.",
+    depends: [],
+    runtime: true,
+    editor: false,
+    parts: [],
+    assets: [],
+)

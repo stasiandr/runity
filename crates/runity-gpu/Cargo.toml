@@ -16,3 +16,6 @@ winit = { version = "0.30.13", optional = true }
 [features]
 # A surface from a winit window, for the plain desktop shell.
 winit = ["dep:winit"]
+
+[dev-dependencies]
+runity-core = { path = "../runity-core" }
