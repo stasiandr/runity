@@ -1082,6 +1082,7 @@ mod tests {
         let mut most_waited = 0;
         let mut bytes = 0usize;
         let flushes = 40;
+        let began = std::time::Instant::now();
         for tick in 1..=flushes as u64 {
             std::thread::sleep(Duration::from_millis(10));
             rig.say(0, vec![many(tick, 10, 100)]);
@@ -1095,7 +1096,7 @@ mod tests {
         }
         assert_eq!(last_heard.len(), 10, "every one went");
         assert!(most_waited <= 6, "none waited more than six flushes: {most_waited}");
-        let seconds = flushes as f32 * 0.0105;
+        let seconds = began.elapsed().as_secs_f32();
         assert!((bytes as f32 / seconds) < 40_000.0, "{} bytes a second", bytes as f32 / seconds);
     }
 
