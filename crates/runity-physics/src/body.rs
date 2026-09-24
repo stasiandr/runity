@@ -339,6 +339,23 @@ pub enum Body {
     /// left each step. Follows its transform like a kinematic body. Unity's
     /// `isTrigger`.
     Trigger,
+    /// One of the colliders of the nearest ancestor with a body of its own:
+    /// a shovel's blade and handle are two parts of one shovel, moving and
+    /// weighing as one — Unity's colliders under a Rigidbody, which make one
+    /// compound body. With no such ancestor it stands still, as a collider
+    /// with no Rigidbody anywhere above it does in Unity.
+    Part,
+    /// A zone that is part of an ancestor's body: it moves with it, is
+    /// solid to nothing and, with [`Contacts`](crate::physics::Contacts) on
+    /// it, knows what is inside — a shovel's head, a bucket's mouth.
+    TriggerPart,
+}
+
+impl Body {
+    /// A collider of an ancestor's body rather than a body of its own.
+    pub fn is_part(self) -> bool {
+        matches!(self, Body::Part | Body::TriggerPart)
+    }
 }
 
 

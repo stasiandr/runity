@@ -325,10 +325,30 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
         }
         Some(desc)
     }
-    roots
+    let mut roots: Vec<EntityDesc> = roots
         .into_iter()
         .filter_map(|r| build(r, &mut entities, &children))
-        .collect()
+        .collect();
+    parts_under_bodies(&mut roots, false);
+    roots
+}
+
+/// Colliders under a Rigidbody are parts of its body, as in Unity: a
+/// collider with no Rigidbody of its own, below one that has it, becomes a
+/// `Part` (a trigger a `TriggerPart`) rather than standing still on its own.
+fn parts_under_bodies(lines: &mut [EntityDesc], under_body: bool) {
+    for line in lines {
+        let body = line.body();
+        if under_body {
+            match body {
+                Body::Static => line.set_part(&Body::Part),
+                Body::Trigger => line.set_part(&Body::TriggerPart),
+                _ => {}
+            }
+        }
+        let below = under_body || matches!(body, Body::Dynamic | Body::Kinematic);
+        parts_under_bodies(&mut line.children, below);
+    }
 }
 
 /// What a component's references resolve to.
