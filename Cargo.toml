@@ -51,7 +51,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/stasiandr/runity"
 
 [workspace.dependencies]
-scrap = { path = "crates/scrap", version = "0.1.0" }
+scrap = { package = "scrap-engine", path = "crates/scrap", version = "0.1.0" }
 scrap-editor = { path = "crates/scrap-editor", version = "0.1.0" }
 scrap-import = { path = "crates/scrap-import", version = "0.1.0" }
 

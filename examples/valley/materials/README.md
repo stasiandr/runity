@@ -11,7 +11,7 @@
 
 ```sh
 cargo run -p scrap-import -- examples/valley/materials/*.scrmat --library examples/valley/library
-cargo run -p scrap --example scene_shot -- examples/valley/scenes/first-light.ron
+cargo run -p scrap-engine --example scene_shot -- examples/valley/scenes/first-light.ron
 ```
 
 Вторая команда рисует ту же сцену, но имена материалов в ней теперь

@@ -1,10 +1,15 @@
 [package]
-name = "scrap"
+# `scrap` on crates.io is someone else's (screen capture): the package is
+# the engine's, the library keeps the short name, so games write `scrap::`.
+name = "scrap-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "scrap"
 
 [dependencies]
 scrap-animation = { path = "../scrap-animation", optional = true }

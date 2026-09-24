@@ -9,7 +9,7 @@ more than four textures keeps the rest as procedural noise.
 
 `scrap import-unity ~/personal/dacha-simulator PROJECT --shaders
 examples/dacha/shaders` puts these in the project's `shaders/` in place of
-the stubs the importer writes. Check one with `cargo run -p scrap --example
+the stubs the importer writes. Check one with `cargo run -p scrap-engine --example
 check_surface -- FILE`, look at them all with `--example shader_gallery`.
 
 A shader here can say what its materials need, on lines of its own:

@@ -12,7 +12,7 @@ repository.workspace = true
 [dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 ron = "0.12.2"
-scrap = { version = "0.1.0", path = "../scrap" }
+scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }
 scrap-cli = { version = "0.1.0", path = "../scrap-cli" }
 scrap-editor = { version = "0.1.0", path = "../scrap-editor" }

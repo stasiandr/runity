@@ -12,7 +12,7 @@ repository.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 ron = "0.12.2"
-scrap = { version = "0.1.0", path = "../scrap" }
+scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }
 serde = { version = "1.0.229", features = ["derive"] }
 

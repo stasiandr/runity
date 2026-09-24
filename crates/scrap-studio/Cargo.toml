@@ -17,7 +17,7 @@ repository.workspace = true
 arboard = { version = "3", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
-scrap = { version = "0.1.0", path = "../scrap", features = ["desktop-shell", "audio"] }
+scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap", features = ["desktop-shell", "audio"] }
 scrap-cli = { version = "0.1.0", path = "../scrap-cli" }
 scrap-editor = { version = "0.1.0", path = "../scrap-editor" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }

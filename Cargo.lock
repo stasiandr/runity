@@ -3335,43 +3335,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scrap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glam 0.32.1",
- "hecs",
- "image",
- "miniz_oxide 0.8.9",
- "ron",
- "scrap-animation",
- "scrap-audio",
- "scrap-character",
- "scrap-core",
- "scrap-destruction",
- "scrap-dialogue",
- "scrap-discord",
- "scrap-fluid",
- "scrap-geometry",
- "scrap-gpu",
- "scrap-input",
- "scrap-navigation",
- "scrap-net",
- "scrap-overlay",
- "scrap-physics",
- "scrap-render",
- "scrap-reports",
- "scrap-routes",
- "scrap-shell",
- "scrap-soft",
- "scrap-spline",
- "scrap-steam",
- "serde",
- "tracing",
- "wgpu",
-]
-
-[[package]]
 name = "scrap-animation"
 version = "0.1.0"
 dependencies = [
@@ -3417,7 +3380,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ron",
- "scrap",
+ "scrap-engine",
  "scrap-import",
  "serde",
 ]
@@ -3473,10 +3436,47 @@ version = "0.1.0"
 dependencies = [
  "hecs",
  "image",
- "scrap",
+ "scrap-engine",
  "scrap-import",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "scrap-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "hecs",
+ "image",
+ "miniz_oxide 0.8.9",
+ "ron",
+ "scrap-animation",
+ "scrap-audio",
+ "scrap-character",
+ "scrap-core",
+ "scrap-destruction",
+ "scrap-dialogue",
+ "scrap-discord",
+ "scrap-fluid",
+ "scrap-geometry",
+ "scrap-gpu",
+ "scrap-input",
+ "scrap-navigation",
+ "scrap-net",
+ "scrap-overlay",
+ "scrap-physics",
+ "scrap-render",
+ "scrap-reports",
+ "scrap-routes",
+ "scrap-shell",
+ "scrap-soft",
+ "scrap-spline",
+ "scrap-steam",
+ "serde",
+ "tracing",
+ "wgpu",
 ]
 
 [[package]]
@@ -3501,8 +3501,8 @@ dependencies = [
  "gltf",
  "image",
  "ron",
- "scrap",
  "scrap-editor",
+ "scrap-engine",
  "serde",
  "serde_json",
  "ureq",
@@ -3543,7 +3543,7 @@ dependencies = [
  "image",
  "rkyv",
  "ron",
- "scrap",
+ "scrap-engine",
  "serde",
  "serde_json",
  "symphonia",
@@ -3568,9 +3568,9 @@ version = "0.1.0"
 dependencies = [
  "image",
  "ron",
- "scrap",
  "scrap-cli",
  "scrap-editor",
+ "scrap-engine",
  "scrap-gen",
  "scrap-import",
  "serde_json",
@@ -3740,9 +3740,9 @@ dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "rfd",
- "scrap",
  "scrap-cli",
  "scrap-editor",
+ "scrap-engine",
  "scrap-import",
  "scrap-ui",
  "serde",

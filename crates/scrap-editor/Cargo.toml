@@ -13,7 +13,7 @@ repository.workspace = true
 # It links the importer, which the game never does.
 [dependencies]
 hecs = "0.11.0"
-scrap = { version = "0.1.0", path = "../scrap" }
+scrap = { package = "scrap-engine", version = "0.1.0", path = "../scrap" }
 scrap-import = { version = "0.1.0", path = "../scrap-import" }
 serde = "1.0.229"
 serde_json = "1.0.151"

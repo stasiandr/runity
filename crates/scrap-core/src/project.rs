@@ -605,7 +605,7 @@ opt-level = 3
 /// writes. `None`: the engine's defaults, with the window and sound.
 fn scrap_dependency(source: &str, features: Option<&[String]>) -> String {
     match features {
-        None => format!("scrap = {{ {source}, features = [\"desktop-shell\", \"audio\"] }}"),
+        None => format!("scrap = {{ package = \"scrap-engine\", {source}, features = [\"desktop-shell\", \"audio\"] }}"),
         Some([]) => {
             let source = source.replace("crates/scrap\"", "crates/scrap-core\"");
             format!("scrap = {{ package = \"scrap-core\", {source} }}")
@@ -613,7 +613,7 @@ fn scrap_dependency(source: &str, features: Option<&[String]>) -> String {
         Some(features) => {
             let list: Vec<String> = features.iter().map(|f| format!("\"{f}\"")).collect();
             format!(
-                "scrap = {{ {source}, default-features = false, features = [{}] }}",
+                "scrap = {{ package = \"scrap-engine\", {source}, default-features = false, features = [{}] }}",
                 list.join(", ")
             )
         }

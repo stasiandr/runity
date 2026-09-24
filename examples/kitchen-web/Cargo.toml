@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-scrap = { path = "../../crates/scrap", default-features = false, features = ["animation", "audio", "desktop-shell", "dialogue", "input", "net", "physics", "routes"] }
+scrap = { package = "scrap-engine", path = "../../crates/scrap", default-features = false, features = ["animation", "audio", "desktop-shell", "dialogue", "input", "net", "physics", "routes"] }
 serde = { version = "1", features = ["derive"] }
 
 # In the browser: the page's data and randomness, a panic said in the

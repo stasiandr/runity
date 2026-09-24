@@ -1262,7 +1262,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "image",
- "scrap",
+ "scrap-engine",
  "serde",
 ]
 
@@ -2638,32 +2638,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
-name = "scrap"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glam 0.32.1",
- "hecs",
- "ron",
- "scrap-animation",
- "scrap-audio",
- "scrap-core",
- "scrap-dialogue",
- "scrap-geometry",
- "scrap-gpu",
- "scrap-input",
- "scrap-net",
- "scrap-overlay",
- "scrap-physics",
- "scrap-render",
- "scrap-routes",
- "scrap-shell",
- "scrap-steam",
- "serde",
- "tracing",
-]
-
-[[package]]
 name = "scrap-animation"
 version = "0.1.0"
 dependencies = [
@@ -2711,6 +2685,32 @@ dependencies = [
  "ron",
  "scrap-core",
  "serde",
+]
+
+[[package]]
+name = "scrap-engine"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "hecs",
+ "ron",
+ "scrap-animation",
+ "scrap-audio",
+ "scrap-core",
+ "scrap-dialogue",
+ "scrap-geometry",
+ "scrap-gpu",
+ "scrap-input",
+ "scrap-net",
+ "scrap-overlay",
+ "scrap-physics",
+ "scrap-render",
+ "scrap-routes",
+ "scrap-shell",
+ "scrap-steam",
+ "serde",
+ "tracing",
 ]
 
 [[package]]
