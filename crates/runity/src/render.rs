@@ -660,7 +660,9 @@ struct FrameUniform {
     /// for all of them leaves one cascade shadowing itself.
     cascade_depth_bias: [f32; 4],
     /// 1 when there is ambient occlusion to read; the share of the direct
-    /// light it darkens too.
+    /// light it darkens too; how far contact shadows' rays go; how far the
+    /// marches' noise is turned this frame — 0 without TAA, which alone
+    /// averages it away, so a still picture stays still.
     ambient_occlusion: [f32; 4],
     /// Traced: sun shadows, lamp shadows, occlusion, each 1 where asked and
     /// the device traces; `w` the tangent of the sun disc's radius.
@@ -818,6 +820,8 @@ struct InstanceRaw {
     detail: [f32; 4],
     /// The material's own numbers, for its shader.
     params: [[f32; 4]; 2],
+    /// Light under the surface: its colour (linear), and how far it goes.
+    subsurface: [f32; 4],
 }
 
 /// Bits of [`InstanceRaw::emission`]'s `w`.
@@ -916,6 +920,12 @@ fn instance_of(transform: Mat4, material: &Material) -> InstanceRaw {
                 material.params[6],
                 material.params[7],
             ],
+        ],
+        subsurface: [
+            material.subsurface[0].max(0.0),
+            material.subsurface[1].max(0.0),
+            material.subsurface[2].max(0.0),
+            material.subsurface_radius.max(0.0005),
         ],
     }
 }
@@ -1442,10 +1452,10 @@ struct Layouts<'a> {
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 11] = wgpu::vertex_attr_array![
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 12] = wgpu::vertex_attr_array![
     3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4,
     7 => Float32x4, 10 => Float32x4, 11 => Float32x4, 12 => Float32x4, 13 => Float32x4,
-    14 => Float32x4, 15 => Float32x4
+    14 => Float32x4, 15 => Float32x4, 16 => Float32x4
 ];
 const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![8 => Uint16x4, 9 => Float32x4];
@@ -2839,7 +2849,7 @@ impl Renderer {
             ),
             lods: std::collections::HashMap::new(),
             lod_meshes: Vec::new(),
-            timer: crate::gpu_timer::GpuTimer::new(gpu),
+            timer: None,
             timing: std::env::var_os("RUNITY_GPU_TIMES").is_some(),
             atmosphere,
             clouds,
@@ -3957,6 +3967,11 @@ impl Renderer {
         // picture's.
         let timed = self.timing && probe.is_none() && view.is_some() && !self.picturing;
         if timed {
+            // Made the first time it is wanted: a renderer that is never
+            // timed never holds a query set.
+            if self.timer.is_none() {
+                self.timer = crate::gpu_timer::GpuTimer::new(gpu);
+            }
             if let Some(timer) = self.timer.as_mut() {
                 timer.begin(gpu);
             }
@@ -4385,7 +4400,7 @@ impl Renderer {
                     .clamp(0.0, 1.0),
                 // Contact shadows: how far their rays go.
                 if contact_on { frame.shadows.contact } else { 0.0 },
-                0.0,
+                if taa_on { (time * 37.0).fract() * 0.618_034 } else { 0.0 },
             ],
             ray: {
                 let on = |asked: bool| {

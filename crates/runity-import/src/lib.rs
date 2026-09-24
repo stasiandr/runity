@@ -927,6 +927,13 @@ pub struct MaterialSource {
     /// Clay: mud in the wet, cracking as it dries.
     #[serde(default)]
     pub clay: bool,
+    /// Light under the surface, as the colour it comes out (sRGB, like
+    /// `color`); none when not said.
+    #[serde(default)]
+    pub subsurface: Option<Color>,
+    /// How far it travels under it, metres.
+    #[serde(default = "subsurface_reach")]
+    pub subsurface_radius: f32,
     /// For water: metres one sees down through it.
     #[serde(default = "clear_water")]
     pub clarity: f32,
@@ -1094,6 +1101,10 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
         );
     }
     Ok(Some(settings.asset_id()))
+}
+
+fn subsurface_reach() -> f32 {
+    0.01
 }
 
 fn clear_water() -> f32 {
@@ -1358,6 +1369,11 @@ pub fn material_from_ron(
                 0.0
             },
             clay: source.clay,
+            subsurface: match &source.subsurface {
+                Some(color) => color.linear()?,
+                None => [0.0; 3],
+            },
+            subsurface_radius: source.subsurface_radius.max(0.0005),
         },
     })
 }
