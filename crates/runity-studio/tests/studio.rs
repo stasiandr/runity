@@ -9,9 +9,9 @@
 //!
 //! Skipped, not failed, where there is no GPU to render the scene with.
 
+use runity::input::{InputEvent, Key, MouseButton};
 #[allow(unused_imports)]
 use runity::prelude::*;
-use runity::input::{InputEvent, Key, MouseButton};
 use runity_studio::Studio;
 
 fn studio() -> Option<(Studio, std::path::PathBuf)> {
@@ -238,6 +238,200 @@ fn keys_after_a_line_act_on_it_in_the_scene() {
     assert_eq!(s.session.tool(), runity::gizmo::Tool::Scale);
 }
 
+/// Whether a pointer at the node's middle would reach it: shown, and on
+/// top.
+fn clickable(s: &mut Studio, name: &str) -> bool {
+    s.ui.paint();
+    let node = s.ui.find(name).unwrap();
+    let (x, y) = s.ui.rect(node).center();
+    s.ui.hit(x, y) == Some(node)
+}
+
+/// The glyph's colour of a tool strip button: the accent when it is the
+/// tool.
+fn tool_lit(s: &Studio, name: &str) -> bool {
+    let button = s.ui.find(name).unwrap();
+    let glyph = s.ui.children(button)[0];
+    s.ui.style(glyph).text.color == runity_studio::theme::ACCENT
+}
+
+#[test]
+fn the_tool_strip_in_the_view_and_q_w_e_r() {
+    use runity::gizmo::Tool;
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    // In the Scene view's corner, not the toolbar.
+    s.ui.paint();
+    let strip = s.ui.rect(s.ui.find("tools").expect("the tool strip"));
+    let view = s.ui.rect(s.ui.find("scene view").unwrap());
+    assert!(
+        view.contains(strip.x + 1.0, strip.y + 1.0),
+        "{strip:?} in {view:?}"
+    );
+    assert!(tool_lit(&s, "tool Move") && !tool_lit(&s, "tool Hand"));
+
+    click(&mut s, "tool Hand");
+    assert!(s.session.hand());
+    assert!(tool_lit(&s, "tool Hand") && !tool_lit(&s, "tool Move"));
+    click(&mut s, "tool Rotate");
+    assert!(!s.session.hand());
+    assert_eq!(s.session.tool(), Tool::Rotate);
+    assert!(tool_lit(&s, "tool Rotate") && !tool_lit(&s, "tool Hand"));
+
+    // The keys, with the view holding the keyboard.
+    for (k, tool) in [
+        (Key::W, Tool::Move),
+        (Key::R, Tool::Scale),
+        (Key::E, Tool::Rotate),
+    ] {
+        key(&mut s, k);
+        assert_eq!(s.session.tool(), tool);
+        assert!(!s.session.hand());
+    }
+    key(&mut s, Key::Q);
+    assert!(s.session.hand());
+    assert!(tool_lit(&s, "tool Hand") && !tool_lit(&s, "tool Rotate"));
+
+    // The Game view has no tools.
+    assert!(clickable(&mut s, "tool Move"));
+    click(&mut s, "view game");
+    assert!(!clickable(&mut s, "tool Move"));
+}
+
+#[test]
+fn the_views_bar_says_pivot_or_center_global_or_local_and_the_grid() {
+    use runity_editor::{Pivot, Space};
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let word = |s: &Studio, name: &str| {
+        let b = s.ui.find(name).unwrap();
+        s.ui.text(s.ui.children(b)[0]).unwrap().to_string()
+    };
+    let pivot = s.session.pivot();
+    let space = s.session.space();
+    click(&mut s, "handles at");
+    assert_ne!(s.session.pivot(), pivot);
+    let expect = |p| {
+        if p == Pivot::Center {
+            "Center"
+        } else {
+            "Pivot"
+        }
+    };
+    assert_eq!(word(&s, "handles at"), expect(s.session.pivot()));
+    click(&mut s, "handles along");
+    assert_ne!(s.session.space(), space);
+    let expect = |p| if p == Space::Local { "Local" } else { "Global" };
+    assert_eq!(word(&s, "handles along"), expect(s.session.space()));
+    // Z says it too, and the word follows.
+    key(&mut s, Key::Z);
+    assert_eq!(s.session.pivot(), pivot);
+    assert_eq!(
+        word(&s, "handles at"),
+        if pivot == Pivot::Center {
+            "Center"
+        } else {
+            "Pivot"
+        }
+    );
+
+    let grid = s.session.show_grid();
+    click(&mut s, "grid");
+    assert_ne!(s.session.show_grid(), grid);
+    // No icon buttons for these on the toolbar any more.
+    assert!(s.ui.find("space").is_none() && s.ui.find("pivot").is_none());
+}
+
+#[test]
+fn the_status_bar_shows_the_consoles_newest_line() {
+    use runity_editor::console::Level;
+    use runity_studio::theme::{ERROR, WARNING};
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let line = |s: &mut Studio| {
+        s.frame();
+        let n = s.ui.find("status console line").unwrap();
+        (s.ui.text(n).unwrap().to_string(), s.ui.style(n).text.color)
+    };
+    s.session.say(Level::Warning, "no ground under crate");
+    assert_eq!(line(&mut s), ("no ground under crate".into(), WARNING));
+    s.session.say(Level::Error, "shader: line 3\nand the rest");
+    assert_eq!(line(&mut s), ("shader: line 3".into(), ERROR), "one line");
+    // A repeat of an older line is the newest again.
+    s.session.say(Level::Warning, "no ground under crate");
+    assert_eq!(line(&mut s).0, "no ground under crate");
+    // Long: cut to the room there is.
+    s.session.say(Level::Info, "x".repeat(2000));
+    let (shown, _) = line(&mut s);
+    assert!(
+        shown.ends_with('…') && shown.chars().count() < 400,
+        "{}",
+        shown.len()
+    );
+
+    click(&mut s, "tab settings");
+    click(&mut s, "status console");
+    s.ui.paint();
+    assert!(
+        s.ui.rect(s.ui.find("console lines").unwrap()).width > 0.0,
+        "the click shows the Console"
+    );
+    s.session.clear_console();
+    assert_eq!(line(&mut s).0, "");
+}
+
+#[test]
+fn the_title_is_scene_project_editor_with_a_dot_while_unsaved() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert_eq!(s.title(), "first-light — valley — runity");
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    assert_eq!(s.title(), "• first-light — valley — runity");
+}
+
+#[test]
+fn the_menus_leave_the_toolbar_for_the_system_and_say_their_state() {
+    use runity_studio::menu::Action;
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    // Headless, the toolbar draws them.
+    assert!(!s.native_menu());
+    assert!(clickable(&mut s, "menu bar Edit"));
+
+    let undo = Action::Editor("undo");
+    assert!(!s.menu_state(&undo, "Undo").enabled);
+    let revision = s.menu_revision();
+    click(&mut s, "line crate");
+    key(&mut s, Key::Delete);
+    let state = s.menu_state(&undo, "Undo");
+    assert!(state.enabled);
+    assert!(state.label.starts_with("Undo "), "{}", state.label);
+    assert_ne!(s.menu_revision(), revision, "the menu bar knows to look");
+    let revision = s.menu_revision();
+    s.frame();
+    assert_eq!(s.menu_revision(), revision, "and not every frame");
+    let grid = s.menu_state(&Action::ToggleGrid, "Grid").checked;
+    s.run(Action::ToggleGrid);
+    assert_ne!(s.menu_state(&Action::ToggleGrid, "Grid").checked, grid);
+
+    // The system's menus: none in the toolbar, the play buttons stay.
+    s.set_native_menu(true);
+    assert!(!clickable(&mut s, "menu bar Edit"));
+    assert!(clickable(&mut s, "play"));
+    s.set_native_menu(false);
+    menu(&mut s, "Entity", "Cube");
+    assert!(
+        s.session.selected().is_some(),
+        "the toolbar's menu works again"
+    );
+}
+
 #[test]
 fn play_stop_and_the_right_click_menu() {
     let Some((mut s, _dir)) = studio() else {
@@ -462,7 +656,10 @@ fn a_colour_typed_or_slid_paints_the_selection() {
         s.frame();
     }
     let m = s.session.material(crate_id).unwrap();
-    assert!(m.base_color.iter().all(|c| *c < 0.01), "black while held: {m:?}");
+    assert!(
+        m.base_color.iter().all(|c| *c < 0.01),
+        "black while held: {m:?}"
+    );
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
     assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
@@ -1031,9 +1228,9 @@ fn play_pause_and_step_stand_in_the_middle_of_the_window() {
     s.resize(1100.0, 800.0, 1.0);
     s.frame();
     s.ui.paint();
-    let grid = s.ui.rect(s.ui.find("grid").unwrap());
+    let last = s.ui.rect(s.ui.find("menu bar Play").unwrap());
     let play = s.ui.rect(s.ui.find("play").unwrap());
-    assert!(play.x > grid.x + grid.width, "{play:?} clear of {grid:?}");
+    assert!(play.x > last.x + last.width, "{play:?} clear of {last:?}");
 }
 
 #[test]
@@ -2208,7 +2405,6 @@ fn a_field_that_differs_has_a_reset_arrow_and_search_narrows_the_inspector() {
         runity::glam::Vec3::ONE
     );
     assert!(s.ui.find("reset scale").is_none(), "and the arrow goes");
-
 }
 
 #[test]
@@ -2556,18 +2752,27 @@ fn the_inspector_scrubs_adds_takes_away_and_switches_off() {
     let steps = s.session.undo_steps().len();
     s.ui.paint();
     let handle = s.ui.rect(s.ui.find("scrub position x").unwrap());
-    let (hx, hy) = (handle.x + handle.width / 2.0, handle.y + handle.height / 2.0);
+    let (hx, hy) = (
+        handle.x + handle.width / 2.0,
+        handle.y + handle.height / 2.0,
+    );
     s.handle(&InputEvent::MouseMoved { x: hx, y: hy });
     s.handle(&InputEvent::MouseDown(MouseButton::Left));
     s.frame();
     for i in 1..=10 {
-        s.handle(&InputEvent::MouseMoved { x: hx + i as f32 * 10.0, y: hy });
+        s.handle(&InputEvent::MouseMoved {
+            x: hx + i as f32 * 10.0,
+            y: hy,
+        });
         s.frame();
     }
     let moved = s.session.transform(crate_id).unwrap().position.x;
     s.handle(&InputEvent::MouseUp(MouseButton::Left));
     s.frame();
-    assert!((moved - x - 1.0).abs() < 0.05, "{x} → {moved}, as it is dragged");
+    assert!(
+        (moved - x - 1.0).abs() < 0.05,
+        "{x} → {moved}, as it is dragged"
+    );
     assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
 
     // A light from Add Component's search, then the trash takes it away.

@@ -19,6 +19,7 @@
 //! | right drag | look around; with W A S D Q E held, fly (shift: faster, wheel: speed) |
 //! | middle drag | pan |
 //! | wheel | zoom |
+//! | Q | the hand: a left drag pans, nothing is picked or moved |
 //! | W / E / R | move / rotate / scale tool |
 //! | X | handles along the world's axes or the entity's own |
 //! | Z | handles on the entity's pivot or the selection's middle |
@@ -88,6 +89,14 @@ impl Session {
             } else {
                 self.vertex_end();
                 did.push("drop");
+            }
+        } else if self.hand {
+            // The hand: the left button moves the view and nothing else.
+            if input.mouse_held(MouseButton::Left) && !alt && motion != runity::glam::Vec2::ZERO {
+                let camera = self.camera();
+                let scale = (camera.position - camera.target).length() * 0.0015;
+                self.pan(-motion.x * scale, motion.y * scale);
+                did.push("pan");
             }
         } else if input.mouse_pressed(MouseButton::Left) && !alt {
             if self.gizmo_begin(x, y)?.is_some() {
@@ -259,6 +268,10 @@ impl Session {
                 did.push("align with view");
             }
         } else if !flying {
+            if pressed(Key::Q) {
+                self.set_hand();
+                did.push("hand tool");
+            }
             for (key, tool, name) in [
                 (Key::W, Tool::Move, "move tool"),
                 (Key::E, Tool::Rotate, "rotate tool"),

@@ -164,10 +164,6 @@ struct Toolbar {
     menus: Vec<(NodeId, Vec<MenuItem>)>,
     scene_name: NodeId,
     modified: NodeId,
-    tools: [NodeId; 3],
-    space: NodeId,
-    pivot: NodeId,
-    grid: NodeId,
     play: NodeId,
     pause: NodeId,
     step: NodeId,
@@ -180,11 +176,66 @@ struct Toolbar {
 }
 
 struct Status {
+    /// The Console's newest line: its box (a click shows the Console),
+    /// its level's glyph, its text.
+    console: NodeId,
+    console_icon: NodeId,
+    console_text: NodeId,
     entities: NodeId,
     selected: NodeId,
-    last: NodeId,
     problems: NodeId,
     mode: NodeId,
+}
+
+/// The Console line the status bar shows: which saying it was, its level
+/// and text, when it came, the width it was cut to, and whether an info
+/// has faded yet.
+struct StatusLine {
+    said: u64,
+    level: Level,
+    text: String,
+    at: Instant,
+    width: f32,
+    faded: bool,
+}
+
+/// How long an info line stays bright in the status bar.
+const STATUS_FADE: Duration = Duration::from_secs(10);
+
+/// The Scene view's tools, in the strip in its corner: the hand, then the
+/// gizmo's three.
+const TOOLS: [(&str, &str, Option<Tool>); 4] = [
+    ("Hand", "hand", None),
+    ("Move", "move-3d", Some(Tool::Move)),
+    ("Rotate", "rotate-3d", Some(Tool::Rotate)),
+    ("Scale", "scale-3d", Some(Tool::Scale)),
+];
+
+/// What a line of a menu shows now: its label (Undo says what it would
+/// take back), whether it can be chosen, whether its tick is on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MenuState {
+    pub label: String,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
+/// Everything the menus' lines show, in brief: the menu bar is brought up
+/// to date when it changes.
+#[derive(PartialEq)]
+struct MenuStamp {
+    undo: Option<Option<String>>,
+    redo: Option<Option<String>>,
+    selected: bool,
+    playing: bool,
+    paused: bool,
+    grid: bool,
+    snap: bool,
+    colliders: bool,
+    navigation: bool,
+    game_view: bool,
+    panels: [bool; 3],
+    maximized: bool,
 }
 
 /// What the panels show, in brief: when it is the same as last frame's
@@ -196,6 +247,7 @@ struct Stamp {
     console: (usize, usize, usize),
     lines: usize,
     tool: Tool,
+    hand: bool,
     playing: bool,
     paused: bool,
     hidden: usize,
@@ -215,6 +267,7 @@ impl Stamp {
             console: session.console_counts(),
             lines: session.console().iter().map(|l| l.count as usize).sum(),
             tool: session.tool(),
+            hand: session.hand(),
             playing: session.is_playing(),
             paused: session.is_paused(),
             hidden: session.hidden().len(),
@@ -238,6 +291,24 @@ pub struct Studio {
     tab_game: NodeId,
     /// Buttons that are one action each: the view's corner, the snap.
     buttons: Vec<(NodeId, Action)>,
+    /// The tool strip in the Scene view's corner, and its buttons in
+    /// [`TOOLS`]' order.
+    tool_strip: NodeId,
+    tools: [NodeId; 4],
+    /// The Scene view's bar: where the handles sit (Pivot, Center), which
+    /// way they point (Global, Local), and the grid.
+    pivot_button: NodeId,
+    space_button: NodeId,
+    grid_button: NodeId,
+    /// The menus are the system's (macOS's menu bar), not the toolbar's.
+    native_menu: bool,
+    /// What the menus showed when last looked at, and a number that
+    /// changes whenever that does.
+    menu_seen: Option<MenuStamp>,
+    menu_revision: u64,
+    /// The Console line in the status bar.
+    status_line: Option<StatusLine>,
+
     snap: NodeId,
     colliders_button: NodeId,
     sculpt_button: NodeId,
@@ -410,7 +481,7 @@ impl Studio {
                 .gap(SPACE_1)
                 .center_items(),
         );
-        let tab_scene = view_tab(&mut ui, view_tabs, "view scene", "hand", "Scene", true);
+        let tab_scene = view_tab(&mut ui, view_tabs, "view scene", "grid-3x3", "Scene", true);
         let tab_game = view_tab(&mut ui, view_tabs, "view game", "camera", "Game", false);
         let aspect_button = ui.add(
             view_tabs,
@@ -430,6 +501,12 @@ impl Studio {
         );
         icon(&mut ui, aspect_button, "chevron-down", MUTED);
         spacer(&mut ui, view_tabs);
+        // What the handles do, in words, as Unity's bar says them: where
+        // they sit, which way they point; and the grid.
+        let pivot_button = word_toggle(&mut ui, view_tabs, "handles at", "Pivot");
+        let space_button = word_toggle(&mut ui, view_tabs, "handles along", "Global");
+        let grid_button = word_toggle(&mut ui, view_tabs, "grid", "Grid");
+        separator(&mut ui, view_tabs);
         let mut buttons = Vec::new();
         let snap = icon_button(&mut ui, view_tabs, "snap", "magnet", false);
         buttons.push((snap, Action::ToggleSnap));
@@ -502,6 +579,7 @@ impl Studio {
             "",
         );
         let compass = build_compass(&mut ui, view_frame);
+        let (tool_strip, tools) = build_tool_strip(&mut ui, view_frame);
         // Unity's Camera Preview: what a selected camera sees, in the corner.
         let cam_holder = ui.add(view_frame, Style::row().absolute(0.0, 0.0).full().hidden());
         ui.add(cam_holder, Style::row().fill());
@@ -592,7 +670,17 @@ impl Studio {
             tab_scene,
             tab_game,
             buttons,
+            tool_strip,
+            tools,
+            pivot_button,
+            space_button,
+            grid_button,
+            native_menu: false,
+            menu_seen: None,
+            menu_revision: 0,
+            status_line: None,
             snap,
+
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
@@ -736,26 +824,107 @@ impl Studio {
         }
     }
 
-    /// What the window's title says: the document, and a dot when it has
-    /// unsaved edits.
+    /// What the window's title says, as Unity's does: the scene, the
+    /// project, the editor — `first-light — valley — runity` — with a dot
+    /// in front while there are unsaved edits (the order an editor with
+    /// tabs uses; macOS also marks the close button, `window.rs`).
     pub fn title(&self) -> String {
-        let name = self
-            .session
+        let s = &self.session;
+        let name = s
             .scene_path()
-            .and_then(|p| p.file_name())
+            .and_then(|p| p.file_stem())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "untitled".into());
-        let dot = if self.session.is_modified() {
-            " ●"
-        } else {
-            ""
+        let dot = if s.is_modified() { "• " } else { "" };
+        let prefab = if s.is_prefab() { " (prefab)" } else { "" };
+        match s.project() {
+            Some(project) => format!("{dot}{name}{prefab} — {} — runity", project.name()),
+            None => format!("{dot}{name}{prefab} — runity"),
+        }
+    }
+
+    /// Menus in the system's menu bar (`true`, macOS's window does this)
+    /// or in the toolbar, drawn by the studio (the tests, other systems).
+    pub fn set_native_menu(&mut self, on: bool) {
+        self.native_menu = on;
+        for (m, _) in &self.toolbar.menus {
+            self.ui
+                .restyle(*m, |s| if on { s.hidden() } else { s.shown() });
+        }
+    }
+
+    pub fn native_menu(&self) -> bool {
+        self.native_menu
+    }
+
+    /// A number that changes whenever something a menu line shows does —
+    /// what the menu bar checks before bringing its lines up to date.
+    pub fn menu_revision(&self) -> u64 {
+        self.menu_revision
+    }
+
+    /// What the menu line for `action`, called `label`, shows now. The
+    /// toolbar's menus and the system's both ask.
+    pub fn menu_state(&self, action: &Action, label: &str) -> MenuState {
+        let s = &self.session;
+        let selected = !s.selection().is_empty();
+        let playing = s.is_playing();
+        let (enabled, checked) = match action {
+            Action::Editor("undo") => (s.can_undo(), false),
+            Action::Editor("redo") => (s.can_redo(), false),
+            Action::Editor("duplicate_entity" | "delete_entity" | "drop_to_ground")
+            | Action::Copy
+            | Action::Rename
+            | Action::Frame
+            | Action::Group
+            | Action::Hide
+            | Action::SnapToGrid
+            | Action::SaveMaterial => (selected, false),
+            Action::Pause => (playing, s.is_paused()),
+            Action::Step | Action::KeepSimulation => (playing, false),
+            Action::Play => (true, playing),
+            Action::ToggleGrid => (true, s.show_grid()),
+            Action::ToggleSnap => (true, s.snap().meters > 0.0),
+            Action::ToggleColliders => (true, self.colliders),
+            Action::ToggleNavigation => (true, self.navigation),
+            Action::GameView(game) => (true, s.is_game_view() == *game),
+            Action::TogglePanel(i) => (true, self.panels.get(*i).copied().unwrap_or(false)),
+            Action::Maximize => (true, self.maximized == Some(Zoom::View)),
+            _ => (true, false),
         };
-        let prefab = if self.session.is_prefab() {
-            " (prefab)"
-        } else {
-            ""
+        // Undo and Redo say what they would do, as Unity's Edit menu.
+        let label = match action {
+            Action::Editor("undo") => s
+                .undo_label()
+                .map_or_else(|| label.to_string(), |l| format!("Undo {l}")),
+            Action::Editor("redo") => s
+                .redo_label()
+                .map_or_else(|| label.to_string(), |l| format!("Redo {l}")),
+            _ => label.to_string(),
         };
-        format!("runity — {name}{prefab}{dot}")
+        MenuState {
+            label,
+            enabled,
+            checked,
+        }
+    }
+
+    fn menu_stamp(&self) -> MenuStamp {
+        let s = &self.session;
+        MenuStamp {
+            undo: s.can_undo().then(|| s.undo_label()),
+            redo: s.can_redo().then(|| s.redo_label()),
+            selected: !s.selection().is_empty(),
+            playing: s.is_playing(),
+            paused: s.is_paused(),
+            grid: s.show_grid(),
+            snap: s.snap().meters > 0.0,
+            colliders: self.colliders,
+            navigation: self.navigation,
+            game_view: s.is_game_view(),
+            panels: self.panels,
+            maximized: self.maximized.is_some(),
+        }
     }
 
     /// The window changed size or moved to a screen with another scale.
@@ -1051,6 +1220,10 @@ impl Studio {
             self.bottom.set_marks(&mut self.ui, files);
         }
         self.turn_compass();
+        // The status bar's line: an info fading, the bar resized.
+        if self.status_line.is_some() {
+            self.update_status_line();
+        }
 
         let t4 = Instant::now();
         let stamp = Stamp::of(&self.session);
@@ -2178,6 +2351,13 @@ impl Studio {
         } else {
             r.y + r.height + 6.0
         };
+        // The tool strip's run down: beside a button, not over the next.
+        let (x, y) = if self.tools.contains(&node) {
+            (r.x + r.width + 8.0, r.y + (r.height - 24.0) / 2.0)
+        } else {
+            (x, y)
+        };
+
         let t = self.ui.add(
             root,
             Style::row()
@@ -2315,35 +2495,38 @@ impl Studio {
         ui.restyle(t.modified, |st| {
             st.opacity(if modified { 1.0 } else { 0.0 })
         });
-        for (i, tool) in [Tool::Move, Tool::Rotate, Tool::Scale]
-            .into_iter()
-            .enumerate()
-        {
-            set_segment(ui, t.tools[i], s.tool() == tool);
+        let game = s.is_game_view();
+        for (i, (_, _, tool)) in TOOLS.iter().enumerate() {
+            let on = match tool {
+                None => s.hand(),
+                Some(tool) => !s.hand() && s.tool() == *tool,
+            };
+            set_tool_button(ui, self.tools[i], on);
         }
-        set_icon_button(
-            ui,
-            t.space,
-            if s.space() == Space::Local {
-                "box"
-            } else {
-                "globe"
+        // The tools are the Scene view's: the Game view has none.
+        ui.restyle(
+            self.tool_strip,
+            |st| {
+                if game {
+                    st.hidden()
+                } else {
+                    st.shown()
+                }
             },
-            false,
-            true,
         );
-        set_icon_button(
+        let center = s.pivot() == Pivot::Center;
+        set_word(
             ui,
-            t.pivot,
-            if s.pivot() == Pivot::Center {
-                "circle-dot"
-            } else {
-                "crosshair"
-            },
-            false,
-            true,
+            self.pivot_button,
+            if center { "Center" } else { "Pivot" },
         );
-        set_icon_button(ui, t.grid, "grid-3x3", s.show_grid(), true);
+        let local = s.space() == Space::Local;
+        set_word(
+            ui,
+            self.space_button,
+            if local { "Local" } else { "Global" },
+        );
+        set_word_toggle(ui, self.grid_button, s.show_grid());
         let playing = s.is_playing();
         set_icon_button(
             ui,
@@ -2381,7 +2564,6 @@ impl Studio {
                 .unwrap_or_default();
             ui.set_text(self.prefab_name, &format!("Prefab: {name}"));
         }
-        let game = s.is_game_view();
         set_view_tab(ui, self.tab_scene, !game);
         set_view_tab(ui, self.tab_game, game);
         ui.restyle(self.view_frame, |st| {
@@ -2394,6 +2576,11 @@ impl Studio {
                 },
             )
         });
+        let menus = self.menu_stamp();
+        if self.menu_seen.as_ref() != Some(&menus) {
+            self.menu_seen = Some(menus);
+            self.menu_revision += 1;
+        }
     }
 
     fn update_status(&mut self) {
@@ -2407,16 +2594,10 @@ impl Studio {
         ui.set_text(
             self.status.selected,
             &if n == 0 {
-                "nothing selected".to_string()
+                String::new()
             } else {
                 format!("{n} selected")
             },
-        );
-        ui.set_text(
-            self.status.last,
-            &s.undo_label()
-                .map(|l| format!("last: {l}"))
-                .unwrap_or_default(),
         );
         let (_, w, e) = s.console_counts();
         ui.set_text(
@@ -2441,6 +2622,66 @@ impl Studio {
         ui.restyle(self.status.mode, |st| {
             st.text_color(if s.is_playing() { ACCENT } else { MUTED })
         });
+        self.update_status_line();
+    }
+
+    /// The Console's newest line at the status bar's left, in its level's
+    /// colour: a warning or an error stays until a newer line, an info
+    /// goes muted after a while. One line, cut to the room there is.
+    fn update_status_line(&mut self) {
+        let said = self
+            .session
+            .last_said()
+            .map(|(line, n)| (n, line.level, line.text.clone()));
+        let Some((n, level, text)) = said else {
+            if self.status_line.take().is_some() {
+                self.ui.set_text(self.status.console_text, "");
+                self.ui.restyle(self.status.console_icon, |s| s.hidden());
+            }
+            return;
+        };
+        let width = self.ui.rect(self.status.console).width;
+        let now = Instant::now();
+        let fade = |l: &StatusLine| l.level == Level::Info && now - l.at >= STATUS_FADE;
+        match &mut self.status_line {
+            Some(l) if l.said == n && (l.width - width).abs() < 1.0 && l.faded == fade(l) => {
+                return;
+            }
+            Some(l) if l.said == n => l.width = width,
+            _ => {
+                self.status_line = Some(StatusLine {
+                    said: n,
+                    level,
+                    text: text.lines().next().unwrap_or_default().to_string(),
+                    at: now,
+                    width,
+                    faded: false,
+                })
+            }
+        }
+        let line = self.status_line.as_mut().expect("just set");
+        line.faded = fade(line);
+        let (glyph, color) = match line.level {
+            Level::Error => ("circle-alert", ERROR),
+            Level::Warning => ("triangle-alert", WARNING),
+            Level::Info if line.faded => ("info", MUTED),
+            Level::Info => ("info", LABEL),
+        };
+        // About six pixels a character at this size; the box clips what
+        // the guess lets past.
+        let room = ((width - 24.0) / 6.0).max(0.0) as usize;
+        let shown = if width <= 0.0 || line.text.chars().count() <= room {
+            line.text.clone()
+        } else {
+            let cut: String = line.text.chars().take(room.saturating_sub(1)).collect();
+            format!("{}…", cut.trim_end())
+        };
+        self.ui.set_text(self.status.console_text, &shown);
+        self.ui
+            .restyle(self.status.console_text, |s| s.text_color(color));
+        self.ui.set_icon(self.status.console_icon, glyph);
+        self.ui
+            .restyle(self.status.console_icon, |s| s.shown().text_color(color));
     }
 
     // --- events ----------------------------------------------------------
@@ -2624,7 +2865,7 @@ impl Studio {
             requests.keyboard_to_scene = true;
             return true;
         }
-        if node == self.status.problems {
+        if node == self.status.problems || node == self.status.console {
             self.docks.activate(&mut self.ui, Panel::Console);
             self.sync_visible();
             requests.refresh = true;
@@ -2636,6 +2877,29 @@ impl Studio {
         }
         if let Some((_, action)) = self.buttons.iter().find(|(n, _)| *n == node) {
             requests.action = Some(action.clone());
+            requests.keyboard_to_scene = true;
+            return true;
+        }
+        if let Some(i) = self.tools.iter().position(|n| *n == node) {
+            requests.action = Some(match TOOLS[i].2 {
+                None => Action::Hand,
+                Some(tool) => Action::Tool(tool),
+            });
+            requests.keyboard_to_scene = true;
+            return true;
+        }
+        // The bar's words: each says what is so, a click the other.
+        let word = if node == self.pivot_button {
+            Some(Action::TogglePivot)
+        } else if node == self.space_button {
+            Some(Action::ToggleSpace)
+        } else if node == self.grid_button {
+            Some(Action::ToggleGrid)
+        } else {
+            None
+        };
+        if let Some(action) = word {
+            requests.action = Some(action);
             requests.keyboard_to_scene = true;
             return true;
         }
@@ -2672,23 +2936,11 @@ impl Studio {
         let t = &self.toolbar;
         if let Some((_, items)) = t.menus.iter().find(|(n, _)| *n == node) {
             let r = self.ui.rect(node);
-            // Undo and Redo say what they would do, as Unity's Edit menu.
+            // The labels as they stand (Undo says what it would undo).
             let mut items = items.clone();
             for item in &mut items {
-                match item.action {
-                    Some(Action::Editor("undo")) => {
-                        item.label = match self.session.undo_label() {
-                            Some(l) => format!("Undo {l}"),
-                            None => "Undo".into(),
-                        }
-                    }
-                    Some(Action::Editor("redo")) => {
-                        item.label = match self.session.redo_label() {
-                            Some(l) => format!("Redo {l}"),
-                            None => "Redo".into(),
-                        }
-                    }
-                    _ => {}
+                if let Some(action) = &item.action {
+                    item.label = self.menu_state(action, &item.label).label;
                 }
             }
             // The Window menu lists the layouts this person saved after
@@ -2708,15 +2960,7 @@ impl Studio {
             requests.menu = Some((items, r.x, r.y + r.height + 4.0));
             return true;
         }
-        let action = if let Some(i) = t.tools.iter().position(|n| *n == node) {
-            Action::Tool([Tool::Move, Tool::Rotate, Tool::Scale][i])
-        } else if node == t.space {
-            Action::ToggleSpace
-        } else if node == t.pivot {
-            Action::TogglePivot
-        } else if node == t.grid {
-            Action::ToggleGrid
-        } else if node == t.play {
+        let action = if node == t.play {
             Action::Play
         } else if node == t.pause {
             Action::Pause
@@ -3286,6 +3530,8 @@ impl Studio {
                     s.set_show_colliders(self.colliders);
                 }
                 Action::Tool(tool) => s.set_tool(tool),
+                Action::Hand => s.set_hand(),
+
                 Action::ToggleSpace => {
                     let next = if s.space() == Space::Local {
                         Space::Global
@@ -3967,30 +4213,6 @@ fn splitter(ui: &mut Ui, parent: NodeId, vertical: bool, name: &str) -> NodeId {
     n
 }
 
-fn segment_style(on: bool, first: bool) -> Style {
-    let mut s = Style::row()
-        .full_height()
-        .padding_x(SPACE_2)
-        .gap(6.0)
-        .center_items()
-        .clickable();
-    if !first {
-        s = s.border(0.0, DIVIDER);
-    }
-    if on {
-        s.background(ACCENT.alpha(12)).hover(ACCENT.alpha(16))
-    } else {
-        s.hover(HOVER)
-    }
-}
-
-fn set_segment(ui: &mut Ui, seg: NodeId, on: bool) {
-    ui.set_style(seg, segment_style(on, false));
-    for child in ui.children(seg) {
-        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
-    }
-}
-
 fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let bar = ui.add(
         root,
@@ -4046,35 +4268,6 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
         ui.add_text(m, text().text_color(LABEL), title);
         menus.push((m, items));
     }
-    separator(ui, left);
-    let seg = ui.add(
-        left,
-        Style::row()
-            .height(26.0)
-            .fixed()
-            .radius(RADIUS_MD)
-            .border(1.0, DIVIDER)
-            .clip(),
-    );
-    let mut tools = [seg; 3];
-    for (i, (glyph, word)) in [
-        ("move-3d", "Move"),
-        ("rotate-3d", "Rotate"),
-        ("scale-3d", "Scale"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let opt = ui.add(seg, segment_style(i == 0, i == 0));
-        ui.set_name(opt, format!("tool {word}"));
-        // The glyph alone, as in Unity: the tooltip names it and its key.
-        icon(ui, opt, glyph, LABEL);
-        tools[i] = opt;
-    }
-    separator(ui, left);
-    let space = icon_button(ui, left, "space", "globe", false);
-    let pivot = icon_button(ui, left, "pivot", "crosshair", false);
-    let grid = icon_button(ui, left, "grid", "grid-3x3", true);
     let play_group = ui.add(
         bar,
         Style::row()
@@ -4135,10 +4328,6 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             menus,
             scene_name,
             modified,
-            tools,
-            space,
-            pivot,
-            grid,
             play,
             pause,
             step,
@@ -4165,10 +4354,32 @@ fn build_status(ui: &mut Ui, root: NodeId) -> (Status, NodeId) {
     );
     ui.set_name(bar, "status");
     let small = || Style::default().text_size(11.0).text_color(MUTED).nowrap();
-    let entities = ui.add_text(bar, small(), "");
+    // The Console's newest line, as Unity's status bar has it: all the
+    // room the numbers leave, and a click shows the Console.
+    let console = ui.add(
+        bar,
+        Style::row()
+            .fill()
+            .full_height()
+            .gap(6.0)
+            .center_items()
+            .clip()
+            .clickable(),
+    );
+    ui.set_name(console, "status console");
+    let console_icon = ui.add_icon(
+        console,
+        Style::default()
+            .size(12.0, 12.0)
+            .fixed()
+            .text_color(MUTED)
+            .hidden(),
+        "info",
+    );
+    let console_text = ui.add_text(console, small(), "");
+    ui.set_name(console_text, "status console line");
     let selected = ui.add_text(bar, small(), "");
-    let last = ui.add_text(bar, small(), "");
-    spacer(ui, bar);
+    let entities = ui.add_text(bar, small(), "");
     // Warnings and errors: a click shows the Console, wherever it is.
     let problems = ui.add_text(bar, small().clickable(), "");
     ui.set_name(problems, "status problems");
@@ -4176,14 +4387,110 @@ fn build_status(ui: &mut Ui, root: NodeId) -> (Status, NodeId) {
     let mode = ui.add_text(bar, small(), "");
     (
         Status {
+            console,
+            console_icon,
+            console_text,
             entities,
             selected,
-            last,
             problems,
             mode,
         },
         fps,
     )
+}
+
+/// A word saying which of two is so, as Unity's Pivot and Global
+/// buttons: a click switches it.
+fn set_word(ui: &mut Ui, b: NodeId, word: &str) {
+    if let Some(text) = ui.children(b).first().copied() {
+        if ui.text(text) != Some(word) {
+            ui.set_text(text, word);
+        }
+    }
+}
+
+fn word_toggle_style(on: bool) -> Style {
+    let s = Style::row()
+        .height(22.0)
+        .fixed()
+        .padding_x(SPACE_3)
+        .center()
+        .radius(6.0)
+        .clickable();
+    if on {
+        s.border(1.0, ACCENT.alpha(60))
+            .background(ACCENT.alpha(12))
+            .hover(ACCENT.alpha(16))
+    } else {
+        s.border(1.0, DIVIDER).hover(HOVER)
+    }
+}
+
+/// A word that is on or off: the grid.
+fn word_toggle(ui: &mut Ui, parent: NodeId, name: &str, word: &str) -> NodeId {
+    let b = ui.add(parent, word_toggle_style(false));
+    ui.set_name(b, name);
+    ui.add_text(
+        b,
+        Style::default().text_size(11.5).text_color(LABEL).nowrap(),
+        word,
+    );
+    b
+}
+
+fn set_word_toggle(ui: &mut Ui, b: NodeId, on: bool) {
+    ui.set_style(b, word_toggle_style(on));
+    for child in ui.children(b) {
+        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
+    }
+}
+
+/// How big a button of the tool strip is, a side.
+const TOOL_BUTTON: f32 = 28.0;
+
+fn tool_button_style(on: bool) -> Style {
+    let s = Style::row()
+        .size(TOOL_BUTTON, TOOL_BUTTON)
+        .fixed()
+        .center()
+        .radius(6.0)
+        .clickable();
+    if on {
+        s.background(ACCENT.alpha(22)).hover(ACCENT.alpha(28))
+    } else {
+        s.hover(HOVER).pressed(PRESSED)
+    }
+}
+
+/// Unity's Tools overlay: the hand and the gizmo's three, a card down the
+/// Scene view's top left corner. Returns the card and its buttons.
+fn build_tool_strip(ui: &mut Ui, frame: NodeId) -> (NodeId, [NodeId; 4]) {
+    let card = ui.add(
+        frame,
+        Style::column()
+            .absolute(8.0, 8.0)
+            .padding(3.0)
+            .gap(2.0)
+            .radius(RADIUS_MD)
+            .background(SURFACE.alpha(92))
+            .border(1.0, NEUTRAL_800),
+    );
+    ui.set_layer(card, true);
+    ui.set_name(card, "tools");
+    let buttons = TOOLS.map(|(word, glyph, _)| {
+        let b = ui.add(card, tool_button_style(false));
+        ui.set_name(b, format!("tool {word}"));
+        icon(ui, b, glyph, LABEL);
+        b
+    });
+    (card, buttons)
+}
+
+fn set_tool_button(ui: &mut Ui, b: NodeId, on: bool) {
+    ui.set_style(b, tool_button_style(on));
+    for child in ui.children(b) {
+        ui.restyle(child, |s| s.text_color(if on { ACCENT } else { LABEL }));
+    }
 }
 
 fn view_tab_style(on: bool) -> Style {
@@ -4228,12 +4535,15 @@ enum Zoom {
 /// What a control does, for its tooltip — by the control's name.
 fn tooltip(name: &str) -> Option<&'static str> {
     Some(match name {
+        "tool Hand" => "Hand: drag to pan the view, pick nothing (Q)",
         "tool Move" => "Move (W)",
         "tool Rotate" => "Rotate (E)",
         "tool Scale" => "Scale (R)",
-        "space" => "Handles along the world's axes or the entity's own (X)",
-        "pivot" => "Handles on the pivot or the selection's centre (Z)",
+        "handles along" => "Handles along the world's axes or the entity's own (X)",
+        "handles at" => "Handles on the entity's pivot or the selection's centre (Z)",
+
         "grid" => "Show the grid",
+        "status console" => "The Console's newest line: click to show the Console",
         "play" => "Play / Stop (Ctrl/Cmd P)",
         "pause" => "Pause (Ctrl/Cmd Shift P)",
         "step" => "One step (Ctrl/Cmd Alt P)",

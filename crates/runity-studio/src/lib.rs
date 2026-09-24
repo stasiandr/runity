@@ -27,6 +27,7 @@ mod hierarchy;
 mod inspector;
 pub mod layouts;
 pub mod menu;
+pub mod native_menu;
 mod screens;
 mod studio;
 pub mod theme;
@@ -38,7 +39,7 @@ use std::path::Path;
 use runity_editor::console::Level;
 use runity_editor::Session;
 
-pub use studio::{Studio, REFERENCE_SCENE};
+pub use studio::{MenuState, Studio, REFERENCE_SCENE};
 
 /// A session with `scene` open, or why it could not be.
 ///

@@ -136,6 +136,8 @@ pub struct Session {
     gizmo_style: GizmoStyle,
     /// Which handles are shown and what a drag does with them.
     tool: Tool,
+    /// The hand (Q): no handles, nothing picked; a left drag pans.
+    hand: bool,
     snap: Snap,
     drag: Option<Drag>,
     /// The selected entity's transform when the drag began.
@@ -327,6 +329,7 @@ impl Session {
             selected: None,
             gizmo_style: GizmoStyle::default(),
             tool: Tool::default(),
+            hand: false,
             snap: Snap::default(),
             drag: None,
             drag_from: None,
@@ -3436,7 +3439,7 @@ impl Session {
         // is submitted, so it is part of the same pass and does not need a
         // second one. It is unlit and drawn last, which is what keeps a
         // handle visible against anything.
-        if let Some(origin) = self.selected_origin() {
+        if let Some(origin) = self.selected_origin().filter(|_| !self.hand) {
             let arm = self.gizmo_arm_mesh();
             let orientation = match self.drag {
                 Some(_) => self.drag_orientation,
@@ -4042,12 +4045,28 @@ impl Session {
         self.tool
     }
 
-    /// Choose what the gizmo does.
+    /// Choose what the gizmo does. Puts the hand down.
     pub fn set_tool(&mut self, tool: Tool) {
         self.tool = tool;
+        self.hand = false;
         // A held handle belongs to the tool that was showing when it was
         // grabbed; keeping it across a change would drag a ring that is no
         // longer drawn.
+        self.drag = None;
+        self.drag_from = None;
+        self.drag_others.clear();
+    }
+
+    /// Whether the hand is the tool: the view only moves.
+    pub fn hand(&self) -> bool {
+        self.hand
+    }
+
+    /// Take up the hand, Unity's Q: the handles go, a left click picks
+    /// nothing and a left drag pans. [`Session::set_tool`] puts it down,
+    /// and the tool before it is the one that comes back.
+    pub fn set_hand(&mut self) {
+        self.hand = true;
         self.drag = None;
         self.drag_from = None;
         self.drag_others.clear();
@@ -4073,7 +4092,7 @@ impl Session {
 
     /// Which handle is under a point, without grabbing it.
     pub fn gizmo_hover(&self, x: u32, y: u32) -> Option<Handle> {
-        let origin = self.selected_origin()?;
+        let origin = self.selected_origin().filter(|_| !self.hand)?;
         let (from, direction) = self.ray(x, y);
         let (from, direction) = gizmo::ray_into(origin, self.handle_orientation(), from, direction);
         gizmo::hit_for(
@@ -4089,10 +4108,11 @@ impl Session {
     /// Grab whatever handle is under a point.
     pub fn gizmo_begin(&mut self, x: u32, y: u32) -> EditResult<Option<Handle>> {
         self.refuse_while_playing()?;
-        let Some(origin) = self.selected_origin() else {
+        let Some(origin) = self.selected_origin().filter(|_| !self.hand) else {
             return Ok(None);
         };
         let orientation = self.handle_orientation();
+
         let (from, direction) = self.ray(x, y);
         let (from, direction) = gizmo::ray_into(origin, orientation, from, direction);
         let Some(handle) = gizmo::hit_for(
