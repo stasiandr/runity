@@ -7,61 +7,12 @@
 use runity::glam::Vec3;
 use runity::net::wire::Conditions;
 use runity::netsim::bench::{ticks, Session, HZ};
-use runity::scene::{Body, BodyProps, Collider, EntityDesc, Scene, Transform};
+use runity::netsim::scenes::*;
+use runity::scene::{Scene, Transform};
 use runity::soft::{Rope, RopeKind, RopeState};
 use runity::{EntityId, EntityRef};
 
-const POST: u64 = 10;
-const LOAD: u64 = 11;
-/// The chain's length, metres.
-const LENGTH: f32 = 1.5;
 
-/// A chain from a post with a 10 kg box on its end, let go level with
-/// the post: a pendulum.
-fn pendulum(net: runity::netsim::NetMode) -> Scene {
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(20.0, 0.5, 20.0), center: Vec3::ZERO }),
-    );
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(POST),
-            name: "post".into(),
-            transform: Transform { position: Vec3::new(0.0, 3.0, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Rope {
-            to: Vec3::ZERO,
-            end: EntityRef::to(EntityId::from_raw(LOAD)),
-            kind: RopeKind::Chain,
-            slack: 0.0,
-            segments: 16,
-            thickness: 0.03,
-            net,
-            ..Default::default()
-        }),
-    );
-    let size = Vec3::splat(0.3);
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(LOAD),
-            name: "load".into(),
-            transform: Transform { position: Vec3::new(LENGTH, 3.0, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Dynamic)
-        .with(Collider::Box { half: size * 0.5, center: Vec3::ZERO })
-        .with(BodyProps { density: 10.0 / (size.x * size.y * size.z), ..Default::default() }),
-    );
-    scene
-}
 
 /// What one peer shows: the chain's points and the load.
 #[derive(Clone, Default)]
@@ -190,53 +141,7 @@ fn a_chain_with_a_load_handed_over_three_times_mid_swing_never_jumps_or_drops_it
 }
 
 
-const PAWN_A: u64 = 20;
-const PAWN_B: u64 = 21;
-/// How far apart the two start, metres; the rope a little longer.
-const APART: f32 = 2.4;
 
-/// Two players' bodies on the ground with a rope between them, held in
-/// both hands: A's body carries the rope, tied at its other end to B's.
-fn tug(net: runity::netsim::NetMode) -> Scene {
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(40.0, 0.5, 40.0), center: Vec3::ZERO }),
-    );
-    let size = Vec3::splat(0.6);
-    let density = 40.0 / (size.x * size.y * size.z);
-    for (id, name, x) in [(PAWN_A, "a", -APART * 0.5), (PAWN_B, "b", APART * 0.5)] {
-        let mut desc = EntityDesc {
-            id: EntityId::from_raw(id),
-            name: name.into(),
-            transform: Transform { position: Vec3::new(x, 0.3, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Dynamic)
-        .with(Collider::Box { half: size * 0.5, center: Vec3::ZERO })
-        .with(BodyProps { density, ..Default::default() });
-        if id == PAWN_A {
-            desc = desc.with(Rope {
-                to: Vec3::ZERO,
-                end: EntityRef::to(EntityId::from_raw(PAWN_B)),
-                kind: RopeKind::Rope,
-                slack: 0.03,
-                segments: 24,
-                thickness: 0.03,
-                net,
-                ..Default::default()
-            });
-        }
-        scene.entities.push(desc);
-    }
-    scene
-}
 
 /// Each player pulls their own body away from the other: A with `a`
 /// newtons, B with `b`. On the machine that simulates the body.
@@ -413,55 +318,7 @@ fn two_players_pull_a_rope_apart_and_nothing_breaks_at_150_ms_and_5_percent_lost
     tug_holds(tug_of_war(bad, 5));
 }
 
-const RUNNER: u64 = 30;
-const CAPE: u64 = 31;
-const TAIL: u64 = 32;
 
-/// A player's body running round a circle, a cape on its back and a tail
-/// behind: the Rough and Local things everyone simulates for themselves.
-fn runner(cape: runity::netsim::NetMode) -> Scene {
-    use runity::soft::{Cloth, Ends, Pinned};
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(40.0, 0.5, 40.0), center: Vec3::ZERO }),
-    );
-    let size = Vec3::new(0.5, 1.6, 0.4);
-    let mut body = EntityDesc {
-        id: EntityId::from_raw(RUNNER),
-        name: "runner".into(),
-        transform: Transform { position: Vec3::new(3.0, 0.8, 0.0), ..Default::default() },
-        ..Default::default()
-    }
-    .with(Body::Kinematic)
-    .with(Collider::Box { half: size * 0.5, center: Vec3::ZERO });
-    body.children.push(
-        EntityDesc {
-            id: EntityId::from_raw(CAPE),
-            name: "cape".into(),
-            transform: Transform { position: Vec3::new(0.0, 0.7, -0.45), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Cloth { size: [0.7, 1.0], cells: [7, 10], pinned: Pinned::Top, net: cape, ..Default::default() }),
-    );
-    body.children.push(
-        EntityDesc {
-            id: EntityId::from_raw(TAIL),
-            name: "tail".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.3, -0.45), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Rope { to: Vec3::new(0.0, 0.0, -0.8), ends: Ends::Start, segments: 12, thickness: 0.03, ..Default::default() }),
-    );
-    scene.entities.push(body);
-    scene
-}
 
 /// Run round a circle of 3 m at 3 m/s, facing the way it goes: moved by
 /// the body's owner.
@@ -583,38 +440,7 @@ fn a_rough_cape_is_no_further_from_its_owners_than_a_local_one() {
     assert!(rough < 0.2 && local < 0.2, "both within a hand's breadth of the owner's");
 }
 
-const WALL: u64 = 40;
 
-/// A wall that breaks by itself a second in: `Event`, so its owner (the
-/// host) breaks it and tells everyone how.
-#[cfg(feature = "destruction")]
-fn wall() -> Scene {
-    use runity::destruction::Fracture;
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(40.0, 0.5, 40.0), center: Vec3::ZERO }),
-    );
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(WALL),
-            name: "wall".into(),
-            transform: Transform { position: Vec3::new(0.0, 1.0, 0.0), scale: Vec3::new(0.3, 2.0, 2.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(runity::scene::ModelRef("builtin:cube".into()))
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::splat(0.5), center: Vec3::ZERO })
-        .with(Fracture { pieces: 12, at: Some(1.0), knock: 1.5, seed: 4, net: runity::netsim::NetMode::Event, ..Default::default() }),
-    );
-    scene
-}
 
 /// The pieces a peer has of what broke, by id: where each is.
 #[cfg(feature = "destruction")]
@@ -645,28 +471,7 @@ fn a_wall_broken_by_its_owner_breaks_into_the_same_pieces_everywhere_and_they_la
     assert!(session.problems().is_empty(), "{:?}", session.problems());
 }
 
-const PERSON: u64 = 50;
 
-#[cfg(feature = "character")]
-fn person() -> Scene {
-    use runity::character::{Ragdoll, Mode, Drive};
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(40.0, 0.5, 40.0), center: Vec3::ZERO }),
-    );
-    scene.entities.push(
-        EntityDesc { id: EntityId::from_raw(PERSON), name: "person".into(), ..Default::default() }
-            .with(Ragdoll { mode: Mode::Active, drive: Drive::Stand, recover: 4.0, net: runity::netsim::NetMode::Full, ..Default::default() }),
-    );
-    scene
-}
 
 /// How high the ragdoll's pelvis is on a peer, and how hard its muscles
 /// pull there.
@@ -736,37 +541,7 @@ fn a_player_knocked_limp_sags_and_gets_up_alike_for_everyone() {
     assert!(session.problems().is_empty(), "{:?}", session.problems());
 }
 
-const CRATE_A: u64 = 60;
-const CRATE_B: u64 = 61;
 
-fn crates() -> Scene {
-    let mut scene = Scene::default();
-    scene.entities.push(
-        EntityDesc {
-            id: EntityId::from_raw(1),
-            name: "floor".into(),
-            transform: Transform { position: Vec3::new(0.0, -0.5, 0.0), ..Default::default() },
-            ..Default::default()
-        }
-        .with(Body::Static)
-        .with(Collider::Box { half: Vec3::new(40.0, 0.5, 40.0), center: Vec3::ZERO }),
-    );
-    let size = Vec3::splat(0.6);
-    for (id, x) in [(CRATE_A, -2.5), (CRATE_B, 2.5)] {
-        scene.entities.push(
-            EntityDesc {
-                id: EntityId::from_raw(id),
-                name: format!("crate {id}"),
-                transform: Transform { position: Vec3::new(x, 0.3, 0.0), ..Default::default() },
-                ..Default::default()
-            }
-            .with(Body::Dynamic)
-            .with(Collider::Box { half: size * 0.5, center: Vec3::ZERO })
-            .with(BodyProps { density: 10.0 / (size.x * size.y * size.z), ..Default::default() }),
-        );
-    }
-    scene
-}
 
 /// Each crate shoved at the other at 9 m/s by whoever drives it, once.
 fn shove(peer: &mut runity::netsim::bench::Peer) {

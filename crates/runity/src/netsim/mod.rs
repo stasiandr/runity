@@ -463,5 +463,8 @@ pub fn pull_bodies(world: &mut World, physics: &mut crate::physics::PhysicsWorld
 /// The simulations' bench: sessions of several peers in one process.
 #[cfg(all(feature = "net", feature = "physics"))]
 pub mod bench;
+/// The bench's scenes.
+#[cfg(all(feature = "net", feature = "physics", feature = "soft"))]
+pub mod scenes;
 
 pub use runity_core::netsim::*;

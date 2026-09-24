@@ -40,10 +40,13 @@ pub struct Peer {
     pub problems: Vec<String>,
 }
 
+/// What a peer's models are drawn with: `(peer, model)` to a handle.
+pub type Meshes<'a> = &'a mut dyn FnMut(usize, &crate::AssetLink) -> Option<MeshHandle>;
+
 impl Peer {
-    fn new(party: Party, scene: &Scene) -> Self {
+    fn new(party: Party, scene: &Scene, index: usize, meshes: Meshes) -> Self {
         let mut world = World::new();
-        crate::spawn_scene(scene, &mut world, |_| Some(MeshHandle::TEST));
+        crate::spawn_scene(scene, &mut world, |name| meshes(index, name));
         crate::world::apply_hierarchy(&mut world);
         let mut physics = PhysicsWorld::new(1.0 / HZ);
         physics.sync_from_world(&mut world);
@@ -130,13 +133,18 @@ impl Session {
         Self::with_late(scene, peers, 0, link, seed)
     }
 
+    /// [`Session::new`], each peer's models drawn with `meshes`: for film.
+    pub fn filmed(scene: &Scene, peers: usize, link: Conditions, seed: u64, meshes: Meshes) -> Self {
+        Self::networked(scene, peers.max(2), 0, link, seed, meshes)
+    }
+
     /// [`Session::new`], with `late` more peers who come in later
     /// ([`Session::join_late`]), over the same link.
     pub fn with_late(scene: &Scene, peers: usize, late: usize, link: Conditions, seed: u64) -> Self {
         if peers <= 1 && late == 0 {
             return Self::alone(scene);
         }
-        Self::networked(scene, peers.max(1), late, link, seed)
+        Self::networked(scene, peers.max(1), late, link, seed, &mut |_, _| Some(MeshHandle::TEST))
     }
 
     fn alone(scene: &Scene) -> Self {
@@ -147,7 +155,7 @@ impl Session {
         {
             let party = Party::alone("netsim", &components);
             return Self {
-                peers: vec![Peer::new(party, scene)],
+                peers: vec![Peer::new(party, scene, 0, &mut |_, _| Some(MeshHandle::TEST))],
                 components,
                 sent,
                 served,
@@ -159,7 +167,7 @@ impl Session {
         }
     }
 
-    fn networked(scene: &Scene, peers: usize, late: usize, link: Conditions, seed: u64) -> Self {
+    fn networked(scene: &Scene, peers: usize, late: usize, link: Conditions, seed: u64, meshes: Meshes) -> Self {
         let mut components = Components::new();
         super::register(&mut components);
         let sent = Arc::new(AtomicU64::new(0));
@@ -173,7 +181,7 @@ impl Session {
             vec![Box::new(Metered { inner: listener, sent: served.clone() })],
             false,
         );
-        let mut all = vec![Peer::new(host, scene)];
+        let mut all = vec![Peer::new(host, scene, 0, meshes)];
         let mut waiting = Vec::new();
         for (i, end) in ends.enumerate() {
             let lagged: Box<dyn Transport + Send> = if link == Conditions::GOOD {
@@ -182,7 +190,7 @@ impl Session {
                 Box::new(Metered { inner: Laggy::new(end, link, seed * 101 + i as u64), sent: sent.clone() })
             };
             if i + 1 < peers {
-                all.push(Peer::new(Party::join(lagged, "netsim", &format!("guest{}", i + 1), &components), scene));
+                all.push(Peer::new(Party::join(lagged, "netsim", &format!("guest{}", i + 1), &components), scene, i + 1, meshes));
             } else {
                 waiting.push((lagged, scene.clone()));
             }
@@ -195,7 +203,8 @@ impl Session {
     pub fn join_late(&mut self) -> bool {
         let Some((end, scene)) = self.late.pop() else { return false };
         let name = format!("late{}", self.peers.len());
-        self.peers.push(Peer::new(Party::join(end, "netsim", &name, &self.components), &scene));
+        let index = self.peers.len();
+        self.peers.push(Peer::new(Party::join(end, "netsim", &name, &self.components), &scene, index, &mut |_, _| Some(MeshHandle::TEST)));
         for _ in 0..ticks(8.0) {
             self.step();
             if self.peers.last().is_some_and(|p| p.party.welcomed()) {
