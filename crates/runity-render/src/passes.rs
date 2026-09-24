@@ -7,7 +7,7 @@
 //!
 //! A pass off here is not run and costs nothing but its memory. A pass
 //! left out of the build is a cargo feature of this module: `ray-tracing`
-//! today.
+//! and `metalfx` today.
 
 use crate::render::Frame;
 
