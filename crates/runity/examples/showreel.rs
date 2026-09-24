@@ -36,6 +36,9 @@ struct Shot {
     /// Split down the middle: on the left drawn without rays, on the right
     /// with the scene's `ray_tracing` — the same world, the same moment.
     compare: bool,
+    /// Seconds of the scene run before the recording starts; a second when
+    /// not said.
+    warmup: Option<f32>,
 }
 
 fn v(x: f32, y: f32, z: f32) -> Vec3 {
@@ -55,6 +58,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[("weather", "(drifted: 1.0)")],
         },
         Shot {
@@ -68,6 +72,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -85,6 +90,7 @@ fn shots() -> Vec<Shot> {
                 ("weather", "(dust_devils: 1.0)"),
                 ("wind", "(direction: (1.0, 0.0, 0.3), strength: 1.8)"),
             ],
+            warmup: None,
         },
         Shot {
             name: "sandstorm",
@@ -105,6 +111,7 @@ fn shots() -> Vec<Shot> {
                 ("wind", "(direction: (1.0, 0.0, 0.2), strength: 3.0)"),
                 ("post", "(temperature: 25.0, saturation: 5.0)"),
             ],
+            warmup: None,
         },
         Shot {
             name: "haboob",
@@ -117,6 +124,7 @@ fn shots() -> Vec<Shot> {
             clock: 4.0,
             speed: 4.6,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -130,6 +138,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -143,6 +152,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -160,6 +170,7 @@ fn shots() -> Vec<Shot> {
                 ("sky", "(mode: Physical, clouds: (coverage: 0.35))"),
                 ("volumetric_fog", "(enabled: true, density: 0.015, anisotropy: 0.75, height_falloff: 0.2)"),
             ],
+            warmup: None,
         },
         Shot {
             name: "clouds",
@@ -176,6 +187,7 @@ fn shots() -> Vec<Shot> {
                 ("sky", "(mode: Physical, clouds: (coverage: 0.55, shadows: 0.8))"),
                 ("wind", "(strength: 1.5)"),
             ],
+            warmup: None,
         },
         Shot {
             name: "rain",
@@ -188,6 +200,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -201,6 +214,7 @@ fn shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -221,6 +235,7 @@ fn shots() -> Vec<Shot> {
                 ("volumetric_fog", "(enabled: true, density: 0.03, ambient: 0.3, lamps: 6.0)"),
                 ("post", "(exposure: 0.8, bloom: (intensity: 0.6), temperature: -20.0)"),
             ],
+            warmup: None,
         },
     ]
 }
@@ -241,6 +256,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -254,6 +270,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -267,6 +284,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -280,6 +298,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -293,6 +312,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: false,
+            warmup: None,
             look: &[],
         },
         Shot {
@@ -306,6 +326,7 @@ fn ray_shots() -> Vec<Shot> {
             clock: 0.0,
             speed: 1.0,
             compare: true,
+            warmup: None,
             look: &[("screen_space_reflections", "(enabled: true)")],
         },
     ]
@@ -327,6 +348,7 @@ fn sim_shots() -> Vec<Shot> {
         speed: 1.0,
         look: &[],
         compare: false,
+        warmup: Some(0.3),
     };
     vec![
         shot(
@@ -360,6 +382,14 @@ fn sim_shots() -> Vec<Shot> {
             9.0,
             (v(-2.5, 2.4, 5.5), v(-1.0, 0.8, -0.5)),
             (v(2.5, 2.6, 5.5), v(1.0, 0.8, -0.5)),
+        ),
+        shot(
+            "destruction",
+            "Разрушение: Вороной заранее и в момент удара, куски бьются снова, крошки на GPU, вмятины на машине",
+            "destruction.ron",
+            9.0,
+            (v(-6.0, 3.5, 9.0), v(-3.0, 1.5, -1.0)),
+            (v(6.0, 4.0, 10.0), v(4.0, 1.2, 0.0)),
         ),
     ]
 }
@@ -590,7 +620,7 @@ fn render_shot(
     let base = runity::scene_camera(&scene.view());
     // A second of the scene first, unrecorded: the trail has steps, the
     // dust is up, and what reads the last frame has one.
-    let warmup = fps;
+    let warmup = (shot.warmup.unwrap_or(1.0) * fps as f32) as u32;
     for i in 0..warmup + frames {
         let t = smooth(i.saturating_sub(warmup) as f32 / frames.max(1) as f32);
         let clock = shot.clock + (i as f32 - warmup as f32) * dt * shot.speed;
@@ -599,12 +629,14 @@ fn render_shot(
         owed += dt * shot.speed;
         while owed >= step {
             physics.run(&mut world);
+            runity::destruction::step(&mut world, &mut physics, step);
             owed -= step;
         }
         runity::world::apply_hierarchy(&mut world);
         // What bends, hangs and flows, on its own fixed steps.
         runity::soft::step(&mut world, dt * shot.speed);
         runity::soft::show(&mut world, 0.0);
+        runity::destruction::show(&mut world, 0.0);
         runity::footprints::run_footprints(&mut world, dt * shot.speed);
         runity::particles::run_particles(&mut world, dt * shot.speed);
         if let Some((a, b)) = shot.hours {

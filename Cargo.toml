@@ -16,6 +16,7 @@ members = [
     "crates/runity-audio",
     "crates/runity-cli",
     "crates/runity-core",
+    "crates/runity-destruction",
     "crates/runity-dialogue",
     "crates/runity-discord",
     "crates/runity-editor",

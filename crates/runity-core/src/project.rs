@@ -796,6 +796,10 @@ fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop,
     // Physics is a system too: bodies from the scene, a fixed step, and
     // where the dynamic ones went written back.
     profile.time("physics", || physics.run(world));
+    // @destruction {
+    // What the step brought together hard enough breaks or dents.
+    profile.time("destruction", || runity::destruction::step(world, physics, seconds));
+    // @destruction }
 }
 
 /// In the project, write what the components look like, for the editor's

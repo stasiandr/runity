@@ -26,6 +26,7 @@ runity-gpu = { path = "../runity-gpu" }
 runity-overlay = { path = "../runity-overlay" }
 runity-physics = { path = "../runity-physics", default-features = false }
 runity-soft = { path = "../runity-soft", optional = true }
+runity-destruction = { path = "../runity-destruction", optional = true }
 anyhow = "1.0.104"
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
 hecs = "0.11.0"
@@ -40,7 +41,7 @@ tracing = "0.1.44"
 # manifest (`module.ron`) names its feature.
 [features]
 default = [
-    "animation", "dialogue", "input", "metalfx", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
+    "animation", "destruction", "dialogue", "input", "metalfx", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
 ]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
@@ -63,6 +64,9 @@ routes = ["dep:runity-routes"]
 # Ropes, cables and chains: particles and constraints, solved by XPBD
 # (docs/simulation.md).
 soft = ["dep:runity-soft"]
+# Things that break into Voronoi pieces, and surfaces that dent; the
+# blows come from the physics.
+destruction = ["physics", "dep:runity-destruction"]
 # Conversations.
 dialogue = ["dep:runity-dialogue"]
 # Where things can walk: a grid baked from the physics world.

@@ -35,6 +35,12 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::soft::JiggleDress));
         out.push(Box::new(crate::soft::SoftLookDress { link, palette }));
     }
+    #[cfg(feature = "destruction")]
+    {
+        out.push(Box::new(crate::destruction::FractureDress));
+        out.push(Box::new(crate::destruction::DentsDress));
+        out.push(Box::new(crate::destruction::DestructionLookDress));
+    }
     #[cfg(feature = "audio")]
     out.push(Box::new(crate::audio::SoundDress));
     out

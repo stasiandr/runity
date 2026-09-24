@@ -48,7 +48,7 @@ pub struct Rope {
     pub thickness: f32,
     /// How much it holds its line, from 0 (limp) to 1 (a stiff cable);
     /// its kind's when left out.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", with = "runity_core::defaults::plain")]
     pub stiffness: Option<f32>,
     /// How much the wind takes it: a thin cord more, a hawser less.
     pub catch: f32,
@@ -692,7 +692,8 @@ mod tests {
 
     #[test]
     fn a_rope_reads_as_a_line_writes_it() {
-        let rope: Rope = ron::from_str("(to: (6.0, 0.0, 0.0), kind: Chain, ends: Start)").unwrap();
+        let rope: Rope = ron::from_str("(to: (6.0, 0.0, 0.0), kind: Chain, ends: Start, stiffness: 0.5)").unwrap();
+        assert_eq!(rope.stiffness, Some(0.5));
         assert_eq!(rope.kind, RopeKind::Chain);
         assert_eq!(rope.ends, Ends::Start);
         assert_eq!(rope.segments, Rope::default().segments);

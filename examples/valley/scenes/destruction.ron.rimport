@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/destruction.ron",
+    id: Some("2e2ef31742e2c21e1c90bbb5c1ae6056"),
+)
