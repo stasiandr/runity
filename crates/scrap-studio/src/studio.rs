@@ -1004,6 +1004,7 @@ impl Studio {
         let (enabled, checked) = match action {
             Action::Editor("undo") => (s.can_undo(), false),
             Action::Editor("redo") => (s.can_redo(), false),
+            Action::Editor("carve") => (s.selection().len() >= 2, false),
             Action::Editor("duplicate_entity" | "delete_entity" | "drop_to_ground")
             | Action::Copy
             | Action::Rename
@@ -3864,7 +3865,7 @@ impl Studio {
                             "model, texture, sound",
                             &[
                                 "gltf", "glb", "obj", "png", "jpg", "jpeg", "wav", "ogg", "mp3",
-                                "flac", "scrterrain", "scrpoly",
+                                "flac", "scrterrain", "scrpoly", "scrbrush",
                             ],
                         )
                         .pick_files()

@@ -73,6 +73,7 @@ pub use scrap_dialogue::dialogue;
 #[cfg(feature = "discord")]
 pub use scrap_discord::discord;
 pub use scrap_geometry::builtin;
+pub use scrap_geometry::solid;
 #[cfg(feature = "physics")]
 pub use scrap_net::bench;
 pub use scrap_render::atmosphere;

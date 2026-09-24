@@ -277,6 +277,29 @@ const EDITOR: &[EditorAction] = &[
             Ok(format!("showing {} alone", ids.len()))
         },
     },
+    EditorAction {
+        name: "carve",
+        module: "blockout",
+        menu: "Entity",
+        label: "Carve Selected",
+        shortcut: None,
+        about: "Hammer's carve: cut shapes out of a blockout solid. The first of `ids` is the solid — a builtin cube, ramp, cylinder or stairs, or a brush solid already — and the rest, builtin shapes however placed, are cut out of it and leave the scene: a doorway, a window, a corridor. A builtin solid becomes assets/<name>.scrbrush in its place (same id, name, material, place; a static body with a collider of its shape); a brush solid gets the cuts added to its file. One undo step; returns the solid's model name.",
+        params: &[
+            Param { name: "ids", kind: Kind::Ids, about: "the solid, then what to cut out of it; the selection, in the order it was picked, when left out" },
+            Param { name: "name", kind: Kind::Text, about: "snake_case name for a new brush solid; the solid's own name when left out" },
+        ],
+        run: |s, args| {
+            let ids = match args.ids("ids") {
+                Some(ids) => ids.to_vec(),
+                None => s.selection(),
+            };
+            let Some((&solid, cutters)) = ids.split_first() else {
+                return Err("select the solid first, then the shapes to cut out of it".into());
+            };
+            let asset = s.carve(solid, cutters, args.text("name")).map_err(err)?;
+            Ok(format!("{} cut out of {solid} (model {asset:?}, assets/{asset}.scrbrush)", cutters.len()))
+        },
+    },
 ];
 
 #[cfg(test)]

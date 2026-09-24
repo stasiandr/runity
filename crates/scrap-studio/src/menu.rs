@@ -426,6 +426,10 @@ fn create_items(with_group: bool) -> Vec<MenuItem> {
     ] {
         v.push(item(label, Action::Create(model)));
     }
+    if with_group {
+        // Blockout: the first picked, less the rest.
+        v.push(editor("carve"));
+    }
     v.push(MenuItem::separator());
     v.push(item("Terrain", Action::NewTerrain));
     v.push(item("Light", Action::CreateLight));
