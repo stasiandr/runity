@@ -581,6 +581,14 @@ impl shell::Game for Game {
         if let Some(quality) = self.quality {
             frame = quality.apply(&frame);
         }
+        // In the browser a texture let go of is freed only when the page's
+        // garbage collector gets to it (wgpu does not destroy it), and
+        // dynamic resolution makes every target again each time it
+        // changes the scale: on a phone the GPU's memory runs out within
+        // seconds. The preset's scale, held.
+        if cfg!(target_arch = "wasm32") {
+            frame.post.upscaling.dynamic.enabled = false;
+        }
         self.profile.record("frame", started.elapsed());
         // The scene's sounds, heard from where the camera is; the
         // kitchen's, from what changed in it.
