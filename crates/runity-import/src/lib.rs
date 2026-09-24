@@ -1169,6 +1169,13 @@ pub struct MaterialSource {
     /// `// runity:params` line names them.
     #[serde(default)]
     pub params: Vec<f32>,
+    /// Textures for its shader, by the names it reads them by (Unity's
+    /// property names): `textures: {"_Road": "T_Road_01"}`, each a
+    /// texture's file stem or its asset id. The shader's
+    /// `// runity:textures` line says which it reads, in which slot.
+    /// Imported as colour unless their sidecars say otherwise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub textures: BTreeMap<String, String>,
     /// The base map on the screen, not the mesh: `Screen`, or `Mirror` for
     /// a mirror's picture.
     #[serde(default)]
@@ -1283,6 +1290,17 @@ fn texture_id(material: &Path, name: &str, data: bool) -> Result<Option<runity::
         );
     }
     Ok(Some(settings.asset_id()))
+}
+
+/// A texture a material hands its shader: an asset id as it is — 32 hex
+/// digits, which no texture is named — or a texture by name, as the maps
+/// are found.
+fn shader_texture_id(material: &Path, texture: &str) -> Result<Option<runity::asset::AssetId>> {
+    let text = texture.trim();
+    if text.len() == 32 && text.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(Some(text.parse().map_err(anyhow::Error::msg)?));
+    }
+    texture_id(material, text, false)
 }
 
 fn subsurface_reach() -> f32 {
@@ -1532,6 +1550,20 @@ pub fn material_from_ron(
             emission_map: texture_id(path, &source.emission_map, false)?,
             shader: (!source.shader.is_empty()).then(|| runity::asset::shader_id(&source.shader)),
             params: std::array::from_fn(|i| source.params.get(i).copied().unwrap_or(0.0)),
+            textures: runity::material::MaterialTextures::new(
+                source
+                    .textures
+                    .iter()
+                    .map(|(name, texture)| {
+                        let id = shader_texture_id(path, texture).with_context(|| {
+                            format!("{}: its texture `{name}`", path.display())
+                        })?;
+                        Ok(id.map(|id| (name.clone(), id)))
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten(),
+            ),
             screen_map: source.screen_map,
             on_top: source.on_top,
             normal_scale: source.normal_scale,

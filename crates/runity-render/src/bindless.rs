@@ -7,11 +7,13 @@
 //! it, where the device has texture binding arrays indexed per fragment
 //! (Metal, Vulkan and DX12 on current hardware; `Gpu::bindless`), group 1
 //! is one array of every uploaded texture and the sampler, each instance
-//! carries its four handles (an eighteenth vertex attribute), and the
+//! carries its handles (an eighteenth vertex attribute: the four maps'
+//! and its material's own four textures', two to a number), and the
 //! shader reads `textures[handle]`: forty crates of one mesh are one draw.
 //!
 //! The shader is one: `render.wgsl` reads its maps through `surface_at`,
-//! `normal_at`, `mask_at` and `emission_at`, which read the bound maps;
+//! `normal_at`, `mask_at`, `emission_at` and a material shader's
+//! `texture_at`, which read the bound maps;
 //! [`prepared`] puts the array and the indexed versions in their place.
 //! The array is made again only when a texture is added or replaced.
 //! Not with the terrain drawn by mesh shaders, whose stage carries no
@@ -21,9 +23,13 @@ use crate::gpu::Gpu;
 use crate::render::TextureHandle;
 
 /// The maps every batch is keyed by, bindless: one set for all.
-pub(crate) const KEY: [TextureHandle; 4] = [
+pub(crate) const KEY: [TextureHandle; 8] = [
     TextureHandle::WHITE,
     TextureHandle::FLAT_NORMAL,
+    TextureHandle::WHITE,
+    TextureHandle::WHITE,
+    TextureHandle::WHITE,
+    TextureHandle::WHITE,
     TextureHandle::WHITE,
     TextureHandle::WHITE,
 ];
@@ -35,21 +41,29 @@ const STUB_BEGIN: &str = "// maps: begin";
 const STUB_END: &str = "// maps: end";
 
 const SHADER: &str = r#"// maps: bindless (bindless.rs)
-// Every texture, one array; an instance names its four by their handles.
+// Every texture, one array; an instance names its eight by their handles,
+// two to a number: the four maps in the low halves, the material's own
+// textures in the high.
 @group(1) @binding(0) var map_textures: binding_array<texture_2d<f32>>;
 @group(1) @binding(1) var surface_sampler: sampler;
 
 fn surface_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.x], surface_sampler, uv);
+    return textureSample(map_textures[maps.x & 0xffffu], surface_sampler, uv);
 }
 fn normal_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.y], surface_sampler, uv);
+    return textureSample(map_textures[maps.y & 0xffffu], surface_sampler, uv);
 }
 fn mask_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.z], surface_sampler, uv);
+    return textureSample(map_textures[maps.z & 0xffffu], surface_sampler, uv);
 }
 fn emission_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
-    return textureSample(map_textures[maps.w], surface_sampler, uv);
+    return textureSample(map_textures[maps.w & 0xffffu], surface_sampler, uv);
+}
+fn texture_at(in: SurfaceIn, slot: u32, uv: vec2<f32>) -> vec4<f32> {
+    let dx = dpdx(uv);
+    let dy = dpdy(uv);
+    let texel = textureSampleGrad(map_textures[in.maps[min(slot, 3u)] >> 16u], surface_sampler, uv, dx, dy);
+    return select(texel, vec4<f32>(1.0), slot > 3u);
 }
 "#;
 

@@ -247,6 +247,13 @@ pub struct Material {
     /// makes two materials on one shader different — a speed, a tint.
     #[serde(default, skip_serializing_if = "is_zeros")]
     pub params: [f32; 8],
+    /// Textures of its own for its shader, by the names the shader reads
+    /// them by (Unity's property names, `_Road_Texture`): the shader's
+    /// `// runity:textures` line puts up to four of them in its slots, for
+    /// `texture_at` in its `surface`.
+    #[serde(default, skip_serializing_if = "MaterialTextures::is_empty")]
+    #[rkyv(with = TextureEntries)]
+    pub textures: MaterialTextures,
     /// The base map laid on the screen rather than on the mesh's UVs: a
     /// camera's picture seen through the surface — a mirror's reflection
     /// ([`ScreenMap::Mirror`] flips it) or a portal's view.
@@ -363,6 +370,7 @@ impl Material {
             emission_map: None,
             shader: None,
             params: [0.0; 8],
+            textures: MaterialTextures::NONE,
             screen_map: ScreenMap::Off,
             on_top: false,
             normal_scale: 1.0,
@@ -379,7 +387,8 @@ impl Material {
         }
     }
 
-    /// The textures it draws with, besides its numbers.
+    /// The textures it draws with, besides its numbers: its four maps and
+    /// those it hands its own shader.
     pub fn maps(&self) -> impl Iterator<Item = crate::asset::AssetId> {
         [
             self.base_map,
@@ -389,6 +398,7 @@ impl Material {
         ]
         .into_iter()
         .flatten()
+        .chain(self.textures.ids())
     }
 
     /// Whether it is blended over what is behind it.
@@ -473,6 +483,7 @@ impl From<&ArchivedMaterial> for Material {
                 .map(crate::asset::AssetId::from),
             shader: archived.shader.as_ref().map(crate::asset::AssetId::from),
             params: std::array::from_fn(|i| archived.params[i].to_native()),
+            textures: MaterialTextures::from_archived(&archived.textures),
             on_top: archived.on_top,
             screen_map: match archived.screen_map {
                 ArchivedScreenMap::Off => ScreenMap::Off,
@@ -501,6 +512,182 @@ impl From<&ArchivedMaterial> for Material {
             ],
             subsurface_radius: archived.subsurface_radius.to_native(),
         }
+    }
+}
+
+/// One texture a material hands its shader: the name the shader reads it
+/// by, and the texture.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
+pub struct TextureEntry {
+    pub name: String,
+    pub texture: crate::asset::AssetId,
+}
+
+/// The textures a material hands its own shader, by name
+/// ([`Material::textures`]).
+///
+/// A number standing for the set rather than the set itself, so that a
+/// material stays `Copy`: a frame copies one into every draw, and a map
+/// of strings there would be an allocation a draw for the materials that
+/// have any. Equal sets are the same number — each is kept once, sorted by
+/// name, for the life of the process — so comparing two materials still
+/// compares their textures. What a set holds is looked up only where a
+/// draw is prepared and where textures are uploaded. A set is never
+/// forgotten: a material edited a hundred times leaves a hundred short
+/// lists behind, which is nothing next to its textures.
+///
+/// Written as a map in text, `{"_Road": "<texture id>"}`, and as a list of
+/// [`TextureEntry`] in an asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct MaterialTextures(u32);
+
+/// Every set of textures named so far: [`MaterialTextures`] `n` is the
+/// `n - 1`th; 0 is none.
+static TEXTURE_SETS: std::sync::RwLock<Vec<std::sync::Arc<[TextureEntry]>>> =
+    std::sync::RwLock::new(Vec::new());
+
+impl MaterialTextures {
+    /// None of its own: what a material without a shader of its own has.
+    pub const NONE: Self = Self(0);
+
+    /// The set of these, by name. A name said twice keeps its last texture.
+    pub fn new(
+        entries: impl IntoIterator<Item = (impl Into<String>, crate::asset::AssetId)>,
+    ) -> Self {
+        let mut by_name = std::collections::BTreeMap::new();
+        for (name, texture) in entries {
+            by_name.insert(name.into(), texture);
+        }
+        if by_name.is_empty() {
+            return Self::NONE;
+        }
+        let set: Vec<TextureEntry> = by_name
+            .into_iter()
+            .map(|(name, texture)| TextureEntry { name, texture })
+            .collect();
+        let find = |sets: &[std::sync::Arc<[TextureEntry]>]| {
+            sets.iter()
+                .position(|s| **s == *set)
+                .map(|i| Self(i as u32 + 1))
+        };
+        if let Some(found) = find(&TEXTURE_SETS.read().unwrap_or_else(|e| e.into_inner())) {
+            return found;
+        }
+        let mut sets = TEXTURE_SETS.write().unwrap_or_else(|e| e.into_inner());
+        // Another thread may have put it in between the two locks.
+        if let Some(found) = find(&sets) {
+            return found;
+        }
+        sets.push(set.into());
+        Self(sets.len() as u32)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// What it holds, sorted by name.
+    pub fn entries(&self) -> std::sync::Arc<[TextureEntry]> {
+        if self.0 == 0 {
+            return std::sync::Arc::new([]);
+        }
+        TEXTURE_SETS.read().unwrap_or_else(|e| e.into_inner())[self.0 as usize - 1].clone()
+    }
+
+    /// The texture it hands its shader as `name`.
+    pub fn get(&self, name: &str) -> Option<crate::asset::AssetId> {
+        if self.0 == 0 {
+            return None;
+        }
+        self.entries()
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.texture)
+    }
+
+    /// Every texture in it.
+    pub fn ids(&self) -> Vec<crate::asset::AssetId> {
+        if self.0 == 0 {
+            return Vec::new();
+        }
+        self.entries().iter().map(|e| e.texture).collect()
+    }
+
+    /// The set an asset holds.
+    pub fn from_archived(entries: &rkyv::vec::ArchivedVec<ArchivedTextureEntry>) -> Self {
+        Self::new(entries.iter().map(|e| {
+            (
+                e.name.as_str().to_string(),
+                crate::asset::AssetId::from(&e.texture),
+            )
+        }))
+    }
+}
+
+impl Serialize for MaterialTextures {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let entries = self.entries();
+        let mut map = serializer.serialize_map(Some(entries.len()))?;
+        for e in entries.iter() {
+            map.serialize_entry(&e.name, &e.texture)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MaterialTextures {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let map =
+            std::collections::BTreeMap::<String, crate::asset::AssetId>::deserialize(deserializer)?;
+        Ok(Self::new(map))
+    }
+}
+
+/// How [`MaterialTextures`] goes into an asset: as the list it stands for.
+pub struct TextureEntries;
+
+impl rkyv::with::ArchiveWith<MaterialTextures> for TextureEntries {
+    type Archived = rkyv::vec::ArchivedVec<ArchivedTextureEntry>;
+    type Resolver = rkyv::vec::VecResolver;
+
+    fn resolve_with(
+        field: &MaterialTextures,
+        resolver: Self::Resolver,
+        out: rkyv::Place<Self::Archived>,
+    ) {
+        rkyv::vec::ArchivedVec::resolve_from_len(field.entries().len(), resolver, out);
+    }
+}
+
+impl<S> rkyv::with::SerializeWith<MaterialTextures, S> for TextureEntries
+where
+    S: rkyv::rancor::Fallible + ?Sized,
+    Vec<TextureEntry>: rkyv::Serialize<S, Resolver = rkyv::vec::VecResolver>,
+{
+    fn serialize_with(
+        field: &MaterialTextures,
+        serializer: &mut S,
+    ) -> Result<Self::Resolver, S::Error> {
+        rkyv::Serialize::serialize(&field.entries().to_vec(), serializer)
+    }
+}
+
+impl<D>
+    rkyv::with::DeserializeWith<
+        rkyv::vec::ArchivedVec<ArchivedTextureEntry>,
+        MaterialTextures,
+        D,
+    > for TextureEntries
+where
+    D: rkyv::rancor::Fallible + ?Sized,
+{
+    fn deserialize_with(
+        field: &rkyv::vec::ArchivedVec<ArchivedTextureEntry>,
+        _: &mut D,
+    ) -> Result<MaterialTextures, D::Error> {
+        Ok(MaterialTextures::from_archived(field))
     }
 }
 

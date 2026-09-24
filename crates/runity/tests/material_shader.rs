@@ -209,3 +209,111 @@ fn a_marker_on_top_shows_through_a_wall() {
     let seen = behind(true);
     assert!(seen[0] > 180, "on top: through the wall {seen:?}");
 }
+
+/// One colour everywhere, as an imported texture asset would be.
+fn texture(id: u128, rgba: [u8; 4]) -> Vec<u8> {
+    use runity::asset::{AssetId, TextureAsset};
+    let asset = TextureAsset {
+        id: AssetId(id),
+        name: format!("t{id}"),
+        width: 4,
+        height: 4,
+        pixels: rgba.repeat(16),
+        mips: Vec::new(),
+        srgb: false,
+    };
+    runity::asset::to_bytes(&asset, runity::asset::TEXTURE).unwrap()
+}
+
+#[test]
+fn a_materials_own_textures_reach_its_shader_in_the_slots_it_names() {
+    use runity::asset::{AssetId, TextureAsset};
+    let Ok(mut gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    // The shader reads `_Second` in its first slot and `_First` in its
+    // second: the material's names go to the shader's slots by the
+    // shader's order, not the material's. Its third slot it does not
+    // name, and the material's `_Unused` it does not read.
+    let reading = |slot: u32| {
+        format!(
+            "// runity:textures _Second _First
+fn surface(in: SurfaceIn, out: Surface) -> Surface {{
+    var o = out;
+    o.albedo = texture_at(in, {slot}u, in.uv).rgb;
+    return o;
+}}"
+        )
+    };
+    let textures = [
+        texture(11, [0, 255, 0, 255]),
+        texture(12, [0, 0, 255, 255]),
+        texture(13, [255, 0, 0, 255]),
+    ];
+    let material = |id| Material {
+        shading: Shading::Unlit,
+        shader: Some(id),
+        textures: runity::material::MaterialTextures::new([
+            ("_First", AssetId(11)),
+            ("_Second", AssetId(12)),
+            ("_Unused", AssetId(13)),
+        ]),
+        ..Material::new(1.0, 1.0, 1.0)
+    };
+    // Both ways maps are bound: one array indexed by the instance's
+    // handles, and a bind group a set of maps.
+    let ways: &[bool] = if gpu.bindless { &[true, false] } else { &[false] };
+    for &bindless in ways {
+        gpu.bindless = bindless;
+        let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+        let mut renderer = Renderer::new(&gpu, &target);
+        for bytes in &textures {
+            renderer.upload_texture(&gpu, runity::asset::view::<TextureAsset>(bytes).unwrap());
+        }
+        let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(2.0));
+        let mut middle = |slot: u32| {
+            let id = runity::asset::shader_id(&format!("slot{slot}"));
+            renderer.set_material_shader(&gpu, id, &reading(slot)).unwrap();
+            let frame = Frame {
+                camera: Camera {
+                    position: Vec3::new(0.0, 0.0, 4.0),
+                    target: Vec3::ZERO,
+                    ..Camera::default()
+                },
+                sky: runity::render::Sky {
+                    mode: SkyMode::Color,
+                    ..Default::default()
+                },
+                clear_color: Vec3::ZERO,
+                post: runity::post::PostProcess::OFF,
+                ambient_occlusion: runity::ssao::AmbientOcclusion::OFF,
+                draws: vec![Draw {
+                    mesh: cube,
+                    transform: Mat4::IDENTITY,
+                    texture: TextureHandle::WHITE,
+                    material: material(id),
+                    pose: None,
+                }],
+                ..Frame::default()
+            };
+            renderer.render(&gpu, &target, &frame);
+            OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2)
+        };
+        let first = middle(0);
+        assert!(
+            first[2] > 200 && first[0] < 40 && first[1] < 40,
+            "slot 0 is `_Second`, blue (bindless {bindless}): {first:?}"
+        );
+        let second = middle(1);
+        assert!(
+            second[1] > 200 && second[0] < 40 && second[2] < 40,
+            "slot 1 is `_First`, green (bindless {bindless}): {second:?}"
+        );
+        let unnamed = middle(2);
+        assert!(
+            unnamed.iter().take(3).all(|c| *c > 200),
+            "a slot the shader does not name is white (bindless {bindless}): {unnamed:?}"
+        );
+    }
+}
