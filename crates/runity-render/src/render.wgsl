@@ -9,6 +9,8 @@ struct Foliage {
     wind: vec4<f32>,
     // position and radius of each; radius 0 bends nothing
     benders: array<vec4<f32>, 8>,
+    // the trample map's middle x and z, its size, 1 when there is one
+    trample: vec4<f32>,
 };
 
 struct Frame {
@@ -231,6 +233,9 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 @group(0) @binding(22) var last_frame: texture_2d<f32>;
 // The drawn terrain's heights on its grid of cells (terrain.rs).
 @group(0) @binding(23) var terrain_heights: texture_2d<f32>;
+// How the grass is trampled round the camera (foliage.rs, TrampleMap):
+// pressed, and the way out.
+@group(0) @binding(30) var trample_map: texture_2d<f32>;
 
 /// Whether any of the dust wall can lie between the eye and a point: the
 /// point is past where the ray enters the wall's side of its front (its
@@ -606,6 +611,22 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
     let flutter = amount * strength * min(height, 1.0) * 0.015
         * sin(t * 7.0 + dot(world, vec3<f32>(1.7, 2.3, 1.1)));
     var moved = world + direction * bend + vec3<f32>(-direction.z, 0.3, direction.x) * flutter;
+    // Branches: how far out from the trunk's axis a point is. Each branch —
+    // a band round the trunk and up it — bobs and swings on its own phase,
+    // more the further out; leaves at the tips flutter fast.
+    let out = world.xz - origin.xz;
+    let reach = length(out);
+    if reach > 0.3 && height > 0.5 {
+        let around = atan2(out.y, out.x);
+        let branch = floor(around * 1.3) * 3.7 + floor(height * 1.5) * 1.9;
+        let swing = sin(t * 1.9 + branch + along * 0.2) * (0.6 + 0.4 * gust);
+        let sway = amount * strength * reach * 0.02 * swing;
+        let side = vec3<f32>(-direction.z, 0.0, direction.x);
+        moved += side * sway + vec3<f32>(0.0, sway * 0.6, 0.0) + direction * abs(sway) * 0.5;
+        let leaf = amount * strength * min(reach, 3.0) * 0.006
+            * sin(t * 11.0 + dot(world, vec3<f32>(3.1, 1.3, 2.7)) + branch);
+        moved += vec3<f32>(leaf, leaf * 0.7, -leaf);
+    }
     // Kept roughly its length: what leans over also drops.
     moved.y -= bend * bend / max(2.0 * height, 0.2);
 
@@ -624,6 +645,32 @@ fn swayed(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<
             moved.y -= push * height * 0.6;
         }
     }
+    return moved;
+}
+
+/// A vertex of grass pressed down and out by what has walked through it
+/// and not yet sprung back: the trample map.
+fn trampled(world: vec3<f32>, origin: vec3<f32>, amount: f32, f: Foliage) -> vec3<f32> {
+    if amount <= 0.0 || f.trample.w < 0.5 {
+        return world;
+    }
+    let size = f.trample.z;
+    let t = (world.xz - f.trample.xy) / size + 0.5;
+    if any(t < vec2<f32>(0.0)) || any(t >= vec2<f32>(1.0)) {
+        return world;
+    }
+    let cells = vec2<f32>(textureDimensions(trample_map));
+    let texel = textureLoad(trample_map, vec2<i32>(t * cells), 0);
+    let pressed = texel.r * min(amount, 1.0);
+    if pressed <= 0.0 {
+        return world;
+    }
+    let height = max(world.y - origin.y, 0.0);
+    let away = texel.gb * 2.0 - 1.0;
+    // Laid over, not squashed: out along the way it was pushed, and down
+    // as far as it leans.
+    var moved = world + vec3<f32>(away.x, 0.0, away.y) * pressed * min(height, 1.0) * 0.9;
+    moved.y -= pressed * height * 0.8;
     return moved;
 }
 
@@ -1472,7 +1519,12 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
 fn standard_vertex(in: VertexInput) -> VertexOutput {
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     let world = vec4<f32>(
-        swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
+        trampled(
+            swayed((model * vec4<f32>(in.position, 1.0)).xyz, in.model_3.xyz, in.detail.z, frame.foliage),
+            in.model_3.xyz,
+            in.detail.z,
+            frame.foliage,
+        ),
         1.0,
     );
 

@@ -1026,6 +1026,11 @@ pub struct Renderer {
     /// The drawn terrain's heights, for its vertex shader; and what they
     /// were made from.
     terrain_heights: wgpu::TextureView,
+    /// How the grass round the camera is trampled, and its texture
+    /// ([`crate::foliage::TrampleMap`]).
+    trample: crate::foliage::TrampleMap,
+    trample_texture: wgpu::Texture,
+    trample_view: wgpu::TextureView,
     terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -2386,6 +2391,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // How the grass is trampled, read by the vertex shader.
+            wgpu::BindGroupLayoutEntry {
+                binding: 30,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The last frame, for screen-space reflections.
             wgpu::BindGroupLayoutEntry {
                 binding: 22,
@@ -2519,11 +2535,27 @@ impl Renderer {
         let atmosphere = crate::atmosphere::AtmosphereRenderer::new(gpu);
         let clouds = crate::clouds::CloudRenderer::new(gpu);
         let terrain_heights = terrain_height_view(gpu, 1, &[0.0]);
+        let trample_texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("trample"),
+            size: wgpu::Extent3d {
+                width: crate::foliage::TRAMPLE_CELLS,
+                height: crate::foliage::TRAMPLE_CELLS,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let trample_view = trample_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
                 terrain_heights: &terrain_heights,
+                trample: &trample_view,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -2881,6 +2913,9 @@ impl Renderer {
             atmosphere,
             clouds,
             terrain_heights,
+            trample: crate::foliage::TrampleMap::default(),
+            trample_texture,
+            trample_view,
             blank_depth: gpu
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -2926,6 +2961,7 @@ impl Renderer {
             &self.layout,
             &FrameInputs {
                 terrain_heights: &self.terrain_heights,
+                trample: &self.trample_view,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -4449,7 +4485,7 @@ impl Renderer {
             sun_light * (1.0 - 0.8 * storm) * Vec3::new(1.0, 1.0 - 0.25 * storm, 1.0 - 0.5 * storm);
         let sky_light = sky_light.lerp(Vec3::new(0.55, 0.4, 0.26), storm * 0.7);
         let ground_light = ground_light.lerp(Vec3::new(0.35, 0.25, 0.15), storm * 0.7);
-        let foliage = crate::foliage::FoliageUniform::new(
+        let mut foliage = crate::foliage::FoliageUniform::new(
             &frame.wind,
             &frame.benders,
             frame.camera.position,
@@ -4457,6 +4493,26 @@ impl Renderer {
                 .time
                 .unwrap_or_else(|| self.started.elapsed().as_secs_f32()),
         );
+        // The benders press into the trample map, which springs back as
+        // the clock runs; a reflection probe's picture leaves it alone.
+        if probe.is_none() && !self.picturing {
+            self.trample.press(&frame.benders, frame.camera.position, foliage.wind[3]);
+            gpu.queue.write_texture(
+                self.trample_texture.as_image_copy(),
+                bytemuck::cast_slice(&self.trample.texels()),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(crate::foliage::TRAMPLE_CELLS * 4),
+                    rows_per_image: None,
+                },
+                wgpu::Extent3d {
+                    width: crate::foliage::TRAMPLE_CELLS,
+                    height: crate::foliage::TRAMPLE_CELLS,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        foliage.trample = [self.trample.centre.x, self.trample.centre.y, crate::foliage::TRAMPLE_SIZE, 1.0];
         let casters: Vec<u8> = light_view_projection
             .iter()
             .chain(light_views.iter())
@@ -5781,6 +5837,8 @@ struct FrameInputs<'a> {
     history: &'a wgpu::TextureView,
     /// Terrain heights, for the vertex shader.
     terrain_heights: &'a wgpu::TextureView,
+    /// How the grass is trampled, for the vertex shader.
+    trample: &'a wgpu::TextureView,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -5866,6 +5924,7 @@ fn frame_bind_group(
         view(21, inputs.clouds),
         view(22, inputs.history),
         view(23, inputs.terrain_heights),
+        view(30, inputs.trample),
     ];
     if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {
