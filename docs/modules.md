@@ -21,7 +21,7 @@ NEXT_STEPS.
 | `runity-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
 | `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
 | `runity-navigation` | сетка проходимости и A* | physics |
-| `runity-soft` | `rope`, `cloth`: верёвки, кабели, цепи и ткань на XPBD (docs/simulation.md) | ядро, geometry |
+| `runity-soft` | `rope`, `cloth`, `hair`: верёвки, цепи, ткань и волосы на XPBD (docs/simulation.md) | ядро, geometry |
 | `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
 | `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
 | `runity-gpu` | устройство, поверхность, offscreen | — |

@@ -57,7 +57,8 @@ pub fn obstacles(world: &World) -> Vec<Obstacle> {
 pub fn step(world: &mut World, seconds: f32) {
     let ropes = world.query::<&RopeState>().iter().next().is_some();
     let cloth = world.query::<&ClothState>().iter().next().is_some();
-    if !ropes && !cloth {
+    let hair = world.query::<&HairState>().iter().next().is_some();
+    if !ropes && !cloth && !hair {
         return;
     }
     let obstacles = Obstacles::new(obstacles(world));
@@ -66,6 +67,9 @@ pub fn step(world: &mut World, seconds: f32) {
     }
     if cloth {
         run_cloth(world, seconds, &obstacles);
+    }
+    if hair {
+        run_hair(world, seconds, &obstacles);
     }
 }
 
@@ -86,6 +90,10 @@ pub fn show(world: &mut World, _seconds: f32) {
         }
     }
     for (state, placed, live) in world.query_mut::<(&ClothState, &WorldTransform, &mut LiveMesh)>() {
+        let (vertices, indices) = state.mesh(placed.0);
+        live.set(vertices, indices);
+    }
+    for (state, placed, live) in world.query_mut::<(&HairState, &WorldTransform, &mut LiveMesh)>() {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
     }
@@ -114,20 +122,23 @@ pub struct SoftLookDress<'a> {
 
 impl Dress for SoftLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["rope", "cloth", "model", "material"]
+        &["rope", "cloth", "hair", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         use crate::prelude::*;
-        let (rope, cloth) = (line.rope(), line.cloth());
-        if rope.is_none() && cloth.is_none() {
+        let (rope, cloth, hair) = (line.rope(), line.cloth(), line.hair());
+        if rope.is_none() && cloth.is_none() && hair.is_none() {
             if world.remove_one::<RopeLook>(entity).is_ok() {
                 let _ = world.remove::<(LiveMesh, Copies)>(entity);
             }
             return;
         }
+        // Hair is drawn in its line's material, like the rest: a head of
+        // hair is a line of its own, a child of the head, so that it and
+        // the head are each their own colour.
         let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
-        if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() {
+        if rope.is_some_and(|r| r.kind == RopeKind::Chain) && cloth.is_none() && hair.is_none() {
             let _ = world.remove_one::<LiveMesh>(entity);
             // The line's model is its link, drawn at each link and not
             // once at the entity.

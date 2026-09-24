@@ -4,11 +4,11 @@
     name: "soft",
     version: "0.1.0",
     engine: "0.1",
-    what: "Ropes, cables, chains and cloth, solved as particles and constraints (XPBD).",
+    what: "Ropes, cables, chains, cloth and hair, solved as particles and constraints (XPBD).",
     depends: ["geometry"],
     runtime: true,
     editor: false,
-    parts: ["rope", "cloth"],
+    parts: ["rope", "cloth", "hair"],
     assets: [],
     feature: Some("soft"),
 )

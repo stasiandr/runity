@@ -1,8 +1,8 @@
 //! Soft things (docs/simulation.md): particles held by constraints and
 //! solved by XPBD in small substeps — one solver for everything that bends,
 //! stretches, twists and hangs. So far: ropes, cables and chains as
-//! Cosserat rods ([`rope`]) and cloth ([`cloth`]), lying on simple
-//! [`obstacle`]s.
+//! Cosserat rods ([`rope`]), cloth ([`cloth`]) and hair on guide rods
+//! ([`hair`]), lying on simple [`obstacle`]s.
 //!
 //! Headless: it hands out points, a tube's triangles and where a chain's
 //! links are; drawing them is the render's, and the facade hands them over.
@@ -10,12 +10,14 @@
 //! does not know the physics.
 
 pub mod cloth;
+pub mod hair;
 pub mod obstacle;
 pub mod particles;
 pub mod rod;
 pub mod rope;
 
 pub use cloth::{run_cloth, Cloth, ClothDress, ClothLine, ClothState, Pinned};
+pub use hair::{run_hair, Hair, HairDress, HairLine, HairState};
 pub use obstacle::{Obstacle, Obstacles};
 pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
 
@@ -23,6 +25,7 @@ pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
 pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
     let mut kinds = rope::part_kinds();
     kinds.extend(cloth::part_kinds());
+    kinds.extend(hair::part_kinds());
     kinds
 }
 
@@ -31,6 +34,7 @@ pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
 pub fn set_wind(world: &mut hecs::World, wind: runity_core::wind::Wind) {
     rope::set_wind(world, wind);
     cloth::set_wind(world, wind);
+    hair::set_wind(world, wind);
 }
 
 /// This module's manifest (`module.ron`): its name, what it stands on,
