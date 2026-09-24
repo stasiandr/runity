@@ -3658,6 +3658,16 @@ fn the_inspector_knows_a_game_component_by_what_the_game_wrote_down() {
 }
 
 #[test]
+fn play_leaves_an_untouched_scene_as_it_is_on_disk() {
+    let Some((mut session, path)) = open("game-untouched") else {
+        return;
+    };
+    let before = std::fs::read(&path).unwrap();
+    session.game_command().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before, "not saved: nothing to save");
+}
+
+#[test]
 fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
     let Some((mut session, path)) = open("game-command") else {
         return;

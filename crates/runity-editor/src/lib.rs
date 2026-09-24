@@ -2029,12 +2029,19 @@ impl Session {
             )));
         }
         let path = self.scene_path.clone().ok_or(EditError::NoPath)?;
-        if !path.starts_with(project.scenes()) || is_prefab(Some(&path)) {
+        // Whatever way each was named — `studio scenes/main.ron` opens a
+        // relative path, the project's root is absolute.
+        let absolute = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if !absolute(&path).starts_with(absolute(&project.scenes())) || is_prefab(Some(&path)) {
             return Err(EditError::Scene(
                 "the game plays scenes from scenes/; open one to play it".into(),
             ));
         }
-        self.save_scene(None)?;
+        // Saved when there is something to save: an untouched scene is
+        // left as it is on disk, byte for byte.
+        if self.is_modified() {
+            self.save_scene(None)?;
+        }
         let name = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
