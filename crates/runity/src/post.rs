@@ -28,6 +28,11 @@ pub enum Tonemapping {
     Neutral,
     /// URP's ACES: filmic, contrasty, highlights desaturating to white.
     Aces,
+    /// AgX (Troy Sobotka's, as Blender has it): a wide log curve through a
+    /// gently rotated space, so bright saturated light goes to white
+    /// smoothly instead of skewing its hue or clipping a channel — a red
+    /// lamp's core stays red at the edge and white at the heart.
+    Agx,
 }
 
 /// Glow around what is brighter than white: the sun on water, an ember, a
@@ -1090,6 +1095,7 @@ impl PostRenderer {
             Tonemapping::None => 0.0,
             Tonemapping::Neutral => 1.0,
             Tonemapping::Aces => 2.0,
+            Tonemapping::Agx => 3.0,
         };
         let balance = white_balance_coefficients(s.temperature, s.tint);
         let knee = s.bloom.threshold * 0.5;
