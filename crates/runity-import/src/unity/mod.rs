@@ -165,6 +165,21 @@ impl Unity {
                 }
             }
         });
+        // The render pipeline's own materials (URP's Lit, the default a
+        // cube is made with): a scene names them by GUID as it does its own.
+        for package in std::fs::read_dir(root.join("Library/PackageCache")).into_iter().flatten().flatten() {
+            let dir = package.path().join("Runtime/Materials");
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "meta")
+                    && path.with_extension("").extension().is_some_and(|e| e == "mat")
+                {
+                    if let Some(guid) = std::fs::read_to_string(&path).ok().and_then(|t| yaml::meta_guid(&t)) {
+                        guids.entry(guid).or_insert_with(|| path.with_extension(""));
+                    }
+                }
+            }
+        }
         // Names: the file's stem, and where two of one kind share it, the
         // folder before it too — `props_crate`, `tools_crate`.
         let mut by_kind: HashMap<(&str, String), Vec<String>> = HashMap::new();
