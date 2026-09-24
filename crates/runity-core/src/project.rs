@@ -791,8 +791,16 @@ impl Game {
 fn tick(world: &mut World, physics: &mut PhysicsWorld, modules: &mut PlayerLoop, profile: &mut runity::perf::Profiler, seconds: f32) {
     // systems, in order
     profile.time("spin", || systems::spin::run(world, seconds));
+    // @soft {
+    // Ropes' ends held by bodies take the bodies' weight and speed.
+    runity::netsim::anchor_ropes(world, physics);
+    // @soft }
     // The modules' systems of the fixed step (`runity::player_loop`).
     modules.run(Phase::FixedUpdate, world, seconds, Some(profile));
+    // @soft {
+    // What the ropes did to the bodies holding them, for the coming step.
+    runity::netsim::pull_bodies(world, physics);
+    // @soft }
     // @fluid {
     // What floats is held up by the water under it, for the coming step.
     runity::fluid::float(world, physics);
@@ -1344,6 +1352,8 @@ pub use {name}::{};", type_name(name));
 /// Every component above, by its file name.
 pub fn register(components: &mut runity::Components) {
     let _ = &components;
+    // The engine's simulations' network states (docs/netsim.md).
+    runity::netsim::register(components);
 ");
     for (name, path) in &components {
         // A component that can be written down is kept: by a save game,

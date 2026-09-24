@@ -226,6 +226,10 @@ impl Obstacle {
 #[derive(Debug, Clone, Default)]
 pub struct Obstacles {
     all: Vec<Obstacle>,
+    /// Whose each is, as the facade tags them (an entity's bits; 0 for
+    /// nobody's): what a rope leaves out of what it meets — the bodies
+    /// holding its ends.
+    tags: Vec<u64>,
     /// Those too big for the grid — the ground — tried by everything.
     everywhere: Vec<u32>,
     cells: std::collections::HashMap<[i32; 3], Vec<u32>>,
@@ -244,8 +248,16 @@ fn cell(p: Vec3) -> [i32; 3] {
 
 impl Obstacles {
     pub fn new(all: Vec<Obstacle>) -> Self {
+        let n = all.len();
+        Self::tagged(all, vec![0; n])
+    }
+
+    /// [`Obstacles::new`], each with whose it is (`tags`, as many).
+    pub fn tagged(all: Vec<Obstacle>, mut tags: Vec<u64>) -> Self {
+        tags.resize(all.len(), 0);
         let mut out = Obstacles {
             all,
+            tags,
             ..Default::default()
         };
         for (i, obstacle) in out.all.iter().enumerate() {
@@ -276,6 +288,11 @@ impl Obstacles {
 
     /// Those that may touch anything from `low` to `high`, into `out`.
     pub fn near(&self, low: Vec3, high: Vec3, out: &mut Vec<Obstacle>) {
+        self.near_except(low, high, &[], out);
+    }
+
+    /// [`Obstacles::near`], leaving out those tagged with any of `skip`.
+    pub fn near_except(&self, low: Vec3, high: Vec3, skip: &[u64], out: &mut Vec<Obstacle>) {
         out.clear();
         let (a, b) = (cell(low), cell(high));
         let mut found: Vec<u32> = self.everywhere.clone();
@@ -299,6 +316,7 @@ impl Obstacles {
         out.extend(
             found
                 .into_iter()
+                .filter(|i| skip.is_empty() || !skip.contains(&self.tags[*i as usize]))
                 .map(|i| self.all[i as usize].clone())
                 .filter(|o| o.near(low, high)),
         );

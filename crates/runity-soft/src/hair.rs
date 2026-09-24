@@ -58,6 +58,10 @@ pub struct Hair {
     /// crown, rather than straight out: 0 fur standing up, 1 hair lying
     /// flat.
     pub lie: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Hair {
@@ -75,6 +79,7 @@ impl Default for Hair {
             curl: 0.0,
             catch: 0.6,
             lie: 0.7,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

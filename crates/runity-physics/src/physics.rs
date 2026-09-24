@@ -1331,6 +1331,20 @@ impl PhysicsWorld {
         true
     }
 
+    /// A kick at a point of the body, in newton-seconds, in the world:
+    /// what a rope's end did to the hand holding it over the last step.
+    /// Unity's `AddForceAtPosition` with `ForceMode.Impulse`.
+    pub fn add_impulse_at(&mut self, world: &World, entity: hecs::Entity, impulse: Vec3, at: Vec3) -> bool {
+        let Some(body) = self
+            .body_of(world, entity)
+            .and_then(|h| self.bodies.get_mut(h))
+        else {
+            return false;
+        };
+        body.apply_impulse_at_point(vector![impulse.x, impulse.y, impulse.z], point![at.x, at.y, at.z], true);
+        true
+    }
+
     /// How fast it turns, radians a second about each axis, in the world.
     pub fn spin(&self, world: &World, entity: hecs::Entity) -> Option<Vec3> {
         let v = self.bodies.get(self.body_of(world, entity)?)?.angvel();

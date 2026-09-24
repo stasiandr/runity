@@ -174,7 +174,11 @@ impl LiveScene {
                 stamps,
                 meshes: HashMap::new(),
                 since_poll: 0.0,
-                components: Components::new(),
+                components: {
+                    let mut components = Components::new();
+                    crate::netsim::register(&mut components);
+                    components
+                },
                 report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
                 since_report: 0.0,
                 noted: Default::default(),

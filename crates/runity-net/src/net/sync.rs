@@ -210,6 +210,23 @@ impl Sync {
                 links.entry(*other).or_default().push(entity);
             }
         }
+        // What a simulation ties together: a rope and its load.
+        let spawned = addressable(world);
+        for (entity, tied) in world.query::<(hecs::Entity, &runity_core::netsim::Tied)>().iter() {
+            for id in &tied.0 {
+                if let Some(other) = by_id.get(id).or_else(|| spawned.get(id)) {
+                    links.entry(entity).or_default().push(*other);
+                    links.entry(*other).or_default().push(entity);
+                }
+            }
+        }
+        // A player's body is its player's: nothing is gathered through it.
+        let pawn = |e: hecs::Entity| world.get::<&runity_core::netsim::Pawn>(e).is_ok();
+        let asked: Vec<hecs::Entity> = asked.into_iter().filter(|e| !pawn(*e)).collect();
+        links.retain(|e, _| !pawn(*e));
+        for near in links.values_mut() {
+            near.retain(|e| !pawn(*e));
+        }
         let mut groups: HashMap<super::NetGroup, Vec<hecs::Entity>> = HashMap::new();
         for (entity, group) in world.query::<(hecs::Entity, &super::NetGroup)>().iter() {
             groups.entry(*group).or_default().push(entity);
@@ -245,6 +262,7 @@ impl Sync {
         for (name, text) in components.write_networked(world, entity) {
             blobs.push((name, text.into_bytes()));
         }
+        blobs.extend(components.gather_states(world, entity));
         blobs
     }
 
@@ -511,7 +529,7 @@ impl Sync {
             (NetId(id), NetPrefab(prefab.to_string()), Owner(owner)),
         );
         let _ = world.insert_one(entity, transform);
-        write_components(world, components, entity, blobs);
+        write_components(world, components, entity, blobs, owner, 0);
         if owner == self.me {
             self.announced.insert(id);
         } else {
@@ -556,7 +574,7 @@ impl Sync {
                         let _ = world.insert_one(entity, transform);
                         let _ = world.remove_one::<Presented>(entity);
                     }
-                    write_components(world, components, entity, &record.blobs);
+                    write_components(world, components, entity, &record.blobs, record.owner, 0);
                 }
             }
         }
@@ -606,7 +624,7 @@ impl Sync {
                 let _ = world.insert_one(entity, presented);
             }
         }
-        write_components(world, components, entity, &entry.blobs);
+        write_components(world, components, entity, &entry.blobs, sender, tick);
         let _ = world.insert_one(
             entity,
             NetTick {
@@ -631,9 +649,17 @@ fn write_components(
     components: &Components,
     entity: hecs::Entity,
     blobs: &[Blob],
+    sender: PeerId,
+    tick: u64,
 ) {
     for (name, bytes) in blobs {
-        if name == TRANSFORM || !components.is_networked(name) {
+        if name == TRANSFORM {
+            continue;
+        }
+        if components.take_state(name, world, entity, sender.0, tick, bytes) {
+            continue;
+        }
+        if !components.is_networked(name) {
             continue;
         }
         if let Ok(text) = std::str::from_utf8(bytes) {
@@ -690,8 +716,11 @@ pub struct Presented {
     offset: f64,
     /// Where the clock stands, in timeline ticks.
     render: f64,
-    /// A handover being hidden: the gap at the join, and seconds since.
-    blend: Option<(Vec3, Quat, f32)>,
+    /// A handover being hidden: the gap at the join, seconds since the
+    /// picture reached it, the join's tick and the old stream's newest —
+    /// between the two the gap grows in as the picture slides from one
+    /// owner's pose to the other's, so it never jumps.
+    blend: Option<(Vec3, Quat, f32, f64, f64)>,
 }
 
 impl Presented {
@@ -716,6 +745,8 @@ impl Presented {
                     heading.position - pose.position,
                     heading.rotation() * pose.rotation().inverse(),
                     0.0,
+                    join,
+                    newest,
                 ));
             }
             _ => {}
@@ -831,13 +862,17 @@ impl Presented {
             self.samples.pop_front();
         }
         let mut pose = self.pose_at(self.render);
-        if let Some((gap, turn, age)) = &mut self.blend {
-            *age += seconds;
-            let x = (*age / HANDOVER_BLEND).clamp(0.0, 1.0);
-            let weight = 1.0 - x * x * (3.0 - 2.0 * x);
+        if let Some((gap, turn, age, join, from)) = &mut self.blend {
+            let weight = if self.render >= *join {
+                *age += seconds;
+                let x = (*age / HANDOVER_BLEND).clamp(0.0, 1.0);
+                1.0 - x * x * (3.0 - 2.0 * x)
+            } else {
+                ((self.render - *from) / (*join - *from).max(1e-6)).clamp(0.0, 1.0) as f32
+            };
             pose.position += *gap * weight;
             pose.set_rotation(Quat::IDENTITY.slerp(*turn, weight) * pose.rotation());
-            if x >= 1.0 {
+            if self.render >= *join && *age >= HANDOVER_BLEND {
                 self.blend = None;
             }
         }

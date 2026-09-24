@@ -45,6 +45,10 @@ pub struct Fracture {
     pub levels: u32,
     /// Which pieces: another number, other pieces.
     pub seed: u32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// When a fracture is cut.
@@ -66,6 +70,7 @@ impl Default for Fracture {
             pattern: Pattern::Ahead,
             levels: 1,
             seed: 1,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

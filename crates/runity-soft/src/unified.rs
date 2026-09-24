@@ -563,7 +563,7 @@ mod tests {
         let mut world = hecs::World::new();
         let cloth = crate::Cloth { size: [1.8, 1.2], cells: [28, 18], pinned: crate::Pinned::Corners, catch: 0.2, ..Default::default() };
         world.spawn((crate::ClothState::new(cloth), WorldTransform(Mat4::from_translation(Vec3::new(0.0, 1.3, 0.0)))));
-        let gravel = crate::Grains { size: Vec3::new(0.35, 0.4, 0.25), grain: 0.08, friction: 0.7 };
+        let gravel = crate::Grains { size: Vec3::new(0.35, 0.4, 0.25), grain: 0.08, friction: 0.7, ..Default::default() };
         world.spawn((crate::GrainsState::new(gravel), WorldTransform(Mat4::from_translation(Vec3::new(0.0, 2.2, 0.0)))));
         let obstacles = Obstacles::new(vec![crate::Obstacle::ground(0.0)]);
         for _ in 0..120 {

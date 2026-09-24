@@ -469,6 +469,7 @@ pub use runity_overlay::screen;
 pub use runity_core::shape;
 #[cfg(feature = "soft")]
 pub mod soft;
+pub mod netsim;
 #[cfg(feature = "destruction")]
 pub mod destruction;
 #[cfg(feature = "fluid")]

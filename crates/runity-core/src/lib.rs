@@ -28,6 +28,7 @@ pub mod library;
 pub mod links;
 pub mod merge;
 pub mod module;
+pub mod netsim;
 pub mod parts;
 pub mod perf;
 pub mod player_loop;

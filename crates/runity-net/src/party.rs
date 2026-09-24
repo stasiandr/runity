@@ -604,6 +604,11 @@ impl Party {
         self.sync.one_way_ticks = self
             .round_trip()
             .map_or(0.0, |trip| trip * 0.5 * crate::net::sync::NET_HZ as f64);
+        // The session's clock and the delay, for what simulates by them
+        // (docs/netsim.md): gusts drawn from the same time everywhere,
+        // takeovers carried forward by the delay.
+        runity_core::netsim::set_session_time(world, self.server_time());
+        runity_core::netsim::set_link_delay(world, self.sync.one_way_ticks);
         self.sync.mark(world);
         if matches!(self.stage, Stage::Loading | Stage::Playing) {
             // What time the server says, once a second.

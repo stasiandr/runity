@@ -15,6 +15,7 @@ pub mod fluid;
 pub mod grains;
 pub mod hair;
 pub mod jiggle;
+pub mod net;
 pub mod obstacle;
 pub mod particles;
 pub mod rod;
@@ -31,7 +32,7 @@ pub use fluid::{run_fluids, Fluid, FluidDress, FluidLine, FluidLook, FluidMethod
 pub use grains::{run_grains, Grains, GrainsDress, GrainsLine, GrainsState};
 pub use jiggle::{run_jiggle, Jiggle, JiggleDress, JiggleLine, JiggleState};
 pub use softbody::{run_soft_bodies, Method, SoftBody, SoftBodyDress, SoftBodyLine, SoftBodyState, SoftShape};
-pub use rope::{run_ropes, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
+pub use rope::{run_ropes, Anchor, Ends, Rope, RopeDress, RopeKind, RopeLine, RopeState};
 
 /// This module's fields of a line, with how to check each one's text.
 pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {

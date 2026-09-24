@@ -28,6 +28,10 @@ pub struct Jiggle {
     pub damping: f32,
     /// How much it sags under gravity, 0 (not at all) to 1.
     pub gravity: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Jiggle {
@@ -36,6 +40,7 @@ impl Default for Jiggle {
             stiffness: 0.3,
             damping: 0.15,
             gravity: 0.3,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

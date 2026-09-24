@@ -52,6 +52,10 @@ pub struct Ragdoll {
     /// What its left hand reaches for.
     #[serde(skip_serializing_if = "unlinked")]
     pub reach: EntityRef,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 fn unlinked(r: &EntityRef) -> bool {
@@ -77,7 +81,7 @@ pub enum Drive {
 
 impl Default for Ragdoll {
     fn default() -> Self {
-        Self { mode: Mode::Active, drive: Drive::Stand, height: 1.8, strength: 1.0, toughness: 5.0, recover: 3.0, reach: EntityRef::default() }
+        Self { mode: Mode::Active, drive: Drive::Stand, height: 1.8, strength: 1.0, toughness: 5.0, recover: 3.0, reach: EntityRef::default(), net: runity_core::netsim::NetMode::Local }
     }
 }
 

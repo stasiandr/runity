@@ -48,6 +48,10 @@ pub struct Cloth {
     pub thickness: f32,
     /// It does not pass through itself — dearer; a flag has no need.
     pub self_collide: bool,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 /// What holds a cloth.
@@ -78,6 +82,7 @@ impl Default for Cloth {
             weight: 0.3,
             thickness: 0.01,
             self_collide: false,
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

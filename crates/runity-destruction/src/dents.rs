@@ -23,11 +23,15 @@ pub struct Dents {
     pub radius: f32,
     /// Metres a second: a blow slower than a tenth of this leaves no mark.
     pub strength: f32,
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Dents {
     fn default() -> Self {
-        Self { depth: 0.08, radius: 0.3, strength: 6.0 }
+        Self { depth: 0.08, radius: 0.3, strength: 6.0, net: runity_core::netsim::NetMode::Local }
     }
 }
 

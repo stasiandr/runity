@@ -49,6 +49,10 @@ pub struct Smoke {
     pub fire: bool,
     /// The smoke's colour.
     pub color: [f32; 3],
+    /// How it goes over the network (docs/netsim.md): `Local` unless
+    /// the line says.
+    #[serde(default, skip_serializing_if = "runity_core::netsim::NetMode::is_local")]
+    pub net: runity_core::netsim::NetMode,
 }
 
 impl Default for Smoke {
@@ -64,6 +68,7 @@ impl Default for Smoke {
             fade: 0.25,
             fire: false,
             color: [0.35, 0.34, 0.33],
+            net: runity_core::netsim::NetMode::Local,
         }
     }
 }

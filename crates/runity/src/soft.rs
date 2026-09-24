@@ -25,23 +25,27 @@ pub fn obstacles(world: &World) -> Vec<Obstacle> {
 /// [`obstacles`], leaving out the entities `skip` says: water leaves out
 /// what floats on it.
 pub fn obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> Vec<Obstacle> {
-    let mut out = primitives(world, |e, _| skip(e));
+    tagged_obstacles_but(world, skip).0
+}
+
+/// [`obstacles_but`], each with the bits of the entity it is (0 for the
+/// distance fields): what a rope leaves out of what it meets.
+pub fn tagged_obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> (Vec<Obstacle>, Vec<u64>) {
+    let (mut out, mut tags) = primitives(world, |e, _| skip(e));
     // The scene's distance fields: its meshes, baked.
-    out.extend(
-        world
-            .query::<&DistanceFieldState>()
-            .iter()
-            .filter_map(|f| f.baked.clone())
-            .map(Obstacle::Field),
-    );
-    out
+    for field in world.query::<&DistanceFieldState>().iter().filter_map(|f| f.baked.clone()) {
+        out.push(Obstacle::Field(field));
+        tags.push(0);
+    }
+    (out, tags)
 }
 
 /// The colliders that are simple shapes, but those `skip` says.
-fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Body>) -> bool) -> Vec<Obstacle> {
+fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Body>) -> bool) -> (Vec<Obstacle>, Vec<u64>) {
     use crate::bodies::{Physics, Shape};
     use crate::body::{Body, Collider};
     let mut out = Vec::new();
+    let mut tags = Vec::new();
     for (entity, shape, placed, body) in world
         .query::<(hecs::Entity, &Shape, &WorldTransform, Option<&Physics>)>()
         .iter()
@@ -52,6 +56,7 @@ fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Bod
         let placed = placed.0;
         let (scale, turn, at) = placed.to_scale_rotation_translation();
         let wide = scale.abs().max_element();
+        let before = out.len();
         match shape.0 {
             Collider::Box { half, center } => out.push(Obstacle::placed_box(placed, center, half)),
             Collider::Ramp { half } => out.push(Obstacle::placed_ramp(placed, half)),
@@ -67,8 +72,10 @@ fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Bod
             }
             Collider::None | Collider::Model => {}
         }
+        tags.resize(before, 0);
+        tags.resize(out.len(), entity.to_bits().get());
     }
-    out
+    (out, tags)
 }
 
 /// Metres either side of a surface the render's copy of a distance field
@@ -91,7 +98,7 @@ pub fn bake_fields(world: &mut World) {
         return;
     }
     let moves = |b: Option<Body>| matches!(b, Some(Body::Dynamic | Body::Kinematic));
-    let still = primitives(world, |_, body| moves(body));
+    let still = primitives(world, |_, body| moves(body)).0;
     let meshes: Vec<(crate::physics::CollisionMesh, glam::Mat4)> = world
         .query::<(&crate::physics::CollisionMesh, &WorldTransform, Option<&Physics>)>()
         .iter()
@@ -139,8 +146,8 @@ pub fn step(world: &mut World, seconds: f32) {
     }
     // Where everything is before it moves: what went through what.
     let starts = frame_starts(world);
-    let solid = obstacles(world);
-    let obstacles = Obstacles::new(solid.clone());
+    let (solid, tags) = tagged_obstacles_but(world, |_| false);
+    let obstacles = Obstacles::tagged(solid.clone(), tags.clone());
     if cloth {
         run_cloth(world, seconds, &obstacles);
     }
@@ -151,7 +158,7 @@ pub fn step(world: &mut World, seconds: f32) {
     let with_sheets = if cloth {
         let mut all = solid;
         all.extend(sheet_obstacles(world));
-        Obstacles::new(all)
+        Obstacles::tagged(all, tags)
     } else {
         obstacles.clone()
     };
