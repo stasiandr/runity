@@ -1960,6 +1960,9 @@ fn moved(a: &glam::Mat4, b: &glam::Mat4) -> bool {
 /// lives in the collider's shape.
 fn isometry(placed: glam::Mat4) -> Isometry<Real> {
     let (_, rotation, translation) = placed.to_scale_rotation_translation();
+    // A zero scale on an axis leaves no turn to read: none, rather than a
+    // NaN that parry then panics on.
+    let rotation = if rotation.is_finite() { rotation } else { glam::Quat::IDENTITY };
     Isometry::from_parts(
         nalgebra::Translation3::new(translation.x, translation.y, translation.z),
         nalgebra::Unit::new_normalize(nalgebra::Quaternion::new(
@@ -1993,7 +1996,23 @@ fn build_collider(
             if dynamic {
                 ColliderBuilder::convex_hull(&points)?.build()
             } else {
-                ColliderBuilder::trimesh(points, mesh.triangles.to_vec())
+                // Triangles with no area — a mesh squashed flat by a zero
+                // scale, a sliver — are nothing to stand on, and a query
+                // against a tree of only those panics in parry.
+                let triangles: Vec<[u32; 3]> = mesh
+                    .triangles
+                    .iter()
+                    .copied()
+                    .filter(|t| {
+                        let [a, b, c] = t.map(|i| points.get(i as usize).copied());
+                        let (Some(a), Some(b), Some(c)) = (a, b, c) else { return false };
+                        (b - a).cross(&(c - a)).norm() > 1e-10
+                    })
+                    .collect();
+                if triangles.is_empty() || points.iter().any(|p| !p.coords.iter().all(|v| v.is_finite())) {
+                    return None;
+                }
+                ColliderBuilder::trimesh(points, triangles)
                     .ok()?
                     .build()
             }
@@ -2216,6 +2235,26 @@ mod tests {
                 physics.run(&mut world);
             }
             assert_eq!(world.get::<&JointBroken>(sponge).is_ok(), loose, "pulled with {pull} N");
+        }
+    }
+
+    /// A trigger squashed to nothing on an axis — an effect that grows from
+    /// zero — sits on a mesh floor without a NaN turn reaching parry.
+    #[test]
+    fn a_body_scaled_to_nothing_on_an_axis_does_not_break_the_world() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "floor", model: "builtin:plane", transform: (scale: (10.0, 1.0, 10.0)),
+             collider: Model, body: Static),
+            (id: "0000000000000002", name: "puff", transform: (position: (0.0, 0.1, 0.0), scale: (0.0, 1.0, 1.0)),
+             collider: Sphere(radius: 0.5), body: Trigger),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        attach_scene_collision_meshes(&mut world, &scene, None);
+        let mut physics = PhysicsWorld::new(1.0 / 50.0);
+        for _ in 0..3 {
+            physics.run(&mut world);
         }
     }
 
