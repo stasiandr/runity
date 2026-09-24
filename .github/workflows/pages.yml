@@ -3,14 +3,15 @@ name: Pages
 # Kitchen Rush in the browser (examples/kitchen-web): the engine built for
 # WebGPU, the kitchen's library built from its sources, and the page around
 # it, published to GitHub Pages.
+#
+# Only from the `pages` branch: the site changes when main is merged into
+# it, not with every commit to main.
+#
+#     git push origin main:pages
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "crates/**"
-      - "examples/kitchen-web/**"
-      - ".github/workflows/pages.yml"
+    branches: [pages]
   workflow_dispatch:
 
 permissions:

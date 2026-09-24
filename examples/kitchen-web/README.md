@@ -3,7 +3,9 @@
 The kitchen template (`examples/kitchen`, made with
 `runity new --template kitchen`) built for the web: the engine on WebGPU,
 sticks and buttons on the screen for a phone, and a room code to cook
-together. Published to GitHub Pages by `.github/workflows/pages.yml`.
+together. Published to GitHub Pages by `.github/workflows/pages.yml`
+whenever the `pages` branch moves — merge main into it (or
+`git push origin main:pages`) to update the site.
 
 - **Soup**: three chopped tomatoes (or onions) in a pot, cooked, onto a plate.
 - **Salad**: chopped tomato and chopped cabbage, put together on a plate.
