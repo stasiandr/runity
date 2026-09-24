@@ -504,6 +504,35 @@ pub fn convert_with(
             _ => {}
         }
     }
+    // Blending said by its factors, where `_Surface` does not: a built-in
+    // particle shader's (SrcAlpha, OneMinusSrcAlpha) is see-through, a
+    // (SrcAlpha or One, One) adds.
+    if !fields.iter().any(|f| f.starts_with("surface")) {
+        match (float(m, "_SrcBlend"), float(m, "_DstBlend")) {
+            (Some(5.0) | Some(1.0), Some(10.0)) => {
+                fields.push("surface: Transparent".into());
+                if base[3] < 1.0 {
+                    fields.push(format!("alpha: {}", base[3]));
+                }
+                if float(m, "_SrcBlend") == Some(1.0) {
+                    fields.push("blend: Premultiply".into());
+                }
+            }
+            (Some(5.0) | Some(1.0), Some(1.0)) => {
+                fields.push("surface: Transparent".into());
+                fields.push("blend: Additive".into());
+            }
+            _ => {}
+        }
+    }
+    // Unity's own particle shaders (built in, fileID 200 up, bar the lit
+    // Standard Surface) light nothing.
+    if let Some(r) = m.reference("m_Shader") {
+        let builtin = r.guid.as_deref() == Some("0000000000000000f000000000000000");
+        if builtin && (200..=211).contains(&r.file_id) && r.file_id != 210 {
+            fields.push("shading: Unlit".into());
+        }
+    }
     if float(m, "_AlphaClip") == Some(1.0) {
         fields.push(format!(
             "alpha_clip: {}",
@@ -571,9 +600,13 @@ pub fn convert_with(
         fields.push(format!("shader: {name:?}"));
         let written = shader_text(name).unwrap_or_default();
         let names = declared_params(&written);
+        // `none`: no base map, so the standard shader hands the surface
+        // function the colour as it is — a particle's own.
         if let Some(map) = declared(&written, "base_map") {
-            fields.retain(|f| !f.starts_with("base_map"));
-            fields.push(format!("base_map: {map:?}"));
+            fields.retain(|f| !f.starts_with("base_map") && !f.starts_with("tiling") && !f.starts_with("offset"));
+            if map != "none" {
+                fields.push(format!("base_map: {map:?}"));
+            }
         }
         if let Some(how) = declared(&written, "screen_map") {
             fields.push(format!("screen_map: {how}"));
@@ -763,6 +796,7 @@ Material:
         let unity = Unity {
             layers: Default::default(),
             pieces: Default::default(),
+            declared_params: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ggg", file("Landscape_Shader.shadergraph")),
@@ -844,6 +878,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             layers: Default::default(),
+            declared_params: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ttt".to_string(), dir.join("stone_albedo.png")),
@@ -871,6 +906,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             layers: Default::default(),
+            declared_params: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]
                 .into_iter()

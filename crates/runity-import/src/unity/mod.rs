@@ -105,6 +105,9 @@ pub struct Unity {
     /// `assets/models/<model>@<object>.glb`, in that object's own frame —
     /// what a MeshFilter that names one mesh of a model draws.
     pub pieces: HashMap<String, Vec<String>>,
+    /// A material's name → what its shader written again says its eight
+    /// numbers are (`// runity:params`): where a particle's custom data goes.
+    pub declared_params: HashMap<String, Vec<String>>,
 }
 
 /// The kind a Unity file becomes in runity, by its extension.
@@ -213,6 +216,7 @@ impl Unity {
             names,
             layers,
             pieces: HashMap::new(),
+            declared_params: HashMap::new(),
         })
     }
 
@@ -385,6 +389,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
     }
 
     let mut shaders: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    let mut declared_params: HashMap<String, Vec<String>> = HashMap::new();
     for (guid, path) in unity.of_kind("material") {
         // A shader's parameters, from the one written again if there is
         // one, else the project's own.
@@ -410,12 +415,16 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
                         .find(|d| d.kind == "Material")
                         .and_then(|d| material::own_shader(&unity, &d.body))
                 }) {
+                    if let Some(text) = declared(&own.0) {
+                        declared_params.insert(name.clone(), material::declared_params(&text));
+                    }
                     shaders.insert(own.0, own.1);
                 }
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
         }
     }
+    unity.declared_params = declared_params;
     // The shaders those materials had: a stub each to write again, never
     // over one already written.
     let dir = project.root().join(runity::project::SHADERS);

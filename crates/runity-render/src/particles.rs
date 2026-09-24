@@ -106,6 +106,7 @@ impl Emitting {
     /// Move the particles on by `dt` and give off what is due, from
     /// `placed` (the entity's world matrix).
     pub fn advance(&mut self, placed: Mat4, dt: f32) {
+        let dt = dt * self.emitter.time_scale.max(0.0);
         self.placed = placed;
         self.lived += dt.max(0.0);
         let gravity = self.emitter.gravity;
@@ -118,7 +119,19 @@ impl Emitting {
         } else {
             Vec3::Y
         };
+        // Slowed past its limit: what it is over, less `dampen` of it each
+        // thirtieth of a second.
+        let slowing = self
+            .emitter
+            .speed_limit
+            .map(|limit| (limit.max(0.0), (1.0 - self.emitter.dampen.clamp(0.0, 1.0)).powf(dt.max(0.0) * 30.0)));
         for p in &mut self.particles {
+            if let Some((limit, keep)) = slowing {
+                let speed = p.velocity.length();
+                if speed > limit {
+                    p.velocity *= (limit + (speed - limit) * keep) / speed;
+                }
+            }
             p.velocity += down * gravity * dt;
             p.at += p.velocity * dt;
             p.age += dt;
@@ -252,9 +265,13 @@ impl Emitting {
         let times = if e.scaled { grown.abs().max_element() } else { 1.0 };
         self.particles.iter().map(move |p| {
             let t = (p.age / life).clamp(0.0, 1.0);
-            let size = match e.end_size {
-                Some(end) => e.size + (end - e.size) * t,
-                None => e.size * (1.0 - t),
+            let size = if e.size_keys.is_empty() {
+                match e.end_size {
+                    Some(end) => e.size + (end - e.size) * t,
+                    None => e.size * (1.0 - t),
+                }
+            } else {
+                e.size * crate::look::keyed(&e.size_keys, t)
             }
             .max(0.0)
                 * times;
@@ -287,9 +304,23 @@ impl Emitting {
             } else {
                 (Vec3::splat(size), Quat::IDENTITY)
             };
-            let tint = start + (end - start) * t;
-            let alpha = e.alpha + (e.end_alpha.unwrap_or(e.alpha) - e.alpha) * t;
-            let fading = e.alpha < 1.0 || e.end_alpha.is_some_and(|a| a < 1.0);
+            let tint = if e.color_keys.is_empty() {
+                start + (end - start) * t
+            } else {
+                let channel = |pick: fn(&(f32, f32, f32)) -> f32| {
+                    let keys: Vec<(f32, f32)> = e.color_keys.iter().map(|(at, c)| (*at, pick(c))).collect();
+                    crate::look::keyed(&keys, t)
+                };
+                start * Vec3::new(channel(|c| c.0), channel(|c| c.1), channel(|c| c.2))
+            };
+            let alpha = if e.alpha_keys.is_empty() {
+                e.alpha + (e.end_alpha.unwrap_or(e.alpha) - e.alpha) * t
+            } else {
+                e.alpha * crate::look::keyed(&e.alpha_keys, t)
+            };
+            let fading = e.alpha < 1.0
+                || e.end_alpha.is_some_and(|a| a < 1.0)
+                || e.alpha_keys.iter().any(|(_, a)| *a < 1.0);
             let mut material = match self.material {
                 Some(mut m) => {
                     m.base_color = [
@@ -304,6 +335,17 @@ impl Emitting {
             if fading {
                 material.surface = crate::material::SurfaceType::Transparent;
                 material.alpha *= alpha.clamp(0.0, 1.0);
+            }
+            // Its numbers for the shader, where the emitter's streams say.
+            for stream in &e.custom {
+                let width = stream.keys.first().map_or(0, |k| k.1.len());
+                for c in 0..width {
+                    let keys: Vec<(f32, f32)> = stream.keys.iter().map(|(at, v)| (*at, v.get(c).copied().unwrap_or(0.0))).collect();
+                    let slot = stream.slot as usize + c;
+                    if slot < material.params.len() {
+                        material.params[slot] = crate::look::keyed(&keys, t);
+                    }
+                }
             }
             // One frame of a sheet: the square's picture moved onto it.
             if let Some((across, down)) = e.sheet.filter(|(a, d)| *a * *d > 1) {
@@ -416,6 +458,28 @@ mod tests {
         // The box about (10, 0, 0), both scaled by three.
         assert!(lo.x > 23.9 && hi.x < 36.1 && lo.z > -9.1 && hi.z < 9.1, "{lo} {hi}");
         assert!(hi.x - lo.x > 10.0 && hi.z - lo.z > 15.0, "all through it: {lo} {hi}");
+    }
+
+    #[test]
+    fn a_particles_custom_data_reaches_its_materials_numbers_over_its_life() {
+        let mut emitting = Emitting::new(
+            Emitter {
+                rate: 0.0,
+                life: 1.0,
+                bursts: vec![(0.0, 1)],
+                custom: vec![crate::look::CustomStream {
+                    slot: 2,
+                    name: "custom0".into(),
+                    keys: vec![(0.0, vec![0.0, 10.0]), (1.0, vec![1.0, 20.0])],
+                }],
+                ..Emitter::default()
+            },
+            MeshHandle::TEST,
+        );
+        emitting.advance(Mat4::IDENTITY, 0.0);
+        emitting.advance(Mat4::IDENTITY, 0.5);
+        let d = emitting.draws().next().expect("one");
+        assert!((d.material.params[2] - 0.5).abs() < 0.02 && (d.material.params[3] - 15.0).abs() < 0.2, "{:?}", d.material.params);
     }
 
     use super::*;

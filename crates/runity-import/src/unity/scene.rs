@@ -1228,7 +1228,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "AudioSource" => audio_source(desc, b, refs.unity, report),
-        "ParticleSystem" => shuriken(desc, b, report),
+        "ParticleSystem" => {
+            shuriken(desc, b, report);
+            bind_custom(desc, refs.unity);
+        }
         "ParticleSystemRenderer" => {
             let mut emitter = desc.particles().unwrap_or_default();
             let e = &mut emitter;
@@ -1255,6 +1258,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 }
             }
             desc.set_part(&emitter);
+            bind_custom(desc, refs.unity);
         }
         other => report.skip(other.to_string()),
     }
@@ -1286,6 +1290,116 @@ fn min_max_mean(v: &Yaml) -> Option<f32> {
         }
         _ => scalar,
     })
+}
+
+/// An AnimationCurve's value at `t`, Hermite between keys as Unity has
+/// it, a stepped key held; `None` for a curve with no keys.
+fn curve_at(curve: &Yaml, t: f32) -> Option<f32> {
+    let keys: Vec<[f32; 4]> = curve
+        .list("m_Curve")
+        .iter()
+        .filter_map(|k| Some([k.f32("time")?, k.f32("value")?, k.f32("inSlope").unwrap_or(0.0), k.f32("outSlope").unwrap_or(0.0)]))
+        .collect();
+    match keys.len() {
+        0 => return None,
+        1 => return Some(keys[0][1]),
+        _ => {}
+    }
+    let i = keys.iter().rposition(|k| k[0] <= t).unwrap_or(0).min(keys.len() - 2);
+    let (a, b) = (keys[i], keys[i + 1]);
+    if t <= keys[0][0] {
+        return Some(keys[0][1]);
+    }
+    if t >= keys[keys.len() - 1][0] {
+        return Some(keys[keys.len() - 1][1]);
+    }
+    if !a[3].is_finite() || !b[2].is_finite() {
+        return Some(a[1]);
+    }
+    let span = (b[0] - a[0]).max(1e-6);
+    let u = ((t - a[0]) / span).clamp(0.0, 1.0);
+    let (u2, u3) = (u * u, u * u * u);
+    Some(
+        (2.0 * u3 - 3.0 * u2 + 1.0) * a[1]
+            + (u3 - 2.0 * u2 + u) * span * a[3]
+            + (-2.0 * u3 + 3.0 * u2) * b[1]
+            + (u3 - u2) * span * b[2],
+    )
+    .filter(|v| v.is_finite())
+}
+
+/// A MinMaxCurve over a particle's life, as (share of life, value) keys:
+/// a constant as one key, a curve (or two, averaged) sampled.
+fn min_max_keys(v: &Yaml) -> Vec<(f32, f32)> {
+    let scalar = v.f32("scalar").unwrap_or(1.0);
+    match v.i64("minMaxState").unwrap_or(0) {
+        1 | 2 => (0..=KEYS)
+            .map(|i| {
+                let t = i as f32 / KEYS as f32;
+                let max = curve_at(&v["maxCurve"], t).unwrap_or(1.0);
+                let value = if v.i64("minMaxState") == Some(2) {
+                    (max + curve_at(&v["minCurve"], t).unwrap_or(1.0)) * 0.5
+                } else {
+                    max
+                };
+                (t, scalar * value)
+            })
+            .collect(),
+        3 => vec![(0.0, (scalar + v.f32("minScalar").unwrap_or(scalar)) * 0.5)],
+        _ => vec![(0.0, scalar)],
+    }
+}
+
+/// Keys a curve over a life is sampled into.
+const KEYS: usize = 12;
+
+/// A Gradient's colour and alpha at `t`: straight between its keys.
+fn gradient_at(g: &Yaml, t: f32) -> Option<[f32; 4]> {
+    let colours = g.i64("m_NumColorKeys").unwrap_or(2).clamp(1, 8) as usize;
+    let alphas = g.i64("m_NumAlphaKeys").unwrap_or(2).clamp(1, 8) as usize;
+    let key = |i: usize| g.color(&format!("key{i}"));
+    let blend = |n: usize, time: &str, pick: &dyn Fn([f32; 4]) -> [f32; 4]| -> Option<[f32; 4]> {
+        let at = |i: usize| g.f32(&format!("{time}{i}")).unwrap_or(0.0) / 65535.0;
+        let mut out = pick(key(0)?);
+        for i in 0..n {
+            if at(i) <= t {
+                out = pick(key(i)?);
+            }
+            if i + 1 < n && at(i) <= t && t <= at(i + 1) {
+                let u = (t - at(i)) / (at(i + 1) - at(i)).max(1e-6);
+                let (a, b) = (pick(key(i)?), pick(key(i + 1)?));
+                return Some(std::array::from_fn(|c| a[c] + (b[c] - a[c]) * u));
+            }
+        }
+        Some(out)
+    };
+    let rgb = blend(colours, "ctime", &|c| c)?;
+    let a = blend(alphas, "atime", &|c| [c[3]; 4])?;
+    Some([rgb[0], rgb[1], rgb[2], a[0]])
+}
+
+/// A MinMaxGradient over a particle's life as keys: a gradient sampled, a
+/// colour as one key.
+fn gradient_keys(v: &Yaml) -> Vec<(f32, [f32; 4])> {
+    match v.i64("minMaxState").unwrap_or(0) {
+        1 => (0..=KEYS)
+            .filter_map(|i| {
+                let t = i as f32 / KEYS as f32;
+                Some((t, gradient_at(&v["maxGradient"], t)?))
+            })
+            .collect(),
+        _ => v.color("maxColor").map(|c| vec![(0.0, c)]).unwrap_or_default(),
+    }
+}
+
+/// A colour Unity saved to linear light: sRGB up to white, and past it (an
+/// HDR glow) as it is.
+fn linear_hdr(c: f32) -> f32 {
+    if c <= 1.0 {
+        runity::material::srgb_to_linear(c.max(0.0))
+    } else {
+        c
+    }
 }
 
 /// An AnimationCurve's average over its keys' span (0 to 1 for Shuriken).
@@ -1339,6 +1453,31 @@ fn gradient(v: &Yaml) -> Option<([f32; 4], [f32; 4])> {
             let last = g.i64("m_NumColorKeys").unwrap_or(2).clamp(1, 8) - 1;
             Some((g.color("key0")?, g.color(&format!("key{last}"))?))
         }
+    }
+}
+
+/// An emitter's custom data streams onto the numbers its material's
+/// shader names them by (`custom0.x`…): from the first such name on. A
+/// stream its shader does not name stays unbound, and is not drawn with.
+fn bind_custom(desc: &mut EntityDesc, unity: &Unity) {
+    let Some(mut emitter) = desc.particles() else { return };
+    let Some(material) = emitter.material.as_ref().map(|m| m.to_string()) else { return };
+    let Some(names) = unity.declared_params.get(&material) else { return };
+    let mut changed = false;
+    for stream in &mut emitter.custom {
+        let prefix = format!("{}.", stream.name);
+        if let Some(slot) = names.iter().position(|n| n.starts_with(&prefix)) {
+            // As many of its components as the shader names in a row.
+            let named = names[slot..].iter().take_while(|n| n.starts_with(&prefix)).count();
+            for (_, values) in &mut stream.keys {
+                values.truncate(named);
+            }
+            stream.slot = slot as u8;
+            changed = true;
+        }
+    }
+    if changed {
+        desc.set_part(&emitter);
     }
 }
 
@@ -1444,6 +1583,60 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
         if let Some((_, end)) = gradient(&colour["gradient"]) {
             e.end_color = Some((e.color.0 * end[0], e.color.1 * end[1], e.color.2 * end[2]));
             e.end_alpha = Some(e.alpha * end[3]);
+        }
+    }
+    e.time_scale = b.f32("simulationSpeed").unwrap_or(1.0);
+    // Limit Velocity: slowed past a speed, as a whole (not by axis).
+    let clamp = &b["ClampVelocityModule"];
+    if clamp.i64("enabled") == Some(1) && clamp.i64("separateAxis") != Some(1) {
+        e.speed_limit = min_max_mean(&clamp["magnitude"]);
+        e.dampen = clamp.f32("dampen").unwrap_or(0.0);
+    }
+    // Size and colour over each one's life, as keys.
+    if size.i64("enabled") == Some(1) {
+        e.size_keys = min_max_keys(&size["curve"]);
+        e.end_size = e.size_keys.last().map(|(_, f)| e.size * f);
+    }
+    if colour.i64("enabled") == Some(1) {
+        let keys = gradient_keys(&colour["gradient"]);
+        if keys.len() > 1 {
+            e.color_keys = keys.iter().map(|(t, c)| (*t, (linear_hdr(c[0]), linear_hdr(c[1]), linear_hdr(c[2])))).collect();
+            e.alpha_keys = keys.iter().map(|(t, c)| (*t, c[3])).collect();
+        }
+    }
+    // Custom Data: numbers each carries to its shader over its life. Which
+    // of the material's numbers they fill, the shader says (`custom0.x`,
+    // `custom1.r` in its params); the renderer's material is bound to
+    // them once both are read (`bind_custom`).
+    let data = &b["CustomDataModule"];
+    if data.i64("enabled") == Some(1) {
+        e.custom.clear();
+        for stream in 0..2 {
+            let name = format!("custom{stream}");
+            let keys: Vec<(f32, Vec<f32>)> = match data.i64(&format!("mode{stream}")).unwrap_or(0) {
+                // Vector: each component its own curve.
+                1 => {
+                    let count = data.i64(&format!("vectorComponentCount{stream}")).unwrap_or(4).clamp(1, 4) as usize;
+                    let comps: Vec<Vec<(f32, f32)>> = (0..count)
+                        .map(|c| min_max_keys(&data[format!("vector{stream}_{c}").as_str()]))
+                        .collect();
+                    (0..=KEYS)
+                        .map(|i| {
+                            let t = i as f32 / KEYS as f32;
+                            (t, comps.iter().map(|k| runity::look::keyed(k, t)).collect())
+                        })
+                        .collect()
+                }
+                // Colour: a gradient, linear, a glow past white kept.
+                2 => gradient_keys(&data[format!("color{stream}").as_str()])
+                    .into_iter()
+                    .map(|(t, c)| (t, vec![linear_hdr(c[0]), linear_hdr(c[1]), linear_hdr(c[2]), c[3]]))
+                    .collect(),
+                _ => continue,
+            };
+            if !keys.is_empty() {
+                e.custom.push(runity::look::CustomStream { slot: u8::MAX, name, keys });
+            }
         }
     }
     // Texture Sheet Animation, grid mode: which frame of the sheet each
@@ -1826,6 +2019,7 @@ mod tests {
     fn unity() -> Unity {
         Unity {
             pieces: Default::default(),
+            declared_params: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),
