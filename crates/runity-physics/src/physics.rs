@@ -47,7 +47,7 @@ use crate::world::{
 /// step's changes, so a system that runs every step sees each exactly once.
 /// Unity's `OnTriggerEnter`/`OnCollisionEnter`, as data a system queries
 /// rather than callbacks on a class.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Contacts {
     /// Everything touching now, in no particular order.
     pub inside: Vec<hecs::Entity>,
@@ -55,6 +55,11 @@ pub struct Contacts {
     pub entered: Vec<hecs::Entity>,
     /// What stopped touching this step — possibly an entity that is gone.
     pub left: Vec<hecs::Entity>,
+    /// Which way each solid contact pushes this body, in the world: away
+    /// from what it touches, so a floor underfoot is up. One per touching
+    /// pair; a character tells ground from a wall by the `y` of these, the
+    /// way a controller reads contact normals rather than probing.
+    pub normals: Vec<Vec3>,
 }
 
 /// What a ray met.
@@ -554,6 +559,13 @@ impl PhysicsWorld {
                 ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::FILTER_INTERSECTION_PAIR,
             );
             collider.set_friction(props.friction.max(0.0));
+            // No grip at all is none against anything: the smaller of the
+            // two decides, so no wall can put friction back on a body that
+            // is meant to slide (a character's capsule, driven by its own
+            // velocity).
+            if props.friction <= 0.0 {
+                collider.set_friction_combine_rule(CoefficientCombineRule::Min);
+            }
             collider.set_restitution(props.bounce.clamp(0.0, 1.0));
             // The bouncier of the two decides, so a ball bounces off any
             // floor; grip stays the average of both, as everywhere.
@@ -752,6 +764,7 @@ impl PhysicsWorld {
                 continue;
             };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut normals: Vec<Vec3> = Vec::new();
             for &mine in body.colliders() {
                 let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
                 for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
@@ -762,6 +775,16 @@ impl PhysicsWorld {
                 for pair in self.narrow_phase.contact_pairs_with(mine) {
                     if pair.has_any_active_contact {
                         now.extend(entity_of(other(pair.collider1, pair.collider2)));
+                        // A manifold's normal points from the pair's first
+                        // collider to its second; ours is the other way from
+                        // whatever we touch.
+                        let sign = if pair.collider1 == mine { -1.0 } else { 1.0 };
+                        for manifold in &pair.manifolds {
+                            if manifold.points.iter().any(|p| p.dist <= 0.01) {
+                                let n = manifold.data.normal;
+                                normals.push(Vec3::new(n.x, n.y, n.z) * sign);
+                            }
+                        }
                     }
                 }
             }
@@ -780,6 +803,7 @@ impl PhysicsWorld {
                 .copied()
                 .collect();
             contacts.inside = now;
+            contacts.normals = normals;
         }
     }
 
@@ -1751,6 +1775,19 @@ mod tests {
     }
 
     /// A ball above a floor, and the clock to drop it with.
+    #[test]
+    fn a_body_resting_on_the_floor_is_pushed_up_by_it() {
+        let (mut physics, mut world, ball) = dropped(0.8);
+        let _ = world.insert_one(ball, Contacts::default());
+        for _ in 0..90 {
+            physics.run(&mut world);
+            physics.update_contacts(&mut world);
+        }
+        let contacts = world.get::<&Contacts>(ball).unwrap();
+        assert!(!contacts.normals.is_empty(), "resting, it touches the floor");
+        assert!(contacts.normals.iter().all(|n| n.y > 0.9), "{:?}", contacts.normals);
+    }
+
     fn dropped(from: f32) -> (PhysicsWorld, World, hecs::Entity) {
         let scene = Scene {
             entities: vec![
