@@ -24,6 +24,7 @@ mod animation;
 mod blender_link;
 mod blockout;
 pub mod console;
+mod embedded;
 mod error;
 mod game;
 pub use game::MAX_PLAYERS;
@@ -2014,10 +2015,10 @@ impl Session {
     /// Play with the game's own code: save the open scene and give the
     /// command that runs the game on it (`cargo run` in the project, the
     /// scene named by `RUNITY_SCENE`, the file it watches by
-    /// `RUNITY_SCENE_FILE`) for the window to start. The game
-    /// opens its own window — the viewport stays the editor's, DNA open
-    /// question 1 untouched — and keeps up with the scene as it is edited
-    /// and saved, as every running game does. The editor's own
+    /// `RUNITY_SCENE_FILE`) for the window to start. Run alone the game
+    /// opens its own window; [`Session::start_game`] has it draw into the
+    /// Game view instead. Either way it keeps up with the scene as it is
+    /// edited and saved, as every running game does. The editor's own
     /// [`Session::play`] simulates physics in place without the game.
     pub fn game_command(&mut self) -> EditResult<std::process::Command> {
         let project = self.project.clone().ok_or(EditError::NotInProject)?;
@@ -3103,6 +3104,10 @@ impl Session {
 
     /// Draw one frame into the session's image.
     pub fn render(&mut self) {
+        // The game Play started draws the Game view itself.
+        if self.show_game_frame() {
+            return;
+        }
         // The project's material shaders, as they are saved.
         if self.shaders.is_none() {
             self.shaders = self.project().map(|p| {

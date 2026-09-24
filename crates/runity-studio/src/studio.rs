@@ -342,6 +342,9 @@ pub struct Studio {
     /// Buttons that went down in the Scene view: their release goes there
     /// too, wherever the pointer is by then.
     scene_buttons: HashSet<MouseButton>,
+    /// Buttons pressed over the game in the view: their release is the
+    /// game's too, wherever the pointer is by then.
+    game_buttons: HashSet<MouseButton>,
     /// The session frame's size when the renderer was last shown it.
     registered: Option<(u32, u32)>,
     drawn: Instant,
@@ -650,6 +653,7 @@ impl Studio {
             navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
+            game_buttons: HashSet::new(),
             registered: None,
             drawn: Instant::now(),
             frame_times: Vec::new(),
@@ -682,6 +686,7 @@ impl Studio {
         self.last_input.elapsed().as_secs_f32() < 1.0
             || self.ui.is_dirty()
             || self.session.is_playing()
+            || self.session.is_game_running()
             || self.session.is_dragging()
             || self.stroke.is_some()
             || self.job.is_some()
@@ -714,6 +719,95 @@ impl Studio {
 
     /// What the pointer should look like where it is: an I-beam over a
     /// field, a resize arrow over a border between panels.
+    /// Whether the game in the view is being played: the Game view is up
+    /// and the game Play started draws in it.
+    fn game_in_view(&self) -> bool {
+        self.session.is_game_view() && self.session.is_game_in_view() && self.popup.is_none()
+    }
+
+    /// Whether the pointer is the game's: captured — hidden, held, only its
+    /// motion counting — as the game asked.
+    pub fn captures_cursor(&self) -> bool {
+        self.game_in_view() && self.session.game_captures_cursor()
+    }
+
+    /// Hand what falls on the game in the view to it, as its own window
+    /// would: the pointer over it, the buttons pressed on it, the keys
+    /// while the view has the keyboard — except the editor's shortcuts, so
+    /// Ctrl/Cmd P still stops. `true` when the event was the game's alone.
+    fn to_game(
+        &mut self,
+        event: &InputEvent,
+        over_view: bool,
+        typing: bool,
+        to_view: impl Fn(f32, f32) -> (f32, f32),
+    ) -> bool {
+        if !self.game_in_view() {
+            self.game_buttons.clear();
+            return false;
+        }
+        let focused = self.ui.focused() == Some(self.viewport);
+        let (_, ctrl, _, command) = self.ui.modifiers();
+        let shortcut = if cfg!(target_os = "macos") { command } else { ctrl };
+        let modifier = |key: &Key| {
+            matches!(
+                key,
+                Key::LeftShift
+                    | Key::RightShift
+                    | Key::LeftControl
+                    | Key::RightControl
+                    | Key::LeftAlt
+                    | Key::RightAlt
+                    | Key::LeftSuper
+                    | Key::RightSuper
+            )
+        };
+        match event {
+            InputEvent::MouseMoved { x, y } => {
+                let (x, y) = to_view(*x, *y);
+                self.session.send_to_game(InputEvent::MouseMoved { x, y });
+                false
+            }
+            InputEvent::MouseMotion { .. } => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseDown(button) if over_view => {
+                self.game_buttons.insert(*button);
+                self.ui.focus(Some(self.viewport));
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseUp(button) if self.game_buttons.remove(button) => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::Scroll { .. } if over_view => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::KeyDown(key) if focused && !typing && (modifier(key) || !shortcut) => {
+                self.session.send_to_game(event.clone());
+                !modifier(key)
+            }
+            // Every release: a key held into the game comes up in it.
+            InputEvent::KeyUp(_) => {
+                self.session.send_to_game(event.clone());
+                false
+            }
+            InputEvent::Text(_) if focused && !typing && !shortcut => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::FocusLost => {
+                self.game_buttons.clear();
+                self.session.send_to_game(event.clone());
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn cursor(&self) -> Cursor {
         let node = self.ui.dragging().or(self.ui.hovered());
         match node {
@@ -769,6 +863,9 @@ impl Studio {
         let scale = self.ui.viewport().2;
         let view = self.ui.rect(self.viewport);
         let to_view = |x: f32, y: f32| ((x - view.x) * scale, (y - view.y) * scale);
+        if self.to_game(event, over_view, typing, to_view) {
+            return;
+        }
         match event {
             InputEvent::MouseMoved { x, y } => {
                 let (vx, vy) = to_view(*x, *y);
@@ -3077,20 +3174,25 @@ impl Studio {
                     s.set_pivot(next);
                 }
                 Action::Play => {
-                    // Play is the game: its own code, input and camera, in
-                    // its own window (DNA, open question 1: the view stays
-                    // the editor's). Pressed while something plays — the
-                    // game, or the physics simulated here — it stops that.
+                    // Play is the game: its own code, input and camera, its
+                    // own process, drawing in the Game view. Pressed while
+                    // something plays — the game, or the physics simulated
+                    // here — it stops that.
                     if s.is_playing() {
                         s.stop();
                         s.set_game_view(false);
                     } else if s.is_game_running() {
                         s.stop_game();
+                        s.set_game_view(false);
                         s.say(Level::Info, "stopped the game");
                     } else {
                         s.start_game().map_err(|err| {
                             format!("{err} — Play → Simulate Physics Here runs the scene's physics in the view instead")
                         })?;
+                        // It builds, then draws here; the Game view shows
+                        // the scene through its camera until it does.
+                        s.set_game_view(true);
+                        self.ui.focus(Some(self.viewport));
                     }
                 }
                 Action::Simulate => {
@@ -3921,7 +4023,7 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "space" => "Handles along the world's axes or the entity's own (X)",
         "pivot" => "Handles on the pivot or the selection's centre (Z)",
         "grid" => "Show the grid",
-        "play" => "Play the game in its own window / Stop (Ctrl/Cmd P)",
+        "play" => "Play the game in the Game view / Stop (Ctrl/Cmd P)",
         "pause" => "Simulate physics here, paused (Ctrl/Cmd Shift P)",
         "step" => "One step of physics simulated here (Ctrl/Cmd Alt P)",
         "undo" => "Undo (Ctrl/Cmd Z)",

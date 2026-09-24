@@ -152,7 +152,7 @@ pub enum PadAxis {
 pub const DEAD_ZONE: f32 = 0.15;
 
 /// What a shell reports.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum InputEvent {
     KeyDown(Key),
     KeyUp(Key),
@@ -199,7 +199,7 @@ pub enum InputEvent {
 }
 
 /// Where a touch is in its life.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TouchPhase {
     Started,
     Moved,
