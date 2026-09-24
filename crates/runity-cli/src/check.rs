@@ -241,6 +241,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
         runity::strings::DIR,
         runity::dialogue::DIR,
         runity::motion::DIR,
+        crate::perf::BUDGETS,
         "Cargo.toml",
         "Cargo.lock",
         "build.rs",

@@ -505,6 +505,8 @@ fn to_static(sound: &ArchivedSoundAsset) -> StaticSoundData {
     }
 }
 
+// The tests sit mid-file, beside what they test; the module's glue follows.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,7 +592,7 @@ mod tests {
         let mut audio = silent();
         let bytes = archived();
         let clip = crate::asset::view::<crate::asset::SoundAsset>(&bytes).unwrap();
-        let find = |link: &crate::AssetLink| (link.to_string() == "tone").then_some(clip);
+        let find = |link: &crate::AssetLink| (*link == "tone").then_some(clip);
         let mut world = hecs::World::new();
         let at = |x: f32| WorldTransform(glam::Mat4::from_translation(Vec3::new(x, 0.0, 0.0)));
         let radio = world.spawn((

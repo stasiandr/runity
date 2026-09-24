@@ -609,6 +609,12 @@ pub fn set_look_field(scene: &mut Scene, field: &str, ron_text: &str) -> Result<
 pub use runity_geometry::line::ModelRef;
 
 
+/// `virtual_shadows: true` on a scene — the sun's shadow from virtual
+/// shadow maps, sharp near and far, out to 200 m. See [`crate::vsm`].
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VirtualShadows(pub bool);
+
 /// `bends_grass: 0.6` — grass and anything else that sways is pushed aside
 /// within this many metres of it. See [`crate::foliage`].
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -623,6 +629,7 @@ crate::impl_parts! {
     Light => "light";
     Emitter => "particles";
     Probe => "reflection_probe";
+    crate::ddgi::IrradianceVolume => "irradiance_volume";
     RenderTexture => "render_texture";
     PostVolume => "post_volume";
     Decal => "decal";
@@ -634,6 +641,7 @@ crate::impl_parts! {
     crate::post::PostProcess => "post";
     crate::ssao::AmbientOcclusion => "ambient_occlusion";
     crate::ray::RayTracing => "ray_tracing";
+    VirtualShadows => "virtual_shadows", default if |v| !v.0;
     crate::volume::VolumetricFog => "volumetric_fog";
     crate::weather::Weather => "weather";
     crate::reflections::ScreenSpaceReflections => "screen_space_reflections";

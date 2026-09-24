@@ -75,6 +75,10 @@ pub struct RayTracing {
     pub refractions: bool,
     /// How much glass bends light: 1.5 is window glass, 1.33 water.
     pub index_of_refraction: f32,
+    /// The lamps' light and shadows by ReSTIR ([`crate::restir`]): one
+    /// shadow ray a pixel however many lamps there are, instead of one a
+    /// lamp.
+    pub restir: bool,
 }
 
 impl Default for RayTracing {
@@ -93,6 +97,7 @@ impl Default for RayTracing {
             reflection_roughness: 0.45,
             refractions: false,
             index_of_refraction: 1.5,
+            restir: false,
         }
     }
 }
@@ -111,7 +116,7 @@ impl RayTracing {
     }
 
     pub fn any(&self) -> bool {
-        self.sun_shadows || self.light_shadows || self.ambient_occlusion || self.reflections || self.refractions
+        self.sun_shadows || self.light_shadows || self.ambient_occlusion || self.reflections || self.refractions || self.restir
     }
 }
 

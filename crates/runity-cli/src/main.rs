@@ -8,6 +8,7 @@
 //! runity check [PROJECT]     what does not resolve, with file and entity
 //! runity modules [sync] [PROJECT]  the engine's modules; Cargo.toml from runity.ron
 //! runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
+//! runity perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]  frames against budgets.ron
 //! runity build [PROJECT] [--out DIR] [--debug | --size]  a folder to ship
 //! runity merge BASE OURS THEIRS [PATH]   the git merge driver for scenes
 //! runity git-setup [PROJECT]             turn the driver on in this clone
@@ -120,6 +121,13 @@ runity add scene NAME [PROJECT]
 runity rebuild-time [PROJECT] [--runs N] [--budget SECONDS]
     Build the game, then time rebuilding it after a one-line edit to
     src/main.rs, N times (3), and report the best. Exits 1 over budget.
+runity perf [PROJECT] [--frames N] [--scene NAME] [--counts] [--write]
+    Draw every scene (or one) offscreen at budgets.ron's size and measure
+    it: the GPU's milliseconds a frame (over N frames, 10), the draws, the
+    triangles. Exits 1 when one is over its budget in budgets.ron; time is
+    held only on a real GPU, and not at all with --counts (a shared
+    runner's GPU is not the one the budgets were set on). --write sets the
+    budgets from this machine, with room.
 
 PROJECT is any path inside a project; the current folder by default.";
 
@@ -287,6 +295,7 @@ fn run() -> Result<ExitCode> {
             })
         }
         "rebuild-time" => rebuild_time(&rest),
+        "perf" => perf(&rest),
         "merge" => merge(&rest),
         "build" => build(&rest),
         "rename" => rename(&rest),
@@ -500,6 +509,58 @@ fn rebuild_time(rest: &[String]) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+fn perf(rest: &[String]) -> Result<ExitCode> {
+    let mut at: Vec<String> = Vec::new();
+    let mut frames = 10u32;
+    let mut only: Option<String> = None;
+    let mut write = false;
+    let mut counts = false;
+    let mut args = rest.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--frames" => frames = args.next().context("--frames wants a number")?.parse()?,
+            "--scene" => only = Some(args.next().context("--scene wants a name")?.clone()),
+            "--write" => write = true,
+            "--counts" => counts = true,
+            other if other.starts_with('-') => bail!("unknown option {other}"),
+            other => at.push(other.to_string()),
+        }
+    }
+    let project = find(&at)?;
+    let mut budgets = runity_cli::perf::read(&project)?;
+    let mut over = 0usize;
+    println!("{:<18} {:>9} {:>7} {:>11}", "scene", "gpu ms", "draws", "triangles");
+    for name in project.scene_names() {
+        if only.as_ref().is_some_and(|o| *o != name) {
+            continue;
+        }
+        let path = project.scenes().join(format!("{name}.ron"));
+        let (measured, real_gpu) = runity_cli::perf::measure(&path, budgets.size, frames)
+            .with_context(|| format!("drawing {name}"))?;
+        let ms = measured.gpu_ms.map_or("-".to_string(), |ms| format!("{ms:.2}"));
+        let budget = budgets.scenes.get(&name).copied().unwrap_or_default();
+        let problems = runity_cli::perf::over(&budget, &measured, real_gpu && !counts);
+        println!(
+            "{name:<18} {ms:>9} {:>7} {:>11}{}",
+            measured.draws,
+            measured.triangles,
+            if problems.is_empty() { String::new() } else { format!("  over: {}", problems.join("; ")) }
+        );
+        over += usize::from(!problems.is_empty());
+        if write {
+            budgets.scenes.insert(name, runity_cli::perf::with_room(&measured));
+        }
+    }
+    if write {
+        let text = ron::ser::to_string_pretty(&budgets, ron::ser::PrettyConfig::default())?;
+        std::fs::write(project.root().join(runity_cli::perf::BUDGETS), text + "\n")?;
+        println!("wrote {}", runity_cli::perf::BUDGETS);
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!("{}: {over} over budget", project.name());
+    Ok(if over > 0 { ExitCode::FAILURE } else { ExitCode::SUCCESS })
 }
 
 fn merge(rest: &[String]) -> Result<ExitCode> {

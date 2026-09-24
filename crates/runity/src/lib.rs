@@ -81,6 +81,7 @@ pub use runity_render::exposure;
 pub use runity_render::floaters;
 pub use runity_render::foliage;
 pub use runity_render::footprints;
+#[cfg(feature = "physics")]
 pub mod gizmo;
 pub use runity_gpu::gpu;
 #[cfg(feature = "animation")]
@@ -90,10 +91,16 @@ pub use runity_core::input;
 #[cfg(feature = "net")]
 pub use runity_net::lan;
 pub use runity_core::layers;
+pub use runity_render::graph;
 pub use runity_render::lens;
+pub use runity_render::vsm;
+pub use runity_render::ddgi;
+pub use runity_render::upscale;
+pub use runity_render::occlusion;
+pub use runity_render::particles_gpu;
+pub use runity_render::lod;
 pub use runity_core::library;
 pub use runity_core::links;
-pub use runity_render::lod;
 pub use runity_render::lights;
 pub mod live;
 pub use runity_render::material;
@@ -127,9 +134,7 @@ pub mod motion {
 pub use runity_navigation::navigation;
 #[cfg(feature = "net")]
 pub use runity_net::net;
-pub use runity_render::occlusion;
 pub use runity_render::particles;
-pub use runity_render::particles_gpu;
 pub use runity_render::passes;
 pub use runity_core::parts;
 #[cfg(feature = "net")]
@@ -318,9 +323,12 @@ pub mod modules {
         }
     }
 }
+pub use runity_render::quality;
 pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;
+pub mod shot;
+pub mod streaming;
 #[cfg(feature = "net")]
 pub use runity_net::relay;
 pub use runity_render::render;
@@ -420,6 +428,7 @@ pub mod scene {
         kinds.extend(crate::body::part_kinds());
         kinds.extend(runity_geometry::line::part_kinds());
         kinds.extend(runity_core::wind::part_kinds());
+        kinds.extend(runity_core::stream::part_kinds());
         kinds.extend(crate::look::part_kinds());
         #[cfg(feature = "animation")]
         kinds.extend(crate::motion::part_kinds());
@@ -489,7 +498,6 @@ pub use runity_render::terrain;
 pub use runity_core::time;
 pub use runity_core::timers;
 pub use runity_render::tour;
-pub use runity_render::upscale;
 pub use runity_core::tuned;
 pub use runity_overlay::ui;
 pub use runity_overlay::ui_render;

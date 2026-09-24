@@ -4687,3 +4687,138 @@ fn a_material_link_gets_its_id_and_a_builtin_stays_a_name() {
         "still clay-coloured"
     );
 }
+
+#[test]
+fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
+    let Some((mut session, _)) = open("background") else {
+        return;
+    };
+    // Whatever the new project's starter assets needed, done first.
+    session.reload_assets();
+    let project = session.project().unwrap().clone();
+    std::fs::write(
+        project.materials().join("slate.rmat"),
+        "(color: \"#445566\")\n",
+    )
+    .unwrap();
+
+    // The first poll starts the update and returns at once.
+    assert_eq!(session.poll_assets(), None, "started, not waited for");
+    let started = std::time::Instant::now();
+    let done = loop {
+        if let Some(n) = session.poll_assets() {
+            break n;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(done, 1, "the new material");
+    assert!(!session.importing());
+    assert!(session.palette().iter().any(|(name, _)| name == "slate"));
+}
+
+/// A saved `.blend` and an object being moved, sent by Blender itself over
+/// the link: the save is imported without starting another Blender, and
+/// the move shows before any save.
+#[test]
+fn an_open_blender_sends_its_saves_and_its_drags_over_the_link() {
+    let Some(blender) = runity_import::blend::blender() else {
+        eprintln!("no Blender on this machine: skipped");
+        return;
+    };
+    let Some((mut session, path)) = open_with(
+        "blender-link",
+        r#"(entities: [(name: "yard", prefab: "yard")])"#,
+    ) else {
+        return;
+    };
+    session.poll_blender();
+    let port = session
+        .blender_port()
+        .expect("listening once a project is open");
+    let root = path.parent().unwrap().parent().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("library/blender-link"))
+            .unwrap()
+            .trim(),
+        port.to_string(),
+        "where the plugin looks"
+    );
+
+    let plugin =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/blender/runity");
+    let source = root.join("assets/yard.blend");
+    let script = format!(
+        r#"
+import sys, bpy
+sys.path.insert(0, {plugin:?})
+import export
+for o in list(bpy.data.objects):
+    bpy.data.objects.remove(o)
+bpy.ops.mesh.primitive_ico_sphere_add()
+rock = bpy.context.object
+rock.name = "rock"
+export.stamp()
+bpy.ops.wm.save_as_mainfile(filepath={out:?})
+assert export.send_link(export.SCENE, export.stream()), "nobody listening"
+rock.location = (7.0, 0.0, 0.0)
+bpy.context.view_layer.update()
+assert export.send_link(export.MOVES, export.moves([rock]))
+"#,
+        plugin = plugin.to_string_lossy(),
+        out = source.to_string_lossy(),
+    );
+    let ran = std::process::Command::new(&blender)
+        .args([
+            "--background",
+            "--factory-startup",
+            "--python-exit-code",
+            "1",
+            "--python-expr",
+        ])
+        .arg(&script)
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+
+    let rock_at = |session: &Session| {
+        session
+            .expanded()
+            .flatten()
+            .into_iter()
+            .find(|(d, _)| d.name == "rock")
+            .map(|(_, m)| m.w_axis.truncate())
+    };
+    let started = std::time::Instant::now();
+    loop {
+        session.poll_blender();
+        if rock_at(&session).is_some_and(|p| (p - Vec3::new(7.0, 0.0, 0.0)).length() < 1e-3) {
+            break;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the rock never arrived where Blender moved it: {:?}; console: {:?}",
+            rock_at(&session),
+            session
+                .console()
+                .iter()
+                .map(|l| l.text.clone())
+                .collect::<Vec<_>>()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(session
+        .console()
+        .iter()
+        .any(|l| l.text.contains("saved in Blender, imported")));
+    // The save's hash is in the sidecar: the poller has nothing to redo.
+    assert_eq!(session.reload_assets(), 0, "no second import");
+}

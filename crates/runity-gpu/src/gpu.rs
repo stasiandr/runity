@@ -41,6 +41,12 @@ pub struct Gpu {
     /// through wgpu 30, the terrain by mesh shaders costs a frame more
     /// than by the vertex shader.
     pub mesh_shaders: bool,
+    /// Whether materials' maps are one array the shader indexes by each
+    /// instance's handles (bindless), so draws are not split by their
+    /// textures: where the adapter has texture binding arrays indexed per
+    /// fragment, unless `RUNITY_NO_BINDLESS` is set. A test may turn it off
+    /// before making a renderer.
+    pub bindless: bool,
 }
 
 /// Set to leave hardware ray tracing off even where the adapter has it.
@@ -104,25 +110,34 @@ impl Gpu {
             && std::env::var_os(NO_RAY_TRACING_VAR).is_none();
         // Mesh shaders likewise: an experiment on top, the terrain's fine
         // grid drawn by task and mesh stages where there are any.
+        let bindless_features = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+            | wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+        let bindless = adapter.features().contains(bindless_features)
+            && adapter.limits().max_binding_array_elements_per_shader_stage >= 4096
+            && adapter.limits().max_vertex_attributes >= 18
+            && std::env::var_os("RUNITY_NO_BINDLESS").is_none();
         let mesh_shaders = adapter
             .features()
             .contains(wgpu::Features::EXPERIMENTAL_MESH_SHADER)
             && std::env::var_os(MESH_SHADERS_VAR).is_some();
         let mut required_limits =
             wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits());
-        // An instance's numbers take seventeen vertex attributes: its
-        // light under the surface is the seventeenth.
+        // An instance's numbers take eighteen vertex attributes: its light
+        // under the surface is the seventeenth, its maps' handles the
+        // eighteenth.
         required_limits.max_vertex_attributes = required_limits
             .max_vertex_attributes
-            .max(17)
+            .max(18)
             .min(adapter.limits().max_vertex_attributes);
-        // Eight storage buffers a stage where there are: the occlusion
+        // Sixteen storage buffers a stage where there are: the occlusion
         // culling reads five, the lit shader one more when it traces (what
         // each thing is made of, for reflections' hits), and a cluster's
-        // vertex shader pulls four.
+        // vertex shader pulls four, ReSTIR's passes read five more beside
+        // the frame's own.
         required_limits.max_storage_buffers_per_shader_stage = required_limits
             .max_storage_buffers_per_shader_stage
-            .max(8)
+            .max(16)
             .min(adapter.limits().max_storage_buffers_per_shader_stage);
         // Seventeen textures in the lit shader's fragment stage: the scene's
         // distance field is the seventeenth. Metal, Vulkan and D3D12 all
@@ -135,7 +150,7 @@ impl Gpu {
             required_limits = required_limits.using_acceleration_structure_values(adapter.limits());
             required_limits.max_storage_buffers_per_shader_stage = required_limits
                 .max_storage_buffers_per_shader_stage
-                .max(8)
+                .max(16)
                 .min(adapter.limits().max_storage_buffers_per_shader_stage);
         }
         if mesh_shaders {
@@ -156,6 +171,10 @@ impl Gpu {
         }
         if mesh_shaders {
             required_features |= wgpu::Features::EXPERIMENTAL_MESH_SHADER;
+        }
+        if bindless {
+            required_features |= bindless_features;
+            required_limits.max_binding_array_elements_per_shader_stage = 4096;
         }
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -187,6 +206,7 @@ impl Gpu {
             queue: Arc::new(queue),
             ray_tracing,
             mesh_shaders,
+            bindless,
         })
     }
 
@@ -200,6 +220,12 @@ impl Gpu {
     pub fn describe(&self) -> String {
         let info = self.adapter.get_info();
         format!("{} ({:?}, {:?})", info.name, info.device_type, info.backend)
+    }
+
+    /// Whether it draws in software (a CI runner's lavapipe): its times say
+    /// nothing about a GPU's.
+    pub fn software(&self) -> bool {
+        self.adapter.get_info().device_type == wgpu::DeviceType::Cpu
     }
 }
 

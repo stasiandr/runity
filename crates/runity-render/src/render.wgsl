@@ -114,6 +114,17 @@ struct Frame {
     glass: vec4<f32>,
     // a stroke of lightning's channel: points, brightness in w
     bolt: array<vec4<f32>, 32>,
+    // The irradiance volume (ddgi.rs): its first probe and spacing; its
+    // probes along each axis and 1 when on; the biases along the normal
+    // and toward the eye, and the farthest a distance counts.
+    ddgi: array<vec4<f32>, 4>,
+    // Virtual shadow maps (vsm.rs): the light's across and the pool's
+    // pages across; its up and where depth starts; along it and how deep;
+    // on, levels, a pixel's metres a metre (negative: anywhere), how far;
+    // then each level's window, two levels a vec4.
+    vsm: array<vec4<f32>, 8>,
+    // ReSTIR (restir.rs): on, the reservoirs' size, the frame's number.
+    restir: vec4<f32>,
     // the scene's distance field (distance.rs): its box and 1 when there
     // is one; its far corner and range in metres
     distance: array<vec4<f32>, 2>,
@@ -532,6 +543,7 @@ struct Caster {
 };
 @group(0) @binding(3) var<uniform> caster: Caster;
 
+// maps: begin
 // The surface's own image. Every draw binds one; an untextured material
 // binds a single white pixel, so the shader never needs a branch and an
 // untextured surface is its colour times one.
@@ -543,6 +555,22 @@ struct Caster {
 @group(1) @binding(2) var normal_map: texture_2d<f32>;
 @group(1) @binding(3) var mask_map: texture_2d<f32>;
 @group(1) @binding(4) var emission_map: texture_2d<f32>;
+
+// The maps read, by the draw's bound ones; `maps` (the instance's
+// handles) is for the bindless shader in their place (bindless.rs).
+fn surface_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(surface_texture, surface_sampler, uv);
+}
+fn normal_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(normal_map, surface_sampler, uv);
+}
+fn mask_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(mask_map, surface_sampler, uv);
+}
+fn emission_at(maps: vec4<u32>, uv: vec2<f32>) -> vec4<f32> {
+    return textureSample(emission_map, surface_sampler, uv);
+}
+// maps: end
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -567,6 +595,8 @@ struct VertexInput {
     @location(15) params_1: vec4<f32>,
     // light under the surface: its colour, and how far it goes
     @location(16) subsurface: vec4<f32>,
+    // the maps' handles: base, normal, mask, emission (bindless.rs)
+    @location(17) maps: vec4<u32>,
 };
 
 struct VertexOutput {
@@ -583,6 +613,7 @@ struct VertexOutput {
     @location(8) params_0: vec4<f32>,
     @location(9) params_1: vec4<f32>,
     @location(10) subsurface: vec4<f32>,
+    @location(11) @interpolate(flat) maps: vec4<u32>,
 };
 
 // One pose's skinning matrices. Bound per draw with a dynamic offset, so
@@ -641,6 +672,7 @@ fn vs_skinned(in: VertexInput, skin: SkinInput) -> VertexOutput {
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
+    out.maps = in.maps;
     return out;
 }
 
@@ -743,6 +775,7 @@ struct ClipOut {
     @location(0) uv: vec2<f32>,
     // alpha, threshold
     @location(1) alpha: vec2<f32>,
+    @location(2) @interpolate(flat) maps: vec4<u32>,
 };
 
 /// The same, for what is cut out by its alpha: a leaf's shadow is a leaf.
@@ -754,12 +787,13 @@ fn vs_shadow_clip(in: VertexInput) -> ClipOut {
     out.position = caster.view_projection * vec4<f32>(world, 1.0);
     out.uv = in.uv * in.uv_transform.xy + in.uv_transform.zw;
     out.alpha = in.surface.zw;
+    out.maps = in.maps;
     return out;
 }
 
 @fragment
 fn fs_shadow_clip(in: ClipOut) {
-    if in.alpha.x * textureSample(surface_texture, surface_sampler, in.uv).a < in.alpha.y {
+    if in.alpha.x * surface_at(in.maps, in.uv).a < in.alpha.y {
         discard;
     }
 }
@@ -870,7 +904,98 @@ fn traced_occlusion(position: vec3<f32>, normal: vec3<f32>, pixel: vec2<f32>) ->
 /// From the first cascade whose sphere holds the point — the finest one
 /// that covers it — and fading out over the last tenth of the last one, so
 /// the shadow distance is not a line on the ground.
+// ReSTIR's reservoirs, one a pixel: the lamp chosen, as bits; the weights'
+// sum; how many it stands for; its weight, its shadow in it.
+@group(0) @binding(27) var<storage, read> restir_shade: array<vec4<f32>>;
+
+// Virtual shadow maps (vsm.rs): each level's window of pages, the pool's
+// tile a drawn page is in, plus one; 0 for none.
+@group(0) @binding(26) var<storage, read> vsm_pages: array<u32>;
+
+const VSM_PAGE: f32 = 128.0;
+const VSM_FINEST: f32 = 0.015;
+const VSM_WINDOW: i32 = 32;
+/// The pool is the layer of the shadow map past the cascades.
+const VSM_LAYER: i32 = 4;
+
+struct VsmTexel {
+    uv: vec2<f32>,
+    // the tile's texels, less half a texel all round: where taps may go
+    low: vec2<f32>,
+    high: vec2<f32>,
+    depth: f32,
+    texel: f32,
+    found: bool,
+};
+
+/// Where `p` (turned `normal`) is in the virtual shadow map: the finest
+/// drawn page for its distance, or a coarser one while that is not drawn.
+fn vsm_find(p: vec3<f32>, normal: vec3<f32>, push: f32) -> VsmTexel {
+    var out: VsmTexel;
+    out.found = false;
+    let distance_to = distance(p, frame.camera_position.xyz);
+    if distance_to > frame.vsm[3].w {
+        return out;
+    }
+    let footprint = frame.vsm[3].z;
+    let pixel = select(distance_to * footprint, -footprint, footprint < 0.0);
+    let levels = u32(frame.vsm[3].y);
+    let pool = frame.vsm[0].w;
+    var level = u32(clamp(ceil(log2(max(pixel, 1e-9) / VSM_FINEST)), 0.0, f32(levels) - 1.0));
+    for (; level < levels; level = level + 1u) {
+        let texel = VSM_FINEST * f32(1u << level);
+        let size = texel * VSM_PAGE;
+        let q = p + normal * texel * push;
+        let u = dot(q, frame.vsm[0].xyz) / size;
+        let v = dot(q, frame.vsm[1].xyz) / size;
+        let page = vec2<i32>(i32(floor(u)), i32(floor(v)));
+        let windows = frame.vsm[4u + level / 2u];
+        let window = select(windows.xy, windows.zw, (level & 1u) == 1u);
+        let slot = page - vec2<i32>(window);
+        if any(slot < vec2<i32>(0)) || any(slot >= vec2<i32>(VSM_WINDOW)) {
+            continue;
+        }
+        let entry = vsm_pages[level * u32(VSM_WINDOW * VSM_WINDOW) + u32(slot.y * VSM_WINDOW + slot.x)];
+        if entry == 0u {
+            continue;
+        }
+        let tile = vec2<f32>(f32((entry - 1u) % u32(pool)), f32((entry - 1u) / u32(pool)));
+        let local = vec2<f32>(u - f32(page.x), f32(page.y + 1) - v);
+        let side = pool * VSM_PAGE;
+        out.uv = (tile + local) / pool;
+        out.low = (tile * VSM_PAGE + 0.5) / side;
+        out.high = ((tile + 1.0) * VSM_PAGE - 0.5) / side;
+        out.depth = (dot(q, frame.vsm[2].xyz) - frame.vsm[1].w) / frame.vsm[2].w;
+        out.texel = 1.0 / side;
+        out.found = true;
+        return out;
+    }
+    return out;
+}
+
+/// The sun through the virtual shadow map: nine taps inside the page.
+fn vsm_sunlight(p: vec3<f32>, normal: vec3<f32>) -> f32 {
+    let at = vsm_find(p, normal, 1.5);
+    if !at.found || at.depth > 1.0 || at.depth < 0.0 {
+        return 1.0;
+    }
+    // A centimetre, in the pages' depth.
+    let reference = at.depth - 0.01 / frame.vsm[2].w;
+    var sum = 0.0;
+    for (var y = -1; y <= 1; y = y + 1) {
+        for (var x = -1; x <= 1; x = x + 1) {
+            let tap = clamp(at.uv + vec2<f32>(f32(x), f32(y)) * at.texel, at.low, at.high);
+            sum = sum + textureSampleCompareLevel(shadow_map, shadow_sampler, tap, VSM_LAYER, reference);
+        }
+    }
+    let fade = clamp((frame.vsm[3].w - distance(p, frame.camera_position.xyz)) / (frame.vsm[3].w * 0.1), 0.0, 1.0);
+    return mix(1.0, sum / 9.0, fade);
+}
+
 fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if frame.vsm[3].x > 0.5 {
+        return vsm_sunlight(world_position, normal);
+    }
     let count = u32(frame.shadow_params.w + 0.5);
     if count == 0u {
         return 1.0;
@@ -928,6 +1053,15 @@ fn sunlight(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
 /// map, how far past the first surface toward the sun the point lies — the
 /// thickness of what it is under. −1 when there is no map there.
 fn sun_thickness(world_position: vec3<f32>, normal: vec3<f32>) -> f32 {
+    if frame.vsm[3].x > 0.5 {
+        let at = vsm_find(world_position, normal, -1.5);
+        if !at.found || at.depth > 1.0 {
+            return -1.0;
+        }
+        let size = vec2<f32>(textureDimensions(shadow_map));
+        let first = textureLoad(shadow_map, vec2<i32>(at.uv * size), VSM_LAYER, 0);
+        return max(at.depth - first, 0.0) * frame.vsm[2].w;
+    }
     let count = u32(frame.shadow_params.w + 0.5);
     if count == 0u {
         return -1.0;
@@ -1512,6 +1646,7 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
     // only the rest.
     out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
     out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+    out.maps = vec4<u32>(0u);
     return out;
 }
 
@@ -1527,11 +1662,13 @@ fn terrain_vertex(g: vec2<f32>, level: f32, look: TerrainLook) -> VertexOutput {
 /// against the sky. Its normal is the slope of what it was raised to.
 @vertex
 fn vs_terrain(in: VertexInput) -> VertexOutput {
-    return terrain_vertex(
+    var out = terrain_vertex(
         in.position.xz,
         in.position.y,
         TerrainLook(in.color_and_shading, in.surface, in.emission, in.uv_transform, in.detail, in.params_0, in.params_1),
     );
+    out.maps = in.maps;
+    return out;
 }
 
 @vertex
@@ -1565,7 +1702,7 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
         return none;
     }
     let v = cluster_indices[d.first + corner] * 8u;
-    let s = d.instance * 12u;
+    let s = d.instance * 13u;
     var in: VertexInput;
     in.position = vec3<f32>(cluster_vertices[v], cluster_vertices[v + 1u], cluster_vertices[v + 2u]);
     in.normal = vec3<f32>(cluster_vertices[v + 3u], cluster_vertices[v + 4u], cluster_vertices[v + 5u]);
@@ -1582,6 +1719,7 @@ fn vs_cluster(@builtin(vertex_index) corner: u32, @builtin(instance_index) kept:
     in.params_0 = cluster_instances[s + 9u];
     in.params_1 = cluster_instances[s + 10u];
     in.subsurface = cluster_instances[s + 11u];
+    in.maps = bitcast<vec4<u32>>(cluster_instances[s + 12u]);
     return standard_vertex(in);
 }
 
@@ -1613,6 +1751,7 @@ fn standard_vertex(in: VertexInput) -> VertexOutput {
     out.params_0 = in.params_0;
     out.params_1 = in.params_1;
     out.subsurface = in.subsurface;
+    out.maps = in.maps;
     return out;
 }
 
@@ -1760,6 +1899,199 @@ fn around(position: vec3<f32>, normal: vec3<f32>, hemisphere: vec3<f32>) -> vec3
     return sum + hemisphere * (1.0 - covered);
 }
 
+// DDGI (ddgi.rs): each probe's two octahedral pictures of 8×8 texels,
+// its light and then its distances (mean, mean of squares, 1 when the
+// probe is out in the open).
+@group(0) @binding(25) var<storage, read> ddgi_probes: array<vec4<f32>>;
+
+const DDGI_TEXELS: u32 = 8u;
+const DDGI_PER_PROBE: u32 = 128u;
+
+/// A direction to a point of the unit square, by the octahedron.
+fn oct_encode(d: vec3<f32>) -> vec2<f32> {
+    var p = d.xz / (abs(d.x) + abs(d.y) + abs(d.z));
+    if d.y < 0.0 {
+        p = (1.0 - abs(p.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    }
+    return p * 0.5 + 0.5;
+}
+
+fn oct_decode(uv: vec2<f32>) -> vec3<f32> {
+    let e = uv * 2.0 - 1.0;
+    var d = vec3<f32>(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    if d.y < 0.0 {
+        let xz = (1.0 - abs(d.zx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), d.xz >= vec2<f32>(0.0));
+        d = vec3<f32>(xz.x, d.y, xz.y);
+    }
+    return normalize(d);
+}
+
+/// A probe's picture at `uv`, filtered between its four nearest texels;
+/// `offset` 0 for its light, 64 for its distances.
+fn ddgi_texel(probe: u32, uv: vec2<f32>, offset: u32) -> vec4<f32> {
+    let t = clamp(uv * f32(DDGI_TEXELS) - 0.5, vec2<f32>(0.0), vec2<f32>(f32(DDGI_TEXELS) - 1.0));
+    let a = vec2<u32>(floor(t));
+    let b = min(a + 1u, vec2<u32>(DDGI_TEXELS - 1u));
+    let f = t - floor(t);
+    let base = probe * DDGI_PER_PROBE + offset;
+    let t00 = ddgi_probes[base + a.y * DDGI_TEXELS + a.x];
+    let t10 = ddgi_probes[base + a.y * DDGI_TEXELS + b.x];
+    let t01 = ddgi_probes[base + b.y * DDGI_TEXELS + a.x];
+    let t11 = ddgi_probes[base + b.y * DDGI_TEXELS + b.x];
+    return mix(mix(t00, t10, f.x), mix(t01, t11, f.x), f.y);
+}
+
+/// The diffuse light the irradiance volume gives a surface at `p`
+/// turned `n`, seen from `to_eye`: rgb, and in alpha how much it covers
+/// there (1 inside the grid and half a cell past it, 0 a cell past).
+fn ddgi_irradiance(p: vec3<f32>, n: vec3<f32>, to_eye: vec3<f32>) -> vec4<f32> {
+    if frame.ddgi[1].w < 0.5 {
+        return vec4<f32>(0.0);
+    }
+    let origin = frame.ddgi[0].xyz;
+    let spacing = frame.ddgi[0].w;
+    let counts = vec3<i32>(frame.ddgi[1].xyz);
+    let biased = p + n * frame.ddgi[2].x + to_eye * frame.ddgi[2].y;
+    let g = (biased - origin) / spacing;
+    let far = vec3<f32>(counts - 1);
+    let inside = min(g, far - g);
+    // Whole to half a cell past the outer probes — a room's walls, just
+    // outside them, are theirs — and gone a cell past.
+    let covered = clamp((min(inside.x, min(inside.y, inside.z)) + 1.0) * 2.0, 0.0, 1.0);
+    if covered <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let base = clamp(vec3<i32>(floor(g)), vec3<i32>(0), counts - 2);
+    let alpha = clamp(g - vec3<f32>(base), vec3<f32>(0.0), vec3<f32>(1.0));
+    let normal_uv = oct_encode(n);
+    var sum = vec3<f32>(0.0);
+    var weights = 0.0;
+    for (var i = 0u; i < 8u; i = i + 1u) {
+        let offset = vec3<i32>(i32(i & 1u), i32((i >> 1u) & 1u), i32((i >> 2u) & 1u));
+        let at = base + offset;
+        let probe = u32(at.x + counts.x * (at.y + counts.y * at.z));
+        let position = origin + vec3<f32>(at) * spacing;
+        let near = mix(1.0 - alpha, alpha, vec3<f32>(offset));
+        let trilinear = near.x * near.y * near.z;
+        // On the side the surface faces: a probe behind it counts less.
+        let toward = normalize(position - p);
+        let facing = (dot(toward, n) + 1.0) * 0.5;
+        var weight = facing * facing + 0.2;
+        // Can the probe see it: its distances that way against how far.
+        let away = biased - position;
+        let r = length(away);
+        let moments = ddgi_texel(probe, oct_encode(away / max(r, 1e-4)), 64u);
+        if moments.z < 0.5 {
+            continue;
+        }
+        if r > moments.x {
+            let variance = abs(moments.x * moments.x - moments.y);
+            let past = r - moments.x;
+            let chebyshev = variance / (variance + past * past);
+            weight *= max(chebyshev * chebyshev * chebyshev, 0.0);
+        }
+        // Crushed where it is faint, so a sliver of a hidden probe's light
+        // does not come through.
+        weight = max(weight, 1e-6);
+        if weight < 0.2 {
+            weight *= weight * weight / 0.04;
+        }
+        weight *= trilinear;
+        sum += ddgi_texel(probe, normal_uv, 0u).rgb * weight;
+        weights += weight;
+    }
+    // Inside the box, no probe that can see here is dark, not the sky:
+    // the sky is what the probes found.
+    if weights < 1e-5 {
+        return vec4<f32>(0.0, 0.0, 0.0, covered);
+    }
+    return vec4<f32>(sum / weights, covered);
+}
+
+// The irradiance volume's update (ddgi.rs): this frame's rays, and the
+// probes' pictures they are blended into.
+struct DdgiStep {
+    rotation: mat4x4<f32>,
+    // rays a probe, how much of the old is kept, the farthest a distance
+    // counts, probes
+    rays: vec4<f32>,
+};
+
+@group(3) @binding(7) var<uniform> ddgi_step: DdgiStep;
+@group(3) @binding(8) var<storage, read_write> ddgi_rays: array<vec4<f32>>;
+@group(3) @binding(9) var<storage, read_write> ddgi_out: array<vec4<f32>>;
+
+/// The `i`-th of a probe's rays this frame: spread evenly over the sphere
+/// (spherical Fibonacci), turned the frame's way.
+fn ddgi_direction(i: u32) -> vec3<f32> {
+    let count = ddgi_step.rays.x;
+    let k = f32(i) + 0.5;
+    let y = 1.0 - 2.0 * k / count;
+    let r = sqrt(max(1.0 - y * y, 0.0));
+    let a = k * 2.3999632;
+    return normalize((ddgi_step.rotation * vec4<f32>(cos(a) * r, y, sin(a) * r, 0.0)).xyz);
+}
+
+fn ddgi_position(probe: u32) -> vec3<f32> {
+    let counts = vec3<u32>(frame.ddgi[1].xyz);
+    let at = vec3<u32>(probe % counts.x, (probe / counts.x) % counts.y, probe / (counts.x * counts.y));
+    return frame.ddgi[0].xyz + vec3<f32>(at) * frame.ddgi[0].w;
+}
+
+var<workgroup> ddgi_backs: atomic<u32>;
+
+/// One probe a group, one texel of both its pictures a thread: every ray
+/// of the frame weighed by how near it runs to the texel's direction.
+@compute @workgroup_size(8, 8)
+fn cs_ddgi_update(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation_id) local: vec3<u32>) {
+    let probe = group.x;
+    let rays = u32(ddgi_step.rays.x);
+    let keep = ddgi_step.rays.y;
+    let farthest = ddgi_step.rays.z;
+    let texel = local.y * DDGI_TEXELS + local.x;
+    if texel == 0u {
+        atomicStore(&ddgi_backs, 0u);
+    }
+    workgroupBarrier();
+    let d = oct_decode((vec2<f32>(local.xy) + 0.5) / f32(DDGI_TEXELS));
+    var light = vec3<f32>(0.0);
+    var light_weight = 0.0;
+    var mean = 0.0;
+    var squares = 0.0;
+    var distance_weight = 0.0;
+    for (var i = 0u; i < rays; i = i + 1u) {
+        let ray = ddgi_rays[probe * rays + i];
+        let direction = ddgi_direction(i);
+        let cosine = dot(d, direction);
+        var t = ray.w;
+        if t < 0.0 {
+            // The back of a face: inside something. Nothing lit, and near.
+            if texel == 0u {
+                atomicAdd(&ddgi_backs, 1u);
+            }
+            t = -t * 0.2;
+        } else {
+            let w = max(cosine, 0.0);
+            light += ray.rgb * w;
+            light_weight += w;
+        }
+        let near = pow(max(cosine, 0.0), 50.0);
+        let clamped = min(t, farthest);
+        mean += clamped * near;
+        squares += clamped * clamped * near;
+        distance_weight += near;
+    }
+    workgroupBarrier();
+    let open = select(0.0, 1.0, f32(atomicLoad(&ddgi_backs)) < f32(rays) * 0.25);
+    let at = probe * DDGI_PER_PROBE + texel;
+    let new_light = light / max(light_weight, 1e-4);
+    let new_moments = vec2<f32>(mean, squares) / max(distance_weight, 1e-4);
+    let old_light = ddgi_out[at];
+    let old_moments = ddgi_out[at + 64u];
+    ddgi_out[at] = vec4<f32>(mix(new_light, old_light.rgb, keep), 1.0);
+    ddgi_out[at + 64u] = vec4<f32>(mix(new_moments, old_moments.xy, keep), open, 0.0);
+}
+
 /// What the probes and the sky give a reflection, without the screen.
 fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughness: f32) -> vec3<f32> {
     let sky = environment(direction, perceptual_roughness);
@@ -1793,8 +2125,14 @@ fn probes_and_sky(position: vec3<f32>, direction: vec3<f32>, perceptual_roughnes
             break;
         }
     }
-    return sum + sky * (1.0 - covered);
+    return sum + sky * (1.0 - covered) * sky_share;
 }
+
+/// How much of the open sky a reflection here may show: less inside an
+/// irradiance volume, by how much of the sky's light its probes found
+/// gets in — a closed room's polish does not mirror a sky it cannot see.
+/// Set by the lit shader for its pixel; 1 everywhere else.
+var<private> sky_share: f32 = 1.0;
 
 /// A tangent-space normal from the map, turned into the world. The
 /// tangent frame is worked out from how position and UV change across the
@@ -1866,10 +2204,10 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             base_uv.x = 1.0 - base_uv.x;
         }
     }
-    let sampled = textureSample(surface_texture, surface_sampler, base_uv);
-    let normal_texel = textureSample(normal_map, surface_sampler, in.uv).xyz;
-    let mask = textureSample(mask_map, surface_sampler, in.uv);
-    let emitted = textureSample(emission_map, surface_sampler, in.uv).rgb;
+    let sampled = surface_at(in.maps, base_uv);
+    let normal_texel = normal_at(in.maps, in.uv).xyz;
+    let mask = mask_at(in.maps, in.uv);
+    let emitted = emission_at(in.maps, in.uv).rgb;
     // A face seen from behind — a two-sided leaf — is lit from its own side.
     let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
     var normal = mapped_normal(geometric, in.world_position, in.uv, normal_texel, in.detail.x);
@@ -2061,7 +2399,27 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     // Point and spot lights, those listed in this fragment's cell: facing
     // it, and fading to nothing at its range — squared, so the edge of the
     // pool is soft rather than a ring.
-    for (var n = 0u; n < cell.y; n = n + 1u) {
+    // By ReSTIR, where asked: the one lamp this pixel's reservoir chose,
+    // shadowed already, times its weight — all of them on average.
+    let restir_on = frame.restir.x > 0.5 && (flags & 4u) != 0u;
+    if restir_on {
+        let pixel = vec2<u32>(in.clip_position.xy);
+        let reservoir = restir_shade[pixel.y * u32(frame.restir.y) + pixel.x];
+        if reservoir.w > 0.0 {
+            let light = lights[bitcast<u32>(reservoir.x)];
+            let to_light = light.position_range.xyz - in.world_position;
+            let distance_to = length(to_light);
+            let toward = to_light / max(distance_to, 1e-4);
+            let reach = clamp(1.0 - distance_to / light.position_range.w, 0.0, 1.0);
+            let facing = max(dot(normal, toward), 0.0);
+            let along = dot(-toward, light.spot.xyz);
+            let edge = light.spot.w + (1.0 - light.spot.w) * 0.1;
+            let cone = select(smoothstep(light.spot.w, edge, along), 1.0, light.spot.w < -1.5);
+            color = color + direct(b, normal, toward, to_eye, highlights)
+                * light.color_shadow.rgb * facing * reach * reach * cone * direct_ao * reservoir.w;
+        }
+    }
+    for (var n = 0u; n < select(cell.y, 0u, restir_on); n = n + 1u) {
         let light = lights[light_indices[cell.x + n]];
         let at = light.position_range;
         let to_light = at.xyz - in.world_position;
@@ -2114,7 +2472,13 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let here = sky_toward(normal);
         sky_light = sky_light * here / max(up, vec3<f32>(1e-4));
     }
-    let ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    var ambient = around(in.world_position, normal, mix(frame.ground_color.rgb, sky_light, normal.y * 0.5 + 0.5));
+    // Inside an irradiance volume its probes give the diffuse light.
+    let volume = ddgi_irradiance(in.world_position, normal, to_eye);
+    let luminance = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let reaches = clamp(dot(volume.rgb, luminance) / max(dot(ambient, luminance), 1e-4), 0.0, 1.0);
+    sky_share = mix(1.0, reaches, volume.a);
+    ambient = mix(ambient, volume.rgb, volume.a);
     color = color + b.diffuse * (ambient * ao + bounce) * baked;
     if (flags & 2u) != 0u {
         let n_v = clamp(dot(normal, to_eye), 0.0, 1.0);
@@ -2167,7 +2531,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
 /// what is solid, cut out where the surface is.
 @fragment
 fn fs_normals(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
-    let alpha = in.surface.z * textureSample(surface_texture, surface_sampler, in.uv).a;
+    let alpha = in.surface.z * surface_at(in.maps, in.uv).a;
     if in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }

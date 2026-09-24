@@ -3195,6 +3195,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-gen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "gltf",
+ "image",
+ "ron",
+ "runity",
+ "runity-editor",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "runity-geometry"
 version = "0.1.0"
 dependencies = [
@@ -3229,6 +3245,7 @@ dependencies = [
  "ron",
  "runity",
  "serde",
+ "serde_json",
  "symphonia",
  "tobj",
  "yaml-rust2",
@@ -3254,6 +3271,7 @@ dependencies = [
  "runity",
  "runity-cli",
  "runity-editor",
+ "runity-gen",
  "runity-import",
  "serde_json",
 ]

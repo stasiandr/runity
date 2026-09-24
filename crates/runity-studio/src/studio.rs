@@ -269,6 +269,8 @@ pub struct Studio {
     maximized: bool,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
+    /// A long background import has been announced.
+    import_said: bool,
     /// The foliage brush (docs/artist.md): on, what it paints, how big it
     /// is, and the stroke under way — when the last dab was and how many
     /// undo steps the stroke has made, to be one.
@@ -612,6 +614,7 @@ impl Studio {
             colliders_button: colliders,
             sculpt_button: sculpt,
             sculpt: false,
+            import_said: false,
             foliage: false,
             foliage_button: foliage,
             foliage_what: None,
@@ -982,6 +985,9 @@ impl Studio {
         let t3 = Instant::now();
 
         self.poll_disk();
+        // An open Blender: saves and objects being moved, every frame, so
+        // a drag there moves here while it happens.
+        self.session.poll_blender();
         self.bottom.update_git(&mut self.ui, &mut self.session);
         // Two of the Project's pictures a frame, until it has them all.
         for (name, image) in self.bottom.wanted_pictures(2) {
@@ -1866,12 +1872,24 @@ impl Studio {
             Ok(_) => {}
             Err(e) => self.session.say(Level::Error, e.to_string()),
         }
-        let n = self.session.reload_assets();
-        if n > 0 {
-            self.session.say(
-                Level::Info,
-                format!("{n} assets changed on disk and were reloaded"),
-            );
+        if let Some(n) = self.session.poll_assets() {
+            self.import_said = false;
+            if n > 0 {
+                self.session.say(
+                    Level::Info,
+                    format!("{n} assets changed on disk and were reloaded"),
+                );
+            }
+        } else if !self.import_said
+            && self
+                .session
+                .importing_for()
+                .is_some_and(|t| t.as_secs_f32() > 1.0)
+        {
+            // A .blend being read by Blender: the view keeps going.
+            self.import_said = true;
+            self.session
+                .say(Level::Info, "importing changed assets in the background…");
         }
     }
 
@@ -3030,6 +3048,19 @@ impl Studio {
                         format!("{name}: {parent} until something on it says otherwise"),
                     );
                     self.show_next = Some(Asset::Material(name));
+                }
+                Action::InstallBlenderPlugin => {
+                    let blender = runity_import::blend::blender()
+                        .ok_or("Blender was not found: install it, or set RUNITY_BLENDER to it")?;
+                    let folder =
+                        runity_import::blend::install(&blender).map_err(|e| format!("{e:#}"))?;
+                    s.say(
+                        Level::Info,
+                        format!(
+                            "the runity plugin is in Blender and on ({}); a Blender already open picks it up when restarted",
+                            folder.display()
+                        ),
+                    );
                 }
                 Action::ToggleFoliage => {
                     self.foliage = !self.foliage;

@@ -1,0 +1,4 @@
+ImportSettings(
+    source: "scenes/bazaar.ron",
+    id: Some("c630fd06096dd388d167fe370bb167d7"),
+)

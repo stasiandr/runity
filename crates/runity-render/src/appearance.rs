@@ -45,10 +45,14 @@ impl Dress for LookDress<'_> {
             "particles",
             "light",
             "reflection_probe",
+            "irradiance_volume",
             "post_volume",
             "camera",
             "render_texture",
             "footprints",
+            "cloth",
+            "rope",
+            "heap",
             "bends_grass",
         ]
     }
@@ -61,7 +65,7 @@ impl Dress for LookDress<'_> {
         changed: Changed,
         missing: &mut Vec<Unresolved>,
     ) {
-        if changed.any(&["model", "material", "decal", "terrain"]) {
+        if changed.any(&["model", "material", "decal", "terrain", "cloth", "rope", "heap"]) {
             dress_look(line, entity, world, &mut *self.resolve, self.palette, missing);
         }
         if changed.has("particles") {
@@ -72,6 +76,9 @@ impl Dress for LookDress<'_> {
         }
         if changed.has("reflection_probe") {
             put(world, entity, line.reflection_probe().map(ProbeBox));
+        }
+        if changed.has("irradiance_volume") {
+            put(world, entity, line.part::<crate::ddgi::IrradianceVolume>().map(crate::world::VolumeBox));
         }
         if changed.has("post_volume") {
             put(world, entity, line.post_volume().map(PostVolumeBox));
@@ -181,7 +188,8 @@ pub fn dress_look(
     // hang children on — not a model that could not be found.
     let model = desc.model();
     if model.is_empty() {
-        let _ = world.remove::<(Model, Surface)>(entity);
+        let _ = world.remove_one::<Model>(entity);
+        let _ = world.remove_one::<Surface>(entity);
         return;
     }
     match resolve(&model) {

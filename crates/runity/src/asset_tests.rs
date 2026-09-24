@@ -84,4 +84,29 @@ mod tests {
         assert_eq!(b.max, [0.0; 3]);
         assert_eq!(b.center(), [0.0; 3]);
     }
+
+    #[test]
+    fn a_lazy_library_reads_an_asset_when_asked_and_gives_it_back_when_told() {
+        use crate::mesh_asset::MeshLibrary;
+        let dir = std::env::temp_dir().join(format!("runity-lazy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mesh = cube();
+        let bytes = to_bytes(&mesh, crate::asset::MESH).unwrap();
+        std::fs::write(dir.join("cube.rasset"), &bytes).unwrap();
+        let (mut library, problems) = crate::Library::open_lazy(&dir).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        // Known by its header alone: nothing read yet.
+        assert_eq!(library.name(mesh.id), Some("cube"));
+        assert_eq!(library.resident_bytes(), 0);
+        // Asked for: read off disk, whole.
+        assert_eq!(library.mesh_by_name("cube").unwrap().vertices.len(), 8);
+        assert_eq!(library.resident_bytes(), bytes.len());
+        // Kept while wanted, given back when not, and read again after.
+        assert_eq!(library.release(|id| id == mesh.id), 0);
+        assert_eq!(library.release(|_| false), bytes.len());
+        assert_eq!(library.resident_bytes(), 0);
+        assert!(library.mesh(mesh.id).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

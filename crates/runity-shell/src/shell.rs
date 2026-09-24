@@ -83,13 +83,25 @@ pub struct Context<'a> {
     /// The drawable size in physical pixels, which is not the window's size
     /// on a HiDPI display.
     pub size: (u32, u32),
+    /// Whether the pointer is captured: hidden, pinned, reporting only how
+    /// far it moved ([`Context::capture_cursor`]).
+    pub cursor_captured: bool,
     quit: bool,
+    capture: Option<bool>,
 }
 
 impl Context<'_> {
     /// Ask the loop to stop after this frame.
     pub fn quit(&mut self) {
         self.quit = true;
+    }
+
+    /// Capture the pointer — hidden and held in the window, the mouse then
+    /// turning the view by how far it moves (`Input::mouse_motion`), as a
+    /// first-person game wants — or let it go, for a menu. Done after this
+    /// call to the game returns.
+    pub fn capture_cursor(&mut self, on: bool) {
+        self.capture = Some(on);
     }
 
     pub fn aspect(&self) -> f32 {
@@ -159,6 +171,7 @@ pub fn run<G: Game + 'static>(config: WindowConfig, game: G) -> anyhow::Result<(
                 None
             }
         },
+        captured: false,
     };
     event_loop.run_app(&mut shell)?;
     Ok(())
@@ -182,10 +195,12 @@ struct Shell<G: Game> {
     /// Gamepads. `None` where the platform has no way to ask — the game
     /// still runs, on keyboard and mouse.
     pads: Option<gilrs::Gilrs>,
+    /// The pointer is captured ([`Context::capture_cursor`]).
+    captured: bool,
 }
 
 impl<G: Game> Shell<G> {
-    fn context<'a>(state: &'a mut Running, time: &'a Time, input: &'a Input) -> Context<'a> {
+    fn context<'a>(state: &'a mut Running, time: &'a Time, input: &'a Input, captured: bool) -> Context<'a> {
         Context {
             time,
             input,
@@ -193,9 +208,25 @@ impl<G: Game> Shell<G> {
             size: (state.surface.width(), state.surface.height()),
             renderer: &mut state.renderer,
             overlay: &mut state.overlay,
+            cursor_captured: captured,
             quit: false,
+            capture: None,
         }
     }
+}
+
+/// Capture the window's pointer or let it go: locked where the platform
+/// can, else confined; hidden while captured.
+fn set_captured(window: &Window, on: bool) {
+    use winit::window::CursorGrabMode;
+    if on {
+        let _ = window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+    }
+    window.set_cursor_visible(!on);
 }
 
 impl<G: Game> Shell<G> {
@@ -208,11 +239,15 @@ impl<G: Game> Shell<G> {
         self.time.tick();
 
         let mut quit = false;
+        // The pointer the game asked for, captured or free, applied once the
+        // frame is done.
+        let mut wanted: Option<bool> = None;
         if PATCHED.swap(false, std::sync::atomic::Ordering::AcqRel) {
-            let mut ctx = Self::context(state, &self.time, &self.input);
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
             let game = &mut self.game;
             subsecond::call(|| game.patched(&mut ctx));
             quit |= ctx.quit;
+            wanted = ctx.capture.or(wanted);
         }
         while self.time.next_step().is_some() {
             // Through `subsecond::call`, so a rebuilt `step` takes effect in
@@ -220,16 +255,22 @@ impl<G: Game> Shell<G> {
             // table and buys not restarting to see a rule change — which is
             // the entire reason gameplay is not behind a scripting language
             // here.
-            let mut ctx = Self::context(state, &self.time, &self.input);
+            let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
             let game = &mut self.game;
             subsecond::call(|| game.step(&mut ctx));
             quit |= ctx.quit;
+            wanted = ctx.capture.or(wanted);
         }
 
-        let mut ctx = Self::context(state, &self.time, &self.input);
+        let mut ctx = Self::context(state, &self.time, &self.input, self.captured);
         let game = &mut self.game;
         let frame = subsecond::call(|| game.frame(&mut ctx));
         quit |= ctx.quit;
+        wanted = ctx.capture.or(wanted);
+        if let Some(on) = wanted.filter(|on| *on != self.captured) {
+            set_captured(&state.window, on);
+            self.captured = on;
+        }
 
         // One acquired frame for both passes: the scene, then the overlay
         // over it, then a single present. Acquiring twice would show an
@@ -324,8 +365,12 @@ impl<G: Game> ApplicationHandler for Shell<G> {
             renderer,
             overlay,
         };
-        let mut ctx = Self::context(&mut state, &self.time, &self.input);
+        let mut ctx = Self::context(&mut state, &self.time, &self.input, self.captured);
         self.game.start(&mut ctx);
+        if let Some(on) = ctx.capture {
+            set_captured(&state.window, on);
+            self.captured = on;
+        }
         self.state = Some(state);
     }
 
@@ -339,11 +384,29 @@ impl<G: Game> ApplicationHandler for Shell<G> {
                 state.surface.resize(&state.gpu, size.width, size.height);
             }
             WindowEvent::RedrawRequested => self.draw(event_loop),
+            // Captured, the pointer's position means nothing: only how far
+            // it moves counts, and that comes as device motion.
+            WindowEvent::CursorMoved { .. } if self.captured => {}
             other => {
                 for event in translate(&other) {
                     self.input.handle(&event);
                 }
             }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        // Raw motion, for looking around with the pointer captured.
+        if let (true, winit::event::DeviceEvent::MouseMotion { delta }) = (self.captured, event) {
+            self.input.handle(&InputEvent::MouseMotion {
+                dx: delta.0 as f32,
+                dy: delta.1 as f32,
+            });
         }
     }
 

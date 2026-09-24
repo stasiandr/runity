@@ -1037,6 +1037,8 @@ pub fn run_controllers(world: &mut hecs::World) {
     }
 }
 
+// The tests sit mid-file, beside what they test; the module's glue follows.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

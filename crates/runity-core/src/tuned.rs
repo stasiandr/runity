@@ -102,6 +102,10 @@ impl<T> std::ops::Deref for Tuned<T> {
     }
 }
 
+/// How often a watched file is looked at for a change, seconds: often
+/// enough that a save shows at once, rarely enough to cost nothing.
+pub const POLL_SECONDS: f32 = 0.25;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,7 +155,3 @@ mod tests {
         assert_eq!(wolf.speed, 7.5, "the last good value stays");
     }
 }
-
-/// How often a watched file is looked at for a change, seconds: often
-/// enough that a save shows at once, rarely enough to cost nothing.
-pub const POLL_SECONDS: f32 = 0.25;

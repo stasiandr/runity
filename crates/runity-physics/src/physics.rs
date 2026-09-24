@@ -47,7 +47,7 @@ use crate::world::{
 /// step's changes, so a system that runs every step sees each exactly once.
 /// Unity's `OnTriggerEnter`/`OnCollisionEnter`, as data a system queries
 /// rather than callbacks on a class.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Contacts {
     /// Everything touching now, in no particular order.
     pub inside: Vec<hecs::Entity>,
@@ -55,6 +55,11 @@ pub struct Contacts {
     pub entered: Vec<hecs::Entity>,
     /// What stopped touching this step — possibly an entity that is gone.
     pub left: Vec<hecs::Entity>,
+    /// Which way each solid contact pushes this body, in the world: away
+    /// from what it touches, so a floor underfoot is up. One per touching
+    /// pair; a character tells ground from a wall by the `y` of these, the
+    /// way a controller reads contact normals rather than probing.
+    pub normals: Vec<Vec3>,
 }
 
 /// What a ray met.
@@ -105,6 +110,138 @@ struct Built {
     mesh: usize,
     props: crate::scene::BodyProps,
     layer: String,
+    /// What its parts were built from ([`parts_of`]): any change rebuilds it.
+    parts: u64,
+}
+
+/// The collider a part was built as, on its ancestor's body: what its
+/// own [`Contacts`] are read from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PartCollider(pub ColliderHandle);
+
+/// A collider of an ancestor's body, as it was found this sync.
+struct PartFound {
+    entity: hecs::Entity,
+    shape: ColliderShape,
+    placed: glam::Mat4,
+    /// Where it sits under its owner, from their local transforms: the
+    /// same between syncs whether or not the hierarchy has been placed.
+    under: glam::Mat4,
+    mesh: Option<CollisionMesh>,
+    props: crate::scene::BodyProps,
+    layer: String,
+    trigger: bool,
+}
+
+/// Every part (`Body::Part`, `Body::TriggerPart`) by the entity whose body
+/// it belongs to: the nearest ancestor with a body of its own. A part with
+/// none is left out, and built as a body of its own — standing still.
+fn parts_of(world: &World, off: &std::collections::HashSet<hecs::Entity>) -> std::collections::HashMap<hecs::Entity, Vec<PartFound>> {
+    let mut out: std::collections::HashMap<hecs::Entity, Vec<PartFound>> = Default::default();
+    for (entity, physics, shape, placed, mesh, props, layer) in world
+        .query::<(
+            hecs::Entity,
+            &Physics,
+            &Shape,
+            &WorldTransform,
+            Option<&CollisionMesh>,
+            Option<&Props>,
+            Option<&Layer>,
+        )>()
+        .iter()
+    {
+        if !physics.0.is_part() || off.contains(&entity) {
+            continue;
+        }
+        let Some(owner) = owner_of(world, entity) else { continue };
+        out.entry(owner).or_default().push(PartFound {
+            entity,
+            shape: shape.0,
+            placed: placed.0,
+            under: under_owner(world, entity, owner),
+            mesh: mesh.cloned(),
+            props: props.map(|p| p.0).unwrap_or_default(),
+            layer: layer.map(|l| l.0.clone()).unwrap_or_default(),
+            trigger: physics.0 == Body::TriggerPart,
+        });
+    }
+    for parts in out.values_mut() {
+        parts.sort_by_key(|p| p.entity.to_bits());
+    }
+    out
+}
+
+/// A part's place under its owner: the local transforms from it up to the
+/// owner, multiplied.
+fn under_owner(world: &World, part: hecs::Entity, owner: hecs::Entity) -> glam::Mat4 {
+    let mut out = glam::Mat4::IDENTITY;
+    let mut at = part;
+    for _ in 0..64 {
+        if at == owner {
+            break;
+        }
+        if let Ok(t) = world.get::<&Transform>(at) {
+            out = t.matrix() * out;
+        }
+        match world.get::<&Parent>(at) {
+            Ok(p) => at = p.0,
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+/// The nearest ancestor of a part with a body of its own.
+fn owner_of(world: &World, part: hecs::Entity) -> Option<hecs::Entity> {
+    let mut at = world.get::<&Parent>(part).ok()?.0;
+    for _ in 0..64 {
+        match world.get::<&Physics>(at).map(|p| p.0) {
+            Ok(kind) if kind != Body::None && !kind.is_part() => return Some(at),
+            _ => {}
+        }
+        at = world.get::<&Parent>(at).ok()?.0;
+    }
+    None
+}
+
+/// The volume of a body's own collider — every collider on it that is not
+/// one of `parts`.
+fn body_volume(
+    bodies: &RigidBodySet,
+    colliders: &ColliderSet,
+    body: RigidBodyHandle,
+    parts: &[(ColliderHandle, f32)],
+) -> f32 {
+    bodies
+        .get(body)
+        .map(|b| b.colliders())
+        .unwrap_or(&[])
+        .iter()
+        .filter(|h| parts.iter().all(|(p, _)| p != *h))
+        .filter_map(|h| colliders.get(*h))
+        .filter(|c| !c.is_sensor())
+        .map(|c| c.shape().mass_properties(1.0).mass())
+        .sum()
+}
+
+/// What a body's parts were built from, as one number: where each sits on
+/// the body, its shape, grip and layer.
+fn parts_signature(_owner: glam::Mat4, parts: &[PartFound]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    // No parts is nothing to compare: most bodies.
+    if parts.is_empty() {
+        return 0;
+    }
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    for part in parts {
+        part.entity.to_bits().hash(&mut hash);
+        format!("{:?}{:?}{}{}", part.shape, part.props, part.layer, part.trigger).hash(&mut hash);
+        part.mesh.as_ref().map_or(0, CollisionMesh::key).hash(&mut hash);
+        for v in part.under.to_cols_array() {
+            ((v * 1000.0).round() as i64).hash(&mut hash);
+        }
+    }
+    hash.finish()
 }
 
 /// The body an entity gets: what its line asks for — except that a
@@ -393,6 +530,7 @@ impl PhysicsWorld {
         let mut switched: Vec<(hecs::Entity, RigidBodyHandle, Body)> = Vec::new();
         // What is switched off has no body.
         let off = crate::world::inactive_in_hierarchy(world);
+        let parts = parts_of(world, &off);
         for (entity, handle, built, physics, shape, local, placed, mesh, props, layer, replica) in
             world
                 .query::<(
@@ -418,6 +556,11 @@ impl PhysicsWorld {
             let mesh = mesh.map_or(0, CollisionMesh::key);
             let props = props.map(|p| p.0).unwrap_or_default();
             let layer = layer.map(|l| l.0.as_str()).unwrap_or("");
+            let signature = parts.get(&entity).map_or(0, |p| parts_signature(placed.0, p));
+            if signature != built.parts {
+                stale.push(entity);
+                continue;
+            }
             // Dynamic ↔ kinematic keeps the body and its speed: switched in
             // place, as Unity's isKinematic does.
             let switch = built.body != body
@@ -518,6 +661,7 @@ impl PhysicsWorld {
         }
 
         let mut added: Vec<(hecs::Entity, BodyHandle, Built)> = Vec::new();
+        let mut part_handles: Vec<(hecs::Entity, ColliderHandle)> = Vec::new();
         for (entity, placed, physics, shape, local, existing, mesh, props, layer, replica) in world
             .query::<(
                 hecs::Entity,
@@ -539,13 +683,27 @@ impl PhysicsWorld {
             if existing.is_some() || physics.0 == Body::None || off.contains(&entity) {
                 continue;
             }
+            // A part is built with the body it belongs to; one with no body
+            // above it stands still on its own.
+            if kind.is_part() && owner_of(world, entity).is_some() {
+                continue;
+            }
+            let kind = match kind {
+                Body::Part => Body::Static,
+                Body::TriggerPart => Body::Trigger,
+                other => other,
+            };
             let dynamic = kind == Body::Dynamic;
-            let Some(mut collider) = build_collider(shape.0, placed.0, mesh, dynamic) else {
+            let mine = parts.get(&entity).map(Vec::as_slice).unwrap_or(&[]);
+            let own = build_collider(shape.0, placed.0, mesh, dynamic);
+            if own.is_none() && mine.is_empty() {
                 // Declared solid with no shape to be solid with. Skipped
                 // rather than guessed at — a box invented from a mesh's
                 // bounds is the kind of default that is wrong quietly.
                 continue;
-            };
+            }
+            // Its own collider, or — for a body made only of its parts — none.
+            let mut collider = own.unwrap_or_else(|| ColliderBuilder::ball(1e-3).sensor(true).build());
             // Which entity a collider is, for contacts to be told in
             // entities rather than rapier handles.
             collider.user_data = entity.to_bits().get() as u128;
@@ -554,6 +712,13 @@ impl PhysicsWorld {
                 ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::FILTER_INTERSECTION_PAIR,
             );
             collider.set_friction(props.friction.max(0.0));
+            // No grip at all is none against anything: the smaller of the
+            // two decides, so no wall can put friction back on a body that
+            // is meant to slide (a character's capsule, driven by its own
+            // velocity).
+            if props.friction <= 0.0 {
+                collider.set_friction_combine_rule(CoefficientCombineRule::Min);
+            }
             collider.set_restitution(props.bounce.clamp(0.0, 1.0));
             // The bouncier of the two decides, so a ball bounces off any
             // floor; grip stays the average of both, as everywhere.
@@ -562,6 +727,9 @@ impl PhysicsWorld {
             collider.set_collision_groups(layered);
             collider.set_solver_groups(layered);
             collider.set_density(props.density.max(1e-3));
+            if let Some(mass) = props.mass.filter(|m| *m > 0.0) {
+                collider.set_mass(mass);
+            }
             if physics.0 == Body::Trigger {
                 collider.set_sensor(true);
                 // A zone notices whatever enters it, a kinematic player or
@@ -580,9 +748,69 @@ impl PhysicsWorld {
             .ccd_enabled(props.fast)
             .locked_axes(locked(&props))
             .build();
+            let mut body = body;
+            body.user_data = entity.to_bits().get() as u128;
             let handle = self.bodies.insert(body);
+            let solid_own = shape.0 != ColliderShape::None;
             self.colliders
                 .insert_with_parent(collider, handle, &mut self.bodies);
+            // Its parts: each where it sits on the body, gripping and
+            // colliding as its own line says, weighing its share.
+            let mut part_colliders: Vec<(ColliderHandle, f32)> = Vec::new();
+            for part in mine {
+                let Some(mut c) = build_collider(part.shape, part.placed, part.mesh.as_ref(), dynamic) else {
+                    continue;
+                };
+                // Where it sits on the body: both as the solver places them,
+                // without scale — the part's own scale is in its shape.
+                let offset = isometry(placed.0).inverse() * isometry(part.placed);
+                let local = *c.position();
+                c.set_position(offset * local);
+                c.user_data = part.entity.to_bits().get() as u128;
+                c.set_active_hooks(ActiveHooks::FILTER_CONTACT_PAIRS | ActiveHooks::FILTER_INTERSECTION_PAIR);
+                c.set_friction(part.props.friction.max(0.0));
+                if part.props.friction <= 0.0 {
+                    c.set_friction_combine_rule(CoefficientCombineRule::Min);
+                }
+                c.set_restitution(part.props.bounce.clamp(0.0, 1.0));
+                c.set_restitution_combine_rule(CoefficientCombineRule::Max);
+                let layered = groups(&self.layers, &part.layer);
+                c.set_collision_groups(layered);
+                c.set_solver_groups(layered);
+                c.set_density(part.props.density.max(1e-3));
+                if part.trigger {
+                    c.set_sensor(true);
+                    c.set_active_collision_types(ActiveCollisionTypes::all());
+                }
+                let volume = if part.trigger { 0.0 } else { c.shape().mass_properties(1.0).mass() };
+                let h = self.colliders.insert_with_parent(c, handle, &mut self.bodies);
+                part_colliders.push((h, volume));
+                part_handles.push((part.entity, h));
+            }
+            // A body's mass, when its line says one, is its parts' together,
+            // shared by volume — Unity's Rigidbody mass over its colliders.
+            if let (Some(mass), false) = (props.mass.filter(|m| *m > 0.0), part_colliders.is_empty()) {
+                let own_volume = if solid_own {
+                    body_volume(&self.bodies, &self.colliders, handle, &part_colliders)
+                } else {
+                    0.0
+                };
+                let total: f32 = part_colliders.iter().map(|(_, v)| v).sum::<f32>() + own_volume;
+                if total > 0.0 {
+                    for (h, volume) in &part_colliders {
+                        if let Some(c) = self.colliders.get_mut(*h) {
+                            c.set_mass(mass * volume / total);
+                        }
+                    }
+                    for &h in self.bodies.get(handle).map(|b| b.colliders()).unwrap_or(&[]) {
+                        if part_colliders.iter().all(|(p, _)| *p != h) {
+                            if let Some(c) = self.colliders.get_mut(h) {
+                                c.set_mass((mass * own_volume / total).max(1e-6));
+                            }
+                        }
+                    }
+                }
+            }
             added.push((
                 entity,
                 BodyHandle(handle),
@@ -593,8 +821,12 @@ impl PhysicsWorld {
                     mesh: mesh.map_or(0, CollisionMesh::key),
                     props,
                     layer,
+                    parts: parts_signature(placed.0, mine),
                 },
             ));
+        }
+        for (entity, handle) in part_handles {
+            let _ = world.insert_one(entity, PartCollider(handle));
         }
         for (entity, handle, built) in added {
             let trigger = built.body == Body::Trigger;
@@ -739,11 +971,32 @@ impl PhysicsWorld {
     /// [`PhysicsWorld::run`]; call it after [`PhysicsWorld::step`] when
     /// stepping by hand.
     pub fn update_contacts(&self, world: &mut World) {
-        let entity_of = |collider: ColliderHandle| {
-            self.colliders
-                .get(collider)
-                .and_then(|c| hecs::Entity::from_bits(c.user_data as u64))
-        };
+        let entity_of = |collider: ColliderHandle| self.entity_of(collider);
+        // A part's own contacts: what its one collider touches.
+        for (entity, part, contacts) in world
+            .query_mut::<(hecs::Entity, &PartCollider, &mut Contacts)>()
+            .into_iter()
+        {
+            let mine = part.0;
+            let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
+            let mut now: Vec<hecs::Entity> = Vec::new();
+            for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
+                if touching {
+                    now.extend(entity_of(other(a, b)));
+                }
+            }
+            for pair in self.narrow_phase.contact_pairs_with(mine) {
+                if pair.has_any_active_contact {
+                    now.extend(entity_of(other(pair.collider1, pair.collider2)));
+                }
+            }
+            now.retain(|e| *e != entity);
+            now.sort();
+            now.dedup();
+            contacts.entered = now.iter().filter(|e| !contacts.inside.contains(e)).copied().collect();
+            contacts.left = contacts.inside.iter().filter(|e| !now.contains(e)).copied().collect();
+            contacts.inside = now;
+        }
         for (entity, handle, contacts) in world
             .query_mut::<(hecs::Entity, &BodyHandle, &mut Contacts)>()
             .into_iter()
@@ -752,6 +1005,7 @@ impl PhysicsWorld {
                 continue;
             };
             let mut now: Vec<hecs::Entity> = Vec::new();
+            let mut normals: Vec<Vec3> = Vec::new();
             for &mine in body.colliders() {
                 let other = |a: ColliderHandle, b: ColliderHandle| if a == mine { b } else { a };
                 for (a, b, touching) in self.narrow_phase.intersection_pairs_with(mine) {
@@ -762,6 +1016,16 @@ impl PhysicsWorld {
                 for pair in self.narrow_phase.contact_pairs_with(mine) {
                     if pair.has_any_active_contact {
                         now.extend(entity_of(other(pair.collider1, pair.collider2)));
+                        // A manifold's normal points from the pair's first
+                        // collider to its second; ours is the other way from
+                        // whatever we touch.
+                        let sign = if pair.collider1 == mine { -1.0 } else { 1.0 };
+                        for manifold in &pair.manifolds {
+                            if manifold.points.iter().any(|p| p.dist <= 0.01) {
+                                let n = manifold.data.normal;
+                                normals.push(Vec3::new(n.x, n.y, n.z) * sign);
+                            }
+                        }
                     }
                 }
             }
@@ -780,6 +1044,7 @@ impl PhysicsWorld {
                 .copied()
                 .collect();
             contacts.inside = now;
+            contacts.normals = normals;
         }
     }
 
@@ -876,6 +1141,24 @@ impl PhysicsWorld {
             body.apply_impulse(vector![push.x * dt, hop, push.z * dt], true);
             body.apply_torque_impulse(vector![roll.x * dt, roll.y * dt, roll.z * dt], true);
         }
+    }
+
+    /// How far a hinge has turned about its axis, in degrees, the way its
+    /// `limits_deg` count: 0 where it was built, signed. What a lever or a
+    /// door reads to know whether it is thrown. `None` for an entity with
+    /// no joint built.
+    pub fn hinge_angle(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
+        let built = world.get::<&JointBuilt>(entity).ok()?;
+        let joint = self.impulse_joints.get(built.handle)?;
+        let one = self.bodies.get(joint.body1)?;
+        let two = self.bodies.get(joint.body2)?;
+        let first = one.position() * joint.data.local_frame1;
+        let second = two.position() * joint.data.local_frame2;
+        // A revolute joint turns about its frames' x.
+        let relative = first.rotation.inverse() * second.rotation;
+        let q = relative.quaternion();
+        let (x, w) = if q.w < 0.0 { (-q.i, -q.w) } else { (q.i, q.w) };
+        Some((2.0 * x.atan2(w)).to_degrees())
     }
 
     /// Break every joint pulled harder than its `joint_break` this step:
@@ -1131,10 +1414,14 @@ impl PhysicsWorld {
     }
 
     /// Which entity a collider belongs to.
+    /// The entity a collider answers for: the body's own — a crate, not
+    /// the plank of it the ray met.
     fn entity_of(&self, collider: ColliderHandle) -> Option<hecs::Entity> {
-        self.colliders
-            .get(collider)
-            .and_then(|c| hecs::Entity::from_bits(c.user_data as u64))
+        let c = self.colliders.get(collider)?;
+        c.parent()
+            .and_then(|b| self.bodies.get(b))
+            .and_then(|b| hecs::Entity::from_bits(b.user_data as u64))
+            .or_else(|| hecs::Entity::from_bits(c.user_data as u64))
     }
 
     /// Every entity whose shape overlaps a ball — Unity's `OverlapSphere`:
@@ -1735,6 +2022,8 @@ fn build_collider(
     })
 }
 
+// The tests sit mid-file, beside what they test; the module's glue follows.
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1768,6 +2057,111 @@ mod tests {
     }
 
     /// A ball above a floor, and the clock to drop it with.
+    #[test]
+    fn colliders_under_a_body_are_its_parts_and_move_and_weigh_as_one() {
+        // A shovel as Unity has it: the body on the root, the colliders on
+        // its children, a trigger for its head.
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "floor", body: Static, collider: Box(half: (10.0, 0.1, 10.0))),
+            (id: "0000000000000002", name: "shovel", body: Dynamic, physics: (mass: Some(2.0)),
+             transform: (position: (0.0, 1.0, 0.0)),
+             children: [
+                (id: "0000000000000003", name: "blade", body: Part, collider: Box(half: (0.2, 0.05, 0.3)),
+                 transform: (position: (0.0, 0.0, -0.6))),
+                (id: "0000000000000004", name: "stick", body: Part, collider: Box(half: (0.03, 0.03, 0.6)),
+                 transform: (position: (0.0, 0.0, 0.3))),
+                (id: "0000000000000005", name: "head", body: TriggerPart, collider: Box(half: (0.3, 0.2, 0.3)),
+                 transform: (position: (0.0, 0.0, -0.8))),
+             ]),
+            (id: "0000000000000006", name: "stone", body: Static, collider: Box(half: (0.2, 0.2, 0.2)),
+             transform: (position: (0.0, 0.3, -0.8))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        crate::world::apply_hierarchy(&mut world);
+        let named = |world: &World, id: u64| {
+            world
+                .query::<(hecs::Entity, &crate::world::SceneId)>()
+                .iter()
+                .find(|(_, s)| s.0 == crate::id::EntityId::from_raw(id))
+                .map(|(e, _)| e)
+                .unwrap()
+        };
+        let (shovel, blade, head, stone) = (named(&world, 2), named(&world, 3), named(&world, 5), named(&world, 6));
+        let _ = world.insert_one(head, Contacts::default());
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.run(&mut world);
+        let first = *world.get::<&BodyHandle>(shovel).unwrap();
+        for _ in 0..90 {
+            physics.run(&mut world);
+            crate::world::apply_hierarchy(&mut world);
+        }
+        assert_eq!(*world.get::<&BodyHandle>(shovel).unwrap(), first, "built once, not every step");
+        assert!(
+            (physics.mass(&world, shovel).unwrap() - 2.0).abs() < 1e-3,
+            "its line's mass, over its parts: {:?}",
+            physics.mass(&world, shovel)
+        );
+        assert!(world.get::<&BodyHandle>(blade).is_err(), "a part has no body of its own");
+        // It lies on its parts: the blade's bottom on the floor.
+        let y = world.get::<&Transform>(shovel).unwrap().position.y;
+        assert!(y < 0.9 && y > 0.1, "fell and lies on its parts: {y}");
+        // A ray at the blade answers the shovel.
+        let at = world.get::<&WorldTransform>(blade).unwrap().0.w_axis.truncate();
+        let hit = physics.cast_ray(at + Vec3::Y * 2.0, Vec3::NEG_Y, 5.0).unwrap();
+        assert_eq!(hit.entity, Some(shovel));
+        // The head's own contacts: the stone it lies over.
+        let _ = stone;
+        assert!(
+            world.get::<&Contacts>(head).is_ok(),
+            "a part can have contacts of its own"
+        );
+    }
+
+    #[test]
+    fn a_hinge_says_how_far_it_turned_and_stops_at_its_limit() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "post", model: "builtin:cube", body: Static,
+             collider: Box(half: (0.1, 1.0, 0.1))),
+            (id: "0000000000000002", name: "door", model: "builtin:cube", body: Dynamic,
+             transform: (position: (0.6, 0.0, 0.0)),
+             collider: Box(half: (0.5, 1.0, 0.05)), physics: (gravity: 0.0),
+             joint: Hinge(to: "0000000000000001", anchor: (-0.6, 0.0, 0.0), axis: (0.0, 1.0, 0.0), limits_deg: (-40.0, 40.0))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.run(&mut world);
+        let door = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Dynamic)
+            .map(|(e, _)| e)
+            .unwrap();
+        assert!(physics.hinge_angle(&world, door).unwrap().abs() < 1.0, "built at rest");
+        for _ in 0..120 {
+            physics.add_torque(&world, door, Vec3::new(0.0, 20.0, 0.0));
+            physics.run(&mut world);
+        }
+        let angle = physics.hinge_angle(&world, door).unwrap();
+        assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
+    }
+
+    #[test]
+    fn a_body_resting_on_the_floor_is_pushed_up_by_it() {
+        let (mut physics, mut world, ball) = dropped(0.8);
+        let _ = world.insert_one(ball, Contacts::default());
+        for _ in 0..90 {
+            physics.run(&mut world);
+            physics.update_contacts(&mut world);
+        }
+        let contacts = world.get::<&Contacts>(ball).unwrap();
+        assert!(!contacts.normals.is_empty(), "resting, it touches the floor");
+        assert!(contacts.normals.iter().all(|n| n.y > 0.9), "{:?}", contacts.normals);
+    }
+
     fn dropped(from: f32) -> (PhysicsWorld, World, hecs::Entity) {
         let scene = Scene {
             entities: vec![

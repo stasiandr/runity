@@ -10,22 +10,64 @@ use crate::render::MeshHandle;
 use crate::scene::{EntityDesc, Scene};
 use crate::world::{patch_scene_dressed, spawn_owned_dressed, spawn_scene_dressed, Dress, Patched, Unresolved};
 
+/// Which lines a spawn dresses: the builtin meshes the simulation modules
+/// draw with are uploaded only when some line has a field that needs one,
+/// so a scene — or a streamed region — without ropes uploads no link.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Needs {
+    /// Ropes, cloth, hair and the rest of the soft module: links, spheres.
+    pub soft: bool,
+    /// Water, smoke and the rest of the fluid module: cubes.
+    pub fluid: bool,
+    /// Ragdolls and crawlers: capsules.
+    pub character: bool,
+}
+
+impl Needs {
+    /// What `lines` and everything under them ask for.
+    pub fn of<'a>(lines: impl IntoIterator<Item = &'a EntityDesc>) -> Self {
+        const SOFT: &[&str] = &["rope", "cloth", "hair", "soft_body", "jiggle", "fluid", "grains", "distance_field"];
+        const FLUID: &[&str] = &["mpm", "shallow_water", "ripples", "ocean", "floats", "smoke", "snow_cover"];
+        const CHARACTER: &[&str] = &["ragdoll", "crawler"];
+        fn walk(desc: &EntityDesc, out: &mut Needs) {
+            let has = |names: &[&str]| names.iter().any(|n| desc.parts.raw(n).is_some());
+            out.soft |= has(SOFT);
+            out.fluid |= has(FLUID);
+            out.character |= has(CHARACTER);
+            for child in &desc.children {
+                walk(child, out);
+            }
+        }
+        let mut out = Needs::default();
+        for desc in lines {
+            walk(desc, &mut out);
+        }
+        out
+    }
+
+    /// Everything: when what will be dressed is not known ahead.
+    pub const ALL: Needs = Needs { soft: true, fluid: true, character: true };
+}
+
 /// Every module's dresser this build has, the look resolving models and
-/// materials with `resolve` and `palette`.
+/// materials with `resolve` and `palette`; the builtin meshes of the
+/// simulation modules only as `needs` says.
+// Pushed one by one: each is there only with its module's feature.
+#[allow(clippy::vec_init_then_push)]
 pub fn dressers<'a>(
     resolve: &'a mut dyn FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: &'a dyn Fn(&crate::AssetLink) -> Option<Material>,
+    needs: Needs,
 ) -> Vec<Box<dyn Dress + 'a>> {
     let mut out: Vec<Box<dyn Dress + 'a>> = Vec::new();
+    let mut builtin = |on: bool, name: &str| on.then(|| resolve(&crate::AssetLink::named(name))).flatten();
     #[cfg(feature = "fluid")]
-    let cube = resolve(&crate::AssetLink::named("builtin:cube"));
+    let cube = builtin(needs.fluid, "builtin:cube");
     #[cfg(feature = "character")]
-    let capsule = resolve(&crate::AssetLink::named("builtin:capsule"));
+    let capsule = builtin(needs.character, "builtin:capsule");
     #[cfg(feature = "soft")]
-    let (link, sphere) = (
-        resolve(&crate::AssetLink::named("builtin:link")),
-        resolve(&crate::AssetLink::named("builtin:sphere")),
-    );
+    let (link, sphere) = (builtin(needs.soft, "builtin:link"), builtin(needs.soft, "builtin:sphere"));
+    let _ = (&mut builtin, needs);
     #[cfg(feature = "physics")]
     out.push(Box::new(crate::physics::PhysicsDress));
     #[cfg(feature = "animation")]
@@ -33,6 +75,7 @@ pub fn dressers<'a>(
     #[cfg(feature = "routes")]
     out.push(Box::new(crate::routes::RouteDress));
     out.push(Box::new(crate::appearance::LookDress { resolve, palette }));
+    out.push(Box::new(crate::streaming::StreamDress));
     #[cfg(feature = "soft")]
     {
         out.push(Box::new(crate::soft::RopeDress));
@@ -100,7 +143,7 @@ pub fn spawn_scene_with(
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Vec<Unresolved> {
-    let mut dressers = dressers(&mut resolve, &palette);
+    let mut dressers = dressers(&mut resolve, &palette, Needs::of(&scene.entities));
     let missing = spawn_scene_dressed(scene, world, &mut dressers);
     drop(dressers);
     blow(scene, world);
@@ -128,11 +171,8 @@ pub fn patch_scene(
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> Patched {
-    let mut dressers = dressers(&mut resolve, &palette);
-    let patched = patch_scene_dressed(before, after, world, &mut dressers);
-    drop(dressers);
-    blow(after, world);
-    patched
+    let mut dressers = dressers(&mut resolve, &palette, Needs::of(&after.entities));
+    patch_scene_dressed(before, after, world, &mut dressers)
 }
 
 /// Spawn an entity and everything under it as the game's own rather than
@@ -144,6 +184,6 @@ pub fn spawn_owned<'a>(
     mut resolve: impl FnMut(&crate::AssetLink) -> Option<MeshHandle>,
     palette: impl Fn(&crate::AssetLink) -> Option<Material>,
 ) -> (Vec<(hecs::Entity, &'a EntityDesc)>, Vec<Unresolved>) {
-    let mut dressers = dressers(&mut resolve, &palette);
+    let mut dressers = dressers(&mut resolve, &palette, Needs::of(std::iter::once(desc)));
     spawn_owned_dressed(desc, parent, world, &mut dressers)
 }

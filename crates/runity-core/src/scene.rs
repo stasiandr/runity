@@ -300,14 +300,6 @@ impl EntityDesc {
     }
 }
 
-/// How an entity names its surface.
-///
-/// Not an `Option`: RON wants `Some(...)` spelled out around an optional
-/// field, and `material: Some("grass")` is noise in every line of every
-/// scene. A default variant costs nothing and reads better.
-// A line of a scene, not a frame's data: the inline material's size does
-// not matter, and a box around it would be in every match on it.
-
 /// Mint IDs for a subtree: unassigned ones, and ones already in `seen`.
 ///
 /// Fresh random IDs, for things being created: an added or duplicated

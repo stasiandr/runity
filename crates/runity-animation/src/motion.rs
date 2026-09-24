@@ -136,6 +136,7 @@ pub struct Moving {
     /// The entity each joint moves.
     joints: Vec<hecs::Entity>,
     /// Per clip, in the animator's order: the tracks that are not a place.
+    #[allow(clippy::type_complexity)]
     others: Vec<Vec<(hecs::Entity, Property, Vec<(f32, f32)>)>>,
 }
 
