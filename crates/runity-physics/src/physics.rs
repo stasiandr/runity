@@ -124,6 +124,9 @@ struct PartFound {
     entity: hecs::Entity,
     shape: ColliderShape,
     placed: glam::Mat4,
+    /// Where it sits under its owner, from their local transforms: the
+    /// same between syncs whether or not the hierarchy has been placed.
+    under: glam::Mat4,
     mesh: Option<CollisionMesh>,
     props: crate::scene::BodyProps,
     layer: String,
@@ -155,6 +158,7 @@ fn parts_of(world: &World, off: &std::collections::HashSet<hecs::Entity>) -> std
             entity,
             shape: shape.0,
             placed: placed.0,
+            under: under_owner(world, entity, owner),
             mesh: mesh.cloned(),
             props: props.map(|p| p.0).unwrap_or_default(),
             layer: layer.map(|l| l.0.clone()).unwrap_or_default(),
@@ -163,6 +167,26 @@ fn parts_of(world: &World, off: &std::collections::HashSet<hecs::Entity>) -> std
     }
     for parts in out.values_mut() {
         parts.sort_by_key(|p| p.entity.to_bits());
+    }
+    out
+}
+
+/// A part's place under its owner: the local transforms from it up to the
+/// owner, multiplied.
+fn under_owner(world: &World, part: hecs::Entity, owner: hecs::Entity) -> glam::Mat4 {
+    let mut out = glam::Mat4::IDENTITY;
+    let mut at = part;
+    for _ in 0..64 {
+        if at == owner {
+            break;
+        }
+        if let Ok(t) = world.get::<&Transform>(at) {
+            out = t.matrix() * out;
+        }
+        match world.get::<&Parent>(at) {
+            Ok(p) => at = p.0,
+            Err(_) => break,
+        }
     }
     out
 }
@@ -202,15 +226,18 @@ fn body_volume(
 
 /// What a body's parts were built from, as one number: where each sits on
 /// the body, its shape, grip and layer.
-fn parts_signature(owner: glam::Mat4, parts: &[PartFound]) -> u64 {
+fn parts_signature(_owner: glam::Mat4, parts: &[PartFound]) -> u64 {
     use std::hash::{Hash, Hasher};
+    // No parts is nothing to compare: most bodies.
+    if parts.is_empty() {
+        return 0;
+    }
     let mut hash = std::collections::hash_map::DefaultHasher::new();
-    let inverse = owner.inverse();
     for part in parts {
         part.entity.to_bits().hash(&mut hash);
         format!("{:?}{:?}{}{}", part.shape, part.props, part.layer, part.trigger).hash(&mut hash);
         part.mesh.as_ref().map_or(0, CollisionMesh::key).hash(&mut hash);
-        for v in (inverse * part.placed).to_cols_array() {
+        for v in part.under.to_cols_array() {
             ((v * 1000.0).round() as i64).hash(&mut hash);
         }
     }
@@ -2045,10 +2072,13 @@ mod tests {
         let (shovel, blade, head, stone) = (named(&world, 2), named(&world, 3), named(&world, 5), named(&world, 6));
         let _ = world.insert_one(head, Contacts::default());
         let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.run(&mut world);
+        let first = *world.get::<&BodyHandle>(shovel).unwrap();
         for _ in 0..90 {
             physics.run(&mut world);
             crate::world::apply_hierarchy(&mut world);
         }
+        assert_eq!(*world.get::<&BodyHandle>(shovel).unwrap(), first, "built once, not every step");
         assert!(
             (physics.mass(&world, shovel).unwrap() - 2.0).abs() < 1e-3,
             "its line's mass, over its parts: {:?}",
