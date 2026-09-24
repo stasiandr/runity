@@ -18,7 +18,7 @@
 //! runity delete FILE                      remove an asset nothing uses
 //! runity duplicate FROM TO                copy an asset as a new one
 //! runity add component|system|scene NAME [PROJECT]  a new file where it goes
-//! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--blender PATH] [--shaders DIR]
+//! runity import-unity UNITY_PROJECT [PROJECT] [--models] [--models-matching NAME] [--blender PATH] [--shaders DIR]
 //! runity bench [--seeds N] [--scenarios a,b] [--rungs a,b] [--out FILE]
 //! ```
 //!
@@ -156,6 +156,10 @@ fn run() -> Result<ExitCode> {
             while let Some(arg) = args.next() {
                 match arg.as_str() {
                     "--models" => options.models = true,
+                    "--models-matching" => {
+                        options.models = true;
+                        options.models_matching = Some(args.next().context("--models-matching wants a name")?.clone());
+                    }
                     "--shaders" => {
                         options.shaders = Some(PathBuf::from(
                             args.next().context("--shaders wants a folder")?,

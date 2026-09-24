@@ -43,6 +43,11 @@ pub struct SpawnedId(pub crate::id::EntityId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Parent(pub hecs::Entity);
 
+/// The name its scene line gives it: what a skin finds its bones by, a
+/// Unity skinned mesh's bones being things of the scene, not of the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineName(pub String);
+
 /// Switched off, from a line's `inactive` or [`set_active`]: it and all
 /// under it are not drawn and not solid, as Unity's inactive GameObject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,7 +188,7 @@ fn spawn_one(
     dressers: &mut [Box<dyn Dress + '_>],
     missing: &mut Vec<Unresolved>,
 ) -> hecs::Entity {
-    let entity = world.spawn((desc.transform, WorldTransform(world_matrix), SceneId(desc.id)));
+    let entity = world.spawn((desc.transform, WorldTransform(world_matrix), SceneId(desc.id), LineName(desc.name.clone())));
     if let Some(parent) = parent {
         let _ = world.insert_one(entity, Parent(parent));
     }

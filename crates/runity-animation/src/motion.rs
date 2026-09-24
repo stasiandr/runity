@@ -227,6 +227,7 @@ pub fn attach(
     motions: &Motions,
     skins: impl Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>,
 ) -> Vec<String> {
+    crate::animator::bind_skins(world, &skins);
     let waiting: Vec<(hecs::Entity, Animates)> = world
         .query::<(hecs::Entity, &Animates)>()
         .without::<&Moving>()
@@ -683,7 +684,7 @@ pub struct MotionDress;
 
 impl crate::world::Dress for MotionDress {
     fn parts(&self) -> &[&'static str] {
-        &["animator", "bone"]
+        &["animator", "bone", "model"]
     }
 
     fn dress(
@@ -700,6 +701,17 @@ impl crate::world::Dress for MotionDress {
                 let _ = world.remove_one::<Animates>(entity);
             } else {
                 let _ = world.insert_one(entity, animates(line));
+            }
+        }
+        // A model that may be skinned: bound to its bones by name once
+        // spawned (`animator::bind_skins`).
+        if changed.has("model") {
+            let _ = world.remove_one::<crate::animator::BoundSkin>(entity);
+            let model = line.model();
+            if model.is_empty() {
+                let _ = world.remove_one::<crate::animator::SkinOf>(entity);
+            } else {
+                let _ = world.insert_one(entity, crate::animator::SkinOf(model.clone()));
             }
         }
         if changed.has("bone") {

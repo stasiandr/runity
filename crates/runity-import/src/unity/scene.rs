@@ -1048,6 +1048,8 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         }
         "MeshRenderer" | "SkinnedMeshRenderer" => {
             if c.kind == "SkinnedMeshRenderer" {
+                // Its piece, with its skin: bent by the bones of the scene
+                // it is under, found by name when it is spawned.
                 if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
                     let model = piece(refs.unity, model, &desc.name);
                     desc.set_part(&runity::scene::ModelRef(AssetLink::named(model)));

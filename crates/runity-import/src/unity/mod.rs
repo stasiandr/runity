@@ -84,6 +84,9 @@ impl std::fmt::Display for Report {
 pub struct Options {
     /// Convert FBX models through Blender: slow, so asked for.
     pub models: bool,
+    /// Only the models whose name has this in it (with `models`): one
+    /// model converted again without all the others.
+    pub models_matching: Option<String>,
     /// Blender to use; found on the PATH when not given.
     pub blender: Option<PathBuf>,
     /// Shaders already written again, one `<name>.wgsl` a shader: put in
@@ -639,6 +642,9 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
     let count = all.len();
     for (i, (guid, path)) in all.into_iter().enumerate() {
         let name = &unity.names[guid];
+        if options.models_matching.as_ref().is_some_and(|m| !name.contains(m.as_str())) {
+            continue;
+        }
         eprintln!("model {}/{count} {name}", i + 1);
         let to = out.join(format!("{name}.glb"));
         let extension = path
@@ -686,10 +692,12 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
              \x20   parent, placed = o.parent, o.matrix_world.copy()\n\
              \x20   for x in scene.objects: x.select_set(False)\n\
              \x20   o.select_set(True)\n\
+             \x20   arm = next((m.object for m in o.modifiers if m.type == 'ARMATURE' and m.object), None)\n\
+             \x20   if arm: arm.select_set(True)\n\
              \x20   o.parent = None\n\
              \x20   o.matrix_world = frame\n\
              \x20   piece = re.sub(r'[^A-Za-z0-9_-]', '_', o.name)\n\
-             \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=False)\n\
+             \x20   bpy.ops.export_scene.gltf(filepath={:?} + '/' + {:?} + '@' + piece + '.glb', export_format='GLB', use_selection=True, export_animations=False, export_skins=bool(arm))\n\
              \x20   o.parent = parent\n\
              \x20   o.matrix_world = placed\n\
              for x in scene.objects: x.select_set(False)\n\
@@ -708,6 +716,29 @@ fn models(unity: &Unity, project: &runity::Project, options: &Options, report: &
         let result = std::process::Command::new(&blender)
             .args(["-b", "--factory-startup", "--python-expr", &script])
             .output();
+        if std::env::var_os("RUNITY_BLENDER_LOG").is_some() {
+            if let Ok(o) = &result {
+                eprintln!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+            }
+        }
+        // Blender ends well even when the script in it failed: its
+        // traceback says so.
+        let failed_inside = result.as_ref().ok().and_then(|o| {
+            let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+            out.lines()
+                .find(|l| l.contains("Error:") || l.starts_with("PermissionError") || l.contains("Traceback"))
+                .map(|_| {
+                    out.lines()
+                        .rev()
+                        .find(|l| l.contains("Error"))
+                        .unwrap_or("a Python error")
+                        .to_string()
+                })
+        });
+        if let Some(why) = failed_inside {
+            report.errors.push(format!("{}: Blender's script failed: {why}", path.display()));
+            continue;
+        }
         match result {
             Ok(o) if o.status.success() && to.is_file() => report.models += 1,
             Ok(o) => report.errors.push(format!(

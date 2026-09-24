@@ -316,6 +316,112 @@ impl std::fmt::Debug for Animator {
     }
 }
 
+/// A line's model, which may be skinned to bones of the scene.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkinOf(pub crate::AssetLink);
+
+/// A skinned model bent by things of the scene: each joint of its skin by
+/// the entity of that name near it (a Unity skinned mesh's bones), and
+/// where the bone stood when it was bound — the pose the model was made in.
+#[derive(Debug, Clone)]
+pub struct BoundSkin {
+    bones: Vec<Option<hecs::Entity>>,
+    /// Per joint: the bone's place when bound, undone, then the model's
+    /// own place then (its vertices are in its own frame).
+    unbind: Vec<Mat4>,
+}
+
+/// Bind every skinned model not yet bound and not played by an animator
+/// of its own to the bones its skin names: the entities of those names
+/// under its parent — a Unity model's root, whose frame its vertices are
+/// in. A model with no skin, or none of whose joints is found, is left
+/// as it is drawn.
+pub fn bind_skins(world: &mut World, skins: &dyn Fn(&crate::AssetLink) -> Option<crate::asset::MeshSkin>) {
+    use crate::world::{LineName, Parent, WorldTransform};
+    let waiting: Vec<(hecs::Entity, crate::AssetLink)> = world
+        .query::<(hecs::Entity, &SkinOf)>()
+        .without::<&BoundSkin>()
+        .without::<&Animator>()
+        .iter()
+        .map(|(e, s)| (e, s.0.clone()))
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    let mut children: std::collections::HashMap<hecs::Entity, Vec<hecs::Entity>> = Default::default();
+    for (e, p) in world.query::<(hecs::Entity, &Parent)>().iter() {
+        children.entry(p.0).or_default().push(e);
+    }
+    let world_of = |world: &World, e: hecs::Entity| world.get::<&WorldTransform>(e).map(|t| t.0).ok();
+    let mut bound = Vec::new();
+    let mut gone = Vec::new();
+    for (entity, link) in waiting {
+        let Some(skin) = skins(&link) else {
+            gone.push(entity);
+            continue;
+        };
+        let root = world.get::<&Parent>(entity).map(|p| p.0).unwrap_or(entity);
+        // The things under the root, by name; the nearest of a name wins.
+        let mut named: std::collections::HashMap<String, hecs::Entity> = Default::default();
+        let mut queue = std::collections::VecDeque::from([root]);
+        while let Some(e) = queue.pop_front() {
+            if let Ok(name) = world.get::<&LineName>(e) {
+                named.entry(name.0.clone()).or_insert(e);
+            }
+            queue.extend(children.get(&e).into_iter().flatten().copied());
+        }
+        let bones: Vec<Option<hecs::Entity>> = skin
+            .skeleton
+            .joints
+            .iter()
+            .map(|j| named.get(&j.name).or_else(|| named.get(crate::animation::bare_joint_name(&j.name))).copied())
+            .collect();
+        // Its vertices are in its own frame (a piece of a Unity model's
+        // are): undone from where each bone stood when bound.
+        let root_at = world_of(world, entity).unwrap_or(Mat4::IDENTITY);
+        if bones.iter().all(Option::is_none) {
+            gone.push(entity);
+            continue;
+        }
+        let unbind = bones
+            .iter()
+            .map(|b| b.and_then(|b| world_of(world, b)).map_or(Mat4::IDENTITY, |at| at.inverse() * root_at))
+            .collect();
+        bound.push((entity, BoundSkin { bones, unbind }));
+    }
+    for entity in gone {
+        let _ = world.remove_one::<SkinOf>(entity);
+    }
+    for (entity, skin) in bound {
+        let _ = world.insert_one(entity, skin);
+    }
+    pose_bound_skins(world);
+}
+
+/// Each bound skin posed by its bones as they stand now: a joint moves its
+/// vertices by how far its bone has moved since it was bound, in the
+/// frame of the entity that draws them.
+pub fn pose_bound_skins(world: &mut World) {
+    use crate::world::WorldTransform;
+    let mut posed: Vec<(hecs::Entity, Vec<Mat4>)> = Vec::new();
+    for (entity, skin, at) in world.query::<(hecs::Entity, &BoundSkin, &WorldTransform)>().iter() {
+        let into_own = at.0.inverse();
+        let matrices = skin
+            .bones
+            .iter()
+            .zip(&skin.unbind)
+            .map(|(bone, unbind)| match bone.and_then(|b| world.get::<&WorldTransform>(b).ok().map(|t| t.0)) {
+                Some(now) => into_own * now * *unbind,
+                None => into_own * at.0,
+            })
+            .collect();
+        posed.push((entity, matrices));
+    }
+    for (entity, matrices) in posed {
+        let _ = world.insert_one(entity, Posed(matrices));
+    }
+}
+
 /// Advance every animator in the world and write the poses it produces.
 ///
 /// Called from the fixed step, not the frame: an animation that advances by
@@ -329,6 +435,7 @@ pub fn advance_animations(world: &mut World, dt: f32) {
     for (entity, matrices) in posed {
         let _ = world.insert_one(entity, Posed(matrices));
     }
+    pose_bound_skins(world);
     hold_on_bones(world);
 }
 
