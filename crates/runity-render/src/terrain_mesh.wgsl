@@ -248,6 +248,7 @@ fn ms_terrain(@builtin(workgroup_id) group: vec3<u32>, @builtin(local_invocation
         out.params_0 = look.params_0;
         out.params_1 = vec4<f32>(look.params_1.xy, fine, coarse);
         out.subsurface = vec4<f32>(0.0, 0.0, 0.0, 0.01);
+        out.maps = vec4<u32>(0u);
         terrain_mesh.vertices[v] = out;
     }
     // Counter-clockwise seen from above, as the vertex-shader grid is.

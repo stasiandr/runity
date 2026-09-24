@@ -217,6 +217,7 @@ fn visit_mut(desc: &mut EntityDesc, f: &mut impl FnMut(&mut EntityDesc)) {
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use super::*;

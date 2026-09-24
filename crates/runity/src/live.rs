@@ -60,6 +60,8 @@ pub struct LiveScene {
     /// What the game said about its systems and who it is, for the next
     /// report ([`LiveScene::note`]).
     noted: crate::save::Diagnostics,
+    /// The world's regions streamed in by the camera ([`crate::streaming`]).
+    streamer: crate::streaming::Streamer,
 }
 
 /// The variable an editor names the state file in, for a game it starts.
@@ -178,6 +180,7 @@ impl LiveScene {
                 report_to: std::env::var_os(STATE_VAR).map(PathBuf::from),
                 since_report: 0.0,
                 noted: Default::default(),
+                streamer: crate::streaming::Streamer::new(),
             },
             problems,
         ))
@@ -198,6 +201,33 @@ impl LiveScene {
 
     pub fn library(&self) -> Option<&Library> {
         self.library.as_ref()
+    }
+
+    /// The world's streamed regions brought to where the camera is
+    /// ([`crate::streaming`]): in as it nears them, out as it leaves; and
+    /// the textures' levels to what the last frame needed. Once a frame,
+    /// after the camera has moved.
+    pub fn stream(
+        &mut self,
+        world: &mut World,
+        eye: glam::Vec3,
+        gpu: &Gpu,
+        renderer: &mut Renderer,
+    ) -> Vec<crate::streaming::StreamEvent> {
+        let scenes = match &self.project {
+            Some(project) => project.scenes(),
+            None => self.path.parent().map(Path::to_path_buf).unwrap_or_default(),
+        };
+        let events = self
+            .streamer
+            .update(world, eye, &scenes, &self.prefabs, self.library.as_ref(), gpu, renderer);
+        // And the pictures' levels to what the last frame needed of them
+        // (mip streaming), a few textures a frame.
+        if let Some(library) = &self.library {
+            use crate::mesh_asset::TextureLibrary;
+            renderer.stream_textures(gpu, |id| library.texture(id), 4);
+        }
+        events
     }
 
     /// The game's component types, which scene lines name. Set before
@@ -511,6 +541,8 @@ impl LiveScene {
         // leaves the one being played.
         let (current, prefabs, problems) = read(&path, Some(&project))?;
         self.unload(world);
+        // The regions were the old level's.
+        self.streamer = crate::streaming::Streamer::new();
         self.stamps = stamps(&path, Some(&project));
         self.path = path;
         self.current = current;

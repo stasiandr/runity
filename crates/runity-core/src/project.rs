@@ -957,11 +957,22 @@ impl shell::Game for Game {
         for phase in [Phase::Update, Phase::LateUpdate, Phase::PostLateUpdate] {
             self.modules.run(phase, &mut self.world, delta, Some(&mut self.profile));
         }
-        let scene = self.live.scene();
+        // Cloth and ropes in the scene's wind: only a look, stepped by the
+        // frame.
+        let wind = self.live.scene().wind().unwrap_or_default();
+        runity::cloth::run_cloth(&mut self.world, delta, &wind);
+        runity::rope::run_ropes(&mut self.world, delta, &wind);
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
-            .unwrap_or_else(|| runity::scene_camera(&scene.view()));
+            .unwrap_or_else(|| runity::scene_camera(&self.live.scene().view()));
+        // The world's streamed regions, in and out by where it looks from.
+        for event in self.live.stream(&mut self.world, camera.position, ctx.gpu, ctx.renderer) {
+            if let runity::streaming::StreamEvent::Failed(scene, why) = event {
+                eprintln!("stream {scene}: {why}");
+            }
+        }
+        let scene = self.live.scene();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
         let frame = self.profile.time("frame", || runity::world::scene_frame(&self.world, camera, scene));

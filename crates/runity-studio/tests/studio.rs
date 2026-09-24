@@ -69,6 +69,23 @@ fn click(studio: &mut Studio, name: &str) {
     press(studio, name, MouseButton::Left);
 }
 
+/// Two clicks within the double-click's time: no frame between them, so a
+/// slow frame (a pipeline being built) cannot pull them apart.
+fn double_click(studio: &mut Studio, name: &str) {
+    studio.ui.paint();
+    let node = studio
+        .ui
+        .find(name)
+        .unwrap_or_else(|| panic!("no node {name:?} in\n{}", studio.ui.dump()));
+    let (x, y) = studio.ui.rect(node).center();
+    studio.handle(&InputEvent::MouseMoved { x, y });
+    for _ in 0..2 {
+        studio.handle(&InputEvent::MouseDown(MouseButton::Left));
+        studio.handle(&InputEvent::MouseUp(MouseButton::Left));
+    }
+    studio.frame();
+}
+
 fn press(studio: &mut Studio, name: &str, button: MouseButton) {
     studio.ui.paint();
     let node = studio
@@ -418,8 +435,7 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     let Some((mut s, dir)) = studio() else { return };
     let scene = s.session.scene_path().unwrap().to_path_buf();
     // The first «asset campfire» is the prefab (prefabs come before models).
-    click(&mut s, "asset campfire");
-    click(&mut s, "asset campfire");
+    double_click(&mut s, "asset campfire");
     assert!(s.session.is_prefab(), "double click opened the prefab");
     assert!(s.title().contains("(prefab)"));
     assert!(s.ui.dump().contains("Prefab: campfire"));

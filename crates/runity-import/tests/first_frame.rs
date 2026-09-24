@@ -131,6 +131,7 @@ fn a_source_model_becomes_a_frame() {
         texture_views: Vec::new(),
         ui_pictures: Vec::new(),
         reflection_probes: Vec::new(),
+        irradiance_volumes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),
         wind: Default::default(),

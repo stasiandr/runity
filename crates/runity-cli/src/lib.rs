@@ -6,6 +6,7 @@ pub mod build;
 pub mod check;
 pub mod merge;
 pub mod modules;
+pub mod perf;
 pub mod rebuild;
 pub mod run;
 pub mod template;

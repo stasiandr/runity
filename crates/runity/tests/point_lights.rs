@@ -50,6 +50,7 @@ fn shoot(
         clear_color: Vec3::ZERO,
         lights,
         reflection_probes: Vec::new(),
+        irradiance_volumes: Vec::new(),
         decals: Vec::new(),
         volumetric_fog: Default::default(),
         wind: Default::default(),

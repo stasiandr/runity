@@ -194,6 +194,11 @@ pub fn texture_views(
         .collect()
 }
 
+/// Dust in the air round a thing, for the frame: what a wall coming down
+/// raises, kept up to date by whatever makes it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Dust(pub Vec<crate::volume::Puff>);
+
 /// A mesh the game rewrites as it goes — the water's surface, a rope
 /// between two hands — drawn at the entity with its material. Changing it
 /// ([`LiveMesh::set`]) uploads it again on the next frame; leaving it
@@ -312,6 +317,10 @@ pub fn post_volumes(frame: &mut Frame, world: &World) {
 /// A reflection probe at an entity, from its line's `reflection_probe`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ProbeBox(pub crate::scene::Probe);
+
+/// An irradiance volume at an entity, from its line's `irradiance_volume`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeBox(pub crate::ddgi::IrradianceVolume);
 
 /// The lighting a scene's sun describes.
 ///
@@ -465,6 +474,12 @@ pub fn scene_look(frame: &mut Frame, scene: &crate::scene::Scene) {
     }
     if let Some(ambient_occlusion) = scene.ambient_occlusion() {
         frame.ambient_occlusion = ambient_occlusion;
+    }
+    if scene.part::<crate::look::VirtualShadows>().is_some_and(|v| v.0) {
+        frame.shadows.virtual_maps = true;
+        frame.shadows.max_distance = frame.shadows.max_distance.max(200.0);
+        // A pool of a thousand pages: what a 1080p view needs at every level.
+        frame.shadows.resolution = frame.shadows.resolution.max(4096);
     }
     if let Some(ray_tracing) = scene.ray_tracing() {
         frame.ray_tracing = ray_tracing;
@@ -776,6 +791,15 @@ pub fn build_frame_where(
             blend_distance: probe.0.blend_distance,
         })
         .collect();
+    let irradiance_volumes = world
+        .query::<(&VolumeBox, &WorldTransform, Option<&SceneId>)>()
+        .iter()
+        .filter(|(_, _, line)| keep(line.map(|l| l.0)))
+        .map(|(volume, placed, _)| crate::ddgi::PlacedVolume {
+            centre: placed.0.w_axis.truncate(),
+            volume: volume.0,
+        })
+        .collect();
     let mut decals: Vec<crate::decals::Decal> = world
         .query::<(&Pressing, &WorldTransform, Option<&SceneId>)>()
         .iter()
@@ -836,6 +860,12 @@ pub fn build_frame_where(
         let linear = |v: f32| crate::material::srgb_to_linear((v * 1.25).clamp(0.0, 1.0));
         puffs.extend(trail.dust([linear(c[0]), linear(c[1]), linear(c[2])]));
     }
+    // And the dust of what came down.
+    for (dust, line) in world.query::<(&Dust, Option<&SceneId>)>().iter() {
+        if keep(line.map(|l| l.0)) {
+            puffs.extend(dust.0.iter().copied());
+        }
+    }
     // The smokes, nearest the eye first: the fog takes the first few.
     let mut smoke: Vec<crate::volume::Smoke> = world
         .query::<(&SmokeVolume, Option<&SceneId>)>()
@@ -849,6 +879,7 @@ pub fn build_frame_where(
         camera,
         lighting,
         reflection_probes,
+        irradiance_volumes,
         decals,
         puffs,
         smoke,

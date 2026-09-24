@@ -1,7 +1,7 @@
 //! How long each pass takes on the GPU: the GPU profiler.
 //!
 //! Every pass of a frame asks for a pair of timestamps by its name —
-//! `timestamp_writes: runity_gpu::gpu_timer::render("ssao")` — written by the GPU
+//! `timestamp_writes: crate::gpu_timer::render("ssao")` — written by the GPU
 //! as the pass begins and ends; a pass is timed from the end of the one
 //! before (or its own beginning, if later) to its end, since on a tiling GPU
 //! a render pass's beginning comes with the frame's. Only at pass boundaries, which is what
@@ -11,13 +11,13 @@
 //! running average — the frame never waits on the GPU for it. Passes of one
 //! name in a frame (the shadow cascades, the lamps' faces) add up.
 //!
-//! Off unless asked (the render's `Renderer::profile_gpu`, or
+//! Off unless asked (`Renderer::profile_gpu` (runity-render), or
 //! `RUNITY_GPU_TIMES=1`): the timestamps cost little, but not nothing. On a
 //! device without timestamps it asks for nothing and reports nothing.
 //!
 //! The pass that wants a pair finds the frame's timer through a
 //! thread-local, set for the length of the frame: the passes are spread
-//! over a dozen files and two module crates (render and overlay), and threading a timer through each of them would
+//! over a dozen modules, and threading a timer through each of them would
 //! be a parameter on every function that draws.
 
 use std::cell::RefCell;
@@ -101,12 +101,8 @@ pub struct GpuTimer {
 
 impl GpuTimer {
     /// A timer, on a device that has timestamps.
-    pub fn new(gpu: &crate::Gpu) -> Option<Self> {
-        if !gpu
-            .device
-            .features()
-            .contains(wgpu::Features::TIMESTAMP_QUERY)
-        {
+    pub fn new(gpu: &crate::gpu::Gpu) -> Option<Self> {
+        if !gpu.device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
             return None;
         }
         let set = gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -143,17 +139,14 @@ impl GpuTimer {
 
     /// Start timing a frame: fold in what has come back, and let the
     /// frame's passes ask for timestamps.
-    pub fn begin(&mut self, gpu: &crate::Gpu) {
+    pub fn begin(&mut self, gpu: &crate::gpu::Gpu) {
         if self.waiting.is_some() {
             let _ = gpu.device.poll(wgpu::PollType::Poll);
         }
         if self.mapped.swap(false, Ordering::AcqRel) {
             if let Some(labels) = self.waiting.take() {
                 let ticks: Vec<u64> = match self.read.slice(..).get_mapped_range() {
-                    Ok(view) => view
-                        .chunks_exact(8)
-                        .map(|b| u64::from_le_bytes(b.try_into().unwrap()))
-                        .collect(),
+                    Ok(view) => view.chunks_exact(8).map(|b| u64::from_le_bytes(b.try_into().expect("eight bytes"))).collect(),
                     Err(_) => Vec::new(),
                 };
                 self.read.unmap();
@@ -229,13 +222,11 @@ impl GpuTimer {
             return;
         }
         let mapped = self.mapped.clone();
-        self.read
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |done| {
-                if done.is_ok() {
-                    mapped.store(true, Ordering::Release);
-                }
-            });
+        self.read.slice(..).map_async(wgpu::MapMode::Read, move |done| {
+            if done.is_ok() {
+                mapped.store(true, Ordering::Release);
+            }
+        });
     }
 
     /// The GPU's time for the last frame read back, milliseconds.
@@ -245,10 +236,7 @@ impl GpuTimer {
 
     /// Each pass's average time, milliseconds.
     pub fn times(&self) -> Vec<(String, f32)> {
-        self.times
-            .iter()
-            .map(|(l, t, _)| (l.to_string(), *t))
-            .collect()
+        self.times.iter().map(|(l, t, _)| (l.to_string(), *t)).collect()
     }
 }
 

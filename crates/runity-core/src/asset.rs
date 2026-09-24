@@ -400,6 +400,46 @@ pub fn read(path: impl AsRef<Path>) -> Result<Vec<u8>, AssetError> {
     Ok(bytes)
 }
 
+/// Only a `.rasset`'s header off disk — its kind, ID and name — leaving
+/// the body where it is: what a library opened lazily knows of an asset
+/// before it is first used.
+pub fn read_head(path: impl AsRef<Path>) -> Result<(AssetKind, AssetId, String), AssetError> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path.as_ref())?;
+    let mut head = vec![0u8; HEADER + 18];
+    file.read_exact(&mut head)?;
+    split_header_prefix(&head)?;
+    let n = u16::from_le_bytes([head[HEADER + 16], head[HEADER + 17]]) as usize;
+    head.resize(HEADER + 18 + n, 0);
+    file.read_exact(&mut head[HEADER + 18..])?;
+    head_of_prefix(&head)
+}
+
+/// The header checks of [`split_header`], on the header alone.
+fn split_header_prefix(bytes: &[u8]) -> Result<(), AssetError> {
+    if bytes.len() < HEADER + 18 || bytes[..8] != MAGIC {
+        return Err(AssetError::BadMagic);
+    }
+    let version = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+    if version != FORMAT_VERSION {
+        return Err(AssetError::Version {
+            found: version,
+            expected: FORMAT_VERSION,
+        });
+    }
+    Ok(())
+}
+
+/// [`head_of`], on the header alone.
+fn head_of_prefix(bytes: &[u8]) -> Result<(AssetKind, AssetId, String), AssetError> {
+    let kind = kind_of(bytes)?;
+    split_header_prefix(bytes)?;
+    let id = u128::from_le_bytes(bytes[HEADER..HEADER + 16].try_into().expect("sixteen bytes"));
+    let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
+    let name = std::str::from_utf8(&bytes[HEADER + 18..HEADER + 18 + n]).map_err(|e| AssetError::Corrupt(e.to_string()))?;
+    Ok((kind, AssetId(id), name.to_string()))
+}
+
 /// Borrow the archived asset inside bytes produced by [`read`].
 pub fn view<T>(bytes: &[u8]) -> Result<&T::Archived, AssetError>
 where

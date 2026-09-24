@@ -284,7 +284,7 @@ fn cs_clusters(@builtin(global_invocation_id) id: vec3<u32>) {
     }
     let instance = job.counts.x + i / per;
     let cluster = clusters[i % per];
-    let s = instance * 12u;
+    let s = instance * 13u;
     let model = mat4x4<f32>(instances[s], instances[s + 1u], instances[s + 2u], instances[s + 3u]);
     let scale = max(length(model[0].xyz), max(length(model[1].xyz), length(model[2].xyz)));
     let c = (model * vec4<f32>(cluster.sphere.xyz, 1.0)).xyz;

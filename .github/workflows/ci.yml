@@ -68,6 +68,16 @@ jobs:
       # its scenes name resolves, and every sidecar is current.
       - name: Check the example project
         run: cargo run -q -p runity-cli -- check examples/valley
+      # The example's frames against their budgets (examples/valley/
+      # budgets.ron, DNA postulate 6): its library built, every scene drawn
+      # offscreen, its draws and triangles held. Not its GPU time: a shared
+      # runner's GPU (or software renderer) is not the one the budgets were
+      # set on; `runity perf` without --counts holds that on a machine that
+      # is.
+      - name: The example's frames within budget
+        run: |
+          cargo run -q -p runity-cli -- sync examples/valley
+          cargo run -q -p runity-cli -- perf examples/valley --frames 2 --counts
       # What `runity new` makes has to build against the engine it came
       # with: a template that rots is the first thing a new project meets.
       # And how long it takes to rebuild after a one-line edit is DNA

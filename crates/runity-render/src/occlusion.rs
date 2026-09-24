@@ -80,8 +80,8 @@ struct Box {
     max: vec4<f32>,
 };
 
-// An instance, as the vertex buffer has it: twelve vec4.
-const STRIDE: u32 = 12u;
+// An instance, as the vertex buffer has it: thirteen vec4.
+const STRIDE: u32 = 13u;
 
 @group(0) @binding(0) var<uniform> cull: Cull;
 @group(0) @binding(1) var<storage, read> boxes: array<Box>;
@@ -428,7 +428,7 @@ impl Occlusion {
             batch_of.extend(std::iter::repeat_n(b as u32, batch.count as usize));
             first += batch.count;
         }
-        let stride = 192u64;
+        let stride = 208u64;
         let mut remade = self.boxes.fit(gpu, boxes.len() as u64 * 32);
         remade |= self.batch_of.fit(gpu, batch_of.len() as u64 * 4);
         remade |= self.args.fit(gpu, args.len() as u64 * 4);
