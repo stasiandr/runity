@@ -2,10 +2,10 @@
 //! a compact frame of bytes, and the buffer a replica is shown from.
 //!
 //! * [`Frame`] — particles, the turns of a rod's links and a few numbers
-//!   more (the pull on each end), quantized: each point a quarter-millimetre
-//!   lattice from the first, sent as how each step bends from the one
-//!   before; a link's turn as its twist about the link; both Rice-coded. A chain of forty links, turns and
-//!   all, is about 250 bytes.
+//!   more (the pull on each end), quantized: the points on a
+//!   quarter-millimetre lattice, sent as how each step bends from the one
+//!   before; a link's turn as its twist about the link; both Rice-coded.
+//!   A chain of forty links, turns and all, is under 250 bytes.
 //! * [`PresentedParticles`] — the owner's frames as they came, shown a
 //!   couple of network ticks in the past between the two around the clock,
 //!   the dacha simulator's interpolation buffer for bodies made to hold a
