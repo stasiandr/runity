@@ -142,6 +142,10 @@ pub struct ClothState {
 }
 
 impl ClothState {
+    pub(crate) fn particles_mut(&mut self) -> &mut Particles {
+        &mut self.particles
+    }
+
     pub fn new(cloth: Cloth) -> Self {
         let across = cloth.cells[0].clamp(2, 128) as usize;
         let down = cloth.cells[1].clamp(2, 128) as usize;
@@ -274,7 +278,7 @@ impl ClothState {
         let fastest = self.particles.v.iter().map(|v| v.length()).fold(0.0, f32::max);
         let room = Vec3::splat(radius + fastest * STEP + 0.25);
         self.near.clear();
-        self.near.extend(obstacles.iter().filter(|o| o.near(low - room, high + room)).copied());
+        self.near.extend(obstacles.iter().filter(|o| o.near(low - room, high + room)).cloned());
         if self.cloth.self_collide {
             self.find_close(radius * 2.0 + fastest * STEP);
         }
@@ -607,7 +611,7 @@ mod tests {
             half: Vec3::splat(0.5),
         };
         let mut state = ClothState::new(cloth);
-        settle(&mut state, Mat4::from_translation(Vec3::new(0.0, 1.2, 0.0)), wind(0.0), &[table, Obstacle::ground(0.0)], 3.0);
+        settle(&mut state, Mat4::from_translation(Vec3::new(0.0, 1.2, 0.0)), wind(0.0), &[table.clone(), Obstacle::ground(0.0)], 3.0);
         let p = state.points();
         let (w, h) = state.grid();
         let middle = p[(h / 2) * w + w / 2];

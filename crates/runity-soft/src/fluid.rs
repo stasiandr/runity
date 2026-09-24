@@ -128,6 +128,10 @@ fn spiky_gradient(d: Vec3, h: f32) -> Vec3 {
 }
 
 impl FluidState {
+    pub(crate) fn particles_mut(&mut self) -> &mut Particles {
+        &mut self.particles
+    }
+
     pub fn new(fluid: Fluid) -> Self {
         let spacing = fluid.spacing.max(0.02);
         let h = spacing * 2.0;

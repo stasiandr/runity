@@ -10,6 +10,7 @@
 //! does not know the physics.
 
 pub mod cloth;
+pub mod field;
 pub mod fluid;
 pub mod grains;
 pub mod hair;
@@ -19,10 +20,13 @@ pub mod particles;
 pub mod rod;
 pub mod rope;
 pub mod softbody;
+pub mod unified;
 
 pub use cloth::{run_cloth, Cloth, ClothDress, ClothLine, ClothState, Pinned};
+pub use field::{bake, DistanceField, DistanceFieldDress, DistanceFieldLine, DistanceFieldState, WorldMesh};
 pub use hair::{run_hair, Hair, HairDress, HairLine, HairState};
 pub use obstacle::{Obstacle, Obstacles};
+pub use unified::{frame_starts, run_contacts, sheet_obstacles, Contacts, Starts};
 pub use fluid::{run_fluids, Fluid, FluidDress, FluidLine, FluidLook, FluidMethod, FluidState};
 pub use grains::{run_grains, Grains, GrainsDress, GrainsLine, GrainsState};
 pub use jiggle::{run_jiggle, Jiggle, JiggleDress, JiggleLine, JiggleState};
@@ -38,6 +42,7 @@ pub fn part_kinds() -> Vec<runity_core::parts::PartKind> {
     kinds.extend(jiggle::part_kinds());
     kinds.extend(fluid::part_kinds());
     kinds.extend(grains::part_kinds());
+    kinds.extend(field::part_kinds());
     kinds
 }
 

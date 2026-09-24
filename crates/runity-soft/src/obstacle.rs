@@ -3,10 +3,13 @@
 //! the physics' colliders; the facade hands them over as these
 //! (docs/simulation.md), and a test or a server hands its own.
 
+use std::sync::Arc;
+
 use glam::{Mat4, Quat, Vec3};
+use runity_geometry::sdf::Sdf;
 
 /// A solid shape, in the world.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Obstacle {
     /// Everything below the plane through `point` facing `normal` is
     /// solid: the ground.
@@ -16,6 +19,87 @@ pub enum Obstacle {
     Capsule { a: Vec3, b: Vec3, radius: f32 },
     /// A box turned by `rotation`, `half` its size on each of its axes.
     Box { center: Vec3, rotation: Quat, half: Vec3 },
+    /// Whatever shape a signed distance field says: a statue, a rock, a
+    /// car's body — the scene's meshes baked once (docs/simulation.md,
+    /// item 12). Solid where the field is below zero.
+    Field(Arc<Sdf>),
+    /// A cloth as it is this step, its triangles `thick` either side, as
+    /// what else is soft meets it within its steps ([`crate::unified`]).
+    Sheet(Arc<Sheet>),
+}
+
+/// Triangles sorted into a grid, so that a point tries only those near it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sheet {
+    pub triangles: Vec<[Vec3; 3]>,
+    pub thick: f32,
+    pub low: Vec3,
+    pub high: Vec3,
+    cell: f32,
+    cells: std::collections::HashMap<[i32; 3], Vec<u32>>,
+}
+
+impl Sheet {
+    pub fn new(triangles: Vec<[Vec3; 3]>, thick: f32) -> Self {
+        let (mut low, mut high) = (Vec3::MAX, Vec3::MIN);
+        let mut longest = 0.0f32;
+        for t in &triangles {
+            for v in t {
+                low = low.min(*v);
+                high = high.max(*v);
+            }
+            longest = longest.max((t[1] - t[0]).length()).max((t[2] - t[0]).length());
+        }
+        let cell = (longest * 2.0).max(0.05);
+        let key = |p: Vec3| {
+            let c = (p / cell).floor();
+            [c.x as i32, c.y as i32, c.z as i32]
+        };
+        let mut cells: std::collections::HashMap<[i32; 3], Vec<u32>> = Default::default();
+        for (i, t) in triangles.iter().enumerate() {
+            let (a, b) = (key(t[0].min(t[1]).min(t[2])), key(t[0].max(t[1]).max(t[2])));
+            // A torn or thrown triangle is left out.
+            if (0..3).any(|k| b[k] - a[k] > 8) || !t.iter().all(|v| v.is_finite()) {
+                continue;
+            }
+            for x in a[0]..=b[0] {
+                for y in a[1]..=b[1] {
+                    for z in a[2]..=b[2] {
+                        cells.entry([x, y, z]).or_default().push(i as u32);
+                    }
+                }
+            }
+        }
+        Self { triangles, thick, low: low - Vec3::splat(thick), high: high + Vec3::splat(thick), cell, cells }
+    }
+
+    /// The nearest point of it to `p` within `reach`, and which way its
+    /// triangle faces.
+    fn nearest(&self, p: Vec3, reach: f32) -> Option<(Vec3, Vec3)> {
+        if p.cmplt(self.low - Vec3::splat(reach)).any() || p.cmpgt(self.high + Vec3::splat(reach)).any() {
+            return None;
+        }
+        let r = (reach / self.cell).ceil() as i32;
+        let c = (p / self.cell).floor();
+        let c = [c.x as i32, c.y as i32, c.z as i32];
+        let mut best: Option<(f32, Vec3, Vec3)> = None;
+        for x in c[0] - r..=c[0] + r {
+            for y in c[1] - r..=c[1] + r {
+                for z in c[2] - r..=c[2] + r {
+                    let Some(here) = self.cells.get(&[x, y, z]) else { continue };
+                    for &i in here {
+                        let [a, b, cc] = self.triangles[i as usize];
+                        let q = runity_geometry::sdf::closest_on_triangle(p, a, b, cc);
+                        let d = p.distance_squared(q);
+                        if best.is_none_or(|(e, _, _)| d < e) {
+                            best = Some((d, q, (b - a).cross(cc - a)));
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(_, q, n)| (q, n.normalize_or(Vec3::Y)))
+    }
 }
 
 impl Obstacle {
@@ -42,9 +126,9 @@ impl Obstacle {
     /// a cheap test that leaves most of a scene out before each point is
     /// tried against what is left.
     pub fn near(&self, low: Vec3, high: Vec3) -> bool {
-        match (*self, self.bounds()) {
+        match (self, self.bounds()) {
             // A plane reaches everywhere below it.
-            (Obstacle::Plane { point, normal }, _) => {
+            (&Obstacle::Plane { point, normal }, _) => {
                 let n = normal.normalize_or(Vec3::Y);
                 let lowest = Vec3::select(n.cmpge(Vec3::ZERO), low, high);
                 (lowest - point).dot(n) <= 0.0
@@ -80,6 +164,24 @@ impl Obstacle {
     /// deep. `None` when it does not touch.
     pub fn contact(&self, p: Vec3, radius: f32) -> Option<(Vec3, f32)> {
         match *self {
+            Obstacle::Field(ref field) => {
+                if !field.contains(p) {
+                    return None;
+                }
+                let depth = radius - field.sample(p);
+                (depth > 0.0).then(|| (field.gradient(p), depth))
+            }
+            Obstacle::Sheet(ref sheet) => {
+                let (q, n) = sheet.nearest(p, radius + sheet.thick)?;
+                let d = p - q;
+                let far = d.length();
+                let depth = radius + sheet.thick - far;
+                if depth <= 0.0 {
+                    return None;
+                }
+                let out = if far > 1e-6 { d / far } else { n };
+                Some((out, depth))
+            }
             Obstacle::Plane { point, normal } => {
                 let n = normal.normalize_or(Vec3::Y);
                 let depth = radius - (p - point).dot(n);
@@ -197,17 +299,39 @@ impl Obstacles {
         out.extend(
             found
                 .into_iter()
-                .map(|i| self.all[i as usize])
+                .map(|i| self.all[i as usize].clone())
                 .filter(|o| o.near(low, high)),
         );
     }
 }
 
 impl Obstacle {
+    /// How far `p` is from its surface, negative inside: what a distance
+    /// field is baked from ([`crate::field`]).
+    pub fn distance(&self, p: Vec3) -> f32 {
+        match *self {
+            Obstacle::Plane { point, normal } => (p - point).dot(normal.normalize_or(Vec3::Y)),
+            Obstacle::Sphere { center, radius } => p.distance(center) - radius,
+            Obstacle::Capsule { a, b, radius } => {
+                let ab = b - a;
+                let t = ((p - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                p.distance(a + ab * t) - radius
+            }
+            Obstacle::Box { center, rotation, half } => {
+                let q = (rotation.inverse() * (p - center)).abs() - half;
+                q.max(Vec3::ZERO).length() + q.max_element().min(0.0)
+            }
+            Obstacle::Field(ref field) => field.sample(p),
+            Obstacle::Sheet(ref sheet) => sheet.nearest(p, f32::MAX / 4.0).map_or(f32::MAX, |(q, _)| p.distance(q) - sheet.thick),
+        }
+    }
+
     /// The box it lies in; `None` for a plane, which has no end.
     pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
         match *self {
             Obstacle::Plane { .. } => None,
+            Obstacle::Field(ref field) => Some((field.low, field.high())),
+            Obstacle::Sheet(ref sheet) => Some((sheet.low, sheet.high)),
             Obstacle::Sphere { center, radius } => Some((center - Vec3::splat(radius), center + Vec3::splat(radius))),
             Obstacle::Capsule { a, b, radius } => Some((a.min(b) - Vec3::splat(radius), a.max(b) + Vec3::splat(radius))),
             Obstacle::Box { center, rotation, half } => {

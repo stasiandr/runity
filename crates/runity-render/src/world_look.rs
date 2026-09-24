@@ -269,6 +269,11 @@ pub struct Copies {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmokeVolume(pub crate::volume::Smoke);
 
+/// The scene's distance field, on the entity that bakes it: the frame
+/// draws occlusion and soft shadows by it ([`crate::distance`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DistanceFieldLook(pub crate::distance::DistanceField);
+
 /// A local look at an entity, from its line's `post_volume`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PostVolumeBox(pub crate::scene::PostVolume);
@@ -847,6 +852,7 @@ pub fn build_frame_where(
         decals,
         puffs,
         smoke,
+        distance_field: world.query::<(&DistanceFieldLook, Option<&SceneId>)>().iter().find(|(_, line)| keep(line.map(|l| l.0))).map(|(f, _)| f.0.clone()),
         gpu_particles,
         plumes,
         terrain,

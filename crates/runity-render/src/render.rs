@@ -550,6 +550,9 @@ pub struct Frame {
     /// Smoke and fire from grids, in the fog ([`crate::volume::Smoke`]),
     /// the nearest the eye first.
     pub smoke: Vec<crate::volume::Smoke>,
+    /// The scene's signed distance field, for occlusion and soft sun
+    /// shadows ([`crate::distance`]); none by default.
+    pub distance_field: Option<crate::distance::DistanceField>,
     /// Emitters whose particles are on the GPU ([`crate::particles_gpu`]).
     pub gpu_particles: Vec<crate::particles_gpu::GpuEmitter>,
     /// Where sand may blow off dune crests ([`crate::volume::Plume`]):
@@ -601,6 +604,7 @@ impl Default for Frame {
             volumetric_fog: crate::volume::VolumetricFog::OFF,
             puffs: Vec::new(),
             smoke: Vec::new(),
+            distance_field: None,
             gpu_particles: Vec::new(),
             plumes: Vec::new(),
             terrain: None,
@@ -731,6 +735,9 @@ struct FrameUniform {
     glass: [f32; 4],
     /// A stroke of lightning's channel: points, brightness in `w`.
     bolt: [[f32; 4]; crate::weather::BOLT_POINTS],
+    /// The scene's distance field: its box and 1 when there is one; its
+    /// far corner and range.
+    distance: [[f32; 4]; 2],
 }
 
 /// What the shadow pass needs for one cascade.
@@ -1031,6 +1038,8 @@ pub struct Renderer {
     trample: crate::foliage::TrampleMap,
     trample_texture: wgpu::Texture,
     trample_view: wgpu::TextureView,
+    /// The scene's distance field's texture.
+    distance: crate::distance::DistanceTexture,
     terrain_made: Option<crate::terrain::Terrain>,
     /// The scene as rays see it, on a device that traces.
     ray: Option<crate::ray::RayScene>,
@@ -2402,6 +2411,17 @@ impl Renderer {
                 },
                 count: None,
             },
+            // The scene's distance field, for occlusion and soft shadows.
+            wgpu::BindGroupLayoutEntry {
+                binding: 31,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: None,
+            },
             // The last frame, for screen-space reflections.
             wgpu::BindGroupLayoutEntry {
                 binding: 22,
@@ -2550,12 +2570,14 @@ impl Renderer {
             view_formats: &[],
         });
         let trample_view = trample_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let distance = crate::distance::DistanceTexture::new(gpu);
         let bind_group = frame_bind_group(
             gpu,
             &layout,
             &FrameInputs {
                 terrain_heights: &terrain_heights,
                 trample: &trample_view,
+                distance: &distance.view,
                 // Any texel will do until the scene's targets exist; the
                 // renderer rebinds once it is built.
                 history: clouds.view(),
@@ -2916,6 +2938,7 @@ impl Renderer {
             trample: crate::foliage::TrampleMap::default(),
             trample_texture,
             trample_view,
+            distance,
             blank_depth: gpu
                 .device
                 .create_texture(&wgpu::TextureDescriptor {
@@ -2962,6 +2985,7 @@ impl Renderer {
             &FrameInputs {
                 terrain_heights: &self.terrain_heights,
                 trample: &self.trample_view,
+                distance: &self.distance.view,
                 history: &self.scene.history_view,
                 clouds: self.clouds.view(),
                 scene_depth: if making_fog {
@@ -3859,6 +3883,11 @@ impl Renderer {
         }
         let mut frame = frame.clone();
         for live in std::mem::take(&mut frame.live_meshes) {
+            // Nothing to draw yet — water not poured, a mesh not made:
+            // an empty buffer is no buffer to the device.
+            if live.vertices.is_empty() || live.indices.is_empty() {
+                continue;
+            }
             let mesh = match self.live.get(&live.key) {
                 Some(&(mesh, version)) if version == live.version => mesh,
                 Some(&(mesh, _)) => {
@@ -4493,6 +4522,10 @@ impl Renderer {
                 .time
                 .unwrap_or_else(|| self.started.elapsed().as_secs_f32()),
         );
+        // A new distance field: into its texture, and bound anew.
+        if self.distance.update(gpu, frame.distance_field.as_ref()) {
+            self.rebind(gpu);
+        }
         // The benders press into the trample map, which springs back as
         // the clock runs; a reflection probe's picture leaves it alone.
         if probe.is_none() && !self.picturing {
@@ -4748,6 +4781,7 @@ impl Renderer {
                 }
                 out
             },
+            distance: crate::distance::uniform(frame.distance_field.as_ref()),
             terrain_look: fine_terrain
                 .and_then(|t| frame.draws.iter().find(|d| d.mesh == t.mesh))
                 .map_or([[0.0; 4]; 7], |d| {
@@ -5479,6 +5513,8 @@ impl Renderer {
                 &frame.gpu_particles,
                 drawn,
                 frame.camera.apparent_eye(),
+                if prepass_drawn { &self.ssao.depth } else { &self.blank_depth },
+                prepass_drawn,
             );
         }
         {
@@ -5839,6 +5875,8 @@ struct FrameInputs<'a> {
     terrain_heights: &'a wgpu::TextureView,
     /// How the grass is trampled, for the vertex shader.
     trample: &'a wgpu::TextureView,
+    /// The scene's distance field.
+    distance: &'a wgpu::TextureView,
 }
 
 /// A terrain's heights as a texture of `side`² floats, read texel by
@@ -5925,6 +5963,7 @@ fn frame_bind_group(
         view(22, inputs.history),
         view(23, inputs.terrain_heights),
         view(30, inputs.trample),
+        view(31, inputs.distance),
     ];
     if let Some((rays, materials)) = inputs.rays {
         entries.push(wgpu::BindGroupEntry {

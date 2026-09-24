@@ -24,7 +24,7 @@ NEXT_STEPS.
 | `runity-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
 | `runity-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
 | `runity-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
-| `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`: верёвки, ткань, волосы, мягкие тела, PBF/SPH (docs/simulation.md) | ядро, geometry |
+| `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`, `grains`, `distance_field`: верёвки, ткань, волосы, мягкие тела, PBF/SPH, гравий, SDF сцены и общие контакты между ними (docs/simulation.md) | ядро, geometry |
 | `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
 | `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
 | `runity-gpu` | устройство, поверхность, offscreen | — |

@@ -42,6 +42,7 @@ pub fn dressers<'a>(
         out.push(Box::new(crate::soft::JiggleDress));
         out.push(Box::new(crate::soft::FluidDress));
         out.push(Box::new(crate::soft::GrainsDress));
+        out.push(Box::new(crate::soft::DistanceFieldDress));
         out.push(Box::new(crate::soft::SoftLookDress { link, sphere, palette }));
     }
     #[cfg(feature = "fluid")]

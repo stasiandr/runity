@@ -72,6 +72,10 @@ pub struct GrainsState {
 }
 
 impl GrainsState {
+    pub(crate) fn particles_mut(&mut self) -> &mut Particles {
+        &mut self.particles
+    }
+
     pub fn new(grains: Grains) -> Self {
         Self { grains, particles: Particles::default(), grid: Default::default(), placed: false, owed: 0.0 }
     }
@@ -120,59 +124,86 @@ impl GrainsState {
         let r = d * 0.5;
         let mu = self.grains.friction.clamp(0.0, 2.0);
         let h = STEP / SUBSTEPS as f32;
-        let key = |p: Vec3| ((p.x / d).floor() as i32, (p.y / d).floor() as i32, (p.z / d).floor() as i32);
+        // Pre-stabilisation (Macklin et al. 2014, 5.1): what overlaps before
+        // the step — pushed together by something else, a cloth, a hand —
+        // is put apart first, where and where it was alike, so that the
+        // step does not take the push as speed and throw the grains.
+        self.sort();
+        for _ in 0..2 {
+            self.push_apart(0.0);
+        }
+        self.particles.collide(r, 0.0, obstacles);
+        for i in 0..self.particles.len() {
+            self.particles.was[i] = self.particles.x[i];
+        }
         for _ in 0..SUBSTEPS {
             self.particles.predict(h, |_| Vec3::new(0.0, -9.81, 0.0));
-            for list in self.grid.values_mut() {
-                list.clear();
-            }
-            for (i, p) in self.particles.x.iter().enumerate() {
-                self.grid.entry(key(*p)).or_default().push(i as u32);
-            }
-            let n = self.particles.len();
+            self.sort();
             for _ in 0..2 {
-                for i in 0..n {
-                    let p = self.particles.x[i];
-                    let (cx, cy, cz) = key(p);
-                    for dz in -1..=1 {
-                        for dy in -1..=1 {
-                            for dx in -1..=1 {
-                                let Some(cell) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
-                                for &j in cell {
-                                    let j = j as usize;
-                                    if j <= i {
-                                        continue;
-                                    }
-                                    let x = &mut self.particles.x;
-                                    let delta = x[j] - x[i];
-                                    let apart = delta.length();
-                                    if apart >= d || apart < 1e-9 {
-                                        continue;
-                                    }
-                                    let normal = delta / apart;
-                                    let depth = d - apart;
-                                    x[i] -= normal * depth * 0.5;
-                                    x[j] += normal * depth * 0.5;
-                                    // Friction: of how far they slid past
-                                    // each other this substep, as much taken
-                                    // back as the push allows.
-                                    let was = &self.particles.was;
-                                    let slid = (x[j] - was[j]) - (x[i] - was[i]);
-                                    let along = slid - normal * slid.dot(normal);
-                                    let length = along.length();
-                                    if length > 1e-9 {
-                                        let hold = along * ((mu * depth / length).min(1.0) * 0.5);
-                                        x[i] += hold;
-                                        x[j] -= hold;
-                                    }
-                                }
+                self.push_apart(mu);
+                self.particles.collide(r, mu, obstacles);
+            }
+            self.particles.finish(h, 0.1);
+        }
+    }
+
+    fn key(&self, p: Vec3) -> (i32, i32, i32) {
+        let d = self.grains.grain.max(0.005);
+        ((p.x / d).floor() as i32, (p.y / d).floor() as i32, (p.z / d).floor() as i32)
+    }
+
+    /// Each grain into the grid of cells a grain across.
+    fn sort(&mut self) {
+        for list in self.grid.values_mut() {
+            list.clear();
+        }
+        for i in 0..self.particles.len() {
+            let k = self.key(self.particles.x[i]);
+            self.grid.entry(k).or_default().push(i as u32);
+        }
+    }
+
+    /// One pass pushing apart grains that overlap, with friction `mu`.
+    fn push_apart(&mut self, mu: f32) {
+        let d = self.grains.grain.max(0.005);
+        let n = self.particles.len();
+        for i in 0..n {
+            let (cx, cy, cz) = self.key(self.particles.x[i]);
+            for dz in -1..=1 {
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let Some(cell) = self.grid.get(&(cx + dx, cy + dy, cz + dz)) else { continue };
+                        for &j in cell {
+                            let j = j as usize;
+                            if j <= i {
+                                continue;
+                            }
+                            let x = &mut self.particles.x;
+                            let delta = x[j] - x[i];
+                            let apart = delta.length();
+                            if apart >= d || apart < 1e-9 {
+                                continue;
+                            }
+                            let normal = delta / apart;
+                            let depth = d - apart;
+                            x[i] -= normal * depth * 0.5;
+                            x[j] += normal * depth * 0.5;
+                            // Friction: of how far they slid past each other
+                            // this substep, as much taken back as the push
+                            // allows.
+                            let was = &self.particles.was;
+                            let slid = (x[j] - was[j]) - (x[i] - was[i]);
+                            let along = slid - normal * slid.dot(normal);
+                            let length = along.length();
+                            if length > 1e-9 {
+                                let hold = along * ((mu * depth / length).min(1.0) * 0.5);
+                                x[i] += hold;
+                                x[j] -= hold;
                             }
                         }
                     }
                 }
-                self.particles.collide(r, mu, obstacles);
             }
-            self.particles.finish(h, 0.1);
         }
     }
 

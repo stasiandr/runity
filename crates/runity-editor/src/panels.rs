@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "snow_cover" | "ragdoll" | "crawler" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "distance_field" | "snow_cover" | "ragdoll" | "crawler" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 40] = [
+pub const FIELDS: [&str; 41] = [
     "name",
     "model",
     "prefab",
@@ -119,6 +119,7 @@ pub const FIELDS: [&str; 40] = [
     "floats",
     "smoke",
     "grains",
+    "distance_field",
     "snow_cover",
     "ragdoll",
     "crawler",
@@ -412,6 +413,10 @@ impl Session {
             (
                 "grains".into(),
                 desc.grains().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "distance_field".into(),
+                desc.distance_field().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "snow_cover".into(),
@@ -892,6 +897,14 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Grains>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "distance_field" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::DistanceField>(field, text)?)
                 })
                 .as_ref(),
             ),

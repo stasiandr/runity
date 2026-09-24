@@ -52,6 +52,11 @@ struct Params {
     direction: vec4<f32>,
     // slots, where the new ones start, how many, and the first's number
     counts: vec4<u32>,
+    // to the world from the screen
+    inverse_view_projection: mat4x4<f32>,
+    // 1 when they bounce off the scene's depth, the bounce, how thick a
+    // surface is taken to be, 0
+    collide: vec4<f32>,
 };
 
 struct Particle {
@@ -65,6 +70,17 @@ struct Particle {
 @group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
 // The same slots, read by the drawing: a vertex stage may not write.
 @group(0) @binding(2) var<storage, read> living: array<Particle>;
+// The scene's depth, from the prepass: what they bounce off.
+@group(1) @binding(0) var scene_depth: texture_depth_2d;
+
+/// Where the scene is, in the world, at a pixel of its depth.
+fn scene_point(pixel: vec2<i32>, size: vec2<f32>) -> vec3<f32> {
+    let d = textureLoad(scene_depth, pixel, 0);
+    let uv = (vec2<f32>(pixel) + 0.5) / size;
+    let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d, 1.0);
+    let w = params.inverse_view_projection * ndc;
+    return w.xyz / w.w;
+}
 
 fn hash(n: u32) -> f32 {
     var x = n * 747796405u + 2891336453u;
@@ -121,6 +137,35 @@ fn cs_step(@builtin(global_invocation_id) id: vec3<u32>) {
     let dt = params.shape.w;
     p.velocity = vec4<f32>(p.velocity.xyz + vec3<f32>(0.0, params.motion.z, 0.0) * dt, p.velocity.w);
     p.at = vec4<f32>(p.at.xyz + p.velocity.xyz * dt, p.at.w + dt);
+    // Behind what is drawn, and not far behind: back onto the surface, and
+    // bounced off it.
+    if params.collide.x > 0.5 {
+        let clip = params.view_projection * vec4<f32>(p.at.xyz, 1.0);
+        if clip.w > 0.0 {
+            let ndc = clip.xyz / clip.w;
+            if all(abs(ndc.xy) < vec2<f32>(0.999)) {
+                let size = vec2<f32>(textureDimensions(scene_depth));
+                let pixel = vec2<i32>((vec2<f32>(ndc.x, -ndc.y) * 0.5 + 0.5) * size);
+                let surface = scene_point(pixel, size);
+                let depth = textureLoad(scene_depth, pixel, 0);
+                if ndc.z > depth && distance(surface, p.at.xyz) < params.collide.z {
+                    let right = scene_point(pixel + vec2<i32>(1, 0), size) - surface;
+                    let down = scene_point(pixel + vec2<i32>(0, 1), size) - surface;
+                    var n = normalize(cross(down, right));
+                    if dot(n, params.eye.xyz - surface) < 0.0 {
+                        n = -n;
+                    }
+                    let v = p.velocity.xyz;
+                    let into = dot(v, n);
+                    if into < 0.0 {
+                        let along = v - n * into;
+                        p.velocity = vec4<f32>(along * 0.8 - n * into * params.collide.y, p.velocity.w);
+                    }
+                    p.at = vec4<f32>(surface + n * 0.01, p.at.w);
+                }
+            }
+        }
+    }
     if p.at.w >= p.velocity.w {
         p.velocity.w = 0.0;
     }
@@ -195,6 +240,8 @@ struct Params {
     end_color: [f32; 4],
     direction: [f32; 4],
     counts: [u32; 4],
+    inverse_view_projection: [[f32; 4]; 4],
+    collide: [f32; 4],
 }
 
 struct Pool {
@@ -216,6 +263,7 @@ struct Pool {
 pub(crate) struct GpuParticles {
     layout: wgpu::BindGroupLayout,
     draw_layout: wgpu::BindGroupLayout,
+    depth_layout: wgpu::BindGroupLayout,
     spawn: wgpu::ComputePipeline,
     step: wgpu::ComputePipeline,
     draw: wgpu::RenderPipeline,
@@ -272,9 +320,22 @@ impl GpuParticles {
                 storage(2, wgpu::ShaderStages::VERTEX, true),
             ],
         });
+        let depth_layout = gpu.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gpu particles depth"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
         let pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu particles step"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&depth_layout)],
             immediate_size: 0,
         });
         let draw_pipeline_layout = gpu.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -331,6 +392,7 @@ impl GpuParticles {
             step: compute("cs_step"),
             layout,
             draw_layout,
+            depth_layout,
             draw,
             pools: std::collections::HashMap::new(),
             frame: 0,
@@ -346,9 +408,20 @@ impl GpuParticles {
         emitters: &[GpuEmitter],
         view_projection: Mat4,
         eye: Vec3,
+        depth: &wgpu::TextureView,
+        depth_drawn: bool,
     ) {
         self.frame += 1;
         self.drawn.clear();
+        // The scene's depth this frame, for those that bounce off it.
+        let depth_group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu particles depth"),
+            layout: &self.depth_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(depth),
+            }],
+        });
         for e in emitters {
             let em = &e.emitter;
             let want = ((em.rate.max(0.0) * em.life.max(0.01) * 1.3).ceil() as u32
@@ -445,6 +518,8 @@ impl GpuParticles {
                 end_color: [end[0], end[1], end[2], end_alpha.clamp(0.0, 1.0)],
                 direction: [direction.x, direction.y, direction.z, if em.local { 1.0 } else { 0.0 }],
                 counts: [pool.capacity, pool.head, spawn, first],
+                inverse_view_projection: view_projection.inverse().to_cols_array_2d(),
+                collide: [if em.collide && depth_drawn { 1.0 } else { 0.0 }, 0.35, 0.4, 0.0],
             };
             gpu.queue.write_buffer(&pool.params, 0, bytemuck::bytes_of(&params));
             pool.head = (pool.head + spawn) % pool.capacity;
@@ -453,6 +528,7 @@ impl GpuParticles {
                 timestamp_writes: crate::gpu_timer::compute("gpu particles"),
             });
             pass.set_bind_group(0, &pool.group, &[]);
+            pass.set_bind_group(1, &depth_group, &[]);
             if spawn > 0 {
                 pass.set_pipeline(&self.spawn);
                 pass.dispatch_workgroups(spawn.div_ceil(64), 1, 1);

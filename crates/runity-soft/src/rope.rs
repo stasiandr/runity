@@ -187,6 +187,10 @@ pub struct RopeState {
 }
 
 impl RopeState {
+    pub(crate) fn rod_mut(&mut self) -> Option<&mut Rod> {
+        self.rod.as_mut()
+    }
+
     pub fn new(rope: Rope) -> Self {
         Self {
             rope,
@@ -300,7 +304,7 @@ impl RopeState {
         let fastest = rod.particles.v.iter().map(|v| v.length()).fold(0.0, f32::max);
         let room = Vec3::splat(rod.radius + fastest * STEP + 0.25);
         self.near.clear();
-        self.near.extend(obstacles.iter().filter(|o| o.near(low - room, high + room)).copied());
+        self.near.extend(obstacles.iter().filter(|o| o.near(low - room, high + room)).cloned());
         let obstacles = &self.near;
         let h = STEP / SUBSTEPS as f32;
         let level = Vec3::new(wind.direction.x, 0.0, wind.direction.z).normalize_or_zero();

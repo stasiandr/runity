@@ -142,6 +142,10 @@ fn corner(c: u32) -> [u32; 3] {
 }
 
 impl SoftBodyState {
+    pub(crate) fn particles_mut(&mut self) -> &mut Particles {
+        &mut self.particles
+    }
+
     /// A soft body, drawn as `mesh` (the model's vertices and triangles, in
     /// the entity's space) or, with none, as its lattice.
     pub fn new(body: SoftBody, mesh: Option<(&[Vertex], &[u32])>) -> Self {

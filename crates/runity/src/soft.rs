@@ -25,6 +25,20 @@ pub fn obstacles(world: &World) -> Vec<Obstacle> {
 /// [`obstacles`], leaving out the entities `skip` says: water leaves out
 /// what floats on it.
 pub fn obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> Vec<Obstacle> {
+    let mut out = primitives(world, |e, _| skip(e));
+    // The scene's distance fields: its meshes, baked.
+    out.extend(
+        world
+            .query::<&DistanceFieldState>()
+            .iter()
+            .filter_map(|f| f.baked.clone())
+            .map(Obstacle::Field),
+    );
+    out
+}
+
+/// The colliders that are simple shapes, but those `skip` says.
+fn primitives(world: &World, skip: impl Fn(hecs::Entity, Option<crate::body::Body>) -> bool) -> Vec<Obstacle> {
     use crate::bodies::{Physics, Shape};
     use crate::body::{Body, Collider};
     let mut out = Vec::new();
@@ -32,7 +46,7 @@ pub fn obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> Vec<
         .query::<(hecs::Entity, &Shape, &WorldTransform, Option<&Physics>)>()
         .iter()
     {
-        if matches!(body, Some(Physics(Body::Trigger))) || skip(entity) {
+        if matches!(body, Some(Physics(Body::Trigger))) || skip(entity, body.map(|b| b.0)) {
             continue;
         }
         let placed = placed.0;
@@ -57,9 +71,60 @@ pub fn obstacles_but(world: &World, skip: impl Fn(hecs::Entity) -> bool) -> Vec<
     out
 }
 
+/// Metres either side of a surface the render's copy of a distance field
+/// tells apart.
+const FIELD_RANGE: f32 = 2.0;
+
+/// Bake each distance field not yet baked, from what stands still: the
+/// physics' simple shapes and its mesh colliders. The render gets it too,
+/// when the line asks.
+pub fn bake_fields(world: &mut World) {
+    use crate::bodies::Physics;
+    use crate::body::Body;
+    let waiting: Vec<(hecs::Entity, DistanceField, glam::Mat4)> = world
+        .query::<(hecs::Entity, &DistanceFieldState, &WorldTransform)>()
+        .iter()
+        .filter(|(_, s, _)| s.baked.is_none())
+        .map(|(e, s, placed)| (e, s.field, placed.0))
+        .collect();
+    if waiting.is_empty() {
+        return;
+    }
+    let moves = |b: Option<Body>| matches!(b, Some(Body::Dynamic | Body::Kinematic));
+    let still = primitives(world, |_, body| moves(body));
+    let meshes: Vec<(crate::physics::CollisionMesh, glam::Mat4)> = world
+        .query::<(&crate::physics::CollisionMesh, &WorldTransform, Option<&Physics>)>()
+        .iter()
+        .filter(|(_, _, body)| !moves(body.map(|b| b.0)))
+        .map(|(mesh, placed, _)| (mesh.clone(), placed.0))
+        .collect();
+    let meshes: Vec<WorldMesh> = meshes
+        .iter()
+        .map(|(m, placed)| WorldMesh { vertices: &m.vertices, triangles: &m.triangles, placed: *placed })
+        .collect();
+    for (entity, field, placed) in waiting {
+        let sdf = std::sync::Arc::new(bake(&field, placed, &still, &meshes));
+        if field.draw {
+            let [x, y, z] = sdf.size;
+            let look = crate::distance::DistanceField {
+                low: sdf.low,
+                high: sdf.high(),
+                size: [x as u32, y as u32, z as u32],
+                range: FIELD_RANGE,
+                cells: std::sync::Arc::new(sdf.bytes(FIELD_RANGE)),
+            };
+            let _ = world.insert_one(entity, crate::world_look::DistanceFieldLook(look));
+        }
+        if let Ok(mut state) = world.get::<&mut DistanceFieldState>(entity) {
+            state.baked = Some(sdf);
+        }
+    }
+}
+
 /// Every soft thing on by `seconds`, lying on the physics' colliders: the
 /// module's fixed-step system.
 pub fn step(world: &mut World, seconds: f32) {
+    bake_fields(world);
     let ropes = world.query::<&RopeState>().iter().next().is_some();
     let cloth = world.query::<&ClothState>().iter().next().is_some();
     let hair = world.query::<&HairState>().iter().next().is_some();
@@ -72,25 +137,38 @@ pub fn step(world: &mut World, seconds: f32) {
     if !ropes && !cloth && !hair && !bodies && !fluids && !grains {
         return;
     }
-    let obstacles = Obstacles::new(obstacles(world));
-    if ropes {
-        run_ropes(world, seconds, &obstacles);
-    }
+    // Where everything is before it moves: what went through what.
+    let starts = frame_starts(world);
+    let solid = obstacles(world);
+    let obstacles = Obstacles::new(solid.clone());
     if cloth {
         run_cloth(world, seconds, &obstacles);
     }
     if hair {
         run_hair(world, seconds, &obstacles);
     }
+    // The rest meet the cloths as they now are, within their own steps.
+    let with_sheets = if cloth {
+        let mut all = solid;
+        all.extend(sheet_obstacles(world));
+        Obstacles::new(all)
+    } else {
+        obstacles.clone()
+    };
+    if ropes {
+        run_ropes(world, seconds, &with_sheets);
+    }
     if bodies {
-        run_soft_bodies(world, seconds, &obstacles);
+        run_soft_bodies(world, seconds, &with_sheets);
     }
     if fluids {
-        run_fluids(world, seconds, &obstacles);
+        run_fluids(world, seconds, &with_sheets);
     }
     if grains {
-        run_grains(world, seconds, &obstacles);
+        run_grains(world, seconds, &with_sheets);
     }
+    // Then each kind against the others: one solver's contacts.
+    run_contacts(world, &starts, &obstacles);
 }
 
 /// Where each soft thing is, into what the render draws: a rope's tube
@@ -124,7 +202,9 @@ pub fn show(world: &mut World, _seconds: f32) {
             (_, Some(copies)) => copies.placed = state.drops(),
             (Some(live), None) => {
                 let (vertices, indices) = state.surface(placed.0);
-                live.set(vertices, indices);
+                if !vertices.is_empty() {
+                    live.set(vertices, indices);
+                }
             }
             _ => {}
         }

@@ -14,6 +14,7 @@ pub mod atmosphere;
 pub mod clouds;
 pub mod cluster;
 pub mod decals;
+pub mod distance;
 pub mod exposure;
 pub mod floaters;
 pub mod foliage;

@@ -71,6 +71,7 @@ pub use runity_render::cluster;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub use runity_render::decals;
+pub use runity_render::distance;
 #[cfg(feature = "dialogue")]
 pub use runity_dialogue::dialogue;
 #[cfg(feature = "discord")]
@@ -402,7 +403,7 @@ pub mod scene {
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{Cloth, Fluid, Grains, Hair, Jiggle, Rope, RopeKind, SoftBody};
+    pub use crate::soft::{Cloth, DistanceField, Fluid, Grains, Hair, Jiggle, Rope, RopeKind, SoftBody};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{Dents, Fracture};
     #[cfg(feature = "fluid")]
@@ -456,7 +457,7 @@ pub mod prelude {
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{ClothLine, FluidLine, GrainsLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
+    pub use crate::soft::{ClothLine, DistanceFieldLine, FluidLine, GrainsLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{DentsLine, FractureLine};
     #[cfg(feature = "fluid")]

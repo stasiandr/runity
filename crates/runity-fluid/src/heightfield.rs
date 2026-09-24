@@ -764,7 +764,7 @@ mod tests {
         let water = ShallowWater { size: Vec2::new(4.0, 4.0), cells: 40, depth: 0.3, dam: 0.0, friction: 0.1 };
         let mut state = ShallowState::new(water);
         let rock = Obstacle::Box { center: Vec3::new(0.0, 0.5, 0.0), rotation: glam::Quat::IDENTITY, half: Vec3::splat(0.5) };
-        state.advance(Mat4::IDENTITY, &[Obstacle::ground(0.0), rock], 1.0 / 60.0);
+        state.advance(Mat4::IDENTITY, &[Obstacle::ground(0.0), rock.clone()], 1.0 / 60.0);
         // No water inside the rock.
         assert!(state.height_at(Vec3::new(0.0, 0.0, 0.0)).is_none());
         let level = state.height_at(Vec3::new(1.5, 0.0, 1.5)).unwrap();
@@ -772,7 +772,7 @@ mod tests {
         // A second rock pushed down into it: the water rises round about.
         let sunk = Obstacle::Box { center: Vec3::new(-1.2, 0.4, 0.0), rotation: glam::Quat::IDENTITY, half: Vec3::new(0.4, 0.4, 0.8) };
         for _ in 0..240 {
-            state.advance(Mat4::IDENTITY, &[Obstacle::ground(0.0), rock, sunk], 1.0 / 60.0);
+            state.advance(Mat4::IDENTITY, &[Obstacle::ground(0.0), rock.clone(), sunk.clone()], 1.0 / 60.0);
         }
         let risen = state.height_at(Vec3::new(1.5, 0.0, 1.5)).unwrap();
         assert!(risen > level + 0.005, "raised: {risen} from {level}");

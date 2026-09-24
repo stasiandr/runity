@@ -114,6 +114,9 @@ struct Frame {
     glass: vec4<f32>,
     // a stroke of lightning's channel: points, brightness in w
     bolt: array<vec4<f32>, 32>,
+    // the scene's distance field (distance.rs): its box and 1 when there
+    // is one; its far corner and range in metres
+    distance: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -236,6 +239,59 @@ const FOG_SIZE = vec3<u32>(160u, 90u, 64u);
 // How the grass is trampled round the camera (foliage.rs, TrampleMap):
 // pressed, and the way out.
 @group(0) @binding(30) var trample_map: texture_2d<f32>;
+// The scene's signed distance field (distance.rs), 128 on the surface.
+@group(0) @binding(31) var distance_field: texture_3d<f32>;
+
+/// How far the nearest solid is from `p`, by the scene's distance field;
+/// far away outside its box.
+fn scene_distance(p: vec3<f32>) -> f32 {
+    let low = frame.distance[0].xyz;
+    let high = frame.distance[1].xyz;
+    let uvw = (p - low) / max(high - low, vec3<f32>(1e-4));
+    if any(uvw < vec3<f32>(0.0)) || any(uvw > vec3<f32>(1.0)) {
+        return 1e4;
+    }
+    let v = textureSampleLevel(distance_field, fog_sampler, uvw, 0.0).r;
+    return (v * 2.0 - 1.0) * frame.distance[1].w;
+}
+
+/// Occlusion by the distance field: stepping out along the normal, how
+/// much nearer something is than the step went (Evans, "Fast Approximations
+/// for Global Illumination on Dynamic Scenes").
+fn field_occlusion(p: vec3<f32>, n: vec3<f32>) -> f32 {
+    var occluded = 0.0;
+    var weight = 1.0;
+    for (var i = 1; i <= 5; i++) {
+        let h = 0.12 * f32(i);
+        occluded += (h - max(scene_distance(p + n * h), 0.0)) * weight;
+        weight *= 0.6;
+    }
+    return clamp(1.0 - occluded * 2.2, 0.0, 1.0);
+}
+
+/// The share of the sun seen from `p` past what the field holds: marched
+/// toward it, the nearest the ray passes to anything over how far it has
+/// gone is how much of the disc shows (Quilez, soft shadows).
+fn field_shadow(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>) -> f32 {
+    var seen = 1.0;
+    var t = 0.08;
+    let start = p + n * 0.06;
+    for (var i = 0; i < 40; i++) {
+        let d = scene_distance(start + to_sun * t);
+        if d > 1e3 {
+            break;
+        }
+        seen = min(seen, 10.0 * d / t);
+        if seen < 0.01 {
+            return 0.0;
+        }
+        t += clamp(d, 0.04, 0.6);
+        if t > 12.0 {
+            break;
+        }
+    }
+    return smoothstep(0.0, 1.0, seen);
+}
 
 /// Whether any of the dust wall can lie between the eye and a point: the
 /// point is past where the ray enters the wall's side of its front (its
@@ -1933,6 +1989,12 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
             }
         }
     }
+    // The scene's distance field softens the sun's shadow where the map
+    // is coarse and adds what the map missed.
+    let field_on = frame.distance[0].w > 0.5 && unlit < 0.5;
+    if field_on && shadow > 0.0 && (flags & 4u) != 0u {
+        shadow = min(shadow, field_shadow(in.world_position, geometric, to_sun));
+    }
     // Under a cloud: in its shadow.
     shadow *= cloud_shadow(in.world_position);
     // Under water: the sun comes down as caustics, dimmer the deeper.
@@ -1952,6 +2014,9 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
         let gathered = textureLoad(occlusion, vec2<i32>(in.clip_position.xy), 0);
         ao = gathered.a;
         bounce = gathered.rgb;
+    }
+    if field_on {
+        ao *= field_occlusion(in.world_position, geometric);
     }
     let direct_ao = mix(1.0, ao, frame.ambient_occlusion.y);
     var color = direct(b, normal, to_sun, to_eye, highlights)

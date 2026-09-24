@@ -141,6 +141,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for m in &missing {
         eprintln!("{}: no model named {}", m.entity_name, m.model);
     }
+    // Mesh colliders get their triangles, as a live scene's do: the
+    // distance field is baked from them.
+    runity::physics::attach_scene_collision_meshes(&mut world, &scene, library.as_ref());
 
     let lighting = runity::scene_lighting(&scene.sun());
     let fog = FogSettings {
