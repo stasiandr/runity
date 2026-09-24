@@ -14,7 +14,7 @@ anyhow = "1.0.104"
 ron = "0.12.2"
 runity = { version = "0.1.0", path = "../runity" }
 runity-import = { version = "0.1.0", path = "../runity-import" }
-serde = "1.0.229"
+serde = { version = "1.0.229", features = ["derive"] }
 
 [[bin]]
 name = "runity"

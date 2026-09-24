@@ -1,0 +1,80 @@
+(
+    size: (640, 360),
+    scenes: {
+        "bazaar": (
+            gpu_ms: Some(6.1),
+            draws: Some(38),
+            triangles: Some(10438),
+        ),
+        "bounce": (
+            gpu_ms: Some(5.2),
+            draws: Some(8),
+            triangles: Some(75),
+        ),
+        "camp": (
+            gpu_ms: Some(5.4),
+            draws: Some(24),
+            triangles: Some(3869),
+        ),
+        "decals": (
+            gpu_ms: Some(3.9),
+            draws: Some(5),
+            triangles: Some(46),
+        ),
+        "desert": (
+            gpu_ms: Some(15.0),
+            draws: Some(4),
+            triangles: Some(297833),
+        ),
+        "first-light": (
+            gpu_ms: Some(4.4),
+            draws: Some(16),
+            triangles: Some(2074),
+        ),
+        "gi": (
+            gpu_ms: Some(10.1),
+            draws: Some(11),
+            triangles: Some(1037),
+        ),
+        "haboob": (
+            gpu_ms: Some(9.0),
+            draws: Some(18),
+            triangles: Some(192),
+        ),
+        "lanterns": (
+            gpu_ms: Some(54.7),
+            draws: Some(171),
+            triangles: Some(15428),
+        ),
+        "materials": (
+            gpu_ms: Some(4.4),
+            draws: Some(10),
+            triangles: Some(3732),
+        ),
+        "meadow": (
+            gpu_ms: Some(4.0),
+            draws: Some(2),
+            triangles: Some(3),
+        ),
+        "pond": (
+            gpu_ms: Some(7.1),
+            draws: Some(8),
+            triangles: Some(63),
+        ),
+        "rain": (
+            gpu_ms: Some(7.1),
+            draws: Some(8),
+            triangles: Some(1889),
+        ),
+        "rays": (
+            gpu_ms: Some(13.8),
+            draws: Some(10),
+            triangles: Some(1011),
+        ),
+        "reflections": (
+            gpu_ms: Some(6.2),
+            draws: Some(8),
+            triangles: Some(1889),
+        ),
+    },
+)

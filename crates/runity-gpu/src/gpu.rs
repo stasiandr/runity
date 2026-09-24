@@ -214,6 +214,12 @@ impl Gpu {
         let info = self.adapter.get_info();
         format!("{} ({:?}, {:?})", info.name, info.device_type, info.backend)
     }
+
+    /// Whether it draws in software (a CI runner's lavapipe): its times say
+    /// nothing about a GPU's.
+    pub fn software(&self) -> bool {
+        self.adapter.get_info().device_type == wgpu::DeviceType::Cpu
+    }
 }
 
 /// A texture to draw into, and the machinery to read it back as pixels.

@@ -6,14 +6,9 @@
 //! this, look at the picture. It needs no window and no graphics card, so it
 //! is the same command in CI, on a laptop, and inside an agent's loop.
 
-#[allow(unused_imports)]
-use runity::prelude::*;
 use std::path::PathBuf;
 
-use runity::builtin;
-use runity::glam::Vec3;
-use runity::render::FogSettings;
-use runity::{Gpu, Library, MeshHandle, OffscreenTarget, Renderer, Scene};
+use runity::shot::Shot;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -53,117 +48,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let scene_path = scene_path.ok_or("usage: scene_shot <scene.ron>")?;
-    let document = Scene::load(&scene_path)?;
-
-    // The project the scene is in says where its prefabs and its library
-    // are. Every instance is replaced by what it stands for before anything
-    // else looks at the scene; nothing downstream knows a prefab existed.
-    let project = runity::Project::find(&scene_path).ok();
-    let (prefabs, prefab_problems) = project
-        .as_ref()
-        .map(runity::Prefabs::of)
-        .unwrap_or_default();
-    for (path, e) in &prefab_problems {
-        eprintln!("skipped {}: {e}", path.display());
+    // The scene with its project's prefabs, library and shaders, spawned
+    // and its frame built (runity::shot).
+    let mut shot = Shot::open(&scene_path, width, height, library_dir.as_deref())?;
+    for problem in &shot.problems {
+        eprintln!("{problem}");
     }
-    let instanced = runity::instantiate(&document, &prefabs);
-    for problem in &instanced.problems {
-        eprintln!(
-            "{}: prefab {} — {}",
-            problem.entity_name, problem.prefab, problem.reason
-        );
-    }
-    let scene = instanced.scene;
-
-    let gpu = Gpu::headless_blocking(false)?;
     eprintln!(
         "{}: {} entities on {}",
         scene_path.display(),
-        scene.entities.len(),
-        gpu.describe()
+        shot.entities,
+        shot.gpu.describe()
     );
-
-    let target = OffscreenTarget::new(&gpu, width, height);
-    let mut renderer = Renderer::new(&gpu, &target);
-    // The project's materials' own shaders.
-    if let Some(project) = &project {
-        let mut shaders =
-            runity::render::MaterialShaders::new(project.root().join(runity::project::SHADERS));
-        for (name, result) in shaders.poll(&mut renderer, &gpu) {
-            if let Err(problem) = result {
-                eprintln!("shader {name}: {problem}");
-            }
-        }
-    }
-
-    // Models resolve from the builtins first, then from a library: the one
-    // given, or else the project's own if it has been built. Builtins first
-    // is what lets the reference scene open with no pipeline at all.
-    let library_dir = library_dir.or_else(|| {
-        project
-            .as_ref()
-            .map(|p| p.library())
-            .filter(|dir| dir.is_dir())
-    });
-    let library = match &library_dir {
-        Some(dir) => {
-            let (library, problems) = Library::open(dir)?;
-            for (path, e) in &problems {
-                eprintln!("skipped {}: {e}", path.display());
-            }
-            Some(library)
-        }
-        None => None,
-    };
-
-    let mut world = hecs_world();
-    let mut uploaded: Vec<(String, MeshHandle)> = Vec::new();
-    // Materials resolve the same way models do: the library first, then the
-    // engine's builtins. With no library the scene still draws, in the
-    // builtin palette — which is why the reference scene needs no pipeline.
-    let missing = runity::spawn_scene_with(
-        &scene,
-        &mut world,
-        |name| {
-            let name: &str = name;
-            if let Some(found) = uploaded.iter().find(|(n, _)| n == name) {
-                return Some(found.1);
-            }
-            let handle = if let Some(mesh) = builtin::by_name(name) {
-                renderer.upload_mesh_owned(&gpu, &mesh)
-            } else {
-                let mesh = library.as_ref()?.mesh_by_name(name)?;
-                renderer.upload_mesh(&gpu, mesh)
-            };
-            uploaded.push((name.to_string(), handle));
-            Some(handle)
-        },
-        |name| library.as_ref()?.material_by_name(name),
-    );
-    for m in &missing {
-        eprintln!("{}: no model named {}", m.entity_name, m.model);
-    }
-
-    let lighting = runity::scene_lighting(&scene.sun());
-    let fog = FogSettings {
-        color: Vec3::from_array(scene.fog().color),
-        start: scene.fog().start,
-        end: scene.fog().end,
-        ..Default::default()
-    };
-    // The scene says where it is looked at from, so two renders of the same
-    // file are the same picture — and so an agent can frame a shot by
-    // editing a line rather than by patching this file.
-    let camera = runity::scene_camera(&scene.view());
-
-    runity::terrain::upload_terrains(&mut world, &gpu, &mut renderer);
-    for problem in
-        runity::world::upload_material_maps(&world, library.as_ref(), &gpu, &mut renderer)
-    {
-        eprintln!("{problem}");
-    }
-    let mut frame = runity::build_frame(&world, camera, lighting, fog);
-    runity::world::scene_look(&mut frame, &scene);
+    let frame = &mut shot.frame;
     if virtual_shadows {
         frame.shadows.virtual_maps = true;
         frame.shadows.max_distance = frame.shadows.max_distance.max(200.0);
@@ -178,43 +75,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if at.is_some() {
         frame.time = at;
     }
-    // Twice: what reads the last frame — screen-space reflections — has
-    // one by the second. Upscaled, a few more: MetalFX temporal's history
-    // at the screen's size fills in over them. With an irradiance volume,
-    // a second's worth: its probes settle over it.
-    let warm = if !frame.irradiance_volumes.is_empty() {
-        90
-    } else if upscale.is_some() || frame.shadows.virtual_maps || frame.ray_tracing.restir {
-        // Virtual shadow maps draw their pages over a few frames, coarsest
-        // first; ReSTIR's reservoirs build up their history.
-        16
-    } else {
-        2
-    };
-    for _ in 0..warm {
-        renderer.render(&gpu, &target, &frame);
-    }
-    let pixels = target.read_rgba(&gpu);
+    // Settled first: what reads the last frame (screen-space reflections),
+    // and what builds a history over frames — probes, pages, reservoirs,
+    // an upscaler's.
+    let warm = shot.warm_frames();
+    shot.draw(warm);
+    let pixels = shot.pixels();
     if timed > 0 {
-        renderer.profile_gpu(true);
+        shot.renderer.profile_gpu(true);
         if std::env::var_os("RUNITY_NO_OCCLUSION").is_some() {
-            renderer.set_occlusion_culling(false);
+            shot.renderer.set_occlusion_culling(false);
         }
         let start = std::time::Instant::now();
-        for _ in 0..timed {
-            renderer.render(&gpu, &target, &frame);
-        }
+        shot.draw(timed);
         // Reading a pixel back waits for the last frame to finish.
-        target.read_rgba(&gpu);
+        shot.pixels();
         let ms = start.elapsed().as_secs_f64() * 1000.0 / timed as f64;
         eprintln!("{ms:.2} ms a frame over {timed}");
         // A few frames more, each waited for, so the passes' times come
         // back: the timer reads them a frame or two late.
         for _ in 0..4 {
-            renderer.render(&gpu, &target, &frame);
-            target.read_rgba(&gpu);
+            shot.draw(1);
+            shot.pixels();
         }
-        let passes = renderer.gpu_times();
+        let passes = shot.renderer.gpu_times();
         if !passes.is_empty() {
             let total: f32 = passes.iter().map(|(_, t)| t).sum();
             eprintln!("on the GPU, {total:.2} ms in passes:");
@@ -227,10 +111,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_png(&out, &pixels, width, height)?;
     eprintln!("wrote {} ({width}x{height})", out.display());
     Ok(())
-}
-
-fn hecs_world() -> hecs::World {
-    hecs::World::new()
 }
 
 fn write_png(

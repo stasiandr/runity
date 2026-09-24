@@ -299,6 +299,7 @@ pub use runity_render::quality;
 pub use runity_render::ray;
 pub use runity_render::reflections;
 pub mod refs;
+pub mod shot;
 #[cfg(feature = "net")]
 pub use runity_net::relay;
 pub use runity_render::render;
