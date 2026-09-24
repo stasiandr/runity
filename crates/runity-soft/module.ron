@@ -8,7 +8,7 @@
     depends: ["geometry"],
     runtime: true,
     editor: false,
-    parts: ["rope", "cloth", "hair", "soft_body", "jiggle", "fluid"],
+    parts: ["rope", "cloth", "hair", "soft_body", "jiggle", "fluid", "grains"],
     assets: [],
     feature: Some("soft"),
 )

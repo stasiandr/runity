@@ -14,7 +14,7 @@ pub mod floats;
 pub mod ocean;
 pub mod smoke;
 
-pub use heightfield::{run_heightfields, water_height, HeightfieldDress, HeightfieldLine, Ripples, RipplesState, ShallowState, ShallowWater};
+pub use heightfield::{run_heightfields, water_height, HeightfieldDress, HeightfieldLine, Ripples, RipplesState, ShallowState, ShallowWater, SnowCover, SnowState};
 pub use mpm::{run_mpm, Mpm, MpmDress, MpmLine, MpmMaterial, MpmState, Transfer};
 pub use ocean::{run_oceans, Ocean, OceanDress, OceanLine, OceanState};
 pub use smoke::{run_smokes, Smoke, SmokeDress, SmokeLine, SmokeState};

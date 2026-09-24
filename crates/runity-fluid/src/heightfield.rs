@@ -68,15 +68,38 @@ impl Default for Ripples {
     }
 }
 
+/// A cover of snow, mud or sand that keeps what is pressed into it: a
+/// deformable ground, as a scene line writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnowCover {
+    pub size: Vec2,
+    pub cells: u32,
+    /// How deep it lies, metres.
+    pub depth: f32,
+    /// How much of what is pressed out of a track heaps beside it.
+    pub berm: f32,
+    /// Seconds for fresh snow to fill a track again; 0 never.
+    pub refill: f32,
+}
+
+impl Default for SnowCover {
+    fn default() -> Self {
+        Self { size: Vec2::splat(8.0), cells: 128, depth: 0.25, berm: 0.5, refill: 0.0 }
+    }
+}
+
 runity_core::impl_parts! {
     ShallowWater => "shallow_water";
     Ripples => "ripples";
+    SnowCover => "snow_cover";
 }
 
 /// The height-field water of a line, read off it.
 pub trait HeightfieldLine {
     fn shallow_water(&self) -> Option<ShallowWater>;
     fn ripples(&self) -> Option<Ripples>;
+    fn snow_cover(&self) -> Option<SnowCover>;
 }
 
 impl HeightfieldLine for runity_core::EntityDesc {
@@ -86,6 +109,9 @@ impl HeightfieldLine for runity_core::EntityDesc {
     fn ripples(&self) -> Option<Ripples> {
         self.part()
     }
+    fn snow_cover(&self) -> Option<SnowCover> {
+        self.part()
+    }
 }
 
 impl HeightfieldLine for runity_core::scene::Override {
@@ -93,6 +119,9 @@ impl HeightfieldLine for runity_core::scene::Override {
         self.part()
     }
     fn ripples(&self) -> Option<Ripples> {
+        self.part()
+    }
+    fn snow_cover(&self) -> Option<SnowCover> {
         self.part()
     }
 }
@@ -492,6 +521,139 @@ impl RipplesState {
     }
 }
 
+/// Snow as it is trodden: the component [`run_heightfields`] steps.
+#[derive(Debug, Clone)]
+pub struct SnowState {
+    pub cover: SnowCover,
+    grid: Option<Grid>,
+    /// Snow over the ground, metres.
+    pub depth: Vec<f32>,
+    /// Pressed into, ever: the berms heap beside tracks, not in them.
+    trodden: Vec<bool>,
+    owed: f32,
+}
+
+impl SnowState {
+    pub fn new(cover: SnowCover) -> Self {
+        Self { cover, grid: None, depth: Vec::new(), trodden: Vec::new(), owed: 0.0 }
+    }
+
+    /// How deep the snow is at a point.
+    pub fn depth_at(&self, p: Vec3) -> Option<f32> {
+        self.grid?.sample(&self.depth, p)
+    }
+
+    /// Along by `seconds`: whatever is in the snow presses it down to its
+    /// underside, and what it pressed out heaps round the track.
+    pub fn advance(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
+        let grid = *self.grid.get_or_insert_with(|| Grid::new(self.cover.size, self.cover.cells, placed));
+        let n = grid.nx * grid.nz;
+        if self.depth.len() != n {
+            self.depth = vec![self.cover.depth.max(0.0); n];
+            self.trodden = vec![false; n];
+        }
+        self.owed = (self.owed + seconds.max(0.0)).min(0.1);
+        while self.owed >= STEP {
+            self.owed -= STEP;
+            let mut pressed = vec![false; n];
+            let mut moved = 0.0f32;
+            for k in 0..grid.nz {
+                for i in 0..grid.nx {
+                    let at = grid.at(i, k);
+                    let base = grid.middle(i, k);
+                    let top = self.depth[at];
+                    if top <= 0.0 {
+                        continue;
+                    }
+                    let solid = |y: f32| obstacles.iter().any(|o| o.contact(base + Vec3::Y * y, 0.0).is_some());
+                    // The lowest of what is in the snow here: sampled up the
+                    // column, then found exactly.
+                    let samples = 6;
+                    let Some(first) = (0..=samples).map(|s| top * s as f32 / samples as f32).find(|y| solid(*y)) else { continue };
+                    let (mut lo, mut hi) = ((first - top / samples as f32).max(0.0), first);
+                    if solid(lo) {
+                        hi = lo;
+                    }
+                    for _ in 0..10 {
+                        let mid = (lo + hi) * 0.5;
+                        if solid(mid) {
+                            hi = mid;
+                        } else {
+                            lo = mid;
+                        }
+                    }
+                    let under = hi.max(0.0);
+                    if under < top {
+                        moved += (top - under) * self.cover.berm.clamp(0.0, 1.0);
+                        self.depth[at] = under;
+                        pressed[at] = true;
+                        self.trodden[at] = true;
+                    }
+                }
+            }
+            // What was pressed out heaps on the snow round the tracks.
+            if moved > 0.0 {
+                let mut rim = Vec::new();
+                for k in 0..grid.nz {
+                    for i in 0..grid.nx {
+                        let at = grid.at(i, k);
+                        if self.trodden[at] {
+                            continue;
+                        }
+                        let beside = [(1i64, 0i64), (-1, 0), (0, 1), (0, -1)].iter().any(|(di, dk)| {
+                            let (a, b) = (i as i64 + di, k as i64 + dk);
+                            a >= 0 && b >= 0 && (a as usize) < grid.nx && (b as usize) < grid.nz && pressed[grid.at(a as usize, b as usize)]
+                        });
+                        if beside {
+                            rim.push(at);
+                        }
+                    }
+                }
+                for at in &rim {
+                    self.depth[*at] += moved / rim.len().max(1) as f32;
+                }
+            }
+            // Heaped snow slumps to its angle of repose (40°): what a
+            // plough pushes ahead of it spills to the sides.
+            let most = grid.cell * 0.84;
+            for _ in 0..2 {
+                for k in 0..grid.nz {
+                    for i in 0..grid.nx {
+                        let at = grid.at(i, k);
+                        for (di, dk) in [(1usize, 0usize), (0, 1)] {
+                            let (a, b) = (i + di, k + dk);
+                            if a >= grid.nx || b >= grid.nz {
+                                continue;
+                            }
+                            let there = grid.at(a, b);
+                            let step = self.depth[at] - self.depth[there];
+                            if step.abs() > most {
+                                let shift = (step.abs() - most) * 0.5 * step.signum();
+                                self.depth[at] -= shift;
+                                self.depth[there] += shift;
+                            }
+                        }
+                    }
+                }
+            }
+            // Fresh snow fills the tracks again.
+            if self.cover.refill > 0.0 {
+                let rate = self.cover.depth / self.cover.refill * STEP;
+                for d in &mut self.depth {
+                    if *d < self.cover.depth {
+                        *d = (*d + rate).min(self.cover.depth);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn mesh(&self, placed: Mat4) -> (Vec<Vertex>, Vec<u32>) {
+        let Some(grid) = self.grid else { return (Vec::new(), Vec::new()) };
+        grid.mesh(placed, |i, k| self.depth[grid.at(i, k)])
+    }
+}
+
 /// The water's surface at a point, from whatever water there is there:
 /// shallow water, ripples, an ocean. What floats things.
 pub fn water_height(world: &hecs::World, p: Vec3) -> Option<f32> {
@@ -510,6 +672,14 @@ pub fn run_heightfields(world: &mut hecs::World, seconds: f32, obstacles: &Obsta
         obstacles.near(c - Vec3::new(half.x, 1.0, half.y), c + Vec3::new(half.x, 4.0, half.y), &mut near);
         state.advance(placed.0, &near, seconds);
     }
+    for (state, placed) in world.query_mut::<(&mut SnowState, &WorldTransform)>() {
+        let c = placed.0.w_axis.truncate();
+        let half = state.cover.size * 0.5;
+        obstacles.near(c - Vec3::new(half.x, 0.1, half.y), c + Vec3::new(half.x, state.cover.depth + 0.5, half.y), &mut near);
+        // What it lies on is not in it: the ground, a floor.
+        near.retain(|o| o.bounds().is_some_and(|(_, top)| top.y > c.y + 0.01));
+        state.advance(placed.0, &near, seconds);
+    }
     for (state, placed) in world.query_mut::<(&mut RipplesState, &WorldTransform)>() {
         let c = placed.0.w_axis.truncate();
         let half = state.ripples.size * 0.5;
@@ -525,7 +695,7 @@ pub struct HeightfieldDress;
 
 impl runity_core::world::Dress for HeightfieldDress {
     fn parts(&self) -> &[&'static str] {
-        &["shallow_water", "ripples"]
+        &["shallow_water", "ripples", "snow_cover"]
     }
 
     fn dress(
@@ -550,6 +720,14 @@ impl runity_core::world::Dress for HeightfieldDress {
             }
             None => {
                 let _ = world.remove_one::<RipplesState>(entity);
+            }
+        }
+        match line.snow_cover() {
+            Some(c) => {
+                let _ = world.insert_one(entity, SnowState::new(c));
+            }
+            None => {
+                let _ = world.remove_one::<SnowState>(entity);
             }
         }
     }
@@ -598,6 +776,27 @@ mod tests {
         }
         let risen = state.height_at(Vec3::new(1.5, 0.0, 1.5)).unwrap();
         assert!(risen > level + 0.005, "raised: {risen} from {level}");
+    }
+
+    #[test]
+    fn a_ball_rolled_through_snow_leaves_a_track_with_berms_that_stays() {
+        let mut state = SnowState::new(SnowCover { size: Vec2::new(4.0, 2.0), cells: 80, depth: 0.2, berm: 0.5, refill: 0.0 });
+        // A ball of 0.3 m sunk to 0.1 over the ground, rolled along x.
+        for step in 0..60 {
+            let x = -1.5 + step as f32 * 0.05;
+            let ball = Obstacle::Sphere { center: Vec3::new(x, 0.25, 0.0), radius: 0.15 };
+            state.advance(Mat4::IDENTITY, &[ball], 1.0 / 60.0);
+        }
+        // Gone: the track is still there, as deep as the ball went.
+        state.advance(Mat4::IDENTITY, &[], 1.0);
+        let track = state.depth_at(Vec3::new(0.0, 0.0, 0.0)).unwrap();
+        assert!((track - 0.1).abs() < 0.02, "track depth {track}");
+        let beside = state.depth_at(Vec3::new(0.0, 0.0, 0.2)).unwrap();
+        assert!(beside > 0.2, "a berm beside it: {beside}");
+        let untouched = state.depth_at(Vec3::new(0.0, 0.0, 0.8)).unwrap();
+        assert!((untouched - 0.2).abs() < 1e-4, "{untouched}");
+        // Before it was rolled over: untouched.
+        assert!((state.depth_at(Vec3::new(1.8, 0.0, 0.0)).unwrap() - 0.2).abs() < 1e-4);
     }
 
     #[test]

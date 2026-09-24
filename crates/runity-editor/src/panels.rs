@@ -55,7 +55,7 @@ pub fn default_text(field: &str) -> Option<String> {
         "inactive" => "false".into(),
         "bends_grass" => ron(&blank.bends_grass()),
         "camera" | "light" | "particles" | "reflection_probe" | "post_volume" | "decal"
-        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "spline" | "along"
+        | "footprints" | "terrain" | "render_texture" | "sound" | "route" | "rope" | "cloth" | "hair" | "soft_body" | "jiggle" | "fluid" | "fracture" | "dents" | "mpm" | "shallow_water" | "ripples" | "ocean" | "floats" | "smoke" | "grains" | "snow_cover" | "spline" | "along"
         | "joint_break" => "None".into(),
         _ => return None,
     })
@@ -82,7 +82,7 @@ pub struct Field {
 }
 
 /// The fields every entity has, in the order the Inspector shows them.
-pub const FIELDS: [&str; 36] = [
+pub const FIELDS: [&str; 38] = [
     "name",
     "model",
     "prefab",
@@ -118,6 +118,8 @@ pub const FIELDS: [&str; 36] = [
     "ocean",
     "floats",
     "smoke",
+    "grains",
+    "snow_cover",
     "components.<name>",
 ];
 
@@ -404,6 +406,14 @@ impl Session {
             (
                 "smoke".into(),
                 desc.smoke().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "grains".into(),
+                desc.grains().as_ref().map_or("None".to_string(), ron),
+            ),
+            (
+                "snow_cover".into(),
+                desc.snow_cover().as_ref().map_or("None".to_string(), ron),
             ),
             (
                 "spline".into(),
@@ -864,6 +874,22 @@ impl Session {
                     None
                 } else {
                     Some(parse::<runity::scene::Smoke>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "grains" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::Grains>(field, text)?)
+                })
+                .as_ref(),
+            ),
+            "snow_cover" => next.set_part_opt(
+                (if text.trim() == "None" {
+                    None
+                } else {
+                    Some(parse::<runity::scene::SnowCover>(field, text)?)
                 })
                 .as_ref(),
             ),

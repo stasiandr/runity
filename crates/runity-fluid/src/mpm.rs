@@ -304,7 +304,8 @@ impl MpmState {
         }
         // The grid: momentum to speed, gravity, and what is solid.
         let [nx, ny, nz] = self.n;
-        let sticky = matches!(material, MpmMaterial::Snow);
+        // Snow and sand grip the floor; water and jelly slide on it.
+        let sticky = matches!(material, MpmMaterial::Snow | MpmMaterial::Sand);
         for k in 0..nz {
             for j in 0..ny {
                 for i in 0..nx {
@@ -499,8 +500,10 @@ fn plastic(f: Mat3, material: MpmMaterial, jp: &mut f32) -> Mat3 {
                 let shear = log - Vec3::splat(trace / 3.0);
                 let shear_len = shear.length();
                 // Friction: 30° or so; the cone of what shear it holds.
-                let alpha = (2.0f32 / 3.0).sqrt() * 2.0 * 0.5 / (3.0 - 0.5);
-                let slip = shear_len + 3.0 * alpha * trace;
+                // The friction angle's 35°: sin φ ≈ 0.57.
+                let alpha = (2.0f32 / 3.0).sqrt() * 2.0 * 0.57 / (3.0 - 0.57);
+                // (dλ + 2μ) / 2μ is 2 for ν = 0.2.
+                let slip = shear_len + 2.0 * alpha * trace;
                 if slip <= 0.0 || shear_len < 1e-9 {
                     log
                 } else {

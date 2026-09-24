@@ -65,10 +65,11 @@ pub fn step(world: &mut World, seconds: f32) {
     let hair = world.query::<&HairState>().iter().next().is_some();
     let bodies = world.query::<&SoftBodyState>().iter().next().is_some();
     let fluids = world.query::<&FluidState>().iter().next().is_some();
+    let grains = world.query::<&GrainsState>().iter().next().is_some();
     // Jiggle bones meet nothing: they go first, and what hangs off them —
     // hair on a jiggling head — goes where they have gone.
     run_jiggle(world, seconds);
-    if !ropes && !cloth && !hair && !bodies && !fluids {
+    if !ropes && !cloth && !hair && !bodies && !fluids && !grains {
         return;
     }
     let obstacles = Obstacles::new(obstacles(world));
@@ -86,6 +87,9 @@ pub fn step(world: &mut World, seconds: f32) {
     }
     if fluids {
         run_fluids(world, seconds, &obstacles);
+    }
+    if grains {
+        run_grains(world, seconds, &obstacles);
     }
 }
 
@@ -125,6 +129,9 @@ pub fn show(world: &mut World, _seconds: f32) {
             _ => {}
         }
     }
+    for (state, copies) in world.query_mut::<(&GrainsState, &mut Copies)>() {
+        copies.placed = state.placed_grains();
+    }
     for (state, placed, live) in world.query_mut::<(&SoftBodyState, &WorldTransform, &mut LiveMesh)>() {
         let (vertices, indices) = state.mesh(placed.0);
         if !vertices.is_empty() {
@@ -158,13 +165,22 @@ pub struct SoftLookDress<'a> {
 
 impl Dress for SoftLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["rope", "cloth", "hair", "soft_body", "fluid", "model", "material"]
+        &["rope", "cloth", "hair", "soft_body", "fluid", "grains", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         use crate::prelude::*;
         let (rope, cloth, hair, body) = (line.rope(), line.cloth(), line.hair(), line.soft_body());
         let fluid = line.fluid();
+        if line.grains().is_some() {
+            // Each grain is a small ball in the line's material.
+            let _ = world.remove::<(crate::world::Model, LiveMesh)>(entity);
+            let _ = world.insert(entity, (RopeLook, Surface(line.material_from(self.palette))));
+            if let Some(mesh) = self.sphere {
+                let _ = world.insert_one(entity, Copies { mesh, placed: Vec::new() });
+            }
+            return;
+        }
         if let Some(fluid) = fluid {
             // Water is its surface or its drops, not the model it names.
             let _ = world.remove_one::<crate::world::Model>(entity);

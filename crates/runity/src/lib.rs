@@ -393,11 +393,11 @@ pub mod scene {
     #[cfg(feature = "spline")]
     pub use crate::spline::*;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{Cloth, Fluid, Hair, Jiggle, Rope, RopeKind, SoftBody};
+    pub use crate::soft::{Cloth, Fluid, Grains, Hair, Jiggle, Rope, RopeKind, SoftBody};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{Dents, Fracture};
     #[cfg(feature = "fluid")]
-    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater, Smoke};
+    pub use crate::fluid::{Floats, Mpm, Ocean, Ripples, ShallowWater, Smoke, SnowCover};
 
     /// Every field of a line, an override or a scene's look the modules
     /// of this build read, with how to check its text: what `check` names
@@ -443,7 +443,7 @@ pub mod prelude {
     #[cfg(feature = "spline")]
     pub use crate::spline::SplineLine;
     #[cfg(feature = "soft")]
-    pub use crate::soft::{ClothLine, FluidLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
+    pub use crate::soft::{ClothLine, FluidLine, GrainsLine, HairLine, JiggleLine, RopeLine, SoftBodyLine};
     #[cfg(feature = "destruction")]
     pub use crate::destruction::{DentsLine, FractureLine};
     #[cfg(feature = "fluid")]

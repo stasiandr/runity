@@ -18,7 +18,9 @@ use crate::world::{Changed, Copies, Dress, LiveMesh, Surface, Unresolved, WorldT
 /// Every fluid on by `seconds`: the module's fixed-step system.
 pub fn step(world: &mut World, seconds: f32) {
     let mpm = world.query::<&MpmState>().iter().next().is_some();
-    let heights = world.query::<&ShallowState>().iter().next().is_some() || world.query::<&RipplesState>().iter().next().is_some();
+    let heights = world.query::<&ShallowState>().iter().next().is_some()
+        || world.query::<&RipplesState>().iter().next().is_some()
+        || world.query::<&SnowState>().iter().next().is_some();
     let smoke = world.query::<&SmokeState>().iter().next().is_some();
     // What floats rides the water, it is not its bed.
     let obstacles = if mpm || heights || smoke {
@@ -118,6 +120,10 @@ pub fn show(world: &mut World, _seconds: f32) {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
     }
+    for (state, placed, live) in world.query_mut::<(&SnowState, &WorldTransform, &mut LiveMesh)>() {
+        let (vertices, indices) = state.mesh(placed.0);
+        live.set(vertices, indices);
+    }
     for (state, placed, live) in world.query_mut::<(&RipplesState, &WorldTransform, &mut LiveMesh)>() {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
@@ -149,12 +155,12 @@ pub struct FluidLookDress<'a> {
 
 impl Dress for FluidLookDress<'_> {
     fn parts(&self) -> &[&'static str] {
-        &["mpm", "shallow_water", "ripples", "ocean", "model", "material"]
+        &["mpm", "shallow_water", "ripples", "ocean", "snow_cover", "model", "material"]
     }
 
     fn dress(&mut self, line: &EntityDesc, entity: hecs::Entity, world: &mut World, _: Changed, _: &mut Vec<Unresolved>) {
         let mpm = line.mpm();
-        let surfaces = line.shallow_water().is_some() || line.ripples().is_some() || line.ocean().is_some();
+        let surfaces = line.shallow_water().is_some() || line.ripples().is_some() || line.ocean().is_some() || line.snow_cover().is_some();
         if mpm.is_none() && !surfaces {
             if world.remove_one::<FluidLook>(entity).is_ok() {
                 let _ = world.remove::<(LiveMesh, Copies)>(entity);
