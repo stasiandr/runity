@@ -1119,6 +1119,8 @@ checksum = "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2092,6 +2094,7 @@ dependencies = [
  "either",
  "ena",
  "hashbrown 0.15.5",
+ "indexmap",
  "log",
  "nalgebra",
  "num-derive",
@@ -2594,6 +2597,7 @@ dependencies = [
  "ron",
  "serde",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -2649,6 +2653,8 @@ dependencies = [
  "runity-physics",
  "serde",
  "tracing",
+ "wasm-bindgen",
+ "web-time",
 ]
 
 [[package]]
@@ -2686,6 +2692,7 @@ dependencies = [
  "bytemuck",
  "glam 0.32.1",
  "hecs",
+ "naga",
  "objc2 0.6.4",
  "objc2-metal 0.3.2",
  "objc2-metal-fx",
@@ -2697,6 +2704,7 @@ dependencies = [
  "runity-gpu",
  "runity-overlay",
  "serde",
+ "web-time",
  "wgpu",
 ]
 
@@ -2716,11 +2724,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gilrs",
+ "js-sys",
  "runity-core",
  "runity-gpu",
  "runity-overlay",
  "runity-render",
  "subsecond",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "winit",
 ]
 
@@ -2891,6 +2903,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c99284beb21666094ba2b75bbceda012e610f5479dfcc2d6e2426f53197ffd95"
 dependencies = [
  "approx",
+ "libm",
  "num-complex",
  "num-traits",
  "paste",
