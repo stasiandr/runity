@@ -278,7 +278,7 @@ impl Components {
     }
 
     /// Put every component of every line of `scene` on the entity spawned
-    /// from it. Call it after [`crate::spawn_scene_with`] on the same scene.
+    /// from it. Call it after the scene is spawned.
     pub fn apply(&self, scene: &Scene, world: &mut World) -> Vec<ComponentProblem> {
         self.patch(&Scene::default(), scene, world)
     }
@@ -286,7 +286,7 @@ impl Components {
     /// Bring components from one version of a scene to the next: write the
     /// ones whose text changed, remove the ones no longer named, leave the
     /// rest — and whatever the game did to them — alone. Call it after
-    /// [`crate::patch_scene`] on the same two versions.
+    /// the world is patched from the one to the other.
     pub fn patch(&self, before: &Scene, after: &Scene, world: &mut World) -> Vec<ComponentProblem> {
         let mut old: HashMap<EntityId, &EntityDesc> = HashMap::new();
         for (desc, _) in before.flatten() {

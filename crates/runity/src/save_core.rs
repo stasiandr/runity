@@ -5,7 +5,7 @@
 //! where it is now and the components the game marked as saved
 //! ([`Components::register_saved`]); which of the scene's entities are
 //! gone; and what was spawned at run time with an id to be known by (see
-//! [`crate::net::announce`]). Loading is opening the same scene and putting
+//! the network module's `announce`). Loading is opening the same scene and putting
 //! that back. The file is RON: a save someone can read to see what went
 //! wrong, and diff against the one before.
 //!
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::components::Components;
 use crate::id::EntityId;
-use crate::net::{addressable, despawn_tree, NetId, NetPrefab};
+use crate::world::{addressable, despawn_tree, NetId, NetPrefab};
 use crate::scene::{Scene, Transform};
 use crate::world::SceneId;
 
@@ -35,7 +35,7 @@ pub struct Saved {
     /// spawned again on load. Empty for the scene's own.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefab: String,
-    /// The state its [`crate::animgraph::Controller`] is in, if it has one:
+    /// The state its animation graph's controller is in, if it has one:
     /// what the editor's Animator lights up while the game runs. A load
     /// does not put it back — the graph finds its state again from the
     /// parameters.
@@ -78,16 +78,6 @@ pub struct Diagnostics {
     pub animators: Vec<(crate::id::EntityId, Vec<String>)>,
 }
 
-/// Every controller's trail, by the entity's id.
-pub fn animator_trails(world: &hecs::World) -> Vec<(crate::id::EntityId, Vec<String>)> {
-    let mut out: Vec<(crate::id::EntityId, Vec<String>)> = world
-        .query::<(&crate::world::SceneId, &crate::animgraph::Controller)>()
-        .iter()
-        .map(|(id, c)| (id.0, c.trail().map(|p| p.to_string()).collect()))
-        .collect();
-    out.sort_by_key(|(id, _)| *id);
-    out
-}
 
 /// One networked entity as a peer sees it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -167,26 +157,6 @@ pub fn diff(a: &SaveGame, b: &SaveGame, tolerance: f32) -> Vec<Difference> {
     out
 }
 
-/// The network's view of every networked entity, for a report.
-pub fn net_lines(world: &hecs::World) -> Vec<NetLine> {
-    let mut out: Vec<NetLine> = world
-        .query::<(
-            hecs::Entity,
-            &NetId,
-            Option<&crate::net::Replica>,
-            Option<&crate::net::NetTick>,
-        )>()
-        .iter()
-        .map(|(entity, id, replica, tick)| NetLine {
-            id: id.0,
-            owner: crate::net::owner_of(world, entity).0,
-            replica: replica.is_some(),
-            tick: tick.map(|t| (t.tick, t.at.elapsed().as_secs_f32() * 1000.0)),
-        })
-        .collect();
-    out.sort_by_key(|l| l.id);
-    out
-}
 
 /// What a load did, and what it could not.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -201,6 +171,18 @@ pub struct Restored {
 
 /// Write down a world that started from `scene`.
 pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> SaveGame {
+    capture_with(world, components, scene, &|_, _| String::new())
+}
+
+/// [`capture`], with each entity's state as `state` tells it: the graph
+/// state its animator is in, for the editor's report, when the animation
+/// module is there to say.
+pub fn capture_with(
+    world: &hecs::World,
+    components: &Components,
+    scene: &Scene,
+    state: &dyn Fn(&hecs::World, hecs::Entity) -> String,
+) -> SaveGame {
     let mut entities: Vec<Saved> = Vec::new();
     for (entity, id, transform) in world.query::<(hecs::Entity, &SceneId, &Transform)>().iter() {
         entities.push(Saved {
@@ -208,7 +190,7 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
             transform: *transform,
             components: components.write_saved(world, entity),
             prefab: String::new(),
-            animator: animator_state(world, entity),
+            animator: state(world, entity),
         });
     }
     for (entity, id, prefab, transform) in world
@@ -220,7 +202,7 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
             transform: *transform,
             components: components.write_saved(world, entity),
             prefab: prefab.0.clone(),
-            animator: animator_state(world, entity),
+            animator: state(world, entity),
         });
     }
     entities.sort_by_key(|s| s.id);
@@ -239,13 +221,6 @@ pub fn capture(world: &hecs::World, components: &Components, scene: &Scene) -> S
     }
 }
 
-fn animator_state(world: &hecs::World, entity: hecs::Entity) -> String {
-    world
-        .get::<&crate::animgraph::Controller>(entity)
-        .ok()
-        .and_then(|c| c.state().map(str::to_string))
-        .unwrap_or_default()
-}
 
 /// Put a save back into a world freshly spawned from the same scene.
 /// `spawn` puts a prefab into the world at a transform — usually

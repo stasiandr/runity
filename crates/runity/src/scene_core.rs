@@ -847,3 +847,31 @@ impl Scene {
         self
     }
 }
+
+/// `layer: "props"` — the collision layer, by the name `layers.ron` gives
+/// it; absent is `default`. See [`crate::layers`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LayerName(pub String);
+
+crate::impl_parts! {
+    LayerName => "layer", default if |l| l.0.is_empty();
+}
+
+/// A line's layer — the core's, since what collides and what a camera
+/// shows both go by it.
+impl EntityDesc {
+    pub fn layer(&self) -> String {
+        self.part::<LayerName>().map(|l| l.0).unwrap_or_default()
+    }
+
+    pub fn set_layer(&mut self, layer: impl Into<String>) {
+        self.set_part(&LayerName(layer.into()))
+    }
+}
+
+impl Override {
+    pub fn layer(&self) -> Option<String> {
+        self.part::<LayerName>().map(|l| l.0)
+    }
+}

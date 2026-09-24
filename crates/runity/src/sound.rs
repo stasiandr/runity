@@ -3,6 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::asset::{Asset, AssetId, AssetKind};
+use crate::library::Library;
+
 #[allow(unused_imports)]
 use crate::defaults::*;
 use crate::scene::EntityDesc;
@@ -78,5 +81,81 @@ pub trait SoundLine {
 impl SoundLine for EntityDesc {
     fn sound(&self) -> Option<SoundSource> {
         self.part()
+    }
+}
+
+/// A sound the entity makes, from its line's `sound`; played by
+/// [`crate::audio::Sources`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sounding(pub crate::scene::SoundSource);
+
+/// Decoded audio, ready to hand to the mixer.
+///
+/// Decoded at import for the same reason meshes are: a game that decodes OGG
+/// on the frame it needs a footstep stutters on the footstep. The cost is
+/// disk — a minute of stereo is about twenty megabytes — which is why music
+/// will eventually want streaming and why sound effects never will.
+#[derive(Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct SoundAsset {
+    pub id: AssetId,
+    pub name: String,
+    pub sample_rate: u32,
+    /// Interleaved stereo. Mono sources are duplicated at import, so the
+    /// mixer has one layout and no branch. Empty for a long one, which
+    /// keeps its `encoded` bytes instead.
+    pub samples: Vec<f32>,
+    /// A long sound — music, a wind that blows all level — as its file
+    /// was, compressed, played by streaming it: decoded, a ten-minute track
+    /// would be two hundred megabytes. Short ones are decoded at import,
+    /// so a footstep never waits on a decoder. Empty for those.
+    pub encoded: Vec<u8>,
+    /// How long it plays.
+    pub seconds: f32,
+}
+
+/// Sounds longer than this keep their file's compressed bytes and stream.
+pub const LONG_SOUND_SECONDS: f32 = 10.0;
+
+impl SoundAsset {
+    pub fn frames(&self) -> usize {
+        self.samples.len() / 2
+    }
+
+    pub fn duration_seconds(&self) -> f32 {
+        if self.samples.is_empty() {
+            return self.seconds;
+        }
+        self.frames() as f32 / self.sample_rate.max(1) as f32
+    }
+}
+
+
+impl Asset for SoundAsset {
+    fn id(&self) -> AssetId {
+        self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Sounds out of the library.
+pub trait SoundLibrary {
+    fn sound(&self, id: AssetId) -> Option<&ArchivedSoundAsset>;
+    fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset>;
+    /// The sound a link names — a scene's `sound: (clip: ...)`.
+    fn sound_of(&self, link: &crate::AssetLink) -> Option<&ArchivedSoundAsset>;
+}
+
+impl SoundLibrary for Library {
+    fn sound(&self, id: AssetId) -> Option<&ArchivedSoundAsset> {
+        crate::asset::view::<SoundAsset>(self.bytes_of(id, AssetKind::Sound)?).ok()
+    }
+    fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
+        crate::asset::view::<SoundAsset>(self.bytes_named(name, AssetKind::Sound)?).ok()
+    }
+    fn sound_of(&self, link: &crate::AssetLink) -> Option<&ArchivedSoundAsset> {
+        let (id, _) = self.find(link, AssetKind::Sound)?;
+        self.sound(id)
     }
 }

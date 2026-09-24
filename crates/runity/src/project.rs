@@ -65,11 +65,11 @@ pub const SRC: &str = "src";
 pub const COMPONENTS: &str = "src/components";
 /// Where the game's systems live, one per file, under [`SRC`].
 pub const SYSTEMS: &str = "src/systems";
-/// The game's screens — menus, the HUD — one RON file each: see
-/// [`crate::screen`].
+/// The game's screens — menus, the HUD — one RON file each (the UI
+/// module's `screen`).
 pub const UI: &str = "ui";
-/// Which animation plays when — Animator Controllers — one RON file each:
-/// see [`crate::animgraph`].
+/// Which animation plays when — Animator Controllers — one RON file each
+/// (the animation module's `animgraph`).
 pub const ANIMATORS: &str = "animators";
 
 /// Materials' own shaders, one `surface` function a file: `shaders/water.wgsl`

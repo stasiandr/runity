@@ -140,9 +140,7 @@ impl Reload {
     }
 }
 
-/// How often [`LiveScene::poll`] looks at the files: as fast as anyone
-/// saves one, and slow enough that the `stat`s cost nothing.
-pub const POLL_SECONDS: f32 = 0.25;
+pub use crate::tuned::POLL_SECONDS;
 
 impl LiveScene {
     /// Read a scene, with the prefabs and library of the project it is in.

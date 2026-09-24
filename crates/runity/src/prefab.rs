@@ -218,13 +218,21 @@ const MAX_DEPTH: usize = 8;
 /// two campfires is two entities, and each keeps its identity for as long as
 /// the instance and the prefab do.
 pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
+    instantiate_with(scene, prefabs, |_| {})
+}
+
+/// [`instantiate`], with what the modules grow on an expanded scene —
+/// copies set along a spline — added before who owns what is read off it:
+/// what grows under a line is that line's.
+pub fn instantiate_with(scene: &Scene, prefabs: &Prefabs, grow: impl Fn(&mut [EntityDesc])) -> Instanced {
     let mut problems = Vec::new();
     let mut parts = HashMap::new();
-    let entities = scene
+    let mut entities: Vec<EntityDesc> = scene
         .entities
         .iter()
         .map(|desc| expand(desc, None, prefabs, 0, &mut problems, &mut parts))
         .collect();
+    grow(&mut entities);
     let expanded = Scene {
         parts: scene.parts.clone(),
         entities,
@@ -397,21 +405,56 @@ fn expand(
             }
         }
     }
-    // What a spline carries grows here, like a prefab's parts: the file
-    // keeps the spline and the spacing, everything downstream sees copies.
-    if let (Some(spline), Some(along)) = (&expanded.spline(), &expanded.along()) {
-        let grown = along.grow(id, spline);
-        expanded.children.extend(grown);
-    }
     expanded
+}
+
+/// The entities a module's field names: every entity ID written in its
+/// text, a quoted sixteen hex digits — a joint's `to: "5f1c09aa3e7b2d10"`.
+/// (An asset's ID is thirty-two, and is not one.) The core scopes and
+/// follows these as it does a component's `EntityRef`, without knowing
+/// which module's field it is.
+pub fn links_in(text: &str) -> Vec<EntityId> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 18 <= bytes.len() {
+        if bytes[i] == b'"'
+            && bytes[i + 17] == b'"'
+            && bytes[i + 1..i + 17].iter().all(u8::is_ascii_hexdigit)
+            && (i + 18 == bytes.len() || !bytes[i + 18].is_ascii_hexdigit())
+        {
+            if let Ok(id) = text[i + 1..i + 17].parse::<EntityId>() {
+                out.push(id);
+            }
+            i += 18;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A line's module fields with every entity they name put through `map`.
+fn map_part_links(parts: &mut crate::parts::Parts, map: impl Fn(EntityId) -> EntityId) {
+    let named: Vec<(String, String)> = parts
+        .iter()
+        .filter(|(_, text)| !links_in(text).is_empty())
+        .map(|(name, text)| {
+            let mut out = text.to_string();
+            for id in links_in(text) {
+                out = out.replace(&format!("\"{id}\""), &format!("\"{}\"", map(id)));
+            }
+            (name.to_string(), out)
+        })
+        .collect();
+    for (name, text) in named {
+        let _ = parts.set_raw(&name, &text);
+    }
 }
 
 /// Point every link to `from` in `desc` and under it at `to` instead.
 fn relink(desc: &mut EntityDesc, from: EntityId, to: EntityId) {
-    if desc.joint().to() == Some(from) {
-        let joint = desc.joint().with_to(to);
-        desc.set_part(&joint);
-    }
+    map_part_links(&mut desc.parts, |id| if id == from { to } else { id });
     let (was, now) = (
         format!("EntityRef(\"{from}\")"),
         format!("EntityRef(\"{to}\")"),
@@ -429,16 +472,18 @@ fn relink(desc: &mut EntityDesc, from: EntityId, to: EntityId) {
     }
 }
 
-/// A line with the links it writes — its components' `EntityRef`s and its
-/// joint's other end — put in `instance`'s scope; its children as they are.
+/// A line with the links it writes — its components' `EntityRef`s and the
+/// entities its module fields name, a joint's other end — put in
+/// `instance`'s scope; its children as they are.
 fn scoped_links(desc: &EntityDesc, instance: EntityId) -> EntityDesc {
     let mut out = desc.clone();
-    if let Some(to) = out.joint().to() {
-        if !to.is_unassigned() {
-            let joint = out.joint().with_to(instance.within(to));
-            out.set_part(&joint);
+    map_part_links(&mut out.parts, |id| {
+        if id.is_unassigned() {
+            id
+        } else {
+            instance.within(id)
         }
-    }
+    });
     // Its components, and those its overrides give its prefab's parts:
     // both written in this file.
     let overridden = out

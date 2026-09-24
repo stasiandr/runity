@@ -39,13 +39,12 @@ pub mod server;
 pub mod sync;
 pub mod wire;
 
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::id::EntityId;
-use crate::world::SceneId;
 
+pub use crate::world::{addressable, despawn_tree, network_id, NetId, NetPrefab};
 pub use link::{Ended, Link, LinkEvent, Mode};
 pub use wire::{Conditions, Laggy, Loopback, Nobody, Transport, Udp};
 
@@ -173,16 +172,7 @@ pub struct OwnershipPending;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DespawnWithOwner;
 
-/// The network identity of an entity the game spawned at run time — one
-/// the scene file does not have, so no [`SceneId`] names it. Minted by the
-/// spawner, so the entity is live the same frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NetId(pub EntityId);
 
-/// Which prefab a run-time entity was spawned from, so a peer joining
-/// later can spawn the same.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NetPrefab(pub String);
 
 /// The newest snapshot applied to a replica: whose, at what tick of
 /// theirs, when it came, and whether it was the owner's last word before
@@ -200,31 +190,7 @@ pub fn owner_of(world: &hecs::World, entity: hecs::Entity) -> PeerId {
     world.get::<&Owner>(entity).map_or(PeerId::HOST, |o| o.0)
 }
 
-/// Every entity the network can name: the scene's by [`SceneId`], the
-/// run-time ones by [`NetId`].
-pub fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
-    let mut out: HashMap<EntityId, hecs::Entity> = world
-        .query::<(hecs::Entity, &SceneId)>()
-        .iter()
-        .map(|(entity, id)| (id.0, entity))
-        .collect();
-    out.extend(
-        world
-            .query::<(hecs::Entity, &NetId)>()
-            .iter()
-            .map(|(entity, id)| (id.0, entity)),
-    );
-    out
-}
 
-/// How the network names an entity.
-pub fn network_id(world: &hecs::World, entity: hecs::Entity) -> Option<EntityId> {
-    world
-        .get::<&NetId>(entity)
-        .map(|n| n.0)
-        .ok()
-        .or_else(|| world.get::<&SceneId>(entity).map(|s| s.0).ok())
-}
 
 /// Mark an entity the game just spawned as networked and `me`'s: a fresh
 /// [`NetId`], the prefab it came from, and the owner. The next frame
@@ -243,22 +209,26 @@ pub fn announce(
     id
 }
 
-/// An entity and everything parented to it.
-pub(crate) fn despawn_tree(world: &mut hecs::World, root: hecs::Entity) {
-    let mut doomed = vec![root];
-    let mut i = 0;
-    while i < doomed.len() {
-        let parent = doomed[i];
-        doomed.extend(
-            world
-                .query::<(hecs::Entity, &crate::world::Parent)>()
-                .iter()
-                .filter(|(_, p)| p.0 == parent)
-                .map(|(e, _)| e),
-        );
-        i += 1;
-    }
-    for entity in doomed {
-        let _ = world.despawn(entity);
-    }
+
+
+/// The network's view of every networked entity, for a report.
+pub fn net_lines(world: &hecs::World) -> Vec<crate::save_core::NetLine> {
+    let mut out: Vec<crate::save_core::NetLine> = world
+        .query::<(
+            hecs::Entity,
+            &NetId,
+            Option<&crate::net::Replica>,
+            Option<&crate::net::NetTick>,
+        )>()
+        .iter()
+        .map(|(entity, id, replica, tick)| crate::save_core::NetLine {
+            id: id.0,
+            owner: crate::net::owner_of(world, entity).0,
+            replica: replica.is_some(),
+            tick: tick.map(|t| (t.tick, t.at.elapsed().as_secs_f32() * 1000.0)),
+        })
+        .collect();
+    out.sort_by_key(|l| l.id);
+    out
 }
+

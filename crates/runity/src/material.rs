@@ -607,3 +607,58 @@ mod tests {
         }
     }
 }
+
+/// A surface, as an asset in its own right.
+///
+/// Materials were inline in scenes first, and inline is where a palette goes
+/// to die: the same brown spelled out in twenty scenes drifts in nineteen of
+/// them, and changing it means a find-and-replace across text files. As an
+/// asset it is named once, referenced by name, and edited in one place — the
+/// same deal meshes and textures already have.
+///
+/// It holds a [`Material`](crate::material::Material) rather than repeating
+/// its fields, so adding a roughness later is one change rather than two
+/// definitions to keep in step.
+#[derive(Debug, Clone, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MaterialAsset {
+    pub id: crate::asset::AssetId,
+    pub name: String,
+    pub material: Material,
+}
+
+
+impl crate::asset::Asset for MaterialAsset {
+    fn id(&self) -> crate::asset::AssetId {
+        self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Materials out of the library: the palette. Returned by value — a
+/// material is a few numbers, and a borrow would tie every surface in a
+/// scene to the library's lifetime for nothing.
+pub trait MaterialLibrary {
+    fn material(&self, id: crate::asset::AssetId) -> Option<Material>;
+    /// By file stem, which is what a scene writes: `material:
+    /// "mossy_stone"` in any scene finds the one asset.
+    fn material_by_name(&self, name: &str) -> Option<Material>;
+    /// Follow a link to a material: by ID first, then by name.
+    fn material_link(&self, link: &crate::AssetLink) -> Option<Material>;
+}
+
+impl MaterialLibrary for crate::library::Library {
+    fn material(&self, id: crate::asset::AssetId) -> Option<Material> {
+        let bytes = self.bytes_of(id, crate::asset::AssetKind::Material)?;
+        crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
+    }
+    fn material_by_name(&self, name: &str) -> Option<Material> {
+        let bytes = self.bytes_named(name, crate::asset::AssetKind::Material)?;
+        crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
+    }
+    fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
+        let bytes = self.bytes_linked(link, crate::asset::AssetKind::Material)?;
+        crate::asset::view::<MaterialAsset>(bytes).ok().map(|a| Material::from(&a.material))
+    }
+}

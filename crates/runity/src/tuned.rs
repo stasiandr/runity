@@ -66,10 +66,10 @@ impl<T: DeserializeOwned> Tuned<T> {
     }
 
     /// [`Tuned::reload_if_changed`] at most every
-    /// [`crate::live::POLL_SECONDS`]: call it every frame with the delta.
+    /// [`POLL_SECONDS`]: call it every frame with the delta.
     pub fn poll(&mut self, delta: f32) -> Option<Result<(), String>> {
         self.since_poll += delta;
-        if self.since_poll < crate::live::POLL_SECONDS {
+        if self.since_poll < POLL_SECONDS {
             return None;
         }
         self.since_poll = 0.0;
@@ -151,3 +151,7 @@ mod tests {
         assert_eq!(wolf.speed, 7.5, "the last good value stays");
     }
 }
+
+/// How often a watched file is looked at for a change, seconds: often
+/// enough that a save shows at once, rarely enough to cost nothing.
+pub const POLL_SECONDS: f32 = 0.25;

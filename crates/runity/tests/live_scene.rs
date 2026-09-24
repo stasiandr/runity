@@ -5,6 +5,8 @@
 //! a new asset lands in the library, and the next reload shows the change
 //! without the game losing what it had.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::Path;
 
 use runity::asset::{self, AssetKind};

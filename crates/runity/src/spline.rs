@@ -129,3 +129,17 @@ impl SplineLine for EntityDesc {
         self.part()
     }
 }
+
+/// What every spline in a scene carries, grown: copies of its model set
+/// along it, as children of the line that has both. A pass over a scene
+/// its prefabs are expanded in; the file keeps the spline and the spacing,
+/// everything downstream sees copies.
+pub fn grow_all(entities: &mut [EntityDesc]) {
+    for desc in entities {
+        if let (Some(spline), Some(along)) = (desc.spline(), desc.along()) {
+            let grown = along.grow(desc.id, &spline);
+            desc.children.extend(grown);
+        }
+        grow_all(&mut desc.children);
+    }
+}

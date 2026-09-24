@@ -11,8 +11,6 @@
 //! produces sixty mutations a second and must be one undo step, so a
 //! snapshot is taken when a drag begins and not while it runs.
 
-#[allow(unused_imports)]
-use crate::prelude::*;
 use std::collections::HashSet;
 
 use crate::id::EntityId;
@@ -252,16 +250,10 @@ pub fn describe(before: &Scene, after: &Scene) -> String {
     };
     match (added.len(), removed.len(), changed.len()) {
         (0, 0, 0) => {
-            let mut parts = Vec::new();
-            if before.view() != after.view() {
-                parts.push("the view");
-            }
-            if before.sun() != after.sun() {
-                parts.push("the sun");
-            }
-            if before.fog() != after.fog() {
-                parts.push("the fog");
-            }
+            let parts: Vec<String> = differing(&before.parts, &after.parts)
+                .into_iter()
+                .map(|name| format!("the {}", name.replace('_', " ")))
+                .collect();
             if parts.is_empty() {
                 "nothing".into()
             } else {
@@ -287,20 +279,17 @@ pub fn describe(before: &Scene, after: &Scene) -> String {
             if moved {
                 what.push("reparent");
             }
-            if a.material_ref() != b.material_ref() {
-                what.push("recolour");
-            }
-            if a.model() != b.model() {
-                what.push("change the model of");
-            }
+            // A module's field by its name: "change the light of".
+            let fields: Vec<String> = differing(&a.parts, &b.parts)
+                .into_iter()
+                .map(|name| format!("change the {} of", name.replace('_', " ")))
+                .collect();
+            what.extend(fields.iter().map(String::as_str));
             if a.components != b.components {
                 what.push("change the components of");
             }
             if a.overrides != b.overrides {
                 what.push("override a part of");
-            }
-            if a.body() != b.body() || a.collider() != b.collider() {
-                what.push("change the physics of");
             }
             if a.name != b.name && what.is_empty() {
                 return format!("rename {} to {}", name(a), name(b));
@@ -1129,4 +1118,15 @@ mod face_tests {
         assert_eq!("top".parse::<Face>().unwrap(), Face::PosY);
         assert!("north".parse::<Face>().unwrap_err().contains("+x, -x"));
     }
+}
+
+/// The module fields whose text differs between two lines, by name.
+fn differing(a: &crate::parts::Parts, b: &crate::parts::Parts) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in a.names().chain(b.names()) {
+        if a.raw(name) != b.raw(name) && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+    }
+    names
 }

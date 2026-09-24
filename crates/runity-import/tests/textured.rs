@@ -6,6 +6,8 @@
 //! flat. Comparing a textured draw against an untextured one is what tells
 //! those apart.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::glam::{Mat4, Vec3};

@@ -33,13 +33,18 @@ pub const MAGIC: [u8; 8] = *b"RUNITY\0\x01";
 
 /// Bumped whenever an archived type below changes shape, or the header does.
 /// An asset built by an older importer is re-imported, never guessed at.
-pub const FORMAT_VERSION: u32 = 16;
+pub const FORMAT_VERSION: u32 = 17;
 
 /// What kind of asset a file holds.
 ///
 /// Stored in the header rather than inferred from the extension, because a
 /// library reads whatever is in a directory and casting a texture's bytes to
 /// a mesh is not an error any type system catches.
+///
+/// The formats themselves are the modules' — a mesh is geometry's, a
+/// sound the sound module's (docs/modules.md) — and the core reads a
+/// library by the header alone. This list of kinds is still the core's:
+/// a module registering a kind of its own is the step after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AssetKind {
@@ -181,219 +186,6 @@ impl<'de> serde::Deserialize<'de> for AssetId {
     }
 }
 
-/// One vertex, in the layout the vertex buffer uses.
-///
-/// `repr(C)` because this is uploaded to the GPU as-is; the archived form and
-/// the in-memory form have to agree on padding.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Archive,
-    Serialize,
-    Deserialize,
-    bytemuck::Pod,
-    bytemuck::Zeroable,
-)]
-#[repr(C)]
-pub struct Vertex {
-    pub position: [f32; 3],
-    pub normal: [f32; 3],
-    pub uv: [f32; 2],
-}
-
-/// A run of indices sharing one material — what becomes one draw call.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct Submesh {
-    pub first_index: u32,
-    pub index_count: u32,
-    /// The material this run is drawn with, or `None` while materials are
-    /// still the atlas the old pipeline baked.
-    pub material: Option<AssetId>,
-}
-
-/// An axis-aligned box around everything in the mesh.
-///
-/// Computed at import rather than at load, because it is needed for culling
-/// on the first frame and recomputing it would mean walking every vertex —
-/// which is exactly the parsing the format exists to avoid.
-#[derive(Debug, Clone, Copy, PartialEq, Archive, Serialize, Deserialize)]
-pub struct Bounds {
-    pub min: [f32; 3],
-    pub max: [f32; 3],
-}
-
-impl Bounds {
-    pub fn of(vertices: &[Vertex]) -> Self {
-        let mut min = [f32::INFINITY; 3];
-        let mut max = [f32::NEG_INFINITY; 3];
-        for v in vertices {
-            for axis in 0..3 {
-                min[axis] = min[axis].min(v.position[axis]);
-                max[axis] = max[axis].max(v.position[axis]);
-            }
-        }
-        // An empty mesh gets a degenerate box at the origin rather than
-        // infinities, which would poison every culling test it touched.
-        if vertices.is_empty() {
-            min = [0.0; 3];
-            max = [0.0; 3];
-        }
-        Bounds { min, max }
-    }
-
-    pub fn center(&self) -> [f32; 3] {
-        [
-            (self.min[0] + self.max[0]) * 0.5,
-            (self.min[1] + self.max[1]) * 0.5,
-            (self.min[2] + self.max[2]) * 0.5,
-        ]
-    }
-}
-
-/// An image, ready to upload: straight RGBA8, one byte per channel.
-///
-/// Uncompressed for now. Block compression (BC7 on desktop, ASTC on mobile)
-/// is the obvious next step and belongs at import, where it is paid for once
-/// rather than every load — but it is a per-platform decision, and the
-/// pipeline has to exist before it is worth making.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct TextureAsset {
-    pub id: AssetId,
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-    /// `width * height * 4` bytes, top row first. The base level.
-    pub pixels: Vec<u8>,
-    /// Levels 1 and down, each half the previous, ending at 1x1.
-    ///
-    /// Built at import rather than on the GPU at load. Without them a
-    /// texture seen at a distance samples one texel out of many and
-    /// shimmers as the camera moves — the artifact that looks like the
-    /// renderer is broken and is only a missing chain.
-    pub mips: Vec<TextureLevel>,
-    /// Whether the values are sRGB-encoded. Colour maps are; normal maps,
-    /// roughness and masks are not, and sampling those through an sRGB view
-    /// bends every value in them.
-    pub srgb: bool,
-}
-
-/// Decoded audio, ready to hand to the mixer.
-///
-/// Decoded at import for the same reason meshes are: a game that decodes OGG
-/// on the frame it needs a footstep stutters on the footstep. The cost is
-/// disk — a minute of stereo is about twenty megabytes — which is why music
-/// will eventually want streaming and why sound effects never will.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct SoundAsset {
-    pub id: AssetId,
-    pub name: String,
-    pub sample_rate: u32,
-    /// Interleaved stereo. Mono sources are duplicated at import, so the
-    /// mixer has one layout and no branch. Empty for a long one, which
-    /// keeps its `encoded` bytes instead.
-    pub samples: Vec<f32>,
-    /// A long sound — music, a wind that blows all level — as its file
-    /// was, compressed, played by streaming it: decoded, a ten-minute track
-    /// would be two hundred megabytes. Short ones are decoded at import,
-    /// so a footstep never waits on a decoder. Empty for those.
-    pub encoded: Vec<u8>,
-    /// How long it plays.
-    pub seconds: f32,
-}
-
-/// Sounds longer than this keep their file's compressed bytes and stream.
-pub const LONG_SOUND_SECONDS: f32 = 10.0;
-
-impl SoundAsset {
-    pub fn frames(&self) -> usize {
-        self.samples.len() / 2
-    }
-
-    pub fn duration_seconds(&self) -> f32 {
-        if self.samples.is_empty() {
-            return self.seconds;
-        }
-        self.frames() as f32 / self.sample_rate.max(1) as f32
-    }
-}
-
-/// A surface, as an asset in its own right.
-///
-/// Materials were inline in scenes first, and inline is where a palette goes
-/// to die: the same brown spelled out in twenty scenes drifts in nineteen of
-/// them, and changing it means a find-and-replace across text files. As an
-/// asset it is named once, referenced by name, and edited in one place — the
-/// same deal meshes and textures already have.
-///
-/// It holds a [`Material`](crate::material::Material) rather than repeating
-/// its fields, so adding a roughness later is one change rather than two
-/// definitions to keep in step.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct MaterialAsset {
-    pub id: AssetId,
-    pub name: String,
-    pub material: crate::material::Material,
-}
-
-/// One step down the mip chain.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct TextureLevel {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
-}
-
-/// What binds a mesh's vertices to a skeleton.
-///
-/// Held apart from [`Vertex`] rather than widened into it, so a static mesh
-/// pays nothing: most meshes in most scenes have no skeleton, and putting
-/// four joint indices and four weights on every vertex in the world would
-/// cost a third more memory and bandwidth for nothing.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct MeshSkin {
-    /// Four joint indices per vertex, parallel to `vertices`.
-    pub joints: Vec<[u16; 4]>,
-    /// Four weights per vertex, summing to one.
-    pub weights: Vec<[f32; 4]>,
-    pub skeleton: crate::animation::Skeleton,
-    pub clips: Vec<crate::animation::Clip>,
-}
-
-impl ArchivedMeshAsset {
-    /// The skeleton and the clips, as plain values: what an [`Animator`]
-    /// is made from. `None` for a mesh with no skin. A copy, made once when
-    /// something starts animating, not in the frame.
-    ///
-    /// [`Animator`]: crate::Animator
-    pub fn skin_owned(&self) -> Option<MeshSkin> {
-        self.skin
-            .as_ref()
-            .and_then(|skin| rkyv::deserialize::<MeshSkin, rkyv::rancor::Error>(skin).ok())
-    }
-}
-
-/// A mesh, ready to upload.
-#[derive(Debug, Clone, PartialEq, Archive, Serialize, Deserialize)]
-pub struct MeshAsset {
-    pub id: AssetId,
-    /// Kept for the editor's browser and for error messages; the runtime
-    /// never looks anything up by it.
-    pub name: String,
-    pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
-    pub submeshes: Vec<Submesh>,
-    pub bounds: Bounds,
-    /// Present only when the mesh is skinned.
-    pub skin: Option<MeshSkin>,
-    /// The model's own colours, from the file's materials: its one texture,
-    /// or its materials' colours in a little palette its UVs point into.
-    /// What it is drawn with when the entity's material has no map of its
-    /// own — a Kenney kit's model looks as it did in its maker's tool.
-    pub look: Option<TextureAsset>,
-}
-
 /// Errors that mean "do not cast these bytes".
 #[derive(Debug)]
 pub enum AssetError {
@@ -444,13 +236,27 @@ impl From<std::io::Error> for AssetError {
     }
 }
 
-/// Header size: magic plus version plus the padding that keeps the body at an
-/// alignment rkyv is happy to read from.
+/// The fixed part of the header: magic, version, kind and padding.
 const HEADER: usize = 16;
+
+/// An asset format, as a module defines one: what kind it is, and the ID
+/// and name it carries — which go in the file's header, so the core can
+/// keep a library of assets it does not know the insides of.
+pub trait Asset {
+    fn id(&self) -> AssetId;
+    fn name(&self) -> &str;
+}
+
+/// How long the whole header is: the fixed part, the ID, the name's
+/// length and the name, padded so the body starts where rkyv reads from.
+fn header_len(name_len: usize) -> usize {
+    (HEADER + 16 + 2 + name_len).div_ceil(16) * 16
+}
 
 /// Serialize an asset into the bytes of a `.rasset` file.
 pub fn to_bytes<T>(value: &T, kind: AssetKind) -> Result<Vec<u8>, AssetError>
 where
+    T: Asset,
     T: for<'a> Serialize<
         rkyv::api::high::HighSerializer<
             rkyv::util::AlignedVec,
@@ -461,13 +267,32 @@ where
 {
     let body = rkyv::to_bytes::<rkyv::rancor::Error>(value)
         .map_err(|e| AssetError::Corrupt(e.to_string()))?;
-    let mut out = Vec::with_capacity(HEADER + body.len());
+    let name = value.name().as_bytes();
+    let name = &name[..name.len().min(u16::MAX as usize)];
+    let len = header_len(name.len());
+    let mut out = Vec::with_capacity(len + body.len());
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.push(kind as u8);
     out.extend_from_slice(&[0u8; 3]);
+    out.extend_from_slice(&value.id().0.to_le_bytes());
+    out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+    out.extend_from_slice(name);
+    out.resize(len, 0);
     out.extend_from_slice(&body);
     Ok(out)
+}
+
+/// What the header says: the kind, the ID and the name — all a library
+/// needs to keep an asset, without knowing its format.
+pub fn head_of(bytes: &[u8]) -> Result<(AssetKind, AssetId, String), AssetError> {
+    let kind = kind_of(bytes)?;
+    split_header(bytes)?;
+    let id = u128::from_le_bytes(bytes[HEADER..HEADER + 16].try_into().expect("sixteen bytes"));
+    let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
+    let name = std::str::from_utf8(&bytes[HEADER + 18..HEADER + 18 + n])
+        .map_err(|e| AssetError::Corrupt(e.to_string()))?;
+    Ok((kind, AssetId(id), name.to_string()))
 }
 
 /// Whether the `.rasset` at `path` was written by another format version
@@ -508,7 +333,8 @@ pub fn is_current(path: impl AsRef<Path>) -> bool {
     std::fs::File::open(path.as_ref())
         .and_then(|mut f| f.read_exact(&mut header))
         .is_ok()
-        && split_header(&header).is_ok()
+        && header[..8] == MAGIC
+        && u32::from_le_bytes([header[8], header[9], header[10], header[11]]) == FORMAT_VERSION
 }
 
 /// Check the header and hand back the body, without touching it.
@@ -526,7 +352,15 @@ pub fn split_header(bytes: &[u8]) -> Result<&[u8], AssetError> {
             expected: FORMAT_VERSION,
         });
     }
-    Ok(&bytes[HEADER..])
+    if bytes.len() < HEADER + 18 {
+        return Err(AssetError::BadMagic);
+    }
+    let n = u16::from_le_bytes([bytes[HEADER + 16], bytes[HEADER + 17]]) as usize;
+    let len = header_len(n);
+    if bytes.len() < len {
+        return Err(AssetError::BadMagic);
+    }
+    Ok(&bytes[len..])
 }
 
 /// Read a `.rasset` off disk into owned bytes whose archived form can be
@@ -552,90 +386,4 @@ where
     let body = split_header(bytes)?;
     rkyv::access::<T::Archived, rkyv::rancor::Error>(body)
         .map_err(|e| AssetError::Corrupt(e.to_string()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn cube() -> MeshAsset {
-        let vertices: Vec<Vertex> = (0..8)
-            .map(|i| Vertex {
-                position: [
-                    if i & 1 == 0 { -1.0 } else { 1.0 },
-                    if i & 2 == 0 { -1.0 } else { 1.0 },
-                    if i & 4 == 0 { -1.0 } else { 1.0 },
-                ],
-                normal: [0.0, 1.0, 0.0],
-                uv: [0.0, 0.0],
-            })
-            .collect();
-        MeshAsset {
-            id: AssetId::from_source("models/cube.obj", 0),
-            name: "cube".into(),
-            bounds: Bounds::of(&vertices),
-            vertices,
-            indices: (0..12u32).collect(),
-            skin: None,
-            look: None,
-            submeshes: vec![Submesh {
-                first_index: 0,
-                index_count: 12,
-                material: None,
-            }],
-        }
-    }
-
-    #[test]
-    fn an_asset_is_read_back_without_being_decoded() {
-        let mesh = cube();
-        let bytes = to_bytes(&mesh, AssetKind::Mesh).unwrap();
-        let archived = view::<MeshAsset>(&bytes).unwrap();
-        assert_eq!(archived.vertices.len(), 8);
-        assert_eq!(archived.name.as_str(), "cube");
-        assert_eq!(archived.id, mesh.id);
-        // Reading a coordinate costs no parse and no allocation.
-        assert_eq!(archived.vertices[1].position[0], 1.0);
-    }
-
-    #[test]
-    fn the_same_source_always_gets_the_same_id() {
-        // A re-import has to update the asset in place. If ids were random,
-        // every re-import would orphan every scene that referenced it.
-        assert_eq!(
-            AssetId::from_source("models/pine_large.obj", 0),
-            AssetId::from_source("models/pine_large.obj", 0)
-        );
-        assert_ne!(
-            AssetId::from_source("models/pine_large.obj", 0),
-            AssetId::from_source("models/pine_small.obj", 0)
-        );
-    }
-
-    #[test]
-    fn a_file_that_is_not_ours_is_refused_rather_than_cast() {
-        let png = b"\x89PNG\r\n\x1a\n and then some".to_vec();
-        assert!(matches!(view::<MeshAsset>(&png), Err(AssetError::BadMagic)));
-    }
-
-    #[test]
-    fn an_older_format_asks_for_a_re_import_instead_of_guessing() {
-        let mut bytes = to_bytes(&cube(), AssetKind::Mesh).unwrap();
-        bytes[8] = 0; // pretend it was written by format v0
-        match view::<MeshAsset>(&bytes) {
-            Err(AssetError::Version { found, expected }) => {
-                assert_eq!((found, expected), (0, FORMAT_VERSION));
-            }
-            Err(e) => panic!("expected a version error, got {e}"),
-            Ok(_) => panic!("a v0 asset was read as if it were current"),
-        }
-    }
-
-    #[test]
-    fn an_empty_mesh_gets_a_box_at_the_origin_not_infinities() {
-        let b = Bounds::of(&[]);
-        assert_eq!(b.min, [0.0; 3]);
-        assert_eq!(b.max, [0.0; 3]);
-        assert_eq!(b.center(), [0.0; 3]);
-    }
 }

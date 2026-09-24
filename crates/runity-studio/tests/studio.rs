@@ -9,6 +9,8 @@
 //!
 //! Skipped, not failed, where there is no GPU to render the scene with.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use runity::input::{InputEvent, Key, MouseButton};
 use runity_studio::Studio;
 

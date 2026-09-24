@@ -326,6 +326,41 @@ pub fn advance_animations(world: &mut World, dt: f32) {
     for (entity, matrices) in posed {
         let _ = world.insert_one(entity, Posed(matrices));
     }
+    hold_on_bones(world);
+}
+
+/// What rides on a bone of its parent's skeleton — a spade in a hand, a
+/// hat on a head — gets the bone's place as it is posed now, for
+/// [`crate::world::apply_hierarchy`] to put between the parent and it.
+pub fn hold_on_bones(world: &mut World) {
+    use crate::world::{Between, OnBone, Parent};
+    let mut held: Vec<(hecs::Entity, Option<Mat4>)> = Vec::new();
+    for (entity, bone, parent) in world.query::<(hecs::Entity, &OnBone, &Parent)>().iter() {
+        let mut q = world.query_one::<(&Animator, &Posed)>(parent.0);
+        let placed = q.get().ok().and_then(|(animator, posed)| {
+            let (i, joint) = animator
+                .skeleton
+                .joints
+                .iter()
+                .enumerate()
+                .find(|(_, j)| j.name == bone.0)?;
+            // Skinning is the joint's place times its inverse bind: undo
+            // the second to get the first.
+            let skinning = posed.0.get(i)?;
+            Some(*skinning * Mat4::from_cols_array_2d(&joint.inverse_bind).inverse())
+        });
+        held.push((entity, placed));
+    }
+    for (entity, placed) in held {
+        match placed {
+            Some(bone) => {
+                let _ = world.insert_one(entity, Between(bone));
+            }
+            None => {
+                let _ = world.remove_one::<Between>(entity);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

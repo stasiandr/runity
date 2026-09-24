@@ -6,6 +6,8 @@
 //! at the wrong dynamic offset. Every one of those draws the mesh in its
 //! bind pose and looks like an animation that is not playing.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::path::{Path, PathBuf};
 
 use runity::glam::{Mat4, Vec3};

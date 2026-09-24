@@ -8,6 +8,8 @@
 //! leave it. What a scene says about playing animations in the game is the
 //! game's — this is the editor looking.
 
+#[allow(unused_imports)]
+use runity::prelude::*;
 use std::sync::Arc;
 
 use runity::{Animator, EntityId, SceneId};

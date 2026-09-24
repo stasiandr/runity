@@ -13,30 +13,16 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::asset::{
-    self, ArchivedMeshAsset, ArchivedSoundAsset, ArchivedTextureAsset, AssetError, AssetId,
-    AssetKind, MaterialAsset, MeshAsset, SoundAsset, TextureAsset,
-};
-use crate::material::Material;
+use crate::asset::{self, AssetError, AssetId, AssetKind};
 
 /// Read an asset's id out of its bytes, whatever kind it is.
 ///
 /// One function rather than a `match` repeated at every call site: adding a
 /// kind used to mean finding three of these, and missing one meant an asset
 /// that loaded but could not be looked up.
-fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
-    match kind {
-        AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok().map(|a| (&a.id).into()),
-        AssetKind::Texture => asset::view::<TextureAsset>(bytes)
-            .ok()
-            .map(|a| (&a.id).into()),
-        AssetKind::Sound => asset::view::<SoundAsset>(bytes)
-            .ok()
-            .map(|a| (&a.id).into()),
-        AssetKind::Material => asset::view::<MaterialAsset>(bytes)
-            .ok()
-            .map(|a| (&a.id).into()),
-    }
+/// The ID an archive's header gives it.
+fn id_of(bytes: &[u8], _kind: AssetKind) -> Option<AssetId> {
+    asset::head_of(bytes).ok().map(|(_, id, _)| id)
 }
 
 /// The name an asset was built with — its source file's stem — read from
@@ -45,14 +31,9 @@ fn id_of(bytes: &[u8], kind: AssetKind) -> Option<AssetId> {
 /// Not from the library file's name: that is the importer's business, and
 /// it is the asset's ID (`<id>.rasset`), so that two sources with one stem
 /// do not overwrite each other. The name a scene uses is the one inside.
-fn name_of(bytes: &[u8], kind: AssetKind) -> Option<String> {
-    let name = match kind {
-        AssetKind::Mesh => asset::view::<MeshAsset>(bytes).ok()?.name.as_str(),
-        AssetKind::Texture => asset::view::<TextureAsset>(bytes).ok()?.name.as_str(),
-        AssetKind::Sound => asset::view::<SoundAsset>(bytes).ok()?.name.as_str(),
-        AssetKind::Material => asset::view::<MaterialAsset>(bytes).ok()?.name.as_str(),
-    };
-    Some(name.to_string())
+/// The name an archive's header gives it.
+fn name_of(bytes: &[u8], _kind: AssetKind) -> Option<String> {
+    asset::head_of(bytes).ok().map(|(_, _, name)| name)
 }
 
 /// One asset's bytes, plus where they came from.
@@ -192,20 +173,28 @@ impl Library {
         self.entries.is_empty()
     }
 
-    pub fn mesh(&self, id: AssetId) -> Option<&ArchivedMeshAsset> {
+
+
+
+    /// An asset's archive, when it is of this kind: what a module reads
+    /// its format from (`MeshLibrary::mesh`…).
+    pub fn bytes_of(&self, id: AssetId, kind: AssetKind) -> Option<&[u8]> {
         let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        (entry.kind == AssetKind::Mesh).then(|| asset::view::<MeshAsset>(&entry.bytes).ok())?
+        (entry.kind == kind).then_some(entry.bytes.as_slice())
     }
 
-    pub fn texture(&self, id: AssetId) -> Option<&ArchivedTextureAsset> {
-        let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        (entry.kind == AssetKind::Texture)
-            .then(|| asset::view::<TextureAsset>(&entry.bytes).ok())?
+    /// The archive of the one asset of this kind with this file stem.
+    pub fn bytes_named(&self, name: &str, kind: AssetKind) -> Option<&[u8]> {
+        self.named(name, kind).map(|e| e.bytes.as_slice())
     }
 
-    pub fn sound(&self, id: AssetId) -> Option<&ArchivedSoundAsset> {
-        let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        (entry.kind == AssetKind::Sound).then(|| asset::view::<SoundAsset>(&entry.bytes).ok())?
+    /// An asset a link names, of this kind: by its ID when the library
+    /// knows it, by its name otherwise (docs/refs.md). By ID is what tells
+    /// two `rock` models in two folders apart.
+    pub fn bytes_linked(&self, link: &crate::AssetLink, kind: AssetKind) -> Option<&[u8]> {
+        link.id
+            .and_then(|id| self.bytes_of(id, kind))
+            .or_else(|| self.bytes_named(link, kind))
     }
 
     /// The one asset of this kind with this file stem.
@@ -217,69 +206,13 @@ impl Library {
             .find(|e| e.kind == kind)
     }
 
-    /// The material an id names.
-    ///
-    /// Returned by value: a material is four numbers, and a borrow would tie
-    /// every surface in a scene to the library's lifetime for nothing.
-    pub fn material(&self, id: AssetId) -> Option<Material> {
-        let entry = self.entries.get(*self.by_id.get(&id)?)?;
-        (entry.kind == AssetKind::Material)
-            .then(|| asset::view::<MaterialAsset>(&entry.bytes).ok())
-            .flatten()
-            .map(|a| Material::from(&a.material))
-    }
 
-    /// Look a material up by file stem, which is what a scene writes.
-    ///
-    /// This is the palette: `material: "mossy_stone"` in any scene finds the
-    /// one asset, and changing that asset changes every scene that used it.
-    pub fn material_by_name(&self, name: &str) -> Option<Material> {
-        let entry = self.named(name, AssetKind::Material)?;
-        asset::view::<MaterialAsset>(&entry.bytes)
-            .ok()
-            .map(|a| Material::from(&a.material))
-    }
 
-    /// Look a sound up by file stem.
-    /// The sound a link names — a scene's `sound: (clip: ...)`.
-    pub fn sound_of(&self, link: &crate::AssetLink) -> Option<&ArchivedSoundAsset> {
-        let (id, _) = self.find(link, AssetKind::Sound)?;
-        self.sound(id)
-    }
 
-    pub fn sound_by_name(&self, name: &str) -> Option<&ArchivedSoundAsset> {
-        asset::view::<SoundAsset>(&self.named(name, AssetKind::Sound)?.bytes).ok()
-    }
 
-    /// Look a texture up by file stem.
-    pub fn texture_by_name(&self, name: &str) -> Option<&ArchivedTextureAsset> {
-        asset::view::<TextureAsset>(&self.named(name, AssetKind::Texture)?.bytes).ok()
-    }
 
-    /// Look an asset up by file stem.
-    ///
-    /// A convenience for scenes written by hand and for tests. Once the
-    /// editor writes scenes, it writes ids, and this stops being on the path
-    /// anything important takes.
-    pub fn mesh_by_name(&self, name: &str) -> Option<&ArchivedMeshAsset> {
-        asset::view::<MeshAsset>(&self.named(name, AssetKind::Mesh)?.bytes).ok()
-    }
 
-    /// Follow a link to a mesh: by its ID when it has one the library
-    /// knows, by its name otherwise (docs/refs.md). By ID is what tells two
-    /// `rock` models in two folders apart.
-    pub fn mesh_link(&self, link: &crate::AssetLink) -> Option<&ArchivedMeshAsset> {
-        link.id
-            .and_then(|id| self.mesh(id))
-            .or_else(|| self.mesh_by_name(link))
-    }
 
-    /// Follow a link to a material: by ID first, then by name.
-    pub fn material_link(&self, link: &crate::AssetLink) -> Option<Material> {
-        link.id
-            .and_then(|id| self.material(id))
-            .or_else(|| self.material_by_name(link))
-    }
 
     /// What a link names, as the library has it now: the ID and the name
     /// inside the asset. By ID first, then by name — only when the name is

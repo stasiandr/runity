@@ -24,7 +24,19 @@ pub mod animation;
 pub mod appearance;
 pub mod animator;
 pub mod animgraph;
-pub mod asset;
+/// The asset archive as the core has it: its header, its ID.
+pub mod asset_core;
+pub mod mesh_asset;
+mod asset_tests;
+
+/// Assets: the core's archive and IDs, and every module's formats, under
+/// one name as before they were cut apart.
+pub mod asset {
+    pub use crate::asset_core::*;
+    pub use crate::material::{ArchivedMaterialAsset, MaterialAsset};
+    pub use crate::mesh_asset::*;
+    pub use crate::sound::{ArchivedSoundAsset, SoundAsset, LONG_SOUND_SECONDS};
+}
 pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub mod audio;
@@ -52,6 +64,7 @@ pub mod lan;
 pub mod layers;
 pub mod lens;
 pub mod library;
+pub mod links;
 pub mod lights;
 pub mod live;
 pub mod material;
@@ -82,7 +95,26 @@ pub mod reports;
 pub mod ron_edit;
 mod ron_text;
 pub mod routes;
-pub mod save;
+/// Saving a game in progress, as the core has it.
+pub mod save_core;
+
+/// Saving a game in progress, and the report a running game sends the
+/// editor: the core's save with what the modules add to it.
+pub mod save {
+    pub use crate::animgraph::animator_trails;
+    pub use crate::net::net_lines;
+    pub use crate::save_core::*;
+
+    /// Write down a world that started from `scene`, with each animated
+    /// entity's graph state.
+    pub fn capture(
+        world: &hecs::World,
+        components: &crate::components::Components,
+        scene: &crate::scene::Scene,
+    ) -> SaveGame {
+        capture_with(world, components, scene, &crate::animgraph::animator_state)
+    }
+}
 /// The scene file as the core has it: a line's identity, place and tree,
 /// its modules' fields as parts (docs/modules.md).
 pub mod scene_core;
@@ -109,6 +141,7 @@ pub mod scene {
     /// a field by that no module reads.
     pub fn part_kinds() -> Vec<crate::parts::PartKind> {
         let mut kinds = Vec::new();
+        kinds.extend(crate::scene_core::part_kinds());
         kinds.extend(crate::body::part_kinds());
         kinds.extend(crate::look::part_kinds());
         kinds.extend(crate::motion::part_kinds());
@@ -123,6 +156,9 @@ pub mod scene {
 /// runity::prelude::*` once.
 pub mod prelude {
     pub use crate::body::{PhysicsLine, PhysicsOverride};
+    pub use crate::material::MaterialLibrary;
+    pub use crate::mesh_asset::{MeshLibrary, TextureLibrary};
+    pub use crate::sound::SoundLibrary;
     pub use crate::look::{LookLine, LookOverride, SceneLook};
     pub use crate::motion::AnimationLine;
     pub use crate::routes::RouteLine;
@@ -150,7 +186,24 @@ pub mod ui_render;
 pub mod volume;
 pub mod weather;
 pub mod widgets;
-pub mod world;
+/// The world as the core has it: hierarchy, identity, spawning.
+pub mod world_core;
+pub mod world_look;
+pub mod bodies;
+pub mod spawning;
+mod world_tests;
+
+/// A world of entities: the core's hierarchy and spawning, and every
+/// module's components of it, under one name as before they were cut
+/// apart.
+pub mod world {
+    pub use crate::bodies::*;
+    pub use crate::motion::OnBone;
+    pub use crate::sound::Sounding;
+    pub use crate::spawning::*;
+    pub use crate::world_core::*;
+    pub use crate::world_look::*;
+}
 
 pub use animation::{Channel, Clip, Joint, PoseTransform, Skeleton};
 pub use animator::{advance_animations, Animator, Playing};
@@ -175,7 +228,13 @@ pub use material::{Material, Shading};
 pub use perf::{FrameSummary, FrameTimes};
 #[cfg(feature = "physics")]
 pub use physics::{BodyHandle, PhysicsWorld, RayHit};
-pub use prefab::{instantiate, Instanced, Prefabs};
+pub use prefab::{Instanced, Prefabs};
+
+/// Expand a scene's prefab instances, with what this build's modules grow
+/// on it: [`prefab::instantiate_with`] and the copies set along splines.
+pub fn instantiate(scene: &Scene, prefabs: &Prefabs) -> Instanced {
+    prefab::instantiate_with(scene, prefabs, spline::grow_all)
+}
 pub use project::{Project, ProjectError};
 pub use render::{
     Camera, Draw, FogSettings, Frame, Lighting, MeshHandle, Renderer, ShadowSettings, TextureHandle,

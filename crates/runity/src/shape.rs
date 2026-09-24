@@ -36,7 +36,7 @@ pub enum Shape {
     /// an editor shows as a picker.
     Entity,
     /// A link to an asset of a kind — `model`, `prefab`, `sound`… — by the
-    /// typed links in [`crate::refs`]: a picker of that kind's assets.
+    /// typed links in [`crate::links`]: a picker of that kind's assets.
     Asset(String),
 }
 
@@ -83,7 +83,7 @@ impl Shape {
             Shape::Enum(variants) => variants.first().cloned().unwrap_or_default(),
             Shape::Entity => format!("{}(\"\")", crate::EntityRef::NAME),
             Shape::Asset(kind) => {
-                let name = crate::refs::LINK_KINDS
+                let name = crate::links::LINK_KINDS
                     .iter()
                     .find(|(_, k)| k == kind)
                     .map_or("ModelLink", |(n, _)| n);
@@ -308,7 +308,7 @@ impl<'de> Deserializer<'de> for Tracer<'_> {
         let Tracer { out, depth } = self;
         // A typed link reads its inside as anything at all, which a tracer
         // cannot answer: its inside is an empty name, and its shape its kind.
-        if let Some((_, kind)) = crate::refs::LINK_KINDS.iter().find(|(n, _)| *n == name) {
+        if let Some((_, kind)) = crate::links::LINK_KINDS.iter().find(|(n, _)| *n == name) {
             *out = Shape::Asset(kind.to_string());
             return visitor.visit_newtype_struct(IntoDeserializer::<Stop>::into_deserializer(""));
         }

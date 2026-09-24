@@ -1464,3 +1464,24 @@ mod tests {
         );
     }
 }
+
+
+/// Every controller's trail, by the entity's id.
+pub fn animator_trails(world: &hecs::World) -> Vec<(crate::id::EntityId, Vec<String>)> {
+    let mut out: Vec<(crate::id::EntityId, Vec<String>)> = world
+        .query::<(&crate::world::SceneId, &crate::animgraph::Controller)>()
+        .iter()
+        .map(|(id, c)| (id.0, c.trail().map(|p| p.to_string()).collect()))
+        .collect();
+    out.sort_by_key(|(id, _)| *id);
+    out
+}
+
+pub fn animator_state(world: &hecs::World, entity: hecs::Entity) -> String {
+    world
+        .get::<&crate::animgraph::Controller>(entity)
+        .ok()
+        .and_then(|c| c.state().map(str::to_string))
+        .unwrap_or_default()
+}
+

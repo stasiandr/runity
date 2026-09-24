@@ -606,44 +606,6 @@ pub struct ModelRef(pub crate::AssetLink);
 pub struct BendsGrass(pub f32);
 
 
-/// The material a line draws with.
-impl EntityDesc {
-    /// The material to draw with, using the engine's builtins only.
-    ///
-    /// What a test and the reference scene want, since neither has a library.
-    /// Anything that does have one calls [`EntityDesc::material_from`].
-    pub fn material(&self) -> Material {
-        self.material_from(|_| None)
-    }
-
-    /// The material to draw with, asking `lookup` first.
-    ///
-    /// The order is the project's palette, then the engine's builtins, then
-    /// plain grey. A project's own `stone` therefore shadows the engine's,
-    /// which is the useful direction: the builtins exist so that an example
-    /// scene can be written before a palette exists, not to reserve seven
-    /// names forever. `builtin:stone` reaches past the shadow when that is
-    /// what was meant.
-    ///
-    /// An unknown name falls back rather than failing to load — a scene with
-    /// a typo should still open, showing plain grey where the mistake is,
-    /// which is more useful than an error and no scene at all.
-    pub fn material_from(
-        &self,
-        lookup: impl Fn(&crate::AssetLink) -> Option<Material>,
-    ) -> Material {
-        match &self.material_ref() {
-            MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
-                Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
-                None => lookup(name)
-                    .or_else(|| crate::material::builtin::by_name(name))
-                    .unwrap_or_default(),
-            },
-            MaterialRef::Inline(material) => *material,
-        }
-    }
-}
-
 crate::impl_parts! {
     ModelRef => "model", default if |m| m.0.is_empty();
     MaterialRef => "material", default if |m| m.is_default();
@@ -692,6 +654,37 @@ pub trait LookLine {
     fn with_model(self, model: impl Into<crate::AssetLink>) -> Self
     where
         Self: Sized;
+    /// The material to draw with, using the engine's builtins only.
+    ///
+    /// What a test and the reference scene want, since neither has a
+    /// library. Anything that does have one calls
+    /// [`LookLine::material_from`].
+    fn material(&self) -> Material {
+        self.material_from(|_| None)
+    }
+    /// The material to draw with, asking `lookup` first.
+    ///
+    /// The order is the project's palette, then the engine's builtins, then
+    /// plain grey. A project's own `stone` therefore shadows the engine's,
+    /// which is the useful direction: the builtins exist so that an example
+    /// scene can be written before a palette exists, not to reserve seven
+    /// names forever. `builtin:stone` reaches past the shadow when that is
+    /// what was meant.
+    ///
+    /// An unknown name falls back rather than failing to load — a scene with
+    /// a typo should still open, showing plain grey where the mistake is,
+    /// which is more useful than an error and no scene at all.
+    fn material_from(&self, lookup: impl Fn(&crate::AssetLink) -> Option<Material>) -> Material {
+        match &self.material_ref() {
+            MaterialRef::Named(name) => match name.strip_prefix("builtin:") {
+                Some(builtin) => crate::material::builtin::by_name(builtin).unwrap_or_default(),
+                None => lookup(name)
+                    .or_else(|| crate::material::builtin::by_name(name))
+                    .unwrap_or_default(),
+            },
+            MaterialRef::Inline(material) => *material,
+        }
+    }
 }
 
 impl LookLine for EntityDesc {

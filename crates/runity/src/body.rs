@@ -336,11 +336,6 @@ pub enum Body {
     Trigger,
 }
 
-/// `layer: "props"` — the collision layer, by the name `layers.ron` gives
-/// it; absent is `default`. See [`crate::layers`].
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LayerName(pub String);
 
 
 /// `joint_break: 400.0` — the joint breaks when pulled harder than this
@@ -355,7 +350,6 @@ crate::impl_parts! {
     Collider => "collider", default if |c| *c == Collider::None;
     BodyProps => "physics", default if |p| p.is_default();
     Joint => "joint", default if |j| j.is_none();
-    LayerName => "layer", default if |l| l.0.is_empty();
     JointBreak => "joint_break";
 }
 
@@ -367,8 +361,6 @@ pub trait PhysicsLine {
     fn physics(&self) -> BodyProps;
     fn joint(&self) -> Joint;
     fn joint_break(&self) -> Option<f32>;
-    fn layer(&self) -> String;
-    fn set_layer(&mut self, layer: impl Into<String>);
     fn set_joint_break(&mut self, newtons: Option<f32>);
 }
 
@@ -388,12 +380,6 @@ impl PhysicsLine for EntityDesc {
     fn joint_break(&self) -> Option<f32> {
         self.part::<JointBreak>().map(|j| j.0)
     }
-    fn layer(&self) -> String {
-        self.part::<LayerName>().map(|l| l.0).unwrap_or_default()
-    }
-    fn set_layer(&mut self, layer: impl Into<String>) {
-        self.set_part(&LayerName(layer.into()))
-    }
     fn set_joint_break(&mut self, newtons: Option<f32>) {
         self.set_part_opt(newtons.map(JointBreak).as_ref())
     }
@@ -404,7 +390,6 @@ pub trait PhysicsOverride {
     fn body(&self) -> Option<Body>;
     fn collider(&self) -> Option<Collider>;
     fn physics(&self) -> Option<BodyProps>;
-    fn layer(&self) -> Option<String>;
 }
 
 impl PhysicsOverride for Override {
@@ -416,8 +401,5 @@ impl PhysicsOverride for Override {
     }
     fn physics(&self) -> Option<BodyProps> {
         self.part()
-    }
-    fn layer(&self) -> Option<String> {
-        self.part::<LayerName>().map(|l| l.0)
     }
 }

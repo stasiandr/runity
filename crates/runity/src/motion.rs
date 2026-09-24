@@ -660,6 +660,7 @@ impl crate::world::Dress for MotionDress {
             let bone = line.bone();
             if bone.is_empty() {
                 let _ = world.remove_one::<crate::world::OnBone>(entity);
+                let _ = world.remove_one::<crate::world::Between>(entity);
             } else {
                 let _ = world.insert_one(entity, crate::world::OnBone(bone));
             }
@@ -710,3 +711,9 @@ impl AnimationLine for crate::scene::EntityDesc {
         self.set_part(&BoneName(bone.into()))
     }
 }
+
+/// Held by a joint of the parent's skeleton, by the joint's name: from a
+/// line's `bone`. [`apply_hierarchy`] places it where the parent's pose
+/// puts that joint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnBone(pub String);

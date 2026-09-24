@@ -3105,7 +3105,7 @@ pub struct PhysicsDress;
 
 impl crate::world::Dress for PhysicsDress {
     fn parts(&self) -> &[&'static str] {
-        &["body", "collider", "physics", "layer", "joint", "joint_break"]
+        &["body", "collider", "physics", "joint", "joint_break"]
     }
 
     fn dress(
@@ -3116,7 +3116,7 @@ impl crate::world::Dress for PhysicsDress {
         changed: crate::world::Changed,
         _: &mut Vec<crate::world::Unresolved>,
     ) {
-        use crate::world::{JointBreak, JointBroken, Jointed, Layer, Props, Shape};
+        use crate::world::{JointBreak, JointBroken, Jointed, Props, Shape};
         if changed.has("body") {
             let _ = world.insert_one(entity, crate::world::Physics(line.body()));
         }
@@ -3129,14 +3129,6 @@ impl crate::world::Dress for PhysicsDress {
                 let _ = world.remove_one::<Props>(entity);
             } else {
                 let _ = world.insert_one(entity, Props(props));
-            }
-        }
-        if changed.has("layer") {
-            let layer = line.layer();
-            if layer.is_empty() {
-                let _ = world.remove_one::<Layer>(entity);
-            } else {
-                let _ = world.insert_one(entity, Layer(layer));
             }
         }
         if changed.has("joint") {
