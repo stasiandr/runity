@@ -338,10 +338,14 @@ impl GpuParticles {
         }
     }
 
-    /// Drawn into a scene of `samples` a pixel now: the draw pipeline made
-    /// again, the pools kept.
-    pub(crate) fn resample(&mut self, gpu: &Gpu, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32) {
-        self.draw = Self::new(gpu, format, depth, samples).draw;
+    /// The draw pipeline for a scene of `samples` a pixel.
+    pub(crate) fn make_draw(&self, gpu: &Gpu, format: wgpu::TextureFormat, depth: wgpu::TextureFormat, samples: u32) -> wgpu::RenderPipeline {
+        Self::new(gpu, format, depth, samples).draw
+    }
+
+    /// Draw with `draw` from now, the pools kept; the one it replaces back.
+    pub(crate) fn swap_draw(&mut self, draw: wgpu::RenderPipeline) -> wgpu::RenderPipeline {
+        std::mem::replace(&mut self.draw, draw)
     }
 
     /// Give off and step this frame's particles, before the colour pass.

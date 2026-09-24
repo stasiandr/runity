@@ -368,6 +368,7 @@ pub(crate) struct Hiz<'a> {
 
 /// The pipelines a cluster is drawn with: the scene's (by face, water or
 /// not) and the prepass's (by face).
+#[derive(Clone)]
 pub(crate) struct ClusterPipelines {
     pub(crate) scene: std::collections::HashMap<(RenderFace, bool), wgpu::RenderPipeline>,
     pub(crate) prepass: std::collections::HashMap<RenderFace, wgpu::RenderPipeline>,
@@ -565,7 +566,7 @@ impl Clusters {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth,
                     depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),

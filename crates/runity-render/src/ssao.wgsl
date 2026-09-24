@@ -19,7 +19,8 @@ struct Ssao {
     size: vec4<f32>,
     kernel: array<vec4<f32>, 16>,
     previous_view_projection: mat4x4<f32>,
-    // how much light bounces (0: none), how far its rays reach; 1 for GTAO
+    // how much light bounces (0: none), how far its rays reach; 1 for GTAO;
+    // how many screen pixels across the occlusion's one is
     bounce: vec4<f32>,
 };
 
@@ -159,7 +160,9 @@ fn behind_at(q: vec3<f32>, pixel: vec2<i32>) -> f32 {
 
 @fragment
 fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
-    let pixel = vec2<i32>(in.position.xy);
+    // Its own pixel, and the screen's it stands for.
+    let own = vec2<i32>(in.position.xy);
+    let pixel = min(own * i32(ssao.bounce.w), vec2<i32>(ssao.size.xy) - vec2<i32>(1));
     if textureLoad(depth, pixel, 0) >= 1.0 {
         // The sky: nothing to occlude, nothing to bounce.
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
@@ -173,7 +176,7 @@ fn fs_occlusion(in: Varyings) -> @location(0) vec4<f32> {
     // pixel of each 4x4 block, which the 4x4 blur then averages away
     // exactly — rather than the same turn everywhere, which bands, or
     // random ones, which leave grain.
-    let cell = vec2<u32>(pixel) % vec2<u32>(4u);
+    let cell = vec2<u32>(own) % vec2<u32>(4u);
     let order = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
     let turn = (order[cell.y * 4u + cell.x] + 0.5) / 16.0;
     let angle = turn * 6.2831853;
@@ -322,24 +325,33 @@ fn gtao(pixel: vec2<i32>, p: vec3<f32>, n: vec3<f32>, distance: f32, turn: f32) 
     return visible / f32(slices);
 }
 
-// A 4x4 box — the pattern's sixteen turns averaged away — over what lies
-// at about the same depth only, so the occlusion of the ground does not
-// spill onto the edge of what stands on it.
+// A 4x4 box of the occlusion's pixels — the pattern's sixteen turns
+// averaged away — over what lies at about the same depth only, so the
+// occlusion of the ground does not spill onto the edge of what stands on
+// it. Each screen pixel gathers the box round its own place in the
+// occlusion's smaller picture: that is the way back to the whole size.
 @fragment
 fn fs_blur(in: Varyings) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(in.position.xy);
-    let limit = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
+    let scale = i32(ssao.bounce.w);
+    let screen = vec2<i32>(ssao.size.xy) - vec2<i32>(1);
+    let limit = vec2<i32>(textureDimensions(source)) - vec2<i32>(1);
     let here = length(world_at(pixel) - ssao.eye.xyz);
+    let centre = pixel / scale;
     var sum = vec4<f32>(0.0);
     var weight = 0.0;
     for (var y = -2; y < 2; y = y + 1) {
         for (var x = -2; x < 2; x = x + 1) {
-            let at = clamp(pixel + vec2<i32>(x, y), vec2<i32>(0), limit);
-            let there = length(world_at(at) - ssao.eye.xyz);
+            let at = clamp(centre + vec2<i32>(x, y), vec2<i32>(0), limit);
+            let there = length(world_at(min(at * scale, screen)) - ssao.eye.xyz);
             let w = 1.0 - smoothstep(0.02, 0.1, abs(there - here) / max(here, 1e-3));
             sum += textureLoad(source, at, 0) * w;
             weight += w;
         }
     }
-    return sum / max(weight, 1e-4);
+    if weight < 1e-3 {
+        // Nothing near its depth among them (a thin thing's edge): its own.
+        return textureLoad(source, clamp(centre, vec2<i32>(0), limit), 0);
+    }
+    return sum / weight;
 }

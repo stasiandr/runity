@@ -491,7 +491,9 @@ struct VertexInput {
 };
 
 struct VertexOutput {
-    @builtin(position) clip_position: vec4<f32>,
+    // The same depth in the prepass and the scene's pass, which starts
+    // from the prepass's.
+    @invariant @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) base_color: vec3<f32>,
@@ -2021,6 +2023,18 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
 
 @fragment
 fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return shade(in, front, true);
+}
+
+/// The solid scene over the prepass's own depth, drawn where it is equal:
+/// what is cut out was cut there already, and a shader with no discard
+/// keeps the GPU's hidden surface removal.
+@fragment
+fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    return shade(in, front, false);
+}
+
+fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // The base map on the screen instead, for a camera's picture seen
     // through the surface: a mirror's (flipped) or a portal's.
     var base_uv = in.uv;
@@ -2045,7 +2059,7 @@ fn fs(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4
     var alpha = in.surface.z * sampled.a;
     // Alpha clipping: what is less opaque than the threshold is not drawn
     // at all.
-    if in.surface.w > 0.0 && alpha < in.surface.w {
+    if clip && in.surface.w > 0.0 && alpha < in.surface.w {
         discard;
     }
     let flags = u32(in.emission.w + 0.5);

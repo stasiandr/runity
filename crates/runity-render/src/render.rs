@@ -1019,6 +1019,12 @@ pub struct Renderer {
     format: wgpu::TextureFormat,
     /// Samples per pixel the scene is drawn with: 4 where the device can.
     samples: u32,
+    /// The scene pass being drawn started from the prepass's depth.
+    depth_prepassed: bool,
+    /// Occlusion culling asked for, however little there is to cull.
+    occlusion_always: bool,
+    /// The pipelines of the sample count drawn with before this one.
+    other_samples: Option<SamplePipelines>,
     /// The scene, in high dynamic range: multisampled, and resolved.
     scene: SceneTargets,
     post: crate::post::PostRenderer,
@@ -1210,6 +1216,20 @@ fn scene_targets(gpu: &Gpu, width: u32, height: u32, samples: u32) -> SceneTarge
         history_view: view(&history),
         history,
         has_history: false,
+    }
+}
+
+/// Instances in the colour pass from which occlusion culling pays.
+const OCCLUSION_FROM: usize = 2000;
+
+/// Rays a pixel this frame, of the `asked` a still frame takes: half of
+/// them when TAA's history gathers the frames' (at least one).
+fn rays_a_frame(asked: u32, taa: bool) -> u32 {
+    let asked = asked.clamp(1, 64);
+    if taa {
+        asked.div_ceil(2)
+    } else {
+        asked
     }
 }
 
@@ -1472,9 +1492,22 @@ impl Look {
     }
 }
 
+/// What of the renderer's pipelines depends on how many samples a pixel
+/// the scene has, for one count.
+struct SamplePipelines {
+    samples: u32,
+    scene: Pipelines,
+    clusters: Option<crate::cluster::ClusterPipelines>,
+    particles: wgpu::RenderPipeline,
+}
+
 /// Every pipeline the renderer draws with.
+#[derive(Clone)]
 struct Pipelines {
     scene: std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    /// The solid looks again, for a scene pass that starts from the
+    /// prepass's depth: equal to it, and with nothing to discard.
+    prepassed: std::collections::HashMap<Look, wgpu::RenderPipeline>,
     shadow: wgpu::RenderPipeline,
     /// The shadow pass for what is cut out by its alpha.
     shadow_clip: wgpu::RenderPipeline,
@@ -1593,13 +1626,16 @@ fn scene_pipelines(
     samples: u32,
     layouts: &Layouts,
     looks: Vec<Look>,
-) -> std::collections::HashMap<Look, wgpu::RenderPipeline> {
+) -> (
+    std::collections::HashMap<Look, wgpu::RenderPipeline>,
+    std::collections::HashMap<Look, wgpu::RenderPipeline>,
+) {
     let format = crate::post::HDR_FORMAT;
     let multisample = wgpu::MultisampleState {
         count: samples,
         ..Default::default()
     };
-    let scene_pipeline = |look: Look| {
+    let scene_pipeline = |look: Look, prepassed: bool| {
         let buffers = vertex_buffers(look.skinned);
         gpu.device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1627,7 +1663,13 @@ fn scene_pipelines(
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: shader,
-                    entry_point: Some(if look.water { "fs_water" } else { "fs" }),
+                    entry_point: Some(if look.water {
+                        "fs_water"
+                    } else if prepassed {
+                        "fs_prepassed"
+                    } else {
+                        "fs"
+                    }),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
                         format,
@@ -1651,10 +1693,14 @@ fn scene_pipelines(
                     // What is see-through does not hide what is drawn
                     // after it; it is tested against the solid world only.
                     depth_write_enabled: Some(look.blend.is_none()),
+                    // Equal passes: the prepass's own depth may be there
+                    // already.
                     depth_compare: Some(if look.on_top {
                         wgpu::CompareFunction::Always
+                    } else if prepassed {
+                        wgpu::CompareFunction::Equal
                     } else {
-                        wgpu::CompareFunction::Less
+                        wgpu::CompareFunction::LessEqual
                     }),
                     stencil: Default::default(),
                     bias: Default::default(),
@@ -1664,10 +1710,13 @@ fn scene_pipelines(
                 cache: None,
             })
     };
-    looks
-        .into_iter()
-        .map(|look| (look, scene_pipeline(look)))
-        .collect()
+    let scene = looks.iter().map(|&look| (look, scene_pipeline(look, false))).collect();
+    let prepassed = looks
+        .iter()
+        .filter(|look| look.blend.is_none() && !look.water && !look.on_top)
+        .map(|&look| (look, scene_pipeline(look, true)))
+        .collect();
+    (scene, prepassed)
 }
 
 /// Every pipeline the renderer draws with, from one shader module: at
@@ -1759,7 +1808,7 @@ fn terrain_mesh_pipelines(
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: depth,
                     depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
                     stencil: Default::default(),
                     bias: Default::default(),
                 }),
@@ -1815,7 +1864,7 @@ fn build_pipelines(
         count: samples,
         ..Default::default()
     };
-    let scene = scene_pipelines(gpu, shader, samples, layouts, Look::all());
+    let (scene, prepassed) = scene_pipelines(gpu, shader, samples, layouts, Look::all());
     let prepass_pipeline = |skinned: bool, face: RenderFace, terrain: bool| {
         let buffers = vertex_buffers(skinned);
         gpu.device
@@ -2067,6 +2116,7 @@ fn build_pipelines(
     };
     Pipelines {
         scene,
+        prepassed,
         shadow,
         shadow_clip,
         prepass,
@@ -2097,6 +2147,13 @@ impl Renderer {
     /// words too. Either way the old shader keeps drawing — a typo saved
     /// mid-edit costs a message, not a black screen or a crash.
     pub fn reload_shader(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
+        // What was kept for the other sample count is the old shader's.
+        self.other_samples = None;
+        self.rebuild_pipelines(gpu, source)
+    }
+
+    /// Every pipeline made again from `source`, with the samples now.
+    fn rebuild_pipelines(&mut self, gpu: &Gpu, source: &str) -> Result<(), String> {
         let original = source;
         use wgpu::naga;
         let prepared = crate::bindless::prepared(
@@ -2168,24 +2225,60 @@ impl Renderer {
 
     /// Draw the scene with `samples` a pixel: its targets made again on
     /// the next frame, its pipelines now.
+    ///
+    /// The pipelines it drew with are kept: going back (the editor's Game
+    /// view and Scene view) swaps them in, and only the first change
+    /// makes any — a third of a second of them.
     fn set_samples(&mut self, gpu: &Gpu, samples: u32) {
         let before = self.samples;
-        self.samples = samples;
-        let shader = self.base_shader.clone();
-        if let Err(e) = self.reload_shader(gpu, &shader) {
-            eprintln!("the scene's pipelines do not build with {samples} samples: {e}");
-            self.samples = before;
-            return;
-        }
-        self.gpu_particles.resample(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples);
+        let cached = self.other_samples.take();
+        let kept = match cached {
+            Some(set) if set.samples == samples => {
+                let now = SamplePipelines {
+                    samples: before,
+                    scene: std::mem::replace(&mut self.pipelines, set.scene),
+                    clusters: std::mem::replace(&mut self.clusters.pipelines, set.clusters),
+                    particles: self.gpu_particles.swap_draw(set.particles),
+                };
+                self.samples = samples;
+                now
+            }
+            _ => {
+                let particles = self.gpu_particles.make_draw(gpu, crate::post::HDR_FORMAT, DEPTH_FORMAT, samples);
+                let shader = self.base_shader.clone();
+                self.samples = samples;
+                // Built into place: what it replaces is what is kept.
+                let old_scene = self.pipelines.clone();
+                let old_clusters = self.clusters.pipelines.clone();
+                if let Err(e) = self.rebuild_pipelines(gpu, &shader) {
+                    eprintln!("the scene's pipelines do not build with {samples} samples: {e}");
+                    self.samples = before;
+                    return;
+                }
+                SamplePipelines {
+                    samples: before,
+                    scene: old_scene,
+                    clusters: old_clusters,
+                    particles: self.gpu_particles.swap_draw(particles),
+                }
+            }
+        };
+        self.other_samples = Some(kept);
         self.depth_size = (0, 0);
     }
 
     /// The pipeline for a look: a material's own shader's, or the standard
     /// one's while that shader is not in (not yet written, or broken).
+    /// Over the prepass's depth ([`Renderer::depth_prepassed`]), a solid
+    /// look takes its equal-depth pipeline.
     fn scene_pipeline(&self, look: Look) -> Option<&wgpu::RenderPipeline> {
-        self.pipelines.scene.get(&look).or_else(|| {
-            self.pipelines.scene.get(&Look {
+        let map = if self.depth_prepassed && look.blend.is_none() {
+            &self.pipelines.prepassed
+        } else {
+            &self.pipelines.scene
+        };
+        map.get(&look).or_else(|| {
+            map.get(&Look {
                 shader: None,
                 ..look
             })
@@ -2202,6 +2295,7 @@ impl Renderer {
         id: crate::asset::AssetId,
         surface: &str,
     ) -> Result<(), String> {
+        self.other_samples = None;
         let composed = with_surface(&self.base_shader, surface)?;
         let source = crate::bindless::prepared(
             &if self.ray.is_some() {
@@ -2253,7 +2347,8 @@ impl Renderer {
         if let Some(error) = pollster::block_on(scope.pop()) {
             return Err(format!("the shader does not fit the renderer: {error}"));
         }
-        self.pipelines.scene.extend(built);
+        self.pipelines.scene.extend(built.0);
+        self.pipelines.prepassed.extend(built.1);
         self.material_shaders.insert(id, surface.to_string());
         Ok(())
     }
@@ -2872,7 +2967,11 @@ impl Renderer {
         };
         let fog_inject_layout = fog_layout("runity::fog inject", &volumes.inject_layout);
         let fog_integrate_layout = fog_layout("runity::fog integrate", &volumes.integrate_layout);
-        let samples = sample_count(gpu);
+        // One sample: a frame is smoothed by TAA unless it says otherwise,
+        // and the pipelines made now are the ones it draws with. A frame
+        // with no smoothing at all makes them again for four
+        // (`set_samples`), once.
+        let samples = 1;
         let shader_source = crate::bindless::prepared(
             &if gpu.ray_tracing {
                 crate::ray::traced(SHADER)
@@ -2932,6 +3031,9 @@ impl Renderer {
             depth: depth_view(gpu, width, height, samples),
             depth_size: (width, height),
             samples,
+            depth_prepassed: false,
+            occlusion_always: false,
+            other_samples: None,
             scene: scene_targets(gpu, width, height, samples),
             post: crate::post::PostRenderer::new(gpu, format),
             lens: crate::lens::LensRenderer::new(gpu),
@@ -3001,7 +3103,7 @@ impl Renderer {
                 gpu,
                 crate::post::HDR_FORMAT,
                 DEPTH_FORMAT,
-                sample_count(gpu),
+                samples,
             ),
             lods: std::collections::HashMap::new(),
             lod_meshes: Vec::new(),
@@ -3916,9 +4018,12 @@ impl Renderer {
         self.render_into(gpu, &target.view, target.width, target.height, frame);
     }
 
-    /// Cull what last frame's depth says is hidden, on the GPU, or not:
-    /// on by default ([`crate::occlusion`]).
+    /// Cull what last frame's depth says is hidden, on the GPU, or not
+    /// ([`crate::occlusion`]). Left alone, a frame is culled when it has
+    /// enough to cull — thousands of things, or dense meshes; asked for,
+    /// always.
     pub fn set_occlusion_culling(&mut self, on: bool) {
+        self.occlusion_always = on;
         self.occlusion.enabled = on && gpu_has_first_instance(&self.occlusion);
         if !on {
             self.occlusion.forget();
@@ -4892,9 +4997,11 @@ impl Renderer {
                     (rt.sun_size.max(0.0).to_radians() * 0.5).tan(),
                 ]
             },
+            // With TAA the rays turn every frame and the history adds them
+            // up, ten frames' worth: half each frame is enough.
             ray_params: [
-                frame.ray_tracing.sun_rays.clamp(1, 64) as f32,
-                frame.ray_tracing.occlusion_rays.clamp(1, 64) as f32,
+                rays_a_frame(frame.ray_tracing.sun_rays, taa_on) as f32,
+                rays_a_frame(frame.ray_tracing.occlusion_rays, taa_on) as f32,
                 frame.ray_tracing.occlusion_radius.max(0.01),
                 frame.ray_tracing.lamp_size.max(0.0),
             ],
@@ -5399,9 +5506,22 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("runity::render"),
             });
-        // What last frame's depth says is hidden, left out on the GPU.
+        // What last frame's depth says is hidden, left out on the GPU —
+        // where there is enough to leave out. A few hundred things are
+        // cheaper drawn than culled: the pyramid, the test and the indirect
+        // draws cost more than the vertices they save (a quarter of a
+        // millisecond at 1080p, on the example's scenes). Dense meshes are
+        // culled a cluster at a time by the same pyramid, and keep it.
+        let occlusion_worth = {
+            let instances: usize = batches.iter().map(|(_, list)| list.len()).sum();
+            self.occlusion_always
+                || instances >= OCCLUSION_FROM
+                || batches
+                    .iter()
+                    .any(|((_, handle, _), _)| self.mesh(*handle).is_some_and(|m| m.clusters.is_some()))
+        };
         {
-            let culling = probe.is_none() && view.is_some() && !self.picturing;
+            let culling = probe.is_none() && view.is_some() && !self.picturing && occlusion_worth;
             let mut boxes: Vec<[f32; 8]> = Vec::new();
             let mut listed: Vec<crate::occlusion::CullBatch> = Vec::new();
             if culling {
@@ -5818,7 +5938,12 @@ impl Renderer {
             // This frame's depth into the pyramid, for the next frame's
             // culling.
             if probe.is_none() && view.is_some() && !self.picturing {
-                self.occlusion.build(gpu, &mut encoder, &self.ssao.depth, (width, height), drawn);
+                if occlusion_worth {
+                    self.occlusion.build(gpu, &mut encoder, &self.ssao.depth, (width, height), drawn);
+                } else {
+                    // Not made this frame: what the old one says is stale.
+                    self.occlusion.forget();
+                }
             }
             if ssao_on {
                 let now = drawn;
@@ -5921,6 +6046,23 @@ impl Renderer {
                 frame.camera.apparent_eye(),
             );
         }
+        // The prepass's depth is where the scene's starts, when they are
+        // the same size and sampling: what is hidden is known before it is
+        // shaded, and a pixel is shaded once — the GPU's own hidden
+        // surface removal gives up on cut-outs, which discard.
+        let reuse_depth = prepass_drawn && probe.is_none() && self.samples == 1 && self.ssao.size == (width, height);
+        if reuse_depth {
+            encoder.copy_texture_to_texture(
+                self.ssao.depth.texture().as_image_copy(),
+                self.depth.texture().as_image_copy(),
+                wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        self.depth_prepassed = reuse_depth;
         {
             // A probe's face is drawn straight into its layer.
             let face = probe.map(|layer| self.reflections.layer(layer, 0));
@@ -5944,7 +6086,11 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: if reuse_depth {
+                            wgpu::LoadOp::Load
+                        } else {
+                            wgpu::LoadOp::Clear(1.0)
+                        },
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
@@ -5983,6 +6129,7 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
         }
+        self.depth_prepassed = false;
 
         // This frame, kept for the next one's screen-space reflections and
         // bounced light.
@@ -6585,7 +6732,12 @@ fn depth_view(gpu: &Gpu, width: u32, height: u32, samples: u32) -> wgpu::Texture
         sample_count: samples,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // One sample a pixel: the prepass's depth is copied in to start from.
+        usage: if samples == 1 {
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        },
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())

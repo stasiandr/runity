@@ -7,10 +7,21 @@ use runity::render::{Camera, Draw, Frame, Lighting, ShadowSettings, Sky, SkyMode
 use runity::ssao::{AmbientOcclusion, Method};
 use runity::{builtin, Gpu, Material, OffscreenTarget, Renderer};
 
-const SIZE: u32 = 96;
-
 #[test]
 fn where_floor_meets_wall_is_darker_and_open_floor_is_not() {
+    corner_and_open_floor(96);
+}
+
+/// On a screen this big the occlusion is found at half the size across
+/// and blurred back up: the corner as dark.
+#[test]
+fn at_half_resolution_the_corner_is_still_darker() {
+    corner_and_open_floor(768);
+}
+
+fn corner_and_open_floor(size: u32) {
+    #[allow(non_snake_case)]
+    let SIZE = size;
     let Ok(gpu) = Gpu::headless_blocking(false) else {
         eprintln!("skipping: no adapter");
         return;
