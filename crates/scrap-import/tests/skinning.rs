@@ -242,6 +242,7 @@ fn at_rest_a_skin_stands_where_it_was_bound() {
     let archived = library.mesh_by_name(&stem).expect("the mesh");
     let mesh: MeshAsset = rkyv::deserialize::<MeshAsset, rkyv::rancor::Error>(archived).unwrap();
     let skin = mesh.skin.as_ref().expect("skinned");
+    eprintln!("bounds {:?}", mesh.bounds);
     for (i, m) in skin.skeleton.skinning_matrices(&skin.skeleton.rest_pose()).iter().enumerate() {
         assert!(
             m.abs_diff_eq(glam::Mat4::IDENTITY, 1e-3),

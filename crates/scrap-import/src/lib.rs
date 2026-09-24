@@ -463,10 +463,20 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                 .collect()
         });
 
+    // Where a skinned mesh's vertices are, at rest: glTF ignores the
+    // transform of the node that carries a skinned mesh — its joints place
+    // it — so its vertices go where its joints at rest and their inverse
+    // binds put them, not under that node (which, from Blender, is often
+    // the Armature at a hundredth scale).
+    let bind = bind_space(&document, &buffers);
     while let Some((node, parent)) = stack.pop() {
         let local = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
         let world = parent * local;
-        let normal_matrix = glam::Mat3::from_mat4(world).inverse().transpose();
+        let placed = match (node.skin().is_some(), bind) {
+            (true, Some(bind)) => bind,
+            _ => world,
+        };
+        let normal_matrix = glam::Mat3::from_mat4(placed).inverse().transpose();
 
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
@@ -517,7 +527,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
                             .unwrap_or([1.0, 0.0, 0.0, 0.0]),
                     );
                     let p =
-                        world.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
+                        placed.transform_point3(glam::Vec3::from_array(*position)) * settings.scale;
                     let n = normals
                         .as_ref()
                         .and_then(|n| n.get(i))
@@ -565,7 +575,7 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
         }
     }
 
-    let skin = read_skin(&document, &buffers, joint_indices, joint_weights);
+    let skin = read_skin(&document, &buffers, joint_indices, joint_weights, bind);
     let look = if settings.keep_uvs {
         None
     } else {
@@ -587,18 +597,66 @@ pub fn mesh_from_gltf(path: impl AsRef<Path>, settings: &ImportSettings) -> Resu
     })
 }
 
+/// Every node's place in the file's world: its ancestors' transforms and
+/// its own.
+fn node_globals(document: &gltf::Document) -> Vec<glam::Mat4> {
+    let mut parent_of = vec![None; document.nodes().len()];
+    for node in document.nodes() {
+        for child in node.children() {
+            parent_of[child.index()] = Some(node.index());
+        }
+    }
+    let locals: Vec<glam::Mat4> = document
+        .nodes()
+        .map(|n| glam::Mat4::from_cols_array_2d(&n.transform().matrix()))
+        .collect();
+    (0..locals.len())
+        .map(|i| {
+            let mut m = locals[i];
+            let mut at = parent_of[i];
+            // A file whose parents loop is broken; stop rather than spin.
+            let mut steps = 0;
+            while let (Some(p), true) = (at, steps < locals.len()) {
+                m = locals[p] * m;
+                at = parent_of[p];
+                steps += 1;
+            }
+            m
+        })
+        .collect()
+}
+
+/// Where the first skin's mesh stands at rest, in the file's world: its
+/// first joint's place times that joint's inverse bind — the same for
+/// every joint of a well-made file.
+fn bind_space(document: &gltf::Document, buffers: &[gltf::buffer::Data]) -> Option<glam::Mat4> {
+    let skin = document.skins().next()?;
+    let first = skin.joints().next()?;
+    let inverse = skin
+        .reader(|buffer| Some(&buffers[buffer.index()]))
+        .read_inverse_bind_matrices()
+        .and_then(|mut m| m.next())
+        .map_or(glam::Mat4::IDENTITY, |m| glam::Mat4::from_cols_array_2d(&m));
+    Some(node_globals(document)[first.index()] * inverse)
+}
+
 /// The skeleton and animations, if the file has any.
 fn read_skin(
     document: &gltf::Document,
     buffers: &[gltf::buffer::Data],
     joints: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
+    bind: Option<glam::Mat4>,
 ) -> Option<MeshSkin> {
     let gltf_skin = document.skins().next()?;
     let reader = gltf_skin.reader(|buffer| Some(&buffers[buffer.index()]));
+    // The vertices were put in the bind space (see `bind_space`): each
+    // inverse bind takes them out of it first, so at rest a skin moves
+    // nothing.
+    let unplace = bind.map_or(glam::Mat4::IDENTITY, |b| b.inverse());
     let inverse_binds: Vec<[[f32; 4]; 4]> = reader
         .read_inverse_bind_matrices()
-        .map(|m| m.collect())
+        .map(|m| m.map(|m| (glam::Mat4::from_cols_array_2d(&m) * unplace).to_cols_array_2d()).collect())
         .unwrap_or_default();
 
     // A joint's parent is whichever node in the skin lists it as a child.
