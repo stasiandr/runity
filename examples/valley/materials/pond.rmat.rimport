@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/pond.rmat",
-    hash: "dc9abb5e5f0f6571f97dc03089ba7e7d",
-    id: Some("d90ac5efe140b2e1b12777a39da5d3c5"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

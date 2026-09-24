@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/tomato.scrmat",
+    hash: "e8b11de86efcb1b5816fa2889c40dfb2",
+    id: Some("4e6a3027ddc330baebc71c570a2af38e"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

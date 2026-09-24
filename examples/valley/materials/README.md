@@ -1,7 +1,7 @@
 # Материалы-примеры
 
 Палитра движка в виде ассетов. Те же цвета, что зашиты в
-`runity::material::builtin`, плюс `moss`, которого среди builtin-ов нет — он и
+`scrap::material::builtin`, плюс `moss`, которого среди builtin-ов нет — он и
 показывает, зачем это нужно: имя материала здесь принадлежит проекту, а не
 движку.
 
@@ -10,8 +10,8 @@
 Линейную тройку тоже можно написать: `color: (0.14, 0.20, 0.09)`.
 
 ```sh
-cargo run -p runity-import -- examples/valley/materials/*.rmat --library examples/valley/library
-cargo run -p runity --example scene_shot -- examples/valley/scenes/first-light.ron
+cargo run -p scrap-import -- examples/valley/materials/*.scrmat --library examples/valley/library
+cargo run -p scrap --example scene_shot -- examples/valley/scenes/first-light.ron
 ```
 
 Вторая команда рисует ту же сцену, но имена материалов в ней теперь

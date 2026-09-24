@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "runity": {
+    "scrap": {
       "command": "cargo",
-      "args": ["run", "-q", "--release", "-p", "runity-mcp"]
+      "args": ["run", "-q", "--release", "-p", "scrap-mcp"]
     }
   }
 }

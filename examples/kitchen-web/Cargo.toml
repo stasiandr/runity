@@ -10,7 +10,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-runity = { path = "../../crates/runity", default-features = false, features = ["animation", "audio", "desktop-shell", "dialogue", "input", "net", "physics", "routes"] }
+scrap = { path = "../../crates/scrap", default-features = false, features = ["animation", "audio", "desktop-shell", "dialogue", "input", "net", "physics", "routes"] }
 serde = { version = "1", features = ["derive"] }
 
 # In the browser: the page's data and randomness, a panic said in the
@@ -27,7 +27,7 @@ image = { version = "0.25.9", default-features = false, features = ["png"] }
 # The engine and every other dependency optimised even in a dev build, the
 # game itself not: a frame that runs at speed, a rebuild that takes seconds.
 # Line tables only: panics still name the line, and the link — most of a
-# rebuild — is a third of the time. `runity rebuild-time` measures it.
+# rebuild — is a third of the time. `scrap rebuild-time` measures it.
 [profile.dev]
 debug = "line-tables-only"
 

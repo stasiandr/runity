@@ -10,9 +10,9 @@
 //! and every item's place as its transform. Each player drives their own
 //! cook's walk; what their hands do goes to the host as an [`Act`].
 
-use runity::glam::Vec3;
-use runity::hecs::{Entity, World};
-use runity::Transform;
+use scrap::glam::Vec3;
+use scrap::hecs::{Entity, World};
+use scrap::Transform;
 use serde::{Deserialize, Serialize};
 
 pub use crate::components::pot::{BURN_SECONDS, COOK_SECONDS, POT_HOLDS};
@@ -117,7 +117,7 @@ pub fn despawn_tree(world: &mut World, root: Entity) {
         let parent = gone[i];
         gone.extend(
             world
-                .query::<(Entity, &runity::world::Parent)>()
+                .query::<(Entity, &scrap::world::Parent)>()
                 .iter()
                 .filter(|(_, p)| p.0 == parent)
                 .map(|(e, _)| e),
@@ -132,7 +132,7 @@ pub fn despawn_tree(world: &mut World, root: Entity) {
 /// The children of `parent` with a mark, by its name.
 pub fn marked(world: &World, parent: Entity) -> Vec<(Entity, String)> {
     world
-        .query::<(Entity, &runity::world::Parent, &crate::components::Mark)>()
+        .query::<(Entity, &scrap::world::Parent, &crate::components::Mark)>()
         .iter()
         .filter(|(_, p, _)| p.0 == parent)
         .map(|(e, _, m)| (e, m.name.clone()))
@@ -143,7 +143,7 @@ pub fn marked(world: &World, parent: Entity) -> Vec<(Entity, String)> {
 /// host does (alone, that is this one).
 pub fn kitchen(world: &World) -> Option<(Entity, bool)> {
     world
-        .query::<(Entity, &crate::components::Kitchen, Option<&runity::net::Owned>)>()
+        .query::<(Entity, &crate::components::Kitchen, Option<&scrap::net::Owned>)>()
         .iter()
         .next()
         .map(|(e, _, owned)| (e, owned.is_some()))

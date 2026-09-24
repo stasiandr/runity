@@ -1,4 +1,4 @@
-// Reflection probes (`runity::reflections`): a courtyard with coloured
+// Reflection probes (`scrap::reflections`): a courtyard with coloured
 // walls, a chrome ball and a polished floor. The probe's box holds them all;
 // its picture is what the ball and the floor reflect, bent to the walls by
 // box projection. Take the probe out and they reflect the sky's gradient.

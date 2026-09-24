@@ -12,9 +12,9 @@
 // cut by the base map's alpha (the importer makes _baza the base map), not by
 // its green, as the shadow pass does not run this function; the _baza
 // textures have no alpha, so a card's shadow is its whole quad.
-// runity:params _Color.r _Color.g _Color.b _Color_2.r _Color_2.g _Color_2.b
-// runity:textures _baza
-// runity:material wind: 1.5, translucency: 0.4
+// scrap:params _Color.r _Color.g _Color.b _Color_2.r _Color_2.g _Color_2.b
+// scrap:textures _baza
+// scrap:material wind: 1.5, translucency: 0.4
 
 const GRASS_CLIP = 0.5;
 

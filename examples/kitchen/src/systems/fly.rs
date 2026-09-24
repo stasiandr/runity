@@ -4,8 +4,8 @@
 //! onto a counter with nothing on it, or on the floor, where a cook can
 //! pick it up again.
 
-use runity::hecs::{Entity, World};
-use runity::Transform;
+use scrap::hecs::{Entity, World};
+use scrap::Transform;
 
 use crate::components::item::Thing;
 use crate::components::station::Kind;
@@ -39,7 +39,7 @@ pub fn run(world: &mut World, seconds: f32) {
         land(world, item);
     }
     // Caught in the air by a pot or the bin.
-    let flying: Vec<(Entity, runity::glam::Vec3)> = world
+    let flying: Vec<(Entity, scrap::glam::Vec3)> = world
         .query::<(Entity, &Transform, &Flying)>()
         .iter()
         .filter(|(_, _, f)| f.launch.is_none())
@@ -55,7 +55,7 @@ pub fn run(world: &mut World, seconds: f32) {
 }
 
 /// The station whose tile `at` is over.
-fn station_under(world: &World, at: runity::glam::Vec3) -> Option<(Entity, Kind)> {
+fn station_under(world: &World, at: scrap::glam::Vec3) -> Option<(Entity, Kind)> {
     world
         .query::<(Entity, &Transform, &Station)>()
         .iter()
@@ -98,7 +98,7 @@ fn catch(world: &mut World, item: Entity, station: Entity, kind: Kind) -> bool {
 
 /// Where it came down, what becomes of it.
 fn land(world: &mut World, item: Entity) {
-    let _ = world.remove::<(runity::world::Physics, runity::world::Shape, Flying)>(item);
+    let _ = world.remove::<(scrap::world::Physics, scrap::world::Shape, Flying)>(item);
     let Ok(at) = world.get::<&Transform>(item).map(|t| t.position) else {
         return;
     };

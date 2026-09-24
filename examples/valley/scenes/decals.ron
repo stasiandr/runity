@@ -1,4 +1,4 @@
-// Decals (`runity::decals`): marks pressed onto the courtyard's floor and
+// Decals (`scrap::decals`): marks pressed onto the courtyard's floor and
 // back wall — lit and shadowed as the stone they lie on. The floor's box
 // presses down, as a decal does unturned; the wall's is turned to face it.
 (

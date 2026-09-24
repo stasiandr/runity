@@ -1,8 +1,8 @@
 // From Assets/Content/Art/Materials/Hologram_Shader.shadergraph (URP Unlit,
 // transparent, both faces). _Color (sRGB), the Fresnel power and the two
 // line sets' strengths and speeds come from the material.
-// runity:params _Color.r _Color.g _Color.b _Fresnel_int _Int_Small_Lines _Int_Big_Lines _Speed_Small_Lines _Speed_Big_Lines
-// runity:textures _SampleTexture2D_d1e16623bfa34629bae7ce91e3854ab1_Texture_1_Texture2D
+// scrap:params _Color.r _Color.g _Color.b _Fresnel_int _Int_Small_Lines _Int_Big_Lines _Speed_Small_Lines _Speed_Big_Lines
+// scrap:textures _SampleTexture2D_d1e16623bfa34629bae7ce91e3854ab1_Texture_1_Texture2D
 //
 // The original glows in _Color by a Fresnel term and fades its alpha with a
 // vertical gradient, minus fine scrolling noise lines, plus bright scrolling
@@ -65,7 +65,7 @@ fn hologram_gradient(t: f32) -> f32 {
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
     let t = in.time;
-    // Unity's v runs up the texture; runity's runs down.
+    // Unity's v runs up the texture; scrap's runs down.
     let v = 1.0 - in.uv.y;
     let view = normalize(frame.camera_position.xyz - in.world_position);
     let fresnel = pow(1.0 - clamp(dot(normalize(in.normal), view), 0.0, 1.0), in.params[0].w);
@@ -73,7 +73,7 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {
     let small_g = v + in.params[1].z * t;
     let small = hologram_noise(vec2<f32>(small_g), 500.0) * in.params[1].x;
     let big_g = v + in.params[1].w * t;
-    // Unity samples at (g, g); its v runs up the texture, runity's down.
+    // Unity samples at (g, g); its v runs up the texture, scrap's down.
     let big = texture_at(in, 0u, vec2<f32>(big_g, 1.0 - big_g)).r * in.params[1].y;
     let lines = clamp(hologram_gradient(v) * fresnel - (small - big), 0.0, 1.0);
 

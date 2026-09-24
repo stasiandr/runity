@@ -7,7 +7,7 @@
 // SM_Refrigerator_1_TXTR its materials still hold (a Sample Texture 2D
 // property left over from the atlas graph) is not read, so the shader
 // names no textures.
-// runity:params _Color.r _Color.g _Color.b _Speed
+// scrap:params _Color.r _Color.g _Color.b _Speed
 
 fn grab_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;

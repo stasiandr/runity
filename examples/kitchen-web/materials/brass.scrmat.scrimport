@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/brass.scrmat",
+    hash: "b4820ea798fcb1b4cda6051d1b85470e",
+    id: Some("99dac67ef73f253f4f02fa1bc35cb2fb"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

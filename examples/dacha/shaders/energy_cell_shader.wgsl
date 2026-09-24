@@ -1,6 +1,6 @@
 // From Assets/Content/Art/Materials/Energy_Cell_Shader.shadergraph (URP Lit,
 // opaque, both faces). Values from M_Energy_Cell_01.mat.
-// runity:textures _SampleTexture2D_27a0de0802834c909c9bf906c47b3516_Texture_1_Texture2D
+// scrap:textures _SampleTexture2D_27a0de0802834c909c9bf906c47b3516_Texture_1_Texture2D
 //
 // The original colours the cell with _Color mixed 10% towards a sand
 // texture (T_Huge_Sand_01), emits that colour x4, and pushes the vertices

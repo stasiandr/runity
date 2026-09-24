@@ -6,8 +6,8 @@
 // Here both textures are the material's own, read as the graph reads them,
 // but it is a surface on whatever mesh carries it, not a projector. Alpha
 // only shows if the material is transparent.
-// runity:textures _Texture2D _SampleTexture2D_6df76a1b04f04a72824c5069c4db43d9_Texture_1_Texture2D
-// runity:params _Tiling _Mask_int
+// scrap:textures _Texture2D _SampleTexture2D_6df76a1b04f04a72824c5069c4db43d9_Texture_1_Texture2D
+// scrap:params _Tiling _Mask_int
 
 const SAND_DECAL_COLOR = 0u;
 const SAND_DECAL_MASK = 1u;

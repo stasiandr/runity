@@ -1,0 +1,21 @@
+[package]
+name = "scrap-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The `scrap` command: what a person or an agent runs on a project without
+# opening the editor. It links the importers, so it is a tool, never a
+# dependency of a game.
+[dependencies]
+anyhow = "1.0.104"
+ron = "0.12.2"
+scrap = { version = "0.1.0", path = "../scrap" }
+scrap-import = { version = "0.1.0", path = "../scrap-import" }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[[bin]]
+name = "scrap"
+path = "src/main.rs"

@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/stove.scrmat",
+    hash: "66e44a96a2fa805cc013861d6c1c931b",
+    id: Some("a05e43d24418961b6c6bd4245729d6e7"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

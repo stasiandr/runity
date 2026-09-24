@@ -3,7 +3,7 @@
 //! stops until the host asks to start again. Opening and starting again are
 //! the same act, `Restart`: it clears the kitchen and opens it.
 
-use runity::hecs::{Entity, World};
+use scrap::hecs::{Entity, World};
 
 use crate::components::station::Kind;
 use crate::components::{Kitchen, Station};

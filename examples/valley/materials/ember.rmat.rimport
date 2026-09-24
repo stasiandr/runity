@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/ember.rmat",
-    hash: "decc7a317014f5182770d4aa0b1f288b",
-    id: Some("00fd02d3baaef1b083a8d40dba2bf8bd"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

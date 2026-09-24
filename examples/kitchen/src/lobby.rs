@@ -9,10 +9,10 @@
 //! has no app of its own; with a real app id, only [`APP_ID`] changes.
 //! Without Steam running the game still plays, alone.
 
-use runity::net::PeerId;
-use runity::party::Party;
-use runity::steam::Steam;
-use runity::Components;
+use scrap::net::PeerId;
+use scrap::party::Party;
+use scrap::steam::Steam;
+use scrap::Components;
 
 /// Valve's Spacewar: the app every Steam account may use for testing.
 pub const APP_ID: u32 = 480;
@@ -119,7 +119,7 @@ impl Lobby {
         }
         self.joined = Some(lobby);
         // Anything but the server's 0, and unlikely to be another guest's.
-        let me = PeerId(runity::EntityId::fresh().raw() as u32 | 1);
+        let me = PeerId(scrap::EntityId::fresh().raw() as u32 | 1);
         let mut wire = steam.wire(me);
         wire.connect(PeerId::HOST, owner);
         Some(Party::join(wire, scene, name, components))

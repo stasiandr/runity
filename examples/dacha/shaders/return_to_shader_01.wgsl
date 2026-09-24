@@ -3,8 +3,8 @@
 // _Incoming/Tools/SexyMouseTrap (the one the prefab uses); _ALL_INT,
 // _Lines_Int and _Speed_Lines_Roll come from the material (the M_Return.mat
 // in Art/Materials has _ALL_INT 0 and draws nothing).
-// runity:params _ALL_INT _Lines_Int _Speed_Lines_Roll
-// runity:textures _Mask
+// scrap:params _ALL_INT _Lines_Int _Speed_Lines_Roll
+// scrap:textures _Mask
 //
 // A "rewind" overlay: the scene behind, read with a noise-jittered screen
 // position and made grey, darkened towards the edges, with faint posterized
@@ -58,7 +58,7 @@ fn return_to_contrast(x: f32, c: f32) -> f32 {
 
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
-    // Unity's v runs up the texture; runity's runs down.
+    // Unity's v runs up the texture; scrap's runs down.
     let v = 1.0 - in.uv.y;
     let r = length(vec2<f32>(in.uv.x, v) - vec2<f32>(0.5));
     let back = vec3<f32>(RETURN_TO_SCENE_GREY) * return_to_contrast(r, -0.48);

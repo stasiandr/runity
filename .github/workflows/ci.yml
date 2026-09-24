@@ -48,37 +48,37 @@ jobs:
       # greybox and nobody is listening yet. Tested here anyway, with kira's
       # mock backend, so that the day it is turned back on it still works.
       - name: Test (audio)
-        run: cargo test --workspace --features runity/audio
+        run: cargo test --workspace --features scrap/audio
       # "Switching a subsystem off is one line" is only true while the engine
       # still builds with it off. Checked here, because nothing else builds
       # the engine bare and the first to notice would be a game that tried.
       - name: Check (no optional subsystems)
-        run: cargo check -p runity --no-default-features
+        run: cargo check -p scrap --no-default-features
       # The web is not closed (DNA): the bare core builds for the browser —
       # no Instant, no clock, no threads of its own, data through a seam.
       - name: The bare core builds for the web
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo check -p runity-core --target wasm32-unknown-unknown
+          cargo check -p scrap-core --target wasm32-unknown-unknown
       # The Steam transport links Valve's SDK and needs the client to run,
       # so it is only built here; nothing can exercise it on a runner.
       - name: Clippy (steam)
-        run: cargo clippy -p runity --features steam -- -D warnings
-      # `runity check` over the example: every model, material and prefab
+        run: cargo clippy -p scrap --features steam -- -D warnings
+      # `scrap check` over the example: every model, material and prefab
       # its scenes name resolves, and every sidecar is current.
       - name: Check the example project
-        run: cargo run -q -p runity-cli -- check examples/valley
+        run: cargo run -q -p scrap-cli -- check examples/valley
       # The example's frames against their budgets (examples/valley/
       # budgets.ron, DNA postulate 6): its library built, every scene drawn
       # offscreen, its draws and triangles held. Not its GPU time: a shared
       # runner's GPU (or software renderer) is not the one the budgets were
-      # set on; `runity perf` without --counts holds that on a machine that
+      # set on; `scrap perf` without --counts holds that on a machine that
       # is.
       - name: The example's frames within budget
         run: |
-          cargo run -q -p runity-cli -- sync examples/valley
-          cargo run -q -p runity-cli -- perf examples/valley --frames 2 --counts
-      # What `runity new` makes has to build against the engine it came
+          cargo run -q -p scrap-cli -- sync examples/valley
+          cargo run -q -p scrap-cli -- perf examples/valley --frames 2 --counts
+      # What `scrap new` makes has to build against the engine it came
       # with: a template that rots is the first thing a new project meets.
       # And how long it takes to rebuild after a one-line edit is DNA
       # postulate 1's number: measured on every commit, with a budget. Loose,
@@ -86,20 +86,20 @@ jobs:
       - name: A new project checks clean, builds, and rebuilds within budget
         shell: bash
         run: |
-          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/fresh" --engine-path crates/runity
-          cargo run -q -p runity-cli -- check "$RUNNER_TEMP/fresh"
+          cargo run -q -p scrap-cli -- new "$RUNNER_TEMP/fresh" --engine-path crates/scrap
+          cargo run -q -p scrap-cli -- check "$RUNNER_TEMP/fresh"
           cp Cargo.lock "$RUNNER_TEMP/fresh/"
-          CARGO_TARGET_DIR="$PWD/target" cargo run -q -p runity-cli -- rebuild-time "$RUNNER_TEMP/fresh" --budget 10
-          CARGO_TARGET_DIR="$PWD/target" cargo run -q -p runity-cli -- build "$RUNNER_TEMP/fresh" --debug --out "$RUNNER_TEMP/dist"
+          CARGO_TARGET_DIR="$PWD/target" cargo run -q -p scrap-cli -- rebuild-time "$RUNNER_TEMP/fresh" --budget 10
+          CARGO_TARGET_DIR="$PWD/target" cargo run -q -p scrap-cli -- build "$RUNNER_TEMP/fresh" --debug --out "$RUNNER_TEMP/dist"
           test -f "$RUNNER_TEMP/dist/data/scenes/main.ron"
       # The other ways to start (DNA, postulate 8): the bare core — a game
-      # with no window, on runity-core alone — and a template, an example
+      # with no window, on scrap-core alone — and a template, an example
       # copied and handed over. Each builds and plays its start scene.
       - name: A bare project and a template build and play
         shell: bash
         run: |
-          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/bare" --set bare --engine-path crates/runity
-          cargo run -q -p runity-cli -- check "$RUNNER_TEMP/bare"
+          cargo run -q -p scrap-cli -- new "$RUNNER_TEMP/bare" --set bare --engine-path crates/scrap
+          cargo run -q -p scrap-cli -- check "$RUNNER_TEMP/bare"
           (cd "$RUNNER_TEMP/bare" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo test)
-          cargo run -q -p runity-cli -- new "$RUNNER_TEMP/soup" --template kitchen --engine-path crates/runity
+          cargo run -q -p scrap-cli -- new "$RUNNER_TEMP/soup" --template kitchen --engine-path crates/scrap
           (cd "$RUNNER_TEMP/soup" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo check --tests)

@@ -9,7 +9,7 @@
 // (M_Outline_01's _Scale 0.5 and _Speed_Rotation 20): a surface function
 // cannot move vertices.
 //
-// runity:params _Cutout_Start _Cutout_End
+// scrap:params _Cutout_Start _Cutout_End
 
 fn outline_fade(distance: f32, start: f32, end: f32) -> f32 {
     // A material that sets neither: the graph's 8 and 12.

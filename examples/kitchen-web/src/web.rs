@@ -4,7 +4,7 @@
 //! * The project's data — scenes, prefabs, screens, strings, the built
 //!   library — was fetched by the page as one file (`data.bin`, made by
 //!   `web/pack.py`) before the game started; [`start`] puts it where the
-//!   game looks for it (`runity::files::mount`), so the rest of the game
+//!   game looks for it (`scrap::files::mount`), so the rest of the game
 //!   reads its files as it does on a disk.
 //! * What the game writes — the player's prefs, the best score — goes to
 //!   the browser's storage and is put back on the next visit.
@@ -18,20 +18,20 @@ mod page {
     #[wasm_bindgen]
     extern "C" {
         /// The project, as the page fetched it.
-        #[wasm_bindgen(js_namespace = runityPage, js_name = data)]
+        #[wasm_bindgen(js_namespace = scrapPage, js_name = data)]
         pub fn data() -> js_sys::Uint8Array;
         /// The player's files from the last visit, packed as `data` is.
-        #[wasm_bindgen(js_namespace = runityPage, js_name = saved)]
+        #[wasm_bindgen(js_namespace = scrapPage, js_name = saved)]
         pub fn saved() -> js_sys::Uint8Array;
         /// Keep a file the game wrote.
-        #[wasm_bindgen(js_namespace = runityPage, js_name = save)]
+        #[wasm_bindgen(js_namespace = scrapPage, js_name = save)]
         pub fn save(path: &str, bytes: &[u8]);
         /// Where the game is: `menu`, `joining`, `lobby`, `kitchen`, `paused`.
-        #[wasm_bindgen(js_namespace = runityPage, js_name = phase)]
+        #[wasm_bindgen(js_namespace = scrapPage, js_name = phase)]
         pub fn phase(name: &str);
         /// The quality the page asks for: `?quality=` in its address, or
         /// `low` on a phone; empty to leave it to the device.
-        #[wasm_bindgen(js_namespace = runityPage, js_name = quality)]
+        #[wasm_bindgen(js_namespace = scrapPage, js_name = quality)]
         pub fn quality() -> String;
     }
 }
@@ -95,11 +95,11 @@ pub fn start(root: &str) {
     #[cfg(target_arch = "wasm32")]
     {
         console_error_panic_hook::set_once();
-        runity::files::mount(root, unpack_page(&page::data()));
-        runity::files::mount("/", unpack(&page::saved().to_vec()));
-        runity::files::on_write(|path, bytes| page::save(&path.to_string_lossy(), bytes));
+        scrap::files::mount(root, unpack_page(&page::data()));
+        scrap::files::mount("/", unpack(&page::saved().to_vec()));
+        scrap::files::on_write(|path, bytes| page::save(&path.to_string_lossy(), bytes));
         let random = || (js_sys::Math::random() * u32::MAX as f64) as u64;
-        runity::EntityId::seed(random() << 32 | random());
+        scrap::EntityId::seed(random() << 32 | random());
     }
     let _ = root;
 }
@@ -120,10 +120,10 @@ pub fn phase(name: &'static str) {
 }
 
 /// The quality the page asks for, if it asks.
-pub fn quality() -> Option<runity::quality::Quality> {
+pub fn quality() -> Option<scrap::quality::Quality> {
     #[cfg(target_arch = "wasm32")]
     {
-        use runity::quality::Quality;
+        use scrap::quality::Quality;
         return match page::quality().to_ascii_lowercase().as_str() {
             "low" => Some(Quality::Low),
             "medium" => Some(Quality::Medium),
@@ -143,7 +143,7 @@ mod tests {
         let mut packed = 2u32.to_le_bytes().to_vec();
         for (path, body) in [
             ("ui/menu.ron", &b"()"[..]),
-            ("library/a.rasset", &[1, 2, 3][..]),
+            ("library/a.scrasset", &[1, 2, 3][..]),
         ] {
             packed.extend((path.len() as u32).to_le_bytes());
             packed.extend(path.as_bytes());
@@ -152,7 +152,7 @@ mod tests {
         }
         let files = super::unpack(&packed);
         assert_eq!(files.len(), 2);
-        assert_eq!(files[1], ("library/a.rasset".to_string(), vec![1, 2, 3]));
+        assert_eq!(files[1], ("library/a.scrasset".to_string(), vec![1, 2, 3]));
         assert!(
             super::unpack(&packed[..9]).is_empty(),
             "a cut file is left out"

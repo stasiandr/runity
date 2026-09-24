@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/tile_dark.scrmat",
+    hash: "95ab584d16fc899ad72857dfd0dcc1fa",
+    id: Some("1fd611f3a89377c5ea1f83163b14d65b"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -3,14 +3,14 @@
 //! scene, a party, and the same frame the window runs (`session::frame`),
 //! with prefabs spawned headless.
 
-use runity::glam::Vec3;
-use runity::hecs::{Entity, World};
-use runity::net::{Loopback, Transport};
-use runity::party::{Event, Party};
-use runity::physics::PhysicsWorld;
+use scrap::glam::Vec3;
+use scrap::hecs::{Entity, World};
+use scrap::net::{Loopback, Transport};
+use scrap::party::{Event, Party};
+use scrap::physics::PhysicsWorld;
 #[allow(unused_imports)]
-use runity::prelude::*;
-use runity::{LiveScene, Transform};
+use scrap::prelude::*;
+use scrap::{LiveScene, Transform};
 
 use crate::components::item::{Dish, Food, Thing};
 use crate::components::Item;
@@ -39,24 +39,24 @@ struct Peer {
     world: World,
     party: Party,
     physics: PhysicsWorld,
-    profile: runity::perf::Profiler,
+    profile: scrap::perf::Profiler,
     events: Vec<Event>,
-    motions: runity::motion::Motions,
+    motions: scrap::motion::Motions,
     noise: crate::noise::Noise,
     /// A GPU to draw with, for the screenshots; `None` plays headless.
     render: Option<Render>,
     /// Where a shot looks from, when not the scene's view.
-    view: Option<runity::scene::View>,
+    view: Option<scrap::scene::View>,
     /// The lens a shot takes, focused where it looks: millimetres, f-number.
     lens: Option<(f32, f32)>,
 }
 
 /// What draws a peer's frames without a window.
 struct Render {
-    gpu: runity::Gpu,
-    target: runity::OffscreenTarget,
-    renderer: runity::Renderer,
-    overlay: runity::ui_render::UiRenderer,
+    gpu: scrap::Gpu,
+    target: scrap::OffscreenTarget,
+    renderer: scrap::Renderer,
+    overlay: scrap::ui_render::UiRenderer,
 }
 
 impl Peer {
@@ -70,7 +70,7 @@ impl Peer {
 
     fn in_scene(name: &str, party: Party, mut render: Option<Render>) -> Self {
         let scene =
-            runity::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{name}.ron"));
+            scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), &format!("scenes/{name}.ron"));
         let (live, problems) = LiveScene::open(&scene).unwrap();
         assert!(problems.is_empty(), "{problems:?}");
         let mut live = live.with_components(game_components());
@@ -88,9 +88,9 @@ impl Peer {
             world,
             party,
             physics: PhysicsWorld::new(1.0 / 60.0),
-            profile: runity::perf::Profiler::new(8),
+            profile: scrap::perf::Profiler::new(8),
             events: Vec::new(),
-            motions: runity::motion::Motions::load(env!("CARGO_MANIFEST_DIR")).0,
+            motions: scrap::motion::Motions::load(env!("CARGO_MANIFEST_DIR")).0,
             noise: crate::noise::Noise::default(),
             render,
             view: None,
@@ -136,8 +136,8 @@ impl Peer {
         });
         // What the window does after the party: the graphs, the sounds.
         let library = self.live.library();
-        let skins = |model: &runity::AssetLink| library?.mesh_by_name(model)?.skin_owned();
-        let problems = runity::motion::attach(&mut self.world, &self.motions, skins);
+        let skins = |model: &scrap::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        let problems = scrap::motion::attach(&mut self.world, &self.motions, skins);
         assert!(problems.is_empty(), "{problems:?}");
         if self.noise.listen(&self.world).contains(&"ding") {
             crate::front::ring(&mut self.world);
@@ -150,7 +150,7 @@ impl Peer {
                 1.0 / 60.0,
             );
         }
-        runity::particles::run_particles(&mut self.world, 1.0 / 30.0);
+        scrap::particles::run_particles(&mut self.world, 1.0 / 30.0);
     }
 
     fn seconds(&mut self, seconds: f32) {
@@ -255,14 +255,14 @@ impl Peer {
         marked(&self.world, station)
             .into_iter()
             .find(|(_, n)| n == name)
-            .is_some_and(|(e, _)| self.world.get::<&runity::world::Inactive>(e).is_err())
+            .is_some_and(|(e, _)| self.world.get::<&scrap::world::Inactive>(e).is_err())
     }
 
     /// How loud the stove's pot boils.
     fn boiling(&self) -> f32 {
         let stove = station_at(&self.world, STOVE);
         self.world
-            .get::<&runity::world::Sounding>(stove)
+            .get::<&scrap::world::Sounding>(stove)
             .map_or(0.0, |s| s.0.volume)
     }
 
@@ -342,7 +342,7 @@ fn alone_a_player_plays_one_cook() {
         .map(|i| k.world.get::<&Seat>(k.cook(i)).ok().map(|s| s.0))
         .collect();
     assert_eq!(seats, [Some(me), None, None, None]);
-    let off = |k: &Peer, i| k.world.get::<&runity::world::Inactive>(k.cook(i)).is_ok();
+    let off = |k: &Peer, i| k.world.get::<&scrap::world::Inactive>(k.cook(i)).is_ok();
     assert!(
         !off(&k, 0) && off(&k, 1) && off(&k, 2) && off(&k, 3),
         "the three nobody plays are out"
@@ -405,7 +405,7 @@ fn a_tomato_soup_goes_from_the_crate_to_the_window() {
     // And the bell over the window hops.
     let heights: Vec<f32> = k
         .world
-        .query::<(&Transform, &runity::world::Parent)>()
+        .query::<(&Transform, &scrap::world::Parent)>()
         .iter()
         .filter(|(t, _)| t.position.y > 0.66 && t.position.y < 0.86 && t.position.x == 0.5)
         .map(|(t, _)| t.position.y)
@@ -547,7 +547,7 @@ fn together_shut() -> (Peer, Peer) {
 
 fn owns(peer: &Peer, index: u32) -> bool {
     peer.world
-        .get::<&runity::net::Owned>(peer.cook(index))
+        .get::<&scrap::net::Owned>(peer.cook(index))
         .is_ok()
 }
 
@@ -640,7 +640,7 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let front = crate::front::Front::load(&root.join("ui")).unwrap();
     // The ids the code asks for are in the files.
-    let ids = |screen: &runity::screen::Screen| -> Vec<String> {
+    let ids = |screen: &scrap::screen::Screen| -> Vec<String> {
         screen
             .layout()
             .elements
@@ -691,7 +691,7 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
         &front.lost,
     ]
     .iter()
-    .flat_map(|s| runity::screen::Screen::keys(s.layout()))
+    .flat_map(|s| scrap::screen::Screen::keys(s.layout()))
     .collect();
     let code = ["src/front.rs", "src/components/item.rs"]
         .map(|f| std::fs::read_to_string(root.join(f)).unwrap())
@@ -699,11 +699,11 @@ fn the_screens_load_and_every_word_is_in_both_languages() {
     for piece in code.split("\"@").skip(1) {
         keys.push(piece.split('"').next().unwrap().to_string());
     }
-    let chef = runity::dialogue::Dialogue::load(root.join("dialogues/chef.ron")).unwrap();
+    let chef = scrap::dialogue::Dialogue::load(root.join("dialogues/chef.ron")).unwrap();
     assert!(chef.problems().is_empty(), "{:?}", chef.problems());
     keys.extend(chef.keys());
     for language in crate::front::LANGUAGES {
-        let strings = runity::strings::Strings::load(root.join("strings"), language).unwrap();
+        let strings = scrap::strings::Strings::load(root.join("strings"), language).unwrap();
         for key in &keys {
             assert_ne!(strings.get(key), key.as_str(), "{language} lacks `{key}`");
         }
@@ -758,7 +758,7 @@ fn the_board_on_the_wall_shows_the_orders_on_every_peer() {
     ];
     let words = |peer: &Peer| -> Vec<String> {
         peer.world
-            .query::<&runity::world::WorldUi>()
+            .query::<&scrap::world::WorldUi>()
             .iter()
             .flat_map(|w| {
                 w.ui.texts
@@ -779,10 +779,10 @@ fn the_board_on_the_wall_shows_the_orders_on_every_peer() {
 impl Render {
     /// A GPU without a window, if the machine has one.
     fn new(width: u32, height: u32) -> Option<Self> {
-        let gpu = runity::Gpu::headless_blocking(false).ok()?;
-        let target = runity::OffscreenTarget::new(&gpu, width, height);
-        let renderer = runity::Renderer::new(&gpu, &target);
-        let mut overlay = runity::ui_render::UiRenderer::new(&gpu, &target);
+        let gpu = scrap::Gpu::headless_blocking(false).ok()?;
+        let target = scrap::OffscreenTarget::new(&gpu, width, height);
+        let renderer = scrap::Renderer::new(&gpu, &target);
+        let mut overlay = scrap::ui_render::UiRenderer::new(&gpu, &target);
         overlay
             .use_font(crate::front::FONT.to_vec())
             .expect("the kitchen's font");
@@ -811,8 +811,8 @@ impl Peer {
         if let Some(view) = self.view {
             scene.set_part(&view);
         }
-        let camera = runity::scene_camera(&scene.view());
-        let mut frame = runity::world::scene_frame(&self.world, camera, &scene);
+        let camera = scrap::scene_camera(&scene.view());
+        let mut frame = scrap::world::scene_frame(&self.world, camera, &scene);
         if let Some((focal_length, aperture)) = self.lens {
             // As the tour does: in focus where it looks, the rest soft.
             let dof = &mut frame.post.depth_of_field;
@@ -822,17 +822,17 @@ impl Peer {
         }
         r.renderer.draw_ui_pictures(&r.gpu, &mut r.overlay, &frame);
         r.renderer.render(&r.gpu, &r.target, &frame);
-        let mut ui = runity::ui::Ui::new();
-        let mut widgets = runity::widgets::Widgets::with_style(crate::front::style());
-        let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
-        let size = runity::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
+        let mut ui = scrap::ui::Ui::new();
+        let mut widgets = scrap::widgets::Widgets::with_style(crate::front::style());
+        let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+        let size = scrap::glam::Vec2::new(r.target.width as f32, r.target.height as f32);
         if let Some(front) = front {
             front.draw(
                 &self.world,
                 &self.party,
                 &mut widgets,
                 &mut ui,
-                &runity::input::Input::default(),
+                &scrap::input::Input::default(),
                 size,
                 &strings,
             );
@@ -874,7 +874,7 @@ fn the_particles_sprites_are_uploaded_with_the_kitchen() {
     let k = Peer::with(Party::alone("main", &game_components()), Some(render));
     let r = k.render.as_ref().unwrap();
     let mut sprites = 0;
-    for emitting in k.world.query::<&runity::particles::Emitting>().iter() {
+    for emitting in k.world.query::<&scrap::particles::Emitting>().iter() {
         let map = emitting
             .material
             .and_then(|m| m.base_map)
@@ -943,7 +943,7 @@ fn a_screenshot_of_the_menu_and_of_a_round_in_full_swing() {
     // The board on the wall has the orders on it.
     let words: Vec<String> = k
         .world
-        .query::<&runity::world::WorldUi>()
+        .query::<&scrap::world::WorldUi>()
         .iter()
         .flat_map(|w| {
             w.ui.texts
@@ -996,7 +996,7 @@ fn a_guest_who_leaves_takes_their_cook_out_and_the_host_keeps_it() {
     );
     assert!(owns(&host, 1), "the host has it back");
     assert!(
-        host.world.get::<&runity::world::Inactive>(hc).is_ok(),
+        host.world.get::<&scrap::world::Inactive>(hc).is_ok(),
         "and it is out of the kitchen"
     );
     assert!(host
@@ -1318,8 +1318,8 @@ fn a_guest_sees_what_its_cook_holds_in_its_hands_at_once() {
 #[test]
 fn the_camera_tour_loads() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tour: runity::Tuned<runity::tour::Tour> =
-        runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: scrap::Tuned<scrap::tour::Tour> =
+        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     assert!(tour.shots.len() >= 2 && tour.travel > 0.0);
 }
 
@@ -1333,8 +1333,8 @@ fn close_ups() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<runity::tour::Tour> =
-        runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: scrap::Tuned<scrap::tour::Tour> =
+        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     let leg = tour.hold + tour.travel;
@@ -1347,7 +1347,7 @@ fn close_ups() {
                 tour.hold + tour.travel * 0.5
             };
         let (at, look) = tour.at(time).unwrap();
-        k.view = Some(runity::scene::View {
+        k.view = Some(scrap::scene::View {
             position: at,
             target: look,
             fov_deg: 50.0,
@@ -1367,14 +1367,14 @@ fn tour_frames() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<runity::tour::Tour> =
-        runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: scrap::Tuned<scrap::tour::Tour> =
+        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let _ = std::fs::remove_dir_all(root.join("target/shots/tour"));
     std::fs::create_dir_all(root.join("target/shots/tour")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
-    let rest = runity::scene_camera(&k.live.scene().view());
-    let mut flyby = runity::tour::Flyby::default();
+    let rest = scrap::scene_camera(&k.live.scene().view());
+    let mut flyby = scrap::tour::Flyby::default();
     let fps = 20.0;
     let lap = (tour.hold + tour.travel) * tour.shots.len() as f32;
     let frames = ((lap + 3.0) * fps) as usize;
@@ -1383,7 +1383,7 @@ fn tour_frames() {
         let touring = (i as f32) < (lap + 1.5) * fps;
         let camera = flyby.camera(&tour, touring, 1.0 / fps, rest);
         k.frame();
-        k.view = Some(runity::scene::View {
+        k.view = Some(scrap::scene::View {
             position: camera.position,
             target: camera.target,
             fov_deg: camera.fov_y_degrees,
@@ -1411,8 +1411,8 @@ fn lenses() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let tour: runity::Tuned<runity::tour::Tour> =
-        runity::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
+    let tour: scrap::Tuned<scrap::tour::Tour> =
+        scrap::Tuned::load(root.join("tuning/flyby.ron")).unwrap();
     let mut k = Peer::with(Party::alone("main", &game_components()), Some(render));
     k.seconds(0.5);
     for (name, lens) in [
@@ -1421,7 +1421,7 @@ fn lenses() {
         ("f1", Some((100.0, 1.2))),
     ] {
         for (i, shot) in tour.shots.iter().enumerate().skip(1).step_by(2) {
-            k.view = Some(runity::scene::View {
+            k.view = Some(scrap::scene::View {
                 position: shot.at,
                 target: shot.look,
                 fov_deg: 50.0,
@@ -1620,7 +1620,7 @@ fn recipes_close() {
             Vec3::new(-5.0, 1.0, -1.5),
         ),
     ] {
-        k.view = Some(runity::scene::View {
+        k.view = Some(scrap::scene::View {
             position: at,
             target: look,
             fov_deg: 50.0,
@@ -1648,15 +1648,15 @@ fn a_guest_whose_host_closes_the_kitchen_is_told_and_offered_the_menu() {
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     front.host_lost = Some(true);
-    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
-    let mut ui = runity::ui::Ui::new();
+    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let mut ui = scrap::ui::Ui::new();
     let wish = front.draw(
         &guest.world,
         &guest.party,
-        &mut runity::widgets::Widgets::new(),
+        &mut scrap::widgets::Widgets::new(),
         &mut ui,
-        &runity::input::Input::default(),
-        runity::glam::Vec2::new(1280.0, 720.0),
+        &scrap::input::Input::default(),
+        scrap::glam::Vec2::new(1280.0, 720.0),
         &strings,
     );
     assert_eq!(wish, None);
@@ -1716,17 +1716,17 @@ fn points_rise_over_the_window_as_they_are_won_and_fall_at_the_board_as_they_are
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
     let k = Peer::alone();
-    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
-    let size = runity::glam::Vec2::new(1280.0, 720.0);
-    let camera = runity::scene_camera(&k.live.scene().view());
+    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let size = scrap::glam::Vec2::new(1280.0, 720.0);
+    let camera = scrap::scene_camera(&k.live.scene().view());
     let draw = |k: &Peer, front: &mut crate::front::Front| {
-        let mut ui = runity::ui::Ui::new();
+        let mut ui = scrap::ui::Ui::new();
         front.draw(
             &k.world,
             &k.party,
-            &mut runity::widgets::Widgets::new(),
+            &mut scrap::widgets::Widgets::new(),
             &mut ui,
-            &runity::input::Input::default(),
+            &scrap::input::Input::default(),
             size,
             &strings,
         );
@@ -1774,15 +1774,15 @@ fn a_guest_says_they_are_ready_and_the_host_sees_it_in_the_lobby() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut front = crate::front::Front::load(&root.join("ui")).unwrap();
     front.phase = crate::front::Phase::Kitchen;
-    let strings = runity::strings::Strings::load(root.join("strings"), "en").unwrap();
-    let mut ui = runity::ui::Ui::new();
+    let strings = scrap::strings::Strings::load(root.join("strings"), "en").unwrap();
+    let mut ui = scrap::ui::Ui::new();
     front.draw(
         &host.world,
         &host.party,
-        &mut runity::widgets::Widgets::new(),
+        &mut scrap::widgets::Widgets::new(),
         &mut ui,
-        &runity::input::Input::default(),
-        runity::glam::Vec2::new(1280.0, 720.0),
+        &scrap::input::Input::default(),
+        scrap::glam::Vec2::new(1280.0, 720.0),
         &strings,
     );
     let words: Vec<&str> = ui.texts.iter().map(|t| t.text.as_str()).collect();

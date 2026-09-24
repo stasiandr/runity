@@ -1,0 +1,52 @@
+[package]
+name = "scrap-render"
+description = "scrap's 3D render: the scene drawn on the GPU — materials and lights, shadows, sky and fog, post-processing, particles, terrain, foliage and gizmos — from what the world's entities look like."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-geometry = { path = "../scrap-geometry" }
+scrap-gpu = { path = "../scrap-gpu" }
+scrap-overlay = { path = "../scrap-overlay" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+pollster = "1.0.1"
+rkyv = { version = "0.8", features = ["bytecheck"] }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+wgpu = "30"
+# The clock: `std::time` on the desktop, the page's in the browser.
+web-time = "1.1"
+
+# In the browser wgpu is WebGPU: its objects are made shareable across the
+# one thread there is (the render prepares draws with `jobs::map`, which
+# asks for `Sync`), and naga comes in for the shader checks `reload_shader`
+# does, which on native wgpu's own core brings.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", features = ["fragile-send-sync-non-atomic-wasm", "naga-ir"] }
+naga = { version = "30", features = ["wgsl-in"] }
+
+# MetalFX, Apple's upscaler (`upscale`): reached through wgpu's Metal
+# handles, so only on Apple's systems, and only with the `metalfx` feature.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3.2", optional = true }
+objc2-metal-fx = { version = "0.3.2", features = ["MTLFXSpatialScaler", "MTLFXTemporalScaler"], optional = true }
+
+[features]
+default = ["metalfx", "ray-tracing"]
+# Hardware ray tracing, where the device has it: an experiment. Off, the
+# code and the shader are not in the build, and the lit pass runs as on a
+# device without rays.
+ray-tracing = []
+# MetalFX temporal and spatial upscaling on Apple's GPUs. Off (or on any
+# other system), upscaling is the engine's own Catmull-Rom.
+metalfx = ["dep:objc2", "dep:objc2-metal", "dep:objc2-metal-fx"]
+# DLSS on NVIDIA's RTX cards (Windows and Linux, Vulkan): the upscaler takes
+# it before its own. Off by default: building it needs NVIDIA's SDK.
+dlss = ["scrap-gpu/dlss"]

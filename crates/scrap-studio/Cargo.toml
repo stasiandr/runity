@@ -1,0 +1,48 @@
+[package]
+name = "scrap-studio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The editor's window: scrap-ui panels over `scrap-editor`'s session.
+#
+# Nothing here decides what an edit means — that is the session's, and the
+# same functions answer to a test and to an agent over MCP (DNA, postulate
+# 5). This crate owns the layout, the panels and the routing of input. The
+# window is a thin winit loop around `Studio`, which runs headless as well:
+# the tests and the `shot` example drive it with no screen.
+[dependencies]
+arboard = { version = "3", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "pollster"] }
+scrap = { version = "0.1.0", path = "../scrap", features = ["desktop-shell", "audio"] }
+scrap-cli = { version = "0.1.0", path = "../scrap-cli" }
+scrap-editor = { version = "0.1.0", path = "../scrap-editor" }
+scrap-import = { version = "0.1.0", path = "../scrap-import" }
+scrap-ui = { version = "0.1.0", path = "../scrap-ui" }
+wgpu = "30"
+winit = "0.30.13"
+
+# The menus in the system's menu bar (`crate::native_menu`): only macOS
+# has one; elsewhere the menus stay in the toolbar.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.20", default-features = false }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSEvent", "NSResponder"] }
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+
+[[example]]
+name = "shot"
+path = "examples/shot.rs"
+
+[[bin]]
+name = "scrap-studio"
+path = "src/main.rs"
+
+[[example]]
+name = "frame_bench"
+path = "examples/frame_bench.rs"

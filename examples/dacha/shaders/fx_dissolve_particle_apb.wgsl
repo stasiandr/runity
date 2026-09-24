@@ -13,9 +13,9 @@
 // The particle's colour and fade are the surface's albedo and alpha (no
 // base map). Soft particles are dropped (no scene depth). Unlit: black
 // albedo and the colour as emission.
-// runity:params custom0.x custom0.y custom0.z custom1.r custom1.g custom1.b Vector1_930B327D Vector1_270105AC
-// runity:textures Main_tex
-// runity:base_map none
+// scrap:params custom0.x custom0.y custom0.z custom1.r custom1.g custom1.b Vector1_930B327D Vector1_270105AC
+// scrap:textures Main_tex
+// scrap:base_map none
 
 const FXD_EMISSION_POWER: f32 = 1.0;
 

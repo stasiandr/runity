@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/dust_fx.rmat",
-    hash: "d40cdfec465edc0345201c982d0b96d3",
-    id: Some("7620d055a0fc849e1e16f83c7e189efd"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

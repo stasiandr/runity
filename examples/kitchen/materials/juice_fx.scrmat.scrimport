@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/juice_fx.scrmat",
+    hash: "6c1b2db73e15b46f548cc2b50cfbac7f",
+    id: Some("48324d0c2bae604823dbb9b93c25f93d"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

@@ -5,7 +5,7 @@
 //! a plate, a knock as a knife goes. The pots' boiling, the pans' sizzle
 //! and the music are the scene's own `sound`s.
 
-use runity::hecs::World;
+use scrap::hecs::World;
 
 use crate::components::Item;
 use crate::state::{Chop, Pot, Round, Served, Stack};

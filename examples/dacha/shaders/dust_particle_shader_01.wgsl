@@ -1,11 +1,11 @@
 // From Assets/Content/Art/Materials/Dust_Particle_Shader_01.shadergraph (URP Lit).
 // A lit dust puff: flat Color for albedo, alpha from the red channel of a
 // cloud-shaped mask (T_Dust_01_M), cut out at 0.5.
-// runity:textures _Alpha
+// scrap:textures _Alpha
 // Port: the mask is read from the material's _Alpha and cut out here with
 // a discard. The albedo is Color alone, as in the graph (neither the
 // particle's colour nor the base map, the same mask, tints it). The
-// importer also sets alpha_clip 0.5, which runity applies before this
+// importer also sets alpha_clip 0.5, which scrap applies before this
 // function to its own alpha: the particle's fade (the mask has no alpha
 // channel), so a puff fading below half vanishes whole, where Unity's
 // graph ignores the fade. The shadow and AO prepasses do not run this

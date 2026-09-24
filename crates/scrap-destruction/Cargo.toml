@@ -1,0 +1,19 @@
+[package]
+name = "scrap-destruction"
+description = "scrap's destruction: things that break into Voronoi pieces — cut ahead or at the moment of the blow, pieces that break again — and surfaces that dent where they are struck. Headless: it cuts and spawns; the facade hands it the blows and draws the pieces."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-geometry = { path = "../scrap-geometry" }
+scrap-physics = { path = "../scrap-physics", default-features = false }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+ron = "0.12.2"

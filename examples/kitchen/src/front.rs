@@ -10,15 +10,15 @@
 
 use std::collections::HashMap;
 
-use runity::glam::Vec2;
-use runity::hecs::{Entity, World};
-use runity::input::Input;
-use runity::party::Party;
-use runity::screen::{Anchor, Element, Kind, Layout, Screen};
-use runity::strings::Strings;
-use runity::ui::Ui;
-use runity::widgets::Widgets;
-use runity::Actions;
+use scrap::glam::Vec2;
+use scrap::hecs::{Entity, World};
+use scrap::input::Input;
+use scrap::party::Party;
+use scrap::screen::{Anchor, Element, Kind, Layout, Screen};
+use scrap::strings::Strings;
+use scrap::ui::Ui;
+use scrap::widgets::Widgets;
+use scrap::Actions;
 
 use crate::components::Player;
 use crate::state::{Act, Controls, Round, Seat, ACT};
@@ -88,7 +88,7 @@ pub struct Front {
     was_open: bool,
     /// The score as last seen, and the points on their way up.
     last_score: Option<i32>,
-    floaters: runity::floaters::Floaters,
+    floaters: scrap::floaters::Floaters,
     /// Escape was pressed in the kitchen: the pause card is up.
     pub paused: bool,
     /// A card for each order, laid out for how many there are.
@@ -104,20 +104,20 @@ pub struct Front {
     /// The head chef's word as a round starts, and how long the line has
     /// been up.
     speech: Screen,
-    chef: runity::dialogue::Dialogue,
-    talk: Option<(runity::dialogue::Conversation, f32)>,
+    chef: scrap::dialogue::Dialogue,
+    talk: Option<(scrap::dialogue::Conversation, f32)>,
 }
 
 /// Where points are won — over the window — and lost — at the board.
-const WON_AT: runity::glam::Vec3 = runity::glam::Vec3::new(-1.5, 1.7, 3.0);
-const LOST_AT: runity::glam::Vec3 = runity::glam::Vec3::new(0.0, 2.3, -3.8);
+const WON_AT: scrap::glam::Vec3 = scrap::glam::Vec3::new(-1.5, 1.7, 3.0);
+const LOST_AT: scrap::glam::Vec3 = scrap::glam::Vec3::new(0.0, 2.3, -3.8);
 
 /// Seconds a line of the chef's stays up.
 pub const LINE_SECONDS: f32 = 2.8;
 
 impl Front {
     pub fn load(ui_dir: &std::path::Path) -> Result<Self, String> {
-        let chef = ui_dir.with_file_name(runity::dialogue::DIR).join("chef.ron");
+        let chef = ui_dir.with_file_name(scrap::dialogue::DIR).join("chef.ron");
         let screen = |name: &str| Screen::load(ui_dir.join(format!("{name}.ron")));
         Ok(Self {
             phase: Phase::Menu,
@@ -138,7 +138,7 @@ impl Front {
             level: LEVELS[0].to_string(),
             was_open: false,
             last_score: None,
-            floaters: runity::floaters::Floaters::new(),
+            floaters: scrap::floaters::Floaters::new(),
             paused: false,
             orders: Screen::from_layout(Layout::default()),
             cards: usize::MAX,
@@ -147,7 +147,7 @@ impl Front {
             best: 0,
             new_best: false,
             speech: screen("speech")?,
-            chef: runity::dialogue::Dialogue::load(chef)?,
+            chef: scrap::dialogue::Dialogue::load(chef)?,
             talk: None,
         })
     }
@@ -340,23 +340,23 @@ impl Front {
 
     /// Someone's "here!", over where they point.
     pub fn ping(&mut self, ping: crate::state::Ping) {
-        let colour = runity::glam::Vec4::new(0.45, 0.85, 1.0, 1.0);
-        self.floaters.push(runity::glam::Vec3::from_array(ping.at), "!", colour);
+        let colour = scrap::glam::Vec4::new(0.45, 0.85, 1.0, 1.0);
+        self.floaters.push(scrap::glam::Vec3::from_array(ping.at), "!", colour);
     }
 
     /// A floater for every change in the score.
     fn watch_score(&mut self, round: Option<&Round>) {
         let Some(score) = round.map(|r| r.score) else {
             self.last_score = None;
-            self.floaters = runity::floaters::Floaters::new();
+            self.floaters = scrap::floaters::Floaters::new();
             return;
         };
         if let Some(was) = self.last_score {
             let change = score - was;
             if change > 0 {
-                self.floaters.push(WON_AT, format!("+{change}"), runity::glam::Vec4::new(1.0, 0.84, 0.3, 1.0));
+                self.floaters.push(WON_AT, format!("+{change}"), scrap::glam::Vec4::new(1.0, 0.84, 0.3, 1.0));
             } else if change < 0 {
-                self.floaters.push(LOST_AT, format!("−{}", -change), runity::glam::Vec4::new(1.0, 0.35, 0.25, 1.0));
+                self.floaters.push(LOST_AT, format!("−{}", -change), scrap::glam::Vec4::new(1.0, 0.35, 0.25, 1.0));
             }
         }
         self.last_score = Some(score);
@@ -364,7 +364,7 @@ impl Front {
 
     /// The floaters, placed on the screen from where they are in the
     /// kitchen as `camera` sees it: call after the camera is known.
-    pub fn floaters(&mut self, camera: &runity::render::Camera, size: Vec2, ui: &mut Ui, seconds: f32) {
+    pub fn floaters(&mut self, camera: &scrap::render::Camera, size: Vec2, ui: &mut Ui, seconds: f32) {
         self.floaters.draw(camera, size, ui, seconds);
     }
 
@@ -397,7 +397,7 @@ impl Front {
     /// The head chef starts talking: the dialogue from its start.
     pub fn brief(&mut self) {
         let mut flags = std::collections::BTreeSet::new();
-        let talk = runity::dialogue::Conversation::begin(self.chef.clone(), &mut flags);
+        let talk = scrap::dialogue::Conversation::begin(self.chef.clone(), &mut flags);
         self.talk = Some((talk, 0.0));
     }
 
@@ -456,8 +456,8 @@ impl Front {
             }
             // "Here!" over the spot in front of the cook, for everyone.
             if actions.pressed(input, "ping") {
-                if let Ok(t) = world.get::<&runity::Transform>(cook) {
-                    let at = t.position + crate::state::facing(&t) * 1.0 + runity::glam::Vec3::Y * 1.3;
+                if let Ok(t) = world.get::<&scrap::Transform>(cook) {
+                    let at = t.position + crate::state::facing(&t) * 1.0 + scrap::glam::Vec3::Y * 1.3;
                     party.publish(crate::state::PING, &crate::state::Ping { at: at.to_array() });
                 }
             }
@@ -476,18 +476,18 @@ impl Front {
 
 /// The round as this peer has it.
 /// Kenney Future, the kitchen's letters. Built into the game rather than
-/// read from `assets/`: `runity build` ships the library, not the sources.
+/// read from `assets/`: `scrap build` ships the library, not the sources.
 pub const FONT: &[u8] = include_bytes!("../assets/fonts/kenney_future.ttf");
 
 /// The kitchen's buttons and panels: warm, round, with a lip to press —
 /// the colours of Kenney's UI pack.
-pub fn style() -> runity::widgets::Style {
-    use runity::glam::Vec4;
+pub fn style() -> scrap::widgets::Style {
+    use scrap::glam::Vec4;
     let hex = |rgb: u32, a: f32| {
         let c = |s: u32| ((rgb >> s) & 0xff) as f32 / 255.0;
         Vec4::new(c(16), c(8), c(0), a)
     };
-    runity::widgets::Style {
+    scrap::widgets::Style {
         idle: hex(0xe86a17, 0.97),
         hover: hex(0xf5873a, 1.0),
         pressed: hex(0x3a2a24, 0.88),
@@ -588,13 +588,13 @@ fn drop_held(world: &mut World, cook: Entity) {
         return;
     };
     let at = world
-        .get::<&runity::Transform>(cook)
+        .get::<&scrap::Transform>(cook)
         .map(|t| t.position)
         .unwrap_or_default();
     let _ = world.insert_one(cook, crate::state::Hands(None));
     let _ = world.remove_one::<crate::state::At>(item);
-    if let Ok(mut t) = world.get::<&mut runity::Transform>(item) {
-        t.position = runity::glam::Vec3::new(at.x, crate::state::FOOD_RADIUS + 0.05, at.z);
+    if let Ok(mut t) = world.get::<&mut scrap::Transform>(item) {
+        t.position = scrap::glam::Vec3::new(at.x, crate::state::FOOD_RADIUS + 0.05, at.z);
     }
 }
 
@@ -606,7 +606,7 @@ pub fn claim(world: &mut World, party: &Party) {
     }
     let me = party.me().0;
     let wanted: Vec<Entity> = world
-        .query::<(Entity, &Player, Option<&Seat>, Option<&runity::net::Owned>)>()
+        .query::<(Entity, &Player, Option<&Seat>, Option<&scrap::net::Owned>)>()
         .iter()
         .filter(|(_, _, seat, owned)| {
             let mine = seat.is_some_and(|s| s.0 == me) || (seat.is_none() && party.is_host());
@@ -655,13 +655,13 @@ fn order_cards(count: usize) -> Layout {
 /// The bell over the window rings: its graph (animators/window.ron) is told
 /// `serve`, and plays its clip on the things under the window.
 pub fn ring(world: &mut World) {
-    for (moving, animates) in world.query_mut::<(&mut runity::motion::Moving, &runity::motion::Animates)>() {
+    for (moving, animates) in world.query_mut::<(&mut scrap::motion::Moving, &scrap::motion::Animates)>() {
         if animates.graph == "window" {
             moving.controller.trigger("serve");
         }
     }
     // And stars fly up from the window.
-    for (mark, emitting) in world.query_mut::<(&crate::components::Mark, &mut runity::particles::Emitting)>() {
+    for (mark, emitting) in world.query_mut::<(&crate::components::Mark, &mut scrap::particles::Emitting)>() {
         if mark.name == "serve fx" {
             emitting.emit(36);
         }
@@ -679,12 +679,12 @@ pub fn hold(world: &mut World) {
         .collect();
     for (item, index) in held {
         let Some(spot) = crate::state::cook(world, index)
-            .and_then(|c| world.get::<&runity::Transform>(c).ok().map(|t| *t))
-            .map(|t| t.position + crate::state::facing(&t) * 0.55 + runity::glam::Vec3::Y * 0.45)
+            .and_then(|c| world.get::<&scrap::Transform>(c).ok().map(|t| *t))
+            .map(|t| t.position + crate::state::facing(&t) * 0.55 + scrap::glam::Vec3::Y * 0.45)
         else {
             continue;
         };
-        if let Ok(mut t) = world.get::<&mut runity::Transform>(item) {
+        if let Ok(mut t) = world.get::<&mut scrap::Transform>(item) {
             t.position = spot;
         }
     }

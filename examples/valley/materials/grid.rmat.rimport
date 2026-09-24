@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/grid.rmat",
-    hash: "d10f6bd1d30f0e541e4f4969a7ab586d",
-    id: Some("3b142ec56116c3a60f1717fcf654afa8"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

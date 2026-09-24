@@ -1,0 +1,124 @@
+[package]
+name = "scrap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-animation = { path = "../scrap-animation", optional = true }
+scrap-audio = { path = "../scrap-audio", default-features = false }
+scrap-core = { path = "../scrap-core" }
+scrap-shell = { path = "../scrap-shell", optional = true }
+scrap-render = { path = "../scrap-render", default-features = false }
+scrap-steam = { path = "../scrap-steam", optional = true }
+scrap-net = { path = "../scrap-net", optional = true }
+scrap-navigation = { path = "../scrap-navigation", optional = true }
+scrap-discord = { path = "../scrap-discord", optional = true }
+scrap-reports = { path = "../scrap-reports", optional = true }
+scrap-input = { path = "../scrap-input", optional = true }
+scrap-dialogue = { path = "../scrap-dialogue", optional = true }
+scrap-routes = { path = "../scrap-routes", optional = true }
+scrap-spline = { path = "../scrap-spline", optional = true }
+scrap-geometry = { path = "../scrap-geometry" }
+scrap-gpu = { path = "../scrap-gpu" }
+scrap-overlay = { path = "../scrap-overlay" }
+scrap-physics = { path = "../scrap-physics", default-features = false }
+scrap-soft = { path = "../scrap-soft", optional = true }
+scrap-destruction = { path = "../scrap-destruction", optional = true }
+scrap-fluid = { path = "../scrap-fluid", optional = true }
+scrap-character = { path = "../scrap-character", optional = true }
+anyhow = "1.0.104"
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
+
+# Every module is a crate of its own (docs/modules.md); this crate is the
+# facade that brings them under one name. A module that can be left out is
+# a feature here, so switching one off is one line and takes its
+# dependencies out of the build with it (DNA, postulate 3); a module's
+# manifest (`module.ron`) names its feature.
+[features]
+default = [
+    "animation", "character", "destruction", "dialogue", "fluid", "input", "metalfx", "navigation", "net", "physics", "ray-tracing", "routes", "soft", "spline",
+]
+# Solid bodies, from rapier. On by default — a battery — and off with
+# `default-features = false` for a game that has no use for it.
+physics = ["scrap-physics/rapier", "scrap-net?/physics"]
+# Hardware ray tracing in the render, where the device has it: an
+# experiment the scene asks for. Off, it is not in the build.
+ray-tracing = ["scrap-render/ray-tracing"]
+# MetalFX upscaling on Apple's GPUs; off, the engine's own upscaler.
+metalfx = ["scrap-render/metalfx"]
+# DLSS on NVIDIA's RTX cards, Windows and Linux; off by default, since it
+# needs NVIDIA's DLSS SDK to build (docs/stack.md, "Апскейл").
+dlss = ["scrap-render/dlss"]
+# Skeletons, animator graphs and motion clips.
+animation = ["dep:scrap-animation"]
+# Peers, ownership and sync, parties, LAN; Steam stands on it.
+net = ["dep:scrap-net"]
+# Named input actions, maps and control schemes (input.ron).
+input = ["dep:scrap-input"]
+# Splines and copies grown along them.
+spline = ["dep:scrap-spline"]
+# Entities travelling their routes.
+routes = ["dep:scrap-routes"]
+# Ropes, cables and chains: particles and constraints, solved by XPBD
+# (docs/simulation.md).
+soft = ["dep:scrap-soft"]
+# Things that break into Voronoi pieces, and surfaces that dent; the
+# blows come from the physics.
+destruction = ["physics", "dep:scrap-destruction"]
+# Fluids on grids: MPM snow, sand and water, shallow water, ripples, the
+# open sea, and what floats on them.
+fluid = ["soft", "dep:scrap-fluid"]
+# Ragdolls, active ragdolls on procedural gait or motion matching, IK,
+# crawlers stepping by IK.
+character = ["physics", "soft", "dep:scrap-character"]
+# Conversations.
+dialogue = ["dep:scrap-dialogue"]
+# Where things can walk: a grid baked from the physics world.
+navigation = ["physics", "dep:scrap-navigation"]
+# Sound. Off by default and not because it is unfinished: the engine is
+# being built on greybox, and a mixer nobody is listening to is a
+# dependency, a device to open and a thing to keep compiling. `--features
+# audio` brings it back, and CI builds with it so it cannot rot.
+audio = ["scrap-audio/kira"]
+# Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
+# transport. Off by default: it links Valve's SDK and does nothing without
+# the Steam client running.
+steam = ["net", "dep:scrap-steam"]
+# Crash reports sent to Sentry and play reported to GameAnalytics. Off by
+# default: it is the network, TLS and a player's consent, none of which a
+# game gets without asking for them.
+reports = ["dep:scrap-reports"]
+# What a player is doing, shown on their Discord profile, through the
+# Discord client running beside the game.
+discord = ["dep:scrap-discord"]
+# A plain desktop window, for running the game without the editor. The
+# engine does not need it: the editor owns its own window, and on iOS and
+# Android the platform does. This is the convenience path, not the
+# architecture.
+desktop-shell = ["dep:scrap-shell"]
+
+[dev-dependencies]
+wgpu = "30"
+hecs = "0.11.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The traffic bench asks whether deflating datagrams would pay.
+miniz_oxide = "0.8"
+
+# The reference scene, rendered headlessly. `cargo run --example scene_shot`.
+[[example]]
+name = "scene_shot"
+path = "examples/scene_shot.rs"
+
+# A window you can walk around in. Needs the shell feature, so it is not
+# built by a plain `cargo build`.
+[[example]]
+name = "walk"
+path = "examples/walk.rs"
+required-features = ["desktop-shell"]

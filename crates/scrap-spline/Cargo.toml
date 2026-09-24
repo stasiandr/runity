@@ -1,0 +1,17 @@
+[package]
+name = "scrap-spline"
+description = "scrap's splines: curves through points on a line of a scene, and copies of a model grown along them when prefabs expand."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-geometry = { path = "../scrap-geometry" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+ron = "0.12.2"

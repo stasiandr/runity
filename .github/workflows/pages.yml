@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # What runity-cli links to build the library (cpal, gilrs).
+      # What scrap-cli links to build the library (cpal, gilrs).
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update -q
@@ -55,13 +55,13 @@ jobs:
           echo "$PWD/wasm-bindgen-${version}-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
 
       - name: Build the kitchen's library
-        run: cargo run --release -p runity-cli -- sync examples/kitchen-web
+        run: cargo run --release -p scrap-cli -- sync examples/kitchen-web
 
       - name: Build the site
         env:
           # Metered's TURN credentials endpoint: two phones on mobile data
           # meet through its relay.
-          RUNITY_TURN_URL: ${{ secrets.RUNITY_TURN_URL }}
+          SCRAP_TURN_URL: ${{ secrets.RUNITY_TURN_URL }}
         run: examples/kitchen-web/web/build.sh "$GITHUB_WORKSPACE/site"
 
       - uses: actions/upload-pages-artifact@v3

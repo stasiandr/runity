@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/needle.rmat",
-    hash: "1581a3e06ffa7f84e71ba939f625f904",
-    id: Some("1fd1451a19608a461e5a21cc03c06fb9"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

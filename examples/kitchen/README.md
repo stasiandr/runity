@@ -1,6 +1,6 @@
 # Kitchen Rush
 
-A little Overcooked on runity, played together over Steam: up to four
+A little Overcooked on scrap, played together over Steam: up to four
 cooks, one kitchen, orders coming in faster than is comfortable.
 
 - **Soup**: three chopped tomatoes (or onions) in a pot, cooked, onto a
@@ -12,16 +12,16 @@ Plates go out of the window before the order walks out, and come back to
 the sink dirty a few seconds later: someone has to wash them (hold F), or
 the racks run dry. Pots and pans burn what is left on them.
 
-It is also the engine's worked example: nearly everything runity does is
+It is also the engine's worked example: nearly everything scrap does is
 used here once, in the place a game would use it. Read it as a map.
 
 ```
 cargo run --release                       # the menu: host a kitchen, join a friend
-runity run --players 2                    # two windows playing together, over UDP
-runity run --players 2 --link poor        # …over a bad link, on purpose
+scrap run --players 2                    # two windows playing together, over UDP
+scrap run --players 2 --link poor        # …over a bad link, on purpose
 cargo test                                # the rules, the network, screenshots
 cargo test -- --ignored steam             # a real Steam lobby (Steam running)
-runity check                              # every name the files use resolves
+scrap check                              # every name the files use resolves
 ```
 
 With Steam running, **Host a kitchen** makes a lobby your friends can see
@@ -56,7 +56,7 @@ Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
 | **Localisation** | `strings/en.ron`, `strings/ru.ron`; every `@key` checked by a test |
 | **Dialogue** | `dialogues/chef.ron`, the head chef before the doors open |
 | **Sound**: sources in the scene, groups, one-shots | the stoves' `sound` (boiling, turned up as the soup cooks), the kitchen's music, `noise.rs` for the rest |
-| **Particles** with sprites | steam off a done soup, smoke off a burnt one, the burner's flame, juice off the knife, stars when a soup goes out, dust from a running cook — `*_fx.rmat` over Kenney's particle sprites in `assets/fx/` |
+| **Particles** with sprites | steam off a done soup, smoke off a burnt one, the burner's flame, juice off the knife, stars when a soup goes out, dust from a running cook — `*_fx.scrmat` over Kenney's particle sprites in `assets/fx/` |
 | **Models**: glTF with their colours | Kenney's furniture, food and characters (`assets/kenney/`); a model's own colours come with it as its look, no material needed |
 | **Skinned characters** blended by speed | the cooks and customers: `animators/cook.ron`, `walker.ron`, `systems/pose.rs` |
 | **A font of the game's own**, a **widget style** | Kenney Future, `front::FONT`; round buttons with a lip, `front::style` |
@@ -67,8 +67,8 @@ Keys: WASD (or the arrows, or the stick) to walk, E to grab, F to chop
 | **Decals** | the stains on the floor |
 | **Lights**, **post-processing** | a warm lamp over the stoves; ACES, bloom, vignette, depth of field, grain, TAA and SSAO (`post:`, `ambient_occlusion:` in the scene) |
 | Switched-off things (`inactive`) | the soup, bars and steam marks; cooks nobody plays |
-| **A camera tour** (`runity::tour`), tuned from a file | the fly-through while players gather: the shots in `tuning/flyby.ron` (saved while running, it changes at once), eased in and out in `main.rs`; the lens focuses on what it looks at |
-| **Words over the world** (`runity::floaters`) | points won rising over the window, lost at the board: `Front::watch_score` |
+| **A camera tour** (`scrap::tour`), tuned from a file | the fly-through while players gather: the shots in `tuning/flyby.ron` (saved while running, it changes at once), eased in and out in `main.rs`; the lens focuses on what it looks at |
+| **Words over the world** (`scrap::floaters`) | points won rising over the window, lost at the board: `Front::watch_score` |
 | State everyone follows | `Round::open`: shut, the kitchen is the lobby; the host opens it (`Act::Restart`) and every peer's screen follows |
 | **Player prefs** | the volumes, the language and the best score, kept between runs |
 | **Input** actions and axes, keyboard and pad | `input.ron` |
