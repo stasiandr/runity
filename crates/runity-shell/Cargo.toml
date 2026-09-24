@@ -1,0 +1,18 @@
+[package]
+name = "runity-shell"
+description = "runity's desktop shell: a plain window on winit, gamepads on gilrs, the fixed step and the frame, hot patches through subsecond. The convenience path for running a game without the editor; the engine does not need it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+runity-core = { path = "../runity-core" }
+runity-gpu = { path = "../runity-gpu", features = ["winit"] }
+runity-overlay = { path = "../runity-overlay" }
+runity-render = { path = "../runity-render" }
+anyhow = "1.0.104"
+gilrs = "0.11"
+subsecond = "0.7.10"
+winit = "0.30.13"

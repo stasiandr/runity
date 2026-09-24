@@ -2523,13 +2523,8 @@ name = "runity"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytemuck",
- "gilrs",
  "glam 0.32.1",
- "glyphon",
  "hecs",
- "pollster",
- "rkyv",
  "ron",
  "runity-animation",
  "runity-audio",
@@ -2544,13 +2539,11 @@ dependencies = [
  "runity-physics",
  "runity-render",
  "runity-routes",
+ "runity-shell",
  "runity-spline",
  "runity-steam",
  "serde",
- "subsecond",
  "tracing",
- "wgpu",
- "winit",
 ]
 
 [[package]]
@@ -2711,6 +2704,20 @@ dependencies = [
  "hecs",
  "runity-core",
  "serde",
+]
+
+[[package]]
+name = "runity-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gilrs",
+ "runity-core",
+ "runity-gpu",
+ "runity-overlay",
+ "runity-render",
+ "subsecond",
+ "winit",
 ]
 
 [[package]]

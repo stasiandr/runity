@@ -70,12 +70,9 @@ pub const PLAYER_VAR: &str = "RUNITY_PLAYER";
 /// `poor`, `awful`, or `latency=80,jitter=10,loss=3,dup=1`.
 pub const LINK_VAR: &str = "RUNITY_LINK";
 
-/// Where a window opens and how big, as `x,y,width,height` in logical
-/// pixels: set for each player's window when several play from the editor
-/// (`runity run --players N`), so they lie side by side rather than on top
-/// of each other. The desktop shell reads it; it overrides the size the
-/// game asked for.
-pub const WINDOW_VAR: &str = "RUNITY_WINDOW";
+// Where each player's window opens: the launcher sets it, the desktop
+// shell reads it, and neither is this module, so the core names it.
+pub use runity_core::project::WINDOW_VAR;
 
 /// How long a replica may go without word from its owner, not having been
 /// told it came to rest, before [`Event::Silent`] says so.

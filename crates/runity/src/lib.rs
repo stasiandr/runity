@@ -195,7 +195,7 @@ pub mod prelude {
 pub use runity_overlay::screen;
 pub use runity_core::shape;
 #[cfg(feature = "desktop-shell")]
-pub mod shell;
+pub use runity_shell::shell;
 pub use runity_core::spelling;
 pub use runity_render::ssao;
 #[cfg(feature = "steam")]

@@ -10,6 +10,7 @@ repository.workspace = true
 runity-animation = { path = "../runity-animation" }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
+runity-shell = { path = "../runity-shell", optional = true }
 runity-render = { path = "../runity-render" }
 runity-steam = { path = "../runity-steam", optional = true }
 runity-net = { path = "../runity-net" }
@@ -25,25 +26,17 @@ runity-gpu = { path = "../runity-gpu" }
 runity-overlay = { path = "../runity-overlay" }
 runity-physics = { path = "../runity-physics", default-features = false }
 anyhow = "1.0.104"
-bytemuck = { version = "1.25.2", features = ["derive"] }
 glam = { version = "0.32", features = ["serde", "bytemuck"] }
-glyphon = "0.12.0"
 hecs = "0.11.0"
-pollster = "1.0.1"
-rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
-subsecond = "0.7.10"
 tracing = "0.1.44"
-wgpu = "30"
-winit = { version = "0.30.13", optional = true }
-gilrs = { version = "0.11", optional = true }
 
-# Built-in subsystems are features, so that switching one off is one line
-# and takes its dependencies out of the build with it (DNA, postulate 3).
-# This is the seam, not the module system: the manifest a module ships with
-# is still an open question in DNA.md, and features are what Cargo already
-# gives us until it is answered.
+# Every module is a crate of its own (docs/modules.md); this crate is the
+# facade that brings them under one name. A module that can be left out is
+# a feature here, so switching one off is one line and takes its
+# dependencies out of the build with it (DNA, postulate 3); a module's
+# manifest (`module.ron`) names its feature.
 [features]
 default = ["physics", "navigation"]
 # Solid bodies, from rapier. On by default — a battery — and off with
@@ -71,9 +64,10 @@ discord = ["dep:runity-discord"]
 # engine does not need it: the editor owns its own window, and on iOS and
 # Android the platform does. This is the convenience path, not the
 # architecture.
-desktop-shell = ["dep:winit", "dep:gilrs", "runity-gpu/winit"]
+desktop-shell = ["dep:runity-shell"]
 
 [dev-dependencies]
+wgpu = "30"
 hecs = "0.11.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

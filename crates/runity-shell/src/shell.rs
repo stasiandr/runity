@@ -59,7 +59,7 @@ impl Default for WindowConfig {
     }
 }
 
-pub use crate::party::WINDOW_VAR;
+pub use runity_core::project::WINDOW_VAR;
 
 /// `x,y,width,height`, or `None` when it is not four numbers.
 pub fn placement(text: &str) -> Option<(i32, i32, u32, u32)> {
@@ -112,7 +112,7 @@ pub trait Game {
 
     /// After a hot patch, before anything else runs: rebuild whatever holds
     /// values of the game's own types, which the patch may have laid out
-    /// differently — [`crate::LiveScene::reinstance`] does it for a world
+    /// differently — `LiveScene::reinstance` does it for a world
     /// that started from a scene. Called through `subsecond::call`, so it is
     /// the new code. Nothing by default, which is right for a game that
     /// keeps no state of its own types.

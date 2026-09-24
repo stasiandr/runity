@@ -48,6 +48,13 @@ use serde::{Deserialize, Serialize};
 
 /// The file that makes a folder a project.
 pub const FILE: &str = "runity.ron";
+
+/// Where a window opens and how big, as `x,y,width,height` in logical
+/// pixels: set for each player's window when several play from the editor
+/// (`runity run --players N`), so they lie side by side rather than on top
+/// of each other. The desktop shell reads it; it overrides the size the
+/// game asked for.
+pub const WINDOW_VAR: &str = "RUNITY_WINDOW";
 /// Where scenes live.
 pub const SCENES: &str = "scenes";
 /// Where prefabs live.
