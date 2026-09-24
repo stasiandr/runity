@@ -459,6 +459,9 @@ struct JointBuilt {
     joint: crate::scene::Joint,
     handle: ImpulseJointHandle,
     bodies: (RigidBodyHandle, RigidBodyHandle),
+    /// Just built and hung on the world: after the next step it lets go of
+    /// the still things it was put into ([`PhysicsWorld::free_hinged`]).
+    fresh: bool,
 }
 
 impl Default for PhysicsWorld {
@@ -468,6 +471,14 @@ impl Default for PhysicsWorld {
 }
 
 impl PhysicsWorld {
+    /// How many times a step the solver goes over the contacts and joints:
+    /// more holds a heavy jointed thing to its hinge where contacts push it
+    /// (a door standing in the ground), at a little more time a step. Four
+    /// unless set.
+    pub fn set_solver_iterations(&mut self, iterations: usize) {
+        self.parameters.num_solver_iterations = std::num::NonZeroUsize::new(iterations).unwrap_or(std::num::NonZeroUsize::MIN);
+    }
+
     /// `fixed_delta` must be the simulation clock's step, not a frame delta.
     pub fn new(fixed_delta: f32) -> Self {
         let parameters = IntegrationParameters {
@@ -984,6 +995,7 @@ impl PhysicsWorld {
                     joint,
                     handle,
                     bodies: (other, body),
+                    fresh: Some(other) == self.ground,
                 },
             );
         }
@@ -1077,6 +1089,7 @@ impl PhysicsWorld {
         self.sync_from_world(world);
         self.blow(world);
         self.step();
+        self.free_hinged(world);
         self.break_joints(world);
         self.sync_to_world(world);
         self.update_contacts(world);
@@ -1247,6 +1260,50 @@ impl PhysicsWorld {
             &Ignoring(&self.ignored),
             &(),
         );
+    }
+
+    /// A thing just hung on the world — a door on its hinge — stops
+    /// colliding with the still things it was put into: a door set flush
+    /// in the sand would otherwise grind against it, and a stiff solver
+    /// hold it shut by that friction. What it only comes to touch later (a
+    /// wall it swings into) it still meets. Once, after the first step its
+    /// contacts are known.
+    fn free_hinged(&mut self, world: &mut World) {
+        let fresh: Vec<(hecs::Entity, RigidBodyHandle)> = world
+            .query::<(hecs::Entity, &JointBuilt)>()
+            .iter()
+            .filter(|(_, b)| b.fresh)
+            .map(|(e, b)| (e, b.bodies.1))
+            .collect();
+        for (entity, body) in fresh {
+            if let Ok(mut built) = world.get::<&mut JointBuilt>(entity) {
+                built.fresh = false;
+            }
+            let Some(rigid) = self.bodies.get(body) else { continue };
+            for &collider in rigid.colliders() {
+                for pair in self.narrow_phase.contact_pairs_with(collider) {
+                    let other = if pair.collider1 == collider { pair.collider2 } else { pair.collider1 };
+                    let still = self
+                        .colliders
+                        .get(other)
+                        .and_then(|c| c.parent())
+                        .and_then(|h| self.bodies.get(h))
+                        .is_none_or(|b| b.is_fixed());
+                    let deep = pair
+                        .manifolds
+                        .iter()
+                        .flat_map(|m| m.points.iter())
+                        .any(|p| p.dist < -0.01);
+                    if still && deep {
+                        let bits = |h: ColliderHandle| self.colliders.get(h).map_or(0, |c| c.user_data as u64);
+                        let (a, b) = (bits(collider), bits(other));
+                        if a != 0 && b != 0 {
+                            self.ignored.insert((a.min(b), a.max(b)));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Let two entities' bodies pass through each other — or collide again
