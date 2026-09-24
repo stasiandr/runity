@@ -19,6 +19,7 @@ image = { version = "0.25.6", default-features = false, features = ["png", "jpeg
 ron = "0.12.2"
 runity = { version = "0.1.0", path = "../runity" }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tobj = "4.0.5"
 yaml-rust2 = "0.10"
 
