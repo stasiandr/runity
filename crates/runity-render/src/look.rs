@@ -245,6 +245,68 @@ pub struct Emitter {
     /// Unity's cones point along forward — an imported one says so here.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
     pub direction: Option<Vec3>,
+    /// How fast it plays: 0.5 at half speed, every second of it twice as
+    /// long. Unity's Simulation Speed.
+    #[serde(default = "unit", skip_serializing_if = "is_one")]
+    pub time_scale: f32,
+    /// Metres a second past which each is slowed, by `dampen` of what it
+    /// is over each thirtieth of a second: a burst that flies out and
+    /// stops. Unity's Limit Velocity over Lifetime.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub speed_limit: Option<f32>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dampen: f32,
+    /// How big each is over its life, times `size`: (share of life,
+    /// factor) keys, straight between them. Unity's Size over Lifetime
+    /// curve. Set, it stands in for `end_size`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub size_keys: Vec<(f32, f32)>,
+    /// Its colour over its life, times `color`: (share of life, linear
+    /// rgb) keys, past 1 for a glow. Unity's Color over Lifetime. Set, it
+    /// stands in for `end_color`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub color_keys: Vec<(f32, (f32, f32, f32))>,
+    /// Its opacity over its life, times `alpha`. Set, it stands in for
+    /// `end_alpha`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alpha_keys: Vec<(f32, f32)>,
+    /// Numbers each carries to its material's shader over its life,
+    /// written into the material's own numbers from `slot` on: Unity's
+    /// Custom Data — a dissolve's progress, a highlight's colour.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub custom: Vec<CustomStream>,
+    /// Its material's picture is a sheet of this many frames across and
+    /// down, and each is drawn as one of them. Unity's Texture Sheet
+    /// Animation.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub sheet: Option<(u32, u32)>,
+    /// Which frame of the sheet, 0 the first and 1 past the last: from the
+    /// first number to the second over each one's life — or, with
+    /// `frames_random`, one picked between them when it is born.
+    #[serde(default = "all_frames", skip_serializing_if = "is_all_frames")]
+    pub frames: (f32, f32),
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frames_random: bool,
+    /// Sizes times the entity's own scale in the world: a small emitter's
+    /// puffs are small. Unity's Scaling Mode Local and Hierarchy.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scaled: bool,
+    /// Where they are born, in the entity's own axes: its origin when not
+    /// said. Unity's Shape position.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub from: Option<Vec3>,
+    /// Born anywhere in a box this size about `from` — dust over a whole
+    /// level — turned by `shape_turn_deg`. Unity's Box shape.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub box_size: Option<Vec3>,
+    /// Born anywhere within this many metres of `from`: across the cone's
+    /// mouth, or in a ball when they leave every way. Unity's radius.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub radius: f32,
+    /// How the box is turned in the entity's axes, degrees. Unity's Shape
+    /// rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub shape_turn_deg: Option<Vec3>,
     /// Each is a flat square turned to the camera — smoke, sparks, dust
     /// with a picture — instead of a small solid. Unity's Billboard.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -273,6 +335,46 @@ pub struct Emitter {
     pub collide: bool,
 }
 
+/// One of an emitter's streams of numbers to its particles' shader: from
+/// `slot` of the material's eight numbers on, one number per component,
+/// keyed over each particle's life.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomStream {
+    pub slot: u8,
+    /// Which of Unity's streams it was, `custom0` or `custom1`: how an
+    /// importer finds its slot in a shader that names them. Not read here.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// (share of life, values) keys, straight between them.
+    pub keys: Vec<(f32, Vec<f32>)>,
+}
+
+/// Straight between (share of life, value) keys; the ends held.
+pub fn keyed(keys: &[(f32, f32)], t: f32) -> f32 {
+    match keys {
+        [] => 1.0,
+        [only] => only.1,
+        _ => {
+            if t <= keys[0].0 {
+                return keys[0].1;
+            }
+            for w in keys.windows(2) {
+                if t <= w[1].0 {
+                    let span = (w[1].0 - w[0].0).max(1e-6);
+                    return w[0].1 + (w[1].1 - w[0].1) * ((t - w[0].0) / span);
+                }
+            }
+            keys[keys.len() - 1].1
+        }
+    }
+}
+
+fn all_frames() -> (f32, f32) {
+    (0.0, 1.0)
+}
+fn is_all_frames(f: &(f32, f32)) -> bool {
+    *f == (0.0, 1.0)
+}
 fn emit_duration() -> f32 {
     5.0
 }

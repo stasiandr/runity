@@ -22,8 +22,11 @@ pub fn fog(text: &str) -> Option<runity::scene::Fog> {
     let settings = docs.iter().find(|d| d.kind == "RenderSettings")?;
     let b = &settings.body;
     let c = b.color("m_FogColor").unwrap_or([0.5, 0.5, 0.5, 1.0]);
+    // Unity saves a colour as the picker shows it, sRGB; runity's fog is
+    // the linear colour it blends towards.
+    let linear = |v: f32| runity::material::srgb_to_linear(v.clamp(0.0, 1.0));
     let mut fog = runity::scene::Fog {
-        color: [c[0], c[1], c[2]],
+        color: [linear(c[0]), linear(c[1]), linear(c[2])],
         start: b.f32("m_LinearFogStart").unwrap_or(0.0),
         end: b.f32("m_LinearFogEnd").unwrap_or(300.0),
         mode: match b.i64("m_FogMode") {
@@ -39,6 +42,28 @@ pub fn fog(text: &str) -> Option<runity::scene::Fog> {
         fog.end = 1.0e6;
     }
     Some(fog)
+}
+
+/// The scene's sky: a Unity scene's skybox is a gradient behind a fog of
+/// its own colour, not air the sun lights — so URP's Procedural skybox,
+/// in the colours Unity's default one shows at an afternoon sun. A scene
+/// with no skybox is its fog's colour.
+pub fn sky(text: &str) -> Option<runity::render::Sky> {
+    let docs = yaml::documents(text);
+    let b = &docs.iter().find(|d| d.kind == "RenderSettings")?.body;
+    let linear = |c: [f32; 3]| c.map(|v| runity::material::srgb_to_linear(v / 255.0));
+    let none = b.reference("m_SkyboxMaterial").is_none_or(|r| r.is_none());
+    Some(runity::render::Sky {
+        mode: if none {
+            runity::render::SkyMode::Color
+        } else {
+            runity::render::SkyMode::Procedural
+        },
+        zenith: linear([120.0, 160.0, 215.0]),
+        horizon: linear([165.0, 190.0, 215.0]),
+        ground: linear([94.0, 89.0, 87.0]),
+        ..Default::default()
+    })
 }
 
 /// The light from all round a scene says itself: Unity's gradient
@@ -130,6 +155,9 @@ pub fn post_of_profile(text: &str, report: &mut Report) -> PostProcess {
         tonemapping: runity::post::Tonemapping::None,
         ..PostProcess::default()
     };
+    // URP has no eye adapting to the light: a picture is as exposed as
+    // its profile says.
+    post.auto_exposure.enabled = false;
     for doc in yaml::documents(text) {
         let c = &doc.body;
         if c.i64("active") == Some(0) {
@@ -240,7 +268,9 @@ pub fn post(unity: &Unity, text: &str, report: &mut Report) -> Option<PostProces
     let docs = yaml::documents(text);
     let profile = docs.iter().find_map(|d| {
         let b = &d.body;
-        (d.kind == "MonoBehaviour" && b.i64("isGlobal") == Some(1))
+        // `isGlobal` before Unity 6, `m_IsGlobal` since.
+        let global = b.i64("isGlobal").or_else(|| b.i64("m_IsGlobal"));
+        (d.kind == "MonoBehaviour" && global == Some(1))
             .then(|| b.reference("sharedProfile"))
             .flatten()
             .and_then(|r| r.guid)

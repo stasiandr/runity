@@ -2416,6 +2416,24 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     smoothness = shaped.smoothness;
     normal = normalize(shaped.normal);
 
+    // An unlit surface is done here: what it emits, through the dust and
+    // the fog, and none of the light's work below — the shadows, the
+    // lamps, the sky — which it would only throw away. A draw is all one
+    // or the other, so the branch costs nothing: a sky of smoke sprites,
+    // each over most of the screen, is what this is for.
+    if unlit > 0.5 {
+        var lit_not = albedo + shaped.emission;
+        if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
+            let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
+            lit_not = lit_not * c.a + c.rgb;
+        }
+        lit_not = through_fog(lit_not, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
+        if (flags & 8u) != 0u {
+            lit_not = lit_not * alpha;
+        }
+        return vec4<f32>(lit_not, alpha);
+    }
+
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);
     let b = brdf(albedo, shaped.metallic, smoothness);
     let baked = mix(1.0, mask.g, in.detail.y);

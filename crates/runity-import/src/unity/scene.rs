@@ -1228,7 +1228,10 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
             }
         }
         "AudioSource" => audio_source(desc, b, refs.unity, report),
-        "ParticleSystem" => shuriken(desc, b, report),
+        "ParticleSystem" => {
+            shuriken(desc, b, report);
+            bind_custom(desc, refs.unity);
+        }
         "ParticleSystemRenderer" => {
             let mut emitter = desc.particles().unwrap_or_default();
             let e = &mut emitter;
@@ -1255,6 +1258,7 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
                 }
             }
             desc.set_part(&emitter);
+            bind_custom(desc, refs.unity);
         }
         other => report.skip(other.to_string()),
     }
@@ -1269,6 +1273,166 @@ fn min_max(v: &Yaml) -> Option<f32> {
         1 | 2 => scalar * curve_end(&v["maxCurve"]).unwrap_or(1.0),
         _ => scalar,
     })
+}
+
+/// A Shuriken value over the whole of a play — a rate that swells and
+/// dies away — as its average: a curve evaluated as Unity does (Hermite
+/// between keys) and averaged.
+fn min_max_mean(v: &Yaml) -> Option<f32> {
+    let scalar = v.f32("scalar")?;
+    Some(match v.i64("minMaxState").unwrap_or(0) {
+        3 => (scalar + v.f32("minScalar").unwrap_or(scalar)) * 0.5,
+        1 => scalar * curve_mean(&v["maxCurve"]).unwrap_or(1.0),
+        2 => {
+            scalar
+                * (curve_mean(&v["maxCurve"]).unwrap_or(1.0) + curve_mean(&v["minCurve"]).unwrap_or(1.0))
+                * 0.5
+        }
+        _ => scalar,
+    })
+}
+
+/// An AnimationCurve's value at `t`, Hermite between keys as Unity has
+/// it, a stepped key held; `None` for a curve with no keys.
+fn curve_at(curve: &Yaml, t: f32) -> Option<f32> {
+    let keys: Vec<[f32; 4]> = curve
+        .list("m_Curve")
+        .iter()
+        .filter_map(|k| Some([k.f32("time")?, k.f32("value")?, k.f32("inSlope").unwrap_or(0.0), k.f32("outSlope").unwrap_or(0.0)]))
+        .collect();
+    match keys.len() {
+        0 => return None,
+        1 => return Some(keys[0][1]),
+        _ => {}
+    }
+    let i = keys.iter().rposition(|k| k[0] <= t).unwrap_or(0).min(keys.len() - 2);
+    let (a, b) = (keys[i], keys[i + 1]);
+    if t <= keys[0][0] {
+        return Some(keys[0][1]);
+    }
+    if t >= keys[keys.len() - 1][0] {
+        return Some(keys[keys.len() - 1][1]);
+    }
+    if !a[3].is_finite() || !b[2].is_finite() {
+        return Some(a[1]);
+    }
+    let span = (b[0] - a[0]).max(1e-6);
+    let u = ((t - a[0]) / span).clamp(0.0, 1.0);
+    let (u2, u3) = (u * u, u * u * u);
+    Some(
+        (2.0 * u3 - 3.0 * u2 + 1.0) * a[1]
+            + (u3 - 2.0 * u2 + u) * span * a[3]
+            + (-2.0 * u3 + 3.0 * u2) * b[1]
+            + (u3 - u2) * span * b[2],
+    )
+    .filter(|v| v.is_finite())
+}
+
+/// A MinMaxCurve over a particle's life, as (share of life, value) keys:
+/// a constant as one key, a curve (or two, averaged) sampled.
+fn min_max_keys(v: &Yaml) -> Vec<(f32, f32)> {
+    let scalar = v.f32("scalar").unwrap_or(1.0);
+    match v.i64("minMaxState").unwrap_or(0) {
+        1 | 2 => (0..=KEYS)
+            .map(|i| {
+                let t = i as f32 / KEYS as f32;
+                let max = curve_at(&v["maxCurve"], t).unwrap_or(1.0);
+                let value = if v.i64("minMaxState") == Some(2) {
+                    (max + curve_at(&v["minCurve"], t).unwrap_or(1.0)) * 0.5
+                } else {
+                    max
+                };
+                (t, scalar * value)
+            })
+            .collect(),
+        3 => vec![(0.0, (scalar + v.f32("minScalar").unwrap_or(scalar)) * 0.5)],
+        _ => vec![(0.0, scalar)],
+    }
+}
+
+/// Keys a curve over a life is sampled into.
+const KEYS: usize = 12;
+
+/// A Gradient's colour and alpha at `t`: straight between its keys.
+fn gradient_at(g: &Yaml, t: f32) -> Option<[f32; 4]> {
+    let colours = g.i64("m_NumColorKeys").unwrap_or(2).clamp(1, 8) as usize;
+    let alphas = g.i64("m_NumAlphaKeys").unwrap_or(2).clamp(1, 8) as usize;
+    let key = |i: usize| g.color(&format!("key{i}"));
+    let blend = |n: usize, time: &str, pick: &dyn Fn([f32; 4]) -> [f32; 4]| -> Option<[f32; 4]> {
+        let at = |i: usize| g.f32(&format!("{time}{i}")).unwrap_or(0.0) / 65535.0;
+        let mut out = pick(key(0)?);
+        for i in 0..n {
+            if at(i) <= t {
+                out = pick(key(i)?);
+            }
+            if i + 1 < n && at(i) <= t && t <= at(i + 1) {
+                let u = (t - at(i)) / (at(i + 1) - at(i)).max(1e-6);
+                let (a, b) = (pick(key(i)?), pick(key(i + 1)?));
+                return Some(std::array::from_fn(|c| a[c] + (b[c] - a[c]) * u));
+            }
+        }
+        Some(out)
+    };
+    let rgb = blend(colours, "ctime", &|c| c)?;
+    let a = blend(alphas, "atime", &|c| [c[3]; 4])?;
+    Some([rgb[0], rgb[1], rgb[2], a[0]])
+}
+
+/// A MinMaxGradient over a particle's life as keys: a gradient sampled, a
+/// colour as one key.
+fn gradient_keys(v: &Yaml) -> Vec<(f32, [f32; 4])> {
+    match v.i64("minMaxState").unwrap_or(0) {
+        1 => (0..=KEYS)
+            .filter_map(|i| {
+                let t = i as f32 / KEYS as f32;
+                Some((t, gradient_at(&v["maxGradient"], t)?))
+            })
+            .collect(),
+        _ => v.color("maxColor").map(|c| vec![(0.0, c)]).unwrap_or_default(),
+    }
+}
+
+/// A colour Unity saved to linear light: sRGB up to white, and past it (an
+/// HDR glow) as it is.
+fn linear_hdr(c: f32) -> f32 {
+    if c <= 1.0 {
+        runity::material::srgb_to_linear(c.max(0.0))
+    } else {
+        c
+    }
+}
+
+/// An AnimationCurve's average over its keys' span (0 to 1 for Shuriken).
+fn curve_mean(curve: &Yaml) -> Option<f32> {
+    let keys: Vec<[f32; 4]> = curve
+        .list("m_Curve")
+        .iter()
+        .filter_map(|k| Some([k.f32("time")?, k.f32("value")?, k.f32("inSlope").unwrap_or(0.0), k.f32("outSlope").unwrap_or(0.0)]))
+        .collect();
+    match keys.len() {
+        0 => return None,
+        1 => return Some(keys[0][1]),
+        _ => {}
+    }
+    let at = |t: f32| {
+        let i = keys.iter().rposition(|k| k[0] <= t).unwrap_or(0).min(keys.len() - 2);
+        let (a, b) = (keys[i], keys[i + 1]);
+        let span = (b[0] - a[0]).max(1e-6);
+        let u = ((t - a[0]) / span).clamp(0.0, 1.0);
+        // An infinite tangent is a step: the value held to the next key.
+        if !a[3].is_finite() || !b[2].is_finite() {
+            return a[1];
+        }
+        let (u2, u3) = (u * u, u * u * u);
+        (2.0 * u3 - 3.0 * u2 + 1.0) * a[1]
+            + (u3 - 2.0 * u2 + u) * span * a[3]
+            + (-2.0 * u3 + 3.0 * u2) * b[1]
+            + (u3 - u2) * span * b[2]
+    };
+    let (start, end) = (keys[0][0], keys[keys.len() - 1][0]);
+    let steps = 64;
+    let sum: f32 = (0..steps).map(|i| at(start + (end - start) * (i as f32 + 0.5) / steps as f32)).sum();
+    Some(sum / steps as f32).filter(|m| m.is_finite())
 }
 
 fn curve_end(curve: &Yaml) -> Option<f32> {
@@ -1292,6 +1456,31 @@ fn gradient(v: &Yaml) -> Option<([f32; 4], [f32; 4])> {
     }
 }
 
+/// An emitter's custom data streams onto the numbers its material's
+/// shader names them by (`custom0.x`…): from the first such name on. A
+/// stream its shader does not name stays unbound, and is not drawn with.
+fn bind_custom(desc: &mut EntityDesc, unity: &Unity) {
+    let Some(mut emitter) = desc.particles() else { return };
+    let Some(material) = emitter.material.as_ref().map(|m| m.to_string()) else { return };
+    let Some(names) = unity.declared_params.get(&material) else { return };
+    let mut changed = false;
+    for stream in &mut emitter.custom {
+        let prefix = format!("{}.", stream.name);
+        if let Some(slot) = names.iter().position(|n| n.starts_with(&prefix)) {
+            // As many of its components as the shader names in a row.
+            let named = names[slot..].iter().take_while(|n| n.starts_with(&prefix)).count();
+            for (_, values) in &mut stream.keys {
+                values.truncate(named);
+            }
+            stream.slot = slot as u8;
+            changed = true;
+        }
+    }
+    if changed {
+        desc.set_part(&emitter);
+    }
+}
+
 /// A Shuriken ParticleSystem onto the entity's emitter: the Main module's
 /// life, speed, size, colour and gravity, the emission rate, the cone,
 /// the simulation space, size and colour over lifetime. What has no
@@ -1301,21 +1490,23 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     let e = &mut emitter;
     let main = &b["InitialModule"];
     let rgb = |c: [f32; 4]| (c[0], c[1], c[2]);
-    e.life = min_max(&main["startLifetime"]).unwrap_or(5.0);
-    e.speed = min_max(&main["startSpeed"]).unwrap_or(5.0);
-    e.size = min_max(&main["startSize"]).unwrap_or(1.0);
+    e.life = min_max_mean(&main["startLifetime"]).unwrap_or(5.0);
+    e.speed = min_max_mean(&main["startSpeed"]).unwrap_or(5.0);
+    e.size = min_max_mean(&main["startSize"]).unwrap_or(1.0);
     if let Some((start, _)) = gradient(&main["startColor"]) {
         e.color = rgb(start);
         e.alpha = start[3];
     }
     e.gravity = -9.81 * min_max(&main["gravityModifier"]).unwrap_or(0.0);
+    // 0 Hierarchy, 1 Local: sizes by the transform's scale; 2 Shape: not.
+    e.scaled = b.i64("scalingMode").unwrap_or(1) != 2;
     // 0 is Local, 1 World.
     e.local = b.i64("moveWithTransform") == Some(0);
     let emission = &b["EmissionModule"];
     e.rate = if emission.i64("enabled") == Some(0) {
         0.0
     } else {
-        min_max(&emission["rateOverTime"]).unwrap_or(10.0)
+        min_max_mean(&emission["rateOverTime"]).unwrap_or(10.0)
     };
     e.bursts = emission
         .list("m_Bursts")
@@ -1341,18 +1532,46 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
     e.once = b.i64("looping") == Some(0);
     e.waits = b.i64("playOnAwake") == Some(0);
     let shape = &b["ShapeModule"];
+    // Unity's cone points along forward, and Z is mirrored.
+    e.direction = Some(Vec3::new(0.0, 0.0, -1.0));
     if shape.i64("enabled") != Some(0) {
-        e.spread_deg = match shape.i64("type").unwrap_or(4) {
+        let kind = shape.i64("type").unwrap_or(4);
+        e.spread_deg = match kind {
             // Sphere, hemisphere.
             0 | 1 => 180.0,
             2 | 3 => 90.0,
+            // A box gives off straight along its forward.
+            5 | 15 | 16 => 0.0,
             _ => shape.f32("angle").unwrap_or(25.0),
         };
+        // Where the shape is and how it is turned, mirrored in Z as the
+        // scene is.
+        let mirror = |v: [f32; 3]| Vec3::new(v[0], v[1], -v[2]);
+        let from = shape.vec3("m_Position").map(mirror).unwrap_or(Vec3::ZERO);
+        e.from = (from != Vec3::ZERO).then_some(from);
+        let turn = shape.vec3("m_Rotation").map(|r| Vec3::new(-r[0], -r[1], r[2])).unwrap_or(Vec3::ZERO);
+        let scale = shape.vec3("m_Scale").map(Vec3::from_array).unwrap_or(Vec3::ONE);
+        if turn != Vec3::ZERO {
+            e.shape_turn_deg = Some(turn);
+            let q = runity::glam::Quat::from_euler(
+                runity::glam::EulerRot::YXZ,
+                turn.y.to_radians(),
+                turn.x.to_radians(),
+                turn.z.to_radians(),
+            );
+            e.direction = Some(q * Vec3::new(0.0, 0.0, -1.0));
+        }
+        match kind {
+            5 | 15 | 16 => e.box_size = Some(scale),
+            // Cones, circles and spheres: their radius, as scaled.
+            0..=4 | 7..=11 => {
+                e.radius = shape["radius"].f32("value").unwrap_or(1.0) * scale.x.abs().max(scale.z.abs());
+            }
+            _ => {}
+        }
     } else {
         e.spread_deg = 0.0;
     }
-    // Unity's cone points along forward, and Z is mirrored.
-    e.direction = Some(Vec3::new(0.0, 0.0, -1.0));
     let size = &b["SizeModule"];
     if size.i64("enabled") == Some(1) {
         e.end_size = Some(e.size * min_max(&size["curve"]).unwrap_or(1.0));
@@ -1365,6 +1584,83 @@ fn shuriken(desc: &mut EntityDesc, b: &Yaml, report: &mut Report) {
             e.end_color = Some((e.color.0 * end[0], e.color.1 * end[1], e.color.2 * end[2]));
             e.end_alpha = Some(e.alpha * end[3]);
         }
+    }
+    e.time_scale = b.f32("simulationSpeed").unwrap_or(1.0);
+    // Limit Velocity: slowed past a speed, as a whole (not by axis).
+    let clamp = &b["ClampVelocityModule"];
+    if clamp.i64("enabled") == Some(1) && clamp.i64("separateAxis") != Some(1) {
+        e.speed_limit = min_max_mean(&clamp["magnitude"]);
+        e.dampen = clamp.f32("dampen").unwrap_or(0.0);
+    }
+    // Size and colour over each one's life, as keys.
+    if size.i64("enabled") == Some(1) {
+        e.size_keys = min_max_keys(&size["curve"]);
+        e.end_size = e.size_keys.last().map(|(_, f)| e.size * f);
+    }
+    if colour.i64("enabled") == Some(1) {
+        let keys = gradient_keys(&colour["gradient"]);
+        if keys.len() > 1 {
+            e.color_keys = keys.iter().map(|(t, c)| (*t, (linear_hdr(c[0]), linear_hdr(c[1]), linear_hdr(c[2])))).collect();
+            e.alpha_keys = keys.iter().map(|(t, c)| (*t, c[3])).collect();
+        }
+    }
+    // Custom Data: numbers each carries to its shader over its life. Which
+    // of the material's numbers they fill, the shader says (`custom0.x`,
+    // `custom1.r` in its params); the renderer's material is bound to
+    // them once both are read (`bind_custom`).
+    let data = &b["CustomDataModule"];
+    if data.i64("enabled") == Some(1) {
+        e.custom.clear();
+        for stream in 0..2 {
+            let name = format!("custom{stream}");
+            let keys: Vec<(f32, Vec<f32>)> = match data.i64(&format!("mode{stream}")).unwrap_or(0) {
+                // Vector: each component its own curve.
+                1 => {
+                    let count = data.i64(&format!("vectorComponentCount{stream}")).unwrap_or(4).clamp(1, 4) as usize;
+                    let comps: Vec<Vec<(f32, f32)>> = (0..count)
+                        .map(|c| min_max_keys(&data[format!("vector{stream}_{c}").as_str()]))
+                        .collect();
+                    (0..=KEYS)
+                        .map(|i| {
+                            let t = i as f32 / KEYS as f32;
+                            (t, comps.iter().map(|k| runity::look::keyed(k, t)).collect())
+                        })
+                        .collect()
+                }
+                // Colour: a gradient, linear, a glow past white kept.
+                2 => gradient_keys(&data[format!("color{stream}").as_str()])
+                    .into_iter()
+                    .map(|(t, c)| (t, vec![linear_hdr(c[0]), linear_hdr(c[1]), linear_hdr(c[2]), c[3]]))
+                    .collect(),
+                _ => continue,
+            };
+            if !keys.is_empty() {
+                e.custom.push(runity::look::CustomStream { slot: u8::MAX, name, keys });
+            }
+        }
+    }
+    // Texture Sheet Animation, grid mode: which frame of the sheet each
+    // is, as a share of the whole sheet.
+    let uv = &b["UVModule"];
+    if uv.i64("enabled") == Some(1) && uv.i64("mode").unwrap_or(0) == 0 {
+        let (across, down) = (uv.i64("tilesX").unwrap_or(1).max(1) as u32, uv.i64("tilesY").unwrap_or(1).max(1) as u32);
+        let count = (across * down) as f32;
+        let start = min_max(&uv["startFrame"]).unwrap_or(0.0) / count;
+        let over = &uv["frameOverTime"];
+        let scalar = over.f32("scalar").unwrap_or(0.0);
+        let (from, to, random) = match over.i64("minMaxState").unwrap_or(0) {
+            3 => (over.f32("minScalar").unwrap_or(0.0), scalar, true),
+            1 | 2 => {
+                let keys = over["maxCurve"].list("m_Curve");
+                let first = keys.first().and_then(|k| k.f32("value")).unwrap_or(0.0);
+                let last = keys.last().and_then(|k| k.f32("value")).unwrap_or(1.0);
+                (first * scalar, last * scalar, false)
+            }
+            _ => (scalar, scalar, false),
+        };
+        e.sheet = Some((across, down));
+        e.frames = (start + from, start + to);
+        e.frames_random = random;
     }
     for module in [
         "NoiseModule",
@@ -1704,11 +2000,26 @@ fn link(r: &Ref, refs: &Refs) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rate_that_swells_and_dies_away_comes_over_as_its_average() {
+        let hump = super::yaml::documents(
+            "--- !u!1 &1\nX:\n  v:\n    scalar: 20\n    minMaxState: 1\n    maxCurve:\n      m_Curve:\n      - time: 0\n        value: 0\n        inSlope: 4\n        outSlope: 4\n      - time: 1\n        value: 0\n        inSlope: -4\n        outSlope: -4\n",
+        );
+        // A parabola 4t(1-t) has slopes 4 and -4 at its ends, and averages 2/3.
+        let rate = min_max_mean(&hump[0].body["v"]).unwrap();
+        assert!((rate - 20.0 * 2.0 / 3.0).abs() < 0.1, "{rate}");
+        let step = super::yaml::documents(
+            "--- !u!1 &1\nX:\n  v:\n    scalar: 10\n    minMaxState: 1\n    maxCurve:\n      m_Curve:\n      - time: 0\n        value: 1\n        inSlope: Infinity\n        outSlope: Infinity\n      - time: 1\n        value: 0\n        inSlope: Infinity\n        outSlope: Infinity\n",
+        );
+        assert_eq!(min_max_mean(&step[0].body["v"]), Some(10.0), "a step holds its value, never NaN");
+    }
+
     use super::*;
 
     fn unity() -> Unity {
         Unity {
             pieces: Default::default(),
+            declared_params: Default::default(),
             root: Default::default(),
             guids: [
                 ("aaa".to_string(), "Assets/Models/crate.fbx".into()),

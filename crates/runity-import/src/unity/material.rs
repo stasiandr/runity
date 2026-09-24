@@ -46,6 +46,72 @@ fn texture<'a>(m: &'a Yaml, name: &str) -> Option<(String, &'a Yaml)> {
     Some((r.guid?, t))
 }
 
+/// A `.mat`'s Material as it draws: a variant (`m_Parent` set) saves only
+/// what it overrides, so its parents' properties come first and its own
+/// replace them by name; the shader is the variant's own when it says one.
+pub fn material_body(unity: &Unity, path: &Path) -> Option<Yaml> {
+    material_body_at(unity, path, 0)
+}
+
+fn material_body_at(unity: &Unity, path: &Path, depth: usize) -> Option<Yaml> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let body = yaml::documents(&text)
+        .into_iter()
+        .find(|d| d.kind == "Material")?
+        .body;
+    let Some(parent) = body
+        .reference("m_Parent")
+        .and_then(|r| r.guid)
+        .and_then(|g| unity.guids.get(&g))
+        .filter(|_| depth < 8)
+        .and_then(|p| material_body_at(unity, p, depth + 1))
+    else {
+        return Some(body);
+    };
+    Some(overlay(parent, body))
+}
+
+/// `child`'s saved properties over `parent`'s, and its other fields as
+/// they are (a variant's shader is its parent's unless it says otherwise).
+fn overlay(parent: Yaml, child: Yaml) -> Yaml {
+    let (Yaml::Hash(mut merged), Yaml::Hash(own)) = (parent, child) else {
+        return Yaml::BadValue;
+    };
+    let props_key = Yaml::String("m_SavedProperties".into());
+    let mut props = match merged.remove(&props_key) {
+        Some(Yaml::Hash(h)) => h,
+        _ => Default::default(),
+    };
+    for (k, v) in own {
+        if k == props_key {
+            let Yaml::Hash(child_props) = v else { continue };
+            for (list, items) in child_props {
+                let (Some(Yaml::Array(base)), Yaml::Array(over)) = (props.get(&list).cloned(), &items)
+                else {
+                    props.insert(list, items);
+                    continue;
+                };
+                let name = |y: &Yaml| match y {
+                    Yaml::Hash(h) => h.keys().next().cloned(),
+                    _ => None,
+                };
+                let mut out: Vec<Yaml> = base
+                    .into_iter()
+                    .filter(|b| !over.iter().any(|o| name(o).is_some() && name(o) == name(b)))
+                    .collect();
+                out.extend(over.iter().cloned());
+                props.insert(list, Yaml::Array(out));
+            }
+        } else if k.as_str() == Some("m_Shader") && yaml::reference(&v).is_none_or(|r| r.is_none()) {
+            continue;
+        } else {
+            merged.insert(k, v);
+        }
+    }
+    merged.insert(props_key, Yaml::Hash(props));
+    Yaml::Hash(merged)
+}
+
 /// Which texture slots come over, and what they are called in `.rmat`.
 const MAPS: [(&str, &str); 5] = [
     ("_BaseMap", "base_map"),
@@ -61,13 +127,13 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut used = BTreeSet::new();
     let mut colour = BTreeSet::new();
     for (_, path) in unity.of_kind("material") {
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Some(body) = material_body(unity, path) else {
             continue;
         };
-        for doc in yaml::documents(&text) {
+        {
             let mut base = false;
             for (slot, field) in MAPS {
-                if let Some((guid, _)) = texture(&doc.body, slot) {
+                if let Some((guid, _)) = texture(&body, slot) {
                     if matches!(field, "base_map" | "emission_map") {
                         colour.insert(guid.clone());
                     }
@@ -75,9 +141,9 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
                     used.insert(guid);
                 }
             }
-            let own = own_shader(unity, &doc.body);
+            let own = own_shader(unity, &body);
             if !base && own.is_some() {
-                if let Some(guid) = own_texture(unity, &doc.body) {
+                if let Some(guid) = own_texture(unity, &body) {
                     colour.insert(guid.clone());
                     used.insert(guid);
                 }
@@ -86,7 +152,7 @@ pub fn textures_used(unity: &Unity) -> (BTreeSet<String>, BTreeSet<String>) {
             // it is a normal map (Unity's import settings may still say
             // it is data).
             if let Some((_, shader)) = &own {
-                for (property, guid) in shader_textures(unity, &doc.body, shader) {
+                for (property, guid) in shader_textures(unity, &body, shader) {
                     let lower = property.to_lowercase();
                     if !lower.contains("normal") && !lower.contains("bump") {
                         colour.insert(guid.clone());
@@ -397,12 +463,9 @@ pub fn convert_with(
     path: &Path,
     shader_text: &dyn Fn(&str) -> Option<String>,
 ) -> Result<String> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
-    let doc = yaml::documents(&text)
-        .into_iter()
-        .find(|d| d.kind == "Material")
-        .context("no Material in it")?;
-    let m = &doc.body;
+    std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
+    let body = material_body(unity, path).context("no Material in it")?;
+    let m = &body;
     let mut fields: Vec<String> = Vec::new();
     let base = color(m, "_BaseColor")
         .or_else(|| color(m, "_Color"))
@@ -439,6 +502,35 @@ pub fn convert_with(
             Some(1.0) => fields.push("blend: Premultiply".into()),
             Some(2.0) => fields.push("blend: Additive".into()),
             _ => {}
+        }
+    }
+    // Blending said by its factors, where `_Surface` does not: a built-in
+    // particle shader's (SrcAlpha, OneMinusSrcAlpha) is see-through, a
+    // (SrcAlpha or One, One) adds.
+    if !fields.iter().any(|f| f.starts_with("surface")) {
+        match (float(m, "_SrcBlend"), float(m, "_DstBlend")) {
+            (Some(5.0) | Some(1.0), Some(10.0)) => {
+                fields.push("surface: Transparent".into());
+                if base[3] < 1.0 {
+                    fields.push(format!("alpha: {}", base[3]));
+                }
+                if float(m, "_SrcBlend") == Some(1.0) {
+                    fields.push("blend: Premultiply".into());
+                }
+            }
+            (Some(5.0) | Some(1.0), Some(1.0)) => {
+                fields.push("surface: Transparent".into());
+                fields.push("blend: Additive".into());
+            }
+            _ => {}
+        }
+    }
+    // Unity's own particle shaders (built in, fileID 200 up, bar the lit
+    // Standard Surface) light nothing.
+    if let Some(r) = m.reference("m_Shader") {
+        let builtin = r.guid.as_deref() == Some("0000000000000000f000000000000000");
+        if builtin && (200..=211).contains(&r.file_id) && r.file_id != 210 {
+            fields.push("shading: Unlit".into());
         }
     }
     if float(m, "_AlphaClip") == Some(1.0) {
@@ -508,12 +600,21 @@ pub fn convert_with(
         fields.push(format!("shader: {name:?}"));
         let written = shader_text(name).unwrap_or_default();
         let names = declared_params(&written);
+        // `none`: no base map, so the standard shader hands the surface
+        // function the colour as it is — a particle's own.
         if let Some(map) = declared(&written, "base_map") {
-            fields.retain(|f| !f.starts_with("base_map"));
-            fields.push(format!("base_map: {map:?}"));
+            fields.retain(|f| !f.starts_with("base_map") && !f.starts_with("tiling") && !f.starts_with("offset"));
+            if map != "none" {
+                fields.push(format!("base_map: {map:?}"));
+            }
         }
         if let Some(how) = declared(&written, "screen_map") {
             fields.push(format!("screen_map: {how}"));
+        }
+        // What the engine already does for it, in `.rmat` fields: grass
+        // sways by the standard shader's wind rather than its own.
+        if let Some(own) = declared(&written, "material") {
+            fields.push(own);
         }
         // Every texture it sets that the shader reads, by the name the
         // shader reads it by; the written shader's `// runity:textures`
@@ -695,6 +796,7 @@ Material:
         let unity = Unity {
             layers: Default::default(),
             pieces: Default::default(),
+            declared_params: Default::default(),
             root: dir.clone(),
             guids: [
                 ("ggg", file("Landscape_Shader.shadergraph")),
@@ -751,6 +853,51 @@ Material:
     }
 
     #[test]
+    fn a_material_variant_keeps_what_its_parent_sets() {
+        let dir = std::env::temp_dir().join(format!("runity-unity-variant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let parent = dir.join("Parent.mat");
+        std::fs::write(&parent, MAT).unwrap();
+        let child = dir.join("Child.mat");
+        std::fs::write(
+            &child,
+            "%YAML 1.1
+--- !u!21 &2100000
+Material:
+  m_Name: Child
+  m_Shader: {fileID: 0}
+  m_Parent: {fileID: 2100000, guid: ppp, type: 2}
+  m_SavedProperties:
+    m_TexEnvs: []
+    m_Floats:
+    - _Smoothness: 0.2
+    m_Colors: []
+",
+        )
+        .unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            layers: Default::default(),
+            declared_params: Default::default(),
+            root: dir.clone(),
+            guids: [
+                ("ttt".to_string(), dir.join("stone_albedo.png")),
+                ("ppp".to_string(), parent.clone()),
+            ]
+            .into_iter()
+            .collect(),
+            names: [("ttt".to_string(), "stone_albedo".to_string())]
+                .into_iter()
+                .collect(),
+        };
+        let text = convert(&unity, &child).unwrap();
+        assert!(text.contains(r#"base_map: "stone_albedo""#), "{text}");
+        assert!(text.contains(r##"color: "#808080""##), "{text}");
+        assert!(text.contains("smoothness: 0.2"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_urp_lit_material_becomes_an_rmat_that_builds() {
         let dir = std::env::temp_dir().join(format!("runity-unity-mat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -759,6 +906,7 @@ Material:
         let unity = Unity {
             pieces: Default::default(),
             layers: Default::default(),
+            declared_params: Default::default(),
             root: dir.clone(),
             guids: [("ttt".to_string(), dir.join("stone_albedo.png"))]
                 .into_iter()

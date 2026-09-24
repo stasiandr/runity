@@ -346,6 +346,7 @@ AnimatorStateTransition:
         .unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            declared_params: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("run".to_string(), dir.join("A_Run.fbx"))]
@@ -378,6 +379,7 @@ AnimatorStateTransition:
         std::fs::write(&path, CONTROLLER).unwrap();
         let unity = Unity {
             pieces: Default::default(),
+            declared_params: Default::default(),
             layers: Default::default(),
             root: dir.clone(),
             guids: [("idleclip".to_string(), dir.join("Idle.anim"))]

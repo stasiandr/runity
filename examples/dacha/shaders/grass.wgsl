@@ -7,12 +7,14 @@
 // Here _baza is read from the material by UV0 (each material its own:
 // T_Grass_Mesh_01..04, T_Tumbleweed_01_M): red picks the colour, green is cut
 // at 0.5 with discard. _Color and _Color_2 (sRGB) come from the material. The
-// wind sway is left out: a surface function cannot move vertices. Shadows are
+// wind sway is the engine's own (the material's `wind`, which also tramples
+// it, and `translucency` for the light through the blades). Shadows are
 // cut by the base map's alpha (the importer makes _baza the base map), not by
 // its green, as the shadow pass does not run this function; the _baza
 // textures have no alpha, so a card's shadow is its whole quad.
 // runity:params _Color.r _Color.g _Color.b _Color_2.r _Color_2.g _Color_2.b
 // runity:textures _baza
+// runity:material wind: 1.5, translucency: 0.4
 
 const GRASS_CLIP = 0.5;
 

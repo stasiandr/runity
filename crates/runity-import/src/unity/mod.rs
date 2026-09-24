@@ -105,6 +105,9 @@ pub struct Unity {
     /// `assets/models/<model>@<object>.glb`, in that object's own frame —
     /// what a MeshFilter that names one mesh of a model draws.
     pub pieces: HashMap<String, Vec<String>>,
+    /// A material's name → what its shader written again says its eight
+    /// numbers are (`// runity:params`): where a particle's custom data goes.
+    pub declared_params: HashMap<String, Vec<String>>,
 }
 
 /// The kind a Unity file becomes in runity, by its extension.
@@ -165,6 +168,21 @@ impl Unity {
                 }
             }
         });
+        // The render pipeline's own materials (URP's Lit, the default a
+        // cube is made with): a scene names them by GUID as it does its own.
+        for package in std::fs::read_dir(root.join("Library/PackageCache")).into_iter().flatten().flatten() {
+            let dir = package.path().join("Runtime/Materials");
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "meta")
+                    && path.with_extension("").extension().is_some_and(|e| e == "mat")
+                {
+                    if let Some(guid) = std::fs::read_to_string(&path).ok().and_then(|t| yaml::meta_guid(&t)) {
+                        guids.entry(guid).or_insert_with(|| path.with_extension(""));
+                    }
+                }
+            }
+        }
         // Names: the file's stem, and where two of one kind share it, the
         // folder before it too — `props_crate`, `tools_crate`.
         let mut by_kind: HashMap<(&str, String), Vec<String>> = HashMap::new();
@@ -198,6 +216,7 @@ impl Unity {
             names,
             layers,
             pieces: HashMap::new(),
+            declared_params: HashMap::new(),
         })
     }
 
@@ -370,6 +389,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
     }
 
     let mut shaders: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    let mut declared_params: HashMap<String, Vec<String>> = HashMap::new();
     for (guid, path) in unity.of_kind("material") {
         // A shader's parameters, from the one written again if there is
         // one, else the project's own.
@@ -395,12 +415,16 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
                         .find(|d| d.kind == "Material")
                         .and_then(|d| material::own_shader(&unity, &d.body))
                 }) {
+                    if let Some(text) = declared(&own.0) {
+                        declared_params.insert(name.clone(), material::declared_params(&text));
+                    }
                     shaders.insert(own.0, own.1);
                 }
             }
             Err(e) => report.errors.push(format!("{}: {e:#}", path.display())),
         }
     }
+    unity.declared_params = declared_params;
     // The shaders those materials had: a stub each to write again, never
     // over one already written.
     let dir = project.root().join(runity::project::SHADERS);
@@ -468,6 +492,7 @@ pub fn import_unity(unity: &Path, project: &runity::Project, options: &Options) 
         if let Some(fog) = look::fog(&text) {
             scene.set_part(&fog);
         }
+        scene.set_part_opt(look::sky(&text).as_ref());
         scene.set_part_opt((look::post(&unity, &text, &mut report)).as_ref());
         let name = &unity.names[guid];
         scene
@@ -562,9 +587,11 @@ fn keep_origins(dir: &Path) -> Result<()> {
         };
         // One mesh, whatever its nodes: a scene names a model as one
         // thing — its pieces are there for a renderer that names one.
-        if settings.origin_to_base || settings.scene || !sidecar.is_file() {
+        // Its UVs as they are: the scene's materials read them.
+        if settings.origin_to_base || settings.scene || !settings.keep_uvs || !sidecar.is_file() {
             settings.origin_to_base = false;
             settings.scene = false;
+            settings.keep_uvs = true;
             settings.hash = String::new();
             settings.save(&sidecar)?;
         }
