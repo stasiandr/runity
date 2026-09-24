@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::link::{Ended, Link, LinkEvent, Mode};
-use super::protocol::{self, Entry, Record, ToClient, ToServer, PROTOCOL};
+use super::protocol::{self, BlobId, Entry, Record, ToClient, ToServer, PROTOCOL};
 use super::PeerId;
 use crate::id::EntityId;
 
@@ -58,7 +58,7 @@ struct Held {
     prefab: Option<String>,
     despawn_with_owner: bool,
     gone: bool,
-    blobs: BTreeMap<String, Vec<u8>>,
+    blobs: BTreeMap<BlobId, Vec<u8>>,
     /// The newest tick taken from the owner; forgotten when it changes
     /// hands, since two owners' ticks are two clocks.
     tick: Option<u64>,
@@ -495,7 +495,7 @@ impl Server {
                 continue;
             }
             held.tick = Some(tick);
-            let names: Vec<String> = held
+            let names: Vec<BlobId> = held
                 .blobs
                 .keys()
                 .filter(|n| !entry.blobs.iter().any(|(m, _)| m == *n))
@@ -505,7 +505,7 @@ impl Server {
                 held.blobs.remove(name);
             }
             for (name, bytes) in &entry.blobs {
-                held.blobs.insert(name.clone(), bytes.clone());
+                held.blobs.insert(*name, bytes.clone());
             }
             if !names.is_empty() {
                 removed.push(ToClient::ComponentsRemoved {
@@ -676,6 +676,9 @@ mod tests {
     use super::*;
     use crate::net::wire::Loopback;
 
+    /// A component's number in these tests.
+    const HP: BlobId = 1;
+
     /// A server on endpoint 0 of a loopback, and clients 1.. as raw links,
     /// so a test speaks the protocol itself.
     struct Rig {
@@ -756,7 +759,7 @@ mod tests {
             settle: false,
             entries: vec![Entry {
                 id: id(n),
-                blobs: vec![("hp".into(), vec![value])],
+                blobs: vec![(HP, vec![value])],
             }],
         }
     }
@@ -802,7 +805,7 @@ mod tests {
             _ => None,
         });
         let world = world.expect("the world after the roster");
-        assert_eq!(world[0].blobs, [("hp".to_string(), vec![1])]);
+        assert_eq!(world[0].blobs, [(HP, vec![1])]);
         assert_eq!(world[0].owner, PeerId::HOST);
     }
 
@@ -882,7 +885,7 @@ mod tests {
         assert!(heard[1].contains(&ToClient::ComponentsRemoved {
             id: id(4),
             tick: 6,
-            names: vec!["hp".into()]
+            names: vec![HP]
         }));
     }
 

@@ -701,3 +701,82 @@ fn ten_chains_swinging_at_once_keep_within_the_budget_and_none_is_left_behind() 
     assert!(up < 31.0 * 1024.0, "{up} bytes a second");
     assert!(worst < 0.15, "every load follows: {worst}");
 }
+
+/// What each scene costs on the wire, a table: the guest's upload and
+/// download, KB a second, over three seconds of it playing. Ignored: run
+/// it to see what an optimisation of the wire saved.
+#[test]
+#[ignore]
+fn traffic() {
+    use std::sync::atomic::Ordering::Relaxed;
+    fn measure(name: &str, scene: Scene, pawns: &[u64], claims: &[u64], mut game: impl FnMut(usize, usize, &mut runity::netsim::bench::Peer)) {
+        let mut session = Session::new(&scene, 2, Conditions::GOOD, 1);
+        for p in &mut session.peers {
+            for id in pawns {
+                if let Some(e) = p.entity(*id) {
+                    let _ = p.world.insert_one(e, runity::netsim::Pawn);
+                }
+            }
+        }
+        assert!(session.join());
+        for id in claims {
+            session.claim(1, *id);
+        }
+        for t in 0..ticks(0.5) {
+            session.step_with(|i, p| game(t, i, p));
+        }
+        let (up, down) = (session.sent.load(Relaxed), session.served.load(Relaxed));
+        let (up_kinds, down_kinds) = (session.sent_kinds.read(), session.served_kinds.read());
+        let seconds = 3.0;
+        for t in ticks(0.5)..ticks(0.5 + seconds) {
+            session.step_with(|i, p| game(t, i, p));
+        }
+        let up = (session.sent.load(Relaxed) - up) as f32 / seconds / 1024.0;
+        let down = (session.served.load(Relaxed) - down) as f32 / seconds / 1024.0;
+        let by = |now: [(u64, u64); 8], was: [(u64, u64); 8]| {
+            ["unrel", "rel", "ack", "ping", "bye"]
+                .iter()
+                .enumerate()
+                .map(|(i, k)| format!("{k} {:.0}B/{:.0}", (now[i].0 - was[i].0) as f32 / seconds, (now[i].1 - was[i].1) as f32 / seconds))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        println!("TRAFFIC {name:<14} guest up {up:6.2} KB/s  down {down:6.2} KB/s");
+        println!("   up:   {}", by(session.sent_kinds.read(), up_kinds));
+        println!("   down: {}", by(session.served_kinds.read(), down_kinds));
+    }
+    measure("idle crates", crates(), &[], &[CRATE_B], |_, _, _| {});
+    measure("crates", crates(), &[], &[CRATE_B], |t, _, p| {
+        if t % ticks(1.0) == 0 {
+            for (id, v) in [(CRATE_A, 4.0), (CRATE_B, -4.0)] {
+                if let Some(e) = p.entity(id) {
+                    if p.world.get::<&runity::net::Owned>(e).is_ok() {
+                        p.physics.set_velocity(&p.world, e, Vec3::new(v, 3.0, 0.0));
+                    }
+                }
+            }
+        }
+    });
+    measure("chain", pendulum(runity::netsim::NetMode::Full), &[], &[POST], |_, _, _| {});
+    measure("tug", tug(runity::netsim::NetMode::Full), &[PAWN_A, PAWN_B], &[PAWN_B], |_, _, p| {
+        for (id, f) in [(PAWN_A, -200.0), (PAWN_B, 700.0)] {
+            if let Some(e) = p.entity(id) {
+                if p.world.get::<&runity::net::Owned>(e).is_ok() {
+                    p.physics.add_force(&p.world, e, Vec3::new(f, 0.0, 0.0));
+                }
+            }
+        }
+    });
+    measure("runner", runner(runity::netsim::NetMode::Rough), &[RUNNER], &[RUNNER], |t, _, p| {
+        let Some(e) = p.entity(RUNNER) else { return };
+        if p.world.get::<&runity::net::Owned>(e).is_err() {
+            return;
+        }
+        let angle = t as f32 / HZ;
+        if let Ok(mut tr) = p.world.get::<&mut Transform>(e) {
+            tr.position = Vec3::new(angle.cos() * 3.0, 0.8, angle.sin() * 3.0);
+            tr.set_rotation(runity::glam::Quat::from_rotation_y(-angle));
+        }
+    });
+    measure("ragdoll", person(), &[PERSON], &[PERSON], |_, _, _| {});
+}

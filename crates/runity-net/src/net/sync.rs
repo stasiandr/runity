@@ -29,7 +29,7 @@ use std::time::Instant;
 
 use glam::{Quat, Vec3};
 
-use super::protocol::{Blob, Entry, Record, ToClient, ToServer, TRANSFORM};
+use super::protocol::{self, Blob, Entry, Record, ToClient, ToServer, TRANSFORM};
 use super::{
     addressable, despawn_tree, owner_of, DespawnWithOwner, NetId, NetPrefab, NetTick, Owned, Owner,
     OwnershipPending, PeerId, Replica, RequestOwnership,
@@ -103,6 +103,11 @@ pub struct Sync {
 /// Bytes of changes a network tick a peer sends at most: 30 KB a second
 /// at the default 30 ticks (the author's decision of 2026-09-24).
 pub const BUDGET: usize = 1000;
+
+/// What a network tick's snapshot costs beyond its entries, bytes: the
+/// message's head (epoch, tick, counts) and the datagram's — charged to
+/// the budget first, so what goes on the wire keeps within it.
+const OVERHEAD: usize = 40;
 
 /// Something the world end noticed that the game may want to know.
 #[derive(Debug, Clone, PartialEq)]
@@ -283,14 +288,17 @@ impl Sync {
             .get::<&Transform>(entity)
             .map(|t| *t)
             .unwrap_or_default();
-        let mut blobs = vec![(
-            TRANSFORM.to_string(),
-            postcard::to_stdvec(&transform).unwrap_or_default(),
-        )];
+        let mut blobs = vec![(TRANSFORM, protocol::encode_transform(&transform))];
         for (name, text) in components.write_networked(world, entity) {
-            blobs.push((name, text.into_bytes()));
+            if let Some(id) = components.networked_id(&name) {
+                blobs.push((id, text.into_bytes()));
+            }
         }
-        blobs.extend(components.gather_states(world, entity));
+        for (name, bytes) in components.gather_states(world, entity) {
+            if let Some(id) = components.networked_id(&name) {
+                blobs.push((id, bytes));
+            }
+        }
         blobs
     }
 
@@ -364,11 +372,11 @@ impl Sync {
             let (pa, pb) = (self.waiting.get(&a.0).copied().unwrap_or(0.0), self.waiting.get(&b.0).copied().unwrap_or(0.0));
             pb.total_cmp(&pa).then(a.0.cmp(&b.0))
         });
-        let mut spent = 0usize;
+        let mut spent = OVERHEAD;
         let mut sending = Vec::new();
         for (id, entry, bytes) in changed {
             let size = bytes.len() + 12;
-            if spent > 0 && spent + size > self.budget {
+            if spent > OVERHEAD && spent + size > self.budget {
                 continue;
             }
             spent += size;
@@ -383,7 +391,9 @@ impl Sync {
             );
             sending.push(entry);
         }
-        self.sent_bytes += spent as u64;
+        if !sending.is_empty() {
+            self.sent_bytes += spent as u64;
+        }
         let changed = sending;
         for entries in chunks(changed) {
             unreliable.push(ToServer::Snapshot {
@@ -514,8 +524,8 @@ impl Sync {
                 let owner = owner_of(world, entity);
                 let gate = self.gates.entry(id).or_insert((owner, 0));
                 gate.1 = gate.1.max(tick);
-                for name in names {
-                    components.remove_by_name(&name, world, entity);
+                for name in names.into_iter().filter_map(|id| components.networked_name(id)) {
+                    components.remove_by_name(name, world, entity);
                 }
             }
             ToClient::Snapshot {
@@ -693,8 +703,8 @@ impl Sync {
 fn transform_of(blobs: &[Blob]) -> Option<Transform> {
     blobs
         .iter()
-        .find(|(name, _)| name == TRANSFORM)
-        .and_then(|(_, bytes)| postcard::from_bytes(bytes).ok())
+        .find(|(name, _)| *name == TRANSFORM)
+        .and_then(|(_, bytes)| protocol::decode_transform(bytes))
 }
 
 fn write_components(
@@ -705,10 +715,10 @@ fn write_components(
     sender: PeerId,
     tick: u64,
 ) {
-    for (name, bytes) in blobs {
-        if name == TRANSFORM {
+    for (id, bytes) in blobs {
+        let Some(name) = components.networked_name(*id) else {
             continue;
-        }
+        };
         if components.take_state(name, world, entity, sender.0, tick, bytes) {
             continue;
         }
@@ -729,7 +739,7 @@ fn chunks(entries: Vec<Entry>) -> Vec<Vec<Entry>> {
         let one = entry
             .blobs
             .iter()
-            .map(|(n, b)| n.len() + b.len() + 4)
+            .map(|(_, b)| b.len() + 4)
             .sum::<usize>()
             + 12;
         if out.is_empty() || size + one > ENTRY_BUDGET {

@@ -92,15 +92,35 @@ impl Peer {
     }
 }
 
-/// Counts what goes through a transport.
+/// Counts what goes through a transport: all of it, and by the kind of
+/// the link's frame (its first byte: unreliable, reliable, ack, ping,
+/// goodbye), bytes and datagrams.
 struct Metered<T> {
     inner: T,
     sent: Arc<AtomicU64>,
+    kinds: Arc<Kinds>,
+}
+
+/// Bytes and datagrams by the link's frame kind.
+#[derive(Default)]
+pub struct Kinds {
+    pub bytes: [AtomicU64; 8],
+    pub datagrams: [AtomicU64; 8],
+}
+
+impl Kinds {
+    /// `(bytes, datagrams)` by kind.
+    pub fn read(&self) -> [(u64, u64); 8] {
+        std::array::from_fn(|i| (self.bytes[i].load(Ordering::Relaxed), self.datagrams[i].load(Ordering::Relaxed)))
+    }
 }
 
 impl<T: Transport> Transport for Metered<T> {
     fn send(&mut self, to: PeerId, bytes: Vec<u8>) {
         self.sent.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let kind = (bytes.first().copied().unwrap_or(7) as usize).min(7);
+        self.kinds.bytes[kind].fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        self.kinds.datagrams[kind].fetch_add(1, Ordering::Relaxed);
         self.inner.send(to, bytes);
     }
 
@@ -117,6 +137,9 @@ pub struct Session {
     /// Bytes the guests sent, and the server sent them.
     pub sent: Arc<AtomicU64>,
     pub served: Arc<AtomicU64>,
+    /// The same by the link's frame kind: the guests', the server's.
+    pub sent_kinds: Arc<Kinds>,
+    pub served_kinds: Arc<Kinds>,
     networked: bool,
     clock: Instant,
     /// Ticks played.
@@ -159,6 +182,8 @@ impl Session {
                 components,
                 sent,
                 served,
+                sent_kinds: Default::default(),
+                served_kinds: Default::default(),
                 networked: false,
                 clock: Instant::now(),
                 tick: 0,
@@ -172,22 +197,24 @@ impl Session {
         super::register(&mut components);
         let sent = Arc::new(AtomicU64::new(0));
         let served = Arc::new(AtomicU64::new(0));
+        let sent_kinds: Arc<Kinds> = Default::default();
+        let served_kinds: Arc<Kinds> = Default::default();
         let mut ends = Loopback::network((peers + late) as u32).into_iter();
         let listener = ends.next().expect("the host's end");
         let host = Party::host(
             "netsim",
             "host",
             &components,
-            vec![Box::new(Metered { inner: listener, sent: served.clone() })],
+            vec![Box::new(Metered { inner: listener, sent: served.clone(), kinds: served_kinds.clone() })],
             false,
         );
         let mut all = vec![Peer::new(host, scene, 0, meshes)];
         let mut waiting = Vec::new();
         for (i, end) in ends.enumerate() {
             let lagged: Box<dyn Transport + Send> = if link == Conditions::GOOD {
-                Box::new(Metered { inner: end, sent: sent.clone() })
+                Box::new(Metered { inner: end, sent: sent.clone(), kinds: sent_kinds.clone() })
             } else {
-                Box::new(Metered { inner: Laggy::new(end, link, seed * 101 + i as u64), sent: sent.clone() })
+                Box::new(Metered { inner: Laggy::new(end, link, seed * 101 + i as u64), sent: sent.clone(), kinds: sent_kinds.clone() })
             };
             if i + 1 < peers {
                 all.push(Peer::new(Party::join(lagged, "netsim", &format!("guest{}", i + 1), &components), scene, i + 1, meshes));
@@ -195,7 +222,7 @@ impl Session {
                 waiting.push((lagged, scene.clone()));
             }
         }
-        Self { peers: all, components, sent, served, networked: true, clock: Instant::now(), tick: 0, late: waiting }
+        Self { peers: all, components, sent, served, sent_kinds, served_kinds, networked: true, clock: Instant::now(), tick: 0, late: waiting }
     }
 
     /// The next late peer comes in: it loads the scene afresh and joins

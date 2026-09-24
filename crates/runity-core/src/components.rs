@@ -65,6 +65,9 @@ pub struct Components {
     /// Simulations' states that go over the network as their own bytes
     /// rather than a component's RON (docs/netsim.md): a rope's particles.
     states: BTreeMap<String, (GatherState, TakeState)>,
+    /// [`Components::networked_names`], kept: what a blob's number is the
+    /// place in.
+    order: Vec<String>,
 }
 
 /// A component a scene names that could not be put on its entity.
@@ -159,7 +162,23 @@ impl Components {
     {
         self.register::<T>(name);
         self.networked.insert(name.to_string(), write::<T>);
+        self.reorder();
         self
+    }
+
+    fn reorder(&mut self) {
+        self.order = self.networked_names().map(str::to_string).collect();
+    }
+
+    /// A networked component's or state's number on the wire: one past its
+    /// place among the names sorted (nought is the transform's).
+    pub fn networked_id(&self, name: &str) -> Option<u16> {
+        self.order.binary_search_by(|n| n.as_str().cmp(name)).ok().map(|i| i as u16 + 1)
+    }
+
+    /// The name a number on the wire stands for.
+    pub fn networked_name(&self, id: u16) -> Option<&str> {
+        self.order.get((id as usize).checked_sub(1)?).map(String::as_str)
     }
 
     /// Say that `name` means `T`, and that a save game keeps it: its value
@@ -197,6 +216,7 @@ impl Components {
     /// names it, and it is not saved.
     pub fn register_state(&mut self, name: &str, gather: GatherState, take: TakeState) -> &mut Self {
         self.states.insert(name.to_string(), (gather, take));
+        self.reorder();
         self
     }
 
