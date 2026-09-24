@@ -23,3 +23,6 @@ crates/runity-gpu/tests/diff/
 # The editor window's own layout: panel sizes and the open tab, per person.
 **/.runity/studio.ron
 __pycache__/
+
+# Keys for the draft models and anything else local: never in git.
+.env
