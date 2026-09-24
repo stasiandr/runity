@@ -17,7 +17,7 @@ pub mod smoke;
 pub use heightfield::{run_heightfields, water_height, HeightfieldDress, HeightfieldLine, Ripples, RipplesState, ShallowState, ShallowWater, SnowCover, SnowState};
 pub use mpm::{run_mpm, Mpm, MpmDress, MpmLine, MpmMaterial, MpmState, Transfer};
 pub use ocean::{run_oceans, Ocean, OceanDress, OceanLine, OceanState};
-pub use smoke::{run_smokes, Smoke, SmokeDress, SmokeLine, SmokeState};
+pub use smoke::{count_smokes, run_smokes, Smoke, SmokeDress, SmokeLine, SmokeState};
 
 /// Every ocean and smoke moved by this wind: the scene's.
 pub fn set_wind(world: &mut hecs::World, wind: runity_core::wind::Wind) {

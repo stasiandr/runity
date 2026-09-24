@@ -28,6 +28,9 @@ const SMALL: &str = r#"(
 /// What a scene draws after `steps` steps, hashed: every draw's place and
 /// every live mesh's vertices.
 fn stepped(scene: &str, steps: u32) -> Option<u64> {
+    // Smoke on the CPU: its grid is what runs on every core here (on the
+    // GPU it is the renderer's).
+    runity::fluid::set_gpu_smoke(false);
     let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("cores-{scene}.ron"));
     std::fs::write(&path, SMALL).ok()?;
     let mut shot = runity::shot::Shot::open(&path, 64, 64, None).ok()?;

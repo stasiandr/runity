@@ -15,6 +15,20 @@ use crate::render::MeshHandle;
 use crate::scene::EntityDesc;
 use crate::world::{Changed, Copies, Dress, LiveMesh, Surface, Unresolved, WorldTransform};
 
+static CPU_SMOKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether smokes are stepped by the renderer on the GPU (the default) —
+/// the fixed step keeps only their clocks — or here on the CPU.
+pub fn gpu_smoke() -> bool {
+    !CPU_SMOKE.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("RUNITY_CPU_SMOKE").is_none()
+}
+
+/// Step smokes on the CPU (`false`) or on the GPU where they are drawn:
+/// for a tool or test that reads their grids.
+pub fn set_gpu_smoke(on: bool) {
+    CPU_SMOKE.store(!on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Every fluid on by `seconds`: the module's fixed-step system.
 pub fn step(world: &mut World, seconds: f32) {
     let mpm = world.query::<&MpmState>().iter().next().is_some();
@@ -35,9 +49,50 @@ pub fn step(world: &mut World, seconds: f32) {
         run_heightfields(world, seconds, &obstacles);
     }
     if smoke {
-        run_smokes(world, seconds, &obstacles);
+        if gpu_smoke() {
+            runity_fluid::count_smokes(world, seconds, &obstacles);
+        } else {
+            run_smokes(world, seconds, &obstacles);
+        }
     }
     run_oceans(world, seconds);
+}
+
+/// A smoke the renderer steps: the box, its look, and the steps owed.
+fn smoke_on_gpu(entity: hecs::Entity, state: &mut SmokeState) -> crate::volume::Smoke {
+    let (solid, solid_version) = state.solid();
+    let solid: Vec<u32> = solid.iter().map(|s| u32::from(*s)).collect();
+    let n = [state.n[0] as u32, state.n[1] as u32, state.n[2] as u32];
+    let stride = crate::volume::smoke_stride(n);
+    let size = [n[0] / stride[0], n[1] / stride[1], n[2] / stride[2]];
+    let s = state.smoke;
+    let wind = Vec3::new(state.wind.direction.x, 0.0, state.wind.direction.z).normalize_or_zero() * state.wind.strength * 1.5;
+    let (low, high) = state.bounds();
+    let linear = |c: f32| crate::material::srgb_to_linear(c.clamp(0.0, 1.0));
+    crate::volume::Smoke {
+        low,
+        high,
+        size,
+        cells: std::sync::Arc::new(Vec::new()),
+        color: [linear(s.color[0]), linear(s.color[1]), linear(s.color[2])],
+        density: 3.0,
+        glow: if s.fire { 16.0 } else { 0.0 },
+        gpu: Some(crate::volume::GpuSmoke {
+            key: entity.to_bits().get(),
+            n,
+            dx: state.dx,
+            source: s.source,
+            rate: s.rate,
+            heat: s.heat,
+            weight: s.weight,
+            curl: s.curl,
+            fade: s.fade,
+            wind,
+            clock: state.clock(),
+            solid: std::sync::Arc::new(solid),
+            solid_version,
+        }),
+    }
 }
 
 /// A smoke's grid as the render's fog takes it: density and heat a byte
@@ -73,6 +128,7 @@ pub fn smoke_volume(state: &SmokeState) -> crate::volume::Smoke {
         color: [linear(c[0]), linear(c[1]), linear(c[2])],
         density: 3.0,
         glow: if state.smoke.fire { 16.0 } else { 0.0 },
+        gpu: None,
     }
 }
 
@@ -135,8 +191,12 @@ pub fn show(world: &mut World, _seconds: f32) {
         let (vertices, indices) = state.mesh(placed.0);
         live.set(vertices, indices);
     }
-    let smokes: Vec<(hecs::Entity, crate::volume::Smoke)> =
-        world.query::<(hecs::Entity, &SmokeState)>().iter().map(|(e, s)| (e, smoke_volume(s))).collect();
+    let gpu = gpu_smoke();
+    let smokes: Vec<(hecs::Entity, crate::volume::Smoke)> = world
+        .query_mut::<(hecs::Entity, &mut SmokeState)>()
+        .into_iter()
+        .map(|(e, s)| (e, if gpu { smoke_on_gpu(e, s) } else { smoke_volume(s) }))
+        .collect();
     for (entity, volume) in smokes {
         let _ = world.insert_one(entity, crate::world::SmokeVolume(volume));
     }

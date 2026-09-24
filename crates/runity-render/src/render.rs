@@ -1034,6 +1034,8 @@ pub struct Renderer {
     depth_prepassed: bool,
     /// Occlusion culling asked for, however little there is to cull.
     occlusion_always: bool,
+    /// Smokes whose air is simulated on the GPU ([`crate::smoke_gpu`]).
+    smoke_sim: crate::smoke_gpu::SmokeSim,
     /// The pipelines of the sample count drawn with before this one.
     other_samples: Option<SamplePipelines>,
     /// The scene, in high dynamic range: multisampled, and resolved.
@@ -3091,6 +3093,7 @@ impl Renderer {
             samples,
             depth_prepassed: false,
             occlusion_always: false,
+            smoke_sim: crate::smoke_gpu::SmokeSim::new(gpu),
             other_samples: None,
             scene: scene_targets(gpu, width, height, samples),
             post: crate::post::PostRenderer::new(gpu, format),
@@ -5946,7 +5949,12 @@ impl Renderer {
 
         // The fog in the air, once every shadow it looks through is drawn.
         if volumetric.enabled {
-            self.volumes.set_smoke(gpu, &frame.smoke);
+            let simulated = self.volumes.set_smoke(gpu, &frame.smoke);
+            // The smokes simulated here step once a frame, on the screen's
+            // own; a probe's face or a picture sees them as they are.
+            if screen && !simulated.is_empty() {
+                self.smoke_sim.run(gpu, &mut encoder, &simulated, &self.volumes.smoke_storage);
+            }
             self.volumes.run(
                 &mut encoder,
                 &self.fog_bind_group,

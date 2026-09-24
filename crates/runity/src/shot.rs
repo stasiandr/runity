@@ -237,7 +237,11 @@ impl Shot {
     /// over frames — probes, pages, reservoirs, an upscaler's — needs them.
     pub fn warm_frames(&self) -> u32 {
         let f = &self.frame;
-        if !f.irradiance_volumes.is_empty() {
+        if let Some(clock) = f.smoke.iter().filter_map(|s| s.gpu.as_ref()).map(|g| g.clock).reduce(f32::max) {
+            // Smokes stepped where they are drawn, a few steps a frame:
+            // as many frames as their settling owes.
+            ((clock / crate::volume::SMOKE_STEP) as u32).div_ceil(8).max(2)
+        } else if !f.irradiance_volumes.is_empty() {
             90
         } else if f.post.upscaling.enabled || f.shadows.virtual_maps || f.ray_tracing.restir {
             16

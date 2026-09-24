@@ -115,6 +115,8 @@ pub struct SmokeState {
     placed: bool,
     owed: f32,
     time: f32,
+    /// How many times what is solid in it has changed.
+    solid_version: u64,
 }
 
 impl SmokeState {
@@ -141,6 +143,7 @@ impl SmokeState {
             placed: false,
             owed: 0.0,
             time: 0.0,
+            solid_version: 0,
         }
     }
 
@@ -228,10 +231,43 @@ impl SmokeState {
             }
         }
         self.solid_from = Some(obstacles.to_vec());
+        self.solid_version += 1;
     }
 
     /// Along by `seconds`, standing where the entity is, round `obstacles`.
     pub fn advance(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
+        self.place(placed, obstacles);
+        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
+        while self.owed >= STEP {
+            self.owed -= STEP;
+            self.step(STEP);
+        }
+    }
+
+    /// The clock and what is solid, as [`SmokeState::advance`] keeps them,
+    /// the air left alone: for whoever steps it elsewhere (the renderer,
+    /// `runity_render::smoke_gpu`) up to [`SmokeState::clock`].
+    pub fn count(&mut self, placed: Mat4, obstacles: &[Obstacle], seconds: f32) {
+        self.place(placed, obstacles);
+        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
+        while self.owed >= STEP {
+            self.owed -= STEP;
+            self.time += STEP;
+        }
+    }
+
+    /// How far its clock has gone, seconds, in whole steps.
+    pub fn clock(&self) -> f32 {
+        self.time
+    }
+
+    /// What is solid, a flag a cell, x fastest, and how many times it has
+    /// changed.
+    pub fn solid(&self) -> (&[bool], u64) {
+        (&self.solid, self.solid_version)
+    }
+
+    fn place(&mut self, placed: Mat4, obstacles: &[Obstacle]) {
         let feet = placed.w_axis.truncate();
         let size = Vec3::new(self.n[0] as f32, self.n[1] as f32, self.n[2] as f32) * self.dx;
         let origin = feet - Vec3::new(size.x * 0.5, 0.0, size.z * 0.5);
@@ -241,11 +277,6 @@ impl SmokeState {
             self.placed = true;
         }
         self.find_solid(obstacles);
-        self.owed = (self.owed + seconds.max(0.0)).min(0.2);
-        while self.owed >= STEP {
-            self.owed -= STEP;
-            self.step(STEP);
-        }
     }
 
     fn step(&mut self, dt: f32) {
@@ -483,13 +514,23 @@ const SWEEPS: usize = 10;
 
 /// Every smoke on by `seconds`, round `obstacles`.
 pub fn run_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    each_smoke(world, obstacles, |state, placed, near| state.advance(placed, near, seconds));
+}
+
+/// Every smoke's clock on by `seconds`, round `obstacles`, its steps only
+/// counted ([`SmokeState::count`]): stepped where it is drawn.
+pub fn count_smokes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    each_smoke(world, obstacles, |state, placed, near| state.count(placed, near, seconds));
+}
+
+fn each_smoke(world: &mut hecs::World, obstacles: &Obstacles, mut f: impl FnMut(&mut SmokeState, Mat4, &[Obstacle])) {
     let mut near = Vec::new();
     for (state, placed) in world.query_mut::<(&mut SmokeState, &WorldTransform)>() {
         let feet = placed.0.w_axis.truncate();
         let size = state.smoke.size;
         obstacles.near(feet - Vec3::new(size.x, 0.1, size.z) * 0.6, feet + Vec3::new(size.x * 0.6, size.y, size.z * 0.6), &mut near);
         near.retain(|o| !matches!(o, Obstacle::Plane { .. }));
-        state.advance(placed.0, &near, seconds);
+        f(state, placed.0, &near);
     }
 }
 
