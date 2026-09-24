@@ -126,6 +126,8 @@ enum Hold {
 #[derive(Debug, Clone)]
 pub struct ClothState {
     pub cloth: Cloth,
+    /// Its summary over the network, when it is `Rough` (docs/netsim.md).
+    pub rough: crate::net::Rough,
     /// The scene's wind: whoever spawns the scene sets it.
     pub wind: Wind,
     across: usize,
@@ -218,7 +220,7 @@ impl ClothState {
                 particles.w[k] = 0.0;
             }
         }
-        Self {
+        Self { rough: Default::default(),
             cloth,
             wind: Wind::default(),
             across,
@@ -495,8 +497,10 @@ pub fn set_wind(world: &mut hecs::World, wind: Wind) {
 
 /// Step every cloth by `seconds` in its wind, lying on `obstacles`.
 pub fn run_cloth(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    let late = (runity_core::netsim::link_delay(world) / crate::net::NET_HZ as f64) as f32;
+    let clock = runity_core::netsim::session_time(world);
     let mut near = Vec::new();
-    for (state, placed) in world.query_mut::<(&mut ClothState, &WorldTransform)>() {
+    for (state, placed, replica) in world.query_mut::<(&mut ClothState, &WorldTransform, Option<&runity_core::world::Replica>)>() {
         let (mut low, mut high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         let points: Vec<Vec3> = if state.placed.is_some() {
             state.points().to_vec()
@@ -511,7 +515,21 @@ pub fn run_cloth(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
         let fall = if state.placed.is_some() { 1.0 + seconds * 20.0 } else { state.cloth.size[0].max(state.cloth.size[1]) + 1.0 };
         obstacles.near(low - Vec3::splat(fall), high + Vec3::splat(fall), &mut near);
         let wind = state.wind;
+        crate::net::keep_time(&mut state.time, clock);
         state.advance(placed.0, &wind, &near, seconds);
+        // Rough: the owner's summary recorded, or pulled toward.
+        if state.cloth.net == runity_core::netsim::NetMode::Rough {
+            let space = placed.0;
+            if replica.is_some() {
+                let rough = std::mem::take(&mut state.rough);
+                let slack = crate::net::ROUGH_SLACK;
+        rough.pull(&mut state.particles_mut().x, space, slack, late);
+                state.rough = rough;
+            } else {
+                let points = state.particles_mut().x.clone();
+                state.rough.record(&points, space, seconds);
+            }
+        }
     }
 }
 
@@ -540,6 +558,24 @@ impl runity_core::world::Dress for ClothDress {
                 let _ = world.remove_one::<ClothState>(entity);
             }
         }
+    }
+}
+
+
+/// Its state for the network (`Components::register_state`): the
+/// summary, from the owner, when it is `Rough`.
+pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> {
+    let state = world.get::<&ClothState>(entity).ok()?;
+    if state.cloth.net != runity_core::netsim::NetMode::Rough || world.get::<&runity_core::world::Replica>(entity).is_ok() {
+        return None;
+    }
+    state.rough.bytes.clone()
+}
+
+/// The owner's summary onto everyone else's.
+pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, _sender: u32, _tick: u64, bytes: &[u8]) {
+    if let Ok(mut state) = world.get::<&mut ClothState>(entity) {
+        state.rough.take(bytes);
     }
 }
 

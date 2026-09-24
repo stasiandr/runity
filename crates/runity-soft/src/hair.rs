@@ -412,12 +412,14 @@ pub fn set_wind(world: &mut hecs::World, wind: Wind) {
 
 /// Step all hair by `seconds` in its wind, off the colliders near it.
 pub fn run_hair(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
+    let clock = runity_core::netsim::session_time(world);
     let mut near = Vec::new();
     for (state, placed) in world.query_mut::<(&mut HairState, &WorldTransform)>() {
         let (scale, _, at) = placed.0.to_scale_rotation_translation();
         let reach = Vec3::splat((state.hair.radius * scale.abs().max_element() + state.hair.length) * 1.2 + 0.5);
         obstacles.near(at - reach, at + reach, &mut near);
         let wind = state.wind;
+        crate::net::keep_time(&mut state.time, clock);
         state.advance(placed.0, &wind, &near, seconds);
     }
 }

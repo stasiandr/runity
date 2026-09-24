@@ -86,8 +86,14 @@ pub fn set_link_delay(world: &mut hecs::World, ticks: f64) {
 }
 
 /// A player's own body: it belongs to its player for as long as it
-/// exists. A claim does not take it, and gathering what is tied to it
-/// stops at it — a rope two players hold is not dragged, with one of
-/// them, to the other's machine.
+/// exists. Gathering what is tied to it stops at it — a rope two players
+/// hold is not dragged, with one of them, to the other's machine — and
+/// nothing is gathered along with it. The game claims it for its player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Pawn;
+
+/// Named like a scene's entity, but not the network's: every peer has its
+/// own. A `Local` ragdoll's parts — their ids name each other's joints,
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Unshared;

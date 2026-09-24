@@ -248,6 +248,39 @@ impl Rod {
                 }
             }
         }
+        // The same from a pinned end, when the start is free.
+        let last = self.particles.len() - 1;
+        if self.particles.w[0] > 0.0 && self.particles.w[last] <= 0.0 {
+            let origin = self.particles.x[last];
+            let mut reach = 0.0;
+            for i in (0..last).rev() {
+                reach += self.rest[i];
+                if self.particles.w[i] <= 0.0 {
+                    continue;
+                }
+                let d = self.particles.x[i] - origin;
+                let far = d.length();
+                if far > reach {
+                    self.particles.x[i] = origin + d * (reach / far);
+                }
+            }
+        }
+        // And the ends never further apart than the rod is long, each moved
+        // by its weight: two bodies pulling a rope between them stretch it
+        // no more than a rope stretches — with nothing pinned, the links'
+        // passes alone let two heavy ends pull it half as long again.
+        let (w0, w1) = (self.particles.w[0], self.particles.w[last]);
+        if w0 + w1 > 0.0 {
+            let total = self.length();
+            let d = self.particles.x[last] - self.particles.x[0];
+            let far = d.length();
+            if far > total && far > 1e-9 {
+                let n = d / far;
+                let excess = far - total;
+                self.particles.x[0] += n * (excess * w0 / (w0 + w1));
+                self.particles.x[last] -= n * (excess * w1 / (w0 + w1));
+            }
+        }
         // An end held by a body is inside that body: it is the body that
         // meets things, not the end.
         let held = self.held_ends;

@@ -25,6 +25,15 @@ pub const NET_HZ: f32 = 30.0;
 /// How far behind a replica is shown, network ticks: the network module's
 /// `DELAY`.
 pub const DELAY: f64 = 2.0;
+/// The most a replica is shown behind, network ticks.
+pub const MOST_DELAY: f64 = 6.0;
+
+/// How far behind to show for a link whose frames come `spread` ticks off
+/// their beat on the mean: the bodies' rule (`net::sync::delay_for`).
+pub fn delay_for(spread: f64) -> f64 {
+    (DELAY + 2.0 * spread).clamp(DELAY, MOST_DELAY)
+}
+
 /// Seconds over which a change of owner is bent into the new stream.
 pub const HANDOVER_BLEND: f32 = 0.5;
 /// The most change of speed a takeover carries forward, metres a second
@@ -206,6 +215,11 @@ pub struct PresentedParticles {
     offset: f64,
     /// Where the clock stands, timeline ticks.
     render: f64,
+    /// When the first frame of this sender came, how late the earliest
+    /// came, and how far off their beat frames come on the mean, ticks.
+    origin: Option<std::time::Instant>,
+    base: Option<f64>,
+    spread: f64,
     /// A handover being hidden: each point's gap at the join, seconds
     /// since the picture reached it, the join's tick and the old stream's
     /// newest — between the two the gap grows in as the picture slides
@@ -217,6 +231,137 @@ pub struct PresentedParticles {
     /// the newest frame as it is, and the ends are carried by what holds
     /// them.
     pub shape_held: bool,
+}
+
+/// Seconds a simulation's own clock (what its gusts are drawn from) is
+/// kept to the session's: wrapped, so an f32 keeps its precision.
+pub const CLOCK_WRAP: f64 = 3600.0;
+
+/// A simulation's clock brought to the session's (docs/netsim.md, Rough:
+/// everyone's flag flaps alike): jumped when far off — the first time,
+/// after a stall — otherwise slewed a tenth of the way a step, so a
+/// correction of the session's clock is not a jerk in the wind.
+pub fn keep_time(time: &mut f32, session: Option<f64>) {
+    let Some(session) = session else { return };
+    let target = (session % CLOCK_WRAP) as f32;
+    let off = target - *time;
+    if off.abs() > 0.25 {
+        *time = target;
+    } else {
+        *time += off * 0.1;
+    }
+}
+
+/// Summaries of a `Rough` thing a second.
+pub const ROUGH_HZ: f32 = 5.0;
+/// The most points a summary carries.
+pub const ROUGH_POINTS: usize = 24;
+/// Of the way to its summary a particle is pulled each step, past the
+/// slack.
+pub const ROUGH_PULL: f32 = 0.08;
+/// How far a cloth's particle may be from its summary before it is
+/// pulled, metres (each kind says its own, by its scale): the same
+/// simulation from the same inputs comes out the same on every peer, and
+/// pulling that toward a summary a fifth of a second old only shakes it —
+/// what is pulled is drift, from inputs that differed.
+pub const ROUGH_SLACK: f32 = 0.1;
+
+/// A `Rough` thing's summary (docs/netsim.md): everyone simulates it, and
+/// a few times a second its owner says where a handful of its particles
+/// are, in the space of what it hangs on — so a cape shown on a body that
+/// is itself shown late is pulled toward the owner's shape, not toward
+/// where the owner's body was. The others pull those particles a little
+/// of the way each step, where they are, not how fast: the rest follow by
+/// their constraints, and nothing jumps.
+#[derive(Debug, Clone, Default)]
+pub struct Rough {
+    since: f32,
+    /// The latest summary as bytes, for the network to send (unchanged
+    /// bytes are not sent again).
+    pub bytes: Option<Vec<u8>>,
+    /// The owner's summary, in the space it is placed in, and when it
+    /// came; the one before it, for how fast it goes.
+    target: Option<Vec<Vec3>>,
+    came: Option<std::time::Instant>,
+    before: Option<(Vec<Vec3>, std::time::Instant)>,
+}
+
+fn every(n: usize) -> usize {
+    n.div_ceil(ROUGH_POINTS).max(1)
+}
+
+impl Rough {
+    /// On the owner: on by `seconds`, and a fresh summary of `points` (in
+    /// the world) in `placed`'s space when one is due.
+    pub fn record(&mut self, points: &[Vec3], placed: glam::Mat4, seconds: f32) {
+        self.since += seconds;
+        if self.bytes.is_some() && self.since < 1.0 / ROUGH_HZ {
+            return;
+        }
+        self.since = 0.0;
+        let back = placed.inverse();
+        let frame = Frame {
+            points: points.iter().step_by(every(points.len())).map(|p| back.transform_point3(*p)).collect(),
+            ..Default::default()
+        };
+        self.bytes = Some(frame.encode());
+    }
+
+    /// On everyone else: the owner's summary.
+    pub fn take(&mut self, bytes: &[u8]) {
+        if let Some(frame) = Frame::decode(bytes) {
+            let now = std::time::Instant::now();
+            if let (Some(old), Some(came)) = (self.target.take(), self.came) {
+                if old.len() == frame.points.len() {
+                    self.before = Some((old, came));
+                }
+            }
+            self.target = Some(frame.points);
+            self.came = Some(now);
+        }
+    }
+
+    /// On everyone else: `points` pulled toward the summary, which is in
+    /// `placed`'s space.
+    ///
+    /// The summary is a moment old when it comes and older each step
+    /// after: it is carried forward by how fast it went between the last
+    /// two, for its age and `late` seconds more (the way here), so a thing
+    /// on the move is pulled toward where the owner has it now, not where
+    /// it was.
+    pub fn pull(&self, points: &mut [Vec3], placed: glam::Mat4, slack: f32, late: f32) {
+        let Some(target) = &self.target else { return };
+        let step = every(points.len());
+        if points.len().div_ceil(step) != target.len() {
+            return;
+        }
+        let ahead = match (&self.before, self.came) {
+            (Some((before, then)), Some(came)) => {
+                let gap = came.duration_since(*then).as_secs_f32().max(1.0 / ROUGH_HZ * 0.5);
+                let age = (came.elapsed().as_secs_f32() + late).min(0.5);
+                Some((before, age / gap))
+            }
+            _ => None,
+        };
+        for (k, t) in target.iter().enumerate() {
+            let i = k * step;
+            let t = match ahead {
+                Some((before, share)) => *t + (*t - before[k]) * share,
+                None => *t,
+            };
+            let there = placed.transform_point3(t);
+            let off = there - points[i];
+            let far = off.length();
+            if far > slack {
+                points[i] += off * ((far - slack) / far * ROUGH_PULL);
+            }
+        }
+    }
+
+    /// Whether a summary has come.
+    pub fn has_target(&self) -> bool {
+        self.target.is_some()
+    }
 }
 
 /// Who a buffer is seeded as: this peer, showing what it had.
@@ -234,21 +379,43 @@ impl PresentedParticles {
         out
     }
 
+    /// An arrival, against the beat it was sent on: how late it came
+    /// beyond the earliest any came (the link's own delay aside) is how
+    /// far off the beat the link is.
+    fn hear(&mut self, tick: f64) {
+        let now = std::time::Instant::now();
+        let origin = *self.origin.get_or_insert(now);
+        let late = now.duration_since(origin).as_secs_f64() * NET_HZ as f64 - tick;
+        // The earliest, let rise a little each time so a link that got
+        // slower for good is not held against it for ever.
+        let base = self.base.map_or(late, |b: f64| (b + 0.02).min(late));
+        self.base = Some(base);
+        self.spread += ((late - base).min(8.0) - self.spread) * 0.05;
+    }
+
+    /// How far behind it is shown now, network ticks.
+    pub fn delay(&self) -> f64 {
+        delay_for(self.spread)
+    }
+
     /// A frame from `sender`, at its tick.
     pub fn push(&mut self, sender: u32, tick: u64, frame: Frame) {
         let tick = tick as f64;
         match self.sender {
             None => {
                 self.offset = 0.0;
-                self.render = tick - DELAY;
+                self.render = tick - self.delay();
             }
             Some(old) if old != sender => {
+                // A new clock: its beat is measured afresh.
+                self.origin = None;
+                self.base = None;
                 // A new owner is a new clock: its first frame goes a delay
                 // ahead of the picture, and the gap between where the old
                 // stream was heading and where the new owner has it is
                 // hidden over a moment.
                 let newest = self.samples.back().map_or(self.render, |(t, _)| *t);
-                let join = (self.render + DELAY).ceil().max(newest + 1.0);
+                let join = (self.render + self.delay()).ceil().max(newest + 1.0);
                 self.offset = join - tick;
                 if let Some(heading) = self.frame_at(join) {
                     if heading.points.len() == frame.points.len() {
@@ -260,6 +427,9 @@ impl PresentedParticles {
             _ => {}
         }
         self.sender = Some(sender);
+        if sender != HERE {
+            self.hear(tick);
+        }
         let at = tick + self.offset;
         if let Some((newest, last)) = self.samples.back() {
             if at <= *newest {
@@ -269,7 +439,7 @@ impl PresentedParticles {
             let fastest = last.points.iter().zip(&frame.points).map(|(a, b)| a.distance(*b)).fold(0.0, f32::max);
             if last.points.len() != frame.points.len() || fastest / seconds.max(1e-3) > SNAP_SPEED {
                 self.samples.clear();
-                self.render = at - DELAY;
+                self.render = at - self.delay();
                 self.blend = None;
             }
         }
@@ -307,7 +477,7 @@ impl PresentedParticles {
     /// up gently when it falls behind and waiting when it runs ahead.
     pub fn advance(&mut self, seconds: f32) -> Option<Frame> {
         let newest = self.samples.back()?.0;
-        let target = newest - DELAY;
+        let target = newest - self.delay();
         let ticks = seconds as f64 * NET_HZ as f64;
         self.render += ticks;
         let off = target - self.render;
@@ -358,7 +528,7 @@ impl PresentedParticles {
             return None;
         }
         let ticks = (newest_at - before_at).max(1e-6) as f32;
-        let lead = ((self.render + DELAY - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
+        let lead = ((self.render + self.delay() - newest_at).max(0.0) + 1.0 + one_way.max(0.0)) as f32;
         // As the bodies' takeover: speed from the newest two, and how it
         // was changing from a third (falling, swinging), clamped so that a
         // knock is not carried on — then a thing held by a body and the
@@ -395,6 +565,42 @@ impl PresentedParticles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rough_summary_pulls_the_particles_it_names_toward_the_owners_shape() {
+        let placed = glam::Mat4::from_translation(Vec3::new(5.0, 0.0, 0.0));
+        let owner: Vec<Vec3> = (0..48).map(|i| Vec3::new(5.0, -(i as f32) * 0.05, 0.3)).collect();
+        let mut sent = Rough::default();
+        sent.record(&owner, placed, 1.0 / 60.0);
+        let bytes = sent.bytes.clone().unwrap();
+        assert!(bytes.len() < 200, "{} bytes", bytes.len());
+        // Not due again for a fifth of a second: the same bytes.
+        sent.record(&owner.iter().map(|p| *p + Vec3::X).collect::<Vec<_>>(), placed, 1.0 / 60.0);
+        assert_eq!(sent.bytes.as_ref().unwrap(), &bytes);
+        let mut here = Rough::default();
+        here.take(&bytes);
+        // Here the thing hangs on a body shown a metre behind, and its
+        // particles are off to the side: pulled toward the shape, in the
+        // body's space here.
+        let behind = glam::Mat4::from_translation(Vec3::new(4.0, 0.0, 0.0));
+        let mut points: Vec<Vec3> = owner.iter().map(|p| *p - Vec3::X + Vec3::Z).collect();
+        for _ in 0..60 {
+            here.pull(&mut points, behind, ROUGH_SLACK, 0.0);
+        }
+        assert!(points[0].distance(Vec3::new(4.0, 0.0, 0.3)) < ROUGH_SLACK + 0.01, "{}", points[0]);
+        assert!(points[1].distance(Vec3::new(4.0, -0.05, 1.3)) < 1e-6, "unnamed ones left to the constraints");
+    }
+
+    #[test]
+    fn a_simulations_clock_is_brought_to_the_sessions_without_a_jerk() {
+        let mut t = 0.0;
+        keep_time(&mut t, Some(100.0));
+        assert_eq!(t, 100.0, "far off: jumped");
+        keep_time(&mut t, Some(100.05));
+        assert!((t - 100.005).abs() < 1e-3, "near: slewed, {t}");
+        keep_time(&mut t, None);
+        assert!((t - 100.005).abs() < 1e-3, "no session: its own");
+    }
 
     #[test]
     fn a_frame_round_trips_within_a_fraction_of_a_millimetre_and_a_tenth_of_a_degree() {

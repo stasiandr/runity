@@ -200,6 +200,17 @@ pub struct RopeState {
     /// Obstacles it passes through, by their tags: the bodies that hold
     /// its ends, which it is tied into, not lying on.
     pub ignores: Vec<u64>,
+    /// Where an end is held when that is not where its entity is shown:
+    /// a hand on another peer's machine, predicted to where its owner has
+    /// it now rather than where the picture of it is (docs/netsim.md, the
+    /// tug of war). World space; the facade sets them each step.
+    pub pins: [Option<Vec3>; 2],
+    /// The pull on each end as its owner last said, smoothed: what a hand
+    /// here feels of a rope simulated elsewhere.
+    pub felt: [Vec3; 2],
+    /// How long it is, stretched, at its owner's: what a hand here holds
+    /// it to.
+    pub owner_length: Option<f32>,
 }
 
 /// An end of a rope held by a body that moves: the body's weight and how
@@ -240,6 +251,9 @@ impl RopeState {
             anchors: [None; 2],
             pulls: [Vec3::ZERO; 2],
             ignores: Vec::new(),
+            pins: [None; 2],
+            felt: [Vec3::ZERO; 2],
+            owner_length: None,
         }
     }
 
@@ -248,10 +262,11 @@ impl RopeState {
     pub fn frame(&self) -> Option<crate::net::Frame> {
         let rod = self.rod.as_ref()?;
         let [a, b] = self.pulls;
+        let stretched: f32 = rod.particles.x.windows(2).map(|w| w[0].distance(w[1])).sum();
         Some(crate::net::Frame {
             points: rod.particles.x.clone(),
             turns: rod.turn.clone(),
-            extra: vec![a.x, a.y, a.z, b.x, b.y, b.z],
+            extra: vec![a.x, a.y, a.z, b.x, b.y, b.z, stretched],
         })
     }
 
@@ -278,10 +293,7 @@ impl RopeState {
                 rod.set_turn(k, *q);
             }
         }
-        if frame.extra.len() >= 6 {
-            let e = &frame.extra;
-            self.pulls = [Vec3::new(e[0], e[1], e[2]), Vec3::new(e[3], e[4], e[5])];
-        }
+
     }
 
     /// Taken over from another peer: the solver starts where the old
@@ -523,7 +535,6 @@ impl RopeState {
             pulls[0] += p0 / SUBSTEPS as f32;
             pulls[1] += p1 / SUBSTEPS as f32;
         }
-        self.pulls = pulls;
         // What the rope did to a holding body: its end's speed now against
         // where the body alone (falling) would have taken it.
         for k in 0..2 {
@@ -533,9 +544,25 @@ impl RopeState {
             if let Some(anchor) = self.anchors[k].as_mut() {
                 let i = ends[k];
                 let alone = held_from[k] + Vec3::new(0.0, -9.81, 0.0) * STEP;
-                anchor.impulse += (rod.particles.v[i] - alone) * anchor.mass;
+                let impulse = (rod.particles.v[i] - alone) * anchor.mass;
+                anchor.impulse += impulse;
+                // The pull on a held end is what the rope did to its body.
+                pulls[k] = impulse / STEP;
             }
         }
+        // A pinned end opposite a held one feels the same tension, along
+        // its own link: the rope passes it on (its weight aside). The
+        // multipliers alone say less than the rope pulls, a stiff rope's
+        // being spread over its passes and substeps.
+        for k in 0..2 {
+            let other = 1 - k;
+            if !anchored[k] && tied[k] && anchored[other] {
+                let (i, next) = if k == 0 { (0, 1) } else { (last, last - 1) };
+                let along = (rod.particles.x[next] - rod.particles.x[i]).normalize_or_zero();
+                pulls[k] = along * pulls[other].length();
+            }
+        }
+        self.pulls = pulls;
     }
 
     /// A tube along it through a smooth curve through its particles, in
@@ -660,6 +687,7 @@ pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
     use runity_core::netsim::NetMode;
     use runity_core::world::Replica;
     let one_way = runity_core::netsim::link_delay(world);
+    let clock = runity_core::netsim::session_time(world);
     let mut todo = Vec::new();
     for (entity, state, placed) in world.query::<(hecs::Entity, &RopeState, &WorldTransform)>().iter() {
         todo.push((entity, placed.0, state.rope.end, state.end));
@@ -680,6 +708,22 @@ pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
             start
         };
         let replica = world.get::<&Replica>(entity).is_ok();
+        // Ends held where their entities are not shown: moved there.
+        let (start, end) = match world.get::<&RopeState>(entity).map(|s| (s.pins, s.rope.to)) {
+            Ok((pins, to)) => {
+                let mut start = start;
+                let mut end = end;
+                if let Some(p) = pins[0] {
+                    start.w_axis = p.extend(1.0);
+                }
+                if let Some(p) = pins[1] {
+                    let shift = p - end.transform_point3(to);
+                    end.w_axis += shift.extend(0.0);
+                }
+                (start, end)
+            }
+            Err(_) => (start, end),
+        };
         let mut query = world.query_one::<(&mut RopeState, Option<&mut crate::net::PresentedParticles>)>(entity);
         let Ok((state, presented)) = query.get() else { continue };
         if state.rope.net == NetMode::Full {
@@ -759,6 +803,7 @@ pub fn run_ropes(world: &mut hecs::World, seconds: f32, obstacles: &Obstacles) {
         let room = if state.points().is_empty() { reach } else { 1.0 + seconds * 20.0 };
         obstacles.near_except(low - Vec3::splat(room), high + Vec3::splat(room), &state.ignores, &mut near);
         let wind = state.wind;
+        crate::net::keep_time(&mut state.time, clock);
         state.advance(start, end, &wind, &near, seconds);
     }
     for entity in taken {
@@ -782,6 +827,13 @@ pub fn gather_net(world: &hecs::World, entity: hecs::Entity) -> Option<Vec<u8>> 
 /// The owner's frame of a rope into its replica's buffer.
 pub fn take_net(world: &mut hecs::World, entity: hecs::Entity, sender: u32, tick: u64, bytes: &[u8]) {
     let Some(frame) = crate::net::Frame::decode(bytes) else { return };
+    // The pulls on its ends as the owner has them now, not as the picture
+    // a couple of ticks behind has them: a hand here feels them as soon
+    // as they come.
+    if let (Ok(mut state), Some(e)) = (world.get::<&mut RopeState>(entity), frame.extra.get(0..7)) {
+        state.pulls = [Vec3::new(e[0], e[1], e[2]), Vec3::new(e[3], e[4], e[5])];
+        state.owner_length = Some(e[6]);
+    }
     if let Ok(mut presented) = world.get::<&mut crate::net::PresentedParticles>(entity) {
         presented.push(sender, tick, frame);
         return;

@@ -534,6 +534,7 @@ pub struct NetPrefab(pub String);
 pub fn addressable(world: &hecs::World) -> HashMap<EntityId, hecs::Entity> {
     let mut out: HashMap<EntityId, hecs::Entity> = world
         .query::<(hecs::Entity, &SceneId)>()
+        .without::<&crate::netsim::Unshared>()
         .iter()
         .map(|(entity, id)| (id.0, entity))
         .collect();

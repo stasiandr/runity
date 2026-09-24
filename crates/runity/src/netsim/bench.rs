@@ -22,8 +22,14 @@ use crate::render::MeshHandle;
 use crate::scene::Scene;
 use crate::EntityId;
 
-/// Fixed steps a second: a network tick each.
-pub const HZ: f32 = 30.0;
+/// Fixed steps a second: the game's (`time::Settings::fixed_delta`). The
+/// party sends at its own rate, a network tick every other step.
+pub const HZ: f32 = 60.0;
+
+/// Steps in `seconds`.
+pub fn ticks(seconds: f32) -> usize {
+    (seconds * HZ).round() as usize
+}
 
 /// One participant: its party, its world, its physics.
 pub struct Peer {
@@ -53,6 +59,12 @@ impl Peer {
     /// says, the physics, then the soft things held by the bodies, and
     /// what they did back to the bodies for the next step.
     pub fn step(&mut self, components: &Components) {
+        self.step_with(components, |_| {});
+    }
+
+    /// [`Peer::step`], with what the game does before the physics: a
+    /// player pulling on their own body.
+    pub fn step_with(&mut self, components: &Components, game: impl FnOnce(&mut Peer)) {
         let dt = 1.0 / HZ;
         for event in self.party.update(&mut self.world, components, dt, |_, _, _| None) {
             if let Event::Problem(problem) = event {
@@ -60,6 +72,10 @@ impl Peer {
             }
         }
         crate::world::apply_hierarchy(&mut self.world);
+        super::claim_approaching(&mut self.world, &self.physics);
+        game(self);
+        #[cfg(feature = "character")]
+        crate::character::step(&mut self.world, &mut self.physics, dt);
         self.physics.run(&mut self.world);
         crate::world::apply_hierarchy(&mut self.world);
         #[cfg(feature = "soft")]
@@ -68,6 +84,8 @@ impl Peer {
             crate::soft::step(&mut self.world, dt);
             super::pull_bodies(&mut self.world, &mut self.physics);
         }
+        #[cfg(feature = "destruction")]
+        crate::destruction::step(&mut self.world, &mut self.physics, dt);
     }
 }
 
@@ -100,17 +118,33 @@ pub struct Session {
     clock: Instant,
     /// Ticks played.
     pub tick: usize,
+    /// Ends of the network kept for peers who join late, with the link
+    /// and seed they come in over.
+    late: Vec<(Box<dyn Transport + Send>, Scene)>,
 }
 
 impl Session {
     /// `peers` in a session over `link` (the host's own is perfect: it is
     /// in the server's process).
     pub fn new(scene: &Scene, peers: usize, link: Conditions, seed: u64) -> Self {
+        Self::with_late(scene, peers, 0, link, seed)
+    }
+
+    /// [`Session::new`], with `late` more peers who come in later
+    /// ([`Session::join_late`]), over the same link.
+    pub fn with_late(scene: &Scene, peers: usize, late: usize, link: Conditions, seed: u64) -> Self {
+        if peers <= 1 && late == 0 {
+            return Self::alone(scene);
+        }
+        Self::networked(scene, peers.max(1), late, link, seed)
+    }
+
+    fn alone(scene: &Scene) -> Self {
         let mut components = Components::new();
         super::register(&mut components);
         let sent = Arc::new(AtomicU64::new(0));
         let served = Arc::new(AtomicU64::new(0));
-        if peers <= 1 {
+        {
             let party = Party::alone("netsim", &components);
             return Self {
                 peers: vec![Peer::new(party, scene)],
@@ -120,9 +154,17 @@ impl Session {
                 networked: false,
                 clock: Instant::now(),
                 tick: 0,
+                late: Vec::new(),
             };
         }
-        let mut ends = Loopback::network(peers as u32).into_iter();
+    }
+
+    fn networked(scene: &Scene, peers: usize, late: usize, link: Conditions, seed: u64) -> Self {
+        let mut components = Components::new();
+        super::register(&mut components);
+        let sent = Arc::new(AtomicU64::new(0));
+        let served = Arc::new(AtomicU64::new(0));
+        let mut ends = Loopback::network((peers + late) as u32).into_iter();
         let listener = ends.next().expect("the host's end");
         let host = Party::host(
             "netsim",
@@ -132,22 +174,48 @@ impl Session {
             false,
         );
         let mut all = vec![Peer::new(host, scene)];
+        let mut waiting = Vec::new();
         for (i, end) in ends.enumerate() {
             let lagged: Box<dyn Transport + Send> = if link == Conditions::GOOD {
                 Box::new(Metered { inner: end, sent: sent.clone() })
             } else {
                 Box::new(Metered { inner: Laggy::new(end, link, seed * 101 + i as u64), sent: sent.clone() })
             };
-            all.push(Peer::new(Party::join(lagged, "netsim", &format!("guest{}", i + 1), &components), scene));
+            if i + 1 < peers {
+                all.push(Peer::new(Party::join(lagged, "netsim", &format!("guest{}", i + 1), &components), scene));
+            } else {
+                waiting.push((lagged, scene.clone()));
+            }
         }
-        Self { peers: all, components, sent, served, networked: true, clock: Instant::now(), tick: 0 }
+        Self { peers: all, components, sent, served, networked: true, clock: Instant::now(), tick: 0, late: waiting }
+    }
+
+    /// The next late peer comes in: it loads the scene afresh and joins
+    /// the session as it stands. Ticks until it is in; whether it is.
+    pub fn join_late(&mut self) -> bool {
+        let Some((end, scene)) = self.late.pop() else { return false };
+        let name = format!("late{}", self.peers.len());
+        self.peers.push(Peer::new(Party::join(end, "netsim", &name, &self.components), &scene));
+        for _ in 0..ticks(8.0) {
+            self.step();
+            if self.peers.last().is_some_and(|p| p.party.welcomed()) {
+                return true;
+            }
+        }
+        false
     }
 
     /// One tick for everyone, at the pace of real time when there is a
     /// link (its delays are the clock's).
     pub fn step(&mut self) {
-        for peer in &mut self.peers {
-            peer.step(&self.components);
+        self.step_with(|_, _| {});
+    }
+
+    /// [`Session::step`], with what each peer's game does before its
+    /// physics, by the peer's number.
+    pub fn step_with(&mut self, mut game: impl FnMut(usize, &mut Peer)) {
+        for (i, peer) in self.peers.iter_mut().enumerate() {
+            peer.step_with(&self.components, |p| game(i, p));
         }
         self.tick += 1;
         if self.networked {

@@ -1331,6 +1331,11 @@ impl PhysicsWorld {
         true
     }
 
+    /// Seconds a step.
+    pub fn dt(&self) -> f32 {
+        self.parameters.dt
+    }
+
     /// A kick at a point of the body, in newton-seconds, in the world:
     /// what a rope's end did to the hand holding it over the last step.
     /// Unity's `AddForceAtPosition` with `ForceMode.Impulse`.

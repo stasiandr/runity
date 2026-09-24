@@ -55,6 +55,8 @@ pub fn step(world: &mut World, physics: &mut crate::PhysicsWorld, seconds: f32) 
     run_dents(world, &blows);
     let broken = run_fracture(world, seconds, &blows);
     let knocked = dress_broken(world, &broken);
+    #[cfg(feature = "net")]
+    crate::netsim::own_pieces(world, &knocked);
     if !knocked.is_empty() {
         physics.sync_from_world(world);
         for (piece, velocity) in knocked {
