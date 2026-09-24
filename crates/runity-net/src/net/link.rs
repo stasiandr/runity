@@ -13,8 +13,10 @@
 //! them" stay two different sentences (the dacha simulator's
 //! `DisconnectKind`).
 //!
-//! Frames: `0 payload` unreliable, `1 seq payload` reliable, `2 seq` its
-//! acknowledgement, `3` a ping, `4` goodbye.
+//! Frames: `0 payload` unreliable, `1 seq payload` reliable, `2 upto n
+//! seq…` acknowledgement — everything up to `upto` and the `n` listed past
+//! it, one a poll for all that came —, `3` a ping, `4` goodbye; the
+//! numbers varints (docs/netsim.md, «Трафик»).
 
 use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, Instant};
@@ -53,6 +55,29 @@ const ACK: u8 = 2;
 const PING: u8 = 3;
 const BYE: u8 = 4;
 
+/// The most frames ahead of a gap one acknowledgement lists.
+const MOST_LISTED: usize = 64;
+
+fn varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+/// A varint off the front of `bytes`, and what follows it.
+fn read_varint(bytes: &[u8]) -> Option<(u64, &[u8])> {
+    let mut v = 0u64;
+    for (i, &b) in bytes.iter().enumerate().take(10) {
+        v |= ((b & 0x7f) as u64) << (7 * i);
+        if b & 0x80 == 0 {
+            return Some((v, &bytes[i + 1..]));
+        }
+    }
+    None
+}
+
 struct Connection {
     /// Heard from at all yet.
     up: bool,
@@ -62,6 +87,8 @@ struct Connection {
     unacked: BTreeMap<u64, (Vec<u8>, Instant)>,
     next_expected: u64,
     held: BTreeMap<u64, Vec<u8>>,
+    /// Reliable frames came this poll: an acknowledgement is owed.
+    owe_ack: bool,
 }
 
 impl Connection {
@@ -74,6 +101,7 @@ impl Connection {
             unacked: BTreeMap::new(),
             next_expected: 1,
             held: BTreeMap::new(),
+            owe_ack: false,
         }
     }
 }
@@ -147,9 +175,9 @@ impl Link {
             Mode::Reliable => {
                 let seq = connection.next_send;
                 connection.next_send += 1;
-                let mut frame = Vec::with_capacity(payload.len() + 9);
+                let mut frame = Vec::with_capacity(payload.len() + 4);
                 frame.push(RELIABLE);
-                frame.extend_from_slice(&seq.to_le_bytes());
+                varint(&mut frame, seq);
                 frame.extend_from_slice(&payload);
                 connection.unacked.insert(seq, (frame.clone(), now));
                 self.wire.send(to, frame);
@@ -221,28 +249,51 @@ impl Link {
                 UNRELIABLE => {
                     events.push(LinkEvent::Data(from, frame[1..].to_vec(), Mode::Unreliable))
                 }
-                RELIABLE if frame.len() >= 9 => {
-                    let seq = u64::from_le_bytes(frame[1..9].try_into().expect("eight bytes"));
-                    let mut ack = vec![ACK];
-                    ack.extend_from_slice(&seq.to_le_bytes());
-                    self.wire.send(from, ack);
+                RELIABLE => {
+                    let Some((seq, payload)) = read_varint(&frame[1..]) else {
+                        continue;
+                    };
+                    connection.owe_ack = true;
                     if seq >= connection.next_expected {
-                        connection.held.insert(seq, frame[9..].to_vec());
+                        connection.held.insert(seq, payload.to_vec());
                     }
                     while let Some(payload) = connection.held.remove(&connection.next_expected) {
                         events.push(LinkEvent::Data(from, payload, Mode::Reliable));
                         connection.next_expected += 1;
                     }
                 }
-                ACK if frame.len() >= 9 => {
-                    let seq = u64::from_le_bytes(frame[1..9].try_into().expect("eight bytes"));
-                    connection.unacked.remove(&seq);
+                ACK => {
+                    let Some((upto, rest)) = read_varint(&frame[1..]) else {
+                        continue;
+                    };
+                    connection.unacked = connection.unacked.split_off(&(upto + 1));
+                    if let Some((count, mut rest)) = read_varint(rest) {
+                        for _ in 0..count.min(MOST_LISTED as u64) {
+                            let Some((seq, after)) = read_varint(rest) else { break };
+                            connection.unacked.remove(&seq);
+                            rest = after;
+                        }
+                    }
                 }
                 BYE => {
                     self.connections.remove(&from);
                     events.push(LinkEvent::Disconnected(from, Ended::Clean));
                 }
                 _ => {}
+            }
+        }
+        // One acknowledgement for all that came: everything in order so
+        // far, and what came ahead of a gap.
+        for (peer, connection) in &mut self.connections {
+            if std::mem::take(&mut connection.owe_ack) {
+                let mut ack = vec![ACK];
+                varint(&mut ack, connection.next_expected - 1);
+                let ahead: Vec<u64> = connection.held.keys().copied().take(MOST_LISTED).collect();
+                varint(&mut ack, ahead.len() as u64);
+                for seq in ahead {
+                    varint(&mut ack, seq);
+                }
+                self.wire.send(*peer, ack);
             }
         }
         let quiet: Vec<PeerId> = self
