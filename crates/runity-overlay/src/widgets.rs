@@ -260,6 +260,18 @@ impl Widgets {
         }
     }
 
+    /// [`Self::begin_frame`] for a frame the pad is playing the game, not
+    /// working the screen: the widgets answer the mouse only, nothing is
+    /// highlighted, and South is the game's. A HUD's one button would
+    /// otherwise be highlighted, and pressed by every jump.
+    pub fn begin_frame_without_pad(&mut self) {
+        self.last = std::mem::take(&mut self.seen);
+        self.press = false;
+        self.nudge = 0.0;
+        self.pad = false;
+        self.selected = None;
+    }
+
     /// Whether the pad has this widget highlighted.
     fn highlighted(&self, id: u64) -> bool {
         self.pad && self.selected == Some(id)
@@ -817,6 +829,37 @@ mod tests {
         width: 100.0,
         height: 30.0,
     };
+
+    #[test]
+    fn a_frame_without_the_pad_leaves_south_to_the_game() {
+        use crate::input::PadButton;
+        let (mut widgets, mut input) = (Widgets::new(), Input::new());
+        let pad = |input: &mut Input, button| {
+            input.begin_frame();
+            input.handle(&InputEvent::PadUp(button));
+            input.begin_frame();
+            input.handle(&InputEvent::PadDown(button));
+        };
+        let leave = |widgets: &mut Widgets, input: &Input| {
+            let mut ui = Ui::new();
+            widgets.button(&mut ui, input, QUIT, "Leave")
+        };
+        // On a menu the pad highlights Leave and South presses it...
+        widgets.begin_frame(&input);
+        leave(&mut widgets, &input);
+        pad(&mut input, PadButton::DPadDown);
+        widgets.begin_frame(&input);
+        leave(&mut widgets, &input);
+        pad(&mut input, PadButton::South);
+        widgets.begin_frame(&input);
+        assert!(leave(&mut widgets, &input), "pressed on a menu");
+        // ...in a round South is a grab, and Leave stays where it is.
+        for _ in 0..3 {
+            pad(&mut input, PadButton::South);
+            widgets.begin_frame_without_pad();
+            assert!(!leave(&mut widgets, &input), "not pressed in a round");
+        }
+    }
 
     #[test]
     fn a_pad_moves_the_highlight_between_widgets_and_presses_one() {

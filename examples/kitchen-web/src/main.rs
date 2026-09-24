@@ -347,7 +347,18 @@ impl shell::Game for Game {
             eprintln!("{problem}");
         }
         // The pad's moves between the screen's widgets, before they draw.
-        self.widgets.begin_frame(ctx.input);
+        // In a round the pad cooks: South grabs, it does not press the
+        // HUD's Leave. On the menus, the lobby, the pause and the results
+        // it works the screen.
+        let cooking = self.front.phase == front::Phase::Kitchen
+            && !self.front.paused
+            && self.front.host_lost.is_none()
+            && front::round_of(&self.world).is_some_and(|r| r.open && !r.over);
+        if cooking {
+            self.widgets.begin_frame_without_pad();
+        } else {
+            self.widgets.begin_frame(ctx.input);
+        }
         self.best_score();
         self.front.listen(ctx.time.delta());
         let wish = self.front.draw(
