@@ -1813,7 +1813,7 @@ fn set_motor(
             let strength = motor.strength.max(0.0);
             match motor.hold {
                 Some(hold) => {
-                    data.set_motor_position(axis, hold * unit, strength, strength * 0.2);
+                    data.set_motor_position(axis, hold * unit, strength, motor.damping());
                 }
                 None => {
                     data.set_motor_velocity(axis, motor.speed * unit, strength);
@@ -1895,7 +1895,7 @@ fn joint_data(
     if let Some(motor) = motor {
         let strength = motor.strength.max(0.0);
         builder = match motor.hold {
-            Some(hold) => builder.motor_position(axis, hold * unit, strength, strength * 0.2),
+            Some(hold) => builder.motor_position(axis, hold * unit, strength, motor.damping()),
             None => builder.motor_velocity(axis, motor.speed * unit, strength),
         };
     }

@@ -147,6 +147,17 @@ pub struct Motor {
     /// How hard: the spring's stiffness, or how firmly the speed is kept.
     #[serde(default = "motor_strength")]
     pub strength: f32,
+    /// How fast a spring's bounce dies (Unity's damper); a fifth of the
+    /// strength when not said.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "plain")]
+    pub damping: Option<f32>,
+}
+
+impl Motor {
+    /// The damping a spring pulls with.
+    pub fn damping(&self) -> f32 {
+        self.damping.unwrap_or(self.strength.max(0.0) * 0.2).max(0.0)
+    }
 }
 
 fn motor_strength() -> f32 {
