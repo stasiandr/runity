@@ -34,7 +34,8 @@ use runity_ui::Clipboard as _;
 use crate::animator::Animator;
 use crate::bottom::{Asset, Bottom};
 use crate::clipboard::SystemClipboard;
-use crate::dock::{Docked, Docks, Panel};
+use crate::dock::{Arrangement, Docked, Docks, Panel};
+use crate::layouts::{self, Layout};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
@@ -121,6 +122,8 @@ enum Ask {
     Variant,
     NewScene,
     Snap,
+    SaveLayout,
+    DeleteLayout,
 }
 
 /// A dialog asking for a name: Nocturne's `.dialog` over its backdrop.
@@ -170,6 +173,8 @@ struct Toolbar {
     undo: NodeId,
     redo: NodeId,
     save: NodeId,
+    /// The Layout dropdown: presets, Save, Delete.
+    layout: NodeId,
 }
 
 struct Status {
@@ -352,6 +357,10 @@ pub struct Studio {
     pending_images: Vec<(ImageId, u32, Vec<u8>)>,
     /// The layout as last written to disk.
     saved_layout: String,
+    /// The layout preset last chosen or saved, for the Layout button.
+    layout_name: Option<String>,
+    /// The per-user config folder, where saved layouts are kept.
+    config_dir: Option<std::path::PathBuf>,
     /// A build running in the background: what it says when it is done.
     job: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     /// The scene to go back to from prefab mode.
@@ -568,7 +577,7 @@ impl Studio {
             &mut ui,
             [left, right, lower],
             roots,
-            Docks::default_layout(),
+            Arrangement::default_layout(),
         );
 
         session.set_readback(false);
@@ -656,6 +665,8 @@ impl Studio {
             conflict_said: false,
             job: None,
             saved_layout: String::new(),
+            layout_name: Some("Default".into()),
+            config_dir: layouts::config_dir(),
             pending_images: Vec::new(),
             scene_before_prefab: None,
             prefab_bar,
@@ -666,6 +677,7 @@ impl Studio {
         studio.ui.set_clipboard(Box::new(SystemClipboard::new()));
         studio.ui.focus(Some(viewport));
         studio.restore_layout();
+        studio.update_layout_button();
         studio.sync_visible();
         studio.refresh();
         studio
@@ -870,7 +882,10 @@ impl Studio {
                     let (x, y) = self.ui.pointer();
                     let zoom = match self.maximized {
                         Some(z) => z,
-                        None => self.docks.dock_at(&self.ui, x, y).map_or(Zoom::View, Zoom::Dock),
+                        None => self
+                            .docks
+                            .stack_at(&self.ui, x, y)
+                            .map_or(Zoom::View, Zoom::Stack),
                     };
                     self.toggle_zoom(zoom);
                     return;
@@ -1098,9 +1113,19 @@ impl Studio {
     /// The UI Builder over the whole window below the toolbar, or back in
     /// its dock.
     fn fit_wide(&mut self) {
-        let under = |panel| self.docks.is_active(panel) && self.docks.dock_of(panel) == Some(2);
-        let wide = (self.screens.wide && under(Panel::Screens))
-            || (self.animator.wide && under(Panel::Animator));
+        let under = |panel| self.docks.is_active(panel) && self.docks.region_of(panel) == Some(2);
+        let wide = if self.screens.wide && under(Panel::Screens) {
+            Some(Panel::Screens)
+        } else if self.animator.wide && under(Panel::Animator) {
+            Some(Panel::Animator)
+        } else {
+            None
+        };
+        // Its stack has the lower area to itself, split or not.
+        if wide.is_some() && self.lower_before_wide.is_none() {
+            self.docks.set_zoom(&mut self.ui, wide);
+        }
+        let wide = wide.is_some();
         let split = self.splits[1];
         match (wide, self.lower_before_wide) {
             (true, _) => {
@@ -1142,8 +1167,24 @@ impl Studio {
         let [left, lower, right] = self.splits;
         let slots = [(self.left, left), (self.right, right), (self.lower, lower)];
         let dragging = self.docks.dragging();
+        // A maximized stack whose panel has gone (floated, closed) gives
+        // the window back.
+        if let Some(Zoom::Stack(p)) = self.maximized {
+            if self.docks.region_of(p).is_none() {
+                self.maximized = None;
+            }
+        }
+        let zoomed_region = match self.maximized {
+            Some(Zoom::Stack(p)) => self.docks.region_of(p),
+            _ => None,
+        };
+        let stack = match self.maximized {
+            Some(Zoom::Stack(p)) => Some(p),
+            _ => None,
+        };
+        self.docks.set_zoom(&mut self.ui, stack);
         for (i, (slot, split)) in slots.into_iter().enumerate() {
-            let zoomed = self.maximized == Some(Zoom::Dock(i));
+            let zoomed = zoomed_region == Some(i);
             let on = match self.maximized {
                 None => self.panels[i] && (dragging || !self.docks.is_empty(i)),
                 Some(_) => zoomed,
@@ -1160,8 +1201,8 @@ impl Studio {
             self.ui
                 .restyle(split, |s| if split_on { s.shown() } else { s.hidden() });
         }
-        let side = matches!(self.maximized, Some(Zoom::Dock(0 | 1)));
-        let lower_zoomed = self.maximized == Some(Zoom::Dock(2));
+        let side = matches!(zoomed_region, Some(0 | 1));
+        let lower_zoomed = zoomed_region == Some(2);
         self.ui
             .restyle(self.center, |s| if side { s.hidden() } else { s.shown() });
         self.ui.restyle(self.view_slot, |s| {
@@ -1388,13 +1429,32 @@ impl Studio {
         self.refresh();
     }
 
-    /// Put a floating panel back under the view, and close its window.
+    /// Bring a panel up wherever it is: its tab on top, back in a dock if
+    /// it was closed, its area shown.
+    fn show_panel(&mut self, panel: Panel) {
+        if self.floats.iter().any(|f| f.panel == panel) {
+            return;
+        }
+        if self.docks.region_of(panel).is_none() {
+            self.docks.give_back(&mut self.ui, panel);
+        }
+        self.docks.activate(&mut self.ui, panel);
+        if let Some(r) = self.docks.region_of(panel) {
+            self.panels[r] = true;
+        }
+        if self.maximized.is_some() && self.maximized != Some(Zoom::Stack(panel)) {
+            self.maximized = None;
+        }
+        self.sync_visible();
+    }
+
+    /// Put a floating panel back where it was docked, and close its window.
     pub(crate) fn dock_back(&mut self, panel: Panel) {
         let Some(at) = self.floats.iter().position(|f| f.panel == panel) else {
             return;
         };
         let float = self.floats.remove(at);
-        self.docks.give_back(&mut self.ui, panel, 2);
+        self.docks.give_back(&mut self.ui, panel);
         self.ui.remove(float.frame);
         self.sync_visible();
         self.refresh();
@@ -1802,20 +1862,31 @@ impl Studio {
             .map(|p| p.root().join(".runity").join("studio.ron"))
     }
 
-    /// The panels' sizes and the bottom tab, as RON.
-    fn layout_text(&self) -> String {
+    /// Where the panels are and how big the areas are, as a preset holds
+    /// it (`crate::layouts`).
+    fn layout(&self) -> Layout {
         // The sizes asked for, not the ones laid out: a folded dock is
         // laid out at none, a maximized one at the whole window.
         let w = |n: NodeId| self.ui.style(n).layout.size.width.value().round();
-        let (docks, active) = self.docks.layout();
-        format!(
-            "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
-            w(self.left),
-            w(self.right),
-            self.lower_before_wide
-                .unwrap_or(self.ui.style(self.lower).layout.size.height.value())
-                .round(),
-        )
+        let lower = self
+            .lower_before_wide
+            .unwrap_or(self.ui.style(self.lower).layout.size.height.value())
+            .round();
+        Layout {
+            sizes: [Some(w(self.left)), Some(w(self.right)), Some(lower)],
+            name: self.layout_name.clone(),
+            arrangement: Some(self.docks.arrangement().clone()),
+            clear_on_play: None,
+        }
+    }
+
+    /// The layout file's text: the layout, and the Console's Clear on Play.
+    fn layout_text(&self) -> String {
+        Layout {
+            clear_on_play: Some(self.bottom.clear_on_play),
+            ..self.layout()
+        }
+        .write()
     }
 
     /// Put the panels back where they were last time.
@@ -1826,43 +1897,116 @@ impl Studio {
         else {
             return;
         };
-        let number = |key: &str| -> Option<f32> {
-            let at = text.find(&format!("{key}:"))? + key.len() + 1;
-            text[at..].split([',', ')']).next()?.trim().parse().ok()
-        };
-        if let Some(v) = number("left") {
+        let layout = Layout::read(&text);
+        if let Some(on) = layout.clear_on_play {
+            self.bottom.clear_on_play = on;
+        }
+        self.apply_layout(layout);
+        self.saved_layout = self.layout_text_after_paint();
+    }
+
+    /// Put the panels where `layout` says, at its sizes. Panels in windows
+    /// of their own are docked first, as Unity's layouts do.
+    fn apply_layout(&mut self, layout: Layout) {
+        for panel in self.floats.iter().map(|f| f.panel).collect::<Vec<_>>() {
+            self.dock_back(panel);
+        }
+        let [left, right, lower] = layout.sizes;
+        if let Some(v) = left {
             self.ui
                 .restyle(self.left, |s| s.width(v.clamp(140.0, 900.0)));
         }
-        if let Some(v) = number("right") {
+        if let Some(v) = right {
             self.ui
                 .restyle(self.right, |s| s.width(v.clamp(140.0, 900.0)));
         }
-        if let Some(v) = number("lower") {
+        if let Some(v) = lower {
             self.ui
                 .restyle(self.lower, |s| s.height(v.clamp(60.0, 900.0)));
         }
-        let quoted = |key: &str| -> Option<String> {
-            let at = text.find(&format!("{key}:"))? + key.len() + 1;
-            let rest = text[at..].trim().strip_prefix('"')?;
-            Some(rest.split('"').next()?.to_string())
-        };
-        if let Some(layout) = quoted("docks").as_deref().and_then(Docks::parse) {
-            for (i, panels) in layout.iter().enumerate() {
-                for panel in panels {
-                    self.docks.move_panel(&mut self.ui, *panel, i);
-                }
-            }
+        if let Some(arrangement) = layout.arrangement {
+            self.docks.set_arrangement(&mut self.ui, arrangement);
         }
-        if let Some(active) = quoted("active") {
-            for name in active.split('|') {
-                if let Some(panel) = Panel::from_name(name) {
-                    self.docks.activate(&mut self.ui, panel);
-                }
-            }
-        }
+        self.layout_name = layout.name;
+        self.maximized = None;
+        self.panels = [true; 3];
         self.sync_visible();
-        self.saved_layout = self.layout_text_after_paint();
+        self.update_layout_button();
+    }
+
+    /// The Layout button names the preset last chosen or saved.
+    fn update_layout_button(&mut self) {
+        let name = self.layout_name.clone().unwrap_or_else(|| "Layout".into());
+        if let Some(t) = self.ui.children(self.toolbar.layout).first().copied() {
+            self.ui.set_text(t, &name);
+        }
+    }
+
+    /// The presets to choose from: the built-in ones, then this person's.
+    fn layout_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = layouts::BUILT_IN.iter().map(|n| n.to_string()).collect();
+        if let Some(dir) = &self.config_dir {
+            names.extend(layouts::saved(dir));
+        }
+        names
+    }
+
+    /// The Layout button's list: every preset, the one in use checked,
+    /// and Save and Delete.
+    fn layout_menu(&self) -> Vec<MenuItem> {
+        let mut items: Vec<MenuItem> = self
+            .layout_names()
+            .into_iter()
+            .map(|n| {
+                let on = self.layout_name.as_deref() == Some(n.as_str());
+                MenuItem::new(&n, Action::Layout(n.clone())).checked(on)
+            })
+            .collect();
+        items.push(MenuItem::separator());
+        items.push(MenuItem::new("Save Layout As…", Action::SaveLayoutAs));
+        items.push(MenuItem::new("Delete Layout…", Action::DeleteLayout));
+        items
+    }
+
+    /// Where the person's own layouts are kept: the per-user config
+    /// folder (`layouts::config_dir`). A test points it elsewhere.
+    pub fn set_config_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
+        self.config_dir = Some(dir.into());
+    }
+
+    /// A panel's menu — its tab's right click and its strip's ⋮: what it
+    /// offers of its own, then what every panel does.
+    fn panel_menu(&self, panel: Panel) -> Vec<MenuItem> {
+        let mut items = match panel {
+            Panel::Inspector => {
+                let debug = self.session.inspector_debug();
+                vec![
+                    MenuItem::new("Normal", Action::InspectorDebug(false)).checked(!debug),
+                    MenuItem::new("Debug", Action::InspectorDebug(true)).checked(debug),
+                    MenuItem::separator(),
+                ]
+            }
+            Panel::Console => vec![
+                MenuItem::new("Clear on Play", Action::ToggleClearOnPlay)
+                    .checked(self.bottom.clear_on_play),
+                MenuItem::new("Clear", Action::ClearConsole),
+                MenuItem::separator(),
+            ],
+            _ => Vec::new(),
+        };
+        let maximized = self.maximized == Some(Zoom::Stack(panel));
+        items.extend([
+            MenuItem::new("Float in its own window", Action::Float(panel)),
+            MenuItem::new("Maximize", Action::MaximizePanel(panel)).checked(maximized),
+            MenuItem::new("Close Tab", Action::CloseTab(panel)),
+        ]);
+        items
+    }
+
+    /// Show the Inspector's padlock in its strip as it is.
+    fn sync_lock(&mut self) {
+        let on = self.inspector.is_locked();
+        self.docks.set_locked(&mut self.ui, Panel::Inspector, on);
     }
 
     /// Tell the lower panels which of them are on top.
@@ -2100,6 +2244,8 @@ impl Studio {
         }
         let t2 = Instant::now();
         self.inspector.update(&mut self.ui, s);
+        // The Inspector lets go of an entity that went: its padlock opens.
+        self.sync_lock();
         let t3 = Instant::now();
         self.update_toolbar();
         self.update_status();
@@ -2353,21 +2499,21 @@ impl Studio {
                 }
                 return;
             }
-            Some(Docked::Maximize(i)) => {
-                self.toggle_zoom(Zoom::Dock(i));
+            Some(Docked::Maximize(panel)) => {
+                self.toggle_zoom(Zoom::Stack(panel));
                 self.sync_visible();
                 return;
             }
-            Some(Docked::Menu(panel)) => {
-                let (x, y) = self.ui.pointer();
-                requests.menu = Some((
-                    vec![MenuItem::new(
-                        "Float in its own window",
-                        Action::Float(panel),
-                    )],
-                    x,
-                    y,
-                ));
+            Some(Docked::Menu(panel, x, y)) => {
+                requests.menu = Some((self.panel_menu(panel), x, y));
+                return;
+            }
+            Some(Docked::Lock(panel)) => {
+                if panel == Panel::Inspector {
+                    self.inspector.toggle_lock();
+                    self.sync_lock();
+                    requests.refresh = true;
+                }
                 return;
             }
             None => {}
@@ -2478,6 +2624,11 @@ impl Studio {
             requests.keyboard_to_scene = true;
             return true;
         }
+        if node == self.toolbar.layout {
+            let r = self.ui.rect(node);
+            requests.menu = Some((self.layout_menu(), r.x + r.width - 236.0, r.y + r.height + 4.0));
+            return true;
+        }
         let t = &self.toolbar;
         if let Some((_, items)) = t.menus.iter().find(|(n, _)| *n == node) {
             let r = self.ui.rect(node);
@@ -2498,6 +2649,20 @@ impl Studio {
                         }
                     }
                     _ => {}
+                }
+            }
+            // The Window menu lists the layouts this person saved after
+            // the built-in ones.
+            if let Some(at) = items
+                .iter()
+                .position(|i| i.action == Some(Action::Layout("Tall".into())))
+            {
+                let saved = self.config_dir.as_deref().map(layouts::saved).unwrap_or_default();
+                for (k, name) in saved.into_iter().enumerate() {
+                    items.insert(
+                        at + 1 + k,
+                        MenuItem::new(&format!("Layout: {name}"), Action::Layout(name)),
+                    );
                 }
             }
             requests.menu = Some((items, r.x, r.y + r.height + 4.0));
@@ -3079,6 +3244,9 @@ impl Studio {
                         s.stop();
                         s.set_game_view(false);
                     } else {
+                        if self.bottom.clear_on_play {
+                            s.clear_console();
+                        }
                         s.play();
                         s.set_game_view(true);
                     }
@@ -3093,6 +3261,9 @@ impl Studio {
                 }
                 Action::Step => {
                     if !s.is_playing() {
+                        if self.bottom.clear_on_play {
+                            s.clear_console();
+                        }
                         s.play();
                     }
                     s.step_once();
@@ -3132,6 +3303,44 @@ impl Studio {
                     );
                 }
                 Action::Float(panel) => self.float(panel),
+                Action::Layout(name) => {
+                    let layout = layouts::load(self.config_dir.as_deref(), &name)?;
+                    self.apply_layout(layout);
+                }
+                Action::SaveLayoutAs => {
+                    let initial = self
+                        .layout_name
+                        .clone()
+                        .filter(|n| Layout::built_in(n).is_none())
+                        .unwrap_or_else(|| "My Layout".into());
+                    self.ask("Save layout as", &initial, Ask::SaveLayout);
+                }
+                Action::DeleteLayout => {
+                    let saved = self.config_dir.as_deref().map(layouts::saved).unwrap_or_default();
+                    let initial = self
+                        .layout_name
+                        .clone()
+                        .filter(|n| saved.contains(n))
+                        .or_else(|| saved.first().cloned())
+                        .ok_or("no saved layouts to delete: built-in ones stay")?;
+                    self.ask("Delete layout", &initial, Ask::DeleteLayout);
+                }
+                Action::ShowPanel(panel) => self.show_panel(panel),
+                Action::MaximizePanel(panel) => {
+                    self.docks.activate(&mut self.ui, panel);
+                    self.toggle_zoom(Zoom::Stack(panel));
+                    self.sync_visible();
+                }
+                Action::CloseTab(panel) => {
+                    self.docks.close(&mut self.ui, panel);
+                    self.sync_visible();
+                }
+                Action::InspectorDebug(debug) => {
+                    self.inspector.set_debug(&mut self.ui, &mut self.session, debug);
+                }
+                Action::ToggleClearOnPlay => {
+                    self.bottom.clear_on_play = !self.bottom.clear_on_play;
+                }
                 Action::MaterialInstance(parent) => {
                     let name = s.new_material_instance(&parent).map_err(e)?;
                     s.say(
@@ -3532,6 +3741,29 @@ impl Studio {
                     scale,
                 });
             }
+            Ask::SaveLayout => {
+                let dir = self.config_dir.clone().ok_or("no config folder to keep layouts in")?;
+                let name = layouts::check_name(text)?.to_string();
+                let layout = Layout {
+                    name: Some(name.clone()),
+                    ..self.layout()
+                };
+                let path = layouts::save(&dir, &name, &layout)?;
+                self.layout_name = Some(name.clone());
+                self.update_layout_button();
+                self.session
+                    .say(Level::Info, format!("saved layout {name} ({})", path.display()));
+            }
+            Ask::DeleteLayout => {
+                let dir = self.config_dir.clone().ok_or("no config folder to keep layouts in")?;
+                layouts::delete(&dir, text)?;
+                if self.layout_name.as_deref() == Some(text) {
+                    self.layout_name = None;
+                    self.update_layout_button();
+                }
+                self.session
+                    .say(Level::Info, format!("deleted layout {text}"));
+            }
         }
         Ok(())
     }
@@ -3562,6 +3794,7 @@ impl Studio {
                 .clip(),
         );
         self.ui.set_name(menu, "menu");
+        let checks = items.iter().any(|i| i.checked.is_some());
         let mut lines = Vec::new();
         for item in items {
             match item.action {
@@ -3589,6 +3822,15 @@ impl Studio {
                             .hover(ACCENT.alpha(16)),
                     );
                     self.ui.set_name(line, format!("menu {}", item.label));
+                    // A choice that is on or off: a check when on. Every
+                    // line of a menu with one keeps room for it, so the
+                    // labels line up.
+                    if checks {
+                        let mark = self.ui.add(line, Style::row().size(14.0, 14.0).fixed());
+                        if item.checked == Some(true) {
+                            icon(&mut self.ui, mark, "check", ACCENT);
+                        }
+                    }
                     self.ui.add_text(line, text().fill(), &item.label);
                     if let Some(k) = item.shortcut {
                         self.ui.add_text(
@@ -3793,6 +4035,22 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .background(ACCENT_400),
     );
     separator(ui, right);
+    // Unity's Layout dropdown, beside Undo and Redo.
+    let layout = ui.add(
+        right,
+        Style::row()
+            .height(26.0)
+            .padding_x(SPACE_2)
+            .gap(4.0)
+            .center_items()
+            .radius(6.0)
+            .hover(HOVER)
+            .pressed(PRESSED),
+    );
+    ui.set_name(layout, "layout");
+    ui.add_text(layout, text().text_color(LABEL), "Default");
+    icon(ui, layout, "chevron-down", MUTED);
+    separator(ui, right);
     let undo = icon_button(ui, right, "undo", "undo-2", false);
     let redo = icon_button(ui, right, "redo", "redo-2", false);
     separator(ui, right);
@@ -3813,6 +4071,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             undo,
             redo,
             save,
+            layout,
         },
         bar,
     )
@@ -3887,8 +4146,8 @@ fn set_view_tab(ui: &mut Ui, tab: NodeId, on: bool) {
 enum Zoom {
     /// The Scene or Game view.
     View,
-    /// Dock `i`: left, right, lower.
-    Dock(usize),
+    /// The stack holding this panel, in whichever area.
+    Stack(Panel),
 }
 
 /// What a control does, for its tooltip — by the control's name.

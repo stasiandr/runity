@@ -134,6 +134,19 @@ pub enum Action {
     MaterialInstance(String),
     /// Put the runity add-on into Blender, turned on (docs/blender.md).
     InstallBlenderPlugin,
+    /// Apply a layout preset, built in or saved, by name.
+    Layout(String),
+    SaveLayoutAs,
+    DeleteLayout,
+    /// Bring a panel up: its tab on top, or back in a dock when closed.
+    ShowPanel(crate::dock::Panel),
+    /// A panel's stack over the whole window, or back.
+    MaximizePanel(crate::dock::Panel),
+    CloseTab(crate::dock::Panel),
+    /// The Inspector's Normal (`false`) or Debug (`true`) mode.
+    InspectorDebug(bool),
+    /// The Console's Clear on Play, on or off.
+    ToggleClearOnPlay,
 }
 
 /// One line of a menu: a label, the key that does the same, what it does.
@@ -143,6 +156,8 @@ pub struct MenuItem {
     pub label: String,
     pub shortcut: Option<&'static str>,
     pub action: Option<Action>,
+    /// A choice that is on or off: `Some(true)` draws a check by it.
+    pub checked: Option<bool>,
 }
 
 impl MenuItem {
@@ -151,7 +166,14 @@ impl MenuItem {
             label: label.to_string(),
             shortcut: None,
             action: Some(action),
+            checked: None,
         }
+    }
+
+    /// A choice that is on or off.
+    pub fn checked(mut self, on: bool) -> Self {
+        self.checked = Some(on);
+        self
     }
 
     pub fn key(mut self, shortcut: &'static str) -> Self {
@@ -164,6 +186,7 @@ impl MenuItem {
             label: String::new(),
             shortcut: None,
             action: None,
+            checked: None,
         }
     }
 }
@@ -296,6 +319,25 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
                     Action::Float(crate::dock::Panel::Project),
                 ),
                 item("Dock All Floating Panels", Action::DockAll),
+                MenuItem::separator(),
+                // The studio lists the layouts a person saved after these.
+                item("Layout: Default", Action::Layout("Default".into())),
+                item("Layout: Tall", Action::Layout("Tall".into())),
+                item("Save Layout As…", Action::SaveLayoutAs),
+                item("Delete Layout…", Action::DeleteLayout),
+                MenuItem::separator(),
+                item("Hierarchy", Action::ShowPanel(crate::dock::Panel::Hierarchy)),
+                item("Inspector", Action::ShowPanel(crate::dock::Panel::Inspector)),
+                item("Project", Action::ShowPanel(crate::dock::Panel::Project)),
+                item("Console", Action::ShowPanel(crate::dock::Panel::Console)),
+                item("History", Action::ShowPanel(crate::dock::Panel::History)),
+                item("Git", Action::ShowPanel(crate::dock::Panel::Git)),
+                item("Animation", Action::ShowPanel(crate::dock::Panel::Animation)),
+                item("Animator", Action::ShowPanel(crate::dock::Panel::Animator)),
+                item("Dialogues", Action::ShowPanel(crate::dock::Panel::Dialogues)),
+                item("UI Builder", Action::ShowPanel(crate::dock::Panel::Screens)),
+                item("Settings", Action::ShowPanel(crate::dock::Panel::Settings)),
+                item("Profiler", Action::ShowPanel(crate::dock::Panel::Profiler)),
             ],
         ),
         (

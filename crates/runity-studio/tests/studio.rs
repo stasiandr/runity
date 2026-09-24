@@ -1098,7 +1098,7 @@ fn debug_mode_edits_the_entity_as_its_ron_on_several_lines() {
     let crate_id = s.session.find("crate").unwrap();
     click(&mut s, "line crate");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Debug");
+    click(&mut s, "menu Debug");
     // The whole block, as the file writes it, and no field rows.
     let ron = s.ui.find("inspector ron").expect("one box");
     assert_eq!(s.ui.text(ron).unwrap(), s.session.entity_ron(crate_id).unwrap());
@@ -2704,7 +2704,7 @@ fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
     };
     assert!(s.ui.find("inspector ron").is_none(), "no RON outside Debug mode");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Debug");
+    click(&mut s, "menu Debug");
     let ron = s.ui.find("inspector ron").expect("the settings as one box");
     let text = s.ui.text(ron).unwrap().to_string();
     assert!(text.contains("sun:") && text.contains("fog:"), "{text}");
@@ -2712,7 +2712,7 @@ fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
     assert!(s.ui.find("scene fog start").is_none(), "no field rows");
     assert!(s.session.inspector_debug(), "remembered");
     click(&mut s, "inspector more");
-    click(&mut s, "inspector mode Normal");
+    click(&mut s, "menu Normal");
     assert!(s.ui.find("inspector ron").is_none());
     assert!(s.ui.find("scene fog start").is_some());
 }
@@ -2767,4 +2767,239 @@ fn a_collider_picks_its_shape_and_edits_its_numbers() {
         .unwrap()
         .iter()
         .any(|f| f.name == "body" && f.value == "Dynamic"));
+}
+
+/// Drag the tab named `tab` and let go at a point of the window.
+fn drag_tab_to(s: &mut Studio, tab: &str, x: f32, y: f32) {
+    s.ui.paint();
+    let (ax, ay) = s.ui.rect(s.ui.find(tab).unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 10.0,
+        y: ay + 10.0,
+    });
+    s.frame();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+}
+
+fn rect(s: &mut Studio, name: &str) -> runity_ui::Rect {
+    s.ui.paint();
+    let node = s
+        .ui
+        .find(name)
+        .unwrap_or_else(|| panic!("no node {name:?} in\n{}", s.ui.dump()));
+    s.ui.rect(node)
+}
+
+#[test]
+fn a_tab_dropped_on_an_edge_splits_the_stack_which_is_kept_and_folds_when_emptied() {
+    let Some((mut s, dir)) = studio() else { return };
+    // The Project onto the lower edge of the Hierarchy's stack: while it
+    // is held there, the lower half lights up.
+    let left = rect(&mut s, "stack 0");
+    let (x, y) = (left.x + left.width / 2.0, left.y + left.height - 30.0);
+    drag_tab_to(&mut s, "tab project", x, y);
+    let zone = rect(&mut s, "drop zone");
+    assert!(s.ui.is_shown(s.ui.find("drop zone").unwrap()), "the target lights up");
+    assert!(
+        (zone.y - (left.y + left.height / 2.0)).abs() < 2.0
+            && (zone.width - left.width).abs() < 2.0,
+        "the lower half of the stack: {zone:?} of {left:?}"
+    );
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    assert!(!s.ui.is_shown(s.ui.find("drop zone").unwrap()));
+
+    let top = rect(&mut s, "stack 0a");
+    let bottom = rect(&mut s, "stack 0b");
+    let dock0 = rect(&mut s, "dock 0");
+    let project = rect(&mut s, "project search");
+    assert!(bottom.contains(project.x + 1.0, project.y + 1.0), "the Project below");
+    let hierarchy = rect(&mut s, "tab hierarchy");
+    assert!(top.contains(hierarchy.x + 1.0, hierarchy.y + 1.0), "the Hierarchy above");
+    assert!(bottom.y > top.y + top.height && dock0.contains(bottom.x + 1.0, bottom.y + 1.0));
+    assert!(s.ui.find("divider 0").is_some(), "a bar between them");
+
+    // The bar drags: the Hierarchy gets taller.
+    let (bx, by) = rect(&mut s, "divider 0").center();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    for i in 1..=10 {
+        s.handle(&InputEvent::MouseMoved {
+            x: bx,
+            y: by + 6.0 * i as f32,
+        });
+    }
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    let taller = rect(&mut s, "stack 0a").height;
+    assert!(taller > top.height + 40.0, "{} -> {taller}", top.height);
+
+    // Written down as a tree, and read back next run.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    s.frame();
+    let text = std::fs::read_to_string(dir.join(".runity/studio.ron")).unwrap();
+    assert!(text.contains("left: down("), "{text}");
+    drop(s);
+    let session = runity_studio::open(&dir.join("scenes/first-light.ron")).unwrap();
+    let mut s = Studio::new(session, 1440.0, 900.0, 1.0);
+    s.frame();
+    let top = rect(&mut s, "stack 0a");
+    let bottom = rect(&mut s, "stack 0b");
+    let project = rect(&mut s, "project search");
+    assert!(bottom.contains(project.x + 1.0, project.y + 1.0), "still below");
+    assert!((top.height - taller).abs() < 2.0, "{} vs {taller}", top.height);
+
+    // Taken back under the view, the Project leaves the Hierarchy the
+    // whole column.
+    drag_tab(&mut s, "tab project", "stack 2");
+    assert!(s.ui.find("divider 0").is_none(), "the split is gone");
+    let whole = rect(&mut s, "stack 0");
+    let dock0 = rect(&mut s, "dock 0");
+    assert!(whole.height > dock0.height - 10.0, "{whole:?} in {dock0:?}");
+}
+
+#[test]
+fn tall_puts_the_project_under_the_hierarchy_and_the_console_under_the_view() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    let hierarchy = rect(&mut s, "hierarchy list");
+    let project = rect(&mut s, "project search");
+    assert!(
+        project.y > hierarchy.y && (project.x - hierarchy.x).abs() < 30.0,
+        "the Project under the Hierarchy: {project:?} {hierarchy:?}"
+    );
+    let dock0 = rect(&mut s, "dock 0");
+    assert!(dock0.height > 800.0, "the left column the window's height: {dock0:?}");
+    let view = rect(&mut s, "scene view");
+    let console = rect(&mut s, "console lines");
+    assert!(console.y > view.y + view.height, "the Console under the view");
+    assert!(
+        console.x >= view.x - 10.0 && console.x + console.width <= view.x + view.width + 10.0,
+        "and only under it: {console:?} {view:?}"
+    );
+    let inspector = rect(&mut s, "dock 1");
+    assert!(inspector.height > 800.0, "the Inspector the window's height");
+    let label = s.ui.children(s.ui.find("layout").unwrap())[0];
+    assert_eq!(s.ui.text(label), Some("Tall"));
+
+    // And the Window menu's Default puts them back.
+    menu(&mut s, "Window", "Layout: Default");
+    assert!(s.ui.find("stack 0a").is_none());
+    let lower = rect(&mut s, "dock 2");
+    let view = rect(&mut s, "scene view");
+    assert!(lower.y > view.y + view.height);
+    let project = rect(&mut s, "project search");
+    assert!(lower.contains(project.x + 1.0, project.y + 1.0), "the Project under the view");
+}
+
+#[test]
+fn a_layout_saved_under_a_name_is_listed_applied_and_deleted() {
+    let Some((mut s, dir)) = studio() else { return };
+    let config = dir.join("config");
+    s.set_config_dir(&config);
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    drag_tab(&mut s, "tab history", "stack 0a");
+    click(&mut s, "layout");
+    click(&mut s, "menu Save Layout As…");
+    answer(&mut s, "Mine");
+    let file = config.join("layouts/Mine.ron");
+    let text = std::fs::read_to_string(&file).expect("saved in the config folder");
+    assert!(text.contains("*history"), "{text}");
+    assert!(!text.contains("clear_on_play"), "a panel's option is not the layout's");
+
+    click(&mut s, "layout");
+    click(&mut s, "menu Default");
+    assert!(s.ui.find("stack 0a").is_none());
+    click(&mut s, "layout");
+    click(&mut s, "menu Mine");
+    let history = rect(&mut s, "tab history");
+    assert!(
+        rect(&mut s, "stack 0a").contains(history.x + 1.0, history.y + 1.0),
+        "as saved"
+    );
+    // The Window menu lists it too.
+    click(&mut s, "menu bar Window");
+    assert!(s.ui.find("menu Layout: Mine").is_some());
+    click(&mut s, "menu overlay");
+
+    click(&mut s, "layout");
+    click(&mut s, "menu Delete Layout…");
+    answer(&mut s, "Mine");
+    assert!(!file.exists(), "deleted");
+    click(&mut s, "layout");
+    assert!(s.ui.find("menu Mine").is_none(), "no longer listed");
+    assert!(s.ui.find("menu Tall").is_some());
+}
+
+#[test]
+fn the_consoles_menu_clears_it_when_play_starts() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "tab console");
+    assert!(
+        s.ui.find("console lock").is_none_or(|n| !s.ui.is_shown(n)),
+        "no padlock where it means nothing"
+    );
+    click(&mut s, "console more");
+    assert!(s.ui.find("menu Float in its own window").is_some(), "what every panel has");
+    assert!(s.ui.find("menu Close Tab").is_some());
+    click(&mut s, "menu Clear on Play");
+    s.session.say(runity_editor::console::Level::Info, "before play");
+    s.frame();
+    click(&mut s, "play");
+    assert!(
+        !s.session.console().iter().any(|l| l.text == "before play"),
+        "cleared: {:?}",
+        s.session.console()
+    );
+    click(&mut s, "play");
+    // Off again: the Console keeps what it had.
+    click(&mut s, "console more");
+    click(&mut s, "menu Clear on Play");
+    s.session.say(runity_editor::console::Level::Info, "kept");
+    click(&mut s, "play");
+    assert!(s.session.console().iter().any(|l| l.text == "kept"));
+    click(&mut s, "play");
+}
+
+#[test]
+fn a_maximized_stack_of_a_split_takes_the_window_and_gives_it_back() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "layout");
+    click(&mut s, "menu Tall");
+    let before = rect(&mut s, "stack 0b");
+    pause_then_double_click(&mut s, "tab project");
+    let big = rect(&mut s, "stack 0b");
+    assert!(big.width > 1300.0 && big.height > 700.0, "{big:?}");
+    assert!(!s.ui.is_shown(s.ui.find("stack 0a").unwrap()), "the Hierarchy gave way");
+    assert!(!s.ui.is_shown(s.ui.find("scene view").unwrap()));
+    pause_then_double_click(&mut s, "tab project");
+    let back = rect(&mut s, "stack 0b");
+    assert!(
+        (back.height - before.height).abs() < 1.0 && (back.width - before.width).abs() < 1.0,
+        "{back:?} was {before:?}"
+    );
+    assert!(s.ui.is_shown(s.ui.find("stack 0a").unwrap()));
+    // Shift Space over it does the same.
+    let (x, y) = back.center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.handle(&InputEvent::KeyDown(Key::LeftShift));
+    key(&mut s, Key::Space);
+    s.handle(&InputEvent::KeyUp(Key::LeftShift));
+    assert!(rect(&mut s, "stack 0b").width > 1300.0);
+}
+
+#[test]
+fn a_closed_tab_comes_back_from_the_window_menu() {
+    let Some((mut s, _dir)) = studio() else { return };
+    press(&mut s, "tab history", MouseButton::Right);
+    click(&mut s, "menu Close Tab");
+    assert!(s.ui.find("tab history").is_none());
+    menu(&mut s, "Window", "History");
+    assert!(s.ui.find("tab history").is_some());
+    assert!(s.ui.is_shown(s.ui.find("history").unwrap()), "on top");
 }

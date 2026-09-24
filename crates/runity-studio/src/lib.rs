@@ -25,6 +25,7 @@ mod dock;
 mod git_marks;
 mod hierarchy;
 mod inspector;
+pub mod layouts;
 pub mod menu;
 mod screens;
 mod studio;
