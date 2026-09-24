@@ -317,3 +317,74 @@ fn surface(in: SurfaceIn, out: Surface) -> Surface {{
         );
     }
 }
+
+/// A cut-out's own shader (grass: a blade out of a card) discards where
+/// the surface is not; the depth prepass, which does not run it, must not
+/// lay the whole card — or what is behind the cut is hidden by nothing.
+#[test]
+fn what_an_own_shader_cuts_away_shows_what_is_behind() {
+    let Ok(gpu) = Gpu::headless_blocking(false) else {
+        eprintln!("skipping: no adapter");
+        return;
+    };
+    let target = OffscreenTarget::new(&gpu, SIZE, SIZE);
+    let mut renderer = Renderer::new(&gpu, &target);
+    let cube = renderer.upload_mesh_owned(&gpu, &builtin::cube(1.0));
+    let id = runity::asset::shader_id("cut_all");
+    renderer
+        .set_material_shader(
+            &gpu,
+            id,
+            "fn surface(in: SurfaceIn, out: Surface) -> Surface {\n    if in.uv.x > -1.0 { discard; }\n    return out;\n}\n",
+        )
+        .unwrap();
+    let draw = |transform: Mat4, material: Material| Draw {
+        mesh: cube,
+        transform,
+        texture: TextureHandle::WHITE,
+        material,
+        pose: None,
+    };
+    let frame = Frame {
+        camera: Camera {
+            position: Vec3::new(0.0, 0.0, 4.0),
+            target: Vec3::ZERO,
+            ..Camera::default()
+        },
+        sky: runity::render::Sky {
+            mode: SkyMode::Color,
+            ..Default::default()
+        },
+        clear_color: Vec3::ZERO,
+        // Occlusion reads the prepass, and TAA its depth: with them on,
+        // the prepass runs and the scene starts from its depth.
+        ambient_occlusion: runity::ssao::AmbientOcclusion {
+            enabled: true,
+            ..Default::default()
+        },
+        draws: vec![
+            // The card in front, cut away everywhere.
+            draw(
+                Mat4::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                Material {
+                    shading: Shading::Unlit,
+                    shader: Some(id),
+                    ..Material::new(1.0, 1.0, 1.0)
+                },
+            ),
+            // Red behind it.
+            draw(
+                Mat4::from_scale(Vec3::splat(3.0)) * Mat4::from_translation(Vec3::new(0.0, 0.0, -1.0)),
+                Material {
+                    shading: Shading::Unlit,
+                    ..Material::new(1.0, 0.0, 0.0)
+                },
+            ),
+        ],
+        ..Frame::default()
+    };
+    renderer.render(&gpu, &target, &frame);
+    renderer.render(&gpu, &target, &frame);
+    let middle = OffscreenTarget::pixel(&target.read_rgba(&gpu), SIZE, SIZE / 2, SIZE / 2);
+    assert!(middle[0] > 200 && middle[1] < 40, "the red behind the cut: {middle:?}");
+}
