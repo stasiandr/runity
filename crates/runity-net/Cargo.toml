@@ -1,0 +1,22 @@
+[package]
+name = "runity-net"
+description = "runity's networking: peers, who owns what, the wire and its transports (UDP by default, a relay, a loopback), parties and LAN discovery, and the physics bench that measures it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+runity-core = { path = "../runity-core" }
+runity-physics = { path = "../runity-physics", default-features = false }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+postcard = { version = "1.1", default-features = false, features = ["use-std"] }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
+
+[features]
+# The physics bench: the simulation itself, on rapier.
+physics = ["runity-physics/rapier"]

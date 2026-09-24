@@ -748,7 +748,7 @@ struct Peer {
 impl Peer {
     fn new(party: Party, scenario: &Scenario) -> Self {
         let mut world = hecs::World::new();
-        crate::world::spawn_scene(&scenario.scene(), &mut world, |_| None);
+        crate::world::spawn_scene_dressed(&scenario.scene(), &mut world, &mut [Box::new(runity_physics::PhysicsDress)]);
         crate::world::apply_hierarchy(&mut world);
         let mut physics = PhysicsWorld::new(1.0 / HZ);
         physics.sync_from_world(&mut world);

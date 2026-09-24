@@ -10,6 +10,8 @@ repository.workspace = true
 runity-animation = { path = "../runity-animation" }
 runity-audio = { path = "../runity-audio", default-features = false }
 runity-core = { path = "../runity-core" }
+runity-steam = { path = "../runity-steam", optional = true }
+runity-net = { path = "../runity-net" }
 runity-navigation = { path = "../runity-navigation", optional = true }
 runity-discord = { path = "../runity-discord", optional = true }
 runity-reports = { path = "../runity-reports", optional = true }
@@ -27,9 +29,6 @@ glam = { version = "0.32", features = ["serde", "bytemuck"] }
 glyphon = "0.12.0"
 hecs = "0.11.0"
 pollster = "1.0.1"
-steamworks = { version = "0.13", optional = true }
-postcard = { version = "1.1", default-features = false, features = ["use-std"] }
-rapier3d = { version = "0.26.1", optional = true }
 rkyv = { version = "0.8", features = ["bytecheck"] }
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -48,7 +47,7 @@ gilrs = { version = "0.11", optional = true }
 default = ["physics", "navigation"]
 # Solid bodies, from rapier. On by default — a battery — and off with
 # `default-features = false` for a game that has no use for it.
-physics = ["dep:rapier3d", "runity-physics/rapier"]
+physics = ["runity-physics/rapier", "runity-net/physics"]
 # Where things can walk: a grid baked from the physics world.
 navigation = ["physics", "dep:runity-navigation"]
 # Sound. Off by default and not because it is unfinished: the engine is
@@ -59,7 +58,7 @@ audio = ["runity-audio/kira"]
 # Steam: lobbies, invites through friends, peer-to-peer through NAT, as a
 # transport. Off by default: it links Valve's SDK and does nothing without
 # the Steam client running.
-steam = ["dep:steamworks"]
+steam = ["dep:runity-steam"]
 # Crash reports sent to Sentry and play reported to GameAnalytics. Off by
 # default: it is the network, TLS and a player's consent, none of which a
 # game gets without asking for them.

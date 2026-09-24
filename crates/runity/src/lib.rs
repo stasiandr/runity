@@ -42,7 +42,7 @@ pub mod atmosphere;
 #[cfg(feature = "audio")]
 pub use runity_audio::audio;
 #[cfg(feature = "physics")]
-pub mod bench;
+pub use runity_net::bench;
 pub use runity_geometry::builtin;
 pub mod clouds;
 pub use runity_core::components;
@@ -61,7 +61,7 @@ pub use runity_gpu::gpu;
 pub use runity_animation::graph_text;
 pub use runity_core::id;
 pub use runity_core::input;
-pub mod lan;
+pub use runity_net::lan;
 pub use runity_core::layers;
 pub mod lens;
 pub use runity_core::library;
@@ -96,10 +96,10 @@ pub mod motion {
 }
 #[cfg(feature = "navigation")]
 pub use runity_navigation::navigation;
-pub mod net;
+pub use runity_net::net;
 pub mod particles;
 pub use runity_core::parts;
-pub mod party;
+pub use runity_net::party;
 pub use runity_core::perf;
 #[cfg(feature = "physics")]
 pub use runity_physics::physics;
@@ -111,7 +111,7 @@ pub mod query;
 pub mod ray;
 pub mod reflections;
 pub mod refs;
-pub mod relay;
+pub use runity_net::relay;
 pub mod render;
 #[cfg(feature = "reports")]
 pub use runity_reports::reports;
@@ -199,7 +199,7 @@ pub mod shell;
 pub use runity_core::spelling;
 pub mod ssao;
 #[cfg(feature = "steam")]
-pub mod steam;
+pub use runity_steam::steam;
 pub use runity_core::strings;
 pub use runity_gpu::surface;
 pub mod taa;

@@ -3038,8 +3038,6 @@ dependencies = [
  "hecs",
  "image",
  "pollster 1.0.1",
- "postcard",
- "rapier3d",
  "rkyv",
  "ron",
  "runity-animation",
@@ -3051,13 +3049,14 @@ dependencies = [
  "runity-gpu",
  "runity-input",
  "runity-navigation",
+ "runity-net",
  "runity-overlay",
  "runity-physics",
  "runity-reports",
  "runity-routes",
  "runity-spline",
+ "runity-steam",
  "serde",
- "steamworks",
  "subsecond",
  "tracing",
  "wgpu",
@@ -3218,6 +3217,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "runity-net"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "hecs",
+ "postcard",
+ "ron",
+ "runity-core",
+ "runity-physics",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "runity-overlay"
 version = "0.1.0"
 dependencies = [
@@ -3278,6 +3291,16 @@ dependencies = [
  "runity-core",
  "runity-geometry",
  "serde",
+]
+
+[[package]]
+name = "runity-steam"
+version = "0.1.0"
+dependencies = [
+ "runity-core",
+ "runity-net",
+ "steamworks",
+ "tracing",
 ]
 
 [[package]]

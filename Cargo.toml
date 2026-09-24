@@ -25,11 +25,13 @@ members = [
     "crates/runity-input",
     "crates/runity-mcp",
     "crates/runity-navigation",
+    "crates/runity-net",
     "crates/runity-overlay",
     "crates/runity-physics",
     "crates/runity-reports",
     "crates/runity-routes",
     "crates/runity-spline",
+    "crates/runity-steam",
     "crates/runity-studio",
     "crates/runity-ui",
 ]
