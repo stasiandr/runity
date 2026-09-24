@@ -1483,6 +1483,10 @@ struct Look {
     on_top: bool,
     /// Terrain's fine grid, placed and raised by its own vertex shader.
     terrain: bool,
+    /// See-through and lit by nothing — smoke, dust, a glow — shaded by
+    /// `fs_unlit`, which skips all the light's work and what goes before
+    /// it: over a screen full of sprites that is most of the frame.
+    unlit: bool,
 }
 
 impl Look {
@@ -1501,15 +1505,21 @@ impl Look {
                         if on_top && blend.is_none() {
                             continue;
                         }
-                        out.push(Look {
-                            skinned,
-                            face,
-                            blend,
-                            water: false,
-                            shader: None,
-                            on_top,
-                            terrain: false,
-                        });
+                        for unlit in [false, true] {
+                            if unlit && (skinned || blend.is_none()) {
+                                continue;
+                            }
+                            out.push(Look {
+                                skinned,
+                                face,
+                                blend,
+                                water: false,
+                                shader: None,
+                                on_top,
+                                terrain: false,
+                                unlit,
+                            });
+                        }
                     }
                 }
             }
@@ -1523,6 +1533,7 @@ impl Look {
                 shader: None,
                 on_top: false,
                 terrain: false,
+                unlit: false,
             });
         }
         // Terrain's fine grid: solid, its front faces.
@@ -1534,6 +1545,7 @@ impl Look {
             shader: None,
             on_top: false,
             terrain: true,
+            unlit: false,
         });
         out
     }
@@ -1552,6 +1564,7 @@ impl Look {
                 shader: None,
                 on_top: false,
                 terrain: false,
+                unlit: false,
             };
         }
         Look {
@@ -1562,6 +1575,7 @@ impl Look {
             shader: material.shader,
             on_top: material.on_top && material.is_transparent(),
             terrain: false,
+            unlit: material.shading == Shading::Unlit && material.is_transparent() && !skinned,
         }
     }
 }
@@ -1742,6 +1756,8 @@ fn scene_pipelines(
                     module: shader,
                     entry_point: Some(if look.water {
                         "fs_water"
+                    } else if look.unlit {
+                        "fs_unlit"
                     } else if prepassed {
                         "fs_prepassed"
                     } else {

@@ -2367,6 +2367,49 @@ fn fs_prepassed(in: VertexOutput, @builtin(front_facing) front: bool) -> @locati
     return shade(in, front, false);
 }
 
+/// A see-through surface lit by nothing — smoke, dust, a glow: its
+/// picture, what it emits and its own shader's say, and none of what
+/// `shade` does for the light (normal maps, decals, weather). A sky of
+/// smoke sprites, each over most of the screen, is what this is for.
+@fragment
+fn fs_unlit(in: VertexOutput, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
+    var base_uv = in.uv;
+    let screen_flags = u32(in.emission.w + 0.5);
+    if (screen_flags & 48u) != 0u {
+        base_uv = in.clip_position.xy / frame.cluster_depth.zw;
+        if (screen_flags & 32u) != 0u {
+            base_uv.x = 1.0 - base_uv.x;
+        }
+    }
+    let sampled = surface_at(in.maps, base_uv);
+    let emitted = emission_at(in.maps, in.uv).rgb;
+    let geometric = normalize(in.normal) * select(-1.0, 1.0, front);
+    var alpha = in.surface.z * sampled.a;
+    if in.surface.w > 0.0 && alpha < in.surface.w {
+        discard;
+    }
+    let shaped = surface(
+        SurfaceIn(in.world_position, geometric, in.uv, frame.clear_color.w, array<vec4<f32>, 2>(in.params_0, in.params_1), in.maps),
+        Surface(in.base_color * sampled.rgb, alpha, in.surface.x, in.surface.y, geometric, in.emission.rgb * emitted),
+    );
+    return unlit_seen(shaped.albedo + shaped.emission, shaped.alpha, in, screen_flags);
+}
+
+/// What an unlit surface's colour looks like from the eye: through the
+/// dust and the fog, premultiplied when its blend wants it.
+fn unlit_seen(colour: vec3<f32>, alpha: f32, in: VertexOutput, flags: u32) -> vec4<f32> {
+    var seen = colour;
+    if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
+        let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
+        seen = seen * c.a + c.rgb;
+    }
+    seen = through_fog(seen, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
+    if (flags & 8u) != 0u {
+        seen = seen * alpha;
+    }
+    return vec4<f32>(seen, alpha);
+}
+
 fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // The base map on the screen instead, for a camera's picture seen
     // through the surface: a mirror's (flipped) or a portal's.
@@ -2490,16 +2533,7 @@ fn shade(in: VertexOutput, front: bool, clip: bool) -> vec4<f32> {
     // or the other, so the branch costs nothing: a sky of smoke sprites,
     // each over most of the screen, is what this is for.
     if unlit > 0.5 {
-        var lit_not = albedo + shaped.emission;
-        if (frame.weather[1].z > 0.0 && dust_can_reach(in.world_position)) || frame.dust.x > 0.5 {
-            let c = textureSampleLevel(cloud_layer, fog_sampler, in.clip_position.xy / frame.cluster_depth.zw, 0.0);
-            lit_not = lit_not * c.a + c.rgb;
-        }
-        lit_not = through_fog(lit_not, in.clip_position.xy, -dot(frame.view_depth, vec4<f32>(in.world_position, 1.0)));
-        if (flags & 8u) != 0u {
-            lit_not = lit_not * alpha;
-        }
-        return vec4<f32>(lit_not, alpha);
+        return unlit_seen(albedo + shaped.emission, alpha, in, flags);
     }
 
     let to_eye = normalize(frame.camera_position.xyz - in.world_position);

@@ -530,7 +530,7 @@ pub fn convert_with(
     if let Some(r) = m.reference("m_Shader") {
         let builtin = r.guid.as_deref() == Some("0000000000000000f000000000000000");
         if builtin && (200..=211).contains(&r.file_id) && r.file_id != 210 {
-            fields.push("shading: Unlit".into());
+            fields.push("unlit: true".into());
         }
     }
     if float(m, "_AlphaClip") == Some(1.0) {
@@ -656,7 +656,7 @@ pub fn convert_with(
             ));
         }
         if look.unlit {
-            fields.push("shading: Unlit".into());
+            fields.push("unlit: true".into());
         }
         if look.on_top && look.transparent {
             fields.push("on_top: true".into());
@@ -849,6 +849,43 @@ Material:
         assert!(["road", "noise", "bumps"].iter().all(|g| used.contains(*g)), "{used:?}");
         assert!(!used.contains("fridge"), "{used:?}");
         assert_eq!(data.into_iter().collect::<Vec<_>>(), ["bumps"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_builtin_particle_material_is_read_back_unlit() {
+        let dir = std::env::temp_dir().join(format!("scrap-unity-unlit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let smoke = dir.join("Smoke.mat");
+        std::fs::write(
+            &smoke,
+            "%YAML 1.1
+--- !u!21 &2100000
+Material:
+  m_Name: Smoke
+  m_Shader: {fileID: 211, guid: 0000000000000000f000000000000000, type: 0}
+  m_SavedProperties:
+    m_TexEnvs: []
+    m_Floats:
+    - _Surface: 1
+    m_Colors: []
+",
+        )
+        .unwrap();
+        let unity = Unity {
+            pieces: Default::default(),
+            layers: Default::default(),
+            declared_params: Default::default(),
+            root: dir.clone(),
+            guids: Default::default(),
+            names: Default::default(),
+        };
+        let text = convert(&unity, &smoke).unwrap();
+        let written = dir.join("Smoke.scrmat");
+        std::fs::write(&written, &text).unwrap();
+        // What the importer writes is what the material reads: a field it
+        // does not know would be dropped without a word, and the smoke lit.
+        assert!(crate::material_source(&written).unwrap().unlit, "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
