@@ -403,8 +403,9 @@ pub struct Studio {
     view_slot: NodeId,
     /// The lower dock's height before the UI Builder went wide.
     lower_before_wide: Option<f32>,
-    /// When the theme file was last read.
-    theme_stamp: Option<std::time::SystemTime>,
+    /// The colours: the person's choice and the project's file.
+    theme: crate::appearance::Theme,
+    appearance: crate::appearance::Appearance,
     left: NodeId,
     right: NodeId,
     lower: NodeId,
@@ -642,6 +643,7 @@ impl Studio {
             roots.insert(panel, root);
         }
         let settings = Settings::new(&mut ui, lower);
+        let appearance = crate::appearance::Appearance::new(&mut ui, settings.page);
         let profiler = Profiler::new(&mut ui, lower);
         roots.insert(Panel::Settings, settings.root);
         roots.insert(Panel::Profiler, profiler.root);
@@ -736,7 +738,8 @@ impl Studio {
             center,
             view_slot,
             lower_before_wide: None,
-            theme_stamp: None,
+            theme: crate::appearance::Theme::new(crate::appearance::config_dir()),
+            appearance,
             left,
             right,
             lower,
@@ -769,6 +772,8 @@ impl Studio {
         studio.restore_layout();
         studio.update_layout_button();
         studio.sync_visible();
+        studio.poll_theme();
+        studio.show_theme();
         studio.refresh();
         studio
     }
@@ -1671,6 +1676,14 @@ impl Studio {
     }
 
     /// A floating panel's window was resized, in logical pixels.
+    /// A panel by its name (`settings`, `inspector`…) into a window of its
+    /// own, as its tab's right-click menu does.
+    pub fn float_panel(&mut self, name: &str) {
+        if let Some(panel) = Panel::from_name(name) {
+            self.float(panel);
+        }
+    }
+
     pub fn resize_float(&mut self, name: &str, width: f32, height: f32) {
         let Some(frame) = self.float_of(name).map(|f| f.frame) else {
             return;
@@ -2166,10 +2179,15 @@ impl Studio {
         items
     }
 
-    /// Where the person's own layouts are kept: the per-user config
-    /// folder (`layouts::config_dir`). A test points it elsewhere.
+    /// Where the person's own things are kept — their layouts and their
+    /// colours: the per-user config folder (`layouts::config_dir`). A test
+    /// points it elsewhere, and what is there is drawn at once.
     pub fn set_config_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
-        self.config_dir = Some(dir.into());
+        let dir = dir.into();
+        self.config_dir = Some(dir.clone());
+        self.theme.set_dir(dir);
+        self.poll_theme();
+        self.show_theme();
     }
 
     /// A panel's menu — its tab's right click and its strip's ⋮: what it
@@ -2241,34 +2259,41 @@ impl Studio {
 
     /// Twice a second, pick up what changed on disk: the scene edited in a
     /// text editor or by git, an asset re-exported (DNA, postulate 1).
-    /// `.runity/theme.ron`, when it changed: Nocturne's colours drawn as
-    /// the file says, with the editor running. A file that does not read
-    /// says why in the Console and the last good colours stay.
+    /// The person's colours and the project's `.runity/theme.ron`, when
+    /// either changed: Nocturne's colours drawn as they say, with the
+    /// editor running. A file that does not read says why in the Console
+    /// and the last good colours stay.
     fn poll_theme(&mut self) {
-        let Some(path) = self
-            .session
-            .project()
-            .map(|p| p.root().join(".runity").join("theme.ron"))
-        else {
-            return;
-        };
-        let stamp = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        if stamp == self.theme_stamp {
-            return;
+        let root = self.session.project().map(|p| p.root().to_path_buf());
+        let (changed, errors) = self.theme.poll(root.as_deref());
+        for e in errors {
+            self.session.say(Level::Error, e);
         }
-        self.theme_stamp = stamp;
-        if stamp.is_none() {
-            self.ui.set_palette(Default::default());
-            return;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        match crate::theme::palette(&text) {
-            Ok(palette) => self.ui.set_palette(palette),
-            Err(e) => self
-                .session
-                .say(Level::Error, format!("{}: {e}", path.display())),
+        if changed {
+            self.show_theme();
         }
     }
+
+    /// Draw the tree in the theme's colours, and the Appearance page as it
+    /// stands.
+    fn show_theme(&mut self) {
+        self.ui.set_palette(self.theme.palette());
+        self.appearance.show(&mut self.ui, &self.theme);
+    }
+
+    /// Change the person's colours: at once here, and in their file.
+    pub fn change_theme(&mut self, change: crate::appearance::Change) {
+        if let Err(e) = self.theme.change(change) {
+            self.session.say(Level::Error, e);
+        }
+        self.show_theme();
+    }
+
+    /// The colours as chosen and as drawn.
+    pub fn theme(&self) -> &crate::appearance::Theme {
+        &self.theme
+    }
+
 
     fn poll_disk(&mut self) {
         if self.polled.elapsed().as_secs_f32() < 0.5 {
@@ -2829,6 +2854,10 @@ impl Studio {
         } else if self.inspector.owns(node) {
             self.inspector
                 .event(&mut self.ui, &mut self.session, node, event, requests);
+        } else if self.appearance.owns(&self.ui, node) {
+            if let Some(change) = self.appearance.event(&mut self.ui, node, event) {
+                self.change_theme(change);
+            }
         } else if self.settings.owns(&self.ui, node) {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -3651,6 +3680,14 @@ impl Studio {
                 }
                 Action::ToggleClearOnPlay => {
                     self.bottom.clear_on_play = !self.bottom.clear_on_play;
+                }
+                Action::Theme(name) => {
+                    self.change_theme(crate::appearance::Change::Preset(name.into()))
+                }
+                Action::Appearance => {
+                    self.show_panel(Panel::Settings);
+                    self.settings.show_page(&mut self.ui, true);
+                    self.sync_visible();
                 }
                 Action::MaterialInstance(parent) => {
                     let name = s.new_material_instance(&parent).map_err(e)?;
@@ -4622,11 +4659,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
     );
     ui.set_layer(dial, true);
     ui.set_name(dial, "compass");
-    let colors = [
-        runity_ui::Color::hex(0xe5736f),
-        runity_ui::Color::hex(0x8cc26b),
-        runity_ui::Color::hex(0x6f9be5),
-    ];
+    let colors = [AXIS_X, AXIS_Y, AXIS_Z];
     let beads = colors.map(|color| {
         (0..BEADS)
             .map(|_| {

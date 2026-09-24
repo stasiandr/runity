@@ -15,6 +15,13 @@ use runity::prelude::*;
 use runity_studio::Studio;
 
 fn studio() -> Option<(Studio, std::path::PathBuf)> {
+    // The person's colours: an empty folder of the tests' own, never the
+    // real one — whatever someone chose, the tests see Nocturne.
+    static CONFIG: std::sync::Once = std::sync::Once::new();
+    CONFIG.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("runity-studio-config-{}", std::process::id()));
+        std::env::set_var(runity_studio::appearance::CONFIG_DIR_VAR, dir);
+    });
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/valley");
     // A number of its own as well: two tests starting in the same
     // nanosecond must not share a folder and delete each other's files.
@@ -3626,4 +3633,124 @@ fn a_closed_tab_comes_back_from_the_window_menu() {
     menu(&mut s, "Window", "History");
     assert!(s.ui.find("tab history").is_some());
     assert!(s.ui.is_shown(s.ui.find("history").unwrap()), "on top");
+}
+
+/// A folder for one test's own colours, and the preset's colour of a token.
+fn my_colours(s: &mut Studio, dir: &std::path::Path) -> std::path::PathBuf {
+    let me = dir.join("me");
+    s.set_config_dir(me.clone());
+    me
+}
+
+/// Click on the Appearance page, scrolled to where the node is: the
+/// lower dock is short.
+fn click_page(s: &mut Studio, name: &str) {
+    s.ui.paint();
+    let page = s.ui.find("appearance").unwrap();
+    let node = s.ui.find(name).unwrap();
+    s.ui.scroll_to(page, node);
+    click(s, name);
+}
+
+fn preset_rgb(preset: &str, token: &str) -> [u8; 3] {
+    runity_studio::theme::preset(preset).unwrap().get(token)
+}
+
+fn drawn(s: &Studio, c: runity_ui::Color) -> [u8; 3] {
+    let t = s.ui.tint(c);
+    [t.r, t.g, t.b]
+}
+
+#[test]
+fn choosing_a_preset_recolours_the_built_tree() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    my_colours(&mut s, &dir);
+    // A panel's card, built before the choice.
+    let surface = runity_studio::theme::SURFACE;
+    let mut card = s.ui.find("tab inspector");
+    while let Some(n) = card {
+        if s.ui.style(n).look.background == surface {
+            break;
+        }
+        card = s.ui.parent(n);
+    }
+    let card = card.expect("a panel on the surface");
+    assert_eq!(drawn(&s, surface), [surface.r, surface.g, surface.b]);
+
+    click(&mut s, "tab settings");
+    let daylight = s.ui.find("theme daylight").unwrap();
+    click_page(&mut s, "theme daylight");
+    assert!(s.ui.exists(card), "not rebuilt");
+    assert_eq!(s.ui.find("theme daylight"), Some(daylight));
+    assert_eq!(
+        s.ui.style(card).look.background,
+        surface,
+        "the style as built"
+    );
+    assert_eq!(drawn(&s, surface), preset_rgb("daylight", "SURFACE"));
+    let want = preset_rgb("daylight", "SURFACE");
+    assert!(
+        s.ui.paint()
+            .iter()
+            .flat_map(|l| l.rects.iter())
+            .any(|r| [r.fill.r, r.fill.g, r.fill.b] == want),
+        "panels drawn in Daylight's surface"
+    );
+}
+
+#[test]
+fn the_choice_is_the_persons_and_a_new_editor_reads_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let me = my_colours(&mut s, &dir);
+    menu(&mut s, "View", "Theme › Graphite");
+    assert_eq!(s.theme().preset().name, "graphite");
+    let file = std::fs::read_to_string(me.join(runity_studio::appearance::FILE)).unwrap();
+    assert!(file.contains("\"graphite\""), "{file}");
+
+    let Some((mut again, dir2)) = studio() else {
+        return;
+    };
+    assert_eq!(again.theme().preset().name, "nocturne", "another folder");
+    again.set_config_dir(me);
+    assert_eq!(again.theme().preset().name, "graphite");
+    assert_eq!(
+        drawn(&again, runity_studio::theme::BG),
+        preset_rgb("graphite", "BG")
+    );
+    let _ = std::fs::remove_dir_all(dir2);
+}
+
+#[test]
+fn a_custom_accent_recolours_the_accent_and_its_ramp() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    let me = my_colours(&mut s, &dir);
+    click(&mut s, "tab settings");
+    click_page(&mut s, "accent hex");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "#e07a5f");
+    key(&mut s, Key::Enter);
+    assert_eq!(drawn(&s, runity_studio::theme::ACCENT), [0xe0, 0x7a, 0x5f]);
+    assert_ne!(
+        drawn(&s, runity_studio::theme::ACCENT_900),
+        preset_rgb("nocturne", "ACCENT_900"),
+        "the selection follows"
+    );
+    let file = std::fs::read_to_string(me.join(runity_studio::appearance::FILE)).unwrap();
+    assert!(file.contains("#e07a5f"), "{file}");
+
+    // A swatch, then back to the preset.
+    click_page(&mut s, "accent 1");
+    assert_ne!(drawn(&s, runity_studio::theme::ACCENT), [0xe0, 0x7a, 0x5f]);
+    click_page(&mut s, "appearance reset");
+    assert_eq!(
+        drawn(&s, runity_studio::theme::ACCENT),
+        preset_rgb("nocturne", "ACCENT")
+    );
+    assert!(s.theme().user.tokens.is_empty());
 }

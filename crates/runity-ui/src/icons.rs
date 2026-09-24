@@ -92,6 +92,7 @@ pub(crate) static ICONS: &[(&str, &[u8])] = &[
     ("move-3d", include_bytes!("../assets/icons/move-3d.svg")),
     ("music", include_bytes!("../assets/icons/music.svg")),
     ("package", include_bytes!("../assets/icons/package.svg")),
+    ("palette", include_bytes!("../assets/icons/palette.svg")),
     ("pause", include_bytes!("../assets/icons/pause.svg")),
     ("pencil", include_bytes!("../assets/icons/pencil.svg")),
     ("play", include_bytes!("../assets/icons/play.svg")),
