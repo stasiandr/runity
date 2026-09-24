@@ -120,6 +120,14 @@ fn key(studio: &mut Studio, key: Key) {
     studio.frame();
 }
 
+/// Type `name` into the Project's search: its tile shows, from whatever
+/// folder it is in, as a person finds it.
+fn find_in_project(s: &mut Studio, name: &str) {
+    click(s, "project search");
+    type_text(s, name);
+    s.frame();
+}
+
 fn shortcut(studio: &mut Studio, k: Key) {
     let cmd = if cfg!(target_os = "macos") {
         Key::LeftSuper
@@ -239,6 +247,7 @@ fn a_project_entry_dragged_into_the_view_lands_there() {
     };
     let count = s.session.entity_count();
     s.ui.paint();
+    find_in_project(&mut s, "sphere");
     let tile = s.ui.find("asset sphere").expect("a sphere in the Project");
     let view = s.ui.find("scene view").unwrap();
     let (ax, ay) = s.ui.rect(tile).center();
@@ -449,6 +458,7 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     let Some((mut s, dir)) = studio() else { return };
     let scene = s.session.scene_path().unwrap().to_path_buf();
     // The first «asset campfire» is the prefab (prefabs come before models).
+    find_in_project(&mut s, "campfire");
     double_click(&mut s, "asset campfire");
     assert!(s.session.is_prefab(), "double click opened the prefab");
     assert!(s.title().contains("(prefab)"));
@@ -507,6 +517,7 @@ fn an_asset_clicked_in_the_project_is_shown_in_the_inspector() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
+    find_in_project(&mut s, "campfire");
     click(&mut s, "asset campfire");
     let dump = s.ui.dump();
     assert!(dump.contains("#asset preview"), "{dump}");
@@ -824,6 +835,7 @@ fn edit_undo_names_the_step_and_an_asset_drops_into_the_hierarchy() {
 
     // The sphere from the Project, let go on the campfire's line.
     s.ui.paint();
+    find_in_project(&mut s, "sphere");
     let tile = s.ui.rect(s.ui.find("asset sphere").unwrap());
     let line = s.ui.rect(s.ui.find("line campfire").unwrap());
     let (ax, ay) = tile.center();
@@ -1055,16 +1067,14 @@ fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
 #[test]
 fn the_project_shows_pictures_of_scenes_and_materials_by_default() {
     let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder scenes");
     draw_pictures(&mut s);
-    s.ui.paint();
-    assert!(
-        s.ui.find("asset first-light").is_some() && s.bottom_pictures_pending() == 0,
-        "every picture drawn: {} left",
-        s.bottom_pictures_pending()
-    );
-    let scene = s.ui.dump();
-    assert!(scene.contains("thumb scene:"), "a scene's picture");
-    assert!(scene.contains("thumb material:"), "a material's picture");
+    assert_eq!(s.bottom_pictures_pending(), 0, "every picture drawn");
+    assert!(s.ui.dump().contains("thumb scene:"), "a scene's picture");
+    click(&mut s, "crumb Project");
+    double_click(&mut s, "folder tile materials");
+    draw_pictures(&mut s);
+    assert!(s.ui.dump().contains("thumb material:"), "a material's picture");
 }
 
 #[test]
@@ -1145,6 +1155,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     click(&mut s, "project search");
     type_text(&mut s, "earth");
     s.frame();
+    find_in_project(&mut s, "earth");
     press(&mut s, "asset earth", MouseButton::Right);
     let menu_dump: Vec<String> =
         s.ui.dump()
@@ -1467,6 +1478,7 @@ fn a_sound_is_listed_in_the_project_to_listen_to() {
     type_text(&mut s, "beep");
     s.frame();
     // Not played here: a test should not make the machine beep.
+    find_in_project(&mut s, "beep");
     press(&mut s, "asset beep", MouseButton::Right);
     assert!(s.ui.find("menu Play").is_some() && s.ui.find("menu Stop").is_some());
 }
@@ -1543,7 +1555,33 @@ fn the_project_filters_by_kind() {
         "only scenes"
     );
     click(&mut s, "kind All");
+    // Not searching: the project's folders, the engine's own among them.
+    let dump = s.ui.dump();
+    assert!(dump.contains("#folder tile scenes") && !dump.contains("#asset cube"));
+    double_click(&mut s, "folder tile Built-in");
     assert!(s.ui.dump().contains("#asset cube"));
+}
+
+#[test]
+fn the_project_goes_into_folders_and_back_up_its_path() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    // The project's top: folders, nothing loose.
+    assert!(s.ui.find("folder tile scenes").is_some());
+    assert!(s.ui.find("asset first-light").is_none());
+    // In by the tree…
+    click(&mut s, "folder scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    assert!(s.ui.find("crumb scenes").is_some());
+    // …up by the path…
+    click(&mut s, "crumb Project");
+    assert!(s.ui.find("asset first-light").is_none());
+    // …in by a double click on a folder's tile.
+    double_click(&mut s, "folder tile scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    // A search looks everywhere, and clearing it comes back.
+    find_in_project(&mut s, "cube");
+    assert!(s.ui.find("asset cube").is_some(), "the engine's, found from here");
 }
 
 #[test]
@@ -2263,6 +2301,7 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     type_text(&mut s, "stone");
     s.frame();
     s.frame();
+    find_in_project(&mut s, "stone");
     press(&mut s, "asset stone", MouseButton::Right);
     click(&mut s, "menu Create Material Instance");
     s.frame();
