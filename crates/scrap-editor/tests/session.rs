@@ -4435,6 +4435,206 @@ fn a_poly_shape_is_an_l_shaped_floor_from_its_outline_and_changes_with_it() {
     assert!(e.contains("snake_case"), "{e}");
 }
 
+fn grey(session: &mut Session, name: &str, model: &str, t: Transform) -> EntityId {
+    session
+        .add_entity(
+            None,
+            scrap::EntityDesc {
+                name: name.into(),
+                transform: t,
+                ..Default::default()
+            }
+            .with(scrap::scene::ModelRef(model.into())),
+        )
+        .unwrap()
+}
+
+#[test]
+fn carving_grey_shapes_out_of_a_slab_leaves_a_hole_things_fall_through() {
+    let Some((mut session, path)) = open("carve") else {
+        return;
+    };
+    // A slab two metres up, 6 by 6 and half a metre thick; a box through
+    // it where the well goes, and a cylinder lying along one edge.
+    let slab = grey(
+        &mut session,
+        "Upper Floor",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0, 0.0, 0.0], [6.0, 0.5, 6.0]),
+    );
+    let well = grey(
+        &mut session,
+        "well",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0, 45.0, 0.0], [1.5, 2.0, 1.5]),
+    );
+    let pipe = grey(
+        &mut session,
+        "pipe",
+        "builtin:cylinder",
+        transform([-2.5, 2.0, -2.5], [0.0, 0.0, 90.0], [0.5, 8.0, 0.5]),
+    );
+    let steps = session.undo_steps().len();
+    let asset = session.carve(slab, &[well, pipe], None).unwrap();
+    assert_eq!(asset, "upper_floor", "named after the solid");
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert!(session.scene().get(well).is_none() && session.scene().get(pipe).is_none());
+    assert_eq!(session.selected(), Some(slab));
+    let line = session.scene().get(slab).unwrap().clone();
+    assert_eq!(line.name, "Upper Floor");
+    assert_eq!(
+        line.transform.scale,
+        Vec3::ONE,
+        "the scale went into the brush"
+    );
+    assert_eq!(line.collider(), scrap::scene::Collider::Model);
+    assert_eq!(line.body(), scrap::Body::Static);
+    let text = std::fs::read_to_string(root_of(&path).join("assets/upper_floor.scrbrush")).unwrap();
+    assert!(
+        text.contains("(shape: Box, scale: (6.0, 0.5, 6.0))"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "(op: Subtract, shape: Box, rotation_deg: (0.0, 45.0, 0.0), scale: (1.5, 2.0, 1.5))"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("(op: Subtract, shape: Cylinder, position: (-2.5, 0.0, -2.5), rotation_deg: (0.0, 0.0, 90.0), scale: (0.5, 8.0, 0.5))"),
+        "{text}"
+    );
+    let (low, high) = session.world_bounds(slab).unwrap();
+    assert!(
+        (low - Vec3::new(-3.0, 1.75, -3.0)).length() < 1e-3
+            && (high - Vec3::new(3.0, 2.25, 3.0)).length() < 1e-3,
+        "{low} {high}"
+    );
+
+    // Solid in its shape: a box over the well falls through, one beside
+    // it stands on the slab.
+    let dropped = |session: &mut Session, x: f32, z: f32| {
+        session
+            .add_entity(
+                None,
+                scrap::EntityDesc {
+                    name: format!("box {x}"),
+                    transform: transform([x, 4.0, z], [0.0; 3], [1.0; 3]),
+                    ..Default::default()
+                }
+                .with(scrap::scene::ModelRef("builtin:cube".into()))
+                .with(scrap::Body::Dynamic)
+                .with(scrap::scene::Collider::Box {
+                    half: Vec3::splat(0.2),
+                    center: Vec3::ZERO,
+                }),
+            )
+            .unwrap()
+    };
+    let (over_well, over_slab) = (
+        dropped(&mut session, 0.0, 0.0),
+        dropped(&mut session, 2.0, 1.0),
+    );
+    session.play();
+    for _ in 0..120 {
+        session.step(1.0 / 60.0);
+    }
+    let y = |id| session.world_position(id).unwrap().y;
+    assert!(y(over_well) < 1.5, "through the well: {}", y(over_well));
+    assert!(
+        (y(over_slab) - 2.45).abs() < 0.1,
+        "on the slab: {}",
+        y(over_slab)
+    );
+    session.stop();
+
+    // Carving into a brush solid adds to its file; undo gives the grey
+    // shapes back.
+    let slot = grey(
+        &mut session,
+        "slot",
+        "builtin:cube",
+        transform([2.0, 2.0, 0.0], [0.0; 3], [0.5, 4.0, 3.0]),
+    );
+    assert_eq!(session.carve(slab, &[slot], None).unwrap(), "upper_floor");
+    assert_eq!(session.brushes("upper_floor").unwrap().brushes.len(), 4);
+    session.undo().unwrap();
+    assert!(session.scene().get(slot).is_some(), "the cutter is back");
+
+    // What cannot be carved says why.
+    let ball = grey(
+        &mut session,
+        "ball",
+        "builtin:sphere",
+        transform([0.0; 3], [0.0; 3], [1.0; 3]),
+    );
+    let e = session.carve(slab, &[ball], None).unwrap_err().to_string();
+    assert!(e.contains("cube, ramp, cylinder or stairs"), "{e}");
+    let e = session.carve(ball, &[slot], None).unwrap_err().to_string();
+    assert!(e.contains("carve cuts"), "{e}");
+    let e = session.carve(slab, &[], None).unwrap_err().to_string();
+    assert!(e.contains("something to cut with"), "{e}");
+    let everything = grey(
+        &mut session,
+        "everything",
+        "builtin:cube",
+        transform([0.0, 2.0, 0.0], [0.0; 3], [10.0; 3]),
+    );
+    let e = session
+        .carve(slab, &[everything], None)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("leave nothing"), "{e}");
+    assert_eq!(
+        session.brushes("upper_floor").unwrap().brushes.len(),
+        4,
+        "the file kept"
+    );
+}
+
+#[test]
+fn a_brush_solid_is_made_and_cut_by_the_agent_line_by_line() {
+    use scrap_import::brush::{Brush, BrushSource, Op};
+    let Some((mut session, path)) = open("brushes") else {
+        return;
+    };
+    let wall = BrushSource {
+        brushes: vec![Brush::cuboid(
+            Op::Add,
+            Vec3::new(-2.0, 0.0, -0.125),
+            Vec3::new(2.0, 3.0, 0.125),
+        )],
+    };
+    let id = session
+        .brush_shape("wall", &wall, Vec3::new(0.0, 0.0, -5.0))
+        .unwrap();
+    // Written by hand in between: a comment the next line must not lose.
+    let file = root_of(&path).join("assets/wall.scrbrush");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("// the back wall\n{text}")).unwrap();
+    let door = Brush::cuboid(
+        Op::Subtract,
+        Vec3::new(-0.5, -0.5, -1.0),
+        Vec3::new(0.5, 2.0, 1.0),
+    );
+    session.add_brush("wall", &door).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.starts_with("// the back wall\n"), "{text}");
+    assert_eq!(session.brushes("wall").unwrap().brushes[1], door);
+    let (low, high) = session.world_bounds(id).unwrap();
+    assert!(
+        (low - Vec3::new(-2.0, 0.0, -5.125)).length() < 1e-3
+            && (high - Vec3::new(2.0, 3.0, -4.875)).length() < 1e-3,
+        "{low} {high}"
+    );
+    // A cut that leaves nothing is refused, the file as it was.
+    let all = Brush::cuboid(Op::Subtract, Vec3::splat(-9.0), Vec3::splat(9.0));
+    assert!(session.add_brush("wall", &all).is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+    let e = session.add_brush("nowhere", &door).unwrap_err().to_string();
+    assert!(e.contains("no nowhere.scrbrush"), "{e}");
+}
+
 #[test]
 fn snapping_the_selection_puts_a_greybox_dragged_by_eye_on_the_grid() {
     let Some((mut session, _)) = open("snap-all") else {

@@ -73,7 +73,7 @@ struct Names {
     shapes: std::collections::BTreeMap<String, scrap::shape::Shape>,
 }
 
-const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "scrterrain"];
+const MODEL_SOURCES: [&str; 6] = ["gltf", "glb", "obj", "scrterrain", "scrpoly", "scrbrush"];
 
 /// Look the whole project over.
 pub fn check(project: &Project) -> Vec<Finding> {
@@ -302,7 +302,7 @@ fn check_layout(project: &Project, out: &mut Vec<Finding>) {
             Some("scrmat") => Some(MATERIALS),
             Some(
                 "gltf" | "glb" | "obj" | "fbx" | "png" | "jpg" | "jpeg" | "wav" | "ogg" | "mp3"
-                | "flac" | "scrterrain",
+                | "flac" | "scrterrain" | "scrpoly" | "scrbrush",
             ) => Some(ASSETS),
             Some("ron") => Some(SCENES),
             _ => None,
@@ -757,7 +757,7 @@ fn check_model(
         out.push(error(
             file,
             format!(
-                "{who}: no model named `{model}` — a model is a .gltf, .glb, .obj or .scrterrain in assets/, named by its file name without the extension{}",
+                "{who}: no model named `{model}` — a model is a .gltf, .glb, .obj, .scrterrain, .scrpoly or .scrbrush in assets/, named by its file name without the extension{}",
                 suggest(model, known)
             ),
         ));

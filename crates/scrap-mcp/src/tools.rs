@@ -157,6 +157,10 @@ pub fn list() -> Vec<Value> {
         tool("poly_shape", "Greybox a floor plan: an outline of points (x, z metres around the shape's origin, either way round, not crossing itself) pulled up `height` metres into a solid — an L-shaped room, a platform, a plinth; ProBuilder's Poly Shape. Writes assets/<name>.scrpoly, imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "description": "[[x, z], ...], at least three" }, "height": { "type": "number" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" }, "standing": { "type": "boolean", "description": "stand it up: points are [x, y], a wall seen from the front, and height is its thickness along z — a U of points is a wall with a doorway" }, "at": vec3("where its origin goes") }), &["name", "points", "height"]),
         tool("set_poly", "Change a Poly Shape's outline and/or height: its .scrpoly is rewritten and rebuilt, and every placement of it changes. Omitted parts stay. Refused, with why, for an outline that cannot be a floor.", json!({ "name": { "type": "string" }, "points": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "height": { "type": "number" }, "standing": { "type": "boolean" }, "holes": { "type": "array", "items": { "type": "array", "items": { "type": "array", "items": { "type": "number" } } }, "description": "outlines cut all the way through, inside points: a window in a standing wall, a well in a floor" } }), &["name"]),
         tool("push_poly_edge", "Push one wall of a Poly Shape out by `metres` (negative pulls it in): both ends of edge `edge` — from point `edge` to the next — move along its outward normal; the walls beside it follow. push_face for an outline.", json!({ "name": { "type": "string" }, "edge": { "type": "integer" }, "metres": { "type": "number" } }), &["name", "edge", "metres"]),
+        tool("brush_shape", "Greybox with brushes, as in Hammer or TrenchBroom: boxes, ramps, cylinders and stairs, each added or cut out (op: subtract) of everything before it, in order — a wall with a doorway, a room with a corridor through it. Writes assets/<name>.scrbrush (a line a brush), imports it, places it at `at` as a static body with a collider of its own shape, selected. One undo step; returns its id. To cut grey shapes already in the scene out of another, use `carve`.", json!({ "name": { "type": "string", "description": "snake_case, becomes the model's name" }, "brushes": { "type": "array", "items": { "type": "object", "properties": { "op": { "type": "string", "enum": ["add", "subtract"] } }, "required": ["shape"], "description": "a brush: op, shape, position, rotation_deg, scale, sides" }, "description": "in order; the first is usually an add" }, "at": vec3("where its origin goes") }), &["name", "brushes"]),
+        tool("brush_add", "Add a brush to a brush solid (assets/<name>.scrbrush): what it covers becomes solid, even where earlier brushes were cut away. One line added to the file, rebuilt at once; every placement changes.", { let mut p = brush_fields(); p["name"] = json!({ "type": "string" }); p }, &["name", "shape"]),
+        tool("brush_subtract", "Cut a brush out of a brush solid (assets/<name>.scrbrush): everything added before it loses what it covers — a doorway, a window, a tunnel. In the solid's own space. One line added to the file, rebuilt at once; every placement changes. Refused, with why, when nothing would be left.", { let mut p = brush_fields(); p["name"] = json!({ "type": "string" }); p }, &["name", "shape"]),
+        tool("set_brushes", "Replace a brush solid's whole list of brushes (to move, change or take one away): the .scrbrush is rewritten and rebuilt, and every placement changes. Refused, with why, when nothing would be left.", json!({ "name": { "type": "string" }, "brushes": { "type": "array", "items": { "type": "object", "required": ["shape"], "description": "a brush: op (add|subtract), shape, position, rotation_deg, scale, sides" } } }), &["name", "brushes"]),
         tool("snap_selection", "Put the selection on the grid: positions to the nearest snap step (a metre when snapping is off), turns to the nearest angle step when there is one — Unity's Snap All Axes. One undo step; says how many moved.", json!({}), &[]),
         tool("fit_collider", "Give an entity a box collider that fits its model — size and centre from the model's bounds — as Unity does when a BoxCollider is added. One undo step.", json!({ "id": { "type": "string", "description": ID } }), &["id"]),
         tool("hide", "Hide entities (and what is under them) from `render`, or with show: true bring them back — the roof off a house to look inside. A view setting: nothing in the scene file, no undo step.", json!({ "ids": { "type": "array", "items": { "type": "string" }, "description": "entity ids" }, "show": { "type": "boolean" } }), &["ids"]),
@@ -1071,6 +1075,57 @@ pub fn call(server: &mut Server, name: &str, args: &Value) -> Answer {
             Ok(vec![text(format!(
                 "{source}: scale {}, recompute_normals {}, srgb {}, origin_to_base {}",
                 s.scale, s.recompute_normals, s.srgb, s.origin_to_base
+            ))])
+        }
+        "brush_shape" | "set_brushes" => {
+            let making = name == "brush_shape";
+            let name = string(args, "name")?;
+            let brushes = args
+                .get("brushes")
+                .and_then(Value::as_array)
+                .ok_or("brushes is a list of {shape, op, position, rotation_deg, scale}")?
+                .iter()
+                .map(|b| brush_of(b, None))
+                .collect::<Result<Vec<_>, _>>()?;
+            let source = scrap_import::brush::BrushSource { brushes };
+            let session = server.session()?;
+            if making {
+                let at = optional_vec3(args, "at")?.unwrap_or(Vec3::ZERO);
+                let id = session
+                    .brush_shape(&name, &source, at)
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!("{id} {name:?}, assets/{name}.scrbrush"))])
+            } else {
+                session
+                    .set_brushes(&name, &source)
+                    .map_err(|e| e.to_string())?;
+                Ok(vec![text(format!(
+                    "{name}: {} brushes",
+                    source.brushes.len()
+                ))])
+            }
+        }
+        "brush_add" | "brush_subtract" => {
+            let op = if name == "brush_add" {
+                scrap_import::brush::Op::Add
+            } else {
+                scrap_import::brush::Op::Subtract
+            };
+            let name = string(args, "name")?;
+            let brush = brush_of(args, Some(op))?;
+            let session = server.session()?;
+            session
+                .add_brush(&name, &brush)
+                .map_err(|e| e.to_string())?;
+            let count = session
+                .brushes(&name)
+                .map_err(|e| e.to_string())?
+                .brushes
+                .len();
+            Ok(vec![text(format!(
+                "{name}: {} as brush {}",
+                brush.to_line(),
+                count - 1
             ))])
         }
         "poly_shape" | "set_poly" => {
@@ -2169,6 +2224,53 @@ fn optional_integer(args: &Value, key: &str) -> Result<Option<u32>, String> {
             .map(Some)
             .ok_or_else(|| format!("{key} is a whole number, not {v}")),
     }
+}
+
+/// A brush's fields, for the tools that take one or a list.
+fn brush_fields() -> Value {
+    json!({
+        "shape": { "type": "string", "enum": ["box", "ramp", "cylinder", "stairs"], "description": "a unit in size and centred, like builtin:cube|ramp|cylinder|stairs; a ramp is high at the back (-z)" },
+        "position": vec3("metres, in the solid's own space"),
+        "rotation_deg": vec3("Euler degrees, applied Y then X then Z"),
+        "scale": vec3("its size in metres along each axis; [1, 1, 1] when left out"),
+        "sides": { "type": "integer", "description": "a cylinder's sides, 3 to 64; 24 when left out" },
+    })
+}
+
+/// A brush from a tool's arguments; `op` given by the tool, or read from
+/// an `op` field of a list's item.
+fn brush_of(
+    value: &Value,
+    op: Option<scrap_import::brush::Op>,
+) -> Result<scrap_import::brush::Brush, String> {
+    use scrap_import::brush::{Brush, Op, Shape};
+    let shape = match string(value, "shape")?.to_ascii_lowercase().as_str() {
+        "box" | "cube" => Shape::Box,
+        "ramp" => Shape::Ramp,
+        "cylinder" => Shape::Cylinder,
+        "stairs" => Shape::Stairs,
+        other => {
+            return Err(format!(
+                "shape is box, ramp, cylinder or stairs, not {other:?}"
+            ))
+        }
+    };
+    let op = match op {
+        Some(op) => op,
+        None => match optional_string(value, "op")?.as_deref() {
+            None | Some("add") | Some("Add") => Op::Add,
+            Some("subtract") | Some("Subtract") => Op::Subtract,
+            Some(other) => return Err(format!("op is add or subtract, not {other:?}")),
+        },
+    };
+    Ok(Brush {
+        op,
+        shape,
+        position: optional_vec3(value, "position")?.unwrap_or(Vec3::ZERO),
+        rotation_deg: optional_vec3(value, "rotation_deg")?.unwrap_or(Vec3::ZERO),
+        scale: optional_vec3(value, "scale")?.unwrap_or(Vec3::ONE),
+        sides: optional_integer(value, "sides")?.unwrap_or(scrap_import::brush::CYLINDER_SIDES),
+    })
 }
 
 fn optional_vec3(args: &Value, key: &str) -> Result<Option<Vec3>, String> {

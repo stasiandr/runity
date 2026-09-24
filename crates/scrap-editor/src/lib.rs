@@ -256,7 +256,14 @@ pub enum SceneReload {
 /// if there is one, the list added before the closing bracket if not. The
 /// rest of the file — comments, layout — is left as it was.
 fn add_edit(text: &str, edit: &str) -> String {
-    if let Some(at) = text.find("edits:") {
+    add_to_list(text, "edits", edit)
+}
+
+/// A source with one more line in its list `key` (`edits`, `brushes`):
+/// added to the list if there is one, the list added before the closing
+/// bracket if not. The rest of the file is left as it was.
+pub(crate) fn add_to_list(text: &str, key: &str, edit: &str) -> String {
+    if let Some(at) = text.find(&format!("{key}:")) {
         if let Some(open) = text[at..].find('[').map(|i| at + i) {
             let mut depth = 0;
             for (i, c) in text[open..].char_indices() {
@@ -292,7 +299,7 @@ fn add_edit(text: &str, edit: &str) -> String {
                 ","
             };
             format!(
-                "{before}{comma}\n    edits: [\n        {edit},\n    ],\n{}",
+                "{before}{comma}\n    {key}: [\n        {edit},\n    ],\n{}",
                 &text[close..]
             )
         }
