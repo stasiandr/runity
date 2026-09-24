@@ -905,6 +905,24 @@ impl PhysicsWorld {
         }
     }
 
+    /// How far a hinge has turned about its axis, in degrees, the way its
+    /// `limits_deg` count: 0 where it was built, signed. What a lever or a
+    /// door reads to know whether it is thrown. `None` for an entity with
+    /// no joint built.
+    pub fn hinge_angle(&self, world: &World, entity: hecs::Entity) -> Option<f32> {
+        let built = world.get::<&JointBuilt>(entity).ok()?;
+        let joint = self.impulse_joints.get(built.handle)?;
+        let one = self.bodies.get(joint.body1)?;
+        let two = self.bodies.get(joint.body2)?;
+        let first = one.position() * joint.data.local_frame1;
+        let second = two.position() * joint.data.local_frame2;
+        // A revolute joint turns about its frames' x.
+        let relative = first.rotation.inverse() * second.rotation;
+        let q = relative.quaternion();
+        let (x, w) = if q.w < 0.0 { (-q.i, -q.w) } else { (q.i, q.w) };
+        Some((2.0 * x.atan2(w)).to_degrees())
+    }
+
     /// Break every joint pulled harder than its `joint_break` this step:
     /// the joint goes, the entity is marked [`JointBroken`], and
     /// [`PhysicsWorld::broken`] says which. Part of [`PhysicsWorld::run`].
@@ -1778,6 +1796,36 @@ mod tests {
     }
 
     /// A ball above a floor, and the clock to drop it with.
+    #[test]
+    fn a_hinge_says_how_far_it_turned_and_stops_at_its_limit() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "post", model: "builtin:cube", body: Static,
+             collider: Box(half: (0.1, 1.0, 0.1))),
+            (id: "0000000000000002", name: "door", model: "builtin:cube", body: Dynamic,
+             transform: (position: (0.6, 0.0, 0.0)),
+             collider: Box(half: (0.5, 1.0, 0.05)), physics: (gravity: 0.0),
+             joint: Hinge(to: "0000000000000001", anchor: (-0.6, 0.0, 0.0), axis: (0.0, 1.0, 0.0), limits_deg: (-40.0, 40.0))),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        let mut physics = PhysicsWorld::new(1.0 / 60.0);
+        physics.run(&mut world);
+        let door = world
+            .query::<(hecs::Entity, &Physics)>()
+            .iter()
+            .find(|(_, p)| p.0 == Body::Dynamic)
+            .map(|(e, _)| e)
+            .unwrap();
+        assert!(physics.hinge_angle(&world, door).unwrap().abs() < 1.0, "built at rest");
+        for _ in 0..120 {
+            physics.add_torque(&world, door, Vec3::new(0.0, 20.0, 0.0));
+            physics.run(&mut world);
+        }
+        let angle = physics.hinge_angle(&world, door).unwrap();
+        assert!((angle.abs() - 40.0).abs() < 3.0, "at its limit: {angle}");
+    }
+
     #[test]
     fn a_body_resting_on_the_floor_is_pushed_up_by_it() {
         let (mut physics, mut world, ball) = dropped(0.8);
