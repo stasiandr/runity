@@ -71,6 +71,8 @@ struct Names {
     layers: scrap::layers::Layers,
     /// What the game's components look like, as the game last wrote them.
     shapes: std::collections::BTreeMap<String, scrap::shape::Shape>,
+    /// The records of the game's tables, for a component's link to one.
+    records: scrap::table::Index,
 }
 
 const MODEL_SOURCES: [&str; 4] = ["gltf", "glb", "obj", "scrterrain"];
@@ -537,6 +539,13 @@ fn names(project: &Project, out: &mut Vec<Finding>) -> Names {
             .ok()
             .and_then(|text| ron::from_str(&text).ok())
             .unwrap_or_default(),
+        records: {
+            let tables = scrap::table::read_shapes(project.root().join(scrap::project::TABLE_SHAPES))
+                .unwrap_or_default();
+            scrap::table::Index::build(&tables, &|path| {
+                scrap::table::read_table_files(project.root(), path)
+            })
+        },
         layers: match scrap::layers::Layers::of(project) {
             Ok(layers) => layers,
             Err(e) => {
@@ -656,6 +665,20 @@ fn check_entities(entities: &[EntityDesc], file: &str, names: &Names, out: &mut 
                             suggest(&link, known.iter().copied())
                         ),
                     ));
+                }
+            }
+        }
+        // A game component's links to the records of its tables, where the
+        // game has said which of its fields are one.
+        for (component, value) in &entity.components {
+            let Some(shape) = names.shapes.get(component.as_str()) else {
+                continue;
+            };
+            let mut links = Vec::new();
+            scrap::table::links_in(shape, value.get_ron(), "", &mut links);
+            for (at, record, text) in links {
+                if let Some(problem) = names.records.problem(&record, &text) {
+                    out.push(error(file, format!("{who}: `{component}.{at}`: {problem}")));
                 }
             }
         }

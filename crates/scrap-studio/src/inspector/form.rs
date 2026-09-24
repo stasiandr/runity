@@ -451,6 +451,7 @@ impl Inspector {
             Some(Shape::AssetId(kind)) => Some((kind.as_str(), Holds::AssetId)),
             Some(Shape::Entity) => Some(("entity", Holds::EntityRef)),
             Some(Shape::EntityId) => Some(("entity", Holds::EntityId)),
+            Some(Shape::Record(record)) => Some((record.as_str(), Holds::Record)),
             _ => None,
         };
         if let Some((kind, holds)) = holds {

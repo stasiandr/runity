@@ -247,7 +247,8 @@ pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
                 while end < b.len() && matches!(b[end], b' ' | b'\t') {
                     end += 1;
                 }
-                if b.get(end) == Some(&b',') {
+                let had_comma = b.get(end) == Some(&b',');
+                if had_comma {
                     end += 1;
                 }
                 while end < b.len() && matches!(b[end], b' ' | b'\t') {
@@ -257,6 +258,17 @@ pub fn apply(text: &str, open: usize, changes: &[Change]) -> Option<String> {
                 if b.get(end) == Some(&b'\n') && indent_of(item.start).is_some() {
                     end += 1;
                     start = line_start(item.start);
+                } else if !had_comma {
+                    // The last item on its line: the comma before it goes
+                    // with it, `(a: 1, b: 2)` to `(a: 1)`.
+                    let mut back = item.start;
+                    while back > open + 1 && matches!(b[back - 1], b' ' | b'\t') {
+                        back -= 1;
+                    }
+                    if back > open + 1 && b[back - 1] == b',' {
+                        start = back - 1;
+                        end = item.end;
+                    }
                 }
                 edits.push((start..end, String::new()));
             }
@@ -385,6 +397,8 @@ mod tests {
             added,
             "// Stone after rain.\n(parent: \"stone\", smoothness: 0.9, metallic: 0.5)\n"
         );
+        let last = set_field(&added, "metallic", None).unwrap();
+        assert_eq!(last, set);
         let gone = set_field(&added, "smoothness", None).unwrap();
         assert_eq!(
             gone,

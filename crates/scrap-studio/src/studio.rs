@@ -1006,8 +1006,8 @@ impl Studio {
         let selected = !s.selection().is_empty();
         let playing = s.is_playing();
         let (enabled, checked) = match action {
-            Action::Editor("undo") => (s.can_undo(), false),
-            Action::Editor("redo") => (s.can_redo(), false),
+            Action::Editor("undo") => (s.can_undo() || self.configs.takes_undo(s), false),
+            Action::Editor("redo") => (s.can_redo() || self.configs.takes_redo(s), false),
             Action::Editor("duplicate_entity" | "delete_entity" | "drop_to_ground")
             | Action::Copy
             | Action::Rename
@@ -1030,6 +1030,14 @@ impl Studio {
         };
         // Undo and Redo say what they would do, as Unity's Edit menu.
         let label = match action {
+            Action::Editor("undo") if self.configs.takes_undo(s) => self
+                .configs
+                .undo_label()
+                .map_or_else(|| label.to_string(), |l| format!("Undo {l}")),
+            Action::Editor("redo") if self.configs.takes_redo(s) => self
+                .configs
+                .redo_label()
+                .map_or_else(|| label.to_string(), |l| format!("Redo {l}")),
             Action::Editor("undo") => s
                 .undo_label()
                 .map_or_else(|| label.to_string(), |l| format!("Undo {l}")),
@@ -3390,7 +3398,8 @@ impl Studio {
             self.settings
                 .event(&mut self.ui, &mut self.session, node, event);
         } else if self.configs.owns(&self.ui, node) {
-            self.configs.event(&mut self.ui, &self.session, node, event);
+            self.configs
+                .event(&mut self.ui, &mut self.session, node, event, requests);
         } else if self.animator.owns(&self.ui, node) {
             self.animator
                 .event(&mut self.ui, &mut self.session, node, event);
@@ -3919,6 +3928,13 @@ impl Studio {
                         }
                     }
                 }
+                // Undo is the Configs window's while its edit is the last.
+                Action::Editor(name @ ("undo" | "redo"))
+                    if (name == "undo" && self.configs.takes_undo(s))
+                        || (name == "redo" && self.configs.takes_redo(s)) =>
+                {
+                    self.configs.step(&mut self.ui, s, name == "redo");
+                }
                 // The registry's actions: what the agent's tools run too.
                 Action::Editor(name) => {
                     let said = scrap_editor::actions::run(s, name, &Default::default())?;
@@ -4172,6 +4188,9 @@ impl Studio {
                 }
                 Action::SetLeaf(place, value) => {
                     self.inspector.set_leaf(s, &place, &value);
+                }
+                Action::SetConfig(place, value) => {
+                    self.configs.set(&mut self.ui, s, &place, &value);
                 }
                 Action::SetField(field, value) => {
                     self.inspector.set_field(s, &field, &value);

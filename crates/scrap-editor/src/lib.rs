@@ -1506,6 +1506,36 @@ impl Session {
                 }
             }
         }
+        // And to the records of the game's tables, where its shapes say
+        // which fields are one.
+        let shapes = self.component_shapes();
+        if !shapes.is_empty() {
+            let records = self
+                .project
+                .as_ref()
+                .map(|p| crate::configs::index(p.root()))
+                .unwrap_or_default();
+            for (desc, _) in self.instanced.scene.flatten() {
+                for (component, value) in &desc.components {
+                    let Some(shape) = shapes.get(component.as_str()) else {
+                        continue;
+                    };
+                    let mut links = Vec::new();
+                    scrap::table::links_in(shape, value.get_ron(), "", &mut links);
+                    for (at, record, text) in links {
+                        if let Some(problem) = records.problem(&record, &text) {
+                            out.push(Diagnostic {
+                                entity: Some(desc.id),
+                                message: format!(
+                                    "`{}` ({}): `{component}.{at}`: {problem}",
+                                    desc.name, desc.id
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         for link in self.instanced.scene.broken_links() {
             out.push(Diagnostic {
                 entity: Some(link.holder),

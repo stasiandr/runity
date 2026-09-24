@@ -1594,6 +1594,78 @@ fn configs_show_as_tables_and_follow_a_save() {
 }
 
 #[test]
+fn a_config_is_edited_by_cell_picked_by_its_shape_and_undone() {
+    use scrap_studio::menu::Action;
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    enum Kind {
+        Wood,
+        Stone,
+    }
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+        kind: Kind,
+        #[serde(default)]
+        tool: Option<scrap::Link<Material>>,
+    }
+    impl scrap::Record for Material {}
+
+    let Some((mut s, dir)) = studio() else { return };
+    let file = dir.join("configs/materials.ron");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(
+        &file,
+        "{\n    \"Палка\": (id: \"4c1e\", hard: 1, kind: Wood),\n    \"Доска\": (id: \"9a02\", base: \"Палка\", hard: 2),\n}\n",
+    )
+    .unwrap();
+    let mut tables = scrap::Tables::new();
+    tables.register::<Material>("configs/materials.ron");
+    tables
+        .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let read = || std::fs::read_to_string(&file).unwrap();
+    click(&mut s, "tab configs");
+    click(&mut s, "configs materials.ron");
+
+    // Typed: the cell's text, all of it, then a number and Enter.
+    click(&mut s, "configs cell  Палка hard");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "3");
+    key(&mut s, Key::Enter);
+    assert!(read().contains("\"Палка\": (id: \"4c1e\", hard: 3, kind: Wood)"), "{}", read());
+
+    // What does not fit the type is not written.
+    click(&mut s, "configs cell  Палка hard");
+    shortcut(&mut s, Key::A);
+    type_text(&mut s, "\"very\"");
+    key(&mut s, Key::Enter);
+    assert!(read().contains("hard: 3,"), "{}", read());
+    assert!(
+        s.session.console().iter().any(|l| l.text.contains("`hard` is a whole number")),
+        "said why"
+    );
+
+    // Picked: an enum's variants; a link's records.
+    click(&mut s, "configs cell  Доска kind");
+    click(&mut s, "menu Stone");
+    assert!(read().contains("base: \"Палка\", hard: 2, kind: Stone)"), "{}", read());
+    click(&mut s, "configs cell  Доска tool");
+    click(&mut s, "menu Палка");
+    assert!(read().contains("tool: Some(\"Палка\")"), "{}", read());
+
+    // Undo is the window's: the link goes, then the kind.
+    s.run(Action::Editor("undo"));
+    assert!(!read().contains("tool:"), "{}", read());
+    assert!(read().contains("kind: Stone"));
+    s.run(Action::Editor("undo"));
+    assert!(!read().contains("kind: Stone"), "{}", read());
+    s.run(Action::Editor("redo"));
+    assert!(read().contains("kind: Stone"), "{}", read());
+}
+
+#[test]
 fn the_profiler_shows_what_frames_cost() {
     let Some((mut s, _dir)) = studio() else {
         return;
@@ -2714,6 +2786,73 @@ fn a_prefab_field_is_picked_from_the_project_and_a_wrong_one_is_named() {
             .iter()
             .any(|p| p.message.contains("links to prefab `campfir`")
                 && p.message.contains("`campfire`")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_component_s_link_to_a_record_is_picked_from_its_table_and_a_wrong_one_named() {
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Material {
+        hard: u8,
+    }
+    impl scrap::Record for Material {}
+
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    std::fs::create_dir_all(dir.join("configs")).unwrap();
+    std::fs::write(
+        dir.join("configs/materials.ron"),
+        "{\n    \"Палка\": (id: \"4c1e\", hard: 1),\n    \"Доска\": (id: \"9a02\", hard: 2),\n}\n",
+    )
+    .unwrap();
+    let mut tables = scrap::Tables::new();
+    tables.register::<Material>("configs/materials.ron");
+    tables
+        .write_shapes(dir.join(scrap::project::TABLE_SHAPES))
+        .unwrap();
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> = [(
+        "crafter".to_string(),
+        scrap::shape::Shape::Struct(vec![(
+            "from".into(),
+            scrap::shape::Shape::Record("Material".into()),
+        )]),
+    )]
+    .into_iter()
+    .collect();
+    std::fs::write(
+        dir.join(scrap::project::SHAPES),
+        scrap::ron::to_string(&shapes).unwrap(),
+    )
+    .unwrap();
+    let boulder = s.session.find("boulder").unwrap();
+    s.session.add_component(boulder, "crafter").unwrap();
+    click(&mut s, "line boulder");
+    click(&mut s, "crafter from");
+    click(&mut s, "object Доска");
+    let value = s
+        .session
+        .inspect(boulder)
+        .unwrap()
+        .into_iter()
+        .find(|f| f.name == "components.crafter")
+        .unwrap()
+        .value;
+    assert!(
+        value.contains(r#"("Доска","0000000000009a02")"#),
+        "by name and ID: {value}"
+    );
+
+    // Written by hand, wrong: named, with the nearest.
+    s.session
+        .set_component(boulder, "crafter", Some(r#"(from: "Доскa")"#))
+        .unwrap();
+    let problems = s.session.problems();
+    assert!(
+        problems.iter().any(|p| p.message.contains("`crafter.from`: no `Material` called `Доскa`")
+            && p.message.contains("did you mean `Доска`?")),
         "{problems:?}"
     );
 }

@@ -416,6 +416,29 @@ fn a_table_is_checked_by_record_as_written_and_by_the_game_s_types() {
     one_containing(&errors, "line 4: `Кость`: `hard` is a whole number");
     one_containing(&errors, "configs/recipes/tools.ron: line 1: `Нож`: `tool`: no `Material` called `Кремень`");
     one_containing(&errors, "configs/stones.ron: the game reads its `Material` records from here");
+
+    // A component's link to a record, where its shape says it is one.
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Crafter {
+        from: scrap::Link<Material>,
+    }
+    let shapes: std::collections::BTreeMap<String, scrap::shape::Shape> =
+        [("crafter".to_string(), scrap::shape::of::<Crafter>())]
+            .into_iter()
+            .collect();
+    write(
+        &root.join(scrap::project::SHAPES),
+        &ron::to_string(&shapes).unwrap(),
+    );
+    write(
+        &root.join("scenes/craft.ron"),
+        "(entities: [(id: \"b1\", name: \"bench\", components: {\"crafter\": (from: \"Кремень\")}), (id: \"b2\", name: \"table\", components: {\"crafter\": (from: \"Палка\")})])\n",
+    );
+    let errors = lines(&check(&project), Severity::Error);
+    let found = one_containing(&errors, "`crafter.from`: no `Material` called `Кремень`");
+    assert!(found.starts_with("error: scenes/craft.ron"), "{found}");
+    assert!(!errors.iter().any(|e| e.contains("`Палка`") && e.contains("crafter")), "{errors:#?}");
 }
 
 #[test]

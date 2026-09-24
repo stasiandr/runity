@@ -921,20 +921,26 @@ pub fn read_table_files(root: &Path, path: &str) -> Vec<(String, String)> {
 /// The records of each type the tables hold, by name and by ID.
 #[derive(Debug, Default)]
 pub struct Index {
-    by_type: HashMap<String, (HashSet<String>, HashSet<RecordId>)>,
+    by_type: HashMap<String, Known>,
+}
+
+/// One type's records: each name's ID, and every ID.
+#[derive(Debug, Default)]
+struct Known {
+    names: HashMap<String, RecordId>,
+    ids: HashSet<RecordId>,
 }
 
 impl Index {
     pub fn build(shapes: &[TableShape], read: &dyn Fn(&str) -> Vec<(String, String)>) -> Self {
-        let mut by_type: HashMap<String, (HashSet<String>, HashSet<RecordId>)> = HashMap::new();
+        let mut by_type: HashMap<String, Known> = HashMap::new();
         for table in shapes {
             let known = by_type.entry(table.record.clone()).or_default();
             for (_, text) in read(&table.path) {
                 for r in written(&text).unwrap_or_default() {
-                    known
-                        .1
-                        .insert(r.id.unwrap_or_else(|| RecordId::from_name(&r.name)));
-                    known.0.insert(r.name);
+                    let id = r.id.unwrap_or_else(|| RecordId::from_name(&r.name));
+                    known.ids.insert(id);
+                    known.names.insert(r.name, id);
                 }
             }
         }
@@ -946,10 +952,15 @@ impl Index {
         let mut names: Vec<String> = self
             .by_type
             .get(record)
-            .map(|(n, _)| n.iter().cloned().collect())
+            .map(|k| k.names.keys().cloned().collect())
             .unwrap_or_default();
         names.sort();
         names
+    }
+
+    /// The ID of the record of a type called `name`.
+    pub fn id_of(&self, record: &str, name: &str) -> Option<RecordId> {
+        self.by_type.get(record)?.names.get(name).copied()
     }
 
     /// What is wrong with a link's text to a record of `record`: `None`
@@ -959,13 +970,13 @@ impl Index {
         if name.is_empty() && id.is_none() {
             return None;
         }
-        let Some((names, ids)) = self.by_type.get(record) else {
+        let Some(known) = self.by_type.get(record) else {
             return Some(format!("no table holds `{record}` records"));
         };
-        if id.is_some_and(|id| ids.contains(&id)) || names.contains(&name) {
+        if id.is_some_and(|id| known.ids.contains(&id)) || known.names.contains_key(&name) {
             return None;
         }
-        let near = crate::spelling::closest(&name, names.iter().map(String::as_str))
+        let near = crate::spelling::closest(&name, known.names.keys().map(String::as_str))
             .map(|n| format!(" (did you mean `{n}`?)"))
             .unwrap_or_default();
         Some(format!("no `{record}` called `{name}`{near}"))

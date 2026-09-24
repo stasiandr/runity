@@ -31,6 +31,8 @@ refers to that does not exist, with the closest real name.";
 
 pub struct Server {
     session: Option<Session>,
+    /// The configs this agent edited, a step each: `config_undo`.
+    configs: scrap_editor::configs::Edits,
     size: (u32, u32),
     /// Draft models from a neural network: a module, made on first use.
     #[cfg(feature = "gen")]
@@ -47,6 +49,7 @@ impl Server {
     pub fn new() -> Self {
         Self {
             session: None,
+            configs: scrap_editor::configs::Edits::new(),
             size: (640, 360),
             #[cfg(feature = "gen")]
             generator: None,
