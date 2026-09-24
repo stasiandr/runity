@@ -367,6 +367,8 @@ pub struct FrameStats {
     /// Draws in the shadow pass, which is not culled by the camera: a
     /// caster behind you still throws a shadow in front of you.
     pub shadow_casters: u32,
+    /// Triangles the colour pass draws, at the levels of detail picked.
+    pub triangles: u64,
 }
 
 /// How shadows are cast, or that they are not.
@@ -923,6 +925,10 @@ struct GpuTexture {
     view: wgpu::TextureView,
 }
 
+/// A mesh handle with this bit set is a coarser level of a mesh, kept
+/// apart so the handles of what is uploaded stay in order.
+const LOD_HANDLE: u32 = 1 << 31;
+
 struct GpuMesh {
     vertices: wgpu::Buffer,
     /// Joint indices and weights, when the mesh has them.
@@ -1050,6 +1056,11 @@ pub struct Renderer {
     started: std::time::Instant,
     /// The stroke of lightning of the frame being drawn, if any.
     bolt: Option<crate::weather::Bolt>,
+    /// Coarser levels of the meshes that have them ([`crate::lod`]): each
+    /// mesh's levels, their handles (with [`LOD_HANDLE`] set) and the least
+    /// share of the screen each is drawn for.
+    lods: std::collections::HashMap<u32, Vec<(MeshHandle, f32)>>,
+    lod_meshes: Vec<GpuMesh>,
     /// How long each pass takes on the GPU, when asked ([`Self::profile_gpu`]).
     timer: Option<crate::gpu_timer::GpuTimer>,
     timing: bool,
@@ -2808,6 +2819,8 @@ impl Renderer {
             fog_bind_group,
             started: std::time::Instant::now(),
             bolt: None,
+            lods: std::collections::HashMap::new(),
+            lod_meshes: Vec::new(),
             timer: crate::gpu_timer::GpuTimer::new(gpu),
             timing: std::env::var_os("RUNITY_GPU_TIMES").is_some(),
             atmosphere,
@@ -2952,10 +2965,54 @@ impl Renderer {
         vertices: &[crate::asset::Vertex],
         indices: &[u32],
     ) -> MeshHandle {
+        let mesh = self.gpu_mesh(gpu, vertices, indices, true);
+        self.meshes.push(mesh);
+        let handle = MeshHandle(self.meshes.len() as u32 - 1);
+        self.make_lods(gpu, handle, vertices, indices);
+        handle
+    }
+
+    /// A mesh of enough triangles gets its coarser levels ([`crate::lod`]).
+    fn make_lods(
+        &mut self,
+        gpu: &Gpu,
+        handle: MeshHandle,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+    ) {
+        self.lods.remove(&handle.0);
+        if indices.len() / 3 < crate::lod::FROM_TRIANGLES {
+            return;
+        }
+        let bounds = crate::asset::Bounds::of(vertices);
+        let diagonal = (Vec3::from_array(bounds.max) - Vec3::from_array(bounds.min)).length();
+        let mut levels = Vec::new();
+        for (share, below) in crate::lod::LEVELS {
+            let Some((v, i)) = crate::lod::simplify(vertices, indices, diagonal * share) else {
+                break;
+            };
+            let mesh = self.gpu_mesh(gpu, &v, &i, false);
+            self.lod_meshes.push(mesh);
+            levels.push((MeshHandle(LOD_HANDLE | (self.lod_meshes.len() as u32 - 1)), below));
+        }
+        if !levels.is_empty() {
+            self.lods.insert(handle.0, levels);
+        }
+    }
+
+    /// A mesh on the GPU; a structure for rays too when `traced`.
+    fn gpu_mesh(
+        &self,
+        gpu: &Gpu,
+        vertices: &[crate::asset::Vertex],
+        indices: &[u32],
+        traced: bool,
+    ) -> GpuMesh {
         let bounds = crate::asset::Bounds::of(vertices);
         use wgpu::util::DeviceExt;
 
-        let traced = if self.ray.is_some() {
+        let traced = traced && self.ray.is_some();
+        let usage = if traced {
             wgpu::BufferUsages::BLAS_INPUT
         } else {
             wgpu::BufferUsages::empty()
@@ -2965,16 +3022,16 @@ impl Renderer {
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertices"),
                 contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | traced,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | usage,
             });
         let index_buffer = gpu
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("indices"),
                 contents: bytemuck::cast_slice(indices),
-                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | traced,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST | usage,
             });
-        let blas = (self.ray.is_some() && !indices.is_empty()).then(|| {
+        let blas = (traced && !indices.is_empty()).then(|| {
             crate::ray::blas(
                 gpu,
                 &vertex_buffer,
@@ -2983,16 +3040,53 @@ impl Renderer {
                 indices.len() as u32,
             )
         });
-
-        self.meshes.push(GpuMesh {
+        GpuMesh {
             vertices: vertex_buffer,
             skin: None,
             indices: index_buffer,
             index_count: indices.len() as u32,
             bounds,
             blas,
-        });
-        MeshHandle(self.meshes.len() as u32 - 1)
+        }
+    }
+
+    /// A mesh by its handle, a coarser level's too.
+    fn mesh(&self, handle: MeshHandle) -> Option<&GpuMesh> {
+        if handle.0 & LOD_HANDLE != 0 {
+            self.lod_meshes.get((handle.0 & !LOD_HANDLE) as usize)
+        } else {
+            self.meshes.get(handle.0 as usize)
+        }
+    }
+
+    /// Which level of its mesh a draw is drawn with, from how much of the
+    /// screen it covers — `None` when it is too small to draw at all. A
+    /// skinned mesh keeps its own: its joints are bound to its vertices.
+    fn level_of(&self, draw: &Draw, eye: Vec3, camera: &Camera, skinned: bool) -> Option<MeshHandle> {
+        let base = self.meshes.get(draw.mesh.0 as usize)?;
+        let (min, max) = (Vec3::from_array(base.bounds.min), Vec3::from_array(base.bounds.max));
+        let (scale, _, _) = draw.transform.to_scale_rotation_translation();
+        let centre = draw.transform.transform_point3((min + max) * 0.5);
+        let radius = ((max - min) * scale.abs()).length() * 0.5;
+        let covers = match camera.ortho {
+            Some(half) => radius / half.max(1e-3),
+            None => crate::lod::coverage(radius, centre.distance(eye), camera.fov_y_degrees),
+        };
+        if covers < crate::lod::TOO_SMALL {
+            return None;
+        }
+        if skinned {
+            return Some(draw.mesh);
+        }
+        let mut pick = draw.mesh;
+        if let Some(levels) = self.lods.get(&draw.mesh.0) {
+            for (handle, below) in levels {
+                if covers < *below {
+                    pick = *handle;
+                }
+            }
+        }
+        Some(pick)
     }
 
     /// Upload an image straight out of an imported asset.
@@ -3188,7 +3282,7 @@ impl Renderer {
         let mut current: Option<Look> = None;
         for ((look, handle, texture), list) in batches {
             let count = list.len() as u32;
-            let Some(mesh) = self.meshes.get(handle.0 as usize) else {
+            let Some(mesh) = self.mesh(*handle) else {
                 first += count;
                 continue;
             };
@@ -3280,7 +3374,7 @@ impl Renderer {
         instance: u32,
         prepass: bool,
     ) {
-        let Some(mesh) = self.meshes.get(mesh.0 as usize) else {
+        let Some(mesh) = self.mesh(mesh) else {
             return;
         };
         let pipeline = if prepass {
@@ -3716,6 +3810,8 @@ impl Renderer {
         let Some(old) = self.meshes.get(mesh.0 as usize) else {
             return;
         };
+        // What moves every frame is drawn as it is: its old levels are stale.
+        self.lods.remove(&mesh.0);
         let same = old.blas.is_none()
             && old.vertices.size() == std::mem::size_of_val(vertices) as u64
             && old.indices.size() == std::mem::size_of_val(indices) as u64;
@@ -3729,6 +3825,7 @@ impl Renderer {
         }
         let fresh = self.upload(gpu, vertices, indices);
         let made = self.meshes.pop().expect("just uploaded");
+        self.lods.remove(&fresh.0);
         debug_assert_eq!(fresh.0 as usize, self.meshes.len());
         self.meshes[mesh.0 as usize] = made;
     }
@@ -4478,34 +4575,44 @@ impl Renderer {
             ..Default::default()
         };
         let eye = frame.camera.apparent_eye();
+        let terrain_mesh = fine_terrain.map(|t| t.mesh);
         for draw in &frame.draws {
             let raw = instance_of(draw.transform, &draw.material);
             let maps = self.maps_of(draw);
+            let skinned = draw.pose.is_some()
+                && self
+                    .meshes
+                    .get(draw.mesh.0 as usize)
+                    .is_some_and(|m| m.skin.is_some());
+            // The level of detail it is drawn at, by how much of the screen
+            // it covers; none when it covers too little to see. The terrain
+            // is always itself: it is drawn finely near and coarse far by
+            // its own grid.
+            let level = if Some(draw.mesh) == terrain_mesh || probe.is_some() {
+                Some(draw.mesh)
+            } else {
+                self.level_of(draw, eye, &frame.camera, skinned)
+            };
             if !draw.material.is_transparent() {
                 let casters = if draw.material.alpha_clip > 0.0 {
                     &mut clip_batches
                 } else {
                     &mut shadow_batches
                 };
-                push(casters, (None, draw.mesh, maps), raw);
+                push(casters, (None, level.unwrap_or(draw.mesh), maps), raw);
                 stats.shadow_casters += 1;
             }
 
-            let skinned = draw.pose.is_some()
-                && self
-                    .meshes
-                    .get(draw.mesh.0 as usize)
-                    .is_some_and(|m| m.skin.is_some());
             let visible = match self.meshes.get(draw.mesh.0 as usize) {
                 Some(mesh) => aabb_in_frustum(&planes, mesh.bounds, draw.transform),
                 // A handle pointing at nothing draws nothing; it should not
                 // also be reported as culled.
                 None => false,
             };
-            if !visible {
+            let Some(mesh) = level.filter(|_| visible) else {
                 stats.culled += 1;
                 continue;
-            }
+            };
             stats.drawn += 1;
             let look = Look::of(&draw.material, skinned);
             // The terrain near the camera: its fine grid instead, placed and
@@ -4534,15 +4641,22 @@ impl Renderer {
             let pose = draw.pose.unwrap_or(0);
             if draw.material.is_transparent() {
                 let distance = (draw.transform.w_axis.truncate() - eye).length_squared();
-                transparent.push((distance, look, draw.mesh, maps, pose, raw));
+                transparent.push((distance, look, mesh, maps, pose, raw));
             } else if skinned {
                 // Skinned draws are not batched: each one has its own pose,
                 // so two of them cannot share an instanced call anyway.
-                singles.push((look, draw.mesh, maps, pose, raw));
+                singles.push((look, mesh, maps, pose, raw));
             } else {
-                push(&mut batches, (Some(look), draw.mesh, maps), raw);
+                push(&mut batches, (Some(look), mesh, maps), raw);
             }
         }
+        stats.triangles = batches
+            .iter()
+            .map(|((_, mesh, _), list)| (list.len(), *mesh))
+            .chain(singles.iter().map(|(_, mesh, _, _, _)| (1, *mesh)))
+            .chain(transparent.iter().map(|(_, _, mesh, _, _, _)| (1, *mesh)))
+            .map(|(count, mesh)| self.mesh(mesh).map_or(0, |m| m.index_count as u64 / 3) * count as u64)
+            .sum();
         self.stats = stats;
         // Each lamp shadow map's casters: what its own view sees.
         let mut lamp_batches: Vec<(Batches, Batches)> = Vec::new();

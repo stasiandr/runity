@@ -44,6 +44,7 @@ pub mod cloth;
 pub mod crumble;
 pub mod footprints;
 pub mod heap;
+pub mod lod;
 pub mod rope;
 pub mod gizmo;
 pub mod gpu;
