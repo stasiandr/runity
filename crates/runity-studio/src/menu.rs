@@ -73,6 +73,9 @@ pub enum Action {
     SetField(String, String),
     /// One field of a game component, by component, field and RON value.
     SetSub(String, String, String),
+    /// One place in a field's value, picked from a form's list: the RON
+    /// written there.
+    SetLeaf(crate::inspector::Place, String),
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,

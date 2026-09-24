@@ -4822,3 +4822,48 @@ assert export.send_link(export.MOVES, export.moves([rock]))
     // The save's hash is in the sidecar: the poller has nothing to redo.
     assert_eq!(session.reload_assets(), 0, "no second import");
 }
+
+#[test]
+fn a_field_says_what_it_looks_like_what_it_starts_as_and_what_it_means() {
+    use runity::shape::Shape;
+    let Some((mut session, _path)) = open("field-forms") else {
+        return;
+    };
+    // The engine's types, traced: a unit enum's variants, a data enum's
+    // variants with what each holds.
+    let Some(Shape::Struct(fog)) = session.field_shape("fog") else {
+        panic!("fog is a struct")
+    };
+    assert!(fog
+        .iter()
+        .any(|(k, s)| k == "mode" && matches!(s, Shape::Enum(v) if v.contains(&"Linear".to_string()))));
+    let colliders = session.field_variants("collider");
+    assert!(colliders.contains(&("Model".to_string(), Shape::Unit)));
+    assert!(colliders
+        .iter()
+        .any(|(v, s)| v == "Sphere" && *s == Shape::Struct(vec![("radius".into(), Shape::Float)])));
+    assert!(session.field_variants("light").is_empty(), "not an enum");
+    assert_eq!(session.field_shape("position"), None, "a core field");
+
+    // What a field is added as is its type's default, where it has one.
+    let sky = session.field_blank("sky").expect("a sky has defaults");
+    session.set_environment("sky", &sky).unwrap();
+    let now = session
+        .environment()
+        .into_iter()
+        .find(|(f, _)| *f == "sky")
+        .unwrap()
+        .1;
+    assert_ne!(now, "None");
+    assert_eq!(session.field_blank("route"), None, "a route needs its points");
+
+    // What a text means: a default left out, a typo refused.
+    let normal = session
+        .field_normal(
+            "fog",
+            "(color: (0.5, 0.5, 0.5), start: 1.0, end: 2.0, mode: Linear)",
+        )
+        .unwrap();
+    assert!(!normal.contains("mode"), "{normal}");
+    assert!(session.field_normal("fog", "(colour: 1.0)").is_err());
+}

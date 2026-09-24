@@ -3009,6 +3009,9 @@ impl Studio {
                 Action::SetSub(component, key, value) => {
                     self.inspector.pick_sub(s, &component, &key, &value);
                 }
+                Action::SetLeaf(place, value) => {
+                    self.inspector.set_leaf(s, &place, &value);
+                }
                 Action::SetField(field, value) => {
                     self.inspector.set_field(s, &field, &value);
                 }

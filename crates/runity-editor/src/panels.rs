@@ -164,6 +164,14 @@ fn take_field(
     Ok(one)
 }
 
+/// The module's field of a line or of a scene's look by its name, from
+/// every module this build has.
+fn part_kind(field: &str) -> Option<runity::parts::PartKind> {
+    runity::scene::part_kinds()
+        .into_iter()
+        .find(|k| k.name == field)
+}
+
 fn ron<T: serde::Serialize>(value: &T) -> String {
     runity::ron::to_string(value).unwrap_or_default()
 }
@@ -506,6 +514,46 @@ impl Session {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| runity::ron::from_str(&text).ok())
             .unwrap_or_default()
+    }
+
+    /// What a field's value looks like, for a form: its type as the
+    /// engine's module that reads it declares it — fields, what each holds,
+    /// an enum's variants ([`runity::shape`]). For a game component, the
+    /// shape the game wrote down. `None` for a field no module of this
+    /// build reads (`position` and the other core fields among them) and
+    /// for a component the game has not described.
+    pub fn field_shape(&self, field: &str) -> Option<runity::shape::Shape> {
+        if let Some(component) = field.strip_prefix("components.") {
+            return self.component_shapes().remove(component);
+        }
+        part_kind(field).map(|k| (k.shape)())
+    }
+
+    /// For a field that is an enum — `collider`, `joint`, `body` — what
+    /// each variant holds: `Box` its `half` and `center`, `Static`
+    /// nothing. What switching a collider to a sphere needs to know it has
+    /// a `radius` to fill in. Empty for anything else.
+    pub fn field_variants(&self, field: &str) -> Vec<(String, runity::shape::Shape)> {
+        part_kind(field).map_or_else(Vec::new, |k| (k.variants)())
+    }
+
+    /// What a field is set to when it is added: its type's own default
+    /// (the value `()` reads as, which for a type with `#[serde(default)]`
+    /// is its `Default`), as a line of the file writes it. `None` for a
+    /// type that has no default — a route needs its points, a collider a
+    /// shape — and for a field no module reads.
+    pub fn field_blank(&self, field: &str) -> Option<String> {
+        part_kind(field).and_then(|k| (k.normal)("()").ok())
+    }
+
+    /// A field's text read as its type and written back as the file
+    /// writes it: what it means, with what is left at its default left
+    /// out. The error in words when it does not read. What tells an
+    /// Inspector which value a field the text leaves out stands at.
+    pub fn field_normal(&self, field: &str, text: &str) -> EditResult<String> {
+        let kind = part_kind(field)
+            .ok_or_else(|| EditError::Scene(format!("no module reads `{field}`")))?;
+        (kind.normal)(text).map_err(|e| EditError::Scene(format!("{field}: {e}")))
     }
 
     /// Add a component the game has with a value of its shape to start

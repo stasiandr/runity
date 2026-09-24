@@ -920,6 +920,9 @@ fn a_long_value_is_edited_on_several_lines() {
         )
         .unwrap();
     click(&mut s, "line crate");
+    // The value as RON is Debug mode's.
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Debug");
     click(&mut s, "light");
     // Enter is a new line inside the value; Cmd Enter commits it.
     s.handle(&InputEvent::KeyDown(Key::LeftSuper));
@@ -2349,4 +2352,183 @@ fn the_inspector_scrubs_adds_takes_away_and_switches_off() {
     s.frame();
     click(&mut s, "inspector active");
     assert!(!off(&s));
+}
+
+/// Everything typed into the box with this name, instead of what it held.
+fn retype(s: &mut Studio, name: &str, text: &str) {
+    click(s, name);
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(s, text);
+    key(s, Key::Enter);
+}
+
+fn look(s: &Studio, field: &str) -> String {
+    s.session
+        .environment()
+        .into_iter()
+        .find(|(f, _)| *f == field)
+        .unwrap()
+        .1
+}
+
+/// Every text box the Inspector shows, by name, with what it holds.
+fn inspector_boxes(s: &mut Studio) -> Vec<(String, String)> {
+    s.ui.paint();
+    let mut out = Vec::new();
+    let mut stack = vec![s.ui.find("inspector").unwrap()];
+    while let Some(node) = stack.pop() {
+        if s.ui.is_field(node) {
+            out.push((
+                s.ui.name(node).unwrap_or_default().to_string(),
+                s.ui.text(node).unwrap_or_default().to_string(),
+            ));
+        }
+        stack.extend(s.ui.children(node));
+    }
+    out
+}
+
+#[test]
+fn the_scene_look_is_a_form_and_never_its_ron() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let boxes = inspector_boxes(&mut s);
+    assert!(
+        boxes.iter().any(|(n, t)| n == "scene fog start" && t == "18"),
+        "{boxes:?}"
+    );
+    for (name, text) in &boxes {
+        assert!(
+            !text.trim_start().starts_with('(') && text != "None",
+            "{name} shows RON: {text}"
+        );
+    }
+    assert!(!s.ui.dump().contains("(hour:"), "no RON anywhere");
+
+    // A number: one step, the rest of the fog as it was.
+    let before = look(&s, "fog");
+    let steps = s.session.undo_steps().len();
+    retype(&mut s, "scene fog start", "25");
+    let fog = look(&s, "fog");
+    assert!(fog.contains("start:25.0"), "{fog}");
+    assert_eq!(
+        fog.replace("start:25.0", "start:18.0"),
+        before,
+        "only the start changed"
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+    click(&mut s, "undo");
+    assert_eq!(look(&s, "fog"), before);
+    assert!(
+        inspector_boxes(&mut s)
+            .iter()
+            .any(|(n, t)| n == "scene fog start" && t == "18"),
+        "the form follows the undo"
+    );
+
+    // A colour, from its swatch's picker.
+    click(&mut s, "scene fog color swatch");
+    retype(&mut s, "picker hex", "#ff0000");
+    assert!(look(&s, "fog").contains("color:(1.0,0.0,0.0)"), "{}", look(&s, "fog"));
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+    click(&mut s, "popover ground");
+
+    // An enum from its list.
+    click(&mut s, "scene fog mode");
+    click(&mut s, "menu Exponential");
+    assert!(look(&s, "fog").contains("mode:Exponential"), "{}", look(&s, "fog"));
+}
+
+#[test]
+fn a_part_of_the_look_switches_on_at_its_default_and_off_to_none() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert_eq!(look(&s, "sky"), "None");
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "scene sky");
+    assert_eq!(
+        runity::ron::from_str::<runity::ron::Value>(&look(&s, "sky")).ok(),
+        runity::ron::from_str::<runity::ron::Value>(&s.session.field_blank("sky").unwrap())
+            .ok(),
+        "the engine's default sky"
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1);
+    assert!(s.ui.find("scene sky exposure").is_some(), "open, its fields shown");
+    click(&mut s, "scene sky");
+    assert_eq!(look(&s, "sky"), "None");
+    assert!(s.ui.find("scene sky exposure").is_none());
+}
+
+#[test]
+fn debug_mode_shows_the_ron_and_normal_the_form() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert!(s.ui.find("scene fog").is_none(), "no RON box outside Debug mode");
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Debug");
+    let fog = s.ui.find("scene fog").expect("the fog as one box");
+    assert!(s.ui.text(fog).unwrap().starts_with("(color:"));
+    assert!(s.session.inspector_debug(), "remembered");
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Normal");
+    assert!(s.ui.find("scene fog").is_none());
+    assert!(s.ui.find("scene fog start").is_some());
+}
+
+#[test]
+fn a_collider_picks_its_shape_and_edits_its_numbers() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(crate_id, "collider", "Box(half: (0.5, 0.5, 0.5))")
+        .unwrap();
+    click(&mut s, "line crate");
+    let collider = |s: &Studio| {
+        s.session
+            .inspect(crate_id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "collider")
+            .unwrap()
+            .value
+    };
+    let boxes = inspector_boxes(&mut s);
+    for (name, text) in &boxes {
+        assert!(!text.trim_start().starts_with('('), "{name} shows RON: {text}");
+    }
+    assert!(boxes.iter().any(|(n, t)| n == "collider half y" && t == "0.5"), "{boxes:?}");
+
+    // One number of the box: one step.
+    let steps = s.session.undo_steps().len();
+    retype(&mut s, "collider half y", "2");
+    assert_eq!(collider(&s), "Box(half:(0.5,2.0,0.5))");
+    assert_eq!(s.session.undo_steps().len(), steps + 1);
+
+    // A field the value leaves out, at its default until typed into.
+    retype(&mut s, "collider center y", "1");
+    assert_eq!(collider(&s), "Box(half:(0.5,2.0,0.5),center:(0.0,1.0,0.0))");
+
+    // Another shape from the list: its own fields to fill in.
+    click(&mut s, "collider");
+    click(&mut s, "menu Sphere");
+    assert!(collider(&s).starts_with("Sphere(radius:"), "{}", collider(&s));
+    assert!(s.ui.find("collider radius").is_some());
+
+    // A unit variant from the list, and the body's.
+    click(&mut s, "body");
+    click(&mut s, "menu Dynamic");
+    assert!(s
+        .session
+        .inspect(crate_id)
+        .unwrap()
+        .iter()
+        .any(|f| f.name == "body" && f.value == "Dynamic"));
 }

@@ -36,6 +36,9 @@ pub(crate) struct Prefs {
     /// `latency=80,loss=3`): the dacha simulator's Bad Link window, kept
     /// per person, never in the project. Empty is a perfect one.
     link: String,
+    /// The Inspector in Debug mode: every field as the RON its file holds,
+    /// as Unity's Inspector menu has it.
+    inspector_debug: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -124,6 +127,24 @@ impl Session {
         prefs.link = link.trim().to_string();
         write_prefs(&path, &prefs);
         Ok(())
+    }
+
+    /// Whether this person has the Inspector in Debug mode: every field as
+    /// the text the scene file holds, instead of a form. Off unless they
+    /// turned it on.
+    pub fn inspector_debug(&self) -> bool {
+        self.read_prefs().inspector_debug
+    }
+
+    /// Turn the Inspector's Debug mode on or off, and remember it. Outside
+    /// a project it is not kept.
+    pub fn set_inspector_debug(&mut self, on: bool) {
+        let Some(path) = self.prefs_path() else {
+            return;
+        };
+        let mut prefs = self.read_prefs();
+        prefs.inspector_debug = on;
+        write_prefs(&path, &prefs);
     }
 
     /// Put the view back where this person left it in the open scene, and
