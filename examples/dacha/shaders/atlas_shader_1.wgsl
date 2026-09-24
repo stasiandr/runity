@@ -20,8 +20,8 @@
 // material brings none (every projection reads the white stand-in, which
 // the greyscale grunge, at most 0.91, never does) the overlay is skipped
 // rather than laid in white, which would lighten the atlas by a quarter.
-// runity:params _Up_Vecto _Blink
-// runity:textures _Triplanar_Texture _Up_Vector_Texture
+// scrap:params _Up_Vecto _Blink
+// scrap:textures _Triplanar_Texture _Up_Vector_Texture
 
 const ATLAS_TILING: f32 = 0.31;
 const ATLAS_BLEND: f32 = 1.0;

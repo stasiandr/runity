@@ -1,0 +1,22 @@
+[package]
+name = "scrap-audio"
+description = "scrap's sound: a line's `sound`, the sound asset, and the mixer that plays them in 3D on kira. With the `kira` feature off, only the fields and the asset: a scene with sounds still opens, reads and saves."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+kira = { version = "0.12.4", optional = true }
+rkyv = { version = "0.8", features = ["bytecheck"] }
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
+
+[features]
+default = ["kira"]
+# The mixer itself: a device to open and a dependency to build.
+kira = ["dep:kira"]

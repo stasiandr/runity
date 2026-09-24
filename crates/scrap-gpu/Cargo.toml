@@ -1,0 +1,34 @@
+[package]
+name = "scrap-gpu"
+description = "scrap's GPU: the device, the surface a host hands over, offscreen targets. What the render and UI modules stand on; the bare core never sees it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pollster = "1.0.1"
+tracing = "0.1.44"
+wgpu = "30"
+winit = { version = "0.30.13", optional = true }
+
+# In the browser: WebGPU, its objects shareable on the one thread there is.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "30", features = ["fragile-send-sync-non-atomic-wasm"] }
+
+# NVIDIA's DLSS (`dlss`): Vulkan only, so only where there is Vulkan to have
+# it on. Building it needs NVIDIA's DLSS SDK (`DLSS_SDK`) and clang.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+dlss_wgpu = { version = "6", optional = true }
+uuid = { version = "1", optional = true }
+
+[features]
+# A surface from a winit window, for the plain desktop shell.
+winit = ["dep:winit"]
+# DLSS on NVIDIA's RTX cards, on Vulkan. Off by default: it needs NVIDIA's
+# SDK to build (docs/stack.md, "Апскейл").
+dlss = ["dep:dlss_wgpu", "dep:uuid"]
+
+[dev-dependencies]
+scrap-core = { path = "../scrap-core" }

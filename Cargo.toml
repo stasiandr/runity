@@ -1,4 +1,4 @@
-# runity: a game engine built on off-the-shelf crates.
+# scrap: a game engine built on off-the-shelf crates.
 #
 # The rule is: take the proven crate, and write our own only where we hit its
 # ceiling. It replaced the opposite rule — an engine assembled from `std`
@@ -11,36 +11,36 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/runity",
-    "crates/runity-animation",
-    "crates/runity-audio",
-    "crates/runity-character",
-    "crates/runity-cli",
-    "crates/runity-core",
-    "crates/runity-destruction",
-    "crates/runity-dialogue",
-    "crates/runity-discord",
-    "crates/runity-editor",
-    "crates/runity-fluid",
-    "crates/runity-gen",
-    "crates/runity-geometry",
-    "crates/runity-gpu",
-    "crates/runity-import",
-    "crates/runity-input",
-    "crates/runity-mcp",
-    "crates/runity-navigation",
-    "crates/runity-net",
-    "crates/runity-overlay",
-    "crates/runity-physics",
-    "crates/runity-render",
-    "crates/runity-reports",
-    "crates/runity-routes",
-    "crates/runity-shell",
-    "crates/runity-soft",
-    "crates/runity-spline",
-    "crates/runity-steam",
-    "crates/runity-studio",
-    "crates/runity-ui",
+    "crates/scrap",
+    "crates/scrap-animation",
+    "crates/scrap-audio",
+    "crates/scrap-character",
+    "crates/scrap-cli",
+    "crates/scrap-core",
+    "crates/scrap-destruction",
+    "crates/scrap-dialogue",
+    "crates/scrap-discord",
+    "crates/scrap-editor",
+    "crates/scrap-fluid",
+    "crates/scrap-gen",
+    "crates/scrap-geometry",
+    "crates/scrap-gpu",
+    "crates/scrap-import",
+    "crates/scrap-input",
+    "crates/scrap-mcp",
+    "crates/scrap-navigation",
+    "crates/scrap-net",
+    "crates/scrap-overlay",
+    "crates/scrap-physics",
+    "crates/scrap-render",
+    "crates/scrap-reports",
+    "crates/scrap-routes",
+    "crates/scrap-shell",
+    "crates/scrap-soft",
+    "crates/scrap-spline",
+    "crates/scrap-steam",
+    "crates/scrap-studio",
+    "crates/scrap-ui",
 ]
 
 [workspace.package]
@@ -51,9 +51,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/stasiandr/runity"
 
 [workspace.dependencies]
-runity = { path = "crates/runity", version = "0.1.0" }
-runity-editor = { path = "crates/runity-editor", version = "0.1.0" }
-runity-import = { path = "crates/runity-import", version = "0.1.0" }
+scrap = { package = "scrap-engine", path = "crates/scrap", version = "0.1.0" }
+scrap-editor = { path = "crates/scrap-editor", version = "0.1.0" }
+scrap-import = { path = "crates/scrap-import", version = "0.1.0" }
 
 # Release builds keep debug info: a profiler that cannot name a frame is
 # worth nothing, and Tracy wants symbols.

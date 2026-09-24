@@ -1,0 +1,18 @@
+[package]
+name = "scrap-navigation"
+description = "scrap's navigation: where something can walk and how to get there — a grid baked from the physics module's static colliders, and A* over it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-physics = { path = "../scrap-physics" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+
+[dev-dependencies]
+scrap-geometry = { path = "../scrap-geometry" }
+ron = "0.12.2"

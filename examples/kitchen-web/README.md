@@ -1,7 +1,7 @@
 # Kitchen Rush — in the browser
 
 The kitchen template (`examples/kitchen`, made with
-`runity new --template kitchen`) built for the web: the engine on WebGPU,
+`scrap new --template kitchen`) built for the web: the engine on WebGPU,
 sticks and buttons on the screen for a phone, and a room code to cook
 together. Published to GitHub Pages by `.github/workflows/pages.yml`
 whenever the `pages` branch moves — merge main into it (or
@@ -17,16 +17,16 @@ map of where each part of the engine is used. What is different here:
 | What | Where |
 |---|---|
 | The page: loading, errors, the room badge, the join dialog | `web/index.html` |
-| Sticks and buttons on a touch screen, as a pad | `web/pad.js` → `runity_pad_axis` / `runity_pad_button` (`runity-shell`'s `web`) |
-| Rooms: a code and a link, WebRTC data channels through PeerJS's broker | `web/runity-net.js`, `src/lobby.rs`; the wire is `runity::net::page::Page` |
-| The project's data as one gzipped file, mounted where the game reads it | `web/pack.py`, `src/web.rs` → `runity::files::mount` |
-| Quality: Low on a phone, by the GPU elsewhere, `?quality=` to choose | `src/web.rs`, `runity::quality` |
-| The player's prefs and best score, kept in the browser | `runity::files::on_write` → `localStorage` |
+| Sticks and buttons on a touch screen, as a pad | `web/pad.js` → `scrap_pad_axis` / `scrap_pad_button` (`scrap-shell`'s `web`) |
+| Rooms: a code and a link, WebRTC data channels through PeerJS's broker | `web/scrap-net.js`, `src/lobby.rs`; the wire is `scrap::net::page::Page` |
+| The project's data as one gzipped file, mounted where the game reads it | `web/pack.py`, `src/web.rs` → `scrap::files::mount` |
+| Quality: Low on a phone, by the GPU elsewhere, `?quality=` to choose | `src/web.rs`, `scrap::quality` |
+| The player's prefs and best score, kept in the browser | `scrap::files::on_write` → `localStorage` |
 
 ## Building
 
 ```
-runity sync                 # the library, from assets/ (once, and after changing one)
+scrap sync                 # the library, from assets/ (once, and after changing one)
 web/build.sh                # → site/: the game, data.bin.gz, the page
 python3 -m http.server -d site 8765
 ```

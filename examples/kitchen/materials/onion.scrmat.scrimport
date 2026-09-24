@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/onion.scrmat",
+    hash: "566e9ca09afcaad241d175eb8710f7cb",
+    id: Some("32e0537a03605f615af5bf007eab2987"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

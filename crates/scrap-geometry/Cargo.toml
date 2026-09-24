@@ -1,0 +1,15 @@
+[package]
+name = "scrap-geometry"
+description = "scrap's geometry: meshes and textures as data, the built-in shapes, a line's model and terrain, skeletons and clips. No GPU: drawing them is the render module's, colliding with them the physics module's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+rkyv = { version = "0.8", features = ["bytecheck"] }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }

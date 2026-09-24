@@ -12,16 +12,16 @@
 //! `cargo run` still opens a desktop window on `scenes/main.ron`, alone;
 //! `web/build.sh` makes the site (`README.md`).
 
-use runity::hecs::World;
-use runity::party::{Event, Party};
-use runity::physics::PhysicsWorld;
+use scrap::hecs::World;
+use scrap::party::{Event, Party};
+use scrap::physics::PhysicsWorld;
 #[allow(unused_imports)]
-use runity::prelude::*;
-use runity::render::Frame;
-use runity::shell::{self, run, Context, WindowConfig};
-use runity::ui::{TextRun, Ui};
-use runity::widgets::Widgets;
-use runity::{Actions, Components, LiveScene, Tuned};
+use scrap::prelude::*;
+use scrap::render::Frame;
+use scrap::shell::{self, run, Context, StepContext, WindowConfig};
+use scrap::ui::{TextRun, Ui};
+use scrap::widgets::Widgets;
+use scrap::{Actions, Components, LiveScene, Tuned};
 use serde::Deserialize;
 
 /// Every file in src/components/, registered by its file name.
@@ -68,19 +68,19 @@ struct Game {
     actions: Actions,
     tuning: Tuned<WorldNumbers>,
     /// The camera's tour while players gather, from `tuning/flyby.ron`.
-    tour: Tuned<runity::tour::Tour>,
-    flyby: runity::tour::Flyby,
-    layers: Tuned<runity::layers::Layers>,
+    tour: Tuned<scrap::tour::Tour>,
+    flyby: scrap::tour::Flyby,
+    layers: Tuned<scrap::layers::Layers>,
     /// The menu, the HUD, the results.
     front: front::Front,
     /// The scene the kitchen is, by name: what a session plays.
     scene: String,
-    strings: runity::strings::Strings,
-    profile: runity::perf::Profiler,
+    strings: scrap::strings::Strings,
+    profile: scrap::perf::Profiler,
     show_profile: bool,
     widgets: Widgets,
     /// Materials' own shaders, put in and reloaded as they are saved.
-    shaders: runity::render::MaterialShaders,
+    shaders: scrap::render::MaterialShaders,
     ui: Ui,
     world: World,
     physics: PhysicsWorld,
@@ -89,19 +89,19 @@ struct Game {
     lobby: lobby::Lobby,
     components: Components,
     /// The mixer; `None` on a machine with no sound device.
-    audio: Option<runity::audio::Audio>,
+    audio: Option<scrap::audio::Audio>,
     /// The scene's `sound`s, played.
-    sounds: runity::audio::Sources,
+    sounds: scrap::audio::Sources,
     /// The graphs and clips that lines' `animator`s play.
-    motions: runity::motion::Motions,
+    motions: scrap::motion::Motions,
     /// What the kitchen sounded like last frame.
     noise: noise::Noise,
     /// The player's choices kept between runs: volumes, the best score.
-    prefs: runity::player_prefs::PlayerPrefs,
+    prefs: scrap::player_prefs::PlayerPrefs,
     /// How much of the scene is drawn: chosen for the device when it
     /// comes up (a phone's browser gets Low), or by the page's
     /// `?quality=`.
-    quality: Option<runity::quality::Quality>,
+    quality: Option<scrap::quality::Quality>,
 }
 
 impl Game {
@@ -142,7 +142,7 @@ impl Game {
                 self.front.best = i64::from(round.score);
                 self.front.new_best = true;
                 self.prefs
-                    .set("best", runity::player_prefs::Pref::Int(self.front.best));
+                    .set("best", scrap::player_prefs::Pref::Int(self.front.best));
                 let _ = self.prefs.save();
             }
             None => self.front.new_best = false,
@@ -179,18 +179,18 @@ impl Game {
                     let _ = audio.set_group_volume(group, volume);
                 }
                 self.prefs
-                    .set(group, runity::player_prefs::Pref::Float(volume as f64));
+                    .set(group, scrap::player_prefs::Pref::Float(volume as f64));
                 let _ = self.prefs.save();
             }
             Wish::Language(language) => {
-                let dir = runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings");
-                match runity::strings::Strings::load(dir, language) {
+                let dir = scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings");
+                match scrap::strings::Strings::load(dir, language) {
                     Ok(strings) => self.strings = strings,
                     Err(e) => eprintln!("{e}"),
                 }
                 self.prefs.set(
                     "language",
-                    runity::player_prefs::Pref::Text(language.into()),
+                    scrap::player_prefs::Pref::Text(language.into()),
                 );
                 let _ = self.prefs.save();
             }
@@ -210,7 +210,7 @@ impl Game {
 fn tick(
     world: &mut World,
     physics: &mut PhysicsWorld,
-    profile: &mut runity::perf::Profiler,
+    profile: &mut scrap::perf::Profiler,
     seconds: f32,
 ) {
     // systems, in order
@@ -224,14 +224,14 @@ fn tick(
     profile.time("board", || systems::board::run(world, seconds));
     // Platforms and lifts on their routes, and lines with an `animator`
     // moving what is under them; then everything placed.
-    profile.time("routes", || runity::routes::run_routes(world, seconds));
-    profile.time("motion", || runity::motion::run(world, seconds));
+    profile.time("routes", || scrap::routes::run_routes(world, seconds));
+    profile.time("motion", || scrap::motion::run(world, seconds));
     // Characters: their graphs pick the clip, the skeleton takes the pose.
     profile.time("animation", || {
-        runity::animgraph::run_controllers(world);
-        runity::advance_animations(world, seconds);
+        scrap::animgraph::run_controllers(world);
+        scrap::advance_animations(world, seconds);
     });
-    runity::world::apply_hierarchy(world);
+    scrap::world::apply_hierarchy(world);
     // Food just thrown: a body now, and its first speed.
     launch(world, physics);
     // Physics is a system too: bodies from the scene, a fixed step, and
@@ -241,8 +241,8 @@ fn tick(
 
 /// What was thrown this step becomes a body, and is given its speed.
 fn launch(world: &mut World, physics: &mut PhysicsWorld) {
-    let thrown: Vec<(runity::hecs::Entity, runity::glam::Vec3)> = world
-        .query::<(runity::hecs::Entity, &state::Flying)>()
+    let thrown: Vec<(scrap::hecs::Entity, scrap::glam::Vec3)> = world
+        .query::<(scrap::hecs::Entity, &state::Flying)>()
         .iter()
         .filter_map(|(e, f)| Some((e, f.launch?)))
         .collect();
@@ -259,11 +259,11 @@ fn launch(world: &mut World, physics: &mut PhysicsWorld) {
 }
 
 /// In the project, write what the components look like, for the editor's
-/// Inspector and `runity check` (library/components.ron). Nothing in a build.
+/// Inspector and `scrap check` (library/components.ron). Nothing in a build.
 fn write_shapes() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    if root.join("runity.ron").is_file() {
-        if let Err(e) = game_components().write_shapes(root.join(runity::project::SHAPES)) {
+    if root.join("scrap.ron").is_file() {
+        if let Err(e) = game_components().write_shapes(root.join(scrap::project::SHAPES)) {
             eprintln!("{e}");
         }
     }
@@ -279,7 +279,7 @@ fn game_components() -> Components {
 impl shell::Game for Game {
     fn start(&mut self, ctx: &mut Context) {
         let quality =
-            web::quality().unwrap_or_else(|| runity::quality::Quality::for_device(ctx.gpu));
+            web::quality().unwrap_or_else(|| scrap::quality::Quality::for_device(ctx.gpu));
         eprintln!("drawn at {quality:?} on {}", ctx.gpu.describe());
         self.quality = Some(quality);
         if let Err(problem) = ctx.overlay.use_font(front::FONT.to_vec()) {
@@ -309,7 +309,7 @@ impl shell::Game for Game {
     }
 
     /// Fixed-step game logic: [`tick`].
-    fn step(&mut self, ctx: &mut Context) {
+    fn step(&mut self, ctx: &mut StepContext) {
         // The menu is a picture of the kitchen: nothing runs behind it.
         // Paused alone, the kitchen waits; together, it cannot.
         if self.front.phase != front::Phase::Kitchen || (self.front.paused && self.party.is_alone())
@@ -342,7 +342,7 @@ impl shell::Game for Game {
             eprintln!("{problem}");
         }
         self.ui.clear();
-        let size = runity::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
+        let size = scrap::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
         if let Some(Err(problem)) = self.strings.poll(ctx.time.delta()) {
             eprintln!("{problem}");
         }
@@ -430,7 +430,7 @@ impl shell::Game for Game {
             session::frame(&mut self.world, &mut self.party, |world, prefab| {
                 let made = live.spawn_prefab(
                     prefab,
-                    runity::Transform::default(),
+                    scrap::Transform::default(),
                     None,
                     world,
                     gpu,
@@ -441,8 +441,8 @@ impl shell::Game for Game {
         }
         // Lines that came in with an `animator` start their graphs.
         let library = self.live.library();
-        let skins = |model: &runity::AssetLink| library?.mesh_by_name(model)?.skin_owned();
-        for problem in runity::motion::attach(&mut self.world, &self.motions, skins) {
+        let skins = |model: &scrap::AssetLink| library?.mesh_by_name(model)?.skin_owned();
+        for problem in scrap::motion::attach(&mut self.world, &self.motions, skins) {
             eprintln!("{problem}");
         }
         for (shader, result) in self.shaders.poll(ctx.renderer, ctx.gpu) {
@@ -544,22 +544,33 @@ impl shell::Game for Game {
             self.show_profile = !self.show_profile;
         }
         if self.show_profile {
-            for (i, line) in self.profile.lines().into_iter().enumerate() {
+            // The game's parts, then the loop's own: steps, frame, drawing and
+            // the wait for the screen.
+            let lines = self.profile.lines().into_iter().chain(
+                ctx.loop_times
+                    .lines()
+                    .into_iter()
+                    .map(|l| format!("loop {l}")),
+            );
+            for (i, line) in lines.enumerate() {
                 let at = 60.0 + 20.0 * i as f32;
                 self.ui
-                    .text(TextRun::new(20.0, at, 16.0, runity::glam::Vec4::ONE, line));
+                    .text(TextRun::new(20.0, at, 16.0, scrap::glam::Vec4::ONE, line));
             }
         }
         // Sparks and dust move on the frame's time: they are for the eye.
-        runity::particles::run_particles(&mut self.world, ctx.time.delta());
+        scrap::particles::run_particles(&mut self.world, ctx.time.delta());
         let scene = self.live.scene();
         // Cameras that follow keep after their targets, then the one that
         // looks is found.
-        runity::world::follow_cameras(&mut self.world, ctx.time.delta());
+        scrap::world::follow_cameras(&mut self.world, ctx.time.delta());
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
-        let camera = runity::world::camera_of(&self.world)
-            .unwrap_or_else(|| runity::scene_camera(&scene.view()));
+        // What the fixed steps move is drawn between the last two of
+        // them, by how far this frame is into the next.
+        scrap::world::interpolate(&mut self.world, ctx.time.interpolation());
+        let camera = scrap::world::camera_of(&self.world)
+            .unwrap_or_else(|| scrap::scene_camera(&scene.view()));
         // While players gather — joining, or in the kitchen before the doors
         // open — the camera tours it.
         if let Some(Err(problem)) = self.tour.poll(ctx.time.delta()) {
@@ -573,13 +584,13 @@ impl shell::Game for Game {
         let camera = self
             .flyby
             .camera(&self.tour, touring, ctx.time.delta(), camera);
-        let size = runity::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
+        let size = scrap::glam::Vec2::new(ctx.size.0 as f32, ctx.size.1 as f32);
         self.front
             .floaters(&camera, size, &mut self.ui, ctx.time.delta());
-        let started = runity::web_time::Instant::now();
+        let started = scrap::web_time::Instant::now();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
-        let mut frame = runity::world::scene_frame(&self.world, camera, scene);
+        let mut frame = scrap::world::scene_frame(&self.world, camera, scene);
         // Close up, the tour's lens: in focus where it looks, the rest soft.
         self.flyby
             .lens(&self.tour, &camera, &mut frame.post.depth_of_field);
@@ -630,22 +641,22 @@ fn main() -> anyhow::Result<()> {
     // looks for it, and the page's randomness for fresh ids.
     web::start(env!("CARGO_MANIFEST_DIR"));
     // `data/` beside the executable in a build, the project in development.
-    // runity.ron's `game`: window, clock, first scene, language.
-    let (project_name, settings) = runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR"))
+    // scrap.ron's `game`: window, clock, first scene, language.
+    let (project_name, settings) = scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR"))
         .map_err(anyhow::Error::msg)?;
-    // A panic is written down in the player's folder: runity::crash::pending
+    // A panic is written down in the player's folder: scrap::crash::pending
     // finds it on the next start.
     #[cfg(not(target_arch = "wasm32"))]
-    runity::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
+    scrap::crash::install(&project_name, env!("CARGO_PKG_VERSION"));
     // Volumes and the best score, kept in the player's folder.
-    let prefs = runity::player_prefs::PlayerPrefs::of_game(&project_name).unwrap_or_default();
-    // `runity run --scene cave` plays scenes/cave.ron.
-    let playing = std::env::var("RUNITY_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
+    let prefs = scrap::player_prefs::PlayerPrefs::of_game(&project_name).unwrap_or_default();
+    // `scrap run --scene cave` plays scenes/cave.ron.
+    let playing = std::env::var("SCRAP_SCENE").unwrap_or_else(|_| settings.start_scene.clone());
     // Started from the editor, the game watches the editor's document as it
-    // stands (RUNITY_SCENE_FILE), so an edit shows here without a save.
-    let scene = match std::env::var_os("RUNITY_SCENE_FILE") {
+    // stands (SCRAP_SCENE_FILE), so an edit shows here without a save.
+    let scene = match std::env::var_os("SCRAP_SCENE_FILE") {
         Some(file) => std::path::PathBuf::from(file),
-        None => runity::project::data_file(
+        None => scrap::project::data_file(
             env!("CARGO_MANIFEST_DIR"),
             &format!("scenes/{}.ron", playing),
         ),
@@ -656,7 +667,7 @@ fn main() -> anyhow::Result<()> {
     for problem in &problems {
         eprintln!("{problem}");
     }
-    // RUNITY_NET: host or join a game — alone without it, which is the
+    // SCRAP_NET: host or join a game — alone without it, which is the
     // same thing with nobody else in it.
     let party = Party::from_env(&playing, &game_components()).map_err(anyhow::Error::msg)?;
     let mut title = if settings.title.is_empty() {
@@ -671,39 +682,40 @@ fn main() -> anyhow::Result<()> {
         title,
         width: settings.width,
         height: settings.height,
-        time: runity::TimeSettings {
+        time: scrap::TimeSettings {
             fixed_delta: settings.fixed_delta(),
             ..Default::default()
         },
+        ..Default::default()
     };
     let (motions, problems) =
-        runity::motion::Motions::load(runity::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
+        scrap::motion::Motions::load(scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), ""));
     for problem in &problems {
         eprintln!("{problem}");
     }
-    let actions = Actions::load(runity::project::data_file(
+    let actions = Actions::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
         "input.ron",
     ))?;
     for problem in actions.missing(&["quit"]) {
         eprintln!("{problem}");
     }
-    let tuning = Tuned::load(runity::project::data_file(
+    let tuning = Tuned::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
         "tuning/world.ron",
     ))
     .map_err(anyhow::Error::msg)?;
-    let tour = Tuned::load(runity::project::data_file(
+    let tour = Tuned::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
         "tuning/flyby.ron",
     ))
     .map_err(anyhow::Error::msg)?;
-    let layers = Tuned::load(runity::project::data_file(
+    let layers = Tuned::load(scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
         "layers.ron",
     ))
     .map_err(anyhow::Error::msg)?;
-    let mut front = front::Front::load(&runity::project::data_file(
+    let mut front = front::Front::load(&scrap::project::data_file(
         env!("CARGO_MANIFEST_DIR"),
         "ui",
     ))
@@ -720,7 +732,7 @@ fn main() -> anyhow::Result<()> {
         (None, Some(why)) => eprintln!("no rooms ({why}): the kitchen alone"),
         _ => {}
     }
-    // Started into a session (`runity run --players 2`): straight in.
+    // Started into a session (`scrap run --players 2`): straight in.
     if !party.is_alone() {
         front.phase = if party.is_host() {
             front::Phase::Kitchen
@@ -728,14 +740,14 @@ fn main() -> anyhow::Result<()> {
             front::Phase::Joining
         };
     }
-    let strings = runity::strings::Strings::load(
-        runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+    let strings = scrap::strings::Strings::load(
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
         &settings.language,
     )
     .map_err(anyhow::Error::msg)?;
     // What the player chose last time.
     front.best = prefs.int("best", 0);
-    let mut audio = runity::audio::Audio::new()
+    let mut audio = scrap::audio::Audio::new()
         .map_err(|e| eprintln!("no sound: {e}"))
         .ok();
     for group in ["music", "sfx"] {
@@ -749,8 +761,8 @@ fn main() -> anyhow::Result<()> {
     if let Some(i) = front::LANGUAGES.iter().position(|l| *l == language) {
         front.menu.set_chosen("language", i);
     }
-    let strings = runity::strings::Strings::load(
-        runity::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
+    let strings = scrap::strings::Strings::load(
+        scrap::project::data_file(env!("CARGO_MANIFEST_DIR"), "strings"),
         &language,
     )
     .unwrap_or(strings);
@@ -759,15 +771,15 @@ fn main() -> anyhow::Result<()> {
         actions,
         tuning,
         tour,
-        flyby: runity::tour::Flyby::default(),
+        flyby: scrap::tour::Flyby::default(),
         layers,
         front,
         scene: playing.clone(),
         strings,
-        profile: runity::perf::Profiler::new(600),
+        profile: scrap::perf::Profiler::new(600),
         show_profile: false,
         widgets: Widgets::with_style(front::style()),
-        shaders: runity::render::MaterialShaders::new(runity::project::data_file(
+        shaders: scrap::render::MaterialShaders::new(scrap::project::data_file(
             env!("CARGO_MANIFEST_DIR"),
             "shaders",
         )),
@@ -778,7 +790,7 @@ fn main() -> anyhow::Result<()> {
         lobby,
         components: game_components(),
         audio,
-        sounds: runity::audio::Sources::new(),
+        sounds: scrap::audio::Sources::new(),
         motions,
         noise: noise::Noise::default(),
         prefs,
@@ -787,7 +799,7 @@ fn main() -> anyhow::Result<()> {
     run(config, game)
 }
 
-/// Play mode without a window: `runity test` (or `cargo test`).
+/// Play mode without a window: `scrap test` (or `cargo test`).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -799,8 +811,8 @@ mod tests {
     fn the_start_scene_plays() {
         write_shapes();
         let (_, settings) =
-            runity::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
-        let scene = runity::project::data_file(
+            scrap::project::GameSettings::load(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let scene = scrap::project::data_file(
             env!("CARGO_MANIFEST_DIR"),
             &format!("scenes/{}.ron", settings.start_scene),
         );
@@ -813,12 +825,12 @@ mod tests {
 
         let seconds = settings.fixed_delta();
         let mut physics = PhysicsWorld::new(seconds);
-        let mut profile = runity::perf::Profiler::new(8);
+        let mut profile = scrap::perf::Profiler::new(8);
         for _ in 0..(2.0 / seconds) as usize {
             tick(&mut world, &mut physics, &mut profile, seconds);
         }
         for (_, transform) in world
-            .query::<(runity::hecs::Entity, &runity::Transform)>()
+            .query::<(scrap::hecs::Entity, &scrap::Transform)>()
             .iter()
         {
             assert!(

@@ -38,13 +38,13 @@ models/:
 textures/:
   textures/valley_atlas.png — атлас плоских цветов долины; оригинальная
     работа для этого репозитория по палитре карточки #33 и
-    crates/runity/examples/valley/look.rs; CC0.
+    crates/scrap/examples/valley/look.rs; CC0.
 
   textures/marks.png — thirty personal ownership marks, generated. Not
     downloaded: drawn by rule and baked once by
-    crates/runity/examples/valley_marks.rs (`cargo run --example
+    crates/scrap/examples/valley_marks.rs (`cargo run --example
     valley_marks`), the way the engine's other one-off pictures are made —
-    see crates/runity-render/src/golden.rs for the same idea applied to
+    see crates/scrap-render/src/golden.rs for the same idea applied to
     test images. Five stroke families, six variants each: strokes across a
     5x5 grid (a tamga-style personal mark), notches on a stem, crosses, a
     tree silhouette, and dots on the grid. Which family and variant a mark

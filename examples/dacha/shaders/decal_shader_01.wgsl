@@ -8,7 +8,7 @@
 // same in every material, so they are constants. Alpha only shows if the
 // material is transparent (the six are opaque in Unity, where the decal
 // projector blends regardless).
-// runity:textures _Decal_Texture
+// scrap:textures _Decal_Texture
 
 const DECAL_COLOR = vec3<f32>(0.4452, 0.2929, 0.2049);
 const DECAL_MASK_INT = 5.67;

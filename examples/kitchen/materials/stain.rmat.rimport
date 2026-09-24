@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/stain.rmat",
-    hash: "d416aa5f7e04a7266ff4105504bd7e5e",
-    id: Some("4d084b92dc472b0b95dfafb86d46b6fb"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

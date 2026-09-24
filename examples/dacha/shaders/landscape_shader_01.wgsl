@@ -18,7 +18,7 @@
 // hue/saturation/contrast pass is identity at the material's values and is
 // skipped. Metallic is the graph's 0, not the .mat's _Metallic = 1; the .mat's
 // base map (a stale refrigerator texture) is ignored.
-// runity:textures _SampleTexture2D_5f1339acdb164c14b236042c20de1ef1_Texture_1_Texture2D _SampleTexture2D_353fddecd0514a679b12f6c2ebe27635_Texture_1_Texture2D _SampleTexture2D_54c0ff5071964b64bf228a86c4406d03_Texture_1_Texture2D _SampleTexture2D_94a9ef748c05450ebe18c4ea0db054a7_Texture_1_Texture2D
+// scrap:textures _SampleTexture2D_5f1339acdb164c14b236042c20de1ef1_Texture_1_Texture2D _SampleTexture2D_353fddecd0514a679b12f6c2ebe27635_Texture_1_Texture2D _SampleTexture2D_54c0ff5071964b64bf228a86c4406d03_Texture_1_Texture2D _SampleTexture2D_94a9ef748c05450ebe18c4ea0db054a7_Texture_1_Texture2D
 
 const LANDSCAPE_ROAD_1 = 0u;
 const LANDSCAPE_ROAD_2 = 1u;

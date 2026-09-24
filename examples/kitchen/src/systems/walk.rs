@@ -3,10 +3,10 @@
 //! stand in, and the room has walls. Each player walks their own cook —
 //! the one this peer owns; the others' come over the network.
 
-use runity::glam::Vec3;
-use runity::hecs::World;
-use runity::net::Owned;
-use runity::Transform;
+use scrap::glam::Vec3;
+use scrap::hecs::World;
+use scrap::net::Owned;
+use scrap::Transform;
 
 use crate::components::{Player, Station};
 use crate::state::Controls;

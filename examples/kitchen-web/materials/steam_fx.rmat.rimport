@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/steam_fx.rmat",
-    hash: "d08172ee8b950cb1e49bc81587f74035",
-    id: Some("d8f7a3bf124a0673b0fdab288fd74945"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

@@ -2,10 +2,10 @@
 //! game draws on every step, on every peer — the clock, the score and the
 //! orders, each a coloured card with a bar of how long it will wait.
 
-use runity::glam::Vec4;
-use runity::hecs::{Entity, World};
-use runity::ui::{Quad, TextRun};
-use runity::world::WorldUi;
+use scrap::glam::Vec4;
+use scrap::hecs::{Entity, World};
+use scrap::ui::{Quad, TextRun};
+use scrap::world::WorldUi;
 
 use crate::components::item::{Dish, Food};
 use crate::components::Mark;
@@ -36,7 +36,7 @@ pub fn run(world: &mut World, _seconds: f32) {
 }
 
 /// The board as it is now: nothing before a round.
-pub fn draw(ui: &mut runity::ui::Ui, round: Option<&Round>) {
+pub fn draw(ui: &mut scrap::ui::Ui, round: Option<&Round>) {
     ui.clear();
     let white = Vec4::ONE;
     let Some(round) = round else {

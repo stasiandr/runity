@@ -3,8 +3,8 @@
 //! seats the players, and makes what the steps asked for — spawned from its
 //! prefab, told to everyone, and put where it goes.
 
-use runity::hecs::{Entity, World};
-use runity::party::{Event, Party};
+use scrap::hecs::{Entity, World};
+use scrap::party::{Event, Party};
 
 use crate::state::{self, Act, Hands, Place, Top, ACT};
 

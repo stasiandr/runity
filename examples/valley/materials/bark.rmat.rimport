@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/bark.rmat",
-    hash: "96bd25b44dfaabdaeded3bccdc06e639",
-    id: Some("fc5513a0a0fdb87d1fd7b289b5d79c52"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

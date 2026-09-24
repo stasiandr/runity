@@ -8,7 +8,7 @@ NEXT_STEPS.
 
 ## Что сейчас
 
-Разрезано (2026-09-24). Ядро — `runity-core`: мир и ID, трансформ и
+Разрезано (2026-09-24). Ядро — `scrap-core`: мир и ID, трансформ и
 иерархия, компоненты, сцена с частями, префабы, слияние, правки, сейв,
 ассеты по заголовку, события устройств, шов одевания (`Dress`). Собирается
 и тестируется без GPU, физики, звука и сети.
@@ -18,26 +18,26 @@ NEXT_STEPS.
 
 | Крейт | Что | Стоит на |
 |---|---|---|
-| `runity-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
-| `runity-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
-| `runity-navigation` | сетка проходимости и A* | physics |
-| `runity-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
-| `runity-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
-| `runity-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
-| `runity-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`, `grains`, `distance_field`: верёвки, ткань, волосы, мягкие тела, PBF/SPH, гравий, SDF сцены и общие контакты между ними (docs/simulation.md) | ядро, geometry |
-| `runity-animation` | аниматор, графы, motion-клипы | ядро, geometry |
-| `runity-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
-| `runity-gpu` | устройство, поверхность, offscreen | — |
-| `runity-render` | вид строки, кадр из мира, проходы, материалы, гизмо | ядро, geometry, gpu, overlay |
-| `runity-overlay` | квады и текст игры, виджеты, экраны — до этапа 4 `docs/ui.md` | ядро, gpu |
-| `runity-ui` | UI редактора (и игры после этапа 4) | ядро, gpu |
-| `runity-net` | владение, синхронизация, транспорты, party, LAN, стенд физики | ядро, physics (поля) |
-| `runity-steam` | лобби и P2P как транспорт | net |
-| `runity-input` | действия и привязки (`input.ron`) | ядро |
-| `runity-spline`, `runity-routes`, `runity-dialogue` | сплайны, маршруты, диалоги | ядро |
-| `runity-reports`, `runity-discord` | Sentry/GameAnalytics, Discord | ядро |
+| `scrap-geometry` | меш и текстура как данные, простые фигуры, скелет и клипы, `model` и `terrain` строки | ядро |
+| `scrap-physics` | `body`, `collider`, суставы; симуляция на rapier за фичей `rapier` | ядро, geometry |
+| `scrap-navigation` | сетка проходимости и A* | physics |
+| `scrap-character` | `ragdoll`, `crawler`: ragdoll, активный ragdoll, IK, motion matching | ядро, geometry, physics, soft |
+| `scrap-destruction` | `fracture`, `dents`: куски Вороного, вмятины | ядро, geometry, physics |
+| `scrap-fluid` | `mpm`, `shallow_water`, `ripples`, `ocean`, `floats` | ядро, geometry, soft |
+| `scrap-soft` | `rope`, `cloth`, `hair`, `soft_body`, `jiggle`, `fluid`, `grains`, `distance_field`: верёвки, ткань, волосы, мягкие тела, PBF/SPH, гравий, SDF сцены и общие контакты между ними (docs/simulation.md) | ядро, geometry |
+| `scrap-animation` | аниматор, графы, motion-клипы | ядро, geometry |
+| `scrap-audio` | `sound`, звуковой ассет; микшер на kira за фичей `kira` | ядро |
+| `scrap-gpu` | устройство, поверхность, offscreen | — |
+| `scrap-render` | вид строки, кадр из мира, проходы, материалы, гизмо | ядро, geometry, gpu, overlay |
+| `scrap-overlay` | квады и текст игры, виджеты, экраны — до этапа 4 `docs/ui.md` | ядро, gpu |
+| `scrap-ui` | UI редактора (и игры после этапа 4) | ядро, gpu |
+| `scrap-net` | владение, синхронизация, транспорты, party, LAN, стенд физики | ядро, physics (поля) |
+| `scrap-steam` | лобби и P2P как транспорт | net |
+| `scrap-input` | действия и привязки (`input.ron`) | ядро |
+| `scrap-spline`, `scrap-routes`, `scrap-dialogue` | сплайны, маршруты, диалоги | ядро |
+| `scrap-reports`, `scrap-discord` | Sentry/GameAnalytics, Discord | ядро |
 
-`runity` — фасад: переэкспортирует модули под прежними путями, склеивает
+`scrap` — фасад: переэкспортирует модули под прежними путями, склеивает
 `scene`/`world`/`asset`/`prelude` из частей всех модулей и держит клей там,
 где два модуля встречаются, не зная друг друга: `spawn_scene` с одевальщиками
 всех модулей сборки, `motion::run` (дорожки громкости и частиц клипа),
@@ -48,7 +48,7 @@ NEXT_STEPS.
 
 Виды ассетов — модулей: `AssetKind` в ядре — только байт заголовка и имя,
 а `MESH` и `TEXTURE` объявляет geometry, `SOUND` — звук, `MATERIAL` —
-рендер. `runity::asset::kinds()` собирает виды сборки, и тест ловит два
+рендер. `scrap::asset::kinds()` собирает виды сборки, и тест ловит два
 модуля на одном байте.
 
 Названные отступления (DNA, постулат 3):
@@ -57,7 +57,7 @@ NEXT_STEPS.
   (`blown`), которые друг от друга не зависят. Уедет в модуль погоды.
 * `Owned`/`Replica` — кто симулирует сущность — в ядре: по ним фильтрует
   каждый симулирующий модуль, а решает сеть.
-* Таймер GPU (`runity_gpu::gpu_timer`) — в модуле `gpu`: его проходы есть
+* Таймер GPU (`scrap_gpu::gpu_timer`) — в модуле `gpu`: его проходы есть
   и у рендера, и у оверлея.
 
 ## Модель
@@ -85,11 +85,11 @@ NEXT_STEPS.
 ### Модуль — крейт
 
 Модуль — крейт в `crates/`, со своим `module.ron` (манифест) рядом с
-`Cargo.toml`. Ядро — `runity-core`. Крейт `runity` — фасад: подключает
+`Cargo.toml`. Ядро — `scrap-core`. Крейт `scrap` — фасад: подключает
 модули по cargo-фичам и отдаёт их под привычными путями
-(`runity::render::…`), так что игра и редактор пишут как раньше. Выключить
-модуль — одна строка в `runity.ron` проекта, а фича фасада и зависимость
-`Cargo.toml` игры выводятся из неё (`runity check` ловит расхождение).
+(`scrap::render::…`), так что игра и редактор пишут как раньше. Выключить
+модуль — одна строка в `scrap.ron` проекта, а фича фасада и зависимость
+`Cargo.toml` игры выводятся из неё (`scrap check` ловит расхождение).
 
 Порядок разреза — от листьев графа зависимостей к ядру; каждый шаг
 оставляет все тесты зелёными:
@@ -98,14 +98,14 @@ NEXT_STEPS.
 2. Мир: ядро спавнит сущность (трансформ, иерархия, `SceneId`,
    компоненты игры), а модуль вешает своё по частям — через `Spawner`,
    которые собирает набор модулей (`Modules`).
-3. `runity-core` — выносится из `runity`, `runity` становится фасадом.
+3. `scrap-core` — выносится из `scrap`, `scrap` становится фасадом.
 4. Модули-крейты: `physics`, `geometry`, `gpu`, `render`, `ui`, `audio`,
    `net`, `animation`, `navigation`, `terrain` и остальные.
 
 ### Манифест
 
 ```ron
-// crates/runity-physics/module.ron
+// crates/scrap-physics/module.ron
 (
     name: "physics",
     version: "0.1.0",
@@ -123,22 +123,22 @@ NEXT_STEPS.
 
 Сделано (2026-09-24): `module.ron` лежит у каждого крейта модуля, крейт
 отдаёт его как `MANIFEST`, и его тест сверяет `parts` с полями, которые
-модуль читает. `runity::modules::official()` — все официальные модули,
+модуль читает. `scrap::modules::official()` — все официальные модули,
 `built()` — те, что есть в этой сборке. Проект перечисляет модули в
-`runity.ron` (`modules: ["render", "physics", …]`); то, на чём они стоят,
-приходит само. `runity modules` показывает модули, `runity modules sync`
-пишет строку `runity` в `Cargo.toml` игры (`default-features = false` и
-фичи перечисленных), а `runity check` называет модуль, которого нет, и
+`scrap.ron` (`modules: ["render", "physics", …]`); то, на чём они стоят,
+приходит само. `scrap modules` показывает модули, `scrap modules sync`
+пишет строку `scrap` в `Cargo.toml` игры (`default-features = false` и
+фичи перечисленных), а `scrap check` называет модуль, которого нет, и
 `Cargo.toml`, который разошёлся со списком.
 
 ### Наборы
 
-`runity new --set basic` (по умолчанию), `full` или `bare`, или
-`--template kitchen`. Набор — список модулей в `runity.ron`
-(`runity::modules::set`), из которого `runity new` пишет и `Cargo.toml`, и
+`scrap new --set basic` (по умолчанию), `full` или `bare`, или
+`--template kitchen`. Набор — список модулей в `scrap.ron`
+(`scrap::modules::set`), из которого `scrap new` пишет и `Cargo.toml`, и
 саму игру: шаблон `src/main.rs` размечен `// @animation {` … `// @animation }`,
 и код модуля не из набора выпадает. Голый набор — игра на одном ядре:
-`runity = { package = "runity-core", … }`, без окна, сцена играется
+`scrap = { package = "scrap-core", … }`, без окна, сцена играется
 фиксированными шагами — сервер, симуляция, тест.
 
 ### Фазы
@@ -148,13 +148,13 @@ NEXT_STEPS.
 `PostLateUpdate` (рендер, сегодняшний `frame`). Модуль вставляет свои
 системы в фазу; игра — свои, в том же порядке, что пишет в `step`.
 
-Сделано (2026-09-24): `runity_core::player_loop` — фазы и `PlayerLoop`
+Сделано (2026-09-24): `scrap_core::player_loop` — фазы и `PlayerLoop`
 (системы по имени, в фазе — по порядку вставки, каждая под профайлером).
 Модуль вставляет свои функцией `systems(&mut PlayerLoop)`: маршруты,
 анимация и иерархия ядра — в `FixedUpdate`, камеры — в `LateUpdate`,
-частицы и следы — в `PostLateUpdate`. `runity::player_loop::modules()`
+частицы и следы — в `PostLateUpdate`. `scrap::player_loop::modules()`
 собирает цикл сборки (и motion-клипы с клеем звука и частиц). Игра из
-`runity new` держит свои системы списком в `tick` и зовёт фазу модулей
+`scrap new` держит свои системы списком в `tick` и зовёт фазу модулей
 после них, а физику — последней. Физика — пока строкой: её
 `PhysicsWorld` — состояние, которое игра держит сама (у hecs нет
 ресурсов).
@@ -186,7 +186,7 @@ NEXT_STEPS.
    текста; кривые спавна 10…10 000 держат её тестом.
 7. **Opinionated.** Одна реализация модуля по умолчанию, замена — крейтом
    с тем же швом.
-8. **Батарейки.** `runity new` даёт голый, базовый или полный набор, или
+8. **Батарейки.** `scrap new` даёт голый, базовый или полный набор, или
    темплейт.
 
 ## Открытые вопросы DNA

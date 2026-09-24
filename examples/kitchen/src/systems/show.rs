@@ -5,10 +5,10 @@
 //! and over the stove as the soup cooks, the soup in a pot and on a plate —
 //! from the pots, the chopping and the plates as the host sends them.
 
-use runity::glam::Vec3;
-use runity::hecs::{Entity, World};
-use runity::net::Owned;
-use runity::Transform;
+use scrap::glam::Vec3;
+use scrap::hecs::{Entity, World};
+use scrap::net::Owned;
+use scrap::Transform;
 
 use crate::components::item::{Dish, Food, Part, Thing};
 use crate::components::station::Kind;
@@ -32,7 +32,7 @@ fn music(world: &mut World) {
         .iter()
         .next()
         .is_some_and(|r| r.open && !r.over && r.time_left < 30.0);
-    for (_, sound) in world.query_mut::<(&crate::components::Kitchen, &mut runity::world::Sounding)>() {
+    for (_, sound) in world.query_mut::<(&crate::components::Kitchen, &mut scrap::world::Sounding)>() {
         sound.0.pitch = if hurry { 1.12 } else { 1.0 };
     }
 }
@@ -72,7 +72,7 @@ fn hops(world: &mut World, seconds: f32) {
 /// A full pot boils, louder once it is done: the stove's own `sound`,
 /// turned up and down.
 fn boiling(world: &mut World) {
-    for (pot, sound) in world.query_mut::<(&Pot, &mut runity::world::Sounding)>() {
+    for (pot, sound) in world.query_mut::<(&Pot, &mut scrap::world::Sounding)>() {
         sound.0.volume = if pot.burnt() {
             0.2
         } else if pot.done() {
@@ -88,13 +88,13 @@ fn boiling(world: &mut World) {
 /// A cook is in the kitchen while someone plays it.
 fn cooks(world: &mut World) {
     let cooks: Vec<(Entity, bool, bool)> = world
-        .query::<(Entity, &Player, Option<&Seat>, Option<&runity::world::Inactive>)>()
+        .query::<(Entity, &Player, Option<&Seat>, Option<&scrap::world::Inactive>)>()
         .iter()
         .map(|(e, _, seat, off)| (e, seat.is_some(), off.is_none()))
         .collect();
     for (cook, seated, on) in cooks {
         if seated != on {
-            runity::world::set_active(world, cook, seated);
+            scrap::world::set_active(world, cook, seated);
         }
     }
 }
@@ -319,7 +319,7 @@ fn marks(world: &mut World) {
     }
     // A pan with meat on it sizzles: its own `sound`, turned up.
     for (pan, volume) in sizzling {
-        if let Ok(mut sound) = world.get::<&mut runity::world::Sounding>(pan) {
+        if let Ok(mut sound) = world.get::<&mut scrap::world::Sounding>(pan) {
             sound.0.volume = volume;
         }
     }
@@ -337,9 +337,9 @@ fn marks(world: &mut World) {
     for (owner, on) in shown {
         for (mark, name) in marked(world, owner) {
             let amount = on.iter().find(|(n, _)| *n == name).map(|(_, a)| *a);
-            let off = world.get::<&runity::world::Inactive>(mark).is_ok();
+            let off = world.get::<&scrap::world::Inactive>(mark).is_ok();
             if amount.is_some() == off {
-                runity::world::set_active(world, mark, amount.is_some());
+                scrap::world::set_active(world, mark, amount.is_some());
             }
             let Some(amount) = amount else { continue };
             if let Ok(mut t) = world.get::<&mut Transform>(mark) {

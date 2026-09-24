@@ -11,7 +11,7 @@ It does four things the raw kits do not:
   `mtllib`/`usemtl` at all, every face points at the center of an atlas cell;
 * repaints those cells into the valley palette (muted northern tones, with the
   berry as the single saturated color — embers stay in code, see
-  `crates/runity/examples/valley/look.rs`);
+  `crates/scrap/examples/valley/look.rs`);
 * puts models on a meter scale, Y up, resting on y = 0;
 * composes and poses: a campfire is stones plus charred logs, a settler is the
   blocky character with its limbs swung around their joints.
@@ -106,7 +106,7 @@ def build_atlas():
 
 
 # --------------------------------------------------------------------------
-# PNG (8-bit RGB, non-interlaced — what `runity_render::decode_png` accepts)
+# PNG (8-bit RGB, non-interlaced — what `scrap_render::decode_png` accepts)
 # --------------------------------------------------------------------------
 
 
@@ -867,7 +867,7 @@ def write_credits(path, rows, atlas_name):
         "textures/:",
         f"  textures/{atlas_name} — атлас плоских цветов долины; оригинальная",
         "    работа для этого репозитория по палитре карточки #33 и",
-        "    crates/runity/examples/valley/look.rs; CC0.",
+        "    crates/scrap/examples/valley/look.rs; CC0.",
         "",
     ]
     path.write_text("\n".join(lines))

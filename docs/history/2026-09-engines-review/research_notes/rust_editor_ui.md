@@ -1,4 +1,4 @@
-# Rust GUI toolkits for the runity editor (September 2026)
+# Rust GUI toolkits for the scrap editor (September 2026)
 
 Research date: 2026-09-22. Scope: replace the native Swift macOS editor with a
 cross-platform Rust editor (macOS / Windows / Linux) that hosts the engine's own
@@ -10,7 +10,7 @@ counts were measured locally with `cargo generate-lockfile` + `cargo tree`
 (no compilation). Anything marked **[unverified]** could not be confirmed from a
 primary source.
 
-runity facts that matter here: `wgpu = "30"`, `winit = "0.30.13"` (optional),
+scrap facts that matter here: `wgpu = "30"`, `winit = "0.30.13"` (optional),
 `hecs 0.11`, `rapier3d 0.26`, license MIT OR Apache-2.0.
 
 ---
@@ -51,7 +51,7 @@ https://github.com/linebender/xilem/blob/main/Cargo.toml,
 https://github.com/lapce/floem/issues/1086.
 
 Takeaway: **only Slint 1.18 is on wgpu 30 today** among real candidates. Every
-other wgpu-based toolkit would force runity to either pin wgpu to the toolkit's
+other wgpu-based toolkit would force scrap to either pin wgpu to the toolkit's
 version (29 for most; iced stable is 27) or copy frames. wgpu majors ship
 roughly quarterly, so lockstep is an ongoing cost of any "shared device"
 design. Worth writing down as an engine rule: the editor UI crate decides the
@@ -119,9 +119,9 @@ wgpu major, or the viewport goes through a version-independent boundary.
   APIs, in part or in total, of the Software"**
   (https://github.com/slint-ui/slint/blob/master/LICENSES/LicenseRef-Slint-Royalty-free-2.0.md).
   An editor whose plugin API lets third parties write Slint UI is plausibly
-  exactly that. GPLv3 would force GPL on the editor (runity is MIT/Apache).
+  exactly that. GPLv3 would force GPL on the editor (scrap is MIT/Apache).
   -> Needs a written answer from SixtyFPS or a commercial license before
-  committing. Wrapping Slint behind runity's own panel abstraction (plugins
+  committing. Wrapping Slint behind scrap's own panel abstraction (plugins
   never touch Slint types) may avoid "exposing APIs" — [unverified legal
   interpretation].
 - **Compile time / size**: 368 crates on Linux, 272 on macOS for
@@ -197,7 +197,7 @@ wgpu major, or the viewport goes through a version-independent boundary.
   the widget's viewport — many shader widgets = many viewports
   (https://docs.iced.rs/iced/widget/shader/index.html); or embed iced into your
   own wgpu loop (`integration` example). **But wgpu 27 (stable) / 29 (master)
-  vs runity's 30.**
+  vs scrap's 30.**
 - **Editor widgets**: `pane_grid` (split/drag/resize, no tab stacks — docking
   needs building on top), `table` (0.14), lazy/virtual lists limited
   [unverified: true row virtualization in 0.14 table], text_editor, combo_box,
@@ -256,7 +256,7 @@ wgpu major, or the viewport goes through a version-independent boundary.
 
 - 1.0.0 on crates (2025-05); main pivoted to "AI-accelerated app and game dev
   environment" (https://github.com/makepad/makepad). Own GPU layer (Metal, DX11,
-  OpenGL, WebGL) — **not wgpu**, so embedding runity's viewport needs native
+  OpenGL, WebGL) — **not wgpu**, so embedding scrap's viewport needs native
   interop. Shader-based styling (very pretty), `live_design!` DSL hot-reloads,
   built-in Dock widget used by Makepad Studio, very fast compiles. Tiny team,
   docs thin. Production: Robrix (Matrix client) [unverified maturity].
@@ -332,7 +332,7 @@ Legend: ++ excellent, + good, 0 workable with effort, - weak, -- blocker.
 ## 3. Ranked recommendation
 
 **1. Slint 1.18 — if the license question is resolved.**
-Only toolkit whose release today matches runity's wgpu 30, with an officially
+Only toolkit whose release today matches scrap's wgpu 30, with an officially
 documented zero-copy texture import and access to the shared device; multiple
 viewports are just multiple `Image`s. Strongest agent/headless story (MCP
 server, testing backend, screenshots, live preview) and a steady ~quarterly
@@ -358,7 +358,7 @@ Shader widget shares iced's wgpu device, so viewports are first-class; hot
 reload, headless + e2e tests, IME, multi-window, lightest compile. Costs: will
 not satisfy "beautiful out of the box" without our own design system (COSMIC
 shows it is possible); docking with tabs, tree view and rich DnD must be built;
-wgpu version lags (27 stable, 29 master) — runity would have to pin to iced's
+wgpu version lags (27 stable, 29 master) — scrap would have to pin to iced's
 wgpu; slow, breaking releases.
 
 Not recommended now: Dioxus Native (right hooks, too experimental — revisit in
@@ -367,7 +367,7 @@ web UI (viewport compositing and plain-Rust plugins both fight the design),
 Bevy UI/Feathers (requires Bevy runtime; but watch Jackdaw/Bevy editor for
 patterns: reflection-driven inspectors, dynamic plugin loading).
 
-Suggested next step: two 3-day spikes in parallel — (a) Slint: runity renders
+Suggested next step: two 3-day spikes in parallel — (a) Slint: scrap renders
 two viewports into `Rgba8Unorm` textures on Slint's wgpu 30 device + a minimal
 dock splitter + headless screenshot test in CI; (b) GPUI Kit: same scene
 through `surface()`/IOSurface on macOS. Plus one email to SixtyFPS on the

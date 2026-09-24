@@ -1,4 +1,4 @@
-// Hardware ray tracing, the experiment (`runity::ray`): a lamp among
+// Hardware ray tracing, the experiment (`scrap::ray`): a lamp among
 // pillars at dusk. With rays each pillar throws the lamp's shadow across the
 // ground and up the wall, and the sun's penumbrae widen with distance;
 // without them — on a device that does not trace, or with `ray_tracing`

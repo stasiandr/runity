@@ -1,0 +1,27 @@
+[package]
+name = "scrap-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The UI of the game and of the editor: one retained tree of nodes, laid out
+# by taffy, text by cosmic-text (through glyphon), drawn by the engine's own
+# wgpu on the engine's own device — so a view of the scene is a texture like
+# any other. `docs/ui.md` is the card. A game without UI does not depend on
+# this crate, and nothing in the engine does (DNA, postulate 3). It stands
+# on the core's input events and the GPU module, not on the engine whole.
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = "0.32"
+glyphon = "0.12.0"
+scrap-core = { version = "0.1.0", path = "../scrap-core" }
+scrap-gpu = { version = "0.1.0", path = "../scrap-gpu" }
+resvg = { version = "0.45", default-features = false }
+taffy = "0.14"
+wgpu = "30"
+
+[dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
+pollster = "1.0.1"

@@ -1,7 +1,7 @@
 // From Assets/Content/Art/Materials/Frut_Ice_Shader_01.shadergraph, values
 // from MI_Frut_Ice.mat (also used by MI_Frut_Ice 1 and 2); _Main_Color comes
 // from the material, sRGB there and made linear here, as Unity does.
-// runity:params _Main_Color.r _Main_Color.g _Main_Color.b
+// scrap:params _Main_Color.r _Main_Color.g _Main_Color.b
 //
 // The original is an opaque URP Lit graph: a flat _Main_Color, smoothness 0.5,
 // and a vertex stage that scales the object by _Scale plus a pulse

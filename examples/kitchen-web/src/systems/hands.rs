@@ -11,9 +11,9 @@
 //! takes food and empties a plate. The host's: what the others' hands do
 //! comes to it as acts.
 
-use runity::glam::Vec3;
-use runity::hecs::{Entity, World};
-use runity::Transform;
+use scrap::glam::Vec3;
+use scrap::hecs::{Entity, World};
+use scrap::Transform;
 
 use crate::components::fry::Fry;
 use crate::components::item::{Food, Part, Thing};
@@ -86,11 +86,11 @@ fn throw(world: &mut World, cook: Entity, at: Vec3, facing: Vec3) {
     let _ = world.insert(
         item,
         (
-            runity::world::Physics(runity::scene::Body::Dynamic),
+            scrap::world::Physics(scrap::scene::Body::Dynamic),
             // A ball the size of the fruit under the item.
-            runity::world::Shape(runity::scene::Collider::Sphere { radius: FOOD_RADIUS }),
+            scrap::world::Shape(scrap::scene::Collider::Sphere { radius: FOOD_RADIUS }),
             // Food does not roll far on a kitchen floor.
-            runity::world::Props(runity::scene::BodyProps {
+            scrap::world::Props(scrap::scene::BodyProps {
                 drag: 0.4,
                 spin_drag: 4.0,
                 friction: 1.0,

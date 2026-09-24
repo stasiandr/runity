@@ -1,0 +1,17 @@
+[package]
+name = "scrap-routes"
+description = "scrap's routes: entities travelling on their own along a line's `route`, platforms and lifts, carrying what stands on them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+hecs = "0.11.0"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+ron = "0.12.2"

@@ -1,11 +1,11 @@
 // Sticks and buttons on the screen, for a phone: the left thumb walks,
 // the right one grabs, chops, throws and points. They come into the game
-// as a pad's (`runity_pad_axis`, `runity_pad_button`), so `input.ron`'s
+// as a pad's (`scrap_pad_axis`, `scrap_pad_button`), so `input.ron`'s
 // `LeftX`/`LeftY` and `Pad(South)` read them like a real pad's.
 (() => {
   const touch = matchMedia("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
   document.body.classList.toggle("touch", touch);
-  const wasm = () => window.runityNet && window.runityNet.wasm;
+  const wasm = () => window.scrapNet && window.scrapNet.wasm;
 
   const stick = document.getElementById("stick");
   const knob = document.getElementById("knob");
@@ -18,8 +18,8 @@
   function axes(x, y) {
     const w = wasm();
     if (!w) return;
-    w.runity_pad_axis("LeftX", x);
-    w.runity_pad_axis("LeftY", y);
+    w.scrap_pad_axis("LeftX", x);
+    w.scrap_pad_axis("LeftY", y);
   }
 
   function place(dx, dy) {
@@ -83,7 +83,7 @@
     if (!w || held.get(button) === down) return;
     held.set(button, down);
     el.classList.toggle("down", down);
-    w.runity_pad_button(button, down);
+    w.scrap_pad_button(button, down);
     if (down && navigator.vibrate) navigator.vibrate(8);
   }
   for (const el of document.querySelectorAll("#pad [data-button]")) {
@@ -98,7 +98,7 @@
     el.addEventListener("contextmenu", (e) => e.preventDefault());
   }
 
-  window.runityPad = {
+  window.scrapPad = {
     // Nothing held over a change of screen: a stick let go of in the menu
     // does not keep the cook walking.
     reset() {

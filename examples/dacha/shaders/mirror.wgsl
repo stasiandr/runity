@@ -3,15 +3,15 @@
 // camera's texture by screen position and blends it over the tint by
 // strength, unlit.
 //
-// Here the reflection is runity's planar mirror: the importer turns the
+// Here the reflection is scrap's planar mirror: the importer turns the
 // PlanarReflectionMirror component into `render_texture: (name: "mirror",
 // mirror: true)`, and a material on this shader shows that picture laid on
 // the screen (the two lines below). Tint and strength come from the
 // material. Two mirrors in view share one picture.
 //
-// runity:params _Tint.r _Tint.g _Tint.b _Strength
-// runity:base_map render:mirror
-// runity:screen_map Mirror
+// scrap:params _Tint.r _Tint.g _Tint.b _Strength
+// scrap:base_map render:mirror
+// scrap:screen_map Mirror
 
 fn mirror_to_linear(c: vec3<f32>) -> vec3<f32> {
     let low = c / 12.92;

@@ -1,4 +1,4 @@
-//! Finds the game's components and systems. Written by `runity new`; not
+//! Finds the game's components and systems. Written by `scrap new`; not
 //! edited. Adding a component is adding a file to src/components/, and the
 //! file's name is the name scenes use for it.
 
@@ -24,7 +24,7 @@ pub use {name}::{};",
     text.push_str(
         "
 /// Every component above, by its file name.
-pub fn register(components: &mut runity::Components) {
+pub fn register(components: &mut scrap::Components) {
     let _ = &components;
 ",
     );

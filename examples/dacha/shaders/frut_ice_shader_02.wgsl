@@ -2,8 +2,8 @@
 // from MI_Frut_Ice_02.mat; _Ice_Int and _Ice_Color come from the material
 // (M_Water_01.mat uses it too). The colour is sRGB in the .mat and made
 // linear here, as Unity does.
-// runity:params _Ice_Int _Ice_Color.r _Ice_Color.g _Ice_Color.b
-// runity:textures _SampleTexture2D_7d72135f9d74416ea46068c3d7433d49_Texture_1_Texture2D _SampleTexture2D_057c6fd260f848edb0f7231e4a6fa5c3_Texture_1_Texture2D _SampleTexture2D_6ad4c1740f58419ca8745a03719c808e_Texture_1_Texture2D
+// scrap:params _Ice_Int _Ice_Color.r _Ice_Color.g _Ice_Color.b
+// scrap:textures _SampleTexture2D_7d72135f9d74416ea46068c3d7433d49_Texture_1_Texture2D _SampleTexture2D_057c6fd260f848edb0f7231e4a6fa5c3_Texture_1_Texture2D _SampleTexture2D_6ad4c1740f58419ca8745a03719c808e_Texture_1_Texture2D
 //
 // The original is an unlit transparent graph: alpha is a frost texture
 // (T_Freeze__01_M) plus _Ice_Int; colour is _Ice_Color plus glints where a
@@ -11,7 +11,7 @@
 // and in screen space, faded by a hard-contrast scene-depth term.
 //
 // This port reads both textures from the material. M_Water_01 is a variant
-// of MI_Frut_Ice_02 and its .rmat lacks the frost texture, so there the
+// of MI_Frut_Ice_02 and its .scrmat lacks the frost texture, so there the
 // frost reads white and the water is opaque. Scene depth (what is behind
 // the ice) is replaced by the fragment's own distance with the camera's
 // 1000 m far plane, and clamped at 0 (the original goes negative there,
@@ -31,7 +31,7 @@ fn frut_ice_shader_02_srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn surface(in: SurfaceIn, out: Surface) -> Surface {
     var o = out;
 
-    // Tiled about Unity's uv origin, bottom left; runity's v runs down.
+    // Tiled about Unity's uv origin, bottom left; scrap's v runs down.
     let ice_uv = vec2<f32>(in.uv.x, 1.0 - in.uv.y) * FRUT_ICE_SHADER_02_ICE_TILING;
     let frost = texture_at(in, 0u, vec2<f32>(ice_uv.x, 1.0 - ice_uv.y)).r;
     o.alpha = clamp(frost + in.params[0].x, 0.0, 1.0);

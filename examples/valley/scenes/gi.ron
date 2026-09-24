@@ -1,4 +1,4 @@
-// Global illumination by probes (`runity::ddgi`): a room 8 × 4 × 8 with a
+// Global illumination by probes (`scrap::ddgi`): a room 8 × 4 × 8 with a
 // red wall and a green one, lit only through a square in its roof. The sun
 // falls on a patch of the white floor; everything else in the room is lit
 // by that patch and by the walls it lights, bounce after bounce — the red

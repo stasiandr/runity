@@ -1,0 +1,9 @@
+ImportSettings(
+    source: "materials/burnt.scrmat",
+    hash: "fbb9915b6ffa894fee77f695c0ccbecd",
+    id: Some("1b5c15b88500a70ce8e60e29d531a289"),
+    scale: 1.0,
+    recompute_normals: false,
+    srgb: true,
+    origin_to_base: true,
+)

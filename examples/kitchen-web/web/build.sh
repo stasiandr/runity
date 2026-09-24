@@ -5,7 +5,7 @@
 # not fetch.
 #
 # Needs: the wasm32-unknown-unknown target, wasm-bindgen-cli at the
-# version in Cargo.lock, and `runity sync` having built library/.
+# version in Cargo.lock, and `scrap sync` having built library/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:-site}"
@@ -22,15 +22,15 @@ if [ "${WASM_OPT:-0}" = 1 ] && command -v wasm-opt >/dev/null; then
 fi
 python3 web/pack.py "$OUT/data.bin.gz"
 cp web/index.html web/pad.js "$OUT/"
-# The relay's credentials endpoint, when there is one (RUNITY_TURN_URL: a
+# The relay's credentials endpoint, when there is one (SCRAP_TURN_URL: a
 # Metered app's REST URL with its key; the Pages workflow has it as a
 # secret). It ends up in the page, as anything a static site uses must.
-python3 - "$OUT/runity-net.js" <<'PY'
+python3 - "$OUT/scrap-net.js" <<'PY'
 import os, sys
-text = open("web/runity-net.js").read()
-url = os.environ.get("RUNITY_TURN_URL", "")
+text = open("web/scrap-net.js").read()
+url = os.environ.get("SCRAP_TURN_URL", "")
 if url:
-    text = text.replace("__RUNITY_TURN_URL__", url)
+    text = text.replace("__SCRAP_TURN_URL__", url)
 open(sys.argv[1], "w").write(text)
 PY
 # Pages serves folders beginning with _ only without Jekyll.

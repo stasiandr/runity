@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Kitchen Rush</title>
-<meta name="description" content="A little Overcooked on the runity engine, in the browser: WebGPU, touch sticks, and a room code to cook with friends.">
+<meta name="description" content="A little Overcooked on the scrap engine, in the browser: WebGPU, touch sticks, and a room code to cook with friends.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🍲</text></svg>">
 <style>
   :root {
@@ -25,7 +25,7 @@
     font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     overscroll-behavior: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
-  canvas#runity { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; outline: none; }
+  canvas#scrap { position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh; display: block; touch-action: none; outline: none; }
 
   /* Loading and failing */
   #cover {
@@ -136,7 +136,7 @@
 </style>
 </head>
 <body>
-<canvas id="runity" tabindex="0"></canvas>
+<canvas id="scrap" tabindex="0"></canvas>
 
 <div id="cover">
   <h1>🍲 Kitchen Rush</h1>
@@ -177,33 +177,33 @@
 <script>
   // What went wrong, on the screen: a phone has no console to look in.
   // Before everything else, so even a script that does not load is told.
-  window.runityStage = "Heating up the stoves";
-  window.runityShowError = (why) => {
+  window.scrapStage = "Heating up the stoves";
+  window.scrapShowError = (why) => {
     const cover = document.getElementById("cover");
     const text = document.getElementById("cover-text");
     if (cover.classList.contains("failed")) return; // the first error is the one that matters
     cover.classList.remove("gone");
     cover.classList.add("failed");
-    const limits = window.runityLimits ? "<br>GPU: " + window.runityLimits : "";
-    text.innerHTML = "Something went wrong while: " + window.runityStage + "<br><small style='display:block;text-align:left;white-space:pre-wrap;max-height:45vh;overflow:auto;-webkit-user-select:text;user-select:text'>" +
+    const limits = window.scrapLimits ? "<br>GPU: " + window.scrapLimits : "";
+    text.innerHTML = "Something went wrong while: " + window.scrapStage + "<br><small style='display:block;text-align:left;white-space:pre-wrap;max-height:45vh;overflow:auto;-webkit-user-select:text;user-select:text'>" +
       String(why).replace(/</g, "&lt;").slice(0, 3000) + "</small><small>" + navigator.userAgent + limits + "</small>";
   };
   const described = (error, fallback) =>
     error ? String(error) + "\n" + String(error.stack || "") : String(fallback);
-  addEventListener("error", (e) => runityShowError(e.error
+  addEventListener("error", (e) => scrapShowError(e.error
     ? described(e.error)
     : (e.message || (e.target && e.target.src) || e) + (e.filename ? "\n" + e.filename + ":" + e.lineno + ":" + e.colno : "")), true);
-  addEventListener("unhandledrejection", (e) => runityShowError(described(e.reason, e.reason)));
+  addEventListener("unhandledrejection", (e) => scrapShowError(described(e.reason, e.reason)));
   // Rust's panics are console.error first: said on the screen too.
   const consoleError = console.error.bind(console);
   console.error = (...args) => {
     consoleError(...args);
     const text = args.map(String).join(" ");
-    if (/panicked|RuntimeError|unreachable/.test(text)) runityShowError(text);
+    if (/panicked|RuntimeError|unreachable/.test(text)) scrapShowError(text);
   };
 </script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
-<script src="runity-net.js"></script>
+<script src="scrap-net.js"></script>
 <script src="pad.js"></script>
 <script type="module">
   // Loaded in main, so a module that does not load is said, not silent.
@@ -219,15 +219,15 @@
     coverText.innerHTML = why;
   }
   function stage(text) {
-    window.runityStage = text;
+    window.scrapStage = text;
     coverText.textContent = text + "…";
   }
   let framing = false;
-  window.runityFailed = (why) => fail("Something went wrong: " + String(why).replace(/</g, "&lt;"));
+  window.scrapFailed = (why) => fail("Something went wrong: " + String(why).replace(/</g, "&lt;"));
 
   const toast = document.getElementById("toast");
   let toastTimer = null;
-  window.runityToast = (text, ms = 3500) => {
+  window.scrapToast = (text, ms = 3500) => {
     toast.textContent = text;
     toast.classList.add("on");
     clearTimeout(toastTimer);
@@ -235,7 +235,7 @@
   };
 
   // The player's files (prefs, best score), kept in the browser between visits.
-  const SAVED = "runity:file:";
+  const SAVED = "scrap:file:";
   function pack(entries) {
     const enc = new TextEncoder();
     const parts = [];
@@ -269,7 +269,7 @@
   }
 
   let data = null;
-  window.runityPage = {
+  window.scrapPage = {
     data: () => data,
     saved,
     save(path, bytes) {
@@ -288,7 +288,7 @@
       }
       document.body.classList.toggle("kitchen", name === "kitchen" || name === "lobby");
       document.body.classList.toggle("lobby", name === "lobby");
-      window.runityPad && window.runityPad.reset();
+      window.scrapPad && window.scrapPad.reset();
     },
     // `?quality=low|medium|high|ultra`; a phone starts on low.
     quality() {
@@ -318,17 +318,17 @@
 
   // Where the room is shown and shared.
   const room = document.getElementById("room");
-  document.getElementById("room-share").addEventListener("click", () => runityNet.invite());
-  runityNet.onRoom = (code) => {
-    room.hidden = !code || runityNet.state() !== "hosting";
+  document.getElementById("room-share").addEventListener("click", () => scrapNet.invite());
+  scrapNet.onRoom = (code) => {
+    room.hidden = !code || scrapNet.state() !== "hosting";
     document.getElementById("room-code").textContent = code || "";
   };
   const dialog = document.getElementById("join-dialog");
   document.getElementById("join-form").addEventListener("submit", (e) => {
     e.preventDefault();
     dialog.hidden = true;
-    runityNet.join(e.target.code.value);
-    document.getElementById("runity").focus();
+    scrapNet.join(e.target.code.value);
+    document.getElementById("scrap").focus();
   });
   document.getElementById("join-cancel").addEventListener("click", () => { dialog.hidden = true; });
 
@@ -367,7 +367,7 @@
     }
     if (adapter && adapter.limits) {
       const l = adapter.limits;
-      window.runityLimits = ["maxBufferSize", "maxStorageBufferBindingSize", "maxVertexAttributes", "maxStorageBuffersPerShaderStage",
+      window.scrapLimits = ["maxBufferSize", "maxStorageBufferBindingSize", "maxVertexAttributes", "maxStorageBuffersPerShaderStage",
         "maxSampledTexturesPerShaderStage", "maxTextureDimension2D", "maxTextureArrayLayers", "maxColorAttachmentBytesPerSample"]
         .map((k) => k.replace("max", "") + "=" + l[k]).join(" ");
     }
@@ -387,15 +387,15 @@
     // Still here after a while: say where it waits.
     setTimeout(() => {
       if (!framing && !cover.classList.contains("failed")) {
-        coverText.innerHTML = window.runityStage + "… still.<br><small>The game started but has not drawn a frame: the GPU may be refusing it. " +
+        coverText.innerHTML = window.scrapStage + "… still.<br><small>The game started but has not drawn a frame: the GPU may be refusing it. " +
           navigator.userAgent + "</small>";
       }
     }, 15000);
     await init();
-    runityNet.wasm = wasm;
+    scrapNet.wasm = wasm;
     // A link with a room in it: straight to the friend's kitchen.
     const join = /join=([A-Za-z0-9]+)/.exec(location.hash);
-    if (join) runityNet.join(join[1]);
+    if (join) scrapNet.join(join[1]);
     document.body.classList.add("started");
     stage("Setting up the kitchen");
   }

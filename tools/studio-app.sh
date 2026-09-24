@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the editor as a macOS app: target/release/Runity.app.
+# Builds the editor as a macOS app: target/release/Scrap.app.
 #
 #   tools/studio-app.sh            # release build, then the bundle
 #   tools/studio-app.sh --install  # and copy it to /Applications
@@ -9,23 +9,23 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-cargo build --release -p runity-studio
+cargo build --release -p scrap-studio
 
-app=target/release/Runity.app
-version=$(cargo pkgid -p runity-studio | sed 's/.*[#@]//')
+app=target/release/Scrap.app
+version=$(cargo pkgid -p scrap-studio | sed 's/.*[#@]//')
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/runity-studio "$app/Contents/MacOS/runity-studio"
+cp target/release/scrap-studio "$app/Contents/MacOS/scrap-studio"
 
 cat > "$app/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Runity</string>
-  <key>CFBundleDisplayName</key><string>Runity</string>
-  <key>CFBundleIdentifier</key><string>dev.runity.studio</string>
-  <key>CFBundleExecutable</key><string>runity-studio</string>
+  <key>CFBundleName</key><string>Scrap</string>
+  <key>CFBundleDisplayName</key><string>Scrap</string>
+  <key>CFBundleIdentifier</key><string>dev.scrap.studio</string>
+  <key>CFBundleExecutable</key><string>scrap-studio</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>$version</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
@@ -40,9 +40,9 @@ EOF
 codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
 
 if [ "${1:-}" = "--install" ]; then
-  rm -rf /Applications/Runity.app
+  rm -rf /Applications/Scrap.app
   cp -R "$app" /Applications/
-  echo "installed /Applications/Runity.app"
+  echo "installed /Applications/Scrap.app"
 else
   echo "built $app"
 fi

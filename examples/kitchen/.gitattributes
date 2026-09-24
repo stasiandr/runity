@@ -1,12 +1,12 @@
-# Text as LF on every machine: .rimport stores a hash of the source's bytes.
+# Text as LF on every machine: .scrimport stores a hash of the source's bytes.
 * text=auto eol=lf
 
 # Scenes and prefabs merge by entity and field, not by line. The driver is
-# `runity merge`; `runity git-setup` turns it on in a clone.
-scenes/**/*.ron merge=runity
-prefabs/**/*.prefab merge=runity
+# `scrap merge`; `scrap git-setup` turns it on in a clone.
+scenes/**/*.ron merge=scrap
+prefabs/**/*.prefab merge=scrap
 
 # Binary sources (models, textures, sounds) are plain git here, like the
 # rest of the engine's repository, which does not use Git LFS: they are a
 # few megabytes, and LFS is off for this repository on GitHub. A project of
-# your own from `runity new` stores them in LFS.
+# your own from `scrap new` stores them in LFS.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The project's data as one gzipped file for the page to fetch: what the
-game reads at run time — runity.ron, the scenes, prefabs, screens, strings,
+game reads at run time — scrap.ron, the scenes, prefabs, screens, strings,
 the built library — and not what it is built from (sources, raw assets).
 
     web/pack.py OUT.bin.gz
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # What the game never reads while it runs.
-SKIP_DIRS = {"src", "target", "web", "site", ".runity"}
+SKIP_DIRS = {"src", "target", "web", "site", ".scrap"}
 SKIP_FILES = {"Cargo.toml", "Cargo.lock", "build.rs", "README.md", "CLAUDE.md"}
 
 
@@ -26,7 +26,7 @@ def wanted(path: Path) -> bool:
         return False
     # Raw assets are built into library/; their sidecars (ids) are kept.
     if rel.parts[0] == "assets":
-        return rel.suffix == ".rimport"
+        return rel.suffix == ".scrimport"
     return True
 
 

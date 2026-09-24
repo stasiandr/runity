@@ -1,18 +1,18 @@
 //! Playing together in the browser: the host opens a kitchen and gets a
 //! room code (and a link with it); a friend opens the link — or types the
 //! code under "Join a friend" — and is in. The page's script
-//! (`web/runity-net.js`) finds the other browser through a public
+//! (`web/scrap-net.js`) finds the other browser through a public
 //! signalling broker and opens a WebRTC data channel to it; the session
-//! runs over that channel (`runity::net::page::Page`), browser to browser,
+//! runs over that channel (`scrap::net::page::Page`), browser to browser,
 //! with nobody's server in the middle. What Steam's lobby was for the
 //! desktop kitchen, the room code is here.
 //!
 //! Off the web there is no page: the kitchen is yours alone.
 
 #[cfg(target_arch = "wasm32")]
-use runity::net::PeerId;
-use runity::party::Party;
-use runity::Components;
+use scrap::net::PeerId;
+use scrap::party::Party;
+use scrap::Components;
 
 #[cfg(target_arch = "wasm32")]
 mod page {
@@ -21,26 +21,26 @@ mod page {
     #[wasm_bindgen]
     extern "C" {
         /// Open a room; its code, at once (the broker is reached after).
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn host() -> String;
         /// Ask the player for a friend's code, and join it.
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn ask();
         /// Share the room's link: the phone's share sheet, or the clipboard.
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn invite();
         /// Close every channel and the room.
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn leave();
         /// "" (nothing), "hosting", "joining", "open" (a guest's channel
         /// to the host is up), or "failed:<why>".
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn state() -> String;
         /// The name this player goes by.
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn name() -> String;
         /// The room's code as it stands (a taken one is swapped for another).
-        #[wasm_bindgen(js_namespace = runityNet)]
+        #[wasm_bindgen(js_namespace = scrapNet)]
         pub fn code() -> Option<String>;
     }
 }
@@ -104,8 +104,8 @@ impl Lobby {
         {
             self.room = Some(page::host());
             self.hosting = true;
-            let wire: Box<dyn runity::net::wire::Transport + Send> =
-                Box::new(runity::net::page::Page::new(PeerId::HOST));
+            let wire: Box<dyn scrap::net::wire::Transport + Send> =
+                Box::new(scrap::net::page::Page::new(PeerId::HOST));
             // Unthreaded: the page has one thread, and the server ticks in
             // the party's update.
             return Some(Party::host(scene, name, components, vec![wire], false));
@@ -183,9 +183,9 @@ impl Lobby {
         if page::state() == "open" {
             self.joined = true;
             // Anything but the server's 0, and unlikely to be another guest's.
-            let me = PeerId(runity::EntityId::fresh().raw() as u32 | 1);
+            let me = PeerId(scrap::EntityId::fresh().raw() as u32 | 1);
             return Some(Party::join(
-                runity::net::page::Page::new(me),
+                scrap::net::page::Page::new(me),
                 scene,
                 name,
                 components,

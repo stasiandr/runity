@@ -1,9 +1,0 @@
-ImportSettings(
-    source: "materials/white.rmat",
-    hash: "dd909f29e7fcaad55ce6bd02226f26a8",
-    id: Some("3f8ced6b07db40b000bb6de9690e6adf"),
-    scale: 1.0,
-    recompute_normals: false,
-    srgb: true,
-    origin_to_base: true,
-)

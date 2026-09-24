@@ -4,10 +4,10 @@
 //! whoever drives it; dust from a running cook's feet; and the customers,
 //! whom a route carries without turning them, turned the way they go.
 
-use runity::animgraph::Controller;
-use runity::glam::Vec3;
-use runity::hecs::{Entity, World};
-use runity::Transform;
+use scrap::animgraph::Controller;
+use scrap::glam::Vec3;
+use scrap::hecs::{Entity, World};
+use scrap::Transform;
 
 use crate::components::Player;
 use crate::state::marked;
@@ -57,9 +57,9 @@ pub fn run(world: &mut World, seconds: f32) {
     for (cook, running) in dusty {
         for (mark, name) in marked(world, cook) {
             if name == "dust" {
-                let off = world.get::<&runity::world::Inactive>(mark).is_ok();
+                let off = world.get::<&scrap::world::Inactive>(mark).is_ok();
                 if off == running {
-                    runity::world::set_active(world, mark, running);
+                    scrap::world::set_active(world, mark, running);
                 }
             }
         }

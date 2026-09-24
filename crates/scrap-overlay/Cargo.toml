@@ -1,0 +1,19 @@
+[package]
+name = "scrap-overlay"
+description = "scrap's game overlay as it was before scrap-ui: quads and text drawn over a frame, immediate widgets, screens written in RON. Leaves when the game's dialogues and widgets move to scrap-ui (docs/ui.md, stage 4)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+scrap-core = { path = "../scrap-core" }
+scrap-gpu = { path = "../scrap-gpu" }
+bytemuck = { version = "1.25.2", features = ["derive"] }
+glam = { version = "0.32", features = ["serde", "bytemuck"] }
+glyphon = "0.12.0"
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+tracing = "0.1.44"
+wgpu = "30"

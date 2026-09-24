@@ -4,7 +4,7 @@
 //! (scraped, hold F). The host's; the others see the pots and the meat as
 //! it sends them.
 
-use runity::hecs::{Entity, World};
+use scrap::hecs::{Entity, World};
 
 use crate::components::station::Kind;
 use crate::components::Station;
