@@ -34,6 +34,9 @@ pub struct Row {
     pub hidden: bool,
     /// Drawn, but a click or a box does not take it.
     pub locked: bool,
+    /// Off in the game: `inactive` itself or under a line that is — Unity's
+    /// greyed line.
+    pub inactive: bool,
 }
 
 /// What a field of a new entity says, as the Inspector writes it: what a
@@ -224,6 +227,7 @@ impl Session {
             entities: &[EntityDesc],
             depth: usize,
             part: bool,
+            inactive: bool,
             selection: &[EntityId],
             unseen: &std::collections::HashSet<EntityId>,
             out: &mut Vec<Row>,
@@ -238,6 +242,11 @@ impl Session {
                 } else {
                     !session.folded.contains(&e.id)
                 };
+                // The document's line is asked too: an instance's own
+                // `inactive` is its line's, not its expanded prefab root's.
+                let inactive = inactive
+                    || e.inactive
+                    || index.get(&e.id).is_some_and(|l| l.inactive);
                 out.push(Row {
                     id: e.id,
                     name: e.name.clone(),
@@ -249,6 +258,7 @@ impl Session {
                     part,
                     hidden: unseen.contains(&e.id),
                     locked: !session.is_pickable(session.instanced_owner(e.id)),
+                    inactive,
                 });
                 if open {
                     walk(
@@ -257,6 +267,7 @@ impl Session {
                         &e.children,
                         depth + 1,
                         part || prefab.is_some(),
+                        inactive,
                         selection,
                         unseen,
                         out,
@@ -269,6 +280,7 @@ impl Session {
             &index,
             &self.expanded().entities,
             0,
+            false,
             false,
             &selection,
             &unseen,
@@ -807,6 +819,26 @@ impl Session {
         let selection = self.selection();
         let unseen = self.unseen();
         let document = self.scene();
+        // What is off, itself or by a line above it: search lines are flat,
+        // so the tree is walked once for it.
+        let mut off = std::collections::HashSet::new();
+        fn mark(
+            document: &runity::Scene,
+            e: &EntityDesc,
+            above: bool,
+            off: &mut std::collections::HashSet<EntityId>,
+        ) {
+            let inactive = above || e.inactive || document.get(e.id).is_some_and(|l| l.inactive);
+            if inactive {
+                off.insert(e.id);
+            }
+            for c in &e.children {
+                mark(document, c, inactive, off);
+            }
+        }
+        for e in &self.expanded().entities {
+            mark(document, e, false, &mut off);
+        }
         Ok(self
             .expanded()
             .flatten()
@@ -825,6 +857,7 @@ impl Session {
                     part: line.is_none(),
                     hidden: unseen.contains(&e.id),
                     locked: !self.is_pickable(self.instanced_owner(e.id)),
+                    inactive: off.contains(&e.id),
                 }
             })
             .collect())

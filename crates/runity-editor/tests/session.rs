@@ -5024,3 +5024,48 @@ fn a_field_that_names_an_asset_says_which_kind() {
     assert_eq!(session.assets_of_kind("animator"), vec!["door".to_string()]);
     assert!(session.link_exists("animator", &runity::AssetLink::named("door")));
 }
+
+#[test]
+fn an_inactive_line_and_what_is_under_it_are_off_in_the_hierarchy() {
+    let Some((mut session, _)) = open("hierarchy-inactive") else {
+        return;
+    };
+    let (crate_id, lid) = (id(&session, "crate"), id(&session, "lid"));
+    let off = |s: &Session, id| {
+        s.hierarchy()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap()
+            .inactive
+    };
+    assert!(!off(&session, crate_id) && !off(&session, lid));
+    session.set_field(crate_id, "inactive", "true").unwrap();
+    assert!(off(&session, crate_id));
+    assert!(off(&session, lid), "under an inactive line: off too");
+    assert!(!off(&session, id(&session, "ground")));
+    // The search's flat lines say the same.
+    let found = session.hierarchy_matching("lid").unwrap();
+    assert!(found[0].inactive);
+    session.undo().unwrap();
+    assert!(!off(&session, lid));
+}
+
+#[test]
+fn reverting_to_disk_throws_the_edits_away_as_one_undo_step() {
+    let Some((mut session, _)) = open("revert-to-disk") else {
+        return;
+    };
+    let lid = id(&session, "lid");
+    assert!(!session.revert_to_disk().unwrap(), "nothing to throw away");
+    session.rename(lid, "cover").unwrap();
+    assert!(session.is_modified());
+    assert!(session.revert_to_disk().unwrap());
+    assert_eq!(session.find("lid"), Some(lid));
+    assert!(!session.is_modified(), "as the file has it");
+    session.undo().unwrap();
+    assert_eq!(
+        session.entity_name(lid).as_deref(),
+        Some("cover"),
+        "undo takes it back"
+    );
+}

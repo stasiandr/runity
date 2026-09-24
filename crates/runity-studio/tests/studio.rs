@@ -1039,7 +1039,7 @@ fn the_hierarchy_collapses_and_expands_every_line_at_once() {
 fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
     let Some((mut s, _dir)) = studio() else { return };
     s.ui.paint();
-    // Line → [arrow, icon, name, tag, tools[eye, lock], dot].
+    // Line → [arrow, icon, name, tag, tools[eye, lock], dot, open].
     let tools = |s: &Studio, name: &str| -> (f32, f32) {
         let line = s.ui.find(name).unwrap();
         let tools = s.ui.children(s.ui.children(line)[4]);
@@ -2881,4 +2881,170 @@ fn an_inline_materials_shading_is_a_list_from_the_engine() {
         .value;
     assert!(material.contains("shading:Unlit"), "{material}");
     assert!(material.contains("base_color:(0.5,0.4,0.3)"), "the rest kept: {material}");
+}
+
+#[test]
+fn the_plus_opens_the_create_menu_and_a_cube_lands_at_the_top() {
+    let Some((mut s, _dir)) = studio() else { return };
+    // With a line selected: Unity's `+` still makes at the top level.
+    click(&mut s, "line crate");
+    click(&mut s, "hierarchy create");
+    assert!(s.ui.find("menu Cube").is_some(), "{}", s.ui.dump());
+    let before = s.session.entity_count();
+    click(&mut s, "menu Cube");
+    assert_eq!(s.session.entity_count(), before + 1);
+    let cube = s.session.selected().expect("the new cube is selected");
+    let row = s.session.hierarchy().into_iter().find(|r| r.id == cube).unwrap();
+    assert_eq!(row.depth, 0, "at the top, not under the crate");
+}
+
+#[test]
+fn the_scene_is_the_first_line_and_its_menu_saves_and_reloads() {
+    let Some((mut s, dir)) = studio() else { return };
+    s.ui.paint();
+    let name = s.ui.find("hierarchy scene name").unwrap();
+    assert_eq!(s.ui.text(name), Some("first-light"));
+    assert_eq!(s.ui.style(name).text.weight, 600, "bold");
+    let scene = s.ui.rect(s.ui.find("hierarchy scene").unwrap());
+    let first = s.ui.rect(s.ui.find("line crate").unwrap());
+    assert!(scene.y < first.y, "above every entity");
+    // Entity lines stand one step in from it.
+    let arrow = |s: &Studio, n: &str| s.ui.rect(s.ui.children(s.ui.find(n).unwrap())[0]).x;
+    assert!(arrow(&s, "line crate") > arrow(&s, "hierarchy scene") + 10.0);
+    // Not an entity: a click on it selects nothing.
+    click(&mut s, "line crate");
+    click(&mut s, "hierarchy scene");
+    assert!(s.session.selection().is_empty());
+
+    // An edit: the name says it is unsaved.
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.rename(crate_id, "box").unwrap();
+    s.refresh();
+    s.frame();
+    assert_eq!(s.ui.text(name), Some("first-light*"));
+
+    click(&mut s, "hierarchy scene menu");
+    for entry in [
+        "Save Scene",
+        "Save Scene As…",
+        "Show in Project",
+        "Reload from Disk",
+        "Add Scene (multi-scene — later)",
+    ] {
+        assert!(s.ui.find(&format!("menu {entry}")).is_some(), "no {entry}");
+    }
+    // What is coming does nothing yet.
+    click(&mut s, "menu Add Scene (multi-scene — later)");
+    assert!(s.ui.find("menu Save Scene").is_none(), "the menu closed");
+
+    // Reload from disk: the file's crate is back, and undo takes it away.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Reload from Disk");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    assert!(!s.session.is_modified());
+    click(&mut s, "undo");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("box"));
+
+    // Save: the file has it.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Save Scene");
+    assert!(!s.session.is_modified());
+    let text = std::fs::read_to_string(dir.join("scenes/first-light.ron")).unwrap();
+    assert!(text.contains("\"box\""));
+    assert_eq!(s.ui.text(name), Some("first-light"));
+
+    // Show in Project: the Project comes up.
+    click(&mut s, "hierarchy scene menu");
+    click(&mut s, "menu Show in Project");
+    s.ui.paint();
+    assert!(s.ui.rect(s.ui.find("project search").unwrap()).width > 0.0);
+}
+
+#[test]
+fn an_instance_opens_its_prefab_by_the_arrow_at_its_end() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.rename(fire, "fire instance").unwrap();
+    s.refresh();
+    s.frame();
+    s.ui.paint();
+    let open = s.ui.find("open fire instance").unwrap();
+    assert_eq!(s.ui.style(open).look.opacity, 0.0, "quiet until hovered");
+    let plain = s.ui.find("open crate").unwrap();
+    assert_eq!(s.ui.rect(plain).width, 0.0, "a plain line has none");
+    let (x, y) = s.ui.rect(s.ui.find("line fire instance").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(s.ui.style(open).look.opacity, 1.0, "under the pointer");
+    click(&mut s, "open fire instance");
+    assert!(s.session.is_prefab(), "prefab mode");
+    // The first line is the prefab now.
+    let name = s.ui.find("hierarchy scene name").unwrap();
+    assert_eq!(s.ui.text(name), Some("campfire"));
+}
+
+#[test]
+fn inactive_lines_are_greyed_and_instances_are_in_the_accent() {
+    let Some((mut s, _dir)) = studio() else { return };
+    use runity_studio::theme::{ACCENT, TEXT};
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.set_field(crate_id, "inactive", "true").unwrap();
+    s.refresh();
+    s.frame();
+    // Line → [arrow, icon, name, …].
+    let part = |s: &Studio, line: &str, i: usize| s.ui.children(s.ui.find(line).unwrap())[i];
+    let name = part(&s, "line crate", 2);
+    assert!(s.ui.style(name).look.opacity < 0.6, "greyed");
+    assert!(s.ui.style(part(&s, "line crate", 1)).look.opacity < 0.6);
+    assert_eq!(s.ui.style(part(&s, "line boulder", 2)).look.opacity, 1.0);
+    // An instance: its icon and name in the accent, its parts paler, a
+    // plain line plain.
+    let fire = s.session.add_instance(None, "campfire").unwrap();
+    s.session.rename(fire, "fire instance").unwrap();
+    s.session.set_open(fire, true);
+    s.refresh();
+    s.frame();
+    assert_eq!(s.ui.style(part(&s, "line fire instance", 2)).text.color, ACCENT);
+    assert_eq!(s.ui.style(part(&s, "line fire instance", 1)).text.color, ACCENT);
+    let rows = s.session.hierarchy();
+    let i = rows.iter().position(|r| r.part).expect("the instance's parts show");
+    let lines = s.ui.children(s.ui.find("hierarchy lines").unwrap());
+    let ember = s.ui.style(s.ui.children(lines[i])[2]).text.color;
+    assert!(ember != ACCENT && ember != TEXT, "a part: a paler accent");
+    assert_eq!(s.ui.style(part(&s, "line boulder", 2)).text.color, TEXT);
+    // An instance's own `inactive` is its line's: greyed too.
+    s.session.set_field(fire, "inactive", "true").unwrap();
+    s.refresh();
+    s.frame();
+    assert!(s.ui.style(part(&s, "line fire instance", 2)).look.opacity < 0.6);
+    s.session.undo().unwrap();
+    s.refresh();
+    s.frame();
+    // Selected, it reads as selected, not as the accent on the accent.
+    click(&mut s, "line fire instance");
+    assert_ne!(s.ui.style(part(&s, "line fire instance", 2)).text.color, ACCENT);
+}
+
+#[test]
+fn a_line_dropped_on_the_scene_line_goes_to_the_top() {
+    let Some((mut s, _dir)) = studio() else { return };
+    let (boulder, crate_id) = (
+        s.session.find("boulder").unwrap(),
+        s.session.find("crate").unwrap(),
+    );
+    s.session.reparent(boulder, Some(crate_id)).unwrap();
+    s.session.set_open(crate_id, true);
+    s.refresh();
+    s.frame();
+    let depth = |s: &Studio| {
+        s.session
+            .hierarchy()
+            .into_iter()
+            .find(|r| r.id == boulder)
+            .unwrap()
+            .depth
+    };
+    assert_eq!(depth(&s), 1);
+    drag_line(&mut s, "line boulder", "hierarchy scene", 0.5);
+    assert_eq!(depth(&s), 0, "unparented");
 }

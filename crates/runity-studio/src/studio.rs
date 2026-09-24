@@ -2852,6 +2852,19 @@ impl Studio {
                         s.say(Level::Info, format!("saved as {}", path.display()));
                     }
                 }
+                Action::ReloadScene => {
+                    if s.revert_to_disk().map_err(e)? {
+                        s.say(Level::Info, "reloaded from disk (undo takes it back)");
+                    }
+                }
+                Action::ShowInProject(path) => {
+                    // Its folder open, its tile outlined and scrolled to.
+                    self.docks.activate(&mut self.ui, Panel::Project);
+                    self.sync_visible();
+                    self.bottom
+                        .ping(&mut self.ui, &self.session, crate::bottom::Asset::Scene(path));
+                    self.refresh();
+                }
                 Action::Import => {
                     if let Some(paths) = rfd::FileDialog::new()
                         .add_filter(
@@ -3595,20 +3608,30 @@ impl Studio {
                     );
                 }
                 Some(action) => {
+                    let style = Style::row()
+                        .full_width()
+                        .height(26.0)
+                        .fixed()
+                        .padding_x(SPACE_3)
+                        .gap(SPACE_2)
+                        .center_items()
+                        .radius(RADIUS_SM);
                     let line = self.ui.add(
                         menu,
-                        Style::row()
-                            .full_width()
-                            .height(26.0)
-                            .fixed()
-                            .padding_x(SPACE_3)
-                            .gap(SPACE_2)
-                            .center_items()
-                            .radius(RADIUS_SM)
-                            .hover(ACCENT.alpha(16)),
+                        if item.disabled {
+                            style
+                        } else {
+                            style.hover(ACCENT.alpha(16))
+                        },
                     );
                     self.ui.set_name(line, format!("menu {}", item.label));
-                    self.ui.add_text(line, text().fill(), &item.label);
+                    let ink = if item.disabled { MUTED } else { TEXT };
+                    self.ui
+                        .add_text(line, text().text_color(ink).fill(), &item.label);
+                    if item.disabled {
+                        // Shown, and nothing when clicked.
+                        continue;
+                    }
                     if let Some(k) = item.shortcut {
                         self.ui.add_text(
                             line,
