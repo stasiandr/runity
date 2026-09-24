@@ -1,13 +1,14 @@
-//! Settings and Profiler: two panels a dock can hold.
+//! Project Settings and Profiler: two panels a dock can hold.
 //!
-//! **Settings** is Unity's Project Settings at the grain this engine has
-//! them: the project's own files — `runity.ron`, `input.ron`, the tuning
-//! numbers in `tuning/` — listed, one open in a field of several lines,
-//! saved only when it still reads as RON. The engine picks the change up
-//! from disk as it picks up any other (DNA, postulate 1); nothing here
-//! knows what the fields mean, so nothing here goes stale when they grow.
-//! Above the files, Appearance: the person's colours, which are not the
-//! project's (`crate::appearance`); its page is what Settings opens on.
+//! **Project Settings** is Unity's at the grain this engine has them: the
+//! project's own files, in git — `runity.ron` (its modules, the game),
+//! `input.ron`, `layers.ron`, the tuning numbers in `tuning/`, the screens
+//! in `ui/` — listed, one open in a field of several lines, saved only
+//! when it still reads as RON. The engine picks the change up from disk
+//! as it picks up any other (DNA, postulate 1); nothing here knows what
+//! the fields mean, so nothing here goes stale when they grow. What is
+//! the person's and not the project's — colours, keys, tools — is
+//! Preferences (`crate::preferences`), a window of its own.
 //!
 //! **Profiler** is what a frame of the editor costs, as Unity's Profiler
 //! shows a frame of the game: the last seconds as bars, each split into
@@ -24,10 +25,6 @@ use crate::theme::*;
 
 pub struct Settings {
     pub root: NodeId,
-    /// Where the Appearance page goes, in place of a file.
-    pub page: NodeId,
-    appearance: NodeId,
-    right: NodeId,
     list: NodeId,
     editor: NodeId,
     title: NodeId,
@@ -50,25 +47,20 @@ impl Settings {
                 .padding(SPACE_2)
                 .gap(2.0),
         );
-        let appearance = settings_row(ui, left, "palette", "Appearance");
-        ui.set_name(appearance, "settings appearance");
-        ui.restyle(appearance, |s| s.background(ACCENT_900));
         ui.add_text(
             left,
             caption().padding_x(SPACE_2).padding_y(SPACE_2),
-            "PROJECT",
+            "PROJECT FILES",
         );
         let list = ui.add(left, Style::column().fill().full_width().gap(2.0).clip());
         ui.set_name(list, "settings files");
-        let page = ui.add(root, Style::column().fill().full_height());
         let right = ui.add(
             root,
             Style::column()
                 .fill()
                 .full_height()
                 .padding(SPACE_2)
-                .gap(SPACE_2)
-                .hidden(),
+                .gap(SPACE_2),
         );
         let bar = ui.add(right, Style::row().full_width().gap(SPACE_2).center_items());
         let title = ui.add_text(
@@ -92,9 +84,6 @@ impl Settings {
         ui.set_name(editor, "settings text");
         Self {
             root,
-            page,
-            appearance,
-            right,
             list,
             editor,
             title,
@@ -112,9 +101,11 @@ impl Settings {
         };
         let root = project.root();
         let mut out = vec![root.join(runity::project::FILE)];
-        let input = root.join(runity::project::INPUT);
-        if input.is_file() {
-            out.push(input);
+        for file in [runity::project::INPUT, runity::layers::FILE] {
+            let path = root.join(file);
+            if path.is_file() {
+                out.push(path);
+            }
         }
         for dir in [runity::project::TUNING, runity::project::UI] {
             if let Ok(read) = std::fs::read_dir(root.join(dir)) {
@@ -130,7 +121,7 @@ impl Settings {
         out
     }
 
-    pub fn update(&mut self, ui: &mut Ui, session: &Session) {
+    pub fn update(&mut self, ui: &mut Ui, session: &mut Session) {
         if self.listed {
             return;
         }
@@ -146,9 +137,15 @@ impl Settings {
                 .strip_prefix(&root)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let row = settings_row(ui, self.list, "settings", &name);
+            let row = settings_row(ui, self.list, "file", &name);
             ui.set_name(row, format!("settings {name}"));
             self.files.push((row, path));
+        }
+        // Open on the first, `runity.ron`: an empty page says nothing.
+        if self.open.is_none() {
+            if let Some((_, path)) = self.files.first().cloned() {
+                self.open(ui, session, path);
+            }
         }
     }
 
@@ -167,7 +164,6 @@ impl Settings {
                     .to_string();
                 ui.set_text(self.title, &name);
                 ui.restyle(self.title, |s| s.text_color(TEXT));
-                self.show_page(ui, false);
                 for (row, p) in &self.files {
                     let on = *p == path;
                     ui.restyle(*row, |s| {
@@ -204,28 +200,8 @@ impl Settings {
         ancestor(ui, node, self.root)
     }
 
-    /// The Appearance page, or the open file.
-    pub fn show_page(&mut self, ui: &mut Ui, page: bool) {
-        ui.restyle(self.page, |s| if page { s.shown() } else { s.hidden() });
-        ui.restyle(self.right, |s| if page { s.hidden() } else { s.shown() });
-        ui.restyle(self.appearance, |s| {
-            s.background(if page {
-                ACCENT_900
-            } else {
-                runity_ui::Color::TRANSPARENT
-            })
-        });
-        if page {
-            self.open = None;
-            for (row, _) in &self.files {
-                ui.restyle(*row, |s| s.background(runity_ui::Color::TRANSPARENT));
-            }
-        }
-    }
-
     pub fn event(&mut self, ui: &mut Ui, session: &mut Session, node: NodeId, event: &Event) {
         match event {
-            Event::Click { .. } if node == self.appearance => self.show_page(ui, true),
             Event::Click { .. } if node == self.save => self.save(ui, session),
             Event::Submit(_) if node == self.editor => self.save(ui, session),
             Event::Click { .. } => {

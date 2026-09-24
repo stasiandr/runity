@@ -339,6 +339,16 @@ impl Style {
         self
     }
 
+    pub fn padding_top(mut self, p: f32) -> Self {
+        self.layout.padding.top = length(p);
+        self
+    }
+
+    pub fn padding_bottom(mut self, p: f32) -> Self {
+        self.layout.padding.bottom = length(p);
+        self
+    }
+
     pub fn margin(mut self, m: f32) -> Self {
         self.layout.margin = taffy::Rect {
             left: length(m),

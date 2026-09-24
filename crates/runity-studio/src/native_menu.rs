@@ -9,8 +9,10 @@
 //! tests drive those.
 //!
 //! **One owner for keys: the studio.** Keys reach the studio as keys on
-//! every platform, and the Scene view's handling (`Session::scene_view`)
-//! and the UI's fields answer them — the in-window menus only *show* them.
+//! every platform, and its keymap (`crate::keymap`, what Preferences ›
+//! Keys rebinds) and the UI's fields answer them — the in-window menus
+//! only *show* them, and the bar's key equivalents are the keymap's too
+//! (`MenuBar::refresh` puts a rebound key on its line).
 //! A Mac menu cannot show a key without answering it: AppKit hands a
 //! ⌘-key to the menu before the window sees it, and the window never gets
 //! it. So a line chosen *by its key* is not run as an action: the key goes
@@ -22,6 +24,9 @@
 //! A key that types something (a letter, Space) with neither ⌘ nor Ctrl
 //! is not given to the system menu at all ([`Shortcut::native`]): AppKit
 //! would take it from a text field before the field could type it.
+//!
+//! Preferences go where a Mac keeps them, «runity › Settings…» (⌘,), and
+//! leave Edit, where the other systems have them ([`tree`]).
 //!
 //! What is built here without a display — [`tree`] and [`Shortcut`] — is
 //! tested on every platform; `mac` puts it into `muda`.
@@ -74,7 +79,7 @@ impl Shortcut {
         let (key, modifiers) = parts.split_last()?;
         for m in modifiers {
             match m.to_ascii_lowercase().as_str() {
-                "cmd" | "command" | "super" => shortcut.command = true,
+                "cmd" | "command" | "super" | "win" => shortcut.command = true,
                 "ctrl" | "control" => shortcut.control = true,
                 "shift" => shortcut.shift = true,
                 "alt" | "option" | "opt" => shortcut.alt = true,
@@ -90,6 +95,122 @@ impl Shortcut {
     pub fn native(&self) -> bool {
         self.command || self.control || !types(self.key)
     }
+
+    /// A key with the modifiers held: Shift, Ctrl, Alt, Cmd, as
+    /// `Ui::modifiers` gives them.
+    pub fn held(key: Key, (shift, control, alt, command): (bool, bool, bool, bool)) -> Self {
+        Self {
+            command,
+            control,
+            shift,
+            alt,
+            key,
+        }
+    }
+
+    /// As this platform's menus write it: "⇧⌘Z" on a Mac, "Ctrl+Shift+Z"
+    /// elsewhere — what [`Shortcut::parse`] reads back.
+    pub fn label(&self) -> String {
+        self.label_for(cfg!(target_os = "macos"))
+    }
+
+    fn label_for(&self, mac: bool) -> String {
+        let key = key_name(self.key);
+        if mac {
+            // Apple's order: Control, Option, Shift, Command.
+            let mut out = String::new();
+            for (on, glyph) in [
+                (self.control, '⌃'),
+                (self.alt, '⌥'),
+                (self.shift, '⇧'),
+                (self.command, '⌘'),
+            ] {
+                if on {
+                    out.push(glyph);
+                }
+            }
+            out + &key
+        } else {
+            let mut parts: Vec<String> = [
+                (self.command, "Win"),
+                (self.control, "Ctrl"),
+                (self.shift, "Shift"),
+                (self.alt, "Alt"),
+            ]
+            .into_iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| name.to_string())
+            .collect();
+            parts.push(key);
+            parts.join("+")
+        }
+    }
+
+    /// A key that is only a modifier: held with another, never a shortcut
+    /// of its own.
+    pub fn is_modifier(key: Key) -> bool {
+        use Key::*;
+        matches!(
+            key,
+            LeftShift
+                | RightShift
+                | LeftControl
+                | RightControl
+                | LeftAlt
+                | RightAlt
+                | LeftSuper
+                | RightSuper
+        )
+    }
+}
+
+/// A key's name as a shortcut writes it: "Z", "F2", "Space", ",".
+pub fn key_name(key: Key) -> String {
+    use Key::*;
+    let name = match key {
+        Digit0 => "0",
+        Digit1 => "1",
+        Digit2 => "2",
+        Digit3 => "3",
+        Digit4 => "4",
+        Digit5 => "5",
+        Digit6 => "6",
+        Digit7 => "7",
+        Digit8 => "8",
+        Digit9 => "9",
+        Escape => "Esc",
+        Space => "Space",
+        Enter => "Enter",
+        Tab => "Tab",
+        // A Mac's Delete key is Backspace, and its menus draw it so.
+        Backspace if cfg!(target_os = "macos") => "⌫",
+        Backspace => "Backspace",
+        Delete => "Delete",
+        Insert => "Insert",
+        Home => "Home",
+        End => "End",
+        PageUp => "PageUp",
+        PageDown => "PageDown",
+        Left => "Left",
+        Right => "Right",
+        Up => "Up",
+        Down => "Down",
+        Comma => ",",
+        Period => ".",
+        Slash => "/",
+        Semicolon => ";",
+        Quote => "'",
+        Minus => "-",
+        Equal => "=",
+        BracketLeft => "[",
+        BracketRight => "]",
+        Backslash => "\\",
+        Backquote => "`",
+        Other(code) => return format!("key {code}"),
+        // The letters and the F keys are their own names.
+        other => return format!("{other:?}"),
+    };
+    name.to_string()
 }
 
 /// Whether a key alone puts a character into a text field.
@@ -136,6 +257,17 @@ fn types(key: Key) -> bool {
             | Enter
             | Tab
             | Backspace
+            | Comma
+            | Period
+            | Slash
+            | Semicolon
+            | Quote
+            | Minus
+            | Equal
+            | BracketLeft
+            | BracketRight
+            | Backslash
+            | Backquote
     )
 }
 
@@ -163,6 +295,17 @@ fn key_named(name: &str) -> Option<Key> {
             '→' => Some(Right),
             '↑' => Some(Up),
             '↓' => Some(Down),
+            ',' => Some(Comma),
+            '.' => Some(Period),
+            '/' => Some(Slash),
+            ';' => Some(Semicolon),
+            '\'' => Some(Quote),
+            '-' => Some(Minus),
+            '=' => Some(Equal),
+            '[' => Some(BracketLeft),
+            ']' => Some(BracketRight),
+            '\\' => Some(Backslash),
+            '`' => Some(Backquote),
             _ => None,
         };
     }
@@ -231,18 +374,57 @@ pub const APP: &str = "runity";
 /// The bar as the system shows it: the application menu, then `bar`'s
 /// menus in their order. Keys the system must not answer
 /// ([`Shortcut::native`]) are left off.
-pub fn tree(bar: Vec<(&'static str, Vec<MenuItem>)>) -> Vec<Submenu> {
+pub fn tree(mut bar: Vec<(&'static str, Vec<MenuItem>)>) -> Vec<Submenu> {
+    // The person's preferences are the application's on a Mac: «runity ›
+    // Settings…» under About (⌘,), where every Mac app keeps them — not in
+    // Edit, where the other systems have them.
+    let mut settings = None;
+    for (_, items) in &mut bar {
+        let Some(at) = items
+            .iter()
+            .position(|i| i.action == Some(Action::Preferences(None)))
+        else {
+            continue;
+        };
+        settings = Some(items.remove(at));
+        // A separator left leading, trailing or doubled goes too.
+        let lone = |items: &Vec<MenuItem>, i: usize| {
+            items.get(i).is_some_and(|m| m.action.is_none())
+                && (i == 0
+                    || i + 1 == items.len()
+                    || items.get(i + 1).is_some_and(|m| m.action.is_none()))
+        };
+        if at > 0 && lone(items, at - 1) {
+            items.remove(at - 1);
+        } else if lone(items, at) {
+            items.remove(at);
+        }
+    }
+    let mut app = vec![Entry::Standard(Standard::About), Entry::Separator];
+    if let Some(item) = settings {
+        app.push(Entry::Item {
+            id: format!("{APP}/settings"),
+            label: "Settings…".into(),
+            shortcut: item
+                .shortcut
+                .as_deref()
+                .and_then(Shortcut::parse)
+                .filter(Shortcut::native),
+            action: Action::Preferences(None),
+            check: false,
+        });
+        app.push(Entry::Separator);
+    }
+    app.extend([
+        Entry::Standard(Standard::Hide),
+        Entry::Standard(Standard::HideOthers),
+        Entry::Standard(Standard::ShowAll),
+        Entry::Separator,
+        Entry::Quit,
+    ]);
     let mut menus = vec![Submenu {
         title: APP.into(),
-        entries: vec![
-            Entry::Standard(Standard::About),
-            Entry::Separator,
-            Entry::Standard(Standard::Hide),
-            Entry::Standard(Standard::HideOthers),
-            Entry::Standard(Standard::ShowAll),
-            Entry::Separator,
-            Entry::Quit,
-        ],
+        entries: app,
     }];
     for (title, items) in bar {
         let entries = items
@@ -255,6 +437,7 @@ pub fn tree(bar: Vec<(&'static str, Vec<MenuItem>)>) -> Vec<Submenu> {
                     label: item.label,
                     shortcut: item
                         .shortcut
+                        .as_deref()
                         .and_then(Shortcut::parse)
                         .filter(Shortcut::native),
                     check: toggles(&action),
@@ -339,12 +522,12 @@ pub mod mac {
         /// Build the bar from the menus and make it the application's.
         /// After the application has launched: before, winit would put
         /// its own over it.
-        pub fn install() -> Self {
+        pub fn install(bar: Vec<(&'static str, Vec<crate::menu::MenuItem>)>) -> Self {
             let menu = Menu::new();
             let mut lines = Vec::new();
             let mut by_id = HashMap::new();
             let quit_id = "quit".to_string();
-            for sub in super::tree(crate::menu::menu_bar()) {
+            for sub in super::tree(bar) {
                 let submenu = Submenu::new(&sub.title, true);
                 for entry in sub.entries {
                     let _ = match entry {
@@ -431,7 +614,20 @@ pub mod mac {
                 return;
             }
             self.seen = Some(revision);
-            for (line, action, label, _) in &self.lines {
+            for (line, action, label, shortcut) in &mut self.lines {
+                // A key rebound in Preferences › Keys: the line shows it,
+                // and a press of it reaches the studio as that key.
+                if let Some(now) = studio.menu_shortcut(action) {
+                    let now = now.filter(Shortcut::native);
+                    if now != *shortcut {
+                        *shortcut = now;
+                        let accelerator = now.and_then(accelerator);
+                        let _ = match line {
+                            Line::Plain(item) => item.set_accelerator(accelerator),
+                            Line::Check(item) => item.set_accelerator(accelerator),
+                        };
+                    }
+                }
                 let state = studio.menu_state(action, label);
                 match line {
                     Line::Plain(item) => {
@@ -559,6 +755,17 @@ pub mod mac {
             F10 => C::F10,
             F11 => C::F11,
             F12 => C::F12,
+            Comma => C::Comma,
+            Period => C::Period,
+            Slash => C::Slash,
+            Semicolon => C::Semicolon,
+            Quote => C::Quote,
+            Minus => C::Minus,
+            Equal => C::Equal,
+            BracketLeft => C::BracketLeft,
+            BracketRight => C::BracketRight,
+            Backslash => C::Backslash,
+            Backquote => C::Backquote,
             _ => return None,
         })
     }
@@ -647,7 +854,7 @@ mod tests {
             for item in items {
                 if let Some(key) = item.shortcut {
                     assert!(
-                        Shortcut::parse(key).is_some(),
+                        Shortcut::parse(&key).is_some(),
                         "{title} › {}: {key:?}",
                         item.label
                     );
@@ -666,6 +873,29 @@ mod tests {
         let titles: Vec<&str> = tree[1..].iter().map(|m| m.title.as_str()).collect();
         let expected: Vec<&str> = bar.iter().map(|(t, _)| *t).collect();
         assert_eq!(titles, expected);
+        // Preferences went to the application's menu, as «Settings…» (⌘,).
+        let settings = tree[0].entries.iter().find_map(|e| match e {
+            Entry::Item {
+                label,
+                shortcut,
+                action: Action::Preferences(None),
+                ..
+            } => Some((label.clone(), *shortcut)),
+            _ => None,
+        });
+        let (label, key) = settings.expect("Settings… in the app menu");
+        assert_eq!(label, "Settings…");
+        assert_eq!(key.map(|k| k.key), Some(Key::Comma));
+        let bar: Vec<(&str, Vec<MenuItem>)> = bar
+            .into_iter()
+            .map(|(t, items)| {
+                let items = items
+                    .into_iter()
+                    .filter(|i| i.action != Some(Action::Preferences(None)))
+                    .collect();
+                (t, items)
+            })
+            .collect();
         for (menu, (_, items)) in tree[1..].iter().zip(&bar) {
             assert_eq!(menu.entries.len(), items.len(), "{}", menu.title);
             for (entry, item) in menu.entries.iter().zip(items) {
@@ -728,5 +958,44 @@ mod tests {
         assert!(find("View", "Grid").1, "a toggle shows its tick");
         assert!(!find("File", "New Scene").1);
         assert!(find("Window", "Maximize the View").1);
+    }
+
+    /// A key rebound in Preferences › Keys is the bar's key equivalent:
+    /// the bar is built from the keymap, and one without a key has none.
+    #[test]
+    fn a_rebound_key_is_the_bars_key_equivalent() {
+        let mut keymap = crate::keymap::Keymap::default();
+        let rebound = Shortcut::parse(if cfg!(target_os = "macos") { "⌥⌘U" } else { "Ctrl+Alt+U" })
+            .unwrap();
+        keymap.set("undo", rebound);
+        keymap.clear("save_scene");
+        let tree = tree(keymap.label_bar(crate::menu::bare_menu_bar()));
+        let key = |menu: &str, name: &str| {
+            tree.iter()
+                .find(|m| m.title == menu)
+                .and_then(|m| {
+                    m.entries.iter().find_map(|e| match e {
+                        Entry::Item {
+                            label, shortcut, ..
+                        } if label == name => Some(*shortcut),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_else(|| panic!("no {menu} › {name}"))
+        };
+        assert_eq!(key("Edit", "Undo"), Some(rebound));
+        assert_eq!(key("File", "Save"), None);
+        assert_eq!(rebound.label(), Shortcut::parse(&rebound.label()).unwrap().label());
+    }
+
+    #[test]
+    fn a_shortcut_writes_as_it_reads() {
+        for text in ["⌘Z", "⇧⌘Z", "⌥⌘P", "⌘,", "⇧Space", "F2", "Esc", "⌘⌫", "Ctrl+Shift+P", "Ctrl+,"] {
+            let k = Shortcut::parse(text).unwrap();
+            assert_eq!(Shortcut::parse(&k.label()), Some(k), "{text} → {}", k.label());
+        }
+        let mac = Shortcut::parse("Ctrl+Shift+Z").unwrap();
+        assert_eq!(mac.label_for(true), "⌃⇧Z");
+        assert_eq!(Shortcut::parse("⇧⌘Z").unwrap().label_for(false), "Win+Shift+Z");
     }
 }

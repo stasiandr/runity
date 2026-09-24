@@ -144,6 +144,9 @@ pub struct Bottom {
     /// Unity's Clear on Play: the Console is emptied when Play starts
     /// (the studio clears it; the Console's ⋮ turns it on).
     pub clear_on_play: bool,
+    /// How a Console line's file is opened: Preferences › External Tools
+    /// (`preferences::editor_command`).
+    pub editor_command: String,
     // History
     history_list: NodeId,
     /// Each History row: how many steps from the start it stands for.
@@ -451,6 +454,7 @@ impl Bottom {
             expanded: Default::default(),
             console_rows: HashMap::new(),
             clear_on_play: false,
+            editor_command: crate::preferences::DEFAULT_EDITOR.to_string(),
             history_list,
             history_rows: HashMap::new(),
             git_list,
@@ -1822,7 +1826,7 @@ impl Bottom {
                         .nth(i)
                         .cloned();
                     if let Some(at) = line.and_then(|l| l.location()) {
-                        open_in_editor(session, &at);
+                        open_in_editor(session, &at, &self.editor_command);
                     }
                 } else if !self.expanded.remove(&i) {
                     self.expanded.insert(i);
@@ -1962,9 +1966,14 @@ impl Bottom {
     }
 }
 
-/// Open the file a Console line points at: in VS Code at the line when it
-/// is there (`code -g`), else with whatever the system opens it with.
-fn open_in_editor(session: &mut Session, at: &runity_editor::console::Location) {
+/// Open the file a Console line points at: with the person's code editor
+/// at the line (Preferences › External Tools; VS Code's `code -g` unless
+/// they chose another), else with whatever the system opens it with.
+pub(crate) fn open_in_editor(
+    session: &mut Session,
+    at: &runity_editor::console::Location,
+    command: &str,
+) {
     let root = session
         .project()
         .map(|p| p.root().to_path_buf())
@@ -1974,12 +1983,9 @@ fn open_in_editor(session: &mut Session, at: &runity_editor::console::Location) 
         session.say(Level::Warning, format!("{} is not in the project", at.file));
         return;
     }
-    let spot = format!("{}:{}:{}", file.display(), at.line, at.column);
-    let code = std::process::Command::new("code")
-        .arg("-g")
-        .arg(&spot)
-        .spawn();
-    if code.is_err() {
+    let opened = crate::preferences::editor_command(command, &file, at.line, at.column)
+        .map(|(program, args)| std::process::Command::new(program).args(args).spawn());
+    if !matches!(opened, Some(Ok(_))) {
         let opener = if cfg!(target_os = "macos") {
             "open"
         } else if cfg!(target_os = "windows") {

@@ -777,6 +777,17 @@ fn key_from(code: KeyCode) -> Key {
         C::F10 => Key::F10,
         C::F11 => Key::F11,
         C::F12 => Key::F12,
+        C::Comma => Key::Comma,
+        C::Period => Key::Period,
+        C::Slash => Key::Slash,
+        C::Semicolon => Key::Semicolon,
+        C::Quote => Key::Quote,
+        C::Minus => Key::Minus,
+        C::Equal => Key::Equal,
+        C::BracketLeft => Key::BracketLeft,
+        C::BracketRight => Key::BracketRight,
+        C::Backslash => Key::Backslash,
+        C::Backquote => Key::Backquote,
         // Keeping the platform's own value means a rebindable game does not
         // lose keys this enum has no name for.
         other => Key::Other(other as u32),

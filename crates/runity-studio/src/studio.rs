@@ -39,6 +39,7 @@ use crate::layouts::{self, Layout};
 use crate::hierarchy::Hierarchy;
 use crate::inspector::Inspector;
 use crate::menu::{self, Action, MenuItem};
+use crate::native_menu::Shortcut;
 use crate::screens::{self, Screens};
 use crate::theme::*;
 use crate::tools::{Animation, FrameCost, Profiler, Settings};
@@ -238,6 +239,8 @@ struct MenuStamp {
     game_view: bool,
     panels: [bool; 3],
     maximized: bool,
+    /// The keymap's generation: a key rebound shows in the menus.
+    keys: u64,
 }
 
 /// What the panels show, in brief: when it is the same as last frame's
@@ -407,7 +410,18 @@ pub struct Studio {
     lower_before_wide: Option<f32>,
     /// The colours: the person's choice and the project's file.
     theme: crate::appearance::Theme,
-    appearance: crate::appearance::Appearance,
+    /// Which key does what: the one table keys are answered from.
+    keymap: crate::keymap::Keymap,
+    /// The person's preferences that are not colours, keys or layouts,
+    /// and whether they changed since written (a window moved).
+    personal: crate::preferences::Personal,
+    personal_dirty: bool,
+    /// A floating panel's window to bring to the front.
+    raise: Option<String>,
+    /// RUNITY_BLENDER is the Blender chosen in Preferences.
+    blender_set: bool,
+    /// The Preferences window's content (Appearance is its first page).
+    preferences: crate::preferences::Preferences,
     left: NodeId,
     right: NodeId,
     lower: NodeId,
@@ -645,7 +659,11 @@ impl Studio {
             roots.insert(panel, root);
         }
         let settings = Settings::new(&mut ui, lower);
-        let appearance = crate::appearance::Appearance::new(&mut ui, settings.page);
+        let config = crate::appearance::config_dir();
+        let (keymap, key_errors) = crate::keymap::Keymap::load(config.as_deref());
+        let (personal, personal_error) = crate::preferences::Personal::load(config.as_deref());
+        let preferences = crate::preferences::Preferences::new(&mut ui, lower, &keymap);
+        roots.insert(Panel::Preferences, preferences.root);
         let profiler = Profiler::new(&mut ui, lower);
         roots.insert(Panel::Settings, settings.root);
         roots.insert(Panel::Profiler, profiler.root);
@@ -740,8 +758,13 @@ impl Studio {
             center,
             view_slot,
             lower_before_wide: None,
-            theme: crate::appearance::Theme::new(crate::appearance::config_dir()),
-            appearance,
+            theme: crate::appearance::Theme::new(config.clone()),
+            keymap,
+            personal,
+            personal_dirty: false,
+            raise: None,
+            blender_set: false,
+            preferences,
             left,
             right,
             lower,
@@ -761,7 +784,7 @@ impl Studio {
             job: None,
             saved_layout: String::new(),
             layout_name: Some("Default".into()),
-            config_dir: layouts::config_dir(),
+            config_dir: config,
             pending_images: Vec::new(),
             scene_before_prefab: None,
             prefab_bar,
@@ -774,6 +797,11 @@ impl Studio {
         studio.restore_layout();
         studio.update_layout_button();
         studio.sync_visible();
+        for e in key_errors.into_iter().chain(personal_error) {
+            studio.session.say(Level::Error, e);
+        }
+        studio.apply_personal();
+        studio.show_preferences();
         studio.poll_theme();
         studio.show_theme();
         studio.refresh();
@@ -931,6 +959,7 @@ impl Studio {
             game_view: s.is_game_view(),
             panels: self.panels,
             maximized: self.maximized.is_some(),
+            keys: self.keymap.generation,
         }
     }
 
@@ -1065,6 +1094,13 @@ impl Studio {
                 }
             }
             InputEvent::Scroll { .. } if over_view => self.scene_input.handle(event),
+            // Preferences › Keys is listening: the key pressed is the new
+            // one (with what is held), whatever it did before.
+            InputEvent::KeyDown(key)
+                if self.preferences.capturing().is_some() && !Shortcut::is_modifier(*key) =>
+            {
+                self.capture_key(*key);
+            }
             InputEvent::KeyDown(key) if !typing => {
                 let mut requests = Requests::default();
                 if self
@@ -1081,38 +1117,31 @@ impl Studio {
                         return;
                     }
                 }
-                let (_, ctrl, _, command) = self.ui.modifiers();
-                if *key == Key::K && (ctrl || command) {
-                    self.open_search();
-                    return;
-                }
-                // Shift Space maximizes what is under the pointer, as in
-                // Unity: a dock, or else the view.
-                if *key == Key::Space && self.ui.modifiers().0 {
-                    let (x, y) = self.ui.pointer();
-                    let zoom = match self.maximized {
-                        Some(z) => z,
-                        None => self
-                            .docks
-                            .stack_at(&self.ui, x, y)
-                            .map_or(Zoom::View, Zoom::Stack),
-                    };
-                    self.toggle_zoom(zoom);
-                    return;
-                }
-                if *key == Key::K && self.session.is_playing() {
-                    self.run(Action::KeepSimulation);
-                    return;
-                }
-                if *key == Key::F2 {
-                    self.hierarchy.rename_selected(&mut self.ui, &self.session);
-                    return;
-                }
                 if *key == Key::Escape && self.popup.is_some() {
                     self.close_popup();
                     return;
                 }
-                self.scene_input.handle(event);
+                let (_, ctrl, _, command) = self.ui.modifiers();
+                // Flying (the right button held in the view), a plain key
+                // steers — W A S D, Q E — and does not pick a tool.
+                let steering = self.scene_buttons.contains(&MouseButton::Right) && !ctrl && !command;
+                if !steering && !Shortcut::is_modifier(*key) {
+                    let chord = Shortcut::held(*key, self.ui.modifiers());
+                    if let Some(action) = self.keymap.action(chord).cloned() {
+                        if self.answer_key(action) {
+                            return;
+                        }
+                    }
+                }
+                // The view hears only the keys it holds — the modifiers
+                // (Ctrl steps a drag), V (vertex snapping), the flying keys
+                // — and never answers one as a shortcut of its own: what a
+                // key does is the keymap's, so a rebound W is not the Move
+                // tool still.
+                let plain_v = *key == Key::V && !ctrl && !command;
+                if Shortcut::is_modifier(*key) || plain_v || steering {
+                    self.scene_input.handle(event);
+                }
             }
             // The foliage brush's size: [ and ], as typed, since the
             // engine's keys have no brackets.
@@ -1305,7 +1334,7 @@ impl Studio {
             }
             self.fit_wide();
             if self.docks.is_showing(Panel::Settings) {
-                self.settings.update(&mut self.ui, &self.session);
+                self.settings.update(&mut self.ui, &mut self.session);
             }
         }
         if timing {
@@ -1580,6 +1609,261 @@ impl Studio {
         self.ui.set_text(self.compass.label, label);
     }
 
+    // --- keys and preferences -------------------------------------------
+
+    /// Do what a key of the keymap does. False when it does nothing now
+    /// and the key should go on as a key: K outside play.
+    fn answer_key(&mut self, action: Action) -> bool {
+        match action {
+            Action::KeepSimulation if !self.session.is_playing() => false,
+            // Shift Space maximizes what is under the pointer, as in
+            // Unity: a dock, or else the view.
+            Action::Maximize => {
+                let (x, y) = self.ui.pointer();
+                let zoom = match self.maximized {
+                    Some(z) => z,
+                    None => self
+                        .docks
+                        .stack_at(&self.ui, x, y)
+                        .map_or(Zoom::View, Zoom::Stack),
+                };
+                self.toggle_zoom(zoom);
+                true
+            }
+            action => {
+                self.run(action);
+                true
+            }
+        }
+    }
+
+    /// The key Preferences › Keys was listening for: the command's now,
+    /// taken from whichever had it. Esc keeps the old one.
+    fn capture_key(&mut self, key: Key) {
+        let Some(id) = self.preferences.capturing() else {
+            return;
+        };
+        self.preferences.stop_capture();
+        if key == Key::Escape {
+            self.preferences.note(&mut self.ui, "Kept as it was.", false);
+            self.preferences.show_keys(&mut self.ui, &self.keymap);
+            return;
+        }
+        let chord = Shortcut::held(key, self.ui.modifiers());
+        let label = chord.label();
+        let name = self.command_label(id);
+        let (note, warn) = match self.keymap.set(id, chord) {
+            Some(other) => (
+                format!("{label} is {name} now — {other} has no key; its ↶ gives it back its own."),
+                true,
+            ),
+            None => (format!("{label} is {name} now."), false),
+        };
+        self.preferences.note(&mut self.ui, &note, warn);
+        self.keys_changed();
+    }
+
+    /// A command's label, by its keymap name.
+    fn command_label(&self, id: &'static str) -> &'static str {
+        self.keymap
+            .commands()
+            .iter()
+            .find(|c| c.id == id)
+            .map_or(id, |c| c.label)
+    }
+
+    /// The keymap changed: written down, shown, and in the menus.
+    fn keys_changed(&mut self) {
+        if let Some(dir) = &self.config_dir {
+            if let Err(e) = self.keymap.save(dir) {
+                self.session.say(Level::Error, e);
+            }
+        }
+        self.preferences.show_keys(&mut self.ui, &self.keymap);
+    }
+
+    /// What Preferences asked for.
+    fn preference(&mut self, asked: crate::preferences::Asked) {
+        use crate::preferences::Asked;
+        match asked {
+            Asked::Theme(change) => self.change_theme(change),
+            Asked::Capture(id) => {
+                let name = self.command_label(id);
+                self.preferences.note(
+                    &mut self.ui,
+                    &format!("Press the new key for {name}, with what it needs held. Esc cancels."),
+                    false,
+                );
+            }
+            Asked::ResetKey(id) => {
+                self.keymap.reset(id);
+                self.preferences
+                    .note(&mut self.ui, "Back to its own key.", false);
+                self.keys_changed();
+            }
+            Asked::ResetAllKeys => {
+                self.keymap.reset_all();
+                self.preferences
+                    .note(&mut self.ui, "Every key is the default again.", false);
+                self.keys_changed();
+            }
+            Asked::CodeEditor(command) => {
+                self.personal.code_editor = command;
+                self.personal_changed();
+            }
+            Asked::Blender(path) => {
+                self.personal.blender = path;
+                self.personal_changed();
+            }
+            Asked::ToggleOpenLastScene => {
+                self.personal.open_last_scene = !self.personal.open_last_scene;
+                self.personal_changed();
+            }
+            Asked::IdleFps(fps) => {
+                self.personal.idle_fps = fps.clamp(1, 60);
+                self.personal_changed();
+            }
+            Asked::ApplyLayout(name) => self.run(Action::Layout(name)),
+            Asked::RenameLayout(old, new) => {
+                let renamed = self
+                    .config_dir
+                    .as_deref()
+                    .ok_or_else(|| "no settings folder".to_string())
+                    .and_then(|dir| layouts::rename(dir, &old, &new));
+                match renamed {
+                    Ok(()) => {
+                        if self.layout_name.as_deref() == Some(old.as_str()) {
+                            self.layout_name = Some(new.clone());
+                            self.update_layout_button();
+                        }
+                        self.session
+                            .say(Level::Info, format!("layout {old} is {new} now"));
+                    }
+                    Err(e) => self.session.say(Level::Error, e),
+                }
+                self.preferences.forget_layouts();
+                self.show_preferences();
+            }
+            Asked::DeleteLayout(name) => {
+                let deleted = self
+                    .config_dir
+                    .as_deref()
+                    .ok_or_else(|| "no settings folder".to_string())
+                    .and_then(|dir| layouts::delete(dir, &name));
+                match deleted {
+                    Ok(()) => self
+                        .session
+                        .say(Level::Info, format!("deleted layout {name}")),
+                    Err(e) => self.session.say(Level::Error, e),
+                }
+                self.preferences.forget_layouts();
+                self.show_preferences();
+            }
+        }
+    }
+
+    /// The person's preferences changed: written down, and in force.
+    fn personal_changed(&mut self) {
+        self.save_personal();
+        self.apply_personal();
+        self.preferences.show_personal(&mut self.ui, &self.personal);
+    }
+
+    fn save_personal(&mut self) {
+        self.personal_dirty = false;
+        if let Some(dir) = &self.config_dir {
+            if let Err(e) = self.personal.save(dir) {
+                self.session.say(Level::Error, e);
+            }
+        }
+    }
+
+    /// Put the preferences in force where they are read: the Console's
+    /// editor command, the Blender every `.blend` is read with.
+    fn apply_personal(&mut self) {
+        self.bottom.editor_command = self.personal.editor().to_string();
+        // Blender is found through RUNITY_BLENDER (`runity_import::blend`):
+        // a path chosen here is that, and choosing none puts back what the
+        // environment said.
+        static ORIGINAL: std::sync::OnceLock<Option<std::ffi::OsString>> =
+            std::sync::OnceLock::new();
+        let original = ORIGINAL.get_or_init(|| std::env::var_os("RUNITY_BLENDER"));
+        let chosen = self.personal.blender.trim();
+        if !chosen.is_empty() {
+            std::env::set_var("RUNITY_BLENDER", chosen);
+            self.blender_set = true;
+        } else if self.blender_set {
+            match original {
+                Some(v) => std::env::set_var("RUNITY_BLENDER", v),
+                None => std::env::remove_var("RUNITY_BLENDER"),
+            }
+            self.blender_set = false;
+        }
+    }
+
+    /// Every page of Preferences as things stand.
+    fn show_preferences(&mut self) {
+        self.preferences
+            .show_where(&mut self.ui, self.config_dir.as_deref());
+        self.preferences.show_keys(&mut self.ui, &self.keymap);
+        self.preferences.show_personal(&mut self.ui, &self.personal);
+        let saved = self
+            .config_dir
+            .as_deref()
+            .map(layouts::saved)
+            .unwrap_or_default();
+        self.preferences.show_layouts(&mut self.ui, saved);
+    }
+
+    /// Preferences in its window (or its tab, when someone docked it), on
+    /// `page`, or where it was.
+    fn open_preferences(&mut self, page: Option<crate::preferences::Page>) {
+        if let Some(page) = page {
+            self.preferences.set_page(&mut self.ui, page);
+        }
+        self.preferences.forget_layouts();
+        self.show_preferences();
+        if self.docks.region_of(Panel::Preferences).is_some() {
+            self.show_panel(Panel::Preferences);
+        } else if self.floats.iter().any(|f| f.panel == Panel::Preferences) {
+            self.raise = Some(Panel::Preferences.name().to_string());
+        } else {
+            self.float(Panel::Preferences);
+        }
+    }
+
+    /// A floating panel asked for while its window is open: the window
+    /// code brings it to the front.
+    pub fn take_raise(&mut self) -> Option<String> {
+        self.raise.take()
+    }
+
+    /// The page Preferences shows.
+    pub fn preferences_page(&self) -> crate::preferences::Page {
+        self.preferences.page()
+    }
+
+    /// Which key does what.
+    pub fn keymap(&self) -> &crate::keymap::Keymap {
+        &self.keymap
+    }
+
+    /// The person's preferences.
+    pub fn personal(&self) -> &crate::preferences::Personal {
+        &self.personal
+    }
+
+    /// The menu bar with the person's keys: what macOS's bar is built from.
+    pub fn menu_bar(&self) -> Vec<(&'static str, Vec<MenuItem>)> {
+        self.keymap.label_bar(menu::bare_menu_bar())
+    }
+
+    /// The key the menu line for `action` shows now: `Some(None)` for a
+    /// command with no key, `None` for a line the keymap has no say in.
+    pub fn menu_shortcut(&self, action: &Action) -> Option<Option<Shortcut>> {
+        self.keymap.shortcut_for(action)
+    }
+
     // --- floating windows ---------------------------------------------
 
     /// Tear a panel off into a window of its own.
@@ -1595,12 +1879,13 @@ impl Studio {
             .map(|i| FLOAT_X + i as f32 * FLOAT_STEP)
             .find(|x| !used.contains(x))
             .expect("there is always a free place");
+        let [width, height] = self.float_size(panel);
         let ui = &mut self.ui;
         let frame = ui.add(
             ui.root(),
             Style::column()
                 .absolute(x, 0.0)
-                .size(420.0, 560.0)
+                .size(width, height)
                 .background(BG)
                 .padding(3.0),
         );
@@ -1632,6 +1917,10 @@ impl Studio {
             "Dock back",
             false,
         );
+        // A panel that lives in a window has no dock to go back to.
+        if panel.floats() {
+            ui.restyle(dock_button, |s| s.hidden());
+        }
         let body = ui.add(card, Style::column().fill().full_width());
         ui.move_to(root, body);
         ui.restyle(root, |s| s.shown());
@@ -1708,6 +1997,14 @@ impl Studio {
             return;
         };
         self.ui.restyle(frame, |s| s.size(width, height));
+        let entry = self
+            .personal
+            .windows
+            .entry(name.to_string())
+            .or_insert([f32::NAN, f32::NAN, width, height]);
+        entry[2] = width;
+        entry[3] = height;
+        self.personal_dirty = true;
     }
 
     /// An event from a floating panel's window, pointer in its logical
@@ -1725,12 +2022,64 @@ impl Studio {
         }
     }
 
-    /// Its window closed: the panel goes back to a dock.
+    /// Its window closed: the panel goes back to a dock — or, one that
+    /// lives in a window (Preferences), away until opened again.
     pub fn close_float(&mut self, name: &str) {
-        if let Some(panel) = self.float_of(name).map(|f| f.panel) {
+        let Some(panel) = self.float_of(name).map(|f| f.panel) else {
+            return;
+        };
+        if !panel.floats() {
             self.dock_back(panel);
+            return;
+        }
+        let Some(at) = self.floats.iter().position(|f| f.panel == panel) else {
+            return;
+        };
+        let float = self.floats.remove(at);
+        self.docks.put_away(&mut self.ui, panel);
+        self.ui.remove(float.frame);
+        self.preferences.stop_capture();
+        self.save_personal();
+        self.sync_visible();
+        self.refresh();
+    }
+
+    /// How big a panel's window is: as it was left, or its first size.
+    fn float_size(&self, panel: Panel) -> [f32; 2] {
+        match self.personal.windows.get(panel.name()) {
+            Some([_, _, w, h]) if *w > 100.0 && *h > 100.0 => [*w, *h],
+            _ if panel == Panel::Preferences => [780.0, 560.0],
+            _ => [420.0, 560.0],
         }
     }
+
+    /// Where a floating panel's window goes when it opens: its size, and
+    /// where it was left on the screen, if it was — logical pixels.
+    pub fn float_place(&self, name: &str) -> ([f32; 2], Option<[f32; 2]>) {
+        let size = Panel::from_name(name).map_or([420.0, 560.0], |p| self.float_size(p));
+        let at = self
+            .personal
+            .windows
+            .get(name)
+            .filter(|[x, y, _, _]| x.is_finite() && y.is_finite())
+            .map(|[x, y, _, _]| [*x, *y]);
+        (size, at)
+    }
+
+    /// A floating panel's window moved on the screen, in logical pixels:
+    /// it opens there next time.
+    pub fn moved_float(&mut self, name: &str, x: f32, y: f32) {
+        let size = self.float_place(name).0;
+        let entry = self
+            .personal
+            .windows
+            .entry(name.to_string())
+            .or_insert([x, y, size[0], size[1]]);
+        entry[0] = x;
+        entry[1] = y;
+        self.personal_dirty = true;
+    }
+
 
     /// Draw a floating panel's window. `seen` is the picture generation
     /// this renderer has: pictures are given to it again when it is old.
@@ -2204,7 +2553,20 @@ impl Studio {
     pub fn set_config_dir(&mut self, dir: impl Into<std::path::PathBuf>) {
         let dir = dir.into();
         self.config_dir = Some(dir.clone());
-        self.theme.set_dir(dir);
+        self.theme.set_dir(dir.clone());
+        let (keymap, errors) = crate::keymap::Keymap::load(Some(&dir));
+        // A new generation all the same: the menus show these keys.
+        let generation = self.keymap.generation + 1;
+        self.keymap = keymap;
+        self.keymap.generation = generation;
+        let (personal, error) = crate::preferences::Personal::load(Some(&dir));
+        self.personal = personal;
+        for e in errors.into_iter().chain(error) {
+            self.session.say(Level::Error, e);
+        }
+        self.apply_personal();
+        self.preferences.forget_layouts();
+        self.show_preferences();
         self.poll_theme();
         self.show_theme();
     }
@@ -2297,7 +2659,7 @@ impl Studio {
     /// stands.
     fn show_theme(&mut self) {
         self.ui.set_palette(self.theme.palette());
-        self.appearance.show(&mut self.ui, &self.theme);
+        self.preferences.appearance.show(&mut self.ui, &self.theme);
     }
 
     /// Change the person's colours: at once here, and in their file.
@@ -2320,6 +2682,9 @@ impl Studio {
         }
         self.polled = Instant::now();
         self.save_layout();
+        if self.personal_dirty {
+            self.save_personal();
+        }
         self.poll_theme();
         match self.session.reload_scene() {
             Ok(runity_editor::SceneReload::Reloaded) => {
@@ -2383,9 +2748,21 @@ impl Studio {
         {
             return;
         }
-        let Some(tip) = self.ui.name(node).and_then(tooltip) else {
+        let Some(name) = self.ui.name(node) else {
             return;
         };
+        let Some(tip) = tooltip(name) else {
+            return;
+        };
+        // The key, as the keymap has it now: a rebound key reads here too.
+        let key = tooltip_key(name)
+            .and_then(|id| self.keymap.keys(id).first())
+            .map(|k| k.label());
+        let tip = match key {
+            Some(key) => format!("{tip} ({key})"),
+            None => tip.to_string(),
+        };
+        let tip = tip.as_str();
         let r = self.ui.rect(node);
         let root = self.ui.root();
         let (w, h, _) = self.ui.viewport();
@@ -2894,9 +3271,12 @@ impl Studio {
         } else if self.inspector.owns(node) {
             self.inspector
                 .event(&mut self.ui, &mut self.session, node, event, requests);
-        } else if self.appearance.owns(&self.ui, node) {
-            if let Some(change) = self.appearance.event(&mut self.ui, node, event) {
-                self.change_theme(change);
+        } else if self.preferences.owns(&self.ui, node) {
+            if let Some(asked) = self
+                .preferences
+                .event(&mut self.ui, node, event, &self.keymap)
+            {
+                self.preference(asked);
             }
         } else if self.settings.owns(&self.ui, node) {
             self.settings
@@ -3725,10 +4105,17 @@ impl Studio {
                 Action::Theme(name) => {
                     self.change_theme(crate::appearance::Change::Preset(name.into()))
                 }
-                Action::Appearance => {
-                    self.show_panel(Panel::Settings);
-                    self.settings.show_page(&mut self.ui, true);
-                    self.sync_visible();
+                Action::Preferences(page) => self.open_preferences(page),
+                Action::ProjectSettings => self.show_panel(Panel::Settings),
+                Action::MoveToView => {
+                    if !s.move_to_view().map_err(e)? {
+                        return Err("select something to move to the view".into());
+                    }
+                }
+                Action::AlignWithView => {
+                    if !s.align_with_view().map_err(e)? {
+                        return Err("select something to align with the view".into());
+                    }
                 }
                 Action::MaterialInstance(parent) => {
                     let name = s.new_material_instance(&parent).map_err(e)?;
@@ -4157,8 +4544,10 @@ impl Studio {
         Ok(())
     }
 
-    fn open_popup(&mut self, items: Vec<MenuItem>, x: f32, y: f32) {
+    fn open_popup(&mut self, mut items: Vec<MenuItem>, x: f32, y: f32) {
         self.close_popup();
+        // The keys as the keymap has them now, rebound ones too.
+        self.keymap.label(&mut items);
         let root = self.ui.root();
         let (w, h, _) = self.ui.viewport();
         let overlay = self.ui.add(
@@ -4231,7 +4620,7 @@ impl Studio {
                         // Shown, and nothing when clicked.
                         continue;
                     }
-                    if let Some(k) = item.shortcut {
+                    if let Some(k) = &item.shortcut {
                         self.ui.add_text(
                             line,
                             Style::default().text_size(11.0).text_color(MUTED).nowrap(),
@@ -4613,26 +5002,26 @@ enum Zoom {
 /// What a control does, for its tooltip — by the control's name.
 fn tooltip(name: &str) -> Option<&'static str> {
     Some(match name {
-        "tool Hand" => "Hand: drag to pan the view, pick nothing (Q)",
-        "tool Move" => "Move (W)",
-        "tool Rotate" => "Rotate (E)",
-        "tool Scale" => "Scale (R)",
-        "tool Rect" => "Rect: resize by the bounds' corners and edges (T)",
-        "tool Transform" => "Transform: move, rotate and scale at once (Y)",
-        "handles along" => "Handles along the world's axes or the entity's own (X)",
-        "handles at" => "Handles on the entity's pivot or the selection's centre (Z)",
+        "tool Hand" => "Hand: drag to pan the view, pick nothing",
+        "tool Move" => "Move",
+        "tool Rotate" => "Rotate",
+        "tool Scale" => "Scale",
+        "tool Rect" => "Rect: resize by the bounds' corners and edges",
+        "tool Transform" => "Transform: move, rotate and scale at once",
+        "handles along" => "Handles along the world's axes or the entity's own",
+        "handles at" => "Handles on the entity's pivot or the selection's centre",
 
         "grid" => "Show the grid",
         "status console" => "The Console's newest line: click to show the Console",
-        "play" => "Play / Stop (Ctrl/Cmd P)",
-        "pause" => "Pause (Ctrl/Cmd Shift P)",
-        "step" => "One step (Ctrl/Cmd Alt P)",
-        "undo" => "Undo (Ctrl/Cmd Z)",
-        "redo" => "Redo (Ctrl/Cmd Shift Z)",
-        "save" => "Save the scene (Ctrl/Cmd S)",
+        "play" => "Play / Stop",
+        "pause" => "Pause",
+        "step" => "One step",
+        "undo" => "Undo",
+        "redo" => "Redo",
+        "save" => "Save the scene",
         "snap" => "Snap moves to ¼ m, turns to 15°, scale to 0.1",
         "colliders" => "Show colliders",
-        "scene view" => "Shift Space: the view over the whole window",
+        "scene view" => "The view over the whole window",
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
         "foliage" => "Foliage brush: paint the model chosen in Project; Shift erases, [ ] size",
@@ -4649,6 +5038,28 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "hierarchy collapse all" => "Collapse all",
         "console clear" => "Clear the Console",
         "status problems" => "Show the Console",
+        _ => return None,
+    })
+}
+
+/// The keymap's command a control does too, whose key its tooltip shows.
+fn tooltip_key(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "tool Hand" => "hand",
+        "tool Move" => "move",
+        "tool Rotate" => "rotate",
+        "tool Scale" => "scale",
+        "tool Rect" => "rect",
+        "tool Transform" => "transform",
+        "handles along" => "space",
+        "handles at" => "pivot",
+        "play" => "play",
+        "pause" => "pause",
+        "step" => "step",
+        "undo" => "undo",
+        "redo" => "redo",
+        "save" => "save_scene",
+        "scene view" => "maximize",
         _ => return None,
     })
 }

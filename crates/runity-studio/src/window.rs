@@ -18,7 +18,7 @@ use runity::input::{InputEvent, Key};
 use runity::surface::{Surface, SurfaceError};
 use runity_ui::render::UiRenderer;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
@@ -89,9 +89,6 @@ struct App {
     next: Instant,
 }
 
-/// How much longer an idle frame waits: four a second.
-const IDLE: Duration = Duration::from_millis(242);
-
 /// The most frames a second the editor draws.
 const FRAME: Duration = Duration::from_micros(1_000_000 / 120);
 
@@ -148,10 +145,11 @@ impl ApplicationHandler<Chosen> for App {
         };
         // Idle, a few frames a second: the disk is still watched and
         // emitters still play, but nothing burns a core for a still scene.
+        // Idle, as many a second as Preferences › General says (four).
         let due = if run.studio.wants_frame() {
             self.next
         } else {
-            self.next + IDLE
+            self.next + run.studio.personal().idle().saturating_sub(FRAME)
         };
         if Instant::now() >= due {
             run.window.request_redraw();
@@ -200,7 +198,8 @@ impl ApplicationHandler<Chosen> for App {
         #[cfg(target_os = "macos")]
         {
             // After launch, or winit's own menu would replace it.
-            self.menu = Some(crate::native_menu::mac::MenuBar::install());
+            // With the person's keys (Preferences › Keys).
+            self.menu = Some(crate::native_menu::mac::MenuBar::install(studio.menu_bar()));
             let proxy = std::sync::Mutex::new(self.proxy.clone());
             crate::native_menu::mac::listen(move |chosen| {
                 if let Ok(proxy) = proxy.lock() {
@@ -357,16 +356,27 @@ impl ApplicationHandler<Chosen> for App {
 
 /// Open a window for each panel the studio has floating, and close the
 /// ones it has docked back.
-fn sync_floats(event_loop: &ActiveEventLoop, run: &Running, floats: &mut Vec<FloatWindow>) {
+fn sync_floats(event_loop: &ActiveEventLoop, run: &mut Running, floats: &mut Vec<FloatWindow>) {
     let wanted = run.studio.floating();
     floats.retain(|f| wanted.iter().any(|(name, _)| *name == f.name));
+    // One asked for again (⌘, with Preferences open): to the front.
+    if let Some(name) = run.studio.take_raise() {
+        if let Some(float) = floats.iter().find(|f| f.name == name) {
+            float.window.focus_window();
+        }
+    }
     for (name, title) in wanted {
         if floats.iter().any(|f| f.name == name) {
             continue;
         }
-        let attrs = Window::default_attributes()
+        // Where it was left, and as big.
+        let ([width, height], at) = run.studio.float_place(&name);
+        let mut attrs = Window::default_attributes()
             .with_title(title)
-            .with_inner_size(LogicalSize::new(420.0, 560.0));
+            .with_inner_size(LogicalSize::new(width, height));
+        if let Some([x, y]) = at {
+            attrs = attrs.with_position(LogicalPosition::new(x, y));
+        }
         let Ok(window) = event_loop.create_window(attrs) else {
             continue;
         };
@@ -405,6 +415,11 @@ fn float_event(run: &mut Running, float: &mut FloatWindow, event: &WindowEvent) 
                 size.height as f32 / scale,
             );
             run.window.request_redraw();
+        }
+        // Moved: it opens there next time.
+        WindowEvent::Moved(at) => {
+            let at = at.to_logical::<f32>(scale as f64);
+            run.studio.moved_float(&float.name, at.x, at.y);
         }
         WindowEvent::RedrawRequested => float.draw(&mut run.studio),
         _ => {
