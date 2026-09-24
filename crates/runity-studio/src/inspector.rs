@@ -4,14 +4,22 @@
 //! `Session::inspect_all` and `Session::set_field_all` — the calls an agent
 //! makes, one undo step each, with `—` where several selected things
 //! disagree. This lays them out as Unity does: the name on top, the
-//! transform as three numbers a line, the rest in groups, each as the RON
-//! the scene file holds (a form built from the game's own types waits on
-//! how modules reach the editor — DNA, open question 2). Material and
-//! model have a picker next to them. Empty fields are offered as chips.
+//! transform as three numbers a line, the rest in groups, each a form laid
+//! out by the engine's type for it ([`form`]): never the RON the file
+//! holds. Debug mode — Unity's, in the Inspector's ⋮ menu — shows that RON
+//! instead, whole, in one box ([`debug`]). A game component is a form by
+//! the shape the game wrote down. Material and model have a picker next to them. Empty
+//! fields are offered by Add Component.
 //!
 //! A field commits on Enter, Tab, or when the keyboard leaves it changed;
 //! what does not parse is said in the Console and the box goes back to
 //! what the scene holds.
+
+mod debug;
+mod form;
+mod tree;
+
+pub use form::Place;
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -202,6 +210,15 @@ fn is_empty(value: &str) -> bool {
     matches!(value, "" | "None" | "r#None" | "()" | "\"\"" | "false")
 }
 
+/// What a field's own box shows: a material by name without its quotes
+/// (typed back without them, it is quoted again), the rest as they are.
+fn slot_text(field: &str, value: &str) -> String {
+    match tree::parse(value).map(|n| n.kind) {
+        Some(tree::Kind::Text(name)) if field == "material" => name,
+        _ => value.to_string(),
+    }
+}
+
 /// A vector field's three numbers, when its text is one.
 fn axes(value: &str) -> Option<[String; 3]> {
     let inner = value.trim().strip_prefix('(')?.strip_suffix(')')?;
@@ -226,9 +243,12 @@ fn trim_number(text: &str) -> String {
     }
 }
 
+/// A field's name as a label: `ambient_occlusion` as "Ambient occlusion",
+/// `components.door` as "Door".
 fn title(field: &str) -> String {
     let name = field.strip_prefix("components.").unwrap_or(field);
-    let mut chars = name.chars();
+    let name = name.replace('_', " ");
+    let mut chars = name.trim().chars();
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
@@ -268,8 +288,6 @@ enum Part {
         key: String,
         kind: SubKind,
     },
-    /// The scene's sun or fog, as RON.
-    Environment(String),
     /// The sun's hour, 0 to 24, as a track.
     Hour,
     /// The switch before the name: on in the world, or off.
@@ -294,6 +312,14 @@ enum Part {
     PickerHex,
     /// Around a list or a picker: a click there closes it.
     Dismiss,
+    /// A box of a form, and what using it does.
+    Form(Place, form::Control),
+    /// In the list the ⋮ next to the padlock opens: Normal (`false`) or
+    /// Debug (`true`).
+    Mode(bool),
+    /// Debug mode's box of RON, and its Apply.
+    DebugRon,
+    DebugApply,
 }
 
 /// A number dragged by its label.
@@ -301,6 +327,8 @@ enum Part {
 enum Scrub {
     Axis(String, usize),
     Sub { component: String, key: String, whole: bool },
+    /// A number of a form; `true` for a count.
+    Form(Place, bool),
 }
 
 /// Something Add Component offers.
@@ -316,9 +344,8 @@ enum Addition {
 pub enum ColorTarget {
     /// The selection's material, in linear light.
     Material,
-    /// A colour inside a field's value, `key: (r, g, b)`, as a picker says
-    /// it (sRGB, 0 to 1): a light's, particles'.
-    Field(String, String),
+    /// Three numbers of a form, 0 to 1, as a picker says them.
+    Form(Place),
 }
 
 /// What is open over the panel.
@@ -336,56 +363,19 @@ enum Popover {
         square_mark: NodeId,
         hue_mark: NodeId,
     },
+    /// The ⋮ menu's Normal and Debug.
+    Modes {
+        root: NodeId,
+    },
 }
 
 impl Popover {
     fn root(&self) -> NodeId {
         match self {
-            Popover::Add { root, .. } | Popover::Color { root, .. } => *root,
+            Popover::Add { root, .. } | Popover::Color { root, .. } | Popover::Modes { root } => {
+                *root
+            }
         }
-    }
-}
-
-/// `key: (r, g, b)` in a field's RON, as three numbers.
-fn ron_color(text: &str, key: &str) -> Option<[f32; 3]> {
-    let at = find_key(text, key)?;
-    let rest = text[at..].trim_start().strip_prefix('(')?;
-    let inner = &rest[..rest.find(')')?];
-    let n: Vec<f32> = inner
-        .split(',')
-        .map(|v| v.trim().parse().ok())
-        .collect::<Option<_>>()?;
-    (n.len() == 3).then(|| [n[0], n[1], n[2]])
-}
-
-/// Where the value of `key:` starts in RON text, the key whole.
-fn find_key(text: &str, key: &str) -> Option<usize> {
-    let pattern = format!("{key}:");
-    let mut from = 0;
-    while let Some(i) = text[from..].find(&pattern) {
-        let at = from + i;
-        let before = text[..at].chars().next_back();
-        if !before.is_some_and(|c| c.is_alphanumeric() || c == '_') {
-            return Some(at + pattern.len());
-        }
-        from = at + pattern.len();
-    }
-    None
-}
-
-/// The text with `key: (r, g, b)` set: replaced, or added at the end.
-fn with_ron_color(text: &str, key: &str, rgb: [f32; 3]) -> String {
-    let value = format!("({:.3}, {:.3}, {:.3})", rgb[0], rgb[1], rgb[2]);
-    if let Some(at) = find_key(text, key) {
-        if let Some(close) = text[at..].find(')') {
-            return format!("{} {value}{}", &text[..at], &text[at + close + 1..]);
-        }
-    }
-    let trimmed = text.trim();
-    match trimmed.strip_suffix(')') {
-        Some(body) if body.trim_end().ends_with('(') => format!("{body}{key}: {value})"),
-        Some(body) => format!("{}, {key}: {value})", body.trim_end().trim_end_matches(',')),
-        None => text.to_string(),
     }
 }
 
@@ -553,6 +543,25 @@ pub struct Inspector {
     hue_drawn: bool,
     /// Each component field's box, to show a scrubbed number as it goes.
     sub_nodes: HashMap<(String, String), NodeId>,
+    /// Debug mode: every field as the RON its file holds. `None` until
+    /// read from this person's preferences.
+    debug: bool,
+    debug_read: bool,
+    /// Debug mode's box, when it shows one.
+    debug_box: Option<debug::DebugBox>,
+    more_button: NodeId,
+    /// Which groups of a form are folded or opened, by their node name.
+    folds: HashMap<String, bool>,
+    /// What a part the value leaves out was shown as, by place: what a box
+    /// inside it writes in around its own number.
+    stand_ins: HashMap<Place, String>,
+    /// Each form number's box, to show a scrubbed number as it goes.
+    form_nodes: HashMap<Place, NodeId>,
+    /// The label of the form line being laid out: a number's handle.
+    last_label: Option<NodeId>,
+    /// What the forms were laid out from: a value changed under them (an
+    /// undo, an edit elsewhere) lays them out again.
+    form_values: Vec<String>,
 }
 
 impl Inspector {
@@ -571,8 +580,19 @@ impl Inspector {
         );
         ui.add(strip, Style::row().fill());
         let lock_button = icon_button(ui, strip, "inspector lock", "lock-open", false);
+        // Unity's ⋮ beside the padlock: Normal or Debug.
+        let more_button = icon_button(ui, strip, "inspector more", "ellipsis-vertical", false);
         let body = ui.add(card, Style::column().fill().full_width().clip());
         Self {
+            debug: false,
+            debug_read: false,
+            debug_box: None,
+            more_button,
+            folds: HashMap::new(),
+            stand_ins: HashMap::new(),
+            form_nodes: HashMap::new(),
+            last_label: None,
+            form_values: Vec::new(),
             locked: None,
             lock_button,
             resets: Vec::new(),
@@ -610,6 +630,7 @@ impl Inspector {
 
     pub fn owns(&self, node: NodeId) -> bool {
         node == self.lock_button
+            || node == self.more_button
             || self.parts.contains_key(&node)
             || self.popover_parts.contains_key(&node)
     }
@@ -659,8 +680,42 @@ impl Inspector {
             self.toggle_lock(ui);
             ids = session.selection();
         }
+        if !self.debug_read {
+            self.debug_read = true;
+            self.debug = session.inspector_debug();
+            set_icon_button(ui, self.more_button, "ellipsis-vertical", self.debug, true);
+        }
+        if self.debug {
+            if !self.built || ids != self.showing {
+                self.close_popover(ui);
+                self.built = true;
+                self.showing = ids.clone();
+                self.shape.clear();
+                ui.clear(self.body);
+                self.parts.clear();
+                self.slots.clear();
+                self.build_debug(ui, session, &ids);
+            } else {
+                self.update_debug(ui, session);
+            }
+            return;
+        }
         let fields = session.inspect_all(&ids).unwrap_or_default();
         let playing = session.is_playing();
+        // What the forms are laid out from; not while one of their boxes
+        // is being typed into, which a new layout would take away.
+        let form_values: Vec<String> = if ids.is_empty() {
+            session.environment().into_iter().map(|(_, v)| v).collect()
+        } else {
+            fields
+                .iter()
+                .filter(|f| self.is_form(f))
+                .map(|f| f.value.clone())
+                .collect()
+        };
+        let typing = ui
+            .focused()
+            .is_some_and(|n| matches!(self.parts.get(&n), Some(Part::Form(..))));
         if ids != self.showing {
             self.revealed.clear();
             if self.scrubbing.is_none() {
@@ -703,8 +758,10 @@ impl Inspector {
             || ids != self.showing
             || shape != self.shape
             || playing != self.playing
-            || resets != self.resets;
+            || resets != self.resets
+            || (form_values != self.form_values && !typing);
         if changed && !dragging {
+            self.form_values = form_values;
             self.resets = resets;
             self.built = true;
             self.showing = ids.clone();
@@ -720,7 +777,7 @@ impl Inspector {
             };
             let text = match axis {
                 Some(i) => axes(&f.value).map(|a| a[*i].clone()).unwrap_or_default(),
-                None => f.value.clone(),
+                None => slot_text(&f.name, &f.value),
             };
             if *given != text && ui.focused() != Some(*node) {
                 ui.set_text(*node, &text);
@@ -733,6 +790,8 @@ impl Inspector {
         ui.clear(self.body);
         self.parts.clear();
         self.slots.clear();
+        self.stand_ins.clear();
+        self.form_nodes.clear();
         if ids.is_empty() {
             let empty = ui.add(self.body, Style::column().padding(SPACE_4).gap(SPACE_2));
             ui.add_text(empty, text().text_color(MUTED), "Nothing selected");
@@ -843,7 +902,7 @@ impl Inspector {
             ui.add_text(
                 note,
                 Style::default().text_size(11.5).text_color(ACCENT_300),
-                "Playing: this is where things are now. Stop brings the scene back.",
+                "Simulating: this is where things are now. Stop brings the scene back.",
             );
         }
 
@@ -884,28 +943,10 @@ impl Inspector {
             self.heading(ui, name);
             for f in group {
                 self.line(ui, session, f);
-                if f.name == "material" && f.value != MIXED {
+                if f.name == "material" && f.value != MIXED && !self.is_form(f) {
                     if let Some(m) = session.material(ids[0]) {
                         let rgb = to_srgb(m.base_color);
                         self.color_line(ui, "Color", "material", rgb, ColorTarget::Material);
-                    }
-                }
-                // A colour inside a light's or particles' value: a swatch.
-                if f.value != MIXED {
-                    for key in ["color", "end_color"] {
-                        if !matches!(f.name.as_str(), "light" | "particles") {
-                            break;
-                        }
-                        if let Some(c) = ron_color(&f.value, key) {
-                            let rgb = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-                            self.color_line(
-                                ui,
-                                &title(key).replace('_', " "),
-                                &format!("{} {key}", f.name),
-                                rgb,
-                                ColorTarget::Field(f.name.clone(), key.to_string()),
-                            );
-                        }
                     }
                 }
             }
@@ -920,7 +961,7 @@ impl Inspector {
                 ui.add_text(
                     line,
                     Style::default()
-                        .width(84.0)
+                        .width(form::LABEL_WIDTH)
                         .fixed()
                         .text_size(11.5)
                         .text_color(LABEL)
@@ -1018,8 +1059,9 @@ impl Inspector {
         let label = ui.add(
             line,
             Style::row()
-                .width(84.0)
+                .width(form::LABEL_WIDTH)
                 .fixed()
+                .min_height(22.0)
                 .gap(SPACE_2)
                 .center_items()
                 .radius(RADIUS_SM)
@@ -1038,13 +1080,11 @@ impl Inspector {
             );
             self.parts.insert(dot, Part::Revert(f.name.clone()));
         }
-        ui.add_text(
+        self.label_text(
+            ui,
             label,
-            Style::default()
-                .text_size(12.0)
-                .text_color(if f.overridden { ACCENT_300 } else { LABEL })
-                .nowrap(),
             &title(&f.name),
+            if f.overridden { ACCENT_300 } else { LABEL },
         );
         match TRANSFORM
             .contains(&f.name.as_str())
@@ -1086,9 +1126,11 @@ impl Inspector {
                     self.slot(slot, &f.name, Some(i), value);
                 }
             }
+            None if self.is_form(f) => self.entity_form(ui, session, line, f),
             None => {
                 // A long value — a light, a route, a component with no
                 // shape to go by — gets room: several lines, wrapping.
+                let value = slot_text(&f.name, &f.value);
                 let long = f.value.len() > 36 || f.name.starts_with("components.");
                 let slot = if long {
                     ui.add_textarea(
@@ -1100,13 +1142,13 @@ impl Inspector {
                             .padding_y(3.0)
                             .mono()
                             .text_size(11.5),
-                        &f.value,
+                        &value,
                     )
                 } else {
-                    ui.add_field(line, field_style().fill().mono().text_size(11.5), &f.value)
+                    ui.add_field(line, field_style().fill(), &value)
                 };
                 ui.set_name(slot, f.name.clone());
-                self.slot(slot, &f.name, None, &f.value);
+                self.slot(slot, &f.name, None, &value);
                 if matches!(f.name.as_str(), "material" | "model" | "prefab") {
                     let pick = ui.add(
                         line,
@@ -1202,17 +1244,13 @@ impl Inspector {
             let name = ui.add(
                 line,
                 Style::row()
-                    .width(84.0 - 18.0)
+                    .width(form::LABEL_WIDTH - 18.0)
                     .fixed()
-                    .height(22.0)
+                    .min_height(22.0)
                     .center_items()
                     .radius(RADIUS_SM),
             );
-            ui.add_text(
-                name,
-                Style::default().text_size(12.0).text_color(LABEL).nowrap(),
-                &title(key),
-            );
+            self.label_text(ui, name, &title(key), LABEL);
             if number && !self.playing {
                 ui.restyle(name, |s| s.hover(HOVER).draggable().clickable());
                 ui.set_name(name, format!("scrub {component} {key}"));
@@ -1234,6 +1272,11 @@ impl Inspector {
                 Shape::Asset(kind) => SubKind::Asset(kind.clone()),
                 _ => SubKind::Raw,
             };
+            if sub == SubKind::Raw {
+                // A struct, a list, an option in it: a form of its own.
+                self.component_part(ui, session, line, f, key, kind);
+                continue;
+            }
             let node = match &sub {
                 SubKind::Bool(on) => {
                     let switch = ui.add(
@@ -1431,8 +1474,8 @@ impl Inspector {
     }
 
     /// The scene's own settings, shown when nothing is selected: the time
-    /// of day as a track, the sun and the fog as the file writes them —
-    /// Unity's Lighting window, where it is at hand.
+    /// of day as a track, then the sun, the fog and the rest of its look
+    /// as forms — Unity's Lighting window, where it is at hand.
     fn environment(&mut self, ui: &mut Ui, session: &Session) {
         self.heading(ui, "Scene");
         let env = session.environment();
@@ -1456,7 +1499,7 @@ impl Inspector {
         ui.add_text(
             line,
             Style::default()
-                .width(84.0)
+                .width(form::LABEL_WIDTH)
                 .fixed()
                 .text_size(12.0)
                 .text_color(LABEL)
@@ -1493,30 +1536,7 @@ impl Inspector {
             &format!("{:02}:{:02}", hour as u32, ((hour.fract()) * 60.0) as u32),
         );
         self.parts.insert(track, Part::Hour);
-        for (field, value) in env {
-            let line = ui.add(
-                self.body,
-                Style::row()
-                    .full_width()
-                    .padding_x(SPACE_4)
-                    .padding_y(2.0)
-                    .gap(SPACE_2)
-                    .center_items(),
-            );
-            ui.add_text(
-                line,
-                Style::default()
-                    .width(84.0)
-                    .fixed()
-                    .text_size(12.0)
-                    .text_color(LABEL)
-                    .nowrap(),
-                &title(field),
-            );
-            let f = ui.add_field(line, field_style().fill().mono().text_size(11.5), &value);
-            ui.set_name(f, format!("scene {field}"));
-            self.parts.insert(f, Part::Environment(field.to_string()));
-        }
+        self.scene_form(ui, session);
     }
 
     /// Go back to showing the selection.
@@ -1822,7 +1842,7 @@ impl Inspector {
         ui.add_text(
             line,
             Style::default()
-                .width(84.0)
+                .width(form::LABEL_WIDTH)
                 .fixed()
                 .text_size(12.0)
                 .text_color(LABEL)
@@ -1879,10 +1899,24 @@ impl Inspector {
             }
             return;
         }
+        if node == self.more_button {
+            if let Event::Click { .. } = event {
+                let r = ui.rect(node);
+                self.open_modes(ui, r);
+            }
+            return;
+        }
         let Some(part) = self.parts.get(&node).cloned() else {
             return;
         };
         match (part, event) {
+            (Part::DebugRon, Event::Submit(_)) | (Part::DebugApply, Event::Click { .. }) => {
+                self.apply_debug(ui, session);
+                requests.refresh = true;
+            }
+            (Part::Form(place, control), _) => {
+                self.form_event(ui, session, node, place, control, event, requests);
+            }
             (Part::Slot { field, axis }, Event::Submit(_)) => {
                 self.commit(ui, session, &field, axis);
                 requests.refresh = true;
@@ -1975,6 +2009,7 @@ impl Inspector {
                         .get(component)
                         .and_then(|v| v.iter().find(|(k, _)| k == key))
                         .and_then(|(_, v)| eval(v.trim())),
+                    Scrub::Form(place, _) => self.number_at(session, place),
                 };
                 if let Some(start) = start {
                     session.begin_gesture();
@@ -2151,13 +2186,6 @@ impl Inspector {
                 self.set_sub(session, &component, &key, &value);
                 requests.refresh = true;
             }
-            (Part::Environment(field), Event::Submit(value)) => {
-                if let Err(e) = session.set_environment(&field, value.trim()) {
-                    session.say(Level::Error, e.to_string());
-                }
-                self.built = false;
-                requests.refresh = true;
-            }
             (Part::Hour, Event::Press { x, .. } | Event::Drag { x, .. }) => {
                 if matches!(event, Event::Press { .. }) {
                     session.begin_gesture();
@@ -2243,6 +2271,20 @@ impl Inspector {
                     s.3 = shown;
                 }
             }
+            Scrub::Form(place, whole) => {
+                let value = if *whole {
+                    format!("{}", (start + moved / 4.0).round() as i64)
+                } else {
+                    // A centimetre a pixel for small numbers, half a percent
+                    // of it for big ones.
+                    let step = (start.abs() * 0.005).max(0.01);
+                    format!("{:?}", start + moved * step)
+                };
+                self.set_leaf(session, place, &value);
+                if let Some(node) = self.form_nodes.get(place) {
+                    ui.set_text(*node, &trim_number(&value));
+                }
+            }
             Scrub::Sub { component, key, whole } => {
                 let value = if *whole {
                     format!("{}", (start + moved / 4.0).round() as i64)
@@ -2267,13 +2309,13 @@ impl Inspector {
 
     /// The colour a swatch stands for, as sRGB bytes.
     fn color_of(&self, session: &Session, target: &ColorTarget) -> Option<[u8; 3]> {
+        if let ColorTarget::Form(place) = target {
+            return self.colour_at(session, place);
+        }
         let id = *self.showing.first()?;
         match target {
             ColorTarget::Material => session.material(id).map(|m| to_srgb(m.base_color)),
-            ColorTarget::Field(field, key) => {
-                let value = session.inspect(id)?.into_iter().find(|f| f.name == *field)?.value;
-                ron_color(&value, key).map(|c| c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8))
-            }
+            ColorTarget::Form(_) => None,
         }
     }
 
@@ -2292,21 +2334,9 @@ impl Inspector {
                     }
                 }
             }
-            ColorTarget::Field(field, key) => {
+            ColorTarget::Form(place) => {
                 let rgb = [r, g, b].map(|v| v as f32 / 255.0);
-                for id in self.showing.clone() {
-                    let Some(value) = session
-                        .inspect(id)
-                        .and_then(|f| f.into_iter().find(|f| f.name == *field))
-                        .map(|f| f.value)
-                    else {
-                        continue;
-                    };
-                    if let Err(e) = session.set_field(id, field, &with_ron_color(&value, key, rgb)) {
-                        session.say(Level::Error, e.to_string());
-                        break;
-                    }
-                }
+                self.set_colour(session, place, rgb);
             }
         }
     }
@@ -2344,6 +2374,36 @@ impl Inspector {
                 .clickable(),
         );
         (ground, card)
+    }
+
+    /// The ⋮ menu: Normal, every field a form, or Debug, every field as
+    /// the RON its file holds.
+    fn open_modes(&mut self, ui: &mut Ui, at: runity_ui::Rect) {
+        let (ground, card) =
+            self.popover_card(ui, at.x + at.width - 160.0, at.y + at.height + 4.0, 160.0);
+        ui.set_name(card, "inspector modes");
+        for (label, debug) in [("Normal", false), ("Debug", true)] {
+            let row = ui.add(
+                card,
+                Style::row()
+                    .full_width()
+                    .height(24.0)
+                    .padding_x(SPACE_2)
+                    .gap(SPACE_2)
+                    .center_items()
+                    .radius(RADIUS_SM)
+                    .hover(HOVER)
+                    .clickable(),
+            );
+            ui.set_name(row, format!("inspector mode {label}"));
+            let mark = ui.add(row, Style::row().size(14.0, 14.0).fixed());
+            if debug == self.debug {
+                icon(ui, mark, "check", ACCENT);
+            }
+            ui.add_text(row, text().nowrap(), label);
+            self.popover_parts.insert(row, Part::Mode(debug));
+        }
+        self.popover = Some(Popover::Modes { root: ground });
     }
 
     /// Unity's Add Component: a search, and what matches it.
@@ -2578,6 +2638,17 @@ impl Inspector {
         };
         match (part, event) {
             (Part::Dismiss, Event::Click { .. }) => self.close_popover(ui),
+            (Part::Mode(debug), Event::Click { .. }) => {
+                self.close_popover(ui);
+                if debug != self.debug {
+                    self.debug = debug;
+                    session.set_inspector_debug(debug);
+                    self.built = false;
+                    self.shape.clear();
+                }
+                set_icon_button(ui, self.more_button, "ellipsis-vertical", debug, true);
+                requests.refresh = true;
+            }
             (Part::AddSearch, Event::Changed(text)) => {
                 let text = text.clone();
                 self.fill_add(ui, session, &text);

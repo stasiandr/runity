@@ -41,8 +41,9 @@ components.
 
 Blender 4.2 or newer. In the runity editor: **Tools › Install Blender
 Plugin**. It puts this folder into Blender's user extensions
-(`user_default`), turns it on and saves Blender's preferences. A Blender
-that is already open picks it up after a restart. By hand: zip this
+(`user_default`), turns it on and saves Blender's preferences. Quit
+Blender first: the editor refuses while one is open, because Blender saves
+its preferences when it quits, over the ones that turn the plugin on. By hand: zip this
 `runity` folder and use Edit › Preferences › Get Extensions › Install from
 Disk. On every save it
 gives objects, meshes, materials and collections an ID (`runity.id`) that

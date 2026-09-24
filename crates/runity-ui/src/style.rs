@@ -274,6 +274,28 @@ impl Style {
         self
     }
 
+    /// Shares the room its siblings leave evenly with the others that
+    /// share it, but never gets narrower than its content: the two sides
+    /// of a toolbar, which keep what is between them in the middle for as
+    /// long as there is room, and push it aside rather than run under it.
+    pub fn share(mut self) -> Self {
+        self.layout.flex_grow = 1.0;
+        self.layout.flex_shrink = 1.0;
+        self.layout.flex_basis = length(0.0);
+        self.layout.min_size = taffy::Size::auto();
+        self
+    }
+
+    /// Undo [`Style::fill`]: its own size again, kept when the parent is
+    /// short of room — a panel back from being maximized.
+    pub fn unfilled(mut self) -> Self {
+        self.layout.flex_grow = 0.0;
+        self.layout.flex_shrink = 0.0;
+        self.layout.flex_basis = auto();
+        self.layout.min_size = taffy::Size::auto();
+        self
+    }
+
     /// Keeps its size when the parent is short of room.
     pub fn fixed(mut self) -> Self {
         self.layout.flex_shrink = 0.0;

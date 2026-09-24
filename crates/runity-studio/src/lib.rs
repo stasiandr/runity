@@ -22,6 +22,7 @@ mod bottom;
 mod clipboard;
 mod dialogues;
 mod dock;
+mod git_marks;
 mod hierarchy;
 mod inspector;
 pub mod menu;

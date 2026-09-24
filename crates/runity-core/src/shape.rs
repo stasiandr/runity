@@ -50,6 +50,27 @@ pub fn of<'de, T: Deserialize<'de>>() -> Shape {
     out
 }
 
+/// What each variant of the enum `T` holds, by name: `Unit` for a bare
+/// one, the fields of one written `Box(half: …)`. Empty when `T` is not an
+/// enum. [`Shape::Enum`] names the variants only; this is what an editor
+/// needs to switch a value to another variant with fields to fill in.
+pub fn variants_of<'de, T: Deserialize<'de>>() -> Vec<(String, Shape)> {
+    let Shape::Enum(names) = of::<T>() else {
+        return Vec::new();
+    };
+    names
+        .into_iter()
+        .map(|name| {
+            let mut content = Shape::Unit;
+            let _ = T::deserialize(Picker {
+                name: &name,
+                content: &mut content,
+            });
+            (name, content)
+        })
+        .collect()
+}
+
 impl Shape {
     /// A value of this shape in RON, as short as it can be written: what a
     /// component added in an inspector starts as.
@@ -539,6 +560,92 @@ impl<'de> de::VariantAccess<'de> for Variant {
     }
 }
 
+// --- one variant of an enum, traced -----------------------------------
+
+/// Asked for an enum, answers with the variant `name` and traces what it
+/// holds into `content`; asked for anything else, stops.
+struct Picker<'a> {
+    name: &'a str,
+    content: &'a mut Shape,
+}
+
+impl<'de> Deserializer<'de> for Picker<'_> {
+    type Error = Stop;
+
+    fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Stop> {
+        Err(Stop("not an enum".into()))
+    }
+
+    fn deserialize_enum<V: Visitor<'de>>(
+        self,
+        _: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Stop> {
+        let name = variants
+            .iter()
+            .find(|v| **v == self.name)
+            .copied()
+            .ok_or_else(|| Stop(format!("no variant `{}`", self.name)))?;
+        visitor.visit_enum(Picked {
+            name,
+            content: self.content,
+        })
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct identifier ignored_any
+    }
+}
+
+struct Picked<'a> {
+    name: &'static str,
+    content: &'a mut Shape,
+}
+
+impl<'de> de::EnumAccess<'de> for Picked<'_> {
+    type Error = Stop;
+    type Variant = Self;
+    fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Self), Stop> {
+        let value = seed.deserialize(self.name.into_deserializer())?;
+        Ok((value, self))
+    }
+}
+
+impl<'de> de::VariantAccess<'de> for Picked<'_> {
+    type Error = Stop;
+    fn unit_variant(self) -> Result<(), Stop> {
+        *self.content = Shape::Unit;
+        Ok(())
+    }
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Stop> {
+        seed.deserialize(Tracer {
+            out: self.content,
+            depth: 1,
+        })
+    }
+    fn tuple_variant<V: Visitor<'de>>(self, len: usize, visitor: V) -> Result<V::Value, Stop> {
+        Tracer {
+            out: self.content,
+            depth: 1,
+        }
+        .deserialize_tuple(len, visitor)
+    }
+    fn struct_variant<V: Visitor<'de>>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Stop> {
+        Tracer {
+            out: self.content,
+            depth: 1,
+        }
+        .deserialize_struct("", fields, visitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +720,21 @@ mod tests {
         );
         let example = shape.example();
         assert!(ron::from_str::<Door>(&example).is_ok(), "{example}");
+    }
+
+    #[test]
+    fn each_variant_says_what_it_holds() {
+        assert_eq!(
+            variants_of::<Kind>(),
+            vec![
+                ("Wood".to_string(), Shape::Unit),
+                (
+                    "Iron".to_string(),
+                    Shape::Struct(vec![("weight".into(), Shape::Float)])
+                ),
+            ]
+        );
+        assert!(variants_of::<Door>().is_empty(), "not an enum");
     }
 
     #[test]

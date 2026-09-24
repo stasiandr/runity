@@ -65,6 +65,7 @@ pub use runity_audio::audio;
 pub use runity_core::components;
 pub use runity_core::crash;
 pub use runity_core::edit;
+pub use runity_core::embed;
 pub use runity_core::files;
 pub use runity_core::web_time;
 #[cfg(feature = "dialogue")]

@@ -92,3 +92,47 @@ fn two_players_play_together_from_the_editor() {
     assert!(session.stop_game());
     assert!(!session.game_running());
 }
+
+/// Play for real: the project's game builds, starts with no window of its
+/// own and draws in the Game view — a picture that is not the editor's.
+/// Compiles a game, so it is not in every run:
+/// `cargo test -p runity-editor --test players -- --ignored`.
+#[test]
+#[ignore]
+fn the_game_draws_in_the_game_view() {
+    let Some((mut session, _project)) = project("in-view") else {
+        return;
+    };
+    let target: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/players-game");
+    std::env::set_var("CARGO_TARGET_DIR", std::path::absolute(target).unwrap());
+    session.resize(320, 180);
+    // What the editor itself shows through the scene's camera.
+    session.set_game_view(true);
+    session.render();
+    let editors = session.frame_pixels().to_vec();
+
+    session.start_game().unwrap();
+    assert!(session.is_game_in_view());
+    let deadline = Instant::now() + Duration::from_secs(900);
+    loop {
+        assert!(session.game_running(), "{:#?}", session.console());
+        assert!(Instant::now() < deadline, "{:#?}", session.console());
+        session.poll_game();
+        session.render();
+        if session.game_draws_in_view() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // It keeps drawing, at the view's size.
+    std::thread::sleep(Duration::from_millis(500));
+    session.poll_game();
+    session.render();
+    assert_eq!(session.frame_pixels().len(), 320 * 180 * 4);
+    if let Some(out) = std::env::var_os("RUNITY_GAME_VIEW_PNG") {
+        image::save_buffer(&out, &editors, 320, 180, image::ColorType::Rgba8).unwrap();
+        let game = Path::new(&out).with_extension("game.png");
+        image::save_buffer(game, session.frame_pixels(), 320, 180, image::ColorType::Rgba8).unwrap();
+    }
+    assert!(session.stop_game());
+}

@@ -65,7 +65,11 @@ pub enum Action {
     Tool(Tool),
     ToggleSpace,
     TogglePivot,
+    /// Play the game — its own code, in its own window — or stop it.
     Play,
+    /// Simulate the scene's physics right here in the view, without the
+    /// game's code: what falls, falls. Stop puts it all back.
+    Simulate,
     /// The Game view (`true`) or the Scene view.
     GameView(bool),
     Pause,
@@ -73,6 +77,9 @@ pub enum Action {
     SetField(String, String),
     /// One field of a game component, by component, field and RON value.
     SetSub(String, String, String),
+    /// One place in a field's value, picked from a form's list: the RON
+    /// written there.
+    SetLeaf(crate::inspector::Place, String),
     /// A prefab or model placed in front of the view.
     Place(String),
     ClearConsole,
@@ -299,6 +306,8 @@ pub fn menu_bar() -> Vec<(&'static str, Vec<MenuItem>)> {
             "Play",
             vec![
                 item("Play / Stop", Action::Play).key(key!("⌘P", "Ctrl+P")),
+                MenuItem::separator(),
+                item("Simulate Physics Here", Action::Simulate),
                 item("Pause", Action::Pause).key(key!("⇧⌘P", "Ctrl+Shift+P")),
                 item("Step", Action::Step).key(key!("⌥⌘P", "Ctrl+Alt+P")),
                 item("Keep Simulation Changes", Action::KeepSimulation).key("K"),

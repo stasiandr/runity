@@ -2174,11 +2174,12 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
             })
             .collect();
         let (lo, hi) = (*luma.iter().min()?, *luma.iter().max()?);
-        // Dark dips along the row: grid lines crossed.
+        // Dark dips along the row: grid lines crossed. A line a pixel wide
+        // comes out of FXAA a few percent under the floor, not ten.
         let mean = luma.iter().sum::<u32>() / luma.len() as u32;
         let dips = luma
             .windows(2)
-            .filter(|w| w[0] >= mean * 9 / 10 && w[1] < mean * 9 / 10)
+            .filter(|w| w[0] >= mean * 95 / 100 && w[1] < mean * 95 / 100)
             .count();
         Some((hi - lo, dips))
     };
@@ -2190,7 +2191,9 @@ fn a_grid_surface_shows_its_metres_and_a_plain_one_does_not() {
         plain < 12 && plain_dips == 0,
         "a plain floor is even: {plain}, {plain_dips}"
     );
-    assert!(grid > 60, "lines darker than the floor: {grid}");
+    // FXAA, which the Scene view smooths with in place of four samples a
+    // pixel, softens a line a pixel wide: darker still, by less.
+    assert!(grid > 45, "lines darker than the floor: {grid}");
     assert!(
         grid_dips >= 4,
         "a line per metre across the view: {grid_dips}"
@@ -2375,6 +2378,19 @@ fn the_hierarchy_and_the_inspector_are_data_a_window_draws() {
         ["camp", "fire", "ember"]
     );
     assert!(rows[2].part && rows[1].prefab.as_deref() == Some("campfire"));
+    assert!(!session.can_undo(), "folding is not an edit");
+    // Everything at once, prefab instances too.
+    session.set_all_open(true);
+    let all = ["camp", "tent", "fire", "ember"];
+    let shown = |session: &Session| -> Vec<String> {
+        session.hierarchy().into_iter().map(|r| r.name).collect()
+    };
+    assert_eq!(shown(&session), all);
+    session.set_all_open(false);
+    assert_eq!(shown(&session), ["camp", "fire"]);
+    session.set_open_below(camp, true);
+    assert_eq!(shown(&session), ["camp", "tent", "fire"]);
+    session.set_all_open(true);
     assert!(!session.can_undo(), "folding is not an edit");
 
     // The Inspector: fields as text, set by name, one step each.
@@ -3642,6 +3658,16 @@ fn the_inspector_knows_a_game_component_by_what_the_game_wrote_down() {
 }
 
 #[test]
+fn play_leaves_an_untouched_scene_as_it_is_on_disk() {
+    let Some((mut session, path)) = open("game-untouched") else {
+        return;
+    };
+    let before = std::fs::read(&path).unwrap();
+    session.game_command().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before, "not saved: nothing to save");
+}
+
+#[test]
 fn play_in_the_game_saves_the_scene_and_names_it_to_the_game() {
     let Some((mut session, path)) = open("game-command") else {
         return;
@@ -4720,6 +4746,28 @@ fn assets_are_brought_up_to_date_beside_the_frame_not_in_it() {
     assert!(session.palette().iter().any(|(name, _)| name == "slate"));
 }
 
+/// Another editor on the same project takes the port file away when it
+/// closes; the one still open puts its own back, so Blender finds it.
+#[test]
+fn the_link_puts_its_port_back_when_another_editor_took_it() {
+    let Some((mut session, path)) = open_with(
+        "blender-link-kept",
+        r#"(entities: [])"#,
+    ) else {
+        return;
+    };
+    session.poll_blender();
+    let port = session.blender_port().expect("listening");
+    let file = path.parent().unwrap().parent().unwrap().join("library/blender-link");
+    std::fs::remove_file(&file).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    session.poll_blender();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap().trim(),
+        port.to_string()
+    );
+}
+
 /// A saved `.blend` and an object being moved, sent by Blender itself over
 /// the link: the save is imported without starting another Blender, and
 /// the move shows before any save.
@@ -4821,4 +4869,149 @@ assert export.send_link(export.MOVES, export.moves([rock]))
         .any(|l| l.text.contains("saved in Blender, imported")));
     // The save's hash is in the sidecar: the poller has nothing to redo.
     assert_eq!(session.reload_assets(), 0, "no second import");
+}
+
+/// The Hierarchy's dots (`Session::changed_since`) against the scene's
+/// committed text.
+#[test]
+fn nothing_is_marked_changed_until_something_changes() {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/kitchen/scenes/main.ron"
+    ))
+    .unwrap();
+    let Some(mut session) = new_session() else {
+        return;
+    };
+    session
+        .open_scene(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/kitchen/scenes/main.ron"
+        )))
+        .unwrap();
+    // Opening settles links (IDs added); that is not a change.
+    let changed = session.changed_since(Some(&text));
+    assert!(changed.is_empty(), "{} marked", changed.len());
+    // One moved: that one, and not the lines around it.
+    let crate_id = session.find("cabbage crate").unwrap();
+    session
+        .set_field(crate_id, "position", "(-3.0, 0.5, -3.0)")
+        .unwrap();
+    let changed = session.changed_since(Some(&text));
+    assert_eq!(changed.into_iter().collect::<Vec<_>>(), [crate_id]);
+    // Never committed: everything is new.
+    assert_eq!(session.changed_since(None).len(), session.scene().ids().len());
+}
+
+#[test]
+fn a_field_says_what_it_looks_like_what_it_starts_as_and_what_it_means() {
+    use runity::shape::Shape;
+    let Some((mut session, _path)) = open("field-forms") else {
+        return;
+    };
+    // The engine's types, traced: a unit enum's variants, a data enum's
+    // variants with what each holds.
+    let Some(Shape::Struct(fog)) = session.field_shape("fog") else {
+        panic!("fog is a struct")
+    };
+    assert!(fog
+        .iter()
+        .any(|(k, s)| k == "mode" && matches!(s, Shape::Enum(v) if v.contains(&"Linear".to_string()))));
+    let colliders = session.field_variants("collider");
+    assert!(colliders.contains(&("Model".to_string(), Shape::Unit)));
+    assert!(colliders
+        .iter()
+        .any(|(v, s)| v == "Sphere" && *s == Shape::Struct(vec![("radius".into(), Shape::Float)])));
+    assert!(session.field_variants("light").is_empty(), "not an enum");
+    assert_eq!(session.field_shape("position"), None, "a core field");
+
+    // What a field is added as is its type's default, where it has one.
+    let sky = session.field_blank("sky").expect("a sky has defaults");
+    session.set_environment("sky", &sky).unwrap();
+    let now = session
+        .environment()
+        .into_iter()
+        .find(|(f, _)| *f == "sky")
+        .unwrap()
+        .1;
+    assert_ne!(now, "None");
+    assert_eq!(session.field_blank("route"), None, "a route needs its points");
+
+    // What a text means: a default left out, a typo refused.
+    let normal = session
+        .field_normal(
+            "fog",
+            "(color: (0.5, 0.5, 0.5), start: 1.0, end: 2.0, mode: Linear)",
+        )
+        .unwrap();
+    assert!(!normal.contains("mode"), "{normal}");
+    assert!(session.field_normal("fog", "(colour: 1.0)").is_err());
+}
+
+#[test]
+fn an_entity_and_the_scene_settings_are_edited_as_the_ron_the_file_holds() {
+    let Some((mut session, path)) = open("entity-ron") else {
+        return;
+    };
+    let crate_id = id(&session, "crate");
+    let lid = id(&session, "lid");
+    session.set_field(crate_id, "body", "Static").unwrap();
+    session.save_scene(None).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
+
+    // The block as the file writes it, without its children.
+    let text = session.entity_ron(crate_id).unwrap();
+    assert!(text.contains("name: \"crate\""), "{text}");
+    assert!(text.contains("body: Static"), "{text}");
+    assert!(!text.contains("children"), "{text}");
+    assert!(!text.contains("lid"), "{text}");
+
+    // Given back as it is: no step, and saving is a zero diff.
+    let steps = session.undo_steps().len();
+    session.set_entity_ron(crate_id, &text).unwrap();
+    assert_eq!(session.undo_steps().len(), steps, "nothing changed");
+    session.save_scene(None).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+
+    // An edit: one step, its id and children kept.
+    let edited = text.replace("\"crate\"", "\"box\"");
+    session.set_entity_ron(crate_id, &edited).unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1, "one step");
+    assert_eq!(session.find("box"), Some(crate_id));
+    assert_eq!(session.find("lid"), Some(lid), "the child is still there");
+    assert!(session
+        .hierarchy()
+        .iter()
+        .any(|r| r.id == lid && r.depth == 1));
+    session.undo().unwrap();
+    assert_eq!(session.find("crate"), Some(crate_id));
+
+    // What does not read changes nothing, and says where.
+    let err = session
+        .set_entity_ron(crate_id, "(name: \"x\", transform: (position: (1.0, 2.0)))")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains(':'), "{err}");
+    let err = session
+        .set_entity_ron(crate_id, &text.replace("body: Static", "body: Floaty"))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("body"), "{err}");
+    assert_eq!(session.undo_steps().len(), steps, "no step for either");
+    assert_eq!(session.entity_ron(crate_id).unwrap(), text);
+
+    // The scene's settings, the same way; the entities stay.
+    let settings = session.scene_settings_ron().unwrap();
+    assert!(!settings.contains("entities"), "{settings}");
+    session.set_scene_settings_ron(&settings).unwrap();
+    assert_eq!(session.undo_steps().len(), steps);
+    session
+        .set_scene_settings_ron("(sun: (hour: 18.0, intensity: 1.0))")
+        .unwrap();
+    assert_eq!(session.undo_steps().len(), steps + 1);
+    assert!(session.environment()[0].1.contains("hour:18.0"));
+    assert_eq!(session.find("lid"), Some(lid));
+    assert!(session.set_scene_settings_ron("(sun: (hour: \"late\"))").is_err());
+    session.undo().unwrap();
+    assert_eq!(session.scene_settings_ron().unwrap(), settings);
 }

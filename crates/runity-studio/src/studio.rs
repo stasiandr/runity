@@ -190,6 +190,8 @@ struct Stamp {
     lines: usize,
     tool: Tool,
     playing: bool,
+    /// The game started with Play: the button turns back when it ends.
+    game: bool,
     paused: bool,
     hidden: usize,
     isolated: usize,
@@ -209,6 +211,7 @@ impl Stamp {
             lines: session.console().iter().map(|l| l.count as usize).sum(),
             tool: session.tool(),
             playing: session.is_playing(),
+            game: session.is_game_running(),
             paused: session.is_paused(),
             hidden: session.hidden().len(),
             isolated: session.isolated().len(),
@@ -264,9 +267,9 @@ pub struct Studio {
     /// while after one.
     last_input: Instant,
     /// Which of the Hierarchy, the Inspector and the lower panel show, and
-    /// whether the view has the whole window.
+    /// what has the whole window, if anything does.
     panels: [bool; 3],
-    maximized: bool,
+    maximized: Option<Zoom>,
     /// The terrain brush is on: a left drag in the view shapes the ground.
     sculpt: bool,
     /// A long background import has been announced.
@@ -314,10 +317,14 @@ pub struct Studio {
     polled: Instant,
     toolbar: Toolbar,
     hierarchy: Hierarchy,
+    /// What git has not got yet: the Hierarchy's and the Project's dots.
+    git: crate::git_marks::GitMarks,
     inspector: Inspector,
     bottom: Bottom,
     status: Status,
     splits: [NodeId; 3],
+    /// The column of the view and the lower dock.
+    center: NodeId,
     view_slot: NodeId,
     /// The lower dock's height before the UI Builder went wide.
     lower_before_wide: Option<f32>,
@@ -335,6 +342,9 @@ pub struct Studio {
     /// Buttons that went down in the Scene view: their release goes there
     /// too, wherever the pointer is by then.
     scene_buttons: HashSet<MouseButton>,
+    /// Buttons pressed over the game in the view: their release is the
+    /// game's too, wherever the pointer is by then.
+    game_buttons: HashSet<MouseButton>,
     /// The session frame's size when the renderer was last shown it.
     registered: Option<(u32, u32)>,
     drawn: Instant,
@@ -416,39 +426,6 @@ impl Studio {
         icon(&mut ui, aspect_button, "chevron-down", MUTED);
         spacer(&mut ui, view_tabs);
         let mut buttons = Vec::new();
-        for (name, label, action) in [
-            ("view persp", "Persp", Action::Perspective),
-            ("view top", "Top", Action::View(runity_editor::Side::Top)),
-            (
-                "view front",
-                "Front",
-                Action::View(runity_editor::Side::Front),
-            ),
-            (
-                "view right",
-                "Right",
-                Action::View(runity_editor::Side::Right),
-            ),
-        ] {
-            let b = ui.add(
-                view_tabs,
-                Style::row()
-                    .height(24.0)
-                    .padding_x(SPACE_2)
-                    .center()
-                    .radius(6.0)
-                    .hover(HOVER)
-                    .pressed(PRESSED),
-            );
-            ui.set_name(b, name);
-            ui.add_text(
-                b,
-                Style::default().text_size(11.5).text_color(LABEL).nowrap(),
-                label,
-            );
-            buttons.push((b, action));
-        }
-        separator(&mut ui, view_tabs);
         let snap = icon_button(&mut ui, view_tabs, "snap", "magnet", false);
         buttons.push((snap, Action::ToggleSnap));
         let colliders = icon_button(&mut ui, view_tabs, "colliders", "box", false);
@@ -651,17 +628,19 @@ impl Studio {
             cam_image,
             cam_registered: None,
             compass,
-            maximized: false,
+            maximized: None,
             stroke: None,
             tooltip: None,
             resting: None,
             polled: Instant::now(),
             toolbar,
             hierarchy,
+            git: crate::git_marks::GitMarks::new(),
             inspector,
             bottom,
             status,
             splits: [split_left, split_lower, split_right],
+            center,
             view_slot,
             lower_before_wide: None,
             theme_stamp: None,
@@ -674,6 +653,7 @@ impl Studio {
             navigation: false,
             seen: None,
             scene_buttons: HashSet::new(),
+            game_buttons: HashSet::new(),
             registered: None,
             drawn: Instant::now(),
             frame_times: Vec::new(),
@@ -706,6 +686,7 @@ impl Studio {
         self.last_input.elapsed().as_secs_f32() < 1.0
             || self.ui.is_dirty()
             || self.session.is_playing()
+            || self.session.is_game_running()
             || self.session.is_dragging()
             || self.stroke.is_some()
             || self.job.is_some()
@@ -738,6 +719,95 @@ impl Studio {
 
     /// What the pointer should look like where it is: an I-beam over a
     /// field, a resize arrow over a border between panels.
+    /// Whether the game in the view is being played: the Game view is up
+    /// and the game Play started draws in it.
+    fn game_in_view(&self) -> bool {
+        self.session.is_game_view() && self.session.is_game_in_view() && self.popup.is_none()
+    }
+
+    /// Whether the pointer is the game's: captured — hidden, held, only its
+    /// motion counting — as the game asked.
+    pub fn captures_cursor(&self) -> bool {
+        self.game_in_view() && self.session.game_captures_cursor()
+    }
+
+    /// Hand what falls on the game in the view to it, as its own window
+    /// would: the pointer over it, the buttons pressed on it, the keys
+    /// while the view has the keyboard — except the editor's shortcuts, so
+    /// Ctrl/Cmd P still stops. `true` when the event was the game's alone.
+    fn to_game(
+        &mut self,
+        event: &InputEvent,
+        over_view: bool,
+        typing: bool,
+        to_view: impl Fn(f32, f32) -> (f32, f32),
+    ) -> bool {
+        if !self.game_in_view() {
+            self.game_buttons.clear();
+            return false;
+        }
+        let focused = self.ui.focused() == Some(self.viewport);
+        let (_, ctrl, _, command) = self.ui.modifiers();
+        let shortcut = if cfg!(target_os = "macos") { command } else { ctrl };
+        let modifier = |key: &Key| {
+            matches!(
+                key,
+                Key::LeftShift
+                    | Key::RightShift
+                    | Key::LeftControl
+                    | Key::RightControl
+                    | Key::LeftAlt
+                    | Key::RightAlt
+                    | Key::LeftSuper
+                    | Key::RightSuper
+            )
+        };
+        match event {
+            InputEvent::MouseMoved { x, y } => {
+                let (x, y) = to_view(*x, *y);
+                self.session.send_to_game(InputEvent::MouseMoved { x, y });
+                false
+            }
+            InputEvent::MouseMotion { .. } => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseDown(button) if over_view => {
+                self.game_buttons.insert(*button);
+                self.ui.focus(Some(self.viewport));
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::MouseUp(button) if self.game_buttons.remove(button) => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::Scroll { .. } if over_view => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::KeyDown(key) if focused && !typing && (modifier(key) || !shortcut) => {
+                self.session.send_to_game(event.clone());
+                !modifier(key)
+            }
+            // Every release: a key held into the game comes up in it.
+            InputEvent::KeyUp(_) => {
+                self.session.send_to_game(event.clone());
+                false
+            }
+            InputEvent::Text(_) if focused && !typing && !shortcut => {
+                self.session.send_to_game(event.clone());
+                true
+            }
+            InputEvent::FocusLost => {
+                self.game_buttons.clear();
+                self.session.send_to_game(event.clone());
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn cursor(&self) -> Cursor {
         let node = self.ui.dragging().or(self.ui.hovered());
         match node {
@@ -793,6 +863,9 @@ impl Studio {
         let scale = self.ui.viewport().2;
         let view = self.ui.rect(self.viewport);
         let to_view = |x: f32, y: f32| ((x - view.x) * scale, (y - view.y) * scale);
+        if self.to_game(event, over_view, typing, to_view) {
+            return;
+        }
         match event {
             InputEvent::MouseMoved { x, y } => {
                 let (vx, vy) = to_view(*x, *y);
@@ -891,8 +964,15 @@ impl Studio {
                     self.open_search();
                     return;
                 }
+                // Shift Space maximizes what is under the pointer, as in
+                // Unity: a dock, or else the view.
                 if *key == Key::Space && self.ui.modifiers().0 {
-                    self.run(Action::Maximize);
+                    let (x, y) = self.ui.pointer();
+                    let zoom = match self.maximized {
+                        Some(z) => z,
+                        None => self.docks.dock_at(&self.ui, x, y).map_or(Zoom::View, Zoom::Dock),
+                    };
+                    self.toggle_zoom(zoom);
                     return;
                 }
                 if *key == Key::K && self.session.is_playing() {
@@ -989,12 +1069,30 @@ impl Studio {
         // a drag there moves here while it happens.
         self.session.poll_blender();
         self.bottom.update_git(&mut self.ui, &mut self.session);
-        // Two of the Project's pictures a frame, until it has them all.
-        for (name, image) in self.bottom.wanted_pictures(2) {
-            if let Ok(pixels) = self.session.thumbnail(&name, 128) {
-                self.pending_images.push((image, 128, pixels));
+        // The Project's pictures, in frames nobody is waiting on: none
+        // while the person is doing something or the document or the
+        // selection just changed, and a few milliseconds' worth at most —
+        // each is drawn and read back whole, and a click must not wait
+        // for a picture of a scene.
+        let calm = self.last_input.elapsed() > Duration::from_millis(250)
+            && self.seen.as_ref().is_some_and(|seen| *seen == Stamp::of(&self.session));
+        if calm {
+            let start = Instant::now();
+            for (name, image) in self.bottom.wanted_pictures(4) {
+                if start.elapsed() > Duration::from_millis(6) {
+                    break;
+                }
+                let pixels = match name.strip_prefix(crate::bottom::SCENE_PICTURE) {
+                    Some(path) => self
+                        .session
+                        .scene_thumbnail(std::path::Path::new(path), 128, 128),
+                    None => self.session.thumbnail(&name, 128),
+                };
+                if let Ok(pixels) = pixels {
+                    self.pending_images.push((image, 128, pixels));
+                }
+                self.bottom.picture_ready(&mut self.ui, &name);
             }
-            self.bottom.picture_ready(&mut self.ui, &name);
         }
         if let Some(job) = &self.job {
             if let Ok(result) = job.try_recv() {
@@ -1006,6 +1104,18 @@ impl Studio {
             }
         }
         self.update_tooltip();
+        self.hierarchy.hover(&mut self.ui);
+        if self.git.poll(&self.session) {
+            self.hierarchy.set_marks(&mut self.ui, &self.git.entities);
+            let mut files = self.git.files.clone();
+            // The open scene, edited and not saved, is not committed either.
+            if !self.git.entities.is_empty() {
+                if let Some(p) = self.session.scene_path().and_then(|p| p.canonicalize().ok()) {
+                    files.insert(p);
+                }
+            }
+            self.bottom.set_marks(&mut self.ui, files);
+        }
         self.turn_compass();
 
         let t4 = Instant::now();
@@ -1121,17 +1231,58 @@ impl Studio {
         }
     }
 
-    /// Show the panels that are on, or only the view when it is maximized.
+    /// Show the panels that are on, or only what is maximized. A dock with
+    /// no panels folds away and gives the view its room, except while a tab
+    /// is dragged: then it shows, to be dropped on.
     fn show_panels(&mut self) {
+        // The UI Builder gone wide lays the window out itself.
+        if self.lower_before_wide.is_some() {
+            return;
+        }
         let [left, lower, right] = self.splits;
         let slots = [(self.left, left), (self.right, right), (self.lower, lower)];
+        let dragging = self.docks.dragging();
         for (i, (slot, split)) in slots.into_iter().enumerate() {
-            let on = self.panels[i] && !self.maximized;
-            for n in [slot, split] {
-                self.ui
-                    .restyle(n, |s| if on { s.shown() } else { s.hidden() });
-            }
+            let zoomed = self.maximized == Some(Zoom::Dock(i));
+            let on = match self.maximized {
+                None => self.panels[i] && (dragging || !self.docks.is_empty(i)),
+                Some(_) => zoomed,
+            };
+            let split_on = on && self.maximized.is_none();
+            self.ui.restyle(slot, |s| {
+                let s = if on { s.shown() } else { s.hidden() };
+                if zoomed {
+                    s.fill()
+                } else {
+                    s.unfilled()
+                }
+            });
+            self.ui
+                .restyle(split, |s| if split_on { s.shown() } else { s.hidden() });
         }
+        let side = matches!(self.maximized, Some(Zoom::Dock(0 | 1)));
+        let lower_zoomed = self.maximized == Some(Zoom::Dock(2));
+        self.ui
+            .restyle(self.center, |s| if side { s.hidden() } else { s.shown() });
+        self.ui.restyle(self.view_slot, |s| {
+            if lower_zoomed {
+                s.hidden()
+            } else {
+                s.shown()
+            }
+        });
+    }
+
+    /// Give `zoom` the whole window, or, when it has it, give the window
+    /// back.
+    fn toggle_zoom(&mut self, zoom: Zoom) {
+        self.maximized = if self.maximized == Some(zoom) {
+            None
+        } else {
+            Some(zoom)
+        };
+        self.show_panels();
+        self.refresh();
     }
 
     /// Draw the selected camera's view into the corner, or hide the box.
@@ -1223,25 +1374,53 @@ impl Studio {
         let right = forward.cross(camera.up).normalize_or_zero();
         let up = right.cross(forward);
         let (c, reach) = (COMPASS / 2.0, COMPASS / 2.0 - 11.0);
-        for (i, (node, _)) in self.compass.axes.clone().into_iter().enumerate() {
-            let axis = [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z][i];
-            let x = c + axis.dot(right) * reach;
-            let y = c - axis.dot(up) * reach;
-            let away = axis.dot(forward) > 0.1;
-            let size = if i < 3 { 20.0 } else { 14.0 };
+        let axes = [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z];
+        let at = |axis: Vec3| (c + axis.dot(right) * reach, c - axis.dot(up) * reach);
+        // Each positive axis's line, from the middle out to its dot.
+        for (i, beads) in self.compass.beads.clone().into_iter().enumerate() {
+            let (x, y) = at(axes[i]);
+            let away = axes[i].dot(forward) > 0.1;
+            for (k, bead) in beads.into_iter().enumerate() {
+                let t = (k as f32 + 1.0) / (BEADS as f32 + 1.0) * 0.8;
+                let (bx, by) = (c + (x - c) * t, c + (y - c) * t);
+                self.ui.restyle(bead, |s| {
+                    s.absolute(bx - 1.5, by - 1.5)
+                        .opacity(if away { 0.35 } else { 0.9 })
+                });
+            }
+        }
+        // The dots, the nearer over the farther: put back in the dial from
+        // the farthest.
+        let mut order: Vec<usize> = (0..6).collect();
+        order.sort_by(|a, b| axes[*b].dot(forward).total_cmp(&axes[*a].dot(forward)));
+        for i in order {
+            let (node, _) = self.compass.axes[i];
+            let depth = axes[i].dot(forward);
+            let (x, y) = at(axes[i]);
+            let size = if i < 3 { 18.0 } else { 12.0 };
+            // An axis along the view sits in the middle, on the switch:
+            // the view already looks from it, so it goes.
+            let along = depth.abs() > 0.95;
             self.ui.restyle(node, |s| {
-                s.absolute(x - size / 2.0, y - size / 2.0)
-                    .opacity(if away { 0.45 } else { 1.0 })
+                let s = s
+                    .absolute(x - size / 2.0, y - size / 2.0)
+                    .opacity(if depth > 0.1 { 0.5 } else { 1.0 });
+                if along {
+                    s.hidden()
+                } else {
+                    s.shown()
+                }
             });
+            self.ui.move_to(node, self.compass.dial);
         }
+        // The switch over every axis: always there to click.
+        self.ui.move_to(self.compass.middle, self.compass.dial);
         let label = if camera.ortho.is_some() {
-            "iso"
+            "Iso"
         } else {
-            "persp"
+            "Persp"
         };
-        if let Some(t) = self.ui.children(self.compass.middle).first().copied() {
-            self.ui.set_text(t, label);
-        }
+        self.ui.set_text(self.compass.label, label);
     }
 
     // --- floating windows ---------------------------------------------
@@ -1725,14 +1904,16 @@ impl Studio {
 
     /// The panels' sizes and the bottom tab, as RON.
     fn layout_text(&self) -> String {
-        let w = |n: NodeId| self.ui.rect(n).width.round();
+        // The sizes asked for, not the ones laid out: a folded dock is
+        // laid out at none, a maximized one at the whole window.
+        let w = |n: NodeId| self.ui.style(n).layout.size.width.value().round();
         let (docks, active) = self.docks.layout();
         format!(
             "(left: {:.0}, right: {:.0}, lower: {:.0}, docks: {docks:?}, active: {active:?})\n",
             w(self.left),
             w(self.right),
             self.lower_before_wide
-                .unwrap_or(self.ui.rect(self.lower).height)
+                .unwrap_or(self.ui.style(self.lower).layout.size.height.value())
                 .round(),
         )
     }
@@ -1786,6 +1967,7 @@ impl Studio {
 
     /// Tell the lower panels which of them are on top.
     fn sync_visible(&mut self) {
+        self.show_panels();
         let on = |p| self.docks.is_showing(p);
         self.bottom.set_visible([
             on(Panel::Project),
@@ -2076,7 +2258,7 @@ impl Studio {
             true,
         );
         set_icon_button(ui, t.grid, "grid-3x3", s.show_grid(), true);
-        let playing = s.is_playing();
+        let playing = s.is_playing() || s.is_game_running();
         set_icon_button(
             ui,
             t.play,
@@ -2164,14 +2346,15 @@ impl Studio {
             st.text_color(if e > 0 { ERROR } else { WARNING })
         });
         let mode = match (s.is_playing(), s.is_paused()) {
-            (true, true) => "paused",
-            (true, false) => "playing",
+            (true, true) => "simulation paused",
+            (true, false) => "simulating",
+            _ if s.is_game_running() => "playing",
             _ if s.is_prefab() => "prefab mode",
             _ => "editing",
         };
         ui.set_text(self.status.mode, mode);
         ui.restyle(self.status.mode, |st| {
-            st.text_color(if s.is_playing() { ACCENT } else { MUTED })
+            st.text_color(if s.is_playing() || s.is_game_running() { ACCENT } else { MUTED })
         });
     }
 
@@ -2269,6 +2452,11 @@ impl Studio {
                 if !matches!(event, Event::Drag { .. }) {
                     requests.refresh = true;
                 }
+                return;
+            }
+            Some(Docked::Maximize(i)) => {
+                self.toggle_zoom(Zoom::Dock(i));
+                self.sync_visible();
                 return;
             }
             Some(Docked::Menu(panel)) => {
@@ -2383,6 +2571,10 @@ impl Studio {
             return true;
         }
         if node == self.tab_scene || node == self.tab_game {
+            if matches!(event, Event::Click { count: 2, .. }) {
+                self.toggle_zoom(Zoom::View);
+                return true;
+            }
             requests.action = Some(Action::GameView(node == self.tab_game));
             requests.keyboard_to_scene = true;
             return true;
@@ -2982,8 +3174,30 @@ impl Studio {
                     s.set_pivot(next);
                 }
                 Action::Play => {
-                    // Play looks through the game's eyes, as Unity's Play
-                    // brings up the Game view; stop goes back.
+                    // Play is the game: its own code, input and camera, its
+                    // own process, drawing in the Game view. Pressed while
+                    // something plays — the game, or the physics simulated
+                    // here — it stops that.
+                    if s.is_playing() {
+                        s.stop();
+                        s.set_game_view(false);
+                    } else if s.is_game_running() {
+                        s.stop_game();
+                        s.set_game_view(false);
+                        s.say(Level::Info, "stopped the game");
+                    } else {
+                        s.start_game().map_err(|err| {
+                            format!("{err} — Play → Simulate Physics Here runs the scene's physics in the view instead")
+                        })?;
+                        // It builds, then draws here; the Game view shows
+                        // the scene through its camera until it does.
+                        s.set_game_view(true);
+                        self.ui.focus(Some(self.viewport));
+                    }
+                }
+                Action::Simulate => {
+                    // The simulation looks through the game's eyes, as
+                    // Unity's Play brings up the Game view; stop goes back.
                     if s.is_playing() {
                         s.stop();
                         s.set_game_view(false);
@@ -3009,6 +3223,9 @@ impl Studio {
                 Action::SetSub(component, key, value) => {
                     self.inspector.pick_sub(s, &component, &key, &value);
                 }
+                Action::SetLeaf(place, value) => {
+                    self.inspector.set_leaf(s, &place, &value);
+                }
                 Action::SetField(field, value) => {
                     self.inspector.set_field(s, &field, &value);
                 }
@@ -3018,14 +3235,11 @@ impl Studio {
                 }
                 Action::ClearConsole => s.clear_console(),
                 Action::TogglePanel(i) => {
-                    self.maximized = false;
+                    self.maximized = None;
                     self.panels[i] = !self.panels[i];
                     self.show_panels();
                 }
-                Action::Maximize => {
-                    self.maximized = !self.maximized;
-                    self.show_panels();
-                }
+                Action::Maximize => self.toggle_zoom(Zoom::View),
                 Action::NewTerrain => {
                     let mut name = "terrain".to_string();
                     let mut n = 1;
@@ -3052,12 +3266,17 @@ impl Studio {
                 Action::InstallBlenderPlugin => {
                     let blender = runity_import::blend::blender()
                         .ok_or("Blender was not found: install it, or set RUNITY_BLENDER to it")?;
+                    if runity_import::blend::blender_open() {
+                        return Err(
+                            "Blender is open: quit it and install again. Blender saves its preferences when it quits, over the ones that turn the plugin on".into(),
+                        );
+                    }
                     let folder =
                         runity_import::blend::install(&blender).map_err(|e| format!("{e:#}"))?;
                     s.say(
                         Level::Info,
                         format!(
-                            "the runity plugin is in Blender and on ({}); a Blender already open picks it up when restarted",
+                            "the runity plugin is in Blender and on ({}): open Blender, the runity tab is in the 3D view's sidebar (N)",
                             folder.display()
                         ),
                     );
@@ -3562,7 +3781,7 @@ fn splitter(ui: &mut Ui, parent: NodeId, vertical: bool, name: &str) -> NodeId {
 fn segment_style(on: bool, first: bool) -> Style {
     let mut s = Style::row()
         .full_height()
-        .padding_x(SPACE_3)
+        .padding_x(SPACE_2)
         .gap(6.0)
         .center_items()
         .clickable();
@@ -3595,8 +3814,18 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
             .center_items(),
     );
     ui.set_name(bar, "toolbar");
+    // Three parts: Play, Pause and Step in the middle of the window, the
+    // two sides sharing what is left evenly. A side wider than its half
+    // pushes the middle over instead of running under it.
+    let side = |ui: &mut Ui| {
+        ui.add(
+            bar,
+            Style::row().share().full_height().gap(SPACE_2).center_items(),
+        )
+    };
+    let left = side(ui);
     let brand = ui.add(
-        bar,
+        left,
         Style::row().gap(SPACE_2).center_items().padding_x(SPACE_1),
     );
     ui.add(
@@ -3615,7 +3844,7 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let mut menus = Vec::new();
     for (title, items) in menu::menu_bar() {
         let m = ui.add(
-            bar,
+            left,
             Style::row()
                 .height(26.0)
                 .padding_x(SPACE_2)
@@ -3628,27 +3857,9 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
         ui.add_text(m, text().text_color(LABEL), title);
         menus.push((m, items));
     }
-    separator(ui, bar);
-    let doc = ui.add(
-        bar,
-        Style::row().gap(SPACE_2).center_items().min_width(120.0),
-    );
-    let scene_name = ui.add_text(
-        doc,
-        Style::default().text_size(13.0).text_color(MUTED).nowrap(),
-        "",
-    );
-    ui.set_name(scene_name, "scene name");
-    let modified = ui.add(
-        doc,
-        Style::row()
-            .size(6.0, 6.0)
-            .radius(3.0)
-            .background(ACCENT_400),
-    );
-
+    separator(ui, left);
     let seg = ui.add(
-        bar,
+        left,
         Style::row()
             .height(26.0)
             .fixed()
@@ -3667,22 +3878,18 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     {
         let opt = ui.add(seg, segment_style(i == 0, i == 0));
         ui.set_name(opt, format!("tool {word}"));
+        // The glyph alone, as in Unity: the tooltip names it and its key.
         icon(ui, opt, glyph, LABEL);
-        ui.add_text(
-            opt,
-            Style::default().text_size(12.0).text_color(LABEL).nowrap(),
-            word,
-        );
         tools[i] = opt;
     }
-    separator(ui, bar);
-    let space = icon_button(ui, bar, "space", "globe", false);
-    let pivot = icon_button(ui, bar, "pivot", "crosshair", false);
-    let grid = icon_button(ui, bar, "grid", "grid-3x3", true);
-    spacer(ui, bar);
+    separator(ui, left);
+    let space = icon_button(ui, left, "space", "globe", false);
+    let pivot = icon_button(ui, left, "pivot", "crosshair", false);
+    let grid = icon_button(ui, left, "grid", "grid-3x3", true);
     let play_group = ui.add(
         bar,
         Style::row()
+            .fixed()
             .gap(SPACE_1)
             .padding(2.0)
             .radius(RADIUS_MD)
@@ -3692,11 +3899,32 @@ fn build_toolbar(ui: &mut Ui, root: NodeId) -> (Toolbar, NodeId) {
     let play = icon_button(ui, play_group, "play", "play", false);
     let pause = icon_button(ui, play_group, "pause", "pause", false);
     let step = icon_button(ui, play_group, "step", "step-forward", false);
-    spacer(ui, bar);
-    let undo = icon_button(ui, bar, "undo", "undo-2", false);
-    let redo = icon_button(ui, bar, "redo", "redo-2", false);
-    separator(ui, bar);
-    let save = button(ui, bar, "save", "Save", false);
+    let right = side(ui);
+    spacer(ui, right);
+    // The document beside what saves it: its name, and a dot while it
+    // has changes.
+    let doc = ui.add(
+        right,
+        Style::row().gap(SPACE_2).center_items(),
+    );
+    let scene_name = ui.add_text(
+        doc,
+        Style::default().text_size(13.0).text_color(MUTED).nowrap(),
+        "",
+    );
+    ui.set_name(scene_name, "scene name");
+    let modified = ui.add(
+        doc,
+        Style::row()
+            .size(6.0, 6.0)
+            .radius(3.0)
+            .background(ACCENT_400),
+    );
+    separator(ui, right);
+    let undo = icon_button(ui, right, "undo", "undo-2", false);
+    let redo = icon_button(ui, right, "redo", "redo-2", false);
+    separator(ui, right);
+    let save = button(ui, right, "save", "Save", false);
     (
         Toolbar {
             menus,
@@ -3782,6 +4010,15 @@ fn set_view_tab(ui: &mut Ui, tab: NodeId, on: bool) {
     ui.restyle(kids[1], |s| s.text_color(if on { TEXT } else { LABEL }));
 }
 
+/// What has the whole window below the toolbar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Zoom {
+    /// The Scene or Game view.
+    View,
+    /// Dock `i`: left, right, lower.
+    Dock(usize),
+}
+
 /// What a control does, for its tooltip — by the control's name.
 fn tooltip(name: &str) -> Option<&'static str> {
     Some(match name {
@@ -3791,9 +4028,9 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "space" => "Handles along the world's axes or the entity's own (X)",
         "pivot" => "Handles on the pivot or the selection's centre (Z)",
         "grid" => "Show the grid",
-        "play" => "Play / Stop (Ctrl/Cmd P)",
-        "pause" => "Pause (Ctrl/Cmd Shift P)",
-        "step" => "One step (Ctrl/Cmd Alt P)",
+        "play" => "Play the game in the Game view / Stop (Ctrl/Cmd P)",
+        "pause" => "Simulate physics here, paused (Ctrl/Cmd Shift P)",
+        "step" => "One step of physics simulated here (Ctrl/Cmd Alt P)",
         "undo" => "Undo (Ctrl/Cmd Z)",
         "redo" => "Redo (Ctrl/Cmd Shift Z)",
         "save" => "Save the scene (Ctrl/Cmd S)",
@@ -3803,12 +4040,17 @@ fn tooltip(name: &str) -> Option<&'static str> {
         "sculpt" => "Terrain brush: left raises, Shift lowers, Ctrl/Cmd flattens; Alt still orbits",
         "faces" => "Face mode: drag a face of a box to push it; Alt still orbits",
         "foliage" => "Foliage brush: paint the model chosen in Project; Shift erases, [ ] size",
-        "view persp" => "Perspective view",
-        "view top" => "Look down from above",
-        "view front" => "Look from the front",
-        "view right" => "Look from the right",
-        "view scene" => "The Scene view: edit",
-        "view game" => "The Game view: what the game's camera sees",
+        "compass middle" => "Perspective or isometric",
+        "compass right" => "Look from the right (+X)",
+        "compass top" => "Look down from above (+Y)",
+        "compass front" => "Look from the front (+Z)",
+        "compass left" => "Look from the left (−X)",
+        "compass bottom" => "Look up from below (−Y)",
+        "compass back" => "Look from the back (−Z)",
+        "view scene" => "The Scene view: edit (double-click: over the whole window)",
+        "view game" => "The Game view: what the game's camera sees (double-click: over the whole window)",
+        "hierarchy expand all" => "Expand all (Alt click an arrow: all under it)",
+        "hierarchy collapse all" => "Collapse all",
         "console clear" => "Clear the Console",
         "status problems" => "Show the Console",
         _ => return None,
@@ -3821,9 +4063,19 @@ const COMPASS: f32 = 84.0;
 struct Compass {
     /// +X, +Y, +Z, −X, −Y, −Z, and the side each looks from.
     axes: Vec<(NodeId, runity_editor::Side)>,
+    /// The dial the axes stand on: what they are put in, back to front.
+    dial: NodeId,
+    /// Each positive axis's line from the middle, as beads.
+    beads: [Vec<NodeId>; 3],
+    /// The middle: a click switches perspective and orthographic.
     middle: NodeId,
+    /// Which of the two, under the dial.
+    label: NodeId,
     seen: Option<(runity::glam::Vec3, runity::glam::Vec3, bool)>,
 }
+
+/// Beads on each axis's line.
+const BEADS: usize = 7;
 
 /// Unity's scene gizmo: the axes as the camera sees them, in the view's
 /// top right corner. A click on an axis looks from it; the label under it
@@ -3837,11 +4089,20 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
             .full_width()
             .height(COMPASS + 30.0),
     );
-    let pad = ui.add(holder, Style::row().fill());
-    let _ = pad;
-    let dial = ui.add(
+    ui.add(holder, Style::row().fill());
+    let column = ui.add(
         holder,
-        Style::row().size(COMPASS, COMPASS + 22.0).margin(4.0),
+        Style::column().margin(4.0).gap(2.0).center_items(),
+    );
+    // A disc under the axes, so they read as one thing to turn the view
+    // by, lit when the pointer is on it.
+    let dial = ui.add(
+        column,
+        Style::row()
+            .size(COMPASS, COMPASS)
+            .radius(COMPASS / 2.0)
+            .background(NEUTRAL_900.alpha(28))
+            .hover(NEUTRAL_900.alpha(60)),
     );
     ui.set_layer(dial, true);
     ui.set_name(dial, "compass");
@@ -3850,23 +4111,36 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
         runity_ui::Color::hex(0x8cc26b),
         runity_ui::Color::hex(0x6f9be5),
     ];
+    let beads = colors.map(|color| {
+        (0..BEADS)
+            .map(|_| {
+                ui.add(
+                    dial,
+                    Style::row()
+                        .absolute(0.0, 0.0)
+                        .size(3.0, 3.0)
+                        .radius(1.5)
+                        .background(color),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
     let middle = ui.add(
         dial,
         Style::row()
-            .absolute(COMPASS / 2.0 - 18.0, COMPASS + 2.0)
-            .size(36.0, 18.0)
-            .radius(9.0)
-            .center()
-            .background(NEUTRAL_900.alpha(80))
-            .hover(NEUTRAL_800),
+            .absolute(COMPASS / 2.0 - 7.0, COMPASS / 2.0 - 7.0)
+            .size(14.0, 14.0)
+            .radius(7.0)
+            .background(NEUTRAL_800)
+            .border(1.0, NEUTRAL_500)
+            .hover_border(TEXT)
+            .clickable(),
     );
     ui.set_name(middle, "compass middle");
-    // Under the dial, as Unity's Persp label: an axis pointing at the
-    // camera sits in the middle and would cover it there.
-    ui.add_text(
-        middle,
+    let label = ui.add_text(
+        column,
         Style::default().text_size(9.5).text_color(LABEL).nowrap(),
-        "persp",
+        "Persp",
     );
     let sides = [
         Side::Right,
@@ -3879,7 +4153,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
     let mut axes = Vec::new();
     for (i, side) in sides.into_iter().enumerate() {
         let positive = i < 3;
-        let size = if positive { 20.0 } else { 14.0 };
+        let size = if positive { 18.0 } else { 12.0 };
         let color = colors[i % 3];
         let dot = ui.add(
             dial,
@@ -3888,7 +4162,7 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
                 .size(size, size)
                 .radius(size / 2.0)
                 .center()
-                .background(if positive { color } else { color.alpha(35) })
+                .background(if positive { color } else { color.alpha(30) })
                 .border(1.0, color)
                 .hover_border(TEXT)
                 .clickable(),
@@ -3909,7 +4183,10 @@ fn build_compass(ui: &mut Ui, frame: NodeId) -> Compass {
     }
     Compass {
         axes,
+        dial,
+        beads,
         middle,
+        label,
         seen: None,
     }
 }

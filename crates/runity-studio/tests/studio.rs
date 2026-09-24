@@ -16,9 +16,13 @@ use runity_studio::Studio;
 
 fn studio() -> Option<(Studio, std::path::PathBuf)> {
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/valley");
+    // A number of its own as well: two tests starting in the same
+    // nanosecond must not share a folder and delete each other's files.
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "runity-studio-{}-{}",
+        "runity-studio-{}-{}-{}",
         std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -64,6 +68,16 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
+/// Frames, a little apart, until the Project has drawn its pictures: it
+/// draws them only once nothing has happened for a moment.
+fn draw_pictures(s: &mut Studio) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while s.bottom_pictures_pending() > 0 && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        s.frame();
+    }
+}
+
 /// Click the node with this name, as a pointer would, and let a frame go.
 fn click(studio: &mut Studio, name: &str) {
     press(studio, name, MouseButton::Left);
@@ -104,6 +118,14 @@ fn key(studio: &mut Studio, key: Key) {
     studio.frame();
     studio.handle(&InputEvent::KeyUp(key));
     studio.frame();
+}
+
+/// Type `name` into the Project's search: its tile shows, from whatever
+/// folder it is in, as a person finds it.
+fn find_in_project(s: &mut Studio, name: &str) {
+    click(s, "project search");
+    type_text(s, name);
+    s.frame();
 }
 
 fn shortcut(studio: &mut Studio, k: Key) {
@@ -206,10 +228,10 @@ fn play_stop_and_the_right_click_menu() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
-    click(&mut s, "play");
+    menu(&mut s, "Play", "Simulate Physics Here");
     assert!(s.session.is_playing());
     click(&mut s, "play");
-    assert!(!s.session.is_playing());
+    assert!(!s.session.is_playing(), "the button stops the simulation too");
 
     press(&mut s, "line boulder", MouseButton::Right);
     assert!(s.ui.find("menu Make Prefab").is_some());
@@ -225,6 +247,7 @@ fn a_project_entry_dragged_into_the_view_lands_there() {
     };
     let count = s.session.entity_count();
     s.ui.paint();
+    find_in_project(&mut s, "sphere");
     let tile = s.ui.find("asset sphere").expect("a sphere in the Project");
     let view = s.ui.find("scene view").unwrap();
     let (ax, ay) = s.ui.rect(tile).center();
@@ -267,10 +290,38 @@ fn play_looks_through_the_game_and_the_tabs_switch_views() {
     assert!(s.session.is_game_view());
     click(&mut s, "view scene");
     assert!(!s.session.is_game_view());
-    click(&mut s, "play");
-    assert!(s.session.is_game_view(), "Play brings up the Game view");
+    menu(&mut s, "Play", "Simulate Physics Here");
+    assert!(s.session.is_game_view(), "the simulation brings up the Game view");
     click(&mut s, "play");
     assert!(!s.session.is_game_view(), "and Stop takes it away");
+}
+
+#[test]
+fn play_runs_the_game_itself_and_stops_it() {
+    let Some((mut s, dir)) = studio() else {
+        return;
+    };
+    // The valley has no game of its own: Play says so, and simulates nothing.
+    click(&mut s, "play");
+    assert!(!s.session.is_playing() && !s.session.is_game_running());
+    let said = |s: &Studio, text: &str| s.session.console().iter().any(|l| l.text.contains(text));
+    assert!(said(&s, "no game crate"), "{:#?}", s.session.console());
+    assert!(said(&s, "Simulate Physics Here"), "and where the physics is");
+
+    // With one, Play is `cargo run` on the open scene — not the simulation.
+    std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"not-built\"\n").unwrap();
+    click(&mut s, "play");
+    assert!(!s.session.is_playing(), "the game plays, not the editor");
+    assert!(said(&s, "playing scenes/first-light.ron in the game"));
+    s.session.stop_game();
+
+    // While a game runs, the button is Stop, and stops it.
+    let mut game = std::process::Command::new("sleep");
+    game.arg("30");
+    s.session.run_in_console(game).unwrap();
+    s.frame();
+    click(&mut s, "play");
+    assert!(!s.session.is_game_running(), "Stop ended the game");
 }
 
 /// Drag the line named `from` to a spot `t` of the way down the line named
@@ -355,9 +406,9 @@ fn snap_and_views_from_the_corner() {
     assert_eq!(s.session.snap().meters, 0.0);
     click(&mut s, "snap");
     assert_eq!(s.session.snap().meters, 0.25);
-    click(&mut s, "view top");
+    click(&mut s, "compass top");
     assert!(s.session.is_orthographic());
-    click(&mut s, "view persp");
+    click(&mut s, "compass middle");
     assert!(!s.session.is_orthographic());
 }
 
@@ -435,6 +486,7 @@ fn a_prefab_opens_from_the_project_and_back_returns_to_the_scene() {
     let Some((mut s, dir)) = studio() else { return };
     let scene = s.session.scene_path().unwrap().to_path_buf();
     // The first «asset campfire» is the prefab (prefabs come before models).
+    find_in_project(&mut s, "campfire");
     double_click(&mut s, "asset campfire");
     assert!(s.session.is_prefab(), "double click opened the prefab");
     assert!(s.title().contains("(prefab)"));
@@ -465,6 +517,9 @@ fn a_big_scene_stays_quick() {
     s.refresh();
     s.frame();
     let first = t.elapsed();
+    // What is measured is the editor at rest, not the Project's pictures
+    // being drawn once.
+    draw_pictures(&mut s);
     // Idle: nothing changed.
     let t = std::time::Instant::now();
     for _ in 0..10 {
@@ -490,6 +545,7 @@ fn an_asset_clicked_in_the_project_is_shown_in_the_inspector() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
+    find_in_project(&mut s, "campfire");
     click(&mut s, "asset campfire");
     let dump = s.ui.dump();
     assert!(dump.contains("#asset preview"), "{dump}");
@@ -807,6 +863,7 @@ fn edit_undo_names_the_step_and_an_asset_drops_into_the_hierarchy() {
 
     // The sphere from the Project, let go on the campfire's line.
     s.ui.paint();
+    find_in_project(&mut s, "sphere");
     let tile = s.ui.rect(s.ui.find("asset sphere").unwrap());
     let line = s.ui.rect(s.ui.find("line campfire").unwrap());
     let (ax, ay) = tile.center();
@@ -894,6 +951,161 @@ fn a_tab_dragged_to_another_dock_takes_its_panel_there_and_stays() {
 }
 
 #[test]
+fn a_dock_left_without_tabs_folds_away_and_shows_again_while_a_tab_is_dragged() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let view_before = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    drag_tab(&mut s, "tab inspector", "dock 2");
+    s.frame();
+    s.ui.paint();
+    assert!(!s.ui.is_shown(s.ui.find("dock 1").unwrap()), "nothing is left on the right");
+    let view_after = s.ui.rect(s.ui.find("scene view").unwrap()).width;
+    assert!(
+        view_after > view_before + 200.0,
+        "the view took its room: {view_before} -> {view_after}"
+    );
+    // Picking the tab up shows the empty dock, to put it back on.
+    let (ax, ay) = s.ui.rect(s.ui.find("tab inspector").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x: ax, y: ay });
+    s.handle(&InputEvent::MouseDown(MouseButton::Left));
+    s.handle(&InputEvent::MouseMoved {
+        x: ax + 10.0,
+        y: ay + 10.0,
+    });
+    s.frame();
+    s.ui.paint();
+    let right = s.ui.rect(s.ui.find("dock 1").unwrap());
+    assert!(right.width > 100.0, "shown while dragging: {right:?}");
+    let (bx, by) = right.center();
+    s.handle(&InputEvent::MouseMoved { x: bx, y: by });
+    s.frame();
+    s.handle(&InputEvent::MouseUp(MouseButton::Left));
+    s.frame();
+    s.ui.paint();
+    let right = s.ui.rect(s.ui.find("dock 1").unwrap());
+    let inspector = s.ui.rect(s.ui.find("tab inspector").unwrap());
+    assert!(
+        right.contains(inspector.x + 1.0, inspector.y + 1.0),
+        "back on the right"
+    );
+}
+
+/// A double click after the last one's time has run out: not a third
+/// and fourth click.
+fn pause_then_double_click(s: &mut Studio, name: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(450));
+    double_click(s, name);
+}
+
+#[test]
+fn a_double_clicked_tab_takes_the_whole_window_and_gives_it_back() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let lower = s.ui.rect(s.ui.find("dock 2").unwrap());
+    pause_then_double_click(&mut s, "tab project");
+    s.ui.paint();
+    let big = s.ui.rect(s.ui.find("dock 2").unwrap());
+    assert!(
+        big.width > 1300.0 && big.height > 700.0,
+        "the lower dock over the window: {big:?}"
+    );
+    assert!(!s.ui.is_shown(s.ui.find("scene view").unwrap()), "the view gave way");
+    assert!(!s.ui.is_shown(s.ui.find("dock 0").unwrap()));
+    pause_then_double_click(&mut s, "tab project");
+    s.ui.paint();
+    let back = s.ui.rect(s.ui.find("dock 2").unwrap());
+    assert!(
+        (back.height - lower.height).abs() < 1.0 && (back.width - lower.width).abs() < 1.0,
+        "as it was: {back:?}, was {lower:?}"
+    );
+    // A side dock too, and the Scene tab for the view.
+    pause_then_double_click(&mut s, "tab hierarchy");
+    s.ui.paint();
+    assert!(s.ui.rect(s.ui.find("dock 0").unwrap()).width > 1300.0);
+    pause_then_double_click(&mut s, "tab hierarchy");
+    pause_then_double_click(&mut s, "view scene");
+    s.ui.paint();
+    assert!(!s.ui.is_shown(s.ui.find("dock 0").unwrap()));
+    assert!(s.ui.rect(s.ui.find("scene view").unwrap()).width > 1300.0);
+}
+
+#[test]
+fn play_pause_and_step_stand_in_the_middle_of_the_window() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    let (x, _) = s.ui.rect(s.ui.find("pause").unwrap()).center();
+    assert!((x - 720.0).abs() < 2.0, "pause at {x}, the middle is 720");
+    s.resize(1700.0, 900.0, 1.0);
+    s.frame();
+    s.ui.paint();
+    let (x, _) = s.ui.rect(s.ui.find("pause").unwrap()).center();
+    assert!((x - 850.0).abs() < 2.0, "pause at {x}, the middle is 850");
+    // Too narrow for the middle: pushed aside, never over the tools.
+    s.resize(1100.0, 800.0, 1.0);
+    s.frame();
+    s.ui.paint();
+    let grid = s.ui.rect(s.ui.find("grid").unwrap());
+    let play = s.ui.rect(s.ui.find("play").unwrap());
+    assert!(play.x > grid.x + grid.width, "{play:?} clear of {grid:?}");
+}
+
+#[test]
+fn the_hierarchy_collapses_and_expands_every_line_at_once() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_some(), "the campfire starts open");
+    click(&mut s, "hierarchy collapse all");
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_none(), "folded");
+    assert!(s.ui.find("line campfire").is_some());
+    click(&mut s, "hierarchy expand all");
+    s.ui.paint();
+    assert!(s.ui.find("line ember").is_some(), "open again");
+}
+
+#[test]
+fn a_lines_eye_and_lock_show_only_under_the_pointer_or_when_set() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    // Line → [arrow, icon, name, tag, tools[eye, lock], dot].
+    let tools = |s: &Studio, name: &str| -> (f32, f32) {
+        let line = s.ui.find(name).unwrap();
+        let tools = s.ui.children(s.ui.children(line)[4]);
+        (
+            s.ui.style(tools[0]).look.opacity,
+            s.ui.style(tools[1]).look.opacity,
+        )
+    };
+    assert_eq!(tools(&s, "line crate"), (0.0, 0.0), "quiet");
+    let (x, y) = s.ui.rect(s.ui.find("line crate").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(tools(&s, "line crate"), (1.0, 1.0), "under the pointer");
+    assert_eq!(tools(&s, "line boulder"), (0.0, 0.0));
+    // Hidden: its eye stays when the pointer leaves.
+    let crate_id = s.session.find("crate").unwrap();
+    s.session.set_hidden(&[crate_id], true).unwrap();
+    s.refresh();
+    let (x, y) = s.ui.rect(s.ui.find("line boulder").unwrap()).center();
+    s.handle(&InputEvent::MouseMoved { x, y });
+    s.frame();
+    assert_eq!(tools(&s, "line crate"), (1.0, 0.0), "the eye of what is hidden");
+}
+
+#[test]
+fn the_project_shows_pictures_of_scenes_and_materials_by_default() {
+    let Some((mut s, _dir)) = studio() else { return };
+    click(&mut s, "folder scenes");
+    draw_pictures(&mut s);
+    assert_eq!(s.bottom_pictures_pending(), 0, "every picture drawn");
+    assert!(s.ui.dump().contains("thumb scene:"), "a scene's picture");
+    click(&mut s, "crumb Project");
+    double_click(&mut s, "folder tile materials");
+    draw_pictures(&mut s);
+    assert!(s.ui.dump().contains("thumb material:"), "a material's picture");
+}
+
+#[test]
 fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
     let Some((mut s, _dir)) = studio() else {
         return;
@@ -907,33 +1119,40 @@ fn the_compass_looks_from_an_axis_and_its_middle_switches_projection() {
 }
 
 #[test]
-fn a_long_value_is_edited_on_several_lines() {
+fn debug_mode_edits_the_entity_as_its_ron_on_several_lines() {
     let Some((mut s, _dir)) = studio() else {
         return;
     };
     let crate_id = s.session.find("crate").unwrap();
-    s.session
-        .set_field(
-            crate_id,
-            "light",
-            "(color: (1.0, 0.9, 0.8), intensity: 3.0, range: 8.0)",
-        )
-        .unwrap();
     click(&mut s, "line crate");
-    click(&mut s, "light");
-    // Enter is a new line inside the value; Cmd Enter commits it.
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Debug");
+    // The whole block, as the file writes it, and no field rows.
+    let ron = s.ui.find("inspector ron").expect("one box");
+    assert_eq!(s.ui.text(ron).unwrap(), s.session.entity_ron(crate_id).unwrap());
+    assert!(s.ui.text(ron).unwrap().contains("name: \"crate\""));
+    assert!(s.ui.find("position x").is_none(), "no field rows");
+
+    // Retyped over several lines: Enter is a new line, Cmd Enter applies.
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "inspector ron");
     s.handle(&InputEvent::KeyDown(Key::LeftSuper));
     s.handle(&InputEvent::KeyDown(Key::A));
     s.handle(&InputEvent::KeyUp(Key::A));
     s.handle(&InputEvent::KeyUp(Key::LeftSuper));
     type_text(&mut s, "(");
     key(&mut s, Key::Enter);
-    type_text(&mut s, "    intensity: 5.0,");
+    type_text(&mut s, "    name: \"box\",");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, "    model: \"builtin:cube\",");
+    key(&mut s, Key::Enter);
+    type_text(&mut s, "    light: (color: (1.0, 0.9, 0.8), intensity: 5.0, range: 8.0),");
     key(&mut s, Key::Enter);
     type_text(&mut s, ")");
     s.handle(&InputEvent::KeyDown(Key::LeftSuper));
     key(&mut s, Key::Enter);
     s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("box"));
     let light = s
         .session
         .inspect(crate_id)
@@ -942,10 +1161,29 @@ fn a_long_value_is_edited_on_several_lines() {
         .find(|f| f.name == "light")
         .unwrap()
         .value;
-    assert!(
-        light.contains("intensity:5.0") || light.contains("intensity: 5.0"),
-        "{light}"
-    );
+    assert!(light.contains("intensity:5.0"), "{light}");
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+
+    // Undo: the document and the box go back.
+    click(&mut s, "undo");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    let ron = s.ui.find("inspector ron").unwrap();
+    assert!(s.ui.text(ron).unwrap().contains("name: \"crate\""));
+
+    // What does not read is said under the box, and nothing changes.
+    click(&mut s, "inspector ron");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(&mut s, "(name: \"x\", transform: (position: (1.0, 2.0)))");
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    key(&mut s, Key::Enter);
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    let error = s.ui.find("inspector ron error").unwrap();
+    assert!(!s.ui.text(error).unwrap().is_empty(), "the reason is shown");
+    assert_eq!(s.session.entity_name(crate_id).as_deref(), Some("crate"));
+    assert_eq!(s.session.undo_steps().len(), steps);
 }
 
 /// Answer the open dialog with `text`.
@@ -968,6 +1206,7 @@ fn assets_are_renamed_and_made_from_the_menus() {
     click(&mut s, "project search");
     type_text(&mut s, "earth");
     s.frame();
+    find_in_project(&mut s, "earth");
     press(&mut s, "asset earth", MouseButton::Right);
     let menu_dump: Vec<String> =
         s.ui.dump()
@@ -1290,6 +1529,7 @@ fn a_sound_is_listed_in_the_project_to_listen_to() {
     type_text(&mut s, "beep");
     s.frame();
     // Not played here: a test should not make the machine beep.
+    find_in_project(&mut s, "beep");
     press(&mut s, "asset beep", MouseButton::Right);
     assert!(s.ui.find("menu Play").is_some() && s.ui.find("menu Stop").is_some());
 }
@@ -1366,7 +1606,33 @@ fn the_project_filters_by_kind() {
         "only scenes"
     );
     click(&mut s, "kind All");
+    // Not searching: the project's folders, the engine's own among them.
+    let dump = s.ui.dump();
+    assert!(dump.contains("#folder tile scenes") && !dump.contains("#asset cube"));
+    double_click(&mut s, "folder tile Built-in");
     assert!(s.ui.dump().contains("#asset cube"));
+}
+
+#[test]
+fn the_project_goes_into_folders_and_back_up_its_path() {
+    let Some((mut s, _dir)) = studio() else { return };
+    s.ui.paint();
+    // The project's top: folders, nothing loose.
+    assert!(s.ui.find("folder tile scenes").is_some());
+    assert!(s.ui.find("asset first-light").is_none());
+    // In by the tree…
+    click(&mut s, "folder scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    assert!(s.ui.find("crumb scenes").is_some());
+    // …up by the path…
+    click(&mut s, "crumb Project");
+    assert!(s.ui.find("asset first-light").is_none());
+    // …in by a double click on a folder's tile.
+    double_click(&mut s, "folder tile scenes");
+    assert!(s.ui.find("asset first-light").is_some());
+    // A search looks everywhere, and clearing it comes back.
+    find_in_project(&mut s, "cube");
+    assert!(s.ui.find("asset cube").is_some(), "the engine's, found from here");
 }
 
 #[test]
@@ -1375,10 +1641,7 @@ fn the_project_shows_pictures_of_models_and_prefabs() {
         return;
     };
     click(&mut s, "kind Prefabs");
-    click(&mut s, "project pictures");
-    for _ in 0..4 {
-        s.frame();
-    }
+    draw_pictures(&mut s);
     assert!(
         s.ui.dump().contains("#thumb campfire"),
         "a card with a picture"
@@ -1922,7 +2185,7 @@ fn k_during_play_keeps_where_the_crate_fell() {
     let start = t.position;
     s.frame();
 
-    click(&mut s, "play");
+    menu(&mut s, "Play", "Simulate Physics Here");
     assert!(s.session.is_playing());
     for _ in 0..60 {
         std::thread::sleep(std::time::Duration::from_millis(15));
@@ -2089,6 +2352,7 @@ fn a_material_instance_is_made_from_the_project_and_is_its_parent_until_changed(
     type_text(&mut s, "stone");
     s.frame();
     s.frame();
+    find_in_project(&mut s, "stone");
     press(&mut s, "asset stone", MouseButton::Right);
     click(&mut s, "menu Create Material Instance");
     s.frame();
@@ -2349,4 +2613,186 @@ fn the_inspector_scrubs_adds_takes_away_and_switches_off() {
     s.frame();
     click(&mut s, "inspector active");
     assert!(!off(&s));
+}
+
+/// Everything typed into the box with this name, instead of what it held.
+fn retype(s: &mut Studio, name: &str, text: &str) {
+    click(s, name);
+    s.handle(&InputEvent::KeyDown(Key::LeftSuper));
+    s.handle(&InputEvent::KeyDown(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::A));
+    s.handle(&InputEvent::KeyUp(Key::LeftSuper));
+    type_text(s, text);
+    key(s, Key::Enter);
+}
+
+fn look(s: &Studio, field: &str) -> String {
+    s.session
+        .environment()
+        .into_iter()
+        .find(|(f, _)| *f == field)
+        .unwrap()
+        .1
+}
+
+/// Every text box the Inspector shows, by name, with what it holds.
+fn inspector_boxes(s: &mut Studio) -> Vec<(String, String)> {
+    s.ui.paint();
+    let mut out = Vec::new();
+    let mut stack = vec![s.ui.find("inspector").unwrap()];
+    while let Some(node) = stack.pop() {
+        if s.ui.is_field(node) {
+            out.push((
+                s.ui.name(node).unwrap_or_default().to_string(),
+                s.ui.text(node).unwrap_or_default().to_string(),
+            ));
+        }
+        stack.extend(s.ui.children(node));
+    }
+    out
+}
+
+#[test]
+fn the_scene_look_is_a_form_and_never_its_ron() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let boxes = inspector_boxes(&mut s);
+    assert!(
+        boxes.iter().any(|(n, t)| n == "scene fog start" && t == "18"),
+        "{boxes:?}"
+    );
+    for (name, text) in &boxes {
+        assert!(
+            !text.trim_start().starts_with('(') && text != "None",
+            "{name} shows RON: {text}"
+        );
+    }
+    assert!(!s.ui.dump().contains("(hour:"), "no RON anywhere");
+
+    // A number: one step, the rest of the fog as it was.
+    let before = look(&s, "fog");
+    let steps = s.session.undo_steps().len();
+    retype(&mut s, "scene fog start", "25");
+    let fog = look(&s, "fog");
+    assert!(fog.contains("start:25.0"), "{fog}");
+    assert_eq!(
+        fog.replace("start:25.0", "start:18.0"),
+        before,
+        "only the start changed"
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+    click(&mut s, "undo");
+    assert_eq!(look(&s, "fog"), before);
+    assert!(
+        inspector_boxes(&mut s)
+            .iter()
+            .any(|(n, t)| n == "scene fog start" && t == "18"),
+        "the form follows the undo"
+    );
+
+    // A colour, from its swatch's picker.
+    click(&mut s, "scene fog color swatch");
+    retype(&mut s, "picker hex", "#ff0000");
+    assert!(look(&s, "fog").contains("color:(1.0,0.0,0.0)"), "{}", look(&s, "fog"));
+    assert_eq!(s.session.undo_steps().len(), steps + 1, "one step");
+    click(&mut s, "popover ground");
+
+    // An enum from its list.
+    click(&mut s, "scene fog mode");
+    click(&mut s, "menu Exponential");
+    assert!(look(&s, "fog").contains("mode:Exponential"), "{}", look(&s, "fog"));
+}
+
+#[test]
+fn a_part_of_the_look_switches_on_at_its_default_and_off_to_none() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert_eq!(look(&s, "sky"), "None");
+    let steps = s.session.undo_steps().len();
+    click(&mut s, "scene sky");
+    assert_eq!(
+        runity::ron::from_str::<runity::ron::Value>(&look(&s, "sky")).ok(),
+        runity::ron::from_str::<runity::ron::Value>(&s.session.field_blank("sky").unwrap())
+            .ok(),
+        "the engine's default sky"
+    );
+    assert_eq!(s.session.undo_steps().len(), steps + 1);
+    assert!(s.ui.find("scene sky exposure").is_some(), "open, its fields shown");
+    click(&mut s, "scene sky");
+    assert_eq!(look(&s, "sky"), "None");
+    assert!(s.ui.find("scene sky exposure").is_none());
+}
+
+#[test]
+fn debug_mode_shows_the_scene_settings_as_one_ron_and_normal_the_form() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    assert!(s.ui.find("inspector ron").is_none(), "no RON outside Debug mode");
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Debug");
+    let ron = s.ui.find("inspector ron").expect("the settings as one box");
+    let text = s.ui.text(ron).unwrap().to_string();
+    assert!(text.contains("sun:") && text.contains("fog:"), "{text}");
+    assert!(!text.contains("entities"), "{text}");
+    assert!(s.ui.find("scene fog start").is_none(), "no field rows");
+    assert!(s.session.inspector_debug(), "remembered");
+    click(&mut s, "inspector more");
+    click(&mut s, "inspector mode Normal");
+    assert!(s.ui.find("inspector ron").is_none());
+    assert!(s.ui.find("scene fog start").is_some());
+}
+
+#[test]
+fn a_collider_picks_its_shape_and_edits_its_numbers() {
+    let Some((mut s, _dir)) = studio() else {
+        return;
+    };
+    let crate_id = s.session.find("crate").unwrap();
+    s.session
+        .set_field(crate_id, "collider", "Box(half: (0.5, 0.5, 0.5))")
+        .unwrap();
+    click(&mut s, "line crate");
+    let collider = |s: &Studio| {
+        s.session
+            .inspect(crate_id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "collider")
+            .unwrap()
+            .value
+    };
+    let boxes = inspector_boxes(&mut s);
+    for (name, text) in &boxes {
+        assert!(!text.trim_start().starts_with('('), "{name} shows RON: {text}");
+    }
+    assert!(boxes.iter().any(|(n, t)| n == "collider half y" && t == "0.5"), "{boxes:?}");
+
+    // One number of the box: one step.
+    let steps = s.session.undo_steps().len();
+    retype(&mut s, "collider half y", "2");
+    assert_eq!(collider(&s), "Box(half:(0.5,2.0,0.5))");
+    assert_eq!(s.session.undo_steps().len(), steps + 1);
+
+    // A field the value leaves out, at its default until typed into.
+    retype(&mut s, "collider center y", "1");
+    assert_eq!(collider(&s), "Box(half:(0.5,2.0,0.5),center:(0.0,1.0,0.0))");
+
+    // Another shape from the list: its own fields to fill in.
+    click(&mut s, "collider");
+    click(&mut s, "menu Sphere");
+    assert!(collider(&s).starts_with("Sphere(radius:"), "{}", collider(&s));
+    assert!(s.ui.find("collider radius").is_some());
+
+    // A unit variant from the list, and the body's.
+    click(&mut s, "body");
+    click(&mut s, "menu Dynamic");
+    assert!(s
+        .session
+        .inspect(crate_id)
+        .unwrap()
+        .iter()
+        .any(|f| f.name == "body" && f.value == "Dynamic"));
 }

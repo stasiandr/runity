@@ -245,6 +245,9 @@ class Exporter:
                     if found is not None:
                         out["normal_map"] = found[0]
                         out["normal_scale"] = node.inputs["Strength"].default_value
+        # EEVEE draws alpha below one see-through under either render
+        # method: Blended, and Dithered, the default since Blender 4.2.
+        out["transparent"] = out["transparent"] or out["alpha"] < 1.0
         self.materials.append(out)
         index = len(self.materials) - 1
         self.material_index[material.name] = index

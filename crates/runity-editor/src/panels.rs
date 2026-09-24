@@ -164,6 +164,34 @@ fn take_field(
     Ok(one)
 }
 
+/// The module's field of a line or of a scene's look by its name, from
+/// every module this build has.
+fn part_kind(field: &str) -> Option<runity::parts::PartKind> {
+    runity::scene::part_kinds()
+        .into_iter()
+        .find(|k| k.name == field)
+}
+
+/// A value written as the scene file writes it: one field a line down to
+/// `depth`, the rest on one line.
+fn pretty<T: serde::Serialize>(value: &T, depth: usize) -> EditResult<String> {
+    let config = runity::ron::ser::PrettyConfig::new().depth_limit(depth);
+    runity::ron::ser::to_string_pretty(value, config).map_err(|e| EditError::Scene(e.to_string()))
+}
+
+/// Every field a module of this build reads, checked against its type: the
+/// first that does not fit, in words. A field no module reads is kept, as
+/// loading a scene keeps it.
+fn check_parts<'a>(parts: impl Iterator<Item = (&'a str, &'a str)>) -> EditResult<()> {
+    let kinds = runity::scene::part_kinds();
+    for (name, text) in parts {
+        if let Some(kind) = kinds.iter().find(|k| k.name == name) {
+            (kind.check)(text).map_err(|e| EditError::Scene(format!("{name}: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 fn ron<T: serde::Serialize>(value: &T) -> String {
     runity::ron::to_string(value).unwrap_or_default()
 }
@@ -265,6 +293,53 @@ impl Session {
         } else {
             set.remove(&id);
         }
+    }
+
+    /// Open or close every line of the Hierarchy that has lines under it:
+    /// Expand All and Collapse All. A view setting, not an edit.
+    pub fn set_all_open(&mut self, open: bool) {
+        let mut ids = Vec::new();
+        parents(&self.expanded().entities, &mut ids);
+        for id in ids {
+            self.set_open(id, open);
+        }
+    }
+
+    /// Open or close a line and every line under it, as Alt and the arrow
+    /// do in Unity.
+    pub fn set_open_below(&mut self, id: EntityId, open: bool) {
+        let mut ids = Vec::new();
+        if let Some(e) = find_desc(&self.expanded().entities, id) {
+            parents(std::slice::from_ref(e), &mut ids);
+        }
+        for id in ids {
+            self.set_open(id, open);
+        }
+    }
+
+    /// The entities of the open document that are not as `committed` has
+    /// them — the scene's text at git's `HEAD`, `None` when it was never
+    /// committed — with unsaved edits counted: the Hierarchy's dots. An
+    /// entity counts when anything of its own changed, or its parent; a
+    /// child that changed marks the child, not the line above it.
+    pub fn changed_since(&self, committed: Option<&str>) -> std::collections::HashSet<EntityId> {
+        let mut then: Option<runity::Scene> =
+            committed.and_then(|text| runity::ron::from_str(text).ok());
+        // Settled as the open document was (docs/refs.md): a link the file
+        // names without its ID is the same link, not a change.
+        if let Some(then) = &mut then {
+            runity::refs::settle(&mut then.entities, self.library.as_ref(), &self.prefabs);
+        }
+        let mut own = std::collections::HashMap::new();
+        if let Some(then) = &then {
+            own_lines(&then.entities, None, &mut own);
+        }
+        let mut now = std::collections::HashMap::new();
+        own_lines(&self.scene().entities, None, &mut now);
+        now.into_iter()
+            .filter(|(id, line)| own.get(id) != Some(line))
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// The Inspector for one entity: its fields as text.
@@ -506,6 +581,114 @@ impl Session {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| runity::ron::from_str(&text).ok())
             .unwrap_or_default()
+    }
+
+    /// What a field's value looks like, for a form: its type as the
+    /// engine's module that reads it declares it — fields, what each holds,
+    /// an enum's variants ([`runity::shape`]). For a game component, the
+    /// shape the game wrote down. `None` for a field no module of this
+    /// build reads (`position` and the other core fields among them) and
+    /// for a component the game has not described.
+    pub fn field_shape(&self, field: &str) -> Option<runity::shape::Shape> {
+        if let Some(component) = field.strip_prefix("components.") {
+            return self.component_shapes().remove(component);
+        }
+        part_kind(field).map(|k| (k.shape)())
+    }
+
+    /// For a field that is an enum — `collider`, `joint`, `body` — what
+    /// each variant holds: `Box` its `half` and `center`, `Static`
+    /// nothing. What switching a collider to a sphere needs to know it has
+    /// a `radius` to fill in. Empty for anything else.
+    pub fn field_variants(&self, field: &str) -> Vec<(String, runity::shape::Shape)> {
+        part_kind(field).map_or_else(Vec::new, |k| (k.variants)())
+    }
+
+    /// What a field is set to when it is added: its type's own default
+    /// (the value `()` reads as, which for a type with `#[serde(default)]`
+    /// is its `Default`), as a line of the file writes it. `None` for a
+    /// type that has no default — a route needs its points, a collider a
+    /// shape — and for a field no module reads.
+    pub fn field_blank(&self, field: &str) -> Option<String> {
+        part_kind(field).and_then(|k| (k.normal)("()").ok())
+    }
+
+    /// A field's text read as its type and written back as the file
+    /// writes it: what it means, with what is left at its default left
+    /// out. The error in words when it does not read. What tells an
+    /// Inspector which value a field the text leaves out stands at.
+    pub fn field_normal(&self, field: &str, text: &str) -> EditResult<String> {
+        let kind = part_kind(field)
+            .ok_or_else(|| EditError::Scene(format!("no module reads `{field}`")))?;
+        (kind.normal)(text).map_err(|e| EditError::Scene(format!("{field}: {e}")))
+    }
+
+    /// An entity as the scene file writes its block — id, name, transform,
+    /// every part, components, overrides — without its children, which are
+    /// lines of their own. What the Inspector's Debug mode shows, and what
+    /// an agent reads to see a line whole.
+    pub fn entity_ron(&self, id: EntityId) -> EditResult<String> {
+        let mut desc = self.line(id).ok_or(EditError::NoEntity(id))?.clone();
+        desc.children.clear();
+        let text = pretty(&desc, 1)?;
+        Ok(runity::ron_edit::set_field(&text, "children", None).unwrap_or(text))
+    }
+
+    /// Replace an entity with `text`, as [`Session::entity_ron`] writes it,
+    /// as one undo step. Its id, its children and its place in the tree
+    /// stay what they are; a part of a prefab instance takes the change as
+    /// an override, as any edit of it does. Text that does not read — or a
+    /// field whose module says it does not fit — changes nothing and says
+    /// where (`3:12: …`). The text as it was given back is no step at all.
+    pub fn set_entity_ron(&mut self, id: EntityId, text: &str) -> EditResult<()> {
+        let current = self.line(id).ok_or(EditError::NoEntity(id))?.clone();
+        let mut next: EntityDesc =
+            runity::ron::from_str(text).map_err(|e| EditError::Scene(e.to_string()))?;
+        if !next.children.is_empty() {
+            return Err(EditError::Scene(
+                "children are lines of their own: edit them in the Hierarchy, not here".into(),
+            ));
+        }
+        check_parts(next.parts.iter())?;
+        next.id = id;
+        next.children = current.children.clone();
+        if next == current {
+            return Ok(());
+        }
+        self.update(id, |desc| *desc = next)
+    }
+
+    /// The scene's own settings — `view`, `sun`, `fog`, `sky`, `post`… —
+    /// as one struct, the way the file writes them above its entities.
+    pub fn scene_settings_ron(&self) -> EditResult<String> {
+        let settings = runity::scene::Scene {
+            parts: self.history.scene().parts.clone(),
+            entities: Vec::new(),
+        };
+        let text = pretty(&settings, 1)?;
+        Ok(runity::ron_edit::set_field(&text, "entities", None).unwrap_or(text))
+    }
+
+    /// Replace the scene's settings with `text`, as
+    /// [`Session::scene_settings_ron`] writes them, as one undo step; the
+    /// entities stay. Text that does not read changes nothing and says
+    /// where.
+    pub fn set_scene_settings_ron(&mut self, text: &str) -> EditResult<()> {
+        self.refuse_while_playing()?;
+        let next: runity::scene::Scene =
+            runity::ron::from_str(text).map_err(|e| EditError::Scene(e.to_string()))?;
+        if !next.entities.is_empty() {
+            return Err(EditError::Scene(
+                "entities are edited in the Hierarchy, not with the scene's settings".into(),
+            ));
+        }
+        check_parts(next.parts.iter())?;
+        if next.parts == self.history.scene().parts {
+            return Ok(());
+        }
+        self.history.edit().parts = next.parts;
+        self.respawn();
+        Ok(())
     }
 
     /// Add a component the game has with a value of its shape to start
@@ -1031,5 +1214,40 @@ impl Session {
             return Ok(());
         }
         self.update(id, |desc| *desc = next)
+    }
+}
+
+/// The entities among `entities`, at any depth, that have children.
+fn parents(entities: &[EntityDesc], out: &mut Vec<EntityId>) {
+    for e in entities {
+        if !e.children.is_empty() {
+            out.push(e.id);
+            parents(&e.children, out);
+        }
+    }
+}
+
+fn find_desc(entities: &[EntityDesc], id: EntityId) -> Option<&EntityDesc> {
+    entities.iter().find_map(|e| {
+        if e.id == id {
+            Some(e)
+        } else {
+            find_desc(&e.children, id)
+        }
+    })
+}
+
+/// Each entity without its children, and the one it hangs under: what
+/// [`Session::changed_since`] compares.
+fn own_lines(
+    entities: &[EntityDesc],
+    parent: Option<EntityId>,
+    out: &mut std::collections::HashMap<EntityId, (EntityDesc, Option<EntityId>)>,
+) {
+    for e in entities {
+        let mut line = e.clone();
+        line.children = Vec::new();
+        out.insert(e.id, (line, parent));
+        own_lines(&e.children, Some(e.id), out);
     }
 }

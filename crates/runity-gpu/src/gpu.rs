@@ -320,6 +320,8 @@ impl OffscreenTarget {
             format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::COPY_SRC
+                // `write_rgba`: another process's frame shown in this one.
+                | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             // The same bytes seen as plain RGBA: see `ui_view`.
             view_formats: &[format.remove_srgb_suffix()],
@@ -367,6 +369,32 @@ impl OffscreenTarget {
     /// picture, on the same device, with no copy.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// Fill the texture with RGBA8 pixels, top row first, `width × height`
+    /// of them — what [`OffscreenTarget::read_rgba`] gives, perhaps from
+    /// another process's target.
+    pub fn write_rgba(&self, gpu: &Gpu, pixels: &[u8]) {
+        debug_assert_eq!(pixels.len(), (self.width * self.height * 4) as usize);
+        gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.width * 4),
+                rows_per_image: Some(self.height),
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     /// Copy the texture back into RGBA8 pixels, row padding removed.
