@@ -638,6 +638,7 @@ const GAME: &str = r#"//! {name}.
 
 use runity::hecs::World;
 use runity::party::{Event, Party};
+use runity::prelude::*;
 use runity::physics::PhysicsWorld;
 use runity::render::Frame;
 use runity::shell::{self, run, Context, WindowConfig};
@@ -694,7 +695,7 @@ impl Game {
         self.physics = PhysicsWorld::new(ctx.time.settings().fixed_delta);
         self.physics.set_layers((*self.layers).clone(), &self.world);
         // The scene's wind carries what it says is `blown`.
-        self.physics.wind = self.live.scene().wind.unwrap_or_default();
+        self.physics.wind = self.live.scene().wind().unwrap_or_default();
     }
 }
 
@@ -868,7 +869,7 @@ impl shell::Game for Game {
         // A camera on an entity — a child of the player follows the player —
         // or the scene's view when there is none.
         let camera = runity::world::camera_of(&self.world)
-            .unwrap_or_else(|| runity::scene_camera(&scene.view));
+            .unwrap_or_else(|| runity::scene_camera(&scene.view()));
         let started = std::time::Instant::now();
         // Everything the scene says about how it looks: sun, fog, sky and
         // post-processing.
