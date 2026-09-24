@@ -355,9 +355,14 @@ pub fn attach_collision_meshes<'a>(
             let _ = world.insert_one(entity, CollisionMesh::of(&terrain.mesh()));
             continue;
         }
+        // Its own collision model, or the model it draws.
+        let model = desc
+            .part::<crate::scene::CollisionModel>()
+            .map(|m| m.0)
+            .unwrap_or_else(|| desc.model());
         let mesh = made
-            .entry(desc.model().as_str().to_string())
-            .or_insert_with(|| collision_mesh_for(&desc.model(), library))
+            .entry(model.as_str().to_string())
+            .or_insert_with(|| collision_mesh_for(&model, library))
             .clone();
         match mesh {
             Some(mesh) => {
@@ -2212,6 +2217,22 @@ mod tests {
             }
             assert_eq!(world.get::<&JointBroken>(sponge).is_ok(), loose, "pulled with {pull} N");
         }
+    }
+
+    /// A mesh collider made of another model than the one drawn — or with
+    /// none drawn at all.
+    #[test]
+    fn a_collision_model_is_what_a_model_collider_is_made_of() {
+        let text = r#"(entities: [
+            (id: "0000000000000001", name: "hidden", collider: Model, body: Static, collision_model: "builtin:sphere"),
+        ])"#;
+        let scene: Scene = ron::from_str(text).unwrap();
+        let mut world = World::new();
+        spawn(&scene, &mut world);
+        attach_scene_collision_meshes(&mut world, &scene, None);
+        let mut physics = PhysicsWorld::new(1.0 / 50.0);
+        physics.run(&mut world);
+        assert!(!physics.overlap_sphere(Vec3::ZERO, 0.1).is_empty(), "solid by the sphere, with nothing drawn");
     }
 
     /// A kinematic body under a parent that moves goes with it: a tool's

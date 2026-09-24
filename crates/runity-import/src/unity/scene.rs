@@ -200,8 +200,15 @@ pub fn convert_file(unity: &Unity, text: &str, report: &mut Report) -> Vec<Entit
                     matches!(c.kind.as_str(), "MeshRenderer" | "SkinnedMeshRenderer")
                         && c.body.i64("m_Enabled") == Some(0)
                 });
-                // (A mesh collider still needs its mesh.)
-                if hidden && desc.part::<Collider>() != Some(Collider::Model) {
+                // A mesh collider keeps its mesh as its collision model.
+                if hidden {
+                    if desc.part::<Collider>() == Some(Collider::Model)
+                        && desc.part::<runity::scene::CollisionModel>().is_none()
+                    {
+                        if let Some(drawn) = desc.part::<runity::scene::ModelRef>() {
+                            desc.set_part(&runity::scene::CollisionModel(drawn.0));
+                        }
+                    }
                     desc.clear_part::<runity::scene::ModelRef>();
                     desc.clear_part::<MaterialRef>();
                 }
@@ -587,6 +594,25 @@ fn instance(
         } else if path == "m_Name" {
             if let Some(n) = m.str("value") {
                 desc.name = n.to_string();
+            }
+        } else if path == "m_Enabled" && value == 0.0 && kind == "model" {
+            // A placed model's renderer or collider switched off: drawn
+            // not at all, solid by its mesh still if its collider is on.
+            desc.set_part(&runity::scene::CollisionModel(AssetLink::named(name)));
+            desc.clear_part::<runity::scene::ModelRef>();
+            report.skip("a placed model's renderer switched off (drawn not at all)");
+        } else if path == "m_Enabled" && value == 0.0 {
+            // A part's renderer or collider switched off in this instance:
+            // taken off it.
+            let found = target.and_then(|t| of.as_ref()?.components.get(&t).cloned());
+            match found {
+                Some((part, what)) if what == "collider" || what == "model" => {
+                    let change = desc.overrides.entry(part).or_default();
+                    if !change.removed.contains(&what) {
+                        change.removed.push(what);
+                    }
+                }
+                _ => report.skip(format!("a prefab modification of `{path}`")),
             }
         } else if path == "m_IsActive" || path == "m_Layer" {
             // On the part it names — the prefab's root being the instance
@@ -1069,6 +1095,11 @@ fn component(desc: &mut EntityDesc, c: &Doc, refs: &Refs, report: &mut Report) {
         }
         "MeshCollider" => {
             desc.set_part(&Collider::Model);
+            // Its own mesh, which need not be the one drawn.
+            if let Some(model) = b.reference("m_Mesh").and_then(|r| model(&r, refs.unity)) {
+                let model = piece(refs.unity, model, &desc.name);
+                desc.set_part(&runity::scene::CollisionModel(AssetLink::named(model)));
+            }
             solid(desc, b);
         }
         "Rigidbody" => {
